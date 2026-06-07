@@ -183,8 +183,32 @@ fn register_nozzle_hooks() {
         }
     });
 
-    // Sys control hooks — reboot/shutdown
+    // Sys control hooks — theme/wallpaper/reboot/shutdown
     nozzle::sys_hooks::set_sys_ctl_fn(|cmd| match cmd {
+        "theme dark" => {
+            lattice::theme::set_theme(lattice::theme::ThemeVariant::Dark);
+            solvent::force_desktop_redraw();
+        }
+        "theme light" => {
+            lattice::theme::set_theme(lattice::theme::ThemeVariant::Light);
+            solvent::force_desktop_redraw();
+        }
+        "theme toggle" => {
+            lattice::theme::toggle_theme();
+            solvent::force_desktop_redraw();
+        }
+        "wallpaper solid" => {
+            lattice::wallpaper::set_wallpaper(lattice::wallpaper::WallpaperMode::SolidColor);
+            solvent::force_desktop_redraw();
+        }
+        "wallpaper grid" => {
+            lattice::wallpaper::set_wallpaper(lattice::wallpaper::WallpaperMode::GridPattern);
+            solvent::force_desktop_redraw();
+        }
+        "wallpaper gradient" => {
+            lattice::wallpaper::set_wallpaper(lattice::wallpaper::WallpaperMode::Gradient);
+            solvent::force_desktop_redraw();
+        }
         "reboot" => {
             petroleum::serial::serial_log(format_args!("Reboot requested via shell\n"));
             unsafe {

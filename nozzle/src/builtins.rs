@@ -181,12 +181,26 @@ pub fn cmd_devices(ctx: &mut CommandContext) -> bool {
 
 /// `theme` — show or change the desktop theme
 pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() >= 2 {
+        // Route to sys control hook for actual theme change
+        let cmd = alloc::format!("theme {}", ctx.args[1]);
+        crate::sys_hooks::call_sys_control_hook(&cmd);
+        // Force desktop redraw via info hook
+        crate::sys_hooks::call_sys_info_hook(ctx, "theme");
+        return true;
+    }
     crate::sys_hooks::call_sys_info_hook(ctx, "theme");
     true
 }
 
 /// `wallpaper` — show or change the desktop wallpaper
 pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() >= 2 {
+        let cmd = alloc::format!("wallpaper {}", ctx.args[1]);
+        crate::sys_hooks::call_sys_control_hook(&cmd);
+        crate::sys_hooks::call_sys_info_hook(ctx, "wallpaper");
+        return true;
+    }
     crate::sys_hooks::call_sys_info_hook(ctx, "wallpaper");
     true
 }

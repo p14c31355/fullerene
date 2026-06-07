@@ -116,12 +116,8 @@ impl Compositor {
             return (0, 0, 0, 0);
         }
 
-        // ── Layer 0: Desktop background + icons ──────────
-        let fb_w = fb_width as usize;
-        for row in dy..dy + dh {
-            let rs = (row as usize) * fb_w + (dx as usize);
-            framebuffer[rs..rs + (dw as usize)].fill(scene.bg_color);
-        }
+        // ── Layer 0: Desktop background (wallpaper) + icons ───
+        crate::wallpaper::render_wallpaper(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
 
         // Draw desktop icons on the background, behind windows
         if let Some(icons) = scene.desktop_icons {

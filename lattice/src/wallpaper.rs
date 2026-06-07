@@ -66,10 +66,27 @@ pub fn render_wallpaper(
 
     match mode {
         WallpaperMode::SolidColor => {
-            // Already handled by bg fill in compositor.
+            // Fill the solid background colour
+            for row in cy..cy + ch {
+                let y = row;
+                if y >= fb_height { continue; }
+                let rs = (y as usize) * fb_w;
+                let start = rs + cx as usize;
+                let end = (rs + (cx + cw) as usize).min(fb.len());
+                fb[start..end].fill(colors.bg);
+            }
         }
         WallpaperMode::GridPattern => {
-            // Draw a subtle lattice grid on top of the background.
+            // Fill background, then draw a subtle lattice grid.
+            for row in cy..cy + ch {
+                let y = row;
+                if y >= fb_height { continue; }
+                let rs = (y as usize) * fb_w;
+                let start = rs + cx as usize;
+                let end = (rs + (cx + cw) as usize).min(fb.len());
+                fb[start..end].fill(colors.bg);
+            }
+
             let grid_spacing: u32 = 64;
             let grid_color = blend_over(colors.bg, colors.surface, 30);
 
