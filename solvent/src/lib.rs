@@ -295,22 +295,23 @@ impl EventHandler for WmEventHandler {
                 let prev_x = rt.desktop.cursor.x;
                 let prev_y = rt.desktop.cursor.y;
                 rt.desktop.mouse_move(*x, *y);
-                // Lightweight cursor update (same as overlay modes).
-                // render() calls save_cursor_backing() BEFORE draw_cursor_on_fb(),
-                // so the backing store always captures clean pixels under the
-                // cursor.  Calling render_cursor_only() here restores the old
-                // position and draws at the new one, keeping the framebuffer
-                // consistent until the next scheduled render().
                 render_cursor_only(prev_x, prev_y, rt.desktop.cursor.x, rt.desktop.cursor.y);
                 true
             }
             Event::Input(InputEvent::MouseDown(_btn)) => {
-                rt.desktop
-                    .set_cursor(rt.desktop.cursor.x, rt.desktop.cursor.y);
+                let cx = rt.desktop.cursor.x;
+                let cy = rt.desktop.cursor.y;
+
+                // ── Top-panel Activities button click ───
+                if rt.desktop.top_panel.hit_activities_button(cx, cy) {
+                    rt.shell_state = ShellState::TaskOverview;
+                    rt.frame_due = true;
+                    return true;
+                }
+
+                rt.desktop.set_cursor(cx, cy);
                 let (fw, fh) = *FB_DIMS.lock();
                 rt.desktop.mouse_down(fw, fh);
-                // Force terminal redraw after any title-bar action that
-                // might have resized/moved the terminal window
                 rt.term_dirty = true;
                 true
             }
@@ -326,30 +327,16 @@ impl EventHandler for WmEventHandler {
 struct TerminalInputHandler;
 
 impl EventHandler for TerminalInputHandler {
-    fn handle(&mut self, event: &Event) -> bool {
-        let mut rt = RUNTIME.lock();
-        let rt = match rt.as_mut() {
-            Some(r) => r,
-            None => return false,
-        };
-
-        // Don't forward key events to terminal when shell overlay is active.
-        if rt.shell_state != ShellState::Desktop {
-            return false;
-        }
-
-        match event {
-            Event::Input(InputEvent::KeyDown(key)) => {
-                if let Some(ascii) = keycode_to_ascii(*key) {
-                    rt.term_buf
-                        .put_str(core::str::from_utf8(&[ascii]).unwrap_or(""));
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        }
+    fn handle(&mut self, _event: &Event) -> bool {
+        // ── No-op event handler ──────────────────────────
+        // LatticeTerminal::read_byte() already consumes keys
+        // directly from nitrogen::ps2::keyboard::read_char().
+        // Writing to term_buf here would cause double input
+        // (once from this handler, once from the shell echo).
+        // This handler is retained for potential future use
+        // (e.g. clipboard paste, compose sequences) but does
+        // NOT forward ASCII to the terminal buffer.
+        false
     }
 }
 
@@ -788,9 +775,24 @@ where
         None => return,
     };
 
-    // When shell overlay is active, force full redraw so the compositor
-    // repaints the clean desktop under the overlay every frame,
-    // avoiding overlay‑on‑overlay accumulation.
+    // Force full redraw on any shell state transition so that the
+    // previous overlay is painted over by the compositor.
+    // Without this, returning from TaskOverview/AppGrid to Desktop
+    // would leave old overlay pixels on the framebuffer.
+    static PREV_SHELL_STATE: Mutex<ShellState> = Mutex::new(ShellState::Desktop);
+    static PREV_TRANSITION: Mutex<bool> = Mutex::new(false);
+    {
+        let prev = *PREV_SHELL_STATE.lock();
+        if rt.shell_state != prev {
+            rt.desktop.force_full_redraw();
+            *PREV_SHELL_STATE.lock() = rt.shell_state;
+            // Signal that a full-screen blit is needed
+            // to erase old overlay pixels from fb_pixels.
+            *PREV_TRANSITION.lock() = true;
+        }
+    }
+
+    // Also keep overlay-active full redraw to avoid accumulation.
     if rt.shell_state != ShellState::Desktop {
         rt.desktop.force_full_redraw();
     }
@@ -826,6 +828,17 @@ where
     if has_dirty || clock_dirty {
         rt.clock_changed = false;
 
+        // On shell-state transitions, copy the ENTIRE back-buffer
+        // to fb_pixels.  Shell overlays are drawn directly onto
+        // fb_pixels (bypassing the back-buffer), so a partial
+        // dirty-rect blit would leave old overlay pixels on screen.
+        let was_transition = {
+            let prev = *PREV_TRANSITION.lock();
+            if prev {
+                *PREV_TRANSITION.lock() = false;
+            }
+            prev
+        };
         {
             let mut back = BACK_BUFFER.lock();
             let mut back_target = FramebufferTarget {
@@ -836,16 +849,20 @@ where
             let scene = rt.desktop.scene();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
 
-            if bw > 0 && bh > 0 {
+            if was_transition || (bw > 0 && bh > 0) {
                 let fb_w = fb_width as usize;
-                let b_w = bw as usize;
-
-                // Copy composited desktop to framebuffer
-                for row in 0..bh {
-                    let off = ((by + row) as usize) * fb_w + (bx as usize);
-                    let len = b_w.min(fb_len.saturating_sub(off));
-                    if len > 0 {
-                        fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+                if was_transition {
+                    // Full-screen blit on transition
+                    let copy_len = fb_len.min(back.len());
+                    fb_pixels[..copy_len].copy_from_slice(&back[..copy_len]);
+                } else {
+                    let b_w = bw as usize;
+                    for row in 0..bh {
+                        let off = ((by + row) as usize) * fb_w + (bx as usize);
+                        let len = b_w.min(fb_len.saturating_sub(off));
+                        if len > 0 {
+                            fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+                        }
                     }
                 }
             }
@@ -868,14 +885,10 @@ where
             ShellState::Desktop => {}
         }
 
-        // ── GNOME-style Top Panel (drawn after compositor on fb_pixels) ───
-        rt.desktop.top_panel.render(fb_pixels, fb_width, fb_height);
-
-        // ── Xfce-style Desktop Icons (drawn on fb_pixels background) ──
-        rt.desktop.desktop_icons.render(
-            fb_pixels, fb_width, fb_height,
-            0, 0, fb_width, fb_height,
-        );
+        // ── Top Panel (only on Desktop; overlays cover it) ───
+        if rt.shell_state == ShellState::Desktop {
+            rt.desktop.top_panel.render(fb_pixels, fb_width, fb_height);
+        }
     }
 
     // ── Cursor overlay (drawn after everything else) ──────

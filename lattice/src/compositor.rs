@@ -116,11 +116,16 @@ impl Compositor {
             return (0, 0, 0, 0);
         }
 
-        // ── Layer 0: Desktop background ──────────────────
+        // ── Layer 0: Desktop background + icons ──────────
         let fb_w = fb_width as usize;
         for row in dy..dy + dh {
             let rs = (row as usize) * fb_w + (dx as usize);
             framebuffer[rs..rs + (dw as usize)].fill(scene.bg_color);
+        }
+
+        // Draw desktop icons on the background, behind windows
+        if let Some(icons) = scene.desktop_icons {
+            icons.render(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
         }
 
         // ── Layer 1: Windows ─────────────────────────────

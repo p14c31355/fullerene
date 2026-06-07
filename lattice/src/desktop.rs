@@ -354,6 +354,7 @@ impl Desktop {
             dirty_rects: &self.dirty_cache,
             taskbar: Some(&self.taskbar),
             overlays: &self.menu_overlays_cache,
+            desktop_icons: Some(&self.desktop_icons),
             layered: true,
         }
     }
