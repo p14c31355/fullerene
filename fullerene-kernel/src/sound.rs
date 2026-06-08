@@ -264,8 +264,8 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE,
         (1u16 << 13) | (1u16 << 12) | gain);
     // Set format: 44.1kHz / 2 = 22.05kHz, 16-bit, 1ch
-    // bits[7]=1 (44.1kHz), bits[3:0]=1 (/2), bits[10:8]=1 (16-bit)
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x0181);
+    // bits[7]=1 (44.1kHz), bits[6:4]=1 (/2), bits[3:0]=1 (16-bit)
+    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x81);
     // Assign stream
     corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
 

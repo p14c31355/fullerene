@@ -19,12 +19,6 @@
 
 use alloc::vec::Vec;
 
-/// Write a u32 pixel to the framebuffer using volatile store.
-/// The framebuffer may be WB-cached; `flush_gpu()` (sfence) commits it.
-unsafe fn fb_write_u32(dst: *mut u32, value: u32) {
-    core::ptr::write_volatile(dst, value);
-}
-
 /// All RLE-compressed frames.
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 
@@ -92,10 +86,10 @@ fn delay_ms(spins_per_ms: u64, ms: u64) {
 
 // ── Frame rendering ────────────────────────────────────────
 
-/// Decode one RLE frame and draw it to the framebuffer.
+/// Decode one RLE frame and draw it to the framebuffer (nearest-neighbor scale).
 ///
-/// `fb_stride`: number of u32 pixels per scanline (stride in bytes / 4).
-/// Decode one RLE frame, scale it to full framebuffer (nearest-neighbor).
+/// Uses a stack-local decode buffer (19 200 bytes) to avoid per-frame heap allocation.
+/// Writes directly to framebuffer slice without volatile stores (only `flush_gpu` at end).
 fn draw_rle_frame(
     fb: &mut [u32],
     fb_stride: usize,
@@ -117,10 +111,10 @@ fn draw_rle_frame(
 
     let total_pixels = fw * fh;
 
-    // ── Decode RLE into grayscale buffer ──────────────
-    // Allocate on stack: 160×120 = 19 200 bytes → 19 200 u32 pixels (76 800 B).
-    // Use Vec for flexibility, but it's small enough.
-    let mut rle_buf = alloc::vec![0u8; total_pixels];
+    // ── Decode RLE into stack-local buffer ────────────────
+    // 160×120 = 19 200 bytes fits on stack; avoids heap allocation every frame.
+    let mut rle_buf = [0u8; 19200];
+    let decode_buf = &mut rle_buf[..total_pixels];
 
     let mut pos: usize = 0;
     let mut cursor: usize = 0;
@@ -131,13 +125,11 @@ fn draw_rle_frame(
         cursor += 3;
 
         let end = (pos + run_len).min(total_pixels);
-        rle_buf[pos..end].fill(fill);
+        decode_buf[pos..end].fill(fill);
         pos = end;
     }
 
-    // ── Nearest-neighbor scale to full framebuffer ────
-    // Aspect ratio: 160:120 = 4:3, matches common resolutions.
-    let fb_ptr = fb.as_mut_ptr();
+    // ── Nearest-neighbor scale directly into framebuffer ──
     let fw_u32 = fw as u32;
     let fh_u32 = fh as u32;
     let fb_stride_u32 = fb_stride as u32;
@@ -145,15 +137,14 @@ fn draw_rle_frame(
 
     for fy in 0..fb_height_u32 {
         let ry = (fy * fh_u32 / fb_height_u32) as usize;
-        let row_base = ry * fw;
+        let src_row = &decode_buf[ry * fw..];
 
-        for fx in 0..fb_stride_u32 {
-            let rx = (fx * fw_u32 / fb_stride_u32) as usize;
-            let gray = rle_buf[row_base + rx] as u32;
-            let pixel = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
-            unsafe {
-                fb_write_u32(fb_ptr.add((fy as usize) * fb_stride + fx as usize), pixel);
-            }
+        let dst_row = &mut fb[(fy as usize) * fb_stride..][..fb_stride];
+
+        for (dx, pixel_out) in dst_row.iter_mut().enumerate() {
+            let rx = (dx as u32 * fw_u32 / fb_stride_u32) as usize;
+            let gray = src_row[rx] as u32;
+            *pixel_out = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
         }
     }
 }
@@ -250,11 +241,10 @@ pub fn play_badapple() {
     let fb = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
 
     // Clear screen to black and flush.
-    // Non-temporal stores: bypass cache, committed by sfence in flush_gpu().
     let fb_len = fb.len();
     let fb_ptr = fb.as_mut_ptr();
     for i in 0..fb_len {
-        unsafe { fb_write_u32(fb_ptr.add(i), 0xFF000000); }
+        unsafe { core::ptr::write_volatile(fb_ptr.add(i), 0xFF000000); }
     }
     crate::graphics::flush_gpu();
 
