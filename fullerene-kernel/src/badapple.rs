@@ -183,7 +183,7 @@ pub fn play_badapple() {
     // Each entry = compressed byte size for that frame.
     // RLE data starts at 16 + n_frames * 2.
     let table_entry_size = 2usize;
-    let data_start = RLE_HDR_SIZE.saturating_add(n_frames * table_entry_size);
+    let data_start = RLE_HDR_SIZE.saturating_add(n_frames.saturating_mul(table_entry_size));
     if data_start >= data.len() {
         log::error!("Bad Apple: RLE data start ({}) exceeds file size ({})", data_start, data.len());
         return;
