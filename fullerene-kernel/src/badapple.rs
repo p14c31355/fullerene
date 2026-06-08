@@ -13,7 +13,7 @@
 //! 8       4     Frame count: u32 LE
 //! 12      2     Width: u16 LE
 //! 14      2     Height: u16 LE
-//! 16      N*4   Frame table: [compressed_size: u32 LE] × N
+//! 16      N*2   Frame table: [compressed_size: u16 LE] × N
 //! …       …     RLE data: [u8 fill][u16 LE run_len] …
 //! ```
 
@@ -95,6 +95,7 @@ fn delay_ms(spins_per_ms: u64, ms: u64) {
 /// Decode one RLE frame and draw it to the framebuffer.
 ///
 /// `fb_stride`: number of u32 pixels per scanline (stride in bytes / 4).
+/// Decode one RLE frame, scale it to full framebuffer (nearest-neighbor).
 fn draw_rle_frame(
     fb: &mut [u32],
     fb_stride: usize,
@@ -110,64 +111,50 @@ fn draw_rle_frame(
     let fw = rle_frame_w as usize;
     let fh = rle_frame_h as usize;
 
-    if fw > fb_stride || fh > fb_height {
+    if fw == 0 || fh == 0 {
         return;
     }
 
-    let ox = if fb_stride > fw {
-        (fb_stride - fw) / 2
-    } else {
-        0
-    };
-    let oy = if fb_height > fh {
-        (fb_height - fh) / 2
-    } else {
-        0
-    };
+    let total_pixels = fw * fh;
 
-    // Fill frame area with black (non-temporal store bypasses cache)
-    let fb_ptr = fb.as_mut_ptr();
-    for y in 0..fh {
-        let row = (oy + y) * fb_stride + ox;
-        if row + fw > fb.len() {
-            continue;
-        }
-        for x in 0..fw {
-            unsafe {
-                fb_write_u32(fb_ptr.add(row + x), 0xFF000000);
-            }
-        }
-    }
+    // ── Decode RLE into grayscale buffer ──────────────
+    // Allocate on stack: 160×120 = 19 200 bytes → 19 200 u32 pixels (76 800 B).
+    // Use Vec for flexibility, but it's small enough.
+    let mut rle_buf = alloc::vec![0u8; total_pixels];
 
-    // Walk RLE runs and paint pixels.
-    // Format: [fill: u8][run_len: u16 LE] (confirmed via Python binary analysis).
     let mut pos: usize = 0;
     let mut cursor: usize = 0;
 
-    while cursor + 3 <= rle_data.len() && pos < fw * fh {
+    while cursor + 3 <= rle_data.len() && pos < total_pixels {
         let fill = rle_data[cursor];
         let run_len = u16::from_le_bytes([rle_data[cursor + 1], rle_data[cursor + 2]]) as usize;
         cursor += 3;
 
-        let run_len = run_len.min(fw * fh - pos);
+        let end = (pos + run_len).min(total_pixels);
+        rle_buf[pos..end].fill(fill);
+        pos = end;
+    }
 
-        // Convert fill byte to a grayscale ARGB pixel.
-        // fill=0x00 → black, fill=0xFF → white, etc.
-        let gray = fill as u32;
-        let pixel = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
+    // ── Nearest-neighbor scale to full framebuffer ────
+    // Aspect ratio: 160:120 = 4:3, matches common resolutions.
+    let fb_ptr = fb.as_mut_ptr();
+    let fw_u32 = fw as u32;
+    let fh_u32 = fh as u32;
+    let fb_stride_u32 = fb_stride as u32;
+    let fb_height_u32 = fb_height as u32;
 
-        let mut rem = run_len;
-        let mut p = pos;
-        while rem > 0 {
-            let y = p / fw;
-            let x = p % fw;
+    for fy in 0..fb_height_u32 {
+        let ry = (fy * fh_u32 / fb_height_u32) as usize;
+        let row_base = ry * fw;
+
+        for fx in 0..fb_stride_u32 {
+            let rx = (fx * fw_u32 / fb_stride_u32) as usize;
+            let gray = rle_buf[row_base + rx] as u32;
+            let pixel = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
             unsafe {
-                fb_write_u32(fb.as_mut_ptr().add((oy + y) * fb_stride + ox + x), pixel);
+                fb_write_u32(fb_ptr.add((fy as usize) * fb_stride + fx as usize), pixel);
             }
-            p += 1;
-            rem -= 1;
         }
-        pos += run_len;
     }
 }
 
@@ -198,10 +185,10 @@ pub fn play_badapple() {
 
     let n_frames = frame_count as usize;
 
-    // Frame table: u32 LE × n_frames at offset 16.
+    // Frame table: u16 LE × n_frames at offset 16.
     // Each entry = compressed byte size for that frame.
-    // RLE data starts at 16 + n_frames * 4.
-    let table_entry_size = 4usize;
+    // RLE data starts at 16 + n_frames * 2.
+    let table_entry_size = 2usize;
     let data_start = RLE_HDR_SIZE.saturating_add(n_frames.saturating_mul(table_entry_size));
     if data_start >= data.len() {
         log::error!("Bad Apple: RLE data start ({}) exceeds file size ({})", data_start, data.len());
@@ -212,11 +199,9 @@ pub fn play_badapple() {
     let mut frame_offsets = Vec::with_capacity(n_frames);
     let mut offset: u64 = data_start as u64;
     for i in 0..n_frames {
-        let compressed_size = u32::from_le_bytes([
+        let compressed_size = u16::from_le_bytes([
             data[RLE_HDR_SIZE + i * table_entry_size],
             data[RLE_HDR_SIZE + i * table_entry_size + 1],
-            data[RLE_HDR_SIZE + i * table_entry_size + 2],
-            data[RLE_HDR_SIZE + i * table_entry_size + 3],
         ]) as u64;
         frame_offsets.push(offset);
         offset = offset.saturating_add(compressed_size);
