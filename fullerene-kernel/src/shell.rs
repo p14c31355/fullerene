@@ -172,6 +172,28 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str("Usage: run <app_name>\n");
             ctx.terminal.write_str("Available: toluene, hello\n");
         }
+        "pci" => {
+            use alloc::format;
+            use nitrogen::pci::PciScanner;
+            ctx.terminal.write_str("BUS  DEV  FUN  VENDOR  DEVICE  CLASS      SUBCLASS  DESCRIPTION\n");
+            ctx.terminal.write_str("---- ---- ----  ------  ------  ---------  --------  -----------\n");
+            let mut scanner = PciScanner::new();
+            if scanner.scan_all_buses().is_ok() {
+                for dev in scanner.get_devices() {
+                    let desc = pci_device_description(dev.class_code, dev.subclass);
+                    let line = format!(
+                        "{:<4}  {:<4} {:<4}  0x{:04x} 0x{:04x}  0x{:02x}       0x{:02x}       {}\n",
+                        dev.bus, dev.device, dev.function,
+                        dev.vendor_id, dev.device_id,
+                        dev.class_code, dev.subclass,
+                        desc,
+                    );
+                    ctx.terminal.write_str(&line);
+                }
+            } else {
+                ctx.terminal.write_str("PCI scan failed.\n");
+            }
+        }
         "badapple" => {
             ctx.terminal.write_str("Playing Bad Apple!! (press any key to stop)...\n");
             crate::badapple::play_badapple();
@@ -285,5 +307,34 @@ impl nozzle::Terminal for KernelTerminal {
 
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
+    }
+}
+
+// ── PCI device description helper ────────────────────────────────
+
+fn pci_device_description(class: u8, subclass: u8) -> &'static str {
+    match (class, subclass) {
+        (0x00, _) => "Pre-PCI 2.0 device",
+        (0x01, 0x01) => "IDE Controller",
+        (0x01, 0x06) => "SATA Controller (AHCI)",
+        (0x01, 0x08) => "NVMe Controller",
+        (0x01, _) => "Mass Storage Controller",
+        (0x02, 0x00) => "Ethernet Controller",
+        (0x02, _) => "Network Controller",
+        (0x03, 0x00) => "VGA Compatible",
+        (0x03, _) => "Display Controller",
+        (0x04, 0x00) => "HDA Audio Device",
+        (0x04, 0x01) => "AC97 Audio Device",
+        (0x04, 0x03) => "HD Audio Controller",
+        (0x04, _) => "Multimedia Controller",
+        (0x06, 0x00) => "Host Bridge",
+        (0x06, 0x01) => "ISA Bridge",
+        (0x06, 0x04) => "PCI-to-PCI Bridge",
+        (0x06, _) => "Bridge Device",
+        (0x0C, 0x03) => "USB Controller (UHCI/OHCI/EHCI/XHCI)",
+        (0x0C, _) => "Serial Bus Controller",
+        (0x01, 0x00) => "SCSI Controller",
+        (0x08, _) => "System Peripheral",
+        _ => "Unknown PCI device",
     }
 }

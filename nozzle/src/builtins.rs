@@ -137,6 +137,14 @@ pub fn cmd_shutdown(ctx: &mut CommandContext) -> bool {
     true
 }
 
+/// `pci` — list PCI devices
+///
+/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
+pub fn cmd_pci(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "pci");
+    true
+}
+
 /// `calc` — simple arithmetic calculator
 pub fn cmd_calc(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() < 2 {

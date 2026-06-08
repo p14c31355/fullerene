@@ -262,10 +262,8 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let steps = (ac & 0x7F) as u16;
     let gain = if steps > 0 { steps / 2 } else { 0 };
     corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE,
-        (1u16 << 13) | (1u16 << 12) | gain);
-    // Set format: 44.1kHz / 2 = 22.05kHz, 16-bit, 1ch
-    // bits[7]=1 (44.1kHz), bits[6:4]=1 (/2), bits[3:0]=1 (16-bit)
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x81);
+        (1u16 << 14) | (1u16 << 13) | (1u16 << 12) | gain);
+    // QEMU automatically sets converter format from SDnFMT when stream starts.
     // Assign stream
     corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
 
@@ -274,7 +272,7 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let ps = (pa & 0x7F) as u16;
     let pg = if ps > 0 { ps / 2 } else { 0 };
     corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE,
-        (1u16 << 13) | (1u16 << 12) | pg);
+        (1u16 << 14) | (1u16 << 13) | (1u16 << 12) | pg);
     // Pin output enable
     corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, (1u16 << 7) | (1u16 << 6));
     // EAPD
@@ -397,14 +395,15 @@ fn hda_init() {
         w8(m, sd + SD_CTL, 0x00);
         for _ in 0..2000 { core::hint::spin_loop(); }
         w8(m, sd + SD_STS, 0xFF);
-        // 22.05kHz = 44.1kHz base / 2, 16-bit, 1ch
-        // bits[7]=1 (44.1kHz base), bits[3:0]=1 (÷2), bits[10:8]=1 (16-bit), bits[13:11]=0 (1ch)
+        // 22.05kHz = 44.1kHz (bit7=1) ÷ 2 (bits[10:8]=1), 16-bit (bits[3:0]=1), mono (bits[13:11]=0)
+        // bit7=1 (44.1kHz), bit8=1 (÷2), bit0=1 (16-bit) → 0x0181
         w16(m, sd + SD_FMT, 0x0181);
         w32(m, sd + SD_CBL, audio_sz);
         w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
         w32(m, sd + SD_BDPL, dma_phys as u32);
         w32(m, sd + SD_BDPU, (dma_phys >> 32) as u32);
-        w32(m, sd + SD_CTL, (1u32 << 20) | 0x02);
+        // Stream tag=1 (bits[19:16]), IOCE (bit20), RUN (bit1)
+        w32(m, sd + SD_CTL, (1u32 << 20) | (1u32 << 16) | 0x02);
         log::info!("Sound: stream started ({} B)", audio_sz);
     }
 

@@ -18,6 +18,7 @@
 //! ```
 
 use alloc::vec::Vec;
+use spin::Mutex;
 
 /// All RLE-compressed frames.
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
@@ -25,9 +26,8 @@ static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 /// PCM audio: 22 050 Hz, mono, signed 16‑bit little‑endian.
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
 
-const PCM_SAMPLE_RATE: u32 = 22050;
 const PCM_BYTES_PER_SAMPLE: u32 = 2;
-const PCM_BYTES_PER_SEC: u32 = PCM_SAMPLE_RATE * PCM_BYTES_PER_SAMPLE; // 44100
+const PCM_BYTES_PER_SEC: u32 = 22050 * PCM_BYTES_PER_SAMPLE; // 44100
 
 const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_HDR_SIZE: usize = 16;
@@ -38,98 +38,77 @@ const RLE_HDR_SIZE: usize = 16;
 /// RDTSC ticks.  Returns `(spins_per_real_ms)`.
 fn calibrate_spins_per_ms() -> u64 {
     const CALIBRATION_MS: u64 = 100;
-    // Safety net: if calibration fails, assume 400 000 spins/ms (typical QEMU).
     const FALLBACK_SPINS_PER_MS: u64 = 400_000;
 
-    // Ensure RDTSC is well‑ordered.
-    unsafe {
-        core::arch::x86_64::_mm_lfence();
-    }
+    unsafe { core::arch::x86_64::_mm_lfence(); }
 
     let tsc_start: u64;
     let mut spins: u64 = 0;
-    unsafe {
-        tsc_start = core::arch::x86_64::_rdtsc();
-    }
+    unsafe { tsc_start = core::arch::x86_64::_rdtsc(); }
     loop {
         spins += 1;
         core::hint::spin_loop();
         let tsc_end = unsafe { core::arch::x86_64::_rdtsc() };
-        let elapsed_tsc = tsc_end.wrapping_sub(tsc_start);
-        // Assume CPU TSC ≈ 2.5 GHz → 1 ms ≈ 2.5M ticks.
-        // 100 ms ≈ 250M ticks.
-        if elapsed_tsc >= 250_000_000 {
-            break;
-        }
+        if tsc_end.wrapping_sub(tsc_start) >= 250_000_000 { break; }
     }
 
-    let per_ms = if CALIBRATION_MS > 0 {
-        spins / CALIBRATION_MS
-    } else {
-        FALLBACK_SPINS_PER_MS
-    };
+    let per_ms = spins / CALIBRATION_MS.max(1);
     log::info!(
         "Bad Apple: calibrated {} spins/ms ({} spins in ~{}ms)",
-        per_ms,
-        spins,
-        CALIBRATION_MS
+        per_ms, spins, CALIBRATION_MS
     );
     if per_ms == 0 { FALLBACK_SPINS_PER_MS } else { per_ms }
 }
 
 fn delay_ms(spins_per_ms: u64, ms: u64) {
-    let spins = ms.saturating_mul(spins_per_ms);
-    for _ in 0..spins {
+    for _ in 0..ms.saturating_mul(spins_per_ms) {
         core::hint::spin_loop();
     }
 }
 
 // ── Frame rendering ────────────────────────────────────────
 
+/// Volatile u32 write to framebuffer (MMIO).
+unsafe fn fb_write_u32(dst: *mut u32, value: u32) {
+    core::ptr::write_volatile(dst, value);
+}
+
+/// Static decode buffer (heap, reused across frames) to avoid kernel stack overflow.
+static RLE_BUF: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
 /// Decode one RLE frame and draw it to the framebuffer (nearest-neighbor scale).
-///
-/// Uses a stack-local decode buffer (19 200 bytes) to avoid per-frame heap allocation.
-/// Writes directly to framebuffer slice without volatile stores (only `flush_gpu` at end).
 fn draw_rle_frame(
-    fb: &mut [u32],
+    fb_ptr: *mut u32,
     fb_stride: usize,
     fb_height: usize,
     rle_frame_w: u16,
     rle_frame_h: u16,
     rle_data: &[u8],
 ) {
-    if fb_stride == 0 || fb_height == 0 {
-        return;
-    }
-
     let fw = rle_frame_w as usize;
     let fh = rle_frame_h as usize;
-
-    if fw == 0 || fh == 0 {
-        return;
-    }
+    if fw == 0 || fh == 0 || fb_stride == 0 || fb_height == 0 { return; }
 
     let total_pixels = fw * fh;
 
-    // ── Decode RLE into stack-local buffer ────────────────
-    // 160×120 = 19 200 bytes fits on stack; avoids heap allocation every frame.
-    let mut rle_buf = [0u8; 19200];
-    let decode_buf = &mut rle_buf[..total_pixels];
+    // Decode RLE into heap buffer (reused across frames).
+    let mut guard = RLE_BUF.lock();
+    let buf = guard.get_or_insert_with(|| alloc::vec![0u8; 19200]);
+    buf.resize(total_pixels.max(19200), 0);
+    let decode_buf = &mut buf[..total_pixels];
 
     let mut pos: usize = 0;
     let mut cursor: usize = 0;
-
     while cursor + 3 <= rle_data.len() && pos < total_pixels {
         let fill = rle_data[cursor];
         let run_len = u16::from_le_bytes([rle_data[cursor + 1], rle_data[cursor + 2]]) as usize;
         cursor += 3;
-
         let end = (pos + run_len).min(total_pixels);
         decode_buf[pos..end].fill(fill);
         pos = end;
     }
 
-    // ── Nearest-neighbor scale directly into framebuffer ──
+    // Nearest-neighbor scale to framebuffer using volatile writes.
     let fw_u32 = fw as u32;
     let fh_u32 = fh as u32;
     let fb_stride_u32 = fb_stride as u32;
@@ -138,13 +117,13 @@ fn draw_rle_frame(
     for fy in 0..fb_height_u32 {
         let ry = (fy * fh_u32 / fb_height_u32) as usize;
         let src_row = &decode_buf[ry * fw..];
+        let row_base = (fy as usize) * fb_stride;
 
-        let dst_row = &mut fb[(fy as usize) * fb_stride..][..fb_stride];
-
-        for (dx, pixel_out) in dst_row.iter_mut().enumerate() {
-            let rx = (dx as u32 * fw_u32 / fb_stride_u32) as usize;
+        for fx in 0..fb_stride_u32 {
+            let rx = (fx * fw_u32 / fb_stride_u32) as usize;
             let gray = src_row[rx] as u32;
-            *pixel_out = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
+            let pixel = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
+            unsafe { fb_write_u32(fb_ptr.add(row_base + fx as usize), pixel); }
         }
     }
 }
@@ -154,7 +133,7 @@ fn draw_rle_frame(
 pub fn play_badapple() {
     log::info!("Bad Apple playback started");
 
-    // ── Parse RLE header ──────────────────────────────────
+    // Parse RLE header.
     let data = BADAPPLE_RLE;
     if data.len() < RLE_HDR_SIZE || &data[0..4] != RLE_MAGIC {
         log::error!("Bad Apple: invalid RLE data");
@@ -175,76 +154,47 @@ pub fn play_badapple() {
     }
 
     let n_frames = frame_count as usize;
-
-    // Frame table: u16 LE × n_frames at offset 16.
-    // Each entry = compressed byte size for that frame.
-    // RLE data starts at 16 + n_frames * 2.
     let table_entry_size = 2usize;
     let data_start = RLE_HDR_SIZE.saturating_add(n_frames.saturating_mul(table_entry_size));
     if data_start >= data.len() {
-        log::error!("Bad Apple: RLE data start ({}) exceeds file size ({})", data_start, data.len());
+        log::error!("Bad Apple: RLE data exceeds file size");
         return;
     }
 
-    // Build frame offset table.
     let mut frame_offsets = Vec::with_capacity(n_frames);
     let mut offset: u64 = data_start as u64;
     for i in 0..n_frames {
-        let compressed_size = u16::from_le_bytes([
+        let cs = u16::from_le_bytes([
             data[RLE_HDR_SIZE + i * table_entry_size],
             data[RLE_HDR_SIZE + i * table_entry_size + 1],
         ]) as u64;
         frame_offsets.push(offset);
-        offset = offset.saturating_add(compressed_size);
+        offset = offset.saturating_add(cs);
     }
 
-    // Dump first few bytes of RLE data for diagnostics.
-    let dbg_end = (data_start + 24).min(data.len());
-    log::info!(
-        "Bad Apple: data_start={}, first bytes: {:02x?}, {} frames",
-        data_start,
-        &data[data_start..dbg_end],
-        n_frames,
-    );
+    log::info!("Bad Apple: {} frames, RLE offset range {}..{}", n_frames, data_start, offset);
 
-    // ── Acquire framebuffer ───────────────────────────────
+    // Acquire framebuffer.
     let (fb_ptr, fb_stride_pixels, fb_height) = {
-        let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-        let guard = renderer_lock;
+        let guard = crate::graphics::PRIMARY_RENDERER.lock();
         let r = match guard.as_ref() {
             Some(r) => r,
-            None => {
-                log::error!("Bad Apple: no primary renderer");
-                return;
-            }
+            None => { log::error!("Bad Apple: no primary renderer"); return; }
         };
         let info = r.get_info();
-        // For 32 bpp: pixel stride = byte stride / 4
-        let stride_px = (info.stride as usize) / 4;
-        (info.address as *mut u32, stride_px, info.height as usize)
+        (info.address as *mut u32, (info.stride as usize) / 4, info.height as usize)
     };
-    // drop lock before long loop
 
     if fb_ptr.is_null() || fb_stride_pixels == 0 || fb_height == 0 {
-        log::error!("Bad Apple: invalid framebuffer parameters");
+        log::error!("Bad Apple: invalid framebuffer");
         return;
     }
 
     let fb_len = fb_stride_pixels * fb_height;
-    let rle_w_usize = rle_w as usize;
-    let rle_h_usize = rle_h as usize;
-    if rle_w_usize > fb_stride_pixels || rle_h_usize > fb_height {
-        log::error!("Bad Apple: RLE frame size exceeds framebuffer dimensions");
-        return;
-    }
 
-    let fb = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
-
-    // Clear screen to black and flush.
-    let fb_len = fb.len();
-    let fb_ptr = fb.as_mut_ptr();
+    // Clear screen to black with volatile writes.
     for i in 0..fb_len {
-        unsafe { core::ptr::write_volatile(fb_ptr.add(i), 0xFF000000); }
+        unsafe { fb_write_u32(fb_ptr.add(i), 0xFF000000); }
     }
     crate::graphics::flush_gpu();
 
@@ -255,39 +205,34 @@ pub fn play_badapple() {
     let song_duration_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
     let frame_interval_ms: u64 = song_duration_ms / (n_frames as u64).max(1);
 
-    // DMA half-buffer size (same as sound.rs: DMA_BUF_SIZE / 2 minus BDL header)
-    // sound.rs uses: audio_sz = DMA_BUF_SIZE - bdl_sz, half = audio_sz / 2
-    // DMA_BUF_SIZE=32768, bdl_sz≈32, so half≈16368
     const DMA_HALF: usize = 16368;
 
     log::info!(
-        "Bad Apple: fb {}x{} (stride {} px), {} frames, {}x{} px rle, {:.1}s, {}ms/f, HDA={}, {} spin/ms",
+        "Bad Apple: {}x{} (stride {}), {} frames, {:.1}s, {}ms/f, HDA={}, {} spin/ms",
         fb_stride_pixels, fb_height, fb_stride_pixels,
-        n_frames, rle_w, rle_h,
+        n_frames,
         song_duration_ms as f64 / 1000.0,
         frame_interval_ms,
         use_hda,
         spins_per_ms,
     );
 
-    // Flush stale input to avoid Enter-key immediate abort.
     nitrogen::ps2::keyboard::flush_input();
 
-    // ── Pre-fill first half of DMA buffer ───────────────
+    // Pre-fill first half of DMA buffer.
     let mut pcm_offset: usize = 0;
     if use_hda {
-        let feed_end = (DMA_HALF).min(pcm_total);
+        let feed_end = DMA_HALF.min(pcm_total);
         if feed_end > 0 {
             pcm_offset += crate::sound::hda_feed_samples(&BADAPPLE_PCM[..feed_end]);
         }
     }
 
-    // ── Playback loop ─────────────────────────────────────
+    // Playback loop.
     let mut frame_idx: usize = 0;
-
     while frame_idx < n_frames && frame_idx < frame_offsets.len() {
         if nitrogen::ps2::keyboard::input_available() {
-            log::info!("Bad Apple aborted by user");
+            log::info!("Bad Apple aborted");
             nitrogen::ps2::keyboard::flush_input();
             break;
         }
@@ -299,11 +244,10 @@ pub fn play_badapple() {
             data.len()
         };
         if off < data.len() && next_off <= data.len() {
-            draw_rle_frame(fb, fb_stride_pixels, fb_height, rle_w, rle_h, &data[off..next_off]);
+            draw_rle_frame(fb_ptr, fb_stride_pixels, fb_height, rle_w, rle_h, &data[off..next_off]);
             crate::graphics::flush_gpu();
         }
 
-        // Feed PCM: fill DMA half-buffer as much as possible from remaining data
         if use_hda {
             let remaining = pcm_total.saturating_sub(pcm_offset);
             if remaining > 0 {
@@ -311,9 +255,7 @@ pub fn play_badapple() {
                 let fed = crate::sound::hda_feed_samples(&BADAPPLE_PCM[pcm_offset..feed_end]);
                 pcm_offset = pcm_offset.saturating_add(fed);
             } else {
-                // Song ended, feed silence
-                let silence = [0u8; 4096];
-                crate::sound::hda_feed_samples(&silence);
+                crate::sound::hda_feed_samples(&[0u8; 4096]);
             }
         }
 
@@ -321,7 +263,7 @@ pub fn play_badapple() {
         delay_ms(spins_per_ms, frame_interval_ms);
     }
 
-    // Drain remaining PCM and silence
+    // Drain remaining PCM and silence.
     if use_hda {
         while pcm_offset < pcm_total {
             let remaining = pcm_total.saturating_sub(pcm_offset);
@@ -331,18 +273,12 @@ pub fn play_badapple() {
             pcm_offset = pcm_offset.saturating_add(fed);
             delay_ms(spins_per_ms, 50);
         }
-        // Drain silence (1 s worth)
-        let silence = [0u8; 4096];
         for _ in 0..10 {
-            crate::sound::hda_feed_samples(&silence);
+            crate::sound::hda_feed_samples(&[0u8; 4096]);
             delay_ms(spins_per_ms, 100);
         }
     }
 
     solvent::force_desktop_redraw();
-    log::info!(
-        "Bad Apple playback finished ({} frames, {:.1}s)",
-        frame_idx,
-        frame_idx as f64 * frame_interval_ms as f64 / 1000.0,
-    );
+    log::info!("Bad Apple finished ({} frames)", frame_idx);
 }

@@ -138,6 +138,7 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("devices", "List registered hardware devices", builtins::cmd_devices),
         ("theme", "Show or change desktop theme", builtins::cmd_theme),
         ("wallpaper", "Show or change desktop wallpaper", builtins::cmd_wallpaper),
+        ("pci", "List PCI devices", builtins::cmd_pci),
         ("badapple", "Play Bad Apple!! animation", builtins::cmd_badapple),
     )
 }
