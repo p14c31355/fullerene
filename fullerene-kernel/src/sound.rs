@@ -106,7 +106,7 @@ static HDA_AUDIO_OFF: Mutex<u32> = Mutex::new(0);
 static HDA_AUDIO_SZ:  Mutex<u32> = Mutex::new(0);
 static HDA_HALF: Mutex<u32> = Mutex::new(0);
 static HDA_SD:   Mutex<usize> = Mutex::new(0);
-static HDA_LAST_LPIB: AtomicU64 = AtomicU64::new(u64::MAX);
+static HDA_LAST_LPIB: AtomicU64 = AtomicU64::new(0);
 static HDA_CORB_V: Mutex<usize> = Mutex::new(0);
 static HDA_RIRB_V: Mutex<usize> = Mutex::new(0);
 static HDA_INIT_DONE: AtomicBool = AtomicBool::new(false);
@@ -262,10 +262,10 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let steps = (ac & 0x7F) as u16;
     let gain = if steps > 0 { steps / 2 } else { 0 };
     corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE,
-        (1u16 << 15) | (1u16 << 13) | (1u16 << 12) | gain);
-    // Set format: 48kHz, 16-bit, stereo
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT,
-        (1u16 << 11) | (1u16 << 7));
+        (1u16 << 13) | (1u16 << 12) | gain);
+    // Set format: 44.1kHz / 2 = 22.05kHz, 16-bit, 1ch
+    // bits[7]=1 (44.1kHz), bits[3:0]=1 (/2), bits[10:8]=1 (16-bit)
+    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x0181);
     // Assign stream
     corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
 
@@ -274,7 +274,7 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let ps = (pa & 0x7F) as u16;
     let pg = if ps > 0 { ps / 2 } else { 0 };
     corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE,
-        (1u16 << 15) | (1u16 << 13) | (1u16 << 12) | pg);
+        (1u16 << 13) | (1u16 << 12) | pg);
     // Pin output enable
     corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, (1u16 << 7) | (1u16 << 6));
     // EAPD
@@ -397,7 +397,9 @@ fn hda_init() {
         w8(m, sd + SD_CTL, 0x00);
         for _ in 0..2000 { core::hint::spin_loop(); }
         w8(m, sd + SD_STS, 0xFF);
-        w16(m, sd + SD_FMT, (1u16 << 11) | (1u16 << 7));
+        // 22.05kHz = 44.1kHz base / 2, 16-bit, 1ch
+        // bits[7]=1 (44.1kHz base), bits[3:0]=1 (÷2), bits[10:8]=1 (16-bit), bits[13:11]=0 (1ch)
+        w16(m, sd + SD_FMT, 0x0181);
         w32(m, sd + SD_CBL, audio_sz);
         w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
         w32(m, sd + SD_BDPL, dma_phys as u32);
@@ -425,23 +427,24 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     let half = *HDA_HALF.lock();
     let sd = *HDA_SD.lock();
 
+    // Read LPIB to determine which half DMA is currently consuming.
     let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
-    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
-
     let dma_in_first = lpib < half;
-    let (write_off, write_max) = if dma_in_first { (half, half) } else { (0, half) };
-    if last == write_off { return 0 }
-    let n = samples.len().min(write_max as usize);
+
+    // Write to the half that DMA is NOT currently consuming.
+    let write_off = if dma_in_first { half } else { 0 };
+    let write_max = half as usize;
+
+    let n = samples.len().min(write_max);
     if n == 0 { return 0 }
 
     unsafe {
         let dst = dma.add((off + write_off) as usize);
         core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, n);
-        if n < write_max as usize {
-            core::ptr::write_bytes(dst.add(n), 0, write_max as usize - n);
+        if n < write_max {
+            core::ptr::write_bytes(dst.add(n), 0, write_max - n);
         }
     }
-    HDA_LAST_LPIB.store(write_off as u64, Ordering::Relaxed);
     n
 }
 

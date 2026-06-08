@@ -264,15 +264,18 @@ pub fn play_badapple() {
     let pcm_total = BADAPPLE_PCM.len();
     let song_duration_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
     let frame_interval_ms: u64 = song_duration_ms / (n_frames as u64).max(1);
-    let pcm_bytes_per_frame = pcm_total / n_frames;
+
+    // DMA half-buffer size (same as sound.rs: DMA_BUF_SIZE / 2 minus BDL header)
+    // sound.rs uses: audio_sz = DMA_BUF_SIZE - bdl_sz, half = audio_sz / 2
+    // DMA_BUF_SIZE=32768, bdl_sz≈32, so half≈16368
+    const DMA_HALF: usize = 16368;
 
     log::info!(
-        "Bad Apple: fb {}x{} (stride {} px), {} frames, {}x{} px rle, {:.1}s, {}ms/f, {} PCM B/f, HDA={}, {} spin/ms",
+        "Bad Apple: fb {}x{} (stride {} px), {} frames, {}x{} px rle, {:.1}s, {}ms/f, HDA={}, {} spin/ms",
         fb_stride_pixels, fb_height, fb_stride_pixels,
         n_frames, rle_w, rle_h,
         song_duration_ms as f64 / 1000.0,
         frame_interval_ms,
-        pcm_bytes_per_frame,
         use_hda,
         spins_per_ms,
     );
@@ -280,9 +283,17 @@ pub fn play_badapple() {
     // Flush stale input to avoid Enter-key immediate abort.
     nitrogen::ps2::keyboard::flush_input();
 
+    // ── Pre-fill first half of DMA buffer ───────────────
+    let mut pcm_offset: usize = 0;
+    if use_hda {
+        let feed_end = (DMA_HALF).min(pcm_total);
+        if feed_end > 0 {
+            pcm_offset += crate::sound::hda_feed_samples(&BADAPPLE_PCM[..feed_end]);
+        }
+    }
+
     // ── Playback loop ─────────────────────────────────────
     let mut frame_idx: usize = 0;
-    let mut pcm_offset: usize = 0;
 
     while frame_idx < n_frames && frame_idx < frame_offsets.len() {
         if nitrogen::ps2::keyboard::input_available() {
@@ -302,13 +313,17 @@ pub fn play_badapple() {
             crate::graphics::flush_gpu();
         }
 
-        // Feed PCM
+        // Feed PCM: fill DMA half-buffer as much as possible from remaining data
         if use_hda {
-            let feed_start = pcm_offset;
-            let feed_end = (feed_start + pcm_bytes_per_frame).min(pcm_total);
-            if feed_end > feed_start {
-                crate::sound::hda_feed_samples(&BADAPPLE_PCM[feed_start..feed_end]);
-                pcm_offset = feed_end;
+            let remaining = pcm_total.saturating_sub(pcm_offset);
+            if remaining > 0 {
+                let feed_end = (pcm_offset + remaining.min(DMA_HALF)).min(pcm_total);
+                let fed = crate::sound::hda_feed_samples(&BADAPPLE_PCM[pcm_offset..feed_end]);
+                pcm_offset = pcm_offset.saturating_add(fed);
+            } else {
+                // Song ended, feed silence
+                let silence = [0u8; 4096];
+                crate::sound::hda_feed_samples(&silence);
             }
         }
 
@@ -316,8 +331,17 @@ pub fn play_badapple() {
         delay_ms(spins_per_ms, frame_interval_ms);
     }
 
-    // Drain silence (1 s worth)
+    // Drain remaining PCM and silence
     if use_hda {
+        while pcm_offset < pcm_total {
+            let remaining = pcm_total.saturating_sub(pcm_offset);
+            let feed_end = (pcm_offset + remaining.min(DMA_HALF)).min(pcm_total);
+            let fed = crate::sound::hda_feed_samples(&BADAPPLE_PCM[pcm_offset..feed_end]);
+            if fed == 0 { break }
+            pcm_offset = pcm_offset.saturating_add(fed);
+            delay_ms(spins_per_ms, 50);
+        }
+        // Drain silence (1 s worth)
         let silence = [0u8; 4096];
         for _ in 0..10 {
             crate::sound::hda_feed_samples(&silence);
