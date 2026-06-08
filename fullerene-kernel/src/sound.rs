@@ -47,12 +47,10 @@ const CORBUBASE: usize = 0x0044;
 const CORBWP: usize    = 0x0048;
 const CORBRP: usize    = 0x004A;
 const CORBCTL: usize   = 0x004C;
-// CORBSIZE: r/o in QEMU, skip writes
 const RIRBLBASE: usize = 0x0050;
 const RIRBUBASE: usize = 0x0054;
 const RIRBWP: usize    = 0x0058;
 const RIRBCTL: usize   = 0x005C;
-// RIRBSIZE: r/o in QEMU, skip writes
 
 const SD_BASE: usize = 0x0080;
 const SD_SIZE: usize = 0x0020;
@@ -67,20 +65,18 @@ const SD_BDPU: usize = 0x1C;
 
 // ── Codec verbs (12-bit) ───────────────────────────────────────
 
-const VERB_GET_PARAM: u32        = 0xF00;
+const VERB_GET_PARAM: u32         = 0xF00;
 const VERB_SET_FMT: u32          = 0x002;
 const VERB_SET_AMP_GAIN_MUTE: u32 = 0x003;
-const VERB_SET_PIN_CTL: u32      = 0x707;
-const VERB_SET_STREAM: u32       = 0x706;
-const VERB_SET_EAPD: u32         = 0x70C;
+const VERB_SET_PIN_CTL: u32       = 0x707;
+const VERB_SET_STREAM: u32        = 0x706;
+const VERB_SET_EAPD: u32          = 0x70C;
 
-// Parameter IDs
 const PARAM_SUBORDINATE_COUNT: u8 = 0x04;
 const PARAM_AUDIO_WIDGET_CAP: u8  = 0x09;
 const PARAM_OUTPUT_AMP_CAP: u8    = 0x12;
 const PARAM_PIN_CAP: u8           = 0x0C;
 
-// Widget types (bits [23:20])
 const WTYPE_AUDIO_OUTPUT: u32 = 0x0;
 const WTYPE_PIN_COMPLEX: u32  = 0x4;
 const WTYPE_AFG: u32          = 0x1;
@@ -160,8 +156,7 @@ pub fn init() {
 
 // ── CORB verb send ─────────────────────────────────────────────
 
-/// Returns solicited 32-bit response, or 0xFFFF_FFFF on timeout.
-unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload: u16) -> u32 {
+unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload: u8) -> u32 {
     let corb_v = *HDA_CORB_V.lock();
     let rirb_v = *HDA_RIRB_V.lock();
     if corb_v == 0 || rirb_v == 0 { return 0xFFFF_FFFF; }
@@ -169,10 +164,8 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     let corb = corb_v as *mut u32;
     let rirb = rirb_v as *mut u64;
 
-    // Verb: [31:28]=codec, [27:20]=node, [19:8]=verb, [7:0]=payload
     let cmd = ((codec as u32) << 28) | ((node as u32) << 20) | (verb << 8) | (payload as u32);
 
-    // Wait if CORB is full (next WP would equal RP)
     for _ in 0..1000 {
         let wp = r16(mmio, CORBWP) as usize;
         let rp = r16(mmio, CORBRP) as usize & 0xFF;
@@ -180,23 +173,19 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
         core::hint::spin_loop();
     }
 
-    // Write verb to CORB at (wp + 1) % CORB_ENTRIES
     let wp = r16(mmio, CORBWP) as usize;
     let next_wp = (wp + 1) % CORB_ENTRIES;
     core::ptr::write_volatile(corb.add(next_wp), cmd);
     w16(mmio, CORBWP, next_wp as u16);
 
-    // Wait for RIRBWP to advance
     let rirb_wp_before = r16(mmio, RIRBWP) & 0xFF;
     for _ in 0..50_000 {
         let rirb_wp = r16(mmio, RIRBWP) & 0xFF;
         if rirb_wp != rirb_wp_before {
             let resp = core::ptr::read_volatile(rirb.add(rirb_wp as usize));
             if (resp >> 63) & 1 == 0 {
-                // Solicited response: bits [63:32] are the response
                 return (resp >> 32) as u32;
             }
-            // Unsolicited response, keep polling
         }
         core::hint::spin_loop();
     }
@@ -206,10 +195,8 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
 
 // ── Codec discovery ────────────────────────────────────────────
 
-/// Find first DAC and Pin widgets under the AFG.
 unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
-    // 1. Root → AFG
-    let sub = corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
+    let sub = corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT);
     if sub == 0xFFFF_FFFF { return None; }
     let start = ((sub >> 16) & 0xFF) as u8;
     let count = (sub & 0xFF) as u8;
@@ -219,7 +206,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
 
     let mut afg: Option<u8> = None;
     for n in start..=end {
-        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16);
+        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP);
         if cap == 0xFFFF_FFFF { continue }
         if (cap >> 20) & 0xF == WTYPE_AFG {
             afg = Some(n);
@@ -229,8 +216,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     }
     let afg = afg?;
 
-    // 2. AFG → widgets
-    let sub = corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
+    let sub = corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT);
     if sub == 0xFFFF_FFFF { return None; }
     let start = ((sub >> 16) & 0xFF) as u8;
     let count = (sub & 0xFF) as u8;
@@ -241,7 +227,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     let mut dac: Option<u8> = None;
     let mut pin: Option<u8> = None;
     for n in start..=end {
-        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16);
+        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP);
         if cap == 0xFFFF_FFFF { continue }
         let t = (cap >> 20) & 0xF;
         log::debug!("Sound: node {} type={}", n, t);
@@ -257,26 +243,29 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
 // ── Codec config ───────────────────────────────────────────────
 
 unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8) {
-    // Unmute DAC amp
-    let ac = corb_send_verb(mmio, codec, dac, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
-    let steps = (ac & 0x7F) as u16;
+    // Unmute DAC output amp: bit6=SetOutput, bit5=Left, bit4=Right, bits[3:0]=gain
+    let ac = corb_send_verb(mmio, codec, dac, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP);
+    let steps = ac as u8 & 0x7F;
     let gain = if steps > 0 { steps / 2 } else { 0 };
-    corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE,
-        (1u16 << 14) | (1u16 << 13) | (1u16 << 12) | gain);
-    // QEMU automatically sets converter format from SDnFMT when stream starts.
-    // Assign stream
-    corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
+    corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, 0x70 | gain);
 
-    // Unmute pin amp
-    let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
-    let ps = (pa & 0x7F) as u16;
-    let pg = if ps > 0 { ps / 2 } else { 0 };
-    corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE,
-        (1u16 << 14) | (1u16 << 13) | (1u16 << 12) | pg);
-    // Pin output enable
-    corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, (1u16 << 7) | (1u16 << 6));
-    // EAPD
-    let cap = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16);
+    // Set converter format: 44.1kHz ÷2 = 22.05kHz, 16-bit, 1ch
+    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x81);
+
+    // Assign stream tag
+    corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream);
+
+    // Unmute pin output amp
+    let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP);
+    let psteps = pa as u8 & 0x7F;
+    let pgain = if psteps > 0 { psteps / 2 } else { 0 };
+    corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE, 0x70 | pgain);
+
+    // Pin output enable (HP out)
+    corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0xC0);
+
+    // EAPD if supported
+    let cap = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP);
     if cap != 0xFFFF_FFFF && (cap >> 16) & 1 != 0 {
         corb_send_verb(mmio, codec, pin, VERB_SET_EAPD, 0x02);
     }
@@ -302,7 +291,6 @@ fn hda_init() {
     }
     log::info!("Sound: GCAP=0x{:x}", gctest);
 
-    // Reset controller
     let (iss, oss) = unsafe {
         let m = virt as *mut u8;
         w32(m, GCTL, 0);
@@ -323,35 +311,28 @@ fn hda_init() {
 
     *HDA_SD.lock() = SD_BASE + (iss as usize) * SD_SIZE;
 
-    // Alloc CORB (1 page = 4 KiB, enough for 256×4 = 1 KiB)
+    // Alloc CORB & RIRB (1 page each)
     let Some((corb_phys, corb_virt)) = alloc_dma_pages(1) else { return };
     *HDA_CORB_V.lock() = corb_virt as usize;
-
-    // Alloc RIRB (1 page = 4 KiB, enough for 256×8 = 2 KiB)
     let Some((rirb_phys, rirb_virt)) = alloc_dma_pages(1) else { return };
     *HDA_RIRB_V.lock() = rirb_virt as usize;
 
     unsafe {
         let m = virt as *mut u8;
-
-        // CORB: set base, reset read pointer, enable
         w32(m, CORBLBASE, corb_phys as u32);
         w32(m, CORBUBASE, (corb_phys >> 32) as u32);
-        w16(m, CORBRP, 0x8000); // reset
+        w16(m, CORBRP, 0x8000);
         for _ in 0..200 { core::hint::spin_loop(); }
         w16(m, CORBRP, 0);
         w16(m, CORBWP, 0);
-        w8(m, CORBCTL, 0x02); // DMA run
-        for _ in 0..2000 { core::hint::spin_loop(); }
+        w32(m, CORBCTL, 0x02); // CORB DMA run (32-bit write for MMIO compliance)
 
-        // RIRB: set base, reset write pointer, enable
         w32(m, RIRBLBASE, rirb_phys as u32);
         w32(m, RIRBUBASE, (rirb_phys >> 32) as u32);
-        w16(m, RIRBWP, 0x8000); // reset
+        w16(m, RIRBWP, 0x8000);
         for _ in 0..200 { core::hint::spin_loop(); }
         w16(m, RIRBWP, 0);
-        w8(m, RIRBCTL, 0x02); // DMA run
-        for _ in 0..2000 { core::hint::spin_loop(); }
+        w32(m, RIRBCTL, 0x02); // RIRB DMA run (32-bit write)
         log::info!("Sound: CORB/RIRB enabled");
     }
 
@@ -365,7 +346,7 @@ fn hda_init() {
         }
     }
 
-    // Alloc DMA buffer
+    // Alloc DMA buffer + BDL
     let dma_pages = (DMA_BUF_SIZE as usize + 4095) / 4096;
     let Some((dma_phys, dma_virt)) = alloc_dma_pages(dma_pages) else { return };
     *HDA_DMA.lock() = dma_virt as usize;
@@ -379,31 +360,38 @@ fn hda_init() {
     *HDA_AUDIO_SZ.lock() = audio_sz;
     *HDA_HALF.lock() = half;
 
+    // Build BDL entries: flags=0 (no IOC, circular DMA loops automatically)
     unsafe {
         let bdl = dma_virt as *mut BdlEntry;
-        *bdl.add(0) = BdlEntry { addr_lo: audio_phys as u32, addr_hi: (audio_phys>>32) as u32, length: half, flags: 1 };
-        *bdl.add(1) = BdlEntry { addr_lo: (audio_phys+half as u64) as u32, addr_hi: ((audio_phys+half as u64)>>32) as u32, length: half, flags: 1 };
+        *bdl.add(0) = BdlEntry { addr_lo: audio_phys as u32, addr_hi: (audio_phys>>32) as u32, length: half, flags: 0 };
+        *bdl.add(1) = BdlEntry { addr_lo: (audio_phys+half as u64) as u32, addr_hi: ((audio_phys+half as u64)>>32) as u32, length: half, flags: 0 };
     }
 
+    // Configure and start the stream
     unsafe {
         let m = virt as *mut u8;
         let sd = *HDA_SD.lock();
-        let ctl = r8(m, sd + SD_CTL);
-        w8(m, sd + SD_CTL, ctl & !0x02);
-        w8(m, sd + SD_CTL, 0x01);
+
+        // Read current CTL, ensure RUN is off
+        let ctl = r32(m, sd + SD_CTL);
+        w32(m, sd + SD_CTL, ctl & !0x42); // clear RUN(bit1) and Stream Reset(bit6)
+
+        // Enter Stream Reset (SRST=1) per Intel HDA spec §4.5.4
+        w32(m, sd + SD_CTL, 0x01);
         for _ in 0..2000 { core::hint::spin_loop(); }
-        w8(m, sd + SD_CTL, 0x00);
-        for _ in 0..2000 { core::hint::spin_loop(); }
+
+        // Clear status while in reset
         w8(m, sd + SD_STS, 0xFF);
-        // 22.05kHz = 44.1kHz (bit7=1) ÷ 2 (bits[10:8]=1), 16-bit (bits[3:0]=1), mono (bits[13:11]=0)
-        // bit7=1 (44.1kHz), bit8=1 (÷2), bit0=1 (16-bit) → 0x0181
+
+        // Set stream registers while SRST=1 (spec requirement)
         w16(m, sd + SD_FMT, 0x0181);
         w32(m, sd + SD_CBL, audio_sz);
         w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
         w32(m, sd + SD_BDPL, dma_phys as u32);
         w32(m, sd + SD_BDPU, (dma_phys >> 32) as u32);
-        // Stream tag=1 (bits[19:16]), IOCE (bit20), RUN (bit1)
-        w32(m, sd + SD_CTL, (1u32 << 20) | (1u32 << 16) | 0x02);
+
+        // Exit Stream Reset (SRST=0) and start: Stream=1, RUN=1
+        w32(m, sd + SD_CTL, (1u32 << 16) | 0x02);
         log::info!("Sound: stream started ({} B)", audio_sz);
     }
 
@@ -426,11 +414,8 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     let half = *HDA_HALF.lock();
     let sd = *HDA_SD.lock();
 
-    // Read LPIB to determine which half DMA is currently consuming.
     let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
     let dma_in_first = lpib < half;
-
-    // Write to the half that DMA is NOT currently consuming.
     let write_off = if dma_in_first { half } else { 0 };
     let write_max = half as usize;
 
