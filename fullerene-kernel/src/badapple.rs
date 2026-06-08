@@ -48,8 +48,8 @@ fn calibrate_spins_per_ms() -> u64 {
     const FALLBACK_SPINS_PER_MS: u64 = 400_000;
 
     // Ensure RDTSC is well‑ordered.
-    for _ in 0..3 {
-        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    unsafe {
+        core::arch::x86_64::_lfence();
     }
 
     let tsc_start: u64;
