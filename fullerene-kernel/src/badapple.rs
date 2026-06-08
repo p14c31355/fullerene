@@ -14,11 +14,16 @@
 //! 12      2     Width: u16 LE
 //! 14      2     Height: u16 LE
 //! 16      N*4   Frame table: [compressed_size: u32 LE] × N
-//! …       …     RLE data: [u16 LE run_len][u8 fill] …
+//! …       …     RLE data: [u8 fill][u16 LE run_len] …
 //! ```
 
 use alloc::vec::Vec;
-use core::sync::atomic::Ordering;
+
+/// Write a u32 pixel to the framebuffer using volatile store.
+/// The framebuffer may be WB-cached; `flush_gpu()` (sfence) commits it.
+unsafe fn fb_write_u32(dst: *mut u32, value: u32) {
+    core::ptr::write_volatile(dst, value);
+}
 
 /// All RLE-compressed frames.
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
@@ -33,31 +38,53 @@ const PCM_BYTES_PER_SEC: u32 = PCM_SAMPLE_RATE * PCM_BYTES_PER_SAMPLE; // 44100
 const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_HDR_SIZE: usize = 16;
 
-// ── Spin-loop calibration ──────────────────────────────────
+// ── RDTSC‑calibrated spin-loop timing ──────────────────────
 
-fn calibrate_spin_loop() -> u64 {
-    const TEST_SPINS: u64 = 3_000_000;   // ~2 s on typical hardware
-    const DEFAULT_ITERS_PER_MS: u64 = 15_000;
-    const TICK_DURATION_MS: u64 = 160;    // APIC div=16, init=1M, bus≈100 MHz
+/// Calibrate spin-loop speed: spins for ~100 ms and measures elapsed
+/// RDTSC ticks.  Returns `(spins_per_real_ms)`.
+fn calibrate_spins_per_ms() -> u64 {
+    const CALIBRATION_MS: u64 = 100;
+    // Safety net: if calibration fails, assume 400 000 spins/ms (typical QEMU).
+    const FALLBACK_SPINS_PER_MS: u64 = 400_000;
 
-    let start_tick = crate::interrupts::TICK_COUNTER.load(Ordering::Relaxed);
-    for _ in 0..TEST_SPINS {
+    // Ensure RDTSC is well‑ordered.
+    unsafe {
+        core::arch::x86_64::_mm_lfence();
+    }
+
+    let tsc_start: u64;
+    let mut spins: u64 = 0;
+    unsafe {
+        tsc_start = core::arch::x86_64::_rdtsc();
+    }
+    loop {
+        spins += 1;
         core::hint::spin_loop();
+        let tsc_end = unsafe { core::arch::x86_64::_rdtsc() };
+        let elapsed_tsc = tsc_end.wrapping_sub(tsc_start);
+        // Assume CPU TSC ≈ 2.5 GHz → 1 ms ≈ 2.5M ticks.
+        // 100 ms ≈ 250M ticks.
+        if elapsed_tsc >= 250_000_000 {
+            break;
+        }
     }
-    let end_tick = crate::interrupts::TICK_COUNTER.load(Ordering::Relaxed);
-    let ticks_elapsed = end_tick.saturating_sub(start_tick);
 
-    if ticks_elapsed == 0 {
-        log::warn!("Bad Apple: tick counter not advancing, using default timing");
-        return DEFAULT_ITERS_PER_MS;
-    }
-
-    let ms_elapsed = ticks_elapsed * TICK_DURATION_MS;
-    TEST_SPINS / ms_elapsed.max(1)
+    let per_ms = if CALIBRATION_MS > 0 {
+        spins / CALIBRATION_MS
+    } else {
+        FALLBACK_SPINS_PER_MS
+    };
+    log::info!(
+        "Bad Apple: calibrated {} spins/ms ({} spins in ~{}ms)",
+        per_ms,
+        spins,
+        CALIBRATION_MS
+    );
+    if per_ms == 0 { FALLBACK_SPINS_PER_MS } else { per_ms }
 }
 
 fn delay_ms(spins_per_ms: u64, ms: u64) {
-    let spins = ms * spins_per_ms;
+    let spins = ms.saturating_mul(spins_per_ms);
     for _ in 0..spins {
         core::hint::spin_loop();
     }
@@ -87,41 +114,58 @@ fn draw_rle_frame(
         return;
     }
 
-    let ox = if fb_stride > fw { (fb_stride - fw) / 2 } else { 0 };
-    let oy = if fb_height > fh { (fb_height - fh) / 2 } else { 0 };
+    let ox = if fb_stride > fw {
+        (fb_stride - fw) / 2
+    } else {
+        0
+    };
+    let oy = if fb_height > fh {
+        (fb_height - fh) / 2
+    } else {
+        0
+    };
 
-    // Fill frame area with black
+    // Fill frame area with black (non-temporal store bypasses cache)
+    let fb_ptr = fb.as_mut_ptr();
     for y in 0..fh {
         let row = (oy + y) * fb_stride + ox;
         if row + fw > fb.len() {
             continue;
         }
         for x in 0..fw {
-            fb[row + x] = 0xFF000000;
+            unsafe {
+                fb_write_u32(fb_ptr.add(row + x), 0xFF000000);
+            }
         }
     }
 
-    // Walk RLE runs and paint white pixels
+    // Walk RLE runs and paint pixels.
+    // Format: [fill: u8][run_len: u16 LE] (confirmed via Python binary analysis).
     let mut pos: usize = 0;
     let mut cursor: usize = 0;
 
     while cursor + 3 <= rle_data.len() && pos < fw * fh {
-        let run_len = u16::from_le_bytes([rle_data[cursor], rle_data[cursor + 1]]) as usize;
-        let fill = rle_data[cursor + 2];
+        let fill = rle_data[cursor];
+        let run_len = u16::from_le_bytes([rle_data[cursor + 1], rle_data[cursor + 2]]) as usize;
         cursor += 3;
 
         let run_len = run_len.min(fw * fh - pos);
 
-        if fill == 0xFF {
-            let mut rem = run_len;
-            let mut p = pos;
-            while rem > 0 {
-                let y = p / fw;
-                let x = p % fw;
-                fb[(oy + y) * fb_stride + ox + x] = 0xFFFFFFFF;
-                p += 1;
-                rem -= 1;
+        // Convert fill byte to a grayscale ARGB pixel.
+        // fill=0x00 → black, fill=0xFF → white, etc.
+        let gray = fill as u32;
+        let pixel = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
+
+        let mut rem = run_len;
+        let mut p = pos;
+        while rem > 0 {
+            let y = p / fw;
+            let x = p % fw;
+            unsafe {
+                fb_write_u32(fb.as_mut_ptr().add((oy + y) * fb_stride + ox + x), pixel);
             }
+            p += 1;
+            rem -= 1;
         }
         pos += run_len;
     }
@@ -153,26 +197,39 @@ pub fn play_badapple() {
     }
 
     let n_frames = frame_count as usize;
-    let table_start = RLE_HDR_SIZE;
-    let table_end = table_start.saturating_add(n_frames * 4);
-    if data.len() < table_end {
-        log::error!("Bad Apple: RLE data truncated at frame table");
+
+    // Frame table: u32 LE × n_frames at offset 16.
+    // Each entry = compressed byte size for that frame.
+    // RLE data starts at 16 + n_frames * 4.
+    let table_entry_size = 4usize;
+    let data_start = RLE_HDR_SIZE.saturating_add(n_frames.saturating_mul(table_entry_size));
+    if data_start >= data.len() {
+        log::error!("Bad Apple: RLE data start ({}) exceeds file size ({})", data_start, data.len());
         return;
     }
 
-    // Build frame offset table (alloc::vec on heap, not stack)
+    // Build frame offset table.
     let mut frame_offsets = Vec::with_capacity(n_frames);
-    let mut offset: u64 = table_end as u64;
+    let mut offset: u64 = data_start as u64;
     for i in 0..n_frames {
         let compressed_size = u32::from_le_bytes([
-            data[table_start + i * 4],
-            data[table_start + i * 4 + 1],
-            data[table_start + i * 4 + 2],
-            data[table_start + i * 4 + 3],
-        ]);
+            data[RLE_HDR_SIZE + i * table_entry_size],
+            data[RLE_HDR_SIZE + i * table_entry_size + 1],
+            data[RLE_HDR_SIZE + i * table_entry_size + 2],
+            data[RLE_HDR_SIZE + i * table_entry_size + 3],
+        ]) as u64;
         frame_offsets.push(offset);
-        offset = offset.saturating_add(compressed_size as u64);
+        offset = offset.saturating_add(compressed_size);
     }
+
+    // Dump first few bytes of RLE data for diagnostics.
+    let dbg_end = (data_start + 24).min(data.len());
+    log::info!(
+        "Bad Apple: data_start={}, first bytes: {:02x?}, {} frames",
+        data_start,
+        &data[data_start..dbg_end],
+        n_frames,
+    );
 
     // ── Acquire framebuffer ───────────────────────────────
     let (fb_ptr, fb_stride_pixels, fb_height) = {
@@ -207,13 +264,16 @@ pub fn play_badapple() {
 
     let fb = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
 
-    // Clear screen to black and flush
-    for pixel in fb.iter_mut() {
-        *pixel = 0xFF000000;
+    // Clear screen to black and flush.
+    // Non-temporal stores: bypass cache, committed by sfence in flush_gpu().
+    let fb_len = fb.len();
+    let fb_ptr = fb.as_mut_ptr();
+    for i in 0..fb_len {
+        unsafe { fb_write_u32(fb_ptr.add(i), 0xFF000000); }
     }
     crate::graphics::flush_gpu();
 
-    let spins_per_ms = calibrate_spin_loop();
+    let spins_per_ms = calibrate_spins_per_ms();
     let use_hda = crate::sound::hda_available();
 
     let pcm_total = BADAPPLE_PCM.len();
@@ -232,28 +292,29 @@ pub fn play_badapple() {
         spins_per_ms,
     );
 
+    // Flush stale input to avoid Enter-key immediate abort.
+    nitrogen::ps2::keyboard::flush_input();
+
+    // ── Playback loop ─────────────────────────────────────
     let mut frame_idx: usize = 0;
     let mut pcm_offset: usize = 0;
 
-    while frame_idx < n_frames {
+    while frame_idx < n_frames && frame_idx < frame_offsets.len() {
         if nitrogen::ps2::keyboard::input_available() {
             log::info!("Bad Apple aborted by user");
-            while nitrogen::ps2::keyboard::read_char().is_some() {}
+            nitrogen::ps2::keyboard::flush_input();
             break;
         }
 
-        // Draw frame
-        if frame_idx < frame_offsets.len() {
-            let off = frame_offsets[frame_idx] as usize;
-            let next_off = if frame_idx + 1 < frame_offsets.len() {
-                frame_offsets[frame_idx + 1] as usize
-            } else {
-                data.len()
-            };
-            if off < data.len() && next_off <= data.len() {
-                draw_rle_frame(fb, fb_stride_pixels, fb_height, rle_w, rle_h, &data[off..next_off]);
-                crate::graphics::flush_gpu();
-            }
+        let off = frame_offsets[frame_idx] as usize;
+        let next_off = if frame_idx + 1 < frame_offsets.len() {
+            frame_offsets[frame_idx + 1] as usize
+        } else {
+            data.len()
+        };
+        if off < data.len() && next_off <= data.len() {
+            draw_rle_frame(fb, fb_stride_pixels, fb_height, rle_w, rle_h, &data[off..next_off]);
+            crate::graphics::flush_gpu();
         }
 
         // Feed PCM
@@ -268,7 +329,6 @@ pub fn play_badapple() {
 
         frame_idx += 1;
         delay_ms(spins_per_ms, frame_interval_ms);
-        core::hint::spin_loop();
     }
 
     // Drain silence (1 s worth)

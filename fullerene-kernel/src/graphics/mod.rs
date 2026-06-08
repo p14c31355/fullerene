@@ -409,6 +409,10 @@ pub fn set_primary_renderer(renderer: UefiFramebufferWriter) {
 }
 
 /// Helper to flush the GPU if present.
+///
+/// When VirtIO-GPU is active, issues a hardware flush.
+/// Otherwise, emits an `sfence` (store fence) to commit any
+/// write-combining (WC) framebuffer writes to the display controller.
 pub fn flush_gpu() {
     let mut gpu = VIRTIO_GPU.lock();
     if let Some(ref mut gpu) = *gpu {
@@ -416,6 +420,12 @@ pub fn flush_gpu() {
             let info = r.get_info();
             gpu.flush(info.width, info.height);
         }
+    } else {
+        // No VirtIO-GPU → flush non-temporal stores to the framebuffer.
+        // `sfence` orders NT stores ahead of it (movnti → WC buffer → sfence →
+        // globally visible).  Regular fences (mfence) also work but sfence is
+        // the correct companion to _mm_stream_si32 / movnti.
+        unsafe { core::arch::x86_64::_mm_sfence(); }
     }
 }
 
