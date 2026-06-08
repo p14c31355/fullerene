@@ -14,7 +14,7 @@
 //! 12      2     Width: u16 LE
 //! 14      2     Height: u16 LE
 //! 16      N*4   Frame table: [compressed_size: u32 LE] × N
-//! …       …     RLE data: [u16 LE run_len][u8 fill] …
+//! …       …     RLE data: [u8 fill][u16 LE run_len] …
 //! ```
 
 use alloc::vec::Vec;
@@ -49,7 +49,7 @@ fn calibrate_spins_per_ms() -> u64 {
 
     // Ensure RDTSC is well‑ordered.
     unsafe {
-        core::arch::x86_64::_lfence();
+        core::arch::x86_64::_mm_lfence();
     }
 
     let tsc_start: u64;
@@ -69,8 +69,17 @@ fn calibrate_spins_per_ms() -> u64 {
         }
     }
 
-    let per_ms = if CALIBRATION_MS > 0 { spins / CALIBRATION_MS } else { FALLBACK_SPINS_PER_MS };
-    log::info!("Bad Apple: calibrated {} spins/ms ({} spins in ~{}ms)", per_ms, spins, CALIBRATION_MS);
+    let per_ms = if CALIBRATION_MS > 0 {
+        spins / CALIBRATION_MS
+    } else {
+        FALLBACK_SPINS_PER_MS
+    };
+    log::info!(
+        "Bad Apple: calibrated {} spins/ms ({} spins in ~{}ms)",
+        per_ms,
+        spins,
+        CALIBRATION_MS
+    );
     if per_ms == 0 { FALLBACK_SPINS_PER_MS } else { per_ms }
 }
 
@@ -105,8 +114,16 @@ fn draw_rle_frame(
         return;
     }
 
-    let ox = if fb_stride > fw { (fb_stride - fw) / 2 } else { 0 };
-    let oy = if fb_height > fh { (fb_height - fh) / 2 } else { 0 };
+    let ox = if fb_stride > fw {
+        (fb_stride - fw) / 2
+    } else {
+        0
+    };
+    let oy = if fb_height > fh {
+        (fb_height - fh) / 2
+    } else {
+        0
+    };
 
     // Fill frame area with black (non-temporal store bypasses cache)
     let fb_ptr = fb.as_mut_ptr();
@@ -116,7 +133,9 @@ fn draw_rle_frame(
             continue;
         }
         for x in 0..fw {
-            unsafe { fb_write_u32(fb_ptr.add(row + x), 0xFF000000); }
+            unsafe {
+                fb_write_u32(fb_ptr.add(row + x), 0xFF000000);
+            }
         }
     }
 
@@ -179,10 +198,10 @@ pub fn play_badapple() {
 
     let n_frames = frame_count as usize;
 
-    // Frame table: u16 LE × n_frames at offset 16.
+    // Frame table: u32 LE × n_frames at offset 16.
     // Each entry = compressed byte size for that frame.
-    // RLE data starts at 16 + n_frames * 2.
-    let table_entry_size = 2usize;
+    // RLE data starts at 16 + n_frames * 4.
+    let table_entry_size = 4usize;
     let data_start = RLE_HDR_SIZE.saturating_add(n_frames.saturating_mul(table_entry_size));
     if data_start >= data.len() {
         log::error!("Bad Apple: RLE data start ({}) exceeds file size ({})", data_start, data.len());
@@ -193,9 +212,11 @@ pub fn play_badapple() {
     let mut frame_offsets = Vec::with_capacity(n_frames);
     let mut offset: u64 = data_start as u64;
     for i in 0..n_frames {
-        let compressed_size = u16::from_le_bytes([
+        let compressed_size = u32::from_le_bytes([
             data[RLE_HDR_SIZE + i * table_entry_size],
             data[RLE_HDR_SIZE + i * table_entry_size + 1],
+            data[RLE_HDR_SIZE + i * table_entry_size + 2],
+            data[RLE_HDR_SIZE + i * table_entry_size + 3],
         ]) as u64;
         frame_offsets.push(offset);
         offset = offset.saturating_add(compressed_size);
