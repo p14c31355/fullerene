@@ -314,6 +314,7 @@ fn pci_device_description(class: u8, subclass: u8) -> &'static str {
         (0x01, 0x01) => "IDE Controller",
         (0x01, 0x06) => "SATA Controller (AHCI)",
         (0x01, 0x08) => "NVMe Controller",
+        (0x01, 0x00) => "SCSI Controller",
         (0x01, _) => "Mass Storage Controller",
         (0x02, 0x00) => "Ethernet Controller",
         (0x02, _) => "Network Controller",
@@ -329,7 +330,6 @@ fn pci_device_description(class: u8, subclass: u8) -> &'static str {
         (0x06, _) => "Bridge Device",
         (0x0C, 0x03) => "USB Controller (UHCI/OHCI/EHCI/XHCI)",
         (0x0C, _) => "Serial Bus Controller",
-        (0x01, 0x00) => "SCSI Controller",
         (0x08, _) => "System Peripheral",
         _ => "Unknown PCI device",
     }
