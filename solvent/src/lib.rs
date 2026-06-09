@@ -61,7 +61,13 @@ const BG_COLOR: u32 = 0x1a1a2e;
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
 const MOUSE_SENSITIVITY: i16 = 6;
-const FRAME_INTERVAL_TICKS: u64 = 1;
+/// Interval (ticks) between forced compositor passes on Desktop.
+///
+/// Setting this too low (e.g. 1) causes the compositor to re‑render on
+/// every scheduler tick, even when nothing has changed.  Raising it to
+/// 8 (~62.5 fps at 500 Hz tick) keeps the clock and cursor responsive
+/// while reducing unnecessary framebuffer copies.
+const FRAME_INTERVAL_TICKS: u64 = 8;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
 
 /// Maximum framebuffer size covering 4K (3840×2160). BSS static buffer;
@@ -302,9 +308,21 @@ impl EventHandler for WmEventHandler {
                 render_cursor_only(prev_x, prev_y, rt.desktop.cursor.x, rt.desktop.cursor.y);
                 true
             }
-            Event::Input(InputEvent::MouseDown(_btn)) => {
+            Event::Input(InputEvent::MouseDown(btn)) => {
                 let cx = rt.desktop.cursor.x;
                 let cy = rt.desktop.cursor.y;
+
+                // ── Desktop right-click → context menu ───
+                if *btn == MouseButton::Right {
+                    // Only show context menu if no window is under the cursor
+                    // (i.e. click is on empty desktop)
+                    let hit_window = rt.desktop.wm.window_at(cx, cy);
+                    if hit_window.is_none() {
+                        rt.desktop.show_context_menu(cx, cy);
+                        rt.frame_due = true;
+                        return true;
+                    }
+                }
 
                 // ── Top-panel Activities button click ───
                 if rt.desktop.top_panel.hit_activities_button(cx, cy) {
@@ -316,6 +334,12 @@ impl EventHandler for WmEventHandler {
                 rt.desktop.set_cursor(cx, cy);
                 let (fw, fh) = *FB_DIMS.lock();
                 rt.desktop.mouse_down(fw, fh);
+
+                // ── Dispatch menu action if one was clicked ─────
+                if let Some(action) = rt.desktop.menu_action_pending.take() {
+                    dispatch_menu_action(rt, &action);
+                }
+
                 rt.term_dirty = true;
                 true
             }
@@ -1337,6 +1361,262 @@ pub fn force_desktop_redraw() {
         r.desktop.force_full_redraw();
         r.frame_due = true;
     }
+}
+
+// ── Menu action dispatch ───────────────────────────────────────
+
+/// Dispatch a context-menu or system-menu action to the appropriate handler.
+fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::DesktopAction) {
+    use lattice::desktop::DesktopAction;
+    match action {
+        DesktopAction::NewTerminal => {
+            // Create a new terminal window
+            let id = rt.desktop.wm.create_titled_window(
+                60,
+                50,
+                TERM_WIN_W,
+                TERM_WIN_H,
+                0x000000,
+                "Terminal",
+            );
+            // Focus the new window
+            rt.desktop.wm.raise_to_top(id);
+            rt.frame_due = true;
+        }
+        DesktopAction::NewShell => {
+            // Create a new shell window (same dimensions as terminal)
+            let id = rt.desktop.wm.create_titled_window(
+                80,
+                70,
+                TERM_WIN_W,
+                TERM_WIN_H,
+                0x0a0a2e,
+                "Shell",
+            );
+            rt.desktop.wm.raise_to_top(id);
+            rt.frame_due = true;
+        }
+        DesktopAction::TaskManager => {
+            open_task_manager_window(rt);
+        }
+        DesktopAction::DeviceManager => {
+            open_device_manager_window(rt);
+        }
+        DesktopAction::FileManager => {
+            open_file_manager_window(rt);
+        }
+        DesktopAction::Refresh => {
+            rt.desktop.force_full_redraw();
+            rt.frame_due = true;
+        }
+        DesktopAction::About => {
+            open_about_window(rt);
+        }
+        DesktopAction::Separator => {
+            // Separator line — no action
+        }
+    }
+}
+
+/// Open a Task Manager window showing process list.
+fn open_task_manager_window(rt: &mut RuntimeState) {
+    // Build a textual task list
+    let task_list = alloc::format!(
+        "PID   NAME             STATE     TYPE\n\
+         ----  ----------------  --------  ----\n\
+         {:<4}  {:<16}  {:<8}  shell\n\
+         {:<4}  {:<16}  {:<8}  wm\n\
+         {:<4}  {:<16}  {:<8}  idle\n",
+        1,  "shell",          "active",
+        2,  "window-manager", "active",
+        99, "idle",           "sleep",
+    );
+
+    // Create a window with the task list rendered as text
+    let cols = 50u32;
+    let rows = 20u32;
+    let win_w = cols * GLYPH_W;
+    let win_h = rows * GLYPH_H;
+    let id = rt.desktop.wm.create_titled_window(
+        120,
+        80,
+        win_w,
+        win_h,
+        0x0d0d1a,
+        "Task Manager",
+    );
+
+    // Render the task list into the window's surface
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = render_text_into_surface(&mut w.surface, &task_list, cols, 0xCCCCCC, 0x0d0d1a);
+    }
+
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Open a Device Manager window.
+fn open_device_manager_window(rt: &mut RuntimeState) {
+    let device_text = alloc::string::String::from(
+        "DEVICE            TYPE        ENABLED\n\
+         ----------------  ----------  -------\n\
+         PS/2 Keyboard     input       yes\n\
+         PS/2 Mouse        input       yes\n\
+         AHCI Controller   storage     yes\n\
+         NVMe SSD          storage     yes\n\
+         virtio-gpu        display     yes\n\
+         Intel HDA         audio       yes\n\
+         PCI Bridge        bridge      yes\n\
+         USB xHCI          usb         yes\n",
+    );
+
+    let cols = 42u32;
+    let rows = 14u32;
+    let win_w = cols * GLYPH_W;
+    let win_h = rows * GLYPH_H;
+    let id = rt.desktop.wm.create_titled_window(
+        140,
+        100,
+        win_w,
+        win_h,
+        0x0d1a0d,
+        "Device Manager",
+    );
+
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = render_text_into_surface(&mut w.surface, &device_text, cols, 0xCCFFCC, 0x0d1a0d);
+    }
+
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Open a File Manager window.
+fn open_file_manager_window(rt: &mut RuntimeState) {
+    let file_text = alloc::string::String::from(
+        "  Name              Size        Type\n\
+         ../../              --          dir\n\
+         ../                 --          dir\n\
+         README.md           1234 B      file\n\
+         CHANGELOG.md         567 B      file\n\
+         Cargo.toml           200 B      file\n\
+         Cargo.lock         10234 B      file\n\
+         flasks/              --          dir\n\
+         lattice/             --          dir\n\
+         solvent/             --          dir\n\
+         toluene/             --          dir\n\
+         docs/                --          dir\n\
+         target/              --          dir\n",
+    );
+
+    let cols = 44u32;
+    let rows = 16u32;
+    let win_w = cols * GLYPH_W;
+    let win_h = rows * GLYPH_H;
+    let id = rt.desktop.wm.create_titled_window(
+        160,
+        120,
+        win_w,
+        win_h,
+        0x1a1a0d,
+        "File Manager",
+    );
+
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = render_text_into_surface(&mut w.surface, &file_text, cols, 0xFFFFCC, 0x1a1a0d);
+    }
+
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Open an About window.
+fn open_about_window(rt: &mut RuntimeState) {
+    let about_text = alloc::string::String::from(
+        "Fullerene OS\n\
+         ============\n\
+         \n\
+         A microkernel-based\n\
+         operating system\n\
+         written in Rust.\n\
+         \n\
+         Version: 0.1.0\n\
+         License: MIT/Apache-2.0\n\
+         \n\
+         (c) 2024-2026\n",
+    );
+
+    let cols = 32u32;
+    let rows = 14u32;
+    let win_w = cols * GLYPH_W;
+    let win_h = rows * GLYPH_H;
+    let id = rt.desktop.wm.create_titled_window(
+        180,
+        140,
+        win_w,
+        win_h,
+        0x1a0d1a,
+        "About Fullerene",
+    );
+
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = render_text_into_surface(&mut w.surface, &about_text, cols, 0xFFCCFF, 0x1a0d1a);
+    }
+
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Render a multi-line text string into a Surface.
+/// Returns the number of lines rendered.
+fn render_text_into_surface(
+    surface: &mut lattice::surface::Surface,
+    text: &str,
+    max_cols: u32,
+    fg_color: u32,
+    bg_color: u32,
+) -> u32 {
+    use lattice::terminal_surface;
+    use lattice::terminal_surface::Cell as LatticeCell;
+
+    let cols = max_cols as usize;
+    let lines_count = text.lines().count() as u32;
+    let total = (cols as u32 * lines_count) as usize;
+    let mut cells: Vec<LatticeCell> = Vec::new();
+    cells.resize(
+        total,
+        LatticeCell {
+            ch: b' ',
+            fg: fg_color,
+            bg: bg_color,
+        },
+    );
+
+    for (row, line) in text.lines().enumerate() {
+        for (col, ch) in line.bytes().enumerate() {
+            if col < cols {
+                let idx = row * cols + col;
+                if idx < cells.len() {
+                    cells[idx] = LatticeCell {
+                        ch,
+                        fg: fg_color,
+                        bg: bg_color,
+                    };
+                }
+            }
+        }
+    }
+
+    terminal_surface::render(terminal_surface::RenderParams {
+        surface,
+        cells: &cells,
+        cols: cols as u32,
+        cursor_col: None,
+        cursor_row: None,
+        cursor_visible: false,
+    });
+
+    lines_count
 }
 
 // ── Theme / wallpaper bridges (avoid kernel → lattice coupling) ─────

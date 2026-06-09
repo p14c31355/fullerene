@@ -320,6 +320,12 @@ impl Compositor {
             inc_draw_calls();
         }
 
+        // Draw menu text on top of overlay rectangles
+        if let Some(menu) = scene.active_menu {
+            menu.render_text(framebuffer, fb_width, fb_height);
+            inc_draw_calls();
+        }
+
         // ── Layer 3: System UI ───────────────────────────
         // Taskbar
         if let Some(tb) = scene.taskbar {
