@@ -391,52 +391,25 @@ impl EventHandler for ShellEventHandler {
     }
 }
 
-fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
-    use KeyCode::*;
-    Some(match key {
-        Enter => b'\n',
-        Space => b' ',
-        Backspace => 0x08,
-        Tab => b'\t',
-        A => b'a',
-        B => b'b',
-        C => b'c',
-        D => b'd',
-        E => b'e',
-        F => b'f',
-        G => b'g',
-        H => b'h',
-        I => b'i',
-        J => b'j',
-        K => b'k',
-        L => b'l',
-        M => b'm',
-        N => b'n',
-        O => b'o',
-        P => b'p',
-        Q => b'q',
-        R => b'r',
-        S => b's',
-        T => b't',
-        U => b'u',
-        V => b'v',
-        W => b'w',
-        X => b'x',
-        Y => b'y',
-        Z => b'z',
-        Digit0 => b'0',
-        Digit1 => b'1',
-        Digit2 => b'2',
-        Digit3 => b'3',
-        Digit4 => b'4',
-        Digit5 => b'5',
-        Digit6 => b'6',
-        Digit7 => b'7',
-        Digit8 => b'8',
-        Digit9 => b'9',
-        _ => return None,
-    })
+macro_rules! key_ascii {
+    ($($variant:ident => $ch:expr),+ $(,)?) => {
+        fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
+            use KeyCode::*;
+            Some(match key { $($variant => $ch,)+ _ => return None })
+        }
+    };
 }
+key_ascii!(
+    Enter => b'\n', Space => b' ', Backspace => 0x08, Tab => b'\t',
+    A => b'a', B => b'b', C => b'c', D => b'd', E => b'e', F => b'f',
+    G => b'g', H => b'h', I => b'i', J => b'j', K => b'k', L => b'l',
+    M => b'm', N => b'n', O => b'o', P => b'p', Q => b'q', R => b'r',
+    S => b's', T => b't', U => b'u', V => b'v', W => b'w', X => b'x',
+    Y => b'y', Z => b'z',
+    Digit0 => b'0', Digit1 => b'1', Digit2 => b'2', Digit3 => b'3',
+    Digit4 => b'4', Digit5 => b'5', Digit6 => b'6', Digit7 => b'7',
+    Digit8 => b'8', Digit9 => b'9',
+);
 
 // ── Input polling ────────────────────────────────────────────
 
@@ -668,9 +641,21 @@ pub fn process_events() {
 
 // ── Clock update ─────────────────────────────────────────────
 
+/// Days in a given month, accounting for leap years.
+fn days_in_month(month: i16, year: i16) -> i16 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            if leap { 29 } else { 28 }
+        }
+        _ => 31,
+    }
+}
+
 /// Update the taskbar clock from the wall‑clock callback.
 /// Format: "YYYY MMDD HHMM" (e.g. "2026 0606 2200").
-/// Current timezone offset in hours (UTC + offset = local time).
 pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
     core::sync::atomic::AtomicI8::new(9);
 
@@ -679,7 +664,6 @@ pub fn update_clock() {
 
     let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
         if let Some((year, month, day, mut hour, minute, _second)) = get_time() {
-            // Apply timezone offset
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;
             let mut local_month = month as i16;
@@ -694,19 +678,7 @@ pub fn update_clock() {
                 local_day += 1;
             }
 
-            // Handle day overflow — simple month-length table
-            let days_in_month = match local_month {
-                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
-                4 | 6 | 9 | 11 => 30i16,
-                2 => {
-                    let leap =
-                        (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
-                    if leap { 29 } else { 28 }
-                }
-                _ => 31,
-            };
-
-            if local_day > days_in_month {
+            if local_day > days_in_month(local_month, local_year) {
                 local_day = 1;
                 local_month += 1;
                 if local_month > 12 {
@@ -719,17 +691,7 @@ pub fn update_clock() {
                     local_month = 12;
                     local_year -= 1;
                 }
-                let prev_days = match local_month {
-                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
-                    4 | 6 | 9 | 11 => 30i16,
-                    2 => {
-                        let leap = (local_year % 4 == 0 && local_year % 100 != 0)
-                            || (local_year % 400 == 0);
-                        if leap { 29 } else { 28 }
-                    }
-                    _ => 31,
-                };
-                local_day = prev_days + local_day;
+                local_day = days_in_month(local_month, local_year) + local_day;
             }
 
             format!(
