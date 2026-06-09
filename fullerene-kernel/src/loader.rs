@@ -66,7 +66,7 @@ pub fn load_program(
     // Load program segments using goblin
     process::PROCESS_MANAGER
         .with_process(pid, |p| {
-            let process_page_table = p.page_table.as_ref().ok_or(LoadError::InvalidFormat)?;
+            let process_page_table = p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
 
             for ph in &elf.program_headers {
                 // Only load PT_LOAD segments
@@ -142,14 +142,20 @@ pub fn load_program(
                             page_flags.remove(X86Flags::NO_EXECUTE);
                         }
 
-                        map_user_page(
+                        // Map directly into the process page table (not kernel's),
+                        // so the mapping is visible after the CR3 switch below.
+                        PageTableHelper::map_page(
+                            &mut **process_page_table,
                             page_vaddr.as_u64() as usize,
                             frame.start_address().as_u64() as usize,
                             page_flags,
-                        )?;
+                            petroleum::page_table::constants::get_frame_allocator_mut(),
+                        ).map_err(|_| LoadError::OutOfMemory)?;
                     }
 
-                    // Switch to process page table to copy segment data
+                    // Switch to process page table to copy segment data.
+                    // Now the process page table has the mapping, so writing
+                    // through the virtual address will work correctly.
                     let _cr3_guard = unsafe { CrxSwitchGuard::new(process_page_table) };
 
                     // Copy file data

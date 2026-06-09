@@ -177,7 +177,7 @@ macro_rules! unmap_page_range {
 #[macro_export]
 macro_rules! get_memory_stats {
     () => {
-        (0usize, 0usize, 0usize)
+        $crate::page_table::raw::utils::get_memory_stats()
     };
 }
 
