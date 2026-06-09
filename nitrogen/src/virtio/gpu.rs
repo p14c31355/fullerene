@@ -69,17 +69,14 @@ pub struct VirtioGpuCtrlHeader {
     pub ctx_id: u32,
     pub padding: u32,
 }
-impl VirtioGpuCtrlHeader {
-    pub fn to_le(self) -> Self {
-        Self {
-            type_: self.type_.to_le(),
-            flags: self.flags.to_le(),
-            fence_id: self.fence_id.to_le(),
-            ctx_id: self.ctx_id.to_le(),
-            padding: self.padding.to_le(),
+macro_rules! impl_to_le {
+    ($ty:ident { $($field:ident),+ $(,)? }) => {
+        impl $ty {
+            pub fn to_le(self) -> Self { Self { $($field: self.$field.to_le()),+ } }
         }
-    }
+    };
 }
+impl_to_le!(VirtioGpuCtrlHeader { type_, flags, fence_id, ctx_id, padding });
 
 pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x0100;
 pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
@@ -96,17 +93,7 @@ pub struct VirtioGpuResourceCreate2d {
     pub width: u32,
     pub height: u32,
 }
-impl VirtioGpuResourceCreate2d {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            resource_id: self.resource_id.to_le(),
-            format: self.format.to_le(),
-            width: self.width.to_le(),
-            height: self.height.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuResourceCreate2d { hdr, resource_id, format, width, height });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -116,16 +103,7 @@ pub struct VirtioGpuRect {
     pub width: u32,
     pub height: u32,
 }
-impl VirtioGpuRect {
-    pub fn to_le(self) -> Self {
-        Self {
-            x: self.x.to_le(),
-            y: self.y.to_le(),
-            width: self.width.to_le(),
-            height: self.height.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuRect { x, y, width, height });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -135,16 +113,7 @@ pub struct VirtioGpuSetScanout {
     pub scanout_id: u32,
     pub resource_id: u32,
 }
-impl VirtioGpuSetScanout {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            r: self.r.to_le(),
-            scanout_id: self.scanout_id.to_le(),
-            resource_id: self.resource_id.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuSetScanout { hdr, r, scanout_id, resource_id });
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VirtioGpuResourceFlush {
@@ -153,16 +122,7 @@ pub struct VirtioGpuResourceFlush {
     pub resource_id: u32,
     pub padding: u32,
 }
-impl VirtioGpuResourceFlush {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            r: self.r.to_le(),
-            resource_id: self.resource_id.to_le(),
-            padding: self.padding.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuResourceFlush { hdr, r, resource_id, padding });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -171,15 +131,7 @@ pub struct VirtioGpuMemEntry {
     pub length: u32,
     pub padding: u32,
 }
-impl VirtioGpuMemEntry {
-    pub fn to_le(self) -> Self {
-        Self {
-            addr: self.addr.to_le(),
-            length: self.length.to_le(),
-            padding: self.padding.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuMemEntry { addr, length, padding });
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -189,16 +141,7 @@ pub struct AttachCmd {
     pub nr_entries: u32,
     pub entry: VirtioGpuMemEntry,
 }
-impl AttachCmd {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            resource_id: self.resource_id.to_le(),
-            nr_entries: self.nr_entries.to_le(),
-            entry: self.entry.to_le(),
-        }
-    }
-}
+impl_to_le!(AttachCmd { hdr, resource_id, nr_entries, entry });
 
 /// VirtIO GPU hardware driver.
 ///

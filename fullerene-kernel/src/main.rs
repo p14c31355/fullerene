@@ -45,3 +45,4 @@ pub mod syscall;
 pub mod task;
 pub mod tracing;
 pub mod vfs;
+pub mod virtio_gpu;
