@@ -541,7 +541,7 @@ impl WindowManager {
                 let stack_y = top + ((i as u32) * (each_h + gap)) as i32;
                 if let Some(sw) = self.windows.iter_mut().find(|w| w.id == id) {
                     sw.x = stack_left;
-                    sw.y = stack_y as i32;
+                    sw.y = stack_y;
                     sw.width = stack_w;
                     sw.height = each_h;
                     self.dirty_rects.push(window_dirty_rect(sw));

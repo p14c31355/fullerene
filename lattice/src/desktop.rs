@@ -336,10 +336,15 @@ impl Desktop {
     }
 
     /// Update the taskbar entries from the current window list.
-    pub fn update_taskbar(&mut self) {
+    ///
+    /// Returns `true` when the entry list changed (count or order).
+    pub fn update_taskbar(&mut self) -> bool {
+        let prev_count = self.taskbar.entries.len();
         self.taskbar.update_from_windows(self.wm.windows());
         // Update clock text on taskbar
         self.taskbar.clock_text = self.clock_text.clone();
+        let new_count = self.taskbar.entries.len();
+        new_count != prev_count
     }
 
     // ── frame preparation ───────────────────────────────────
