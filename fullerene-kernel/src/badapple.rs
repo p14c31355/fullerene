@@ -201,6 +201,11 @@ pub fn play_badapple() {
     let use_hda = crate::sound::hda_available();
     nitrogen::ps2::keyboard::flush_input();
 
+    // ── Suppress solvent compositor during playback ──────────
+    // Prevent the desktop compositor from overwriting our
+    // direct framebuffer writes.  Restore on exit.
+    solvent::suspend_rendering();
+
     // ── Pre‑fill DMA ring buffer both halves ─────────────────
     let mut pcm_off: usize = 0;
     if use_hda {
@@ -220,8 +225,10 @@ pub fn play_badapple() {
     let mut idx = 0usize;
     let mut last_audio_feed = unsafe { x86_64::_rdtsc() };
     while idx < n && idx < offs.len() {
-        // Abort on keyboard input
-        if nitrogen::ps2::keyboard::input_available() {
+        // Abort on any keyboard input (ASCII keys, arrows, modifiers, …)
+        if nitrogen::ps2::keyboard::input_available()
+            || nitrogen::ps2::keyboard::raw_key_available()
+        {
             log::info!("Bad Apple aborted");
             nitrogen::ps2::keyboard::flush_input();
             break;
@@ -277,6 +284,7 @@ pub fn play_badapple() {
         }
     }
 
+    solvent::resume_rendering();
     solvent::force_desktop_redraw();
     log::info!("Bad Apple finished ({} frames)", idx);
 }

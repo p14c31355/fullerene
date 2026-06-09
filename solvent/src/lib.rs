@@ -738,6 +738,11 @@ pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
 {
+    // Skip compositor when rendering is suspended (e.g. BadApple playback).
+    if *RENDERING_SUSPENDED.lock() {
+        return;
+    }
+
     let mut rt_lock = RUNTIME.lock();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
@@ -1249,6 +1254,11 @@ pub fn set_render_fn(f: fn()) {
 fn runtime_tick_no_fb() {
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+
+    // Suppress rendering while suspended.
+    if *RENDERING_SUSPENDED.lock() {
+        return;
+    }
     poll_mouse_state();
     poll_keyboard();
     update_clock();
@@ -1273,7 +1283,12 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
 {
+    // Skip tick when rendering is suspended (e.g. BadApple playback).
+    // Still update global tick to keep keyboard repeat timed.
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+    if *RENDERING_SUSPENDED.lock() {
+        return;
+    }
     poll_mouse_state();
     poll_keyboard();
     update_clock();
@@ -1295,6 +1310,24 @@ pub fn write_terminal(s: &str) {
         r.term_buf.put_str(s);
         r.term_dirty = true;
     }
+}
+
+/// Global flag to temporarily suspend the compositor render pass.
+/// When set, `runtime_tick` and `render` will skip framebuffer
+/// writes so that another subsystem (e.g. BadApple) can drive the
+/// framebuffer exclusively.
+static RENDERING_SUSPENDED: spin::Mutex<bool> = spin::Mutex::new(false);
+
+/// Suspend solvent compositor rendering.
+/// Call before taking exclusive control of the framebuffer.
+pub fn suspend_rendering() {
+    *RENDERING_SUSPENDED.lock() = true;
+}
+
+/// Resume solvent compositor rendering.
+/// Call after releasing exclusive framebuffer control.
+pub fn resume_rendering() {
+    *RENDERING_SUSPENDED.lock() = false;
 }
 
 /// Trigger a full desktop redraw on the next render pass.

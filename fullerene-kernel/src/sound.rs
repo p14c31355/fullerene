@@ -288,9 +288,10 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let steps = ac as u8 & 0x7F;
     let gain = if steps > 0 { steps / 2 } else { 0 };
     corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, 0x70 | gain);
-    // 8-bit mono: bits 7:4 = 0x0 (8-bit), bits 3:0 = 0x0 (1ch mono)
-    // The PCM data is raw 8-bit signed mono at 44100 Hz.
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x00);
+    // 8-bit signed mono at 44100 Hz:
+    // bit[7] = 1 → signed, bits[6:4] = 0 → 8-bit container,
+    // bit[3:0] = 0 → 1 channel
+    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x80);
     corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream);
     let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP);
     let psteps = pa as u8 & 0x7F;
