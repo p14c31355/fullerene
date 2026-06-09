@@ -294,7 +294,24 @@ fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
     Glyph { rows }
 }
 
+/// Fast glyph pixel lookup — avoids per‑call font selection overhead.
+///
+/// For repeated pixel queries on the same character (e.g. text rendering),
+/// prefer [`get_glyph_pixel`] which caches the glyph reference.
 #[inline]
 pub fn get_glyph_pixel(ch: u8, row: u32, col: u32) -> bool {
     glyph(ch).pixel(row, col)
+}
+
+/// Return a `Glyph` for ASCII without Mutex contention per pixel.
+///
+/// This checks PSF once and returns either the PSF glyph or the embedded
+/// glyph, so callers can do many `.pixel()` calls without re‑locking.
+#[inline]
+pub fn glyph_fast(ch: u8) -> Glyph<'static> {
+    // Fast path: check PSF only once
+    if let Some(ref psf) = *PSF_FONT.lock() {
+        return psf_glyph(psf, ch);
+    }
+    embedded_glyph(ch)
 }

@@ -855,12 +855,11 @@ where
                     // Full-screen blit on transition: non‑temporal store
                     let copy_len = fb_len.min(back.len());
                     unsafe {
-                        copy_to_fb_non_temporal(
+                        copy_to_fb_volatile(
                             fb_pixels.as_mut_ptr(),
                             back.as_ptr(),
                             copy_len,
                         );
-                        core::arch::x86_64::_mm_sfence();
                     }
                 } else {
                     let b_w = bw as usize;
@@ -869,16 +868,13 @@ where
                         let len = b_w.min(fb_len.saturating_sub(off));
                         if len > 0 {
                             unsafe {
-                                copy_to_fb_non_temporal(
+                                copy_to_fb_volatile(
                                     fb_pixels.as_mut_ptr().add(off),
                                     back.as_ptr().add(off),
                                     len,
                                 );
                             }
                         }
-                    }
-                    unsafe {
-                        core::arch::x86_64::_mm_sfence();
                     }
                 }
             }
@@ -987,20 +983,20 @@ fn draw_cursor_on_fb(fb: &mut [u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
     }
 }
 
-/// Non‑temporal copy of `len` u32 pixels from `src` to `dst`.
+/// Volatile copy of `len` u32 pixels from `src` to `dst`.
 ///
-/// Uses `_mm_stream_si32` (`movnti`) to bypass cache and write directly
-/// to the framebuffer via write‑combining (WC) or write‑through (WT)
-/// mappings.  Caller must issue `_mm_sfence()` after the copy to commit
-/// all non‑temporal stores before the display controller scans them out.
+/// Uses `write_volatile` / `read_volatile` which work correctly with
+/// all framebuffer memory types (WB, WT, WC, UC).  Non‑temporal stores
+/// (`_mm_stream_si32`) are NOT used here because the framebuffer may
+/// not be mapped as WC — on real hardware WB/WT is common.
 ///
 /// # Safety
 /// `dst` and `src` must be valid for `len` u32 reads/writes.
 /// Both pointers must be suitably aligned for u32 access (4 bytes).
-unsafe fn copy_to_fb_non_temporal(dst: *mut u32, src: *const u32, len: usize) {
+unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
     for i in 0..len {
         let v = core::ptr::read_volatile(src.add(i));
-        core::arch::x86_64::_mm_stream_si32(dst.add(i) as *mut i32, v as i32);
+        core::ptr::write_volatile(dst.add(i), v);
     }
 }
 

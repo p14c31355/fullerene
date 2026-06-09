@@ -208,3 +208,67 @@ pub fn hda_poll(){
     loop{let lpib=unsafe{r32(mmio,sd+SD_LPIB)}; let a=lpib<half; let b=last<half;
         if a!=b{break} core::hint::spin_loop();}
 }
+
+/// Poll with optional TSC‑based timeout.  Returns `true` when data
+/// was fed, `false` on timeout / not ready.
+pub fn hda_poll_block(timeout_tsc: Option<u64>) -> bool {
+    if !HDA_READY.load(Ordering::Acquire) {
+        return false;
+    }
+    let virt = *HDA_VIRT.lock();
+    if virt == 0 {
+        return false;
+    }
+    let mmio = virt as *mut u8;
+    let half = *HDA_HALF.lock();
+    let sd = *HDA_SD.lock();
+    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
+    let deadline = match timeout_tsc {
+        Some(d) => unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(d),
+        None => u64::MAX,
+    };
+    loop {
+        let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
+        let a = lpib < half;
+        let b = last < half;
+        if a != b {
+            return true;
+        }
+        if timeout_tsc.is_some() && unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// TSC‑based delay after HDA poll (used for silence drain).
+pub fn hda_poll_delay(tsc_per_ms: u64, ms: u64) {
+    let deadline = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(tsc_per_ms.saturating_mul(ms));
+    while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
+        hda_poll();
+        core::hint::spin_loop();
+    }
+}
+
+/// High‑level PCM feed: try to push `pcm[pcm_off..pcm_total]` into
+/// the HDA half‑buffer.  Advances `*pcm_off`.  Returns immediately
+/// if the destination half is not ready.
+#[inline]
+pub fn hda_feed_pcm(pcm: &[u8], pcm_off: &mut usize, pcm_total: usize, half: usize) -> usize {
+    let off = *pcm_off;
+    if off >= pcm_total {
+        return 0;
+    }
+    let rem = pcm_total - off;
+    let end = (off + rem.min(half)).min(pcm_total);
+    let fed = hda_feed_samples(&pcm[off..end]);
+    if fed > 0 {
+        *pcm_off += fed;
+    }
+    fed
+}
+
+/// Feed silence into the HDA half‑buffer.
+pub fn hda_feed_silence(half: usize) -> usize {
+    hda_feed_samples(&[0u8; 16368][..half.min(16368)])
+}

@@ -49,6 +49,53 @@ static RENDER_TICKS: AtomicU64 = AtomicU64::new(0);
 static mut PREV_DEBUG_TEXT: [u8; 32] = [0u8; 32];
 static mut PREV_DEBUG_LEN: usize = 0;
 
+// ── Inline formatting helpers (no heap) ────────────────────
+
+/// Write a byte slice into `buf` at `pos`. Returns the number of bytes written.
+fn write_str(buf: &mut [u8; 32], pos: &mut usize, s: &[u8]) -> usize {
+    let n = s.len().min(buf.len().saturating_sub(*pos));
+    buf[*pos..*pos + n].copy_from_slice(&s[..n]);
+    *pos += n;
+    n
+}
+
+/// Write a single byte into the buffer.
+fn write_byte(buf: &mut [u8; 32], pos: &mut usize, b: u8) -> usize {
+    if *pos < buf.len() {
+        buf[*pos] = b;
+        *pos += 1;
+        1
+    } else {
+        0
+    }
+}
+
+/// Write a u64 as decimal, padded to at least `min_digits` (0 = natural width).
+fn write_u64_fixed(buf: &mut [u8; 32], pos: &mut usize, mut v: u64, min_digits: usize) -> usize {
+    let mut tmp = [0u8; 20];
+    let mut i = 0usize;
+    if v == 0 {
+        tmp[i] = b'0';
+        i += 1;
+    }
+    while v > 0 {
+        tmp[i] = b'0' + (v % 10) as u8;
+        i += 1;
+        v /= 10;
+    }
+    // Pad to min_digits
+    while i < min_digits {
+        tmp[i] = b'0';
+        i += 1;
+    }
+    // tmp has digits reversed — write in correct order
+    let start = *pos;
+    for j in (0..i).rev() {
+        write_byte(buf, pos, tmp[j]);
+    }
+    *pos - start
+}
+
 pub fn notify_frame_presented(now_tick: u64) {
     let fc = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     let last = LAST_FPS_TICK.load(Ordering::Relaxed);
@@ -219,21 +266,29 @@ impl Compositor {
             return;
         }
         let dc = draw_calls_last_frame();
-        let text = alloc::format!("FPS:{}.{:02} DC:{}", fps / 100, fps % 100, dc);
-
-        // Always redraw because the compositor clears the merged dirty rect\n        // background in Layer 0 — skipping the redraw would leave a blank\n        // rectangle over the dirty region.
+        // Inline formatting to avoid heap allocation
+        let mut buf = [0u8; 32];
+        let mut pos = 0usize;
+        let _ = write_str(&mut buf, &mut pos, b"FPS:");
+        write_u64_fixed(&mut buf, &mut pos, fps / 100, 1);
+        let _ = write_byte(&mut buf, &mut pos, b'.');
+        write_u64_fixed(&mut buf, &mut pos, fps % 100, 2);
+        let _ = write_str(&mut buf, &mut pos, b" DC:");
+        write_u64_fixed(&mut buf, &mut pos, dc, 0);
+        let text = &buf[..pos.min(32)];
 
         let x = fbw.saturating_sub(150);
         let y = 4u32;
-        for (i, ch) in text.bytes().enumerate() {
+        for (i, &ch) in text.iter().enumerate() {
             if ch < 32 || ch > 126 {
                 continue;
             }
+            let gl = crate::font::glyph_fast(ch);
             for row in 0..12 {
+                let py = y + row;
                 for col in 0..8 {
                     let px = x + (i as u32) * 8 + col;
-                    let py = y + row;
-                    if px < fbw && py < _fbh && crate::font::get_glyph_pixel(ch, row, col) {
+                    if px < fbw && py < _fbh && gl.pixel(row, col) {
                         fb[(py * fbw + px) as usize] = COLOR_ACCENT;
                     }
                 }
@@ -561,12 +616,14 @@ impl Compositor {
         }
 
         // Title text (with padding from left)
+        // Uses glyph_fast to avoid per-pixel Mutex lock on font lookup
         let tx = win.x + WINDOW_PADDING as i32;
         let ty = win.y + WINDOW_PADDING as i32;
         for (i, ch) in title.bytes().enumerate() {
             if ch < 32 || ch > 126 {
                 continue;
             }
+            let gl = crate::font::glyph_fast(ch);
             let gx = tx + (i as i32) * 8;
             for row in 0..12 {
                 let da = ty + row;
@@ -578,7 +635,7 @@ impl Compositor {
                     if dxa < cx as i32 || dxa >= cex || dxa >= fw {
                         continue;
                     }
-                    if crate::font::get_glyph_pixel(ch, row as u32, col as u32) {
+                    if gl.pixel(row as u32, col as u32) {
                         fb[(da as usize) * (fbw as usize) + dxa as usize] = COLOR_TEXT;
                     }
                 }
