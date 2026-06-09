@@ -158,12 +158,12 @@ impl EarlyMapper {
                     x86_64::structures::paging::Size2MiB,
                 >::containing_address(phys);
                 // SAFETY: Caller ensures safety.
-                unsafe {
-                    mapper
-                        .map_to(page, frame, flags_2mb, frame_allocator)
-                        .map_err(|_| "map_2mb failed")?
-                        .flush();
-                }
+                mapper
+                    .map_to(page, frame, flags_2mb, frame_allocator)
+                    .map_err(|_| "map_2mb failed")?
+                    .flush();
+             }
+             Ok(())
             }
             Ok(())
         }
