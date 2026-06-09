@@ -63,6 +63,10 @@ pub fn render(params: RenderParams<'_>) {
     let glyph_w = font::GLYPH_WIDTH;
     let glyph_h = font::GLYPH_HEIGHT;
 
+    let surf_w = surface.width() as usize;
+    let surf_h = surface.height() as usize;
+    let pixels = surface.pixels_mut();
+
     for (i, cell) in cells.iter().enumerate() {
         let col = (i as u32) % cols;
         let row = (i as u32) / cols;
@@ -70,32 +74,53 @@ pub fn render(params: RenderParams<'_>) {
             break;
         }
 
-        let dx = col * glyph_w;
-        let dy = row * glyph_h;
+        let dx = (col * glyph_w) as usize;
+        let dy = (row * glyph_h) as usize;
 
         // Check if this cell is the cursor position
         let is_cursor = cursor_visible
             && cursor_col.map_or(false, |cc| cc == col)
             && cursor_row.map_or(false, |rr| rr == row);
 
-        // Draw background
-        surface.fill_rect(dx, dy, glyph_w, glyph_h, cell.bg);
+        // Draw background — write directly to pixels slice (bounds checked once
+        // per cell instead of once per pixel)
+        let bg = cell.bg;
+        for gy in 0..glyph_h as usize {
+            let row_base = (dy + gy) * surf_w;
+            if row_base + dx >= pixels.len() || dy + gy >= surf_h {
+                continue;
+            }
+            let row_slice = &mut pixels[row_base + dx..row_base + dx + glyph_w as usize];
+            row_slice.fill(bg);
+        }
 
-        // Draw glyph pixels
-        for gy in 0..glyph_h {
-            for gx in 0..glyph_w {
-                if font::glyph(cell.ch).pixel(gy, gx) {
-                    surface.set_pixel(dx + gx, dy + gy, cell.fg);
+        // Draw glyph pixels — write directly to pixels slice, no per‑pixel
+        // bounds check
+        let gl = font::glyph_fast(cell.ch);
+        let fg = cell.fg;
+        for gy in 0..glyph_h as usize {
+            let row_base = (dy + gy) * surf_w;
+            if row_base + dx >= pixels.len() || dy + gy >= surf_h {
+                continue;
+            }
+            let byte = gl.row_byte(gy as u32);
+            for gx in 0..glyph_w as usize {
+                if byte & (0x80 >> gx) != 0 {
+                    pixels[row_base + dx + gx] = fg;
                 }
             }
         }
 
-        // Draw cursor (invert fg/bg for the cell)
+        // Draw cursor (underline on the bottom 2 rows)
         if is_cursor {
-            // Simple cursor: underline on the bottom 2 rows
-            for gx in 0..glyph_w {
-                surface.set_pixel(dx + gx, dy + glyph_h - 2, cell.fg);
-                surface.set_pixel(dx + gx, dy + glyph_h - 1, cell.fg);
+            let cur_y0 = dy + glyph_h as usize - 2;
+            let cur_y1 = dy + glyph_h as usize - 1;
+            for &cy in &[cur_y0, cur_y1] {
+                let row_base = cy * surf_w;
+                if row_base + dx < pixels.len() && cy < surf_h {
+                    let row_slice = &mut pixels[row_base + dx..row_base + dx + glyph_w as usize];
+                    row_slice.fill(fg);
+                }
             }
         }
     }

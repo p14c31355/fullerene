@@ -961,20 +961,19 @@ fn draw_cursor_on_fb(fb: &mut [u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
     }
 }
 
-/// Volatile copy of `len` u32 pixels from `src` to `dst`.
+/// Copy `len` u32 pixels from back‑buffer `src` to framebuffer `dst`.
 ///
-/// Uses `write_volatile` / `read_volatile` which work correctly with
-/// all framebuffer memory types (WB, WT, WC, UC).  Non‑temporal stores
-/// (`_mm_stream_si32`) are NOT used here because the framebuffer may
-/// not be mapped as WC — on real hardware WB/WT is common.
+/// Uses `core::ptr::copy_nonoverlapping` for maximum throughput.
+/// The caller must issue an `sfence` (or equivalent GPU flush) after
+/// the copy to make the writes globally visible for WC/UC framebuffers.
 ///
 /// # Safety
 /// `dst` and `src` must be valid for `len` u32 reads/writes.
 /// Both pointers must be suitably aligned for u32 access (4 bytes).
+/// Regions must NOT overlap.
 unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
-    for i in 0..len {
-        let v = core::ptr::read_volatile(src.add(i));
-        core::ptr::write_volatile(dst.add(i), v);
+    unsafe {
+        core::ptr::copy_nonoverlapping(src, dst, len);
     }
 }
 

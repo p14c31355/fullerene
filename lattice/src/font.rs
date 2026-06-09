@@ -239,6 +239,19 @@ impl Glyph<'_> {
         let byte = self.rows[idx];
         byte & (0x80 >> col) != 0
     }
+
+    /// Return the raw bitmap byte for a given row (0..height).
+    /// Returns 0 if `row` is out of bounds.  Callers can test
+    /// individual bits with `byte & (0x80 >> col) != 0`.
+    #[inline]
+    pub fn row_byte(&self, row: u32) -> u8 {
+        let idx = row as usize;
+        if idx < self.rows.len() {
+            self.rows[idx]
+        } else {
+            0
+        }
+    }
 }
 
 /// Look up a glyph for printable ASCII (0x20–0x7E).

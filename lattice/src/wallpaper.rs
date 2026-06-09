@@ -93,19 +93,8 @@ pub fn render_wallpaper(
             }
         }
         WallpaperMode::GridPattern => {
-            // Fill background, then draw a subtle lattice grid.
-            for row in cy..cy + ch {
-                let y = row;
-                if y >= fb_height {
-                    continue;
-                }
-                let rs = (y as usize) * fb_w;
-                let start = rs + cx as usize;
-                let end = (rs + (cx + cw) as usize).min(fb.len());
-                fb[start..end].fill(colors.bg);
-            }
-
             let grid_spacing: u32 = 64;
+            let grid_thickness: u32 = 2;
             let grid_color = blend_over(colors.bg, colors.surface, 30);
 
             for row in cy..cy + ch {
@@ -113,19 +102,28 @@ pub fn render_wallpaper(
                 if y >= fb_height {
                     continue;
                 }
+                let on_grid_y = (y % grid_spacing) < grid_thickness;
                 let rs = (y as usize) * fb_w;
-                for col in cx..cx + cw {
-                    let x = col;
-                    if x >= fb_width {
-                        continue;
-                    }
-                    let on_grid_x = (x % grid_spacing) < 2;
-                    let on_grid_y = (y % grid_spacing) < 2;
-                    if on_grid_x || on_grid_y {
-                        let idx = rs + x as usize;
-                        if idx < fb.len() {
-                            fb[idx] = grid_color;
-                        }
+
+                if on_grid_y {
+                    // Entire row is a horizontal grid line — fill with grid_color.
+                    let start = rs + cx as usize;
+                    let end = (rs + (cx + cw) as usize).min(fb.len());
+                    fb[start..end].fill(grid_color);
+                } else {
+                    // Fill row with background, then draw vertical grid dots.
+                    let start = rs + cx as usize;
+                    let end = (rs + (cx + cw) as usize).min(fb.len());
+                    fb[start..end].fill(colors.bg);
+
+                    // Find the first grid column within the clip rect.
+                    let first_col = ((cx + grid_spacing - 1) / grid_spacing) * grid_spacing;
+                    let mut gx = first_col;
+                    while gx < cx + cw && gx < fb_width {
+                        let col_start = rs + gx as usize;
+                        let col_end = (col_start + grid_thickness as usize).min(fb.len());
+                        fb[col_start..col_end].fill(grid_color);
+                        gx += grid_spacing;
                     }
                 }
             }
