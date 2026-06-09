@@ -479,7 +479,10 @@ fn hda_init() {
         }
         // Program format, BDL and stream settings
         w8(m, sd + SD_STS, 0xFF);
-        w16(m, sd + SD_FMT, 0x4000); // 44.1 kHz 8-bit mono (bit14=BASE44, bits7:4=0=8-bit, bits3:0=0=1ch)
+        // 44.1 kHz 8-bit mono:
+        // bit7 BASE=1 (44.1kHz), bits6:4 BITS=0 (8-bit), bits3:0 CHAN=0 (1ch)
+        // bits15:14 MULT=0 (1x — no oversampling)
+        w16(m, sd + SD_FMT, 0x0080);
         w32(m, sd + SD_CBL, audio_sz);
         w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
         w32(m, sd + SD_BDPL, dma_phys as u32);
@@ -488,7 +491,7 @@ fn hda_init() {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
         w32(m, sd + SD_CTL, (1u32 << 16) | 0x02);
-        log::info!("Sound: stream started ({} B, fmt=0x4000)", audio_sz);
+        log::info!("Sound: stream started ({} B, fmt=0x0080)", audio_sz);
     }
     HDA_READY.store(true, Ordering::Release);
     HDA_INIT_DONE.store(true, Ordering::Release);

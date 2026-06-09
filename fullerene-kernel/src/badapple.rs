@@ -1,11 +1,10 @@
 //! Bad Apple!! — shadow-art video + HDA PCM audio playback
 //!
 //! Optimised rendering path:
-//! - Pre‑computed scaling LUTs avoid per‑pixel divisions.
-//! - Volatile framebuffer writes work correctly with all memory
-//!   types (WB, WT, WC, UC).
-//! - TSC‑based frame pacing replaces spin‑loop counting.
-//! - Audio is fed at ~1 ms intervals instead of every spin iteration.
+//! - Aspect‑ratio‑preserving letterbox / pillarbox rendering.
+//! - Hard threshold for true black‑and‑white silhouette.
+//! - Non‑temporal stores (`_mm_stream_si32`) for framebuffer writes.
+//! - TSC‑based frame pacing with ~1 ms audio feed granularity.
 use alloc::vec::Vec;
 use core::arch::x86_64;
 
@@ -14,6 +13,7 @@ static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
 const PCM_BYTES_PER_SEC: u32 = 44100;
 const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_HDR_SIZE: usize = 16;
+const THRESHOLD: u8 = 128;
 
 // ── Timing ──────────────────────────────────────────────────────
 
@@ -55,37 +55,37 @@ fn decode_rle_frame(data: &[u8], buf: &mut [u8], total: usize) {
 
 // ── Framebuffer drawing ─────────────────────────────────────────
 
-/// Draw a decoded RLE frame to the framebuffer.
-///
-/// Uses non‑temporal stores (`_mm_stream_si32`) which bypass the CPU
-/// cache and write directly to a WC buffer — safe and correct for all
-/// memory types (WB, WT, WC, UC).  An `_mm_sfence()` in `flush_gpu()`
-/// drains the WC buffer so the display controller sees every pixel.
+/// Draw a decoded RLE frame into a sub‑region of the framebuffer,
+/// preserving the source aspect ratio via nearest‑neighbour scaling
+/// and applying a hard black/white threshold for true silhouette.
 ///
 /// # Safety
 /// `fb` must point to a valid framebuffer of at least `fb_stride * fb_h` u32
-/// elements.  `decode` must be at least `fw * fh` bytes.  `row_map` /
-/// `col_map` must be pre‑computed scaling look‑up tables.
+/// elements.  `decode` must be at least `fw * fh` bytes.  The destination
+/// rectangle (`off_x`, `off_y`, `draw_w`, `draw_h`) must lie entirely within
+/// the framebuffer.
 #[inline]
 unsafe fn draw_decoded_frame(
     fb: *mut u32,
     fb_stride: usize,
-    fb_h: usize,
     fw: usize,
+    fh: usize,
     decode: &[u8],
-    row_map: &[usize],
-    col_map: &[usize],
+    off_x: usize,
+    off_y: usize,
+    draw_w: usize,
+    draw_h: usize,
 ) {
-    for fy in 0..fb_h {
-        let ry = row_map[fy];
-        let src_row = &decode[ry * fw..];
-        let row_off = fy * fb_stride;
-        for fx in 0..fb_stride {
-            let rx = col_map[fx];
-            let g = src_row[rx] as u32;
+    for dy in 0..draw_h {
+        let sy = dy * fh / draw_h;
+        let src_row = &decode[sy * fw..];
+        let row_off = (off_y + dy) * fb_stride + off_x;
+        for dx in 0..draw_w {
+            let sx = dx * fw / draw_w;
+            // Hard threshold: sample >= 128 → white, else black
+            let g = if src_row[sx] >= THRESHOLD { 255u32 } else { 0u32 };
             let pixel = 0xFF00_0000u32 | (g << 16) | (g << 8) | g;
-            // non‑temporal store bypasses cache; _mm_sfence in flush_gpu drains WC buffer
-            core::arch::x86_64::_mm_stream_si32(fb.add(row_off + fx) as *mut i32, pixel as i32);
+            core::arch::x86_64::_mm_stream_si32(fb.add(row_off + dx) as *mut i32, pixel as i32);
         }
     }
 }
@@ -152,17 +152,21 @@ pub fn play_badapple() {
         return;
     }
 
-    // ── Pre‑compute scaling LUTs ─────────────────────────────
-    // Row map:  framebuffer y → RLE source row
-    let mut row_map = alloc::vec![0usize; fbh];
-    for fy in 0..fbh {
-        row_map[fy] = (fy * fh / fbh).min(fh - 1);
-    }
-    // Column map: framebuffer x → RLE source column
-    let mut col_map = alloc::vec![0usize; fbs];
-    for fx in 0..fbs {
-        col_map[fx] = (fx * fw / fbs).min(fw - 1);
-    }
+    // ── Compute letterbox / pillarbox draw region ────────────
+    // Source aspect ratio (fw : fh) is preserved.
+    let src_aspect = fw as f64 / fh as f64;
+    let dst_aspect = fbs as f64 / fbh as f64;
+    let (draw_w, draw_h, off_x, off_y) = if dst_aspect > src_aspect {
+        // Screen is wider → pillarbox (black bars left/right)
+        let h = fbh;
+        let w = ((fbh as f64 * src_aspect) as usize).max(1);
+        (w, h, (fbs.saturating_sub(w)) / 2, 0)
+    } else {
+        // Screen is taller → letterbox (black bars top/bottom)
+        let w = fbs;
+        let h = ((fbs as f64 / src_aspect) as usize).max(1);
+        (w, h, 0, (fbh.saturating_sub(h)) / 2)
+    };
 
     // ── Decode buffer ────────────────────────────────────────
     let decode_total = fw * fh;
@@ -233,7 +237,9 @@ pub fn play_badapple() {
         if fo < data.len() && no <= data.len() {
             decode_rle_frame(&data[fo..no], &mut decode_buf, decode_total);
             unsafe {
-                draw_decoded_frame(fb, fbs, fbh, fw, &decode_buf, &row_map, &col_map);
+                draw_decoded_frame(
+                    fb, fbs, fw, fh, &decode_buf, off_x, off_y, draw_w, draw_h,
+                );
             }
             crate::graphics::flush_gpu();
         }
