@@ -191,7 +191,8 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
     };
     let fb_phys = fb_config.address;
     let fb_virt = fb_phys + off;
-    let fb_pages = ((fb_config.stride as u64 * fb_config.height as u64) as usize + 4095) / 4096;
+    let fb_byte_size = (fb_config.stride * fb_config.height * (fb_config.bpp / 8)) as u64;
+    let fb_pages = ((fb_byte_size + 4095) / 4096) as usize;
 
     // 9. Map framebuffer WC
     let wc_flags = x86_64::structures::paging::PageTableFlags::WRITE_THROUGH
@@ -202,16 +203,22 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
         let mut mm = crate::memory_management::get_memory_manager().lock();
         let mm = mm.as_mut().expect("MemoryManager not initialized");
         for i in 0..fb_pages {
-            let _ = mm.safe_map_page(
-                (fb_virt + (i * 4096) as u64) as usize,
-                (fb_phys + (i * 4096) as u64) as usize,
-                wc_flags,
-            );
+            if mm
+                .safe_map_page(
+                    (fb_virt + (i * 4096) as u64) as usize,
+                    (fb_phys + (i * 4096) as u64) as usize,
+                    wc_flags,
+                )
+                .is_err()
+            {
+                log::error!("virtio_gpu: failed to map fb page {}/{}", i, fb_pages);
+                return None;
+            }
         }
     }
 
     // 10. Negotiate display
-    let fb_size = fb_config.stride * fb_config.height;
+    let fb_size = (fb_config.stride * fb_config.height * (fb_config.bpp / 8)) as u32;
     gpu.init_display(fb_config.width, fb_config.height, fb_phys, fb_size)
         .ok()?;
 

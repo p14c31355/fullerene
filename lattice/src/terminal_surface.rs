@@ -82,27 +82,25 @@ pub fn render(params: RenderParams<'_>) {
             && cursor_col.map_or(false, |cc| cc == col)
             && cursor_row.map_or(false, |rr| rr == row);
 
-        // Draw background — write directly to pixels slice (bounds checked once
-        // per cell instead of once per pixel)
+        // Draw glyph early-exit guard: skip this cell entirely if it
+        // hangs off the right or bottom edge of the surface.
+        if dx + glyph_w as usize > surf_w || dy + glyph_h as usize > surf_h {
+            continue;
+        }
+
+        // Draw background — write directly to pixels slice
         let bg = cell.bg;
         for gy in 0..glyph_h as usize {
             let row_base = (dy + gy) * surf_w;
-            if row_base + dx >= pixels.len() || dy + gy >= surf_h {
-                continue;
-            }
             let row_slice = &mut pixels[row_base + dx..row_base + dx + glyph_w as usize];
             row_slice.fill(bg);
         }
 
-        // Draw glyph pixels — write directly to pixels slice, no per‑pixel
-        // bounds check
+        // Draw glyph pixels — write directly to pixels slice
         let gl = font::glyph_fast(cell.ch);
         let fg = cell.fg;
         for gy in 0..glyph_h as usize {
             let row_base = (dy + gy) * surf_w;
-            if row_base + dx >= pixels.len() || dy + gy >= surf_h {
-                continue;
-            }
             let byte = gl.row_byte(gy as u32);
             for gx in 0..glyph_w as usize {
                 if byte & (0x80 >> gx) != 0 {
@@ -117,10 +115,8 @@ pub fn render(params: RenderParams<'_>) {
             let cur_y1 = dy + glyph_h as usize - 1;
             for &cy in &[cur_y0, cur_y1] {
                 let row_base = cy * surf_w;
-                if row_base + dx < pixels.len() && cy < surf_h {
-                    let row_slice = &mut pixels[row_base + dx..row_base + dx + glyph_w as usize];
-                    row_slice.fill(fg);
-                }
+                let row_slice = &mut pixels[row_base + dx..row_base + dx + glyph_w as usize];
+                row_slice.fill(fg);
             }
         }
     }

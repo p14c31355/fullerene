@@ -105,11 +105,7 @@ pub unsafe fn map_page_4k_l1(
             let l1_phys = frame.start_address();
             let l1_ptr = (l1_phys.as_u64() + phys_offset.as_u64()) as *mut PageTable;
             core::ptr::write_bytes(l1_ptr as *mut u8, 0, 4096);
-             let l1_ptr = (l1_phys.as_u64() + phys_offset.as_u64()) as *mut PageTable;
-             core::ptr::write_bytes(l1_ptr as *mut u8, 0, 4096);
-             let l1_ref = &mut *l1_ptr;
-             for j in 0..512u64 {
-                 l1_ref[j as usize].set_addr(PhysAddr::new(huge_page_phys_base + j * 4096), flags);
+            let l1_ref = &mut *l1_ptr;
             for j in 0..512u64 {
                 l1_ref[j as usize].set_addr(PhysAddr::new(huge_page_phys_base + j * 4096), flags);
             }

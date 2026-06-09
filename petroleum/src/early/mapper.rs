@@ -101,12 +101,10 @@ impl EarlyMapper {
             let page = Page::<Size4KiB>::containing_address(virt);
             let frame = PhysFrame::containing_address(phys);
             // SAFETY: The caller ensures safety.
-            unsafe {
-                mapper
-                    .map_to(page, frame, flags, frame_allocator)
-                    .map_err(|_| "map_4k failed")?
-                    .flush();
-            }
+            mapper
+                .map_to(page, frame, flags, frame_allocator)
+                .map_err(|_| "map_4k failed")?
+                .flush();
             Ok(())
         }
     }
@@ -162,8 +160,6 @@ impl EarlyMapper {
                     .map_to(page, frame, flags_2mb, frame_allocator)
                     .map_err(|_| "map_2mb failed")?
                     .flush();
-             }
-             Ok(())
             }
             Ok(())
         }

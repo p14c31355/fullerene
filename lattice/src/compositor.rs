@@ -133,10 +133,14 @@ const fn build_minimize_button() -> [u32; 14 * 14] {
 fn blit_button(fb: &mut [u32], fbw: u32, cache: &[u32; 14 * 14], bx: i32, by: i32) {
     let fb_w = fbw as usize;
     let fb_len = fb.len();
+    let fbh = (fb_len / fb_w) as i32;
+    if fbh == 0 {
+        return;
+    }
     let fbw_i32 = fbw as i32;
     for row in 0..14 {
         let da = by + row;
-        if da < 0 || da >= fbw_i32 {
+        if da < 0 || da >= fbh {
             continue;
         }
         let row_base = (da as usize) * fb_w;

@@ -184,7 +184,7 @@ pub fn init() {
     }
 }
 
-unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload: u8) -> u32 {
+unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload: u16) -> u32 {
     let corb_v = *HDA_CORB_V.lock();
     let rirb_v = *HDA_RIRB_V.lock();
     if corb_v == 0 || rirb_v == 0 {
@@ -193,7 +193,17 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     let corb_n = *HDA_CORB_ENTRIES.lock();
     let corb = corb_v as *mut u32;
     let rirb = rirb_v as *mut u64;
-    let cmd = ((codec as u32) << 28) | ((node as u32) << 20) | (verb << 8) | (payload as u32);
+
+    // 4-bit verbs (e.g. VERB_SET_FMT=0x002, VERB_SET_AMP_GAIN_MUTE=0x003):
+    //   Verb ID → bits [19:16], 16-bit payload → bits [15:0]
+    // 12-bit verbs (e.g. VERB_GET_PARAM=0xF00):
+    //   Verb ID → bits [19:8], 8-bit payload → bits [7:0]
+    let cmd_val = if verb > 0xF {
+        (verb << 8) | (payload as u32 & 0xFF)
+    } else {
+        (verb << 16) | (payload as u32 & 0xFFFF)
+    };
+    let cmd = ((codec as u32) << 28) | ((node as u32) << 20) | cmd_val;
     for _ in 0..1000 {
         let wp = r16(mmio, CORBWP) as usize;
         let rp = r16(mmio, CORBRP) as usize & 0xFF;
@@ -227,7 +237,7 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
 }
 
 unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
-    let sub = corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT);
+    let sub = corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
     if sub == 0xFFFF_FFFF {
         return None;
     }
@@ -240,7 +250,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     log::info!("Sound: root children {}-{}", start, end);
     let mut afg: Option<u8> = None;
     for n in start..=end {
-        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP);
+        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16);
         if cap == 0xFFFF_FFFF {
             continue;
         }
@@ -251,7 +261,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
         }
     }
     let afg = afg?;
-    let sub = corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT);
+    let sub = corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
     if sub == 0xFFFF_FFFF {
         return None;
     }
@@ -265,7 +275,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     let mut dac: Option<u8> = None;
     let mut pin: Option<u8> = None;
     for n in start..=end {
-        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP);
+        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16);
         if cap == 0xFFFF_FFFF {
             continue;
         }
@@ -284,21 +294,21 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
 }
 
 unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8) {
-    let ac = corb_send_verb(mmio, codec, dac, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP);
+    let ac = corb_send_verb(mmio, codec, dac, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
     let steps = ac as u8 & 0x7F;
     let gain = if steps > 0 { steps / 2 } else { 0 };
-    corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, 0x70 | gain);
+    corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, (0x70 | gain) as u16);
     // 8-bit signed mono at 44100 Hz:
     // bit[7] = 1 → signed, bits[6:4] = 0 → 8-bit container,
     // bit[3:0] = 0 → 1 channel
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x80);
-    corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream);
-    let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP);
+    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x80u16);
+    corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
+    let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
     let psteps = pa as u8 & 0x7F;
     let pgain = if psteps > 0 { psteps / 2 } else { 0 };
-    corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE, 0x70 | pgain);
-    corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0xC0);
-    let cap = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP);
+    corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE, (0x70 | pgain) as u16);
+    corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0xC0u16);
+    let cap = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16);
     if cap != 0xFFFF_FFFF && (cap >> 16) & 1 != 0 {
         corb_send_verb(mmio, codec, pin, VERB_SET_EAPD, 0x02);
     }
@@ -546,7 +556,9 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     if last == write_off {
         return 0;
     }
-    HDA_LAST_LPIB.store(write_off as u64, Ordering::Relaxed);
+    // Track the actual DMA position so hda_poll/hda_poll_block can
+    // reliably detect when the controller crosses the half-buffer boundary.
+    HDA_LAST_LPIB.store(lpib as u64, Ordering::Relaxed);
 
     let write_max = half as usize;
     let n = samples.len().min(write_max);

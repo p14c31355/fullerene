@@ -17,23 +17,13 @@ const THRESHOLD: u8 = 128;
 
 // ── Timing ──────────────────────────────────────────────────────
 
-/// Calibrate TSC ticks per millisecond by spinning for ~100 ms.
+/// Return a fixed TSC ticks-per-millisecond estimate (2.5 GHz).
+///
+/// Accurate calibration requires an external hardware timer (PIT / APIC);
+/// without one we simply assume a 2.5 GHz clock to avoid wasting ~100 ms
+/// spinning at boot for a value that always rounds to the same constant.
 fn calibrate_tsc_per_ms() -> u64 {
-    const TSC_CAL_WINDOW: u64 = 250_000_000; // ≈ 100 ms @ 2.5 GHz
-    const FALLBACK: u64 = 2_500_000; // assume 2.5 GHz
-    unsafe {
-        x86_64::_mm_lfence();
-    }
-    let start = unsafe { x86_64::_rdtsc() };
-    loop {
-        if unsafe { x86_64::_rdtsc() }.wrapping_sub(start) >= TSC_CAL_WINDOW {
-            break;
-        }
-        core::hint::spin_loop();
-    }
-    let elapsed = unsafe { x86_64::_rdtsc() }.wrapping_sub(start);
-    let per_ms = elapsed / 100;
-    if per_ms == 0 { FALLBACK } else { per_ms }
+    2_500_000 // assume 2.5 GHz
 }
 
 // ── RLE decode ──────────────────────────────────────────────────
@@ -260,7 +250,7 @@ pub fn play_badapple() {
             let now = unsafe { x86_64::_rdtsc() };
             if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
                 last_audio_feed = now;
-                crate::sound::hda_feed_pcm(&BADAPPLE_PCM[pcm_off..], &mut pcm_off, pcm_total, HALF);
+                crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             }
             core::hint::spin_loop();
         }
@@ -271,7 +261,7 @@ pub fn play_badapple() {
         let drain_deadline =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < drain_deadline {
-            crate::sound::hda_feed_pcm(&BADAPPLE_PCM[pcm_off..], &mut pcm_off, pcm_total, HALF);
+            crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             if crate::sound::hda_poll_block(Some(audio_feed_tsc)) {
                 continue;
             }
