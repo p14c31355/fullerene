@@ -307,10 +307,11 @@ fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
     Glyph { rows }
 }
 
-/// Fast glyph pixel lookup — avoids per‑call font selection overhead.
+/// Single glyph pixel lookup with per-call font selection.
 ///
-/// For repeated pixel queries on the same character (e.g. text rendering),
-/// prefer [`get_glyph_pixel`] which caches the glyph reference.
+/// For repeated pixel queries on the same character (e.g. rendering a glyph
+/// row-by-row), prefer [`glyph_fast`] to lock the font mutex once instead
+/// of on every pixel access.
 #[inline]
 pub fn get_glyph_pixel(ch: u8, row: u32, col: u32) -> bool {
     glyph(ch).pixel(row, col)
