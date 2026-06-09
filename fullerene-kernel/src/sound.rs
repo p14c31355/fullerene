@@ -42,6 +42,9 @@ static HDA_AUDIO_OFF: Mutex<u32>=Mutex::new(0); static HDA_AUDIO_SZ: Mutex<u32>=
 static HDA_HALF: Mutex<u32>=Mutex::new(0); static HDA_SD: Mutex<usize>=Mutex::new(0);
 static HDA_LAST_LPIB: AtomicU64=AtomicU64::new(u64::MAX); static HDA_CORB_V: Mutex<usize>=Mutex::new(0);
 static HDA_RIRB_V: Mutex<usize>=Mutex::new(0); static HDA_INIT_DONE: AtomicBool=AtomicBool::new(false);
+/// Actual CORB entry count (derived from GCAP CORBSZCAP; 2, 16, or 256).
+/// Used by `corb_send_verb` for circular‑buffer wrap.
+static HDA_CORB_ENTRIES: Mutex<usize> = Mutex::new(256);
 
 unsafe fn r32(m:*mut u8, o:usize)->u32{core::ptr::read_volatile(m.add(o) as *const u32)}
 unsafe fn w32(m:*mut u8, o:usize, v:u32){core::ptr::write_volatile(m.add(o) as *mut u32, v)}
@@ -57,16 +60,28 @@ fn alloc_dma_pages(pages:usize)->Option<(u64,*mut u8)>{
     let virt=(phys+off) as *mut u8; unsafe{core::ptr::write_bytes(virt,0,pages*4096);} Some((phys,virt))
 }
 
+/// Probe for HDA controller across all PCI buses.
+///
+/// On real hardware (InsydeH2O) the HDA controller may reside on a bus other
+/// than 0, so we iterate bus 0..=255, skipping buses that don't exist.
 fn probe_hda()->Option<(u8,u8,u8,u64)>{
-    for d in 0..=31u8{
-        let Some(dev)=PciDevice::new(0,d,0) else{continue};
-        if dev.class_code!=0x04||dev.subclass!=0x03{continue}
-        let bar0=dev.read_bar(0)?; dev.enable_memory_access();
-        use nitrogen::pci::PciConfigSpace;
-        let Some(mut cfg)=PciConfigSpace::read_from_device(0,d,0) else{continue};
-        cfg.command|=0x0004; let v=(cfg.status as u32)<<16|(cfg.command as u32);
-        PciConfigSpace::write_config_dword(&mut cfg,0,d,0,0x04,v);
-        return Some((0,d,0,bar0));
+    use nitrogen::pci::PciConfigSpace;
+    /// Check whether a PCI bus exists by probing device 0 function 0.
+    fn bus_exists(bus:u8)->bool{
+        PciConfigSpace::read_config_word(bus,0,0,0)!=0xFFFF
+    }
+    for bus in 0..=255u8{
+        if bus>0&&!bus_exists(bus){continue}
+        for d in 0..=31u8{
+            let Some(dev)=PciDevice::new(bus,d,0) else{continue};
+            if dev.class_code!=0x04||dev.subclass!=0x03{continue}
+            let bar0=dev.read_bar(0)?; dev.enable_memory_access();
+            let Some(mut cfg)=PciConfigSpace::read_from_device(bus,d,0) else{continue};
+            cfg.command|=0x0004; let v=(cfg.status as u32)<<16|(cfg.command as u32);
+            PciConfigSpace::write_config_dword(&mut cfg,bus,d,0,0x04,v);
+            log::info!("Sound: HDA found at {:04x}:{:02x}.{}, MMIO=0x{:x}",bus,d,0,bar0);
+            return Some((bus,d,0,bar0));
+        }
     }None
 }
 
@@ -78,11 +93,12 @@ pub fn init(){match probe_hda(){
 unsafe fn corb_send_verb(mmio:*mut u8,codec:u8,node:u8,verb:u32,payload:u8)->u32{
     let corb_v=*HDA_CORB_V.lock(); let rirb_v=*HDA_RIRB_V.lock();
     if corb_v==0||rirb_v==0{return 0xFFFF_FFFF;}
+    let corb_n=*HDA_CORB_ENTRIES.lock();
     let corb=corb_v as *mut u32; let rirb=rirb_v as *mut u64;
     let cmd=((codec as u32)<<28)|((node as u32)<<20)|(verb<<8)|(payload as u32);
     for _ in 0..1000{let wp=r16(mmio,CORBWP) as usize; let rp=r16(mmio,CORBRP) as usize&0xFF;
-        if (wp+1)%CORB_ENTRIES!=rp{break} core::hint::spin_loop();}
-    let wp=r16(mmio,CORBWP) as usize; let next_wp=(wp+1)%CORB_ENTRIES;
+        if (wp+1)%corb_n!=rp{break} core::hint::spin_loop();}
+    let wp=r16(mmio,CORBWP) as usize; let next_wp=(wp+1)%corb_n;
     core::ptr::write_volatile(corb.add(next_wp),cmd); w16(mmio,CORBWP,next_wp as u16);
     let rirb_wp_before=r16(mmio,RIRBWP)&0xFF;
     for _ in 0..50_000{let rirb_wp=r16(mmio,RIRBWP)&0xFF; if rirb_wp!=rirb_wp_before{
@@ -113,7 +129,8 @@ unsafe fn configure_codec(mmio:*mut u8,codec:u8,dac:u8,pin:u8,stream:u8){
     let ac=corb_send_verb(mmio,codec,dac,VERB_GET_PARAM,PARAM_OUTPUT_AMP_CAP);
     let steps=ac as u8&0x7F; let gain=if steps>0{steps/2}else{0};
     corb_send_verb(mmio,codec,dac,VERB_SET_AMP_GAIN_MUTE,0x70|gain);
-    corb_send_verb(mmio,codec,dac,VERB_SET_FMT,0x90);
+    // 16-bit stereo: bits 7:4 = 0x1 (16-bit), bits 3:0 = 0x1 (2ch stereo)
+    corb_send_verb(mmio,codec,dac,VERB_SET_FMT,0x11);
     corb_send_verb(mmio,codec,dac,VERB_SET_STREAM,stream);
     let pa=corb_send_verb(mmio,codec,pin,VERB_GET_PARAM,PARAM_OUTPUT_AMP_CAP);
     let psteps=pa as u8&0x7F; let pgain=if psteps>0{psteps/2}else{0};
@@ -141,11 +158,42 @@ fn hda_init(){
     *HDA_SD.lock()=SD_BASE+(iss as usize)*SD_SIZE;
     let Some((corb_phys,corb_virt))=alloc_dma_pages(1) else{return}; *HDA_CORB_V.lock()=corb_virt as usize;
     let Some((rirb_phys,rirb_virt))=alloc_dma_pages(1) else{return}; *HDA_RIRB_V.lock()=rirb_virt as usize;
-    unsafe{let m=virt as *mut u8; w32(m,CORBLBASE,corb_phys as u32); w32(m,CORBUBASE,(corb_phys>>32) as u32);
+    // ── CORB size encoding ────────────────────────────────────
+    // GCAP bit 0 → 64-bit address support; bits 7:4 → CORBSZCAP
+    // We request 256 entries → CORBSIZE = 10b (bits 9:8 of CORBCTL).
+    // But first we must ensure the controller supports it; if not,
+    // fall back to 2 entries (00b) or 16 entries (01b).
+    let gcap=unsafe{r16(virt as *mut u8,GCAP+2) as u32 | ((r16(virt as *mut u8,GCAP) as u32)<<16)};
+    // Full 32-bit GCAP.  CORB size capability in bits 7:4.
+    let corb_szcap=(gcap>>4)&0xF; // 0=2, 1=16, 2=256 entries
+    // By default assume 256 entries.  If the controller does not
+    // support that, fall back to 16 entries.
+    let corb_sz:u32=if corb_szcap>=2{2}else if corb_szcap>=1{1}else{0};
+    let corb_sz_bits=corb_sz<<8; // CORBSIZE in bits 9:8
+    // CORB entries count derived from size code
+    let corb_n:usize=match corb_sz{0=>2,1=>16,_=>256};
+    // RIRB uses the same size field (bits 9:8 of RIRBCTL);
+    // the controller only supports a single size for both.
+    let rirb_sz_bits=corb_sz_bits;
+    // Store for corb_send_verb
+    *HDA_CORB_ENTRIES.lock()=corb_n;
+
+    unsafe{let m=virt as *mut u8;
+        // Stop CORB/RIRB DMA engines before programming
+        w32(m,CORBCTL,0); w32(m,RIRBCTL,0);
+        w32(m,CORBLBASE,corb_phys as u32); w32(m,CORBUBASE,(corb_phys>>32) as u32);
+        // CORB Read Pointer Reset via bit 15, then clear RP/WP
         w16(m,CORBRP,0x8000); for _ in 0..200{core::hint::spin_loop();} w16(m,CORBRP,0); w16(m,CORBWP,0);
-        w32(m,CORBCTL,0x02); w32(m,RIRBLBASE,rirb_phys as u32); w32(m,RIRBUBASE,(rirb_phys>>32) as u32);
-        w16(m,RIRBWP,0x8000); for _ in 0..200{core::hint::spin_loop();} w16(m,RIRBWP,0);
-        w32(m,RIRBCTL,0x02); log::info!("Sound: CORB/RIRB enabled");}
+        // Enable CORB DMA with the correct size
+        w32(m,CORBCTL,0x02|corb_sz_bits);
+        w32(m,RIRBLBASE,rirb_phys as u32); w32(m,RIRBUBASE,(rirb_phys>>32) as u32);
+        // RIRBWP reset: set bit 15 (RIRBRST) then clear
+        w16(m,RIRBWP,0x8000); for _ in 0..200{core::hint::spin_loop();}
+        // Read back to confirm reset is released, then zero WP
+        if r16(m,RIRBWP)&0x8000!=0{w16(m,RIRBWP,0);}
+        // Enable RIRB DMA with the correct size
+        w32(m,RIRBCTL,0x02|rirb_sz_bits);
+        log::info!("Sound: CORB/RIRB enabled (size={} entries)",corb_n);}
     let codec_addr:u8=0;
     unsafe{if let Some((dac,pin))=discover_codec(virt as *mut u8,codec_addr){
         configure_codec(virt as *mut u8,codec_addr,dac,pin,1);}else{log::warn!("Sound: no codec widgets");}}
@@ -158,10 +206,24 @@ fn hda_init(){
         *bdl.add(0)=BdlEntry{addr_lo:audio_phys as u32,addr_hi:(audio_phys>>32) as u32,length:half,flags:0};
         *bdl.add(1)=BdlEntry{addr_lo:(audio_phys+half as u64) as u32,addr_hi:((audio_phys+half as u64)>>32) as u32,length:half,flags:0};}
     unsafe{let m=virt as *mut u8; let sd=*HDA_SD.lock();
+        // Stop any previous stream, then clear status
+        w32(m,sd+SD_CTL,0); for _ in 0..2000{core::hint::spin_loop();}
+        w8(m,sd+SD_STS,0xFF); // clear all status bits (WC)
+        // Reset stream
         w32(m,sd+SD_CTL,0x01); for _ in 0..2000{core::hint::spin_loop();}
-        w8(m,sd+SD_STS,0xFF); w16(m,sd+SD_FMT,0x0181); w32(m,sd+SD_CBL,audio_sz);
-        w16(m,sd+SD_LVI,BDL_ENTRIES as u16-1); w32(m,sd+SD_BDPL,dma_phys as u32); w32(m,sd+SD_BDPU,(dma_phys>>32) as u32);
-        w32(m,sd+SD_CTL,(1u32<<16)|0x02); log::info!("Sound: stream started ({} B)",audio_sz);}
+        // Wait for reset to complete
+        for _ in 0..50000{if r32(m,sd+SD_CTL)&0x01==0{break}core::hint::spin_loop();}
+        // Program format, BDL and stream settings
+        w8(m,sd+SD_STS,0xFF);
+        w16(m,sd+SD_FMT,0x0281); // 16-bit stereo 44.1 kHz (bits 14:8=0x02=16-bit)
+        w32(m,sd+SD_CBL,audio_sz);
+        w16(m,sd+SD_LVI,BDL_ENTRIES as u16-1);
+        w32(m,sd+SD_BDPL,dma_phys as u32); w32(m,sd+SD_BDPU,(dma_phys>>32) as u32);
+        // Store fence: ensure BDL / DMA buffer writes are visible
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
+        w32(m,sd+SD_CTL,(1u32<<16)|0x02);
+        log::info!("Sound: stream started ({} B, fmt=0x0281)",audio_sz);}
     HDA_READY.store(true,Ordering::Release); HDA_INIT_DONE.store(true,Ordering::Release);
 }
 
