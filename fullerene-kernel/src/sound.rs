@@ -128,14 +128,32 @@ fn alloc_dma_pages(pages: usize) -> Option<(u64, *mut u8)> {
 
 /// Probe for HDA controller across all PCI buses.
 ///
-/// On real hardware (InsydeH2O) the HDA controller may reside on a bus other
-/// than 0, so we iterate bus 0..=255, skipping buses that don't exist.
+/// On real hardware (InsydeH2O) there are often two HDA controllers:
+///
+/// | BDF       | Vendor:Device | Role                      |
+/// |-----------|---------------|---------------------------|
+/// | 00:03.0   | 8086:160c     | Intel Display Audio (HDMI)|
+/// | 00:1b.0   | 8086:9ca0     | Wildcat Point-LP (PCH)    |
+///
+/// The Display Audio controller appears first during bus scan (device 3 <
+/// device 27), but it has no codec attached → STATESTS bit 0 is 0.  We
+/// therefore enumerate **all** HDA controllers, log BAR0 / GCAP / STATESTS
+/// for each, and prefer the one with a connected codec (STATESTS & 0x0001).
 fn probe_hda() -> Option<(u8, u8, u8, u64)> {
     use nitrogen::pci::PciConfigSpace;
+    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+
     /// Check whether a PCI bus exists by probing device 0 function 0.
     fn bus_exists(bus: u8) -> bool {
         PciConfigSpace::read_config_word(bus, 0, 0, 0) != 0xFFFF
     }
+
+    // Accumulate the "last seen" HDA as a fallback when no codec-connected
+    // candidate is found.  Because we iterate device numbers in ascending
+    // order, the last entry corresponds to the highest device number
+    // (i.e. the PCH HDA rather than the CPU Display Audio).
+    let mut fallback: Option<(u8, u8, u8, u64)> = None;
+
     for bus in 0..=255u8 {
         if bus > 0 && !bus_exists(bus) {
             continue;
@@ -147,7 +165,9 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             if dev.class_code != 0x04 || dev.subclass != 0x03 {
                 continue;
             }
-            let bar0 = dev.read_bar(0)?;
+            let Some(bar0) = dev.read_bar(0) else {
+                continue;
+            };
             dev.enable_memory_access();
             let Some(mut cfg) = PciConfigSpace::read_from_device(bus, d, 0) else {
                 continue;
@@ -155,17 +175,41 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             cfg.command |= 0x0004;
             let v = (cfg.status as u32) << 16 | (cfg.command as u32);
             PciConfigSpace::write_config_dword(&mut cfg, bus, d, 0, 0x04, v);
+
+            // ── Quick MMIO probe ──────────────────────────────────
+            let mmio = (bar0 + off) as *mut u8;
+            let gcap = unsafe { r32(mmio, GCAP) };
+            let states = unsafe { r16(mmio, STATESTS) };
+
             log::info!(
-                "Sound: HDA found at {:04x}:{:02x}.{}, MMIO=0x{:x}",
-                bus,
-                d,
-                0,
-                bar0
+                "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x}",
+                bus, d, 0,
+                dev.vendor_id, dev.device_id,
+                bar0,
+                gcap,
+                states
             );
-            return Some((bus, d, 0, bar0));
+
+            // Codec #0 connected → this is the real audio controller.
+            if states & 0x0001 != 0 {
+                log::info!(
+                    "Sound: selecting HDA {:04x}:{:02x}.{} (codec connected)",
+                    bus, d, 0
+                );
+                return Some((bus, d, 0, bar0));
+            }
+
+            fallback = Some((bus, d, 0, bar0));
         }
     }
-    None
+
+    if let Some(ref b) = fallback {
+        log::info!(
+            "Sound: falling back to HDA {:04x}:{:02x}.{} (no codec detected on any HDA)",
+            b.0, b.1, b.2
+        );
+    }
+    fallback
 }
 
 pub fn init() {
