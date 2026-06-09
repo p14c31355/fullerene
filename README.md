@@ -4,7 +4,7 @@
 
 ![](docs/assets/fullerene_202605210700_desktop.png)
 
-[development_history](docs/assets)
+[development_history](docs/history)
 
 ---
 
