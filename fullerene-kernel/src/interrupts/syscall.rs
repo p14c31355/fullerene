@@ -62,11 +62,15 @@ pub extern "C" fn syscall_entry() {
         "push rsp",
         "call handle_syscall",
         "add rsp, 8",
+        // Save return value before popping CR3
+        "mov r12, rax",
         // Restore user CR3 and RFLAGS/RIP
         "pop r11",
         "pop rcx",
         "pop rax",
         "mov cr3, rax",
+        // Restore return value before returning to user
+        "mov rax, r12",
         "swapgs",
         "sysretq"
     );

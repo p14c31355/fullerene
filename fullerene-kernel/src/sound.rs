@@ -333,5 +333,10 @@ pub fn hda_feed_pcm(pcm: &[u8], pcm_off: &mut usize, pcm_total: usize, half: usi
 
 /// Feed silence into the HDA half‑buffer.
 pub fn hda_feed_silence(half: usize) -> usize {
-    hda_feed_samples(&[0u8; 16368][..half.min(16368)])
+    // Allocate a zeroed buffer on the stack sized to match the half buffer.
+    // The maximum half size is derived from DMA_BUF_SIZE minus BDL overhead:
+    // audio_sz = DMA_BUF_SIZE - bdl_sz = 32768 - 64 = 32704, half = audio_sz/2 = 16352.
+    const MAX_SILENCE: usize = 16352;
+    let buf = [0u8; MAX_SILENCE];
+    hda_feed_samples(&buf[..half.min(MAX_SILENCE)])
 }

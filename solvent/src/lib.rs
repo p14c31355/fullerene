@@ -1280,9 +1280,12 @@ fn runtime_tick_no_fb() {
     chrono_tick(now);
     process_events();
 
-    let do_render = RUNTIME.lock().as_ref().map_or(false, |r| r.frame_due);
+    let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
+        let due = r.frame_due;
+        r.frame_due = false;
+        due
+    });
     if do_render {
-        RUNTIME.lock().as_mut().map(|r| r.frame_due = false);
         if let Some(render_fn) = *RENDER_FN.lock() {
             render_fn();
         }
@@ -1302,9 +1305,12 @@ where
     chrono_tick(now);
     process_events();
 
-    let do_render = RUNTIME.lock().as_ref().map_or(false, |r| r.frame_due);
+    let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
+        let due = r.frame_due;
+        r.frame_due = false;
+        due
+    });
     if do_render {
-        RUNTIME.lock().as_mut().map(|r| r.frame_due = false);
         render(framebuffer_fn);
     }
 }

@@ -120,6 +120,8 @@ pub struct Process {
     pub exit_code: Option<i32>,
     /// Parent process ID (for wait() and signal propagation)
     pub parent_id: Option<ProcessId>,
+    /// Opaque data for async task futures (used by task.rs spawn/entry)
+    pub task_data: u64,
 }
 
 impl Process {
@@ -140,6 +142,7 @@ impl Process {
             is_user,
             exit_code: None,
             parent_id: None, // Will be set by fork
+            task_data: 0,
         }
     }
 
@@ -322,13 +325,16 @@ pub fn init(heap_start: usize, heap_end: usize) {
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
 
-        // Initialize static process using Box::from_raw on the static context
+        // Take ownership of static context via Box::from_raw (no heap allocation)
+        let ctx_box: Box<ProcessContext> = Box::from_raw(ctx_ptr);
+
+        // Initialize static process, reusing static storage
         let proc_ptr = core::ptr::addr_of_mut!(IDLE_PROCESS).cast::<Process>();
         proc_ptr.write(Process {
             id: pid,
             name: "idle",
             state: ProcessState::Running,
-            context: Box::new(unsafe { core::ptr::read(ctx_ptr) }),
+            context: ctx_box,
             page_table_phys_addr: PhysAddr::new(0),
             page_table: None,
             kernel_stack: VirtAddr::new(0),
@@ -337,10 +343,13 @@ pub fn init(heap_start: usize, heap_end: usize) {
             is_user: false,
             exit_code: None,
             parent_id: None,
+            task_data: 0,
         });
 
+        // Take ownership of static process via Box::from_raw
+        let proc_box: Box<Process> = Box::from_raw(proc_ptr);
         PROCESS_MANAGER
-            .add(Box::new(unsafe { core::ptr::read(proc_ptr) }))
+            .add(proc_box)
             .expect("Failed to add idle process");
     }
     CURRENT_PROCESS.store(1, Ordering::SeqCst);
@@ -670,7 +679,9 @@ pub fn cleanup_terminated_processes() {
     PROCESS_MANAGER.cleanup();
 }
 // Test process functions (only available in test builds)
+// Called by test infrastructure via entry point references.
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn test_process_main() {
     // Use syscall helpers for reduced code duplication
     let message = b"Hello from test user process!\n";

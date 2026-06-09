@@ -99,10 +99,13 @@ fn write_u64_fixed(buf: &mut [u8; 32], pos: &mut usize, mut v: u64, min_digits: 
 pub fn notify_frame_presented(now_tick: u64) {
     let fc = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     let last = LAST_FPS_TICK.load(Ordering::Relaxed);
-    if now_tick > last && (fc % 30 == 0) {
-        let delta = now_tick.saturating_sub(last);
-        if delta > 0 {
-            let fps = 30u64.saturating_mul(100).saturating_div(delta);
+    // Update FPS every FRAMES_PER_UPDATE frames, but also enforce a minimum
+    // time between updates so low-framerate environments don't show stale data.
+    const FRAMES_PER_UPDATE: u64 = 30;
+    if now_tick > last && (fc as u64 % FRAMES_PER_UPDATE == 0) {
+        let ticks_since = now_tick.saturating_sub(last);
+        if ticks_since > 0 {
+            let fps = FRAMES_PER_UPDATE.saturating_mul(100).saturating_div(ticks_since);
             CURRENT_FPS_X100.store(fps, Ordering::Relaxed);
         }
         LAST_FPS_TICK.store(now_tick, Ordering::Relaxed);
