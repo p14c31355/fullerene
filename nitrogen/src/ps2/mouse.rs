@@ -72,7 +72,8 @@ fn mouse_port_present() -> bool {
             let mouse_disabled = (cfg & 0x20) != 0;
             log::info!(
                 "[nitrogen] PS/2 controller config byte: {:#04x}, mouse_clock_disabled={}",
-                cfg, mouse_disabled
+                cfg,
+                mouse_disabled
             );
             !mouse_disabled
         }

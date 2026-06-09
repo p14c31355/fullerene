@@ -167,49 +167,52 @@ pub unsafe fn map_range_with_huge_pages<
     behavior: &str,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>
 {
-    use x86_64::structures::paging::{Mapper, Page, PhysFrame, Size2MiB, Size4KiB};
+    unsafe {
+        use x86_64::structures::paging::{Mapper, Page, PhysFrame, Size2MiB, Size4KiB};
 
-    let mut current_page = 0;
-    while current_page < pages {
-        let p_addr = phys + current_page * 4096;
-        let v_addr = virt + current_page * 4096;
+        let mut current_page = 0;
+        while current_page < pages {
+            let p_addr = phys + current_page * 4096;
+            let v_addr = virt + current_page * 4096;
 
-        // Try 2 MiB huge page using Size2MiB mapper (not Size4KiB with HUGE_PAGE flag,
-        // because x86_64 crate's set_frame() asserts HUGE_PAGE flag is not set for Size4KiB)
-        if p_addr % 0x200000 == 0 && v_addr % 0x200000 == 0 && (current_page + 512 <= pages) {
-            let page = Page::<Size2MiB>::containing_address(x86_64::VirtAddr::new(v_addr));
-            let frame = PhysFrame::<Size2MiB>::containing_address(x86_64::PhysAddr::new(p_addr));
+            // Try 2 MiB huge page using Size2MiB mapper (not Size4KiB with HUGE_PAGE flag,
+            // because x86_64 crate's set_frame() asserts HUGE_PAGE flag is not set for Size4KiB)
+            if p_addr % 0x200000 == 0 && v_addr % 0x200000 == 0 && (current_page + 512 <= pages) {
+                let page = Page::<Size2MiB>::containing_address(x86_64::VirtAddr::new(v_addr));
+                let frame =
+                    PhysFrame::<Size2MiB>::containing_address(x86_64::PhysAddr::new(p_addr));
+                match mapper.map_to(page, frame, flags, allocator) {
+                    Ok(flush) => {
+                        flush.flush();
+                        current_page += 512;
+                        continue;
+                    }
+                    Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                        current_page += 512;
+                        continue;
+                    }
+                    Err(_) => {} // Fall through to 4K mapping
+                }
+            }
+
+            // 4 KiB page
+            let page = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(v_addr));
+            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr));
             match mapper.map_to(page, frame, flags, allocator) {
-                Ok(flush) => {
-                    flush.flush();
-                    current_page += 512;
-                    continue;
-                }
+                Ok(flush) => flush.flush(),
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    current_page += 512;
-                    continue;
+                    x86_64::instructions::tlb::flush(page.start_address());
                 }
-                Err(_) => {} // Fall through to 4K mapping
-            }
-        }
-
-        // 4 KiB page
-        let page = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(v_addr));
-        let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(p_addr));
-        match mapper.map_to(page, frame, flags, allocator) {
-            Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                x86_64::instructions::tlb::flush(page.start_address());
-            }
-            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
-            Err(e) => {
-                if behavior == "panic" {
-                    panic!("Mapping error: {:?}", e);
+                Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
+                Err(e) => {
+                    if behavior == "panic" {
+                        panic!("Mapping error: {:?}", e);
+                    }
+                    return Err(e);
                 }
-                return Err(e);
             }
+            current_page += 1;
         }
-        current_page += 1;
+        Ok(())
     }
-    Ok(())
 }

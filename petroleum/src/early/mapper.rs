@@ -66,10 +66,12 @@ impl EarlyMapper {
     /// # Safety
     /// CR3 must point to a valid page table that is accessible through `phys_offset`.
     pub unsafe fn active_l4_table(&self) -> &'static mut PageTable {
-        let (l4_frame, _) = x86_64::registers::control::Cr3::read();
-        let l4_phys = l4_frame.start_address().as_u64();
-        let l4_virt = l4_phys + self.phys_offset.as_u64();
-        &mut *(l4_virt as *mut PageTable)
+        unsafe {
+            let (l4_frame, _) = x86_64::registers::control::Cr3::read();
+            let l4_phys = l4_frame.start_address().as_u64();
+            let l4_virt = l4_phys + self.phys_offset.as_u64();
+            &mut *(l4_virt as *mut PageTable)
+        }
     }
 
     /// Create an `OffsetPageTable` mapper for the active L4 table.
@@ -77,7 +79,7 @@ impl EarlyMapper {
     /// # Safety
     /// Same as `active_l4_table`.
     pub unsafe fn offset_mapper(&self) -> OffsetPageTable<'static> {
-        OffsetPageTable::new(self.active_l4_table(), self.phys_offset)
+        unsafe { OffsetPageTable::new(self.active_l4_table(), self.phys_offset) }
     }
 
     /// Map a single 4 KiB page at the given virtual address to the given physical address.
@@ -94,17 +96,17 @@ impl EarlyMapper {
         flags: PageTableFlags,
         frame_allocator: &mut EarlyFrameAllocator,
     ) -> Result<(), &'static str> {
-        let mut mapper = self.offset_mapper();
-        let page = Page::<Size4KiB>::containing_address(virt);
-        let frame = PhysFrame::containing_address(phys);
-        // SAFETY: The caller ensures safety.
         unsafe {
+            let mut mapper = self.offset_mapper();
+            let page = Page::<Size4KiB>::containing_address(virt);
+            let frame = PhysFrame::containing_address(phys);
+            // SAFETY: The caller ensures safety.
             mapper
                 .map_to(page, frame, flags, frame_allocator)
                 .map_err(|_| "map_4k failed")?
                 .flush();
+            Ok(())
         }
-        Ok(())
     }
 
     /// Map a range of 4 KiB pages.
@@ -119,12 +121,14 @@ impl EarlyMapper {
         flags: PageTableFlags,
         frame_allocator: &mut EarlyFrameAllocator,
     ) -> Result<(), &'static str> {
-        for i in 0..page_count {
-            let virt = VirtAddr::new(virt_start.as_u64() + i * 4096);
-            let phys = PhysAddr::new(phys_start.as_u64() + i * 4096);
-            self.map_4k(virt, phys, flags, frame_allocator)?;
+        unsafe {
+            for i in 0..page_count {
+                let virt = VirtAddr::new(virt_start.as_u64() + i * 4096);
+                let phys = PhysAddr::new(phys_start.as_u64() + i * 4096);
+                self.map_4k(virt, phys, flags, frame_allocator)?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     /// Map a range of 2 MiB huge pages.
@@ -141,23 +145,24 @@ impl EarlyMapper {
         flags: PageTableFlags,
         frame_allocator: &mut EarlyFrameAllocator,
     ) -> Result<(), &'static str> {
-        let flags_2mb = flags | PageTableFlags::HUGE_PAGE;
-        for i in 0..page_count {
-            let virt = VirtAddr::new(virt_start.as_u64() + i * 2 * 1024 * 1024);
-            let phys = PhysAddr::new(phys_start.as_u64() + i * 2 * 1024 * 1024);
-            let mut mapper = self.offset_mapper();
-            let page = Page::<x86_64::structures::paging::Size2MiB>::containing_address(virt);
-            let frame =
-                x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size2MiB>::containing_address(phys);
-            // SAFETY: Caller ensures safety.
-            unsafe {
+        unsafe {
+            let flags_2mb = flags | PageTableFlags::HUGE_PAGE;
+            for i in 0..page_count {
+                let virt = VirtAddr::new(virt_start.as_u64() + i * 2 * 1024 * 1024);
+                let phys = PhysAddr::new(phys_start.as_u64() + i * 2 * 1024 * 1024);
+                let mut mapper = self.offset_mapper();
+                let page = Page::<x86_64::structures::paging::Size2MiB>::containing_address(virt);
+                let frame = x86_64::structures::paging::PhysFrame::<
+                    x86_64::structures::paging::Size2MiB,
+                >::containing_address(phys);
+                // SAFETY: Caller ensures safety.
                 mapper
                     .map_to(page, frame, flags_2mb, frame_allocator)
                     .map_err(|_| "map_2mb failed")?
                     .flush();
             }
+            Ok(())
         }
-        Ok(())
     }
 
     /// Flush the TLB for the entire system.

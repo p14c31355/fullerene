@@ -124,7 +124,7 @@ where
                 false,
             )?;
             process::PROCESS_MANAGER.with_process(ProcessId(p.0 as u64), |pr| {
-                pr.user_stack = VirtAddr::new(raw as u64);
+                pr.task_data = raw as u64;
                 pr.state = ProcessState::Ready;
             });
             Ok(p)
@@ -139,7 +139,7 @@ extern "C" fn task_entry<F: Future<Output = ()> + Send + 'static>() {
     let pid = process::current_pid().expect("task_entry: no current PID");
     let raw = process::PROCESS_MANAGER
         .with_process(pid, |p| {
-            p.user_stack.as_u64() as *mut Box<dyn Future<Output = ()> + Send>
+            p.task_data as *mut Box<dyn Future<Output = ()> + Send>
         })
         .expect("task_entry: process not found");
 
@@ -234,10 +234,7 @@ impl TaskManager {
         out.push_str("----  ----------------  --------  ----\n");
         for e in entries.iter() {
             let ttype = if e.is_user { "user" } else { "kern" };
-            let line = alloc::format!(
-                "{:<4}  {:<16}  {:<8}  {}\n",
-                e.pid, e.name, e.state, ttype
-            );
+            let line = alloc::format!("{:<4}  {:<16}  {:<8}  {}\n", e.pid, e.name, e.state, ttype);
             out.push_str(&line);
         }
         out

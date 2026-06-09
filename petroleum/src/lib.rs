@@ -1,93 +1,6 @@
 #![no_std]
-#![feature(never_type)]
-#![feature(alloc_error_handler)]
 
 extern crate alloc;
-
-#[macro_export]
-macro_rules! define_panic_handler {
-    () => {
-        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
-        #[panic_handler]
-        fn panic(info: &core::panic::PanicInfo) -> ! {
-            use core::fmt::Write;
-
-            $crate::serial::_print(format_args!("\n========== KERNEL PANIC ==========\n"));
-            if let Some(loc) = info.location() {
-                $crate::serial::_print(format_args!(
-                    "  at {}:{}:{}\n",
-                    loc.file(),
-                    loc.line(),
-                    loc.column()
-                ));
-            }
-            $crate::serial::_print(format_args!("  {}\n", info));
-            $crate::serial::_print(format_args!("====================================\n"));
-
-            // Stack backtrace via BacktraceCollector (reuses debug.rs)
-            $crate::serial::_print(format_args!("\nStack backtrace:\n"));
-            {
-                let mut collector = $crate::debug::BacktraceCollector::new();
-                collector.capture();
-                for (i, entry) in collector.entries().iter().enumerate() {
-                    $crate::serial::_print(format_args!(
-                        "  #{:<2} rbp=0x{:016x} rip=0x{:016x}\n",
-                        i, entry.sp, entry.ip
-                    ));
-                }
-            }
-
-            #[cfg(feature = "vga_panic")]
-            {
-                let vga = 0xb8000 as *mut u16;
-                for i in 0..(80 * 25) {
-                    unsafe { vga.add(i).write_volatile(0x4F20u16) };
-                }
-                let header = b"*** KERNEL PANIC ***";
-                for (i, &b) in header.iter().enumerate() {
-                    unsafe { vga.add(i).write_volatile(b as u16 | 0x4F00u16) };
-                }
-                if let Some(loc) = info.location() {
-                    use core::fmt::Write as _;
-                    let mut line_buf = heapless::String::<128>::new();
-                    let _ = write!(line_buf, "{}:{}", loc.file(), loc.line());
-                    for (i, b) in line_buf.bytes().enumerate() {
-                        let off = 80 * 2 + i;
-                        if off < 80 * 25 {
-                            unsafe { vga.add(off).write_volatile(b as u16 | 0x4F00u16) };
-                        }
-                    }
-                }
-                use core::fmt::Write as _;
-                let mut msg_buf = heapless::String::<128>::new();
-                let _ = write!(msg_buf, "{}", info);
-                for (i, b) in msg_buf.bytes().enumerate() {
-                    let off = 80 * 3 + i;
-                    if off < 80 * 25 {
-                        let ch = if b < 0x20 || b > 0x7e { b' ' } else { b };
-                        unsafe { vga.add(off).write_volatile(ch as u16 | 0x4F00u16) };
-                    }
-                }
-            }
-
-            loop {
-                x86_64::instructions::hlt();
-            }
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! define_alloc_error_handler {
-    () => {
-        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
-        #[alloc_error_handler]
-        fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
-            $crate::serial::_print(format_args!("ALLOC ERROR: {:?}\n", layout));
-            loop {}
-        }
-    };
-}
 
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
@@ -151,35 +64,6 @@ pub use page_table::heap::heap_stats;
 pub use page_table::heap::heap_top;
 pub use page_table::heap::init_global_heap;
 pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
-
-// ── Backward-compat deprecated macro wrappers ──────────────────
-
-#[macro_export]
-macro_rules! map_identity_range_checked {
-    ($($arg:tt)*) => { $crate::page_table::map_identity_range($($arg)*) };
-}
-#[macro_export]
-macro_rules! map_range_with_log_macro {
-    ($($arg:tt)*) => { $crate::page_table::map_range_with_log_macro($($arg)*) };
-}
-#[macro_export]
-macro_rules! map_to_higher_half_with_log_macro {
-    ($($arg:tt)*) => { $crate::page_table::map_to_higher_half_with_log_macro($($arg)*) };
-}
-#[macro_export]
-macro_rules! map_page_range {
-    ($($arg:tt)*) => { $crate::page_table::map_range_4kiB($($arg)*) };
-}
-#[macro_export]
-macro_rules! unmap_page_range {
-    ($($arg:tt)*) => { $crate::page_table::unmap_page_range($($arg)*) };
-}
-#[macro_export]
-macro_rules! get_memory_stats {
-    () => {
-        (0usize, 0usize, 0usize)
-    };
-}
 
 use crate::common::EfiSystemTable;
 use crate::common::uefi::FullereneFramebufferConfig;
@@ -267,7 +151,7 @@ pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
 
 pub fn halt_loop() -> ! {
     loop {
-        cpu_pause();
+        core::hint::spin_loop();
     }
 }
 
@@ -281,22 +165,65 @@ pub fn cpu_halt() {
     x86_64::instructions::hlt();
 }
 
-pub unsafe fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
+/// Write raw bytes to a serial port. Used by early-boot and debug code.
+/// This function is safe to call; the unsafe port I/O is encapsulated internally.
+pub fn write_serial_bytes(port: u16, status_port: u16, bytes: &[u8]) {
     #[cfg(not(feature = "std"))]
     unsafe {
         serial::write_serial_bytes(port, status_port, bytes);
     }
     #[cfg(feature = "std")]
-    {}
+    {
+        let _ = (port, status_port, bytes);
+    }
 }
 
 #[macro_export]
-macro_rules! write_serial_bytes {
-    ($port:expr, $status:expr, $bytes:expr) => {
-        unsafe {
-            $crate::write_serial_bytes($port, $status, $bytes);
+macro_rules! define_panic_handler {
+    () => {
+        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
+        #[panic_handler]
+        fn panic(info: &core::panic::PanicInfo) -> ! {
+            use core::fmt::Write;
+            $crate::serial::_print(format_args!("\n========== KERNEL PANIC ==========\n"));
+            if let Some(loc) = info.location() {
+                $crate::serial::_print(format_args!(
+                    "  at {}:{}:{}\n",
+                    loc.file(),
+                    loc.line(),
+                    loc.column()
+                ));
+            }
+            $crate::serial::_print(format_args!("  {}\n", info));
+            $crate::serial::_print(format_args!("====================================\n"));
+            loop {
+                x86_64::instructions::hlt();
+            }
         }
     };
+}
+
+#[macro_export]
+macro_rules! define_alloc_error_handler {
+    () => {
+        #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
+        #[alloc_error_handler]
+        fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
+            $crate::serial::_print(format_args!("ALLOC ERROR: {:?}\n", layout));
+            loop {}
+        }
+    };
+}
+
+/// Returns (used, total, free) memory in bytes from the global page allocator.
+#[macro_export]
+macro_rules! get_memory_stats {
+    () => {{
+        let allocator = $crate::page_table::ALLOCATOR.lock();
+        let used = allocator.used();
+        let total = allocator.size();
+        (used, total, total.saturating_sub(used))
+    }};
 }
 
 #[derive(Clone, Copy)]

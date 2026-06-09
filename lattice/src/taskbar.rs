@@ -7,8 +7,6 @@
 //!
 //! The taskbar is drawn as an overlay on the compositor output.
 
-use crate::surface::Surface;
-
 /// Taskbar height in pixels.
 pub const TASKBAR_HEIGHT: u32 = 28;
 

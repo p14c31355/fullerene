@@ -9,9 +9,9 @@ use x86_64::{
 };
 
 pub fn clone_page_table(
-    pt: &mut impl PageTableHelper,
-    source_table: usize,
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+    _pt: &mut impl PageTableHelper,
+    _source_table: usize,
+    _frame_allocator: &mut impl FrameAllocator<Size4KiB>,
 ) -> crate::common::logging::SystemResult<usize> {
     // This logic is now integrated into ProcessPageTable via PageTableHelper,
     // but we can provide a standalone helper if needed.
@@ -56,7 +56,7 @@ pub unsafe fn clone_page_table_recursive<'a>(
         let source_table = &*(source_va.as_ptr() as *const PageTable);
         let dest_table = &mut *(dest_va.as_mut_ptr() as *mut PageTable);
 
-        for (i, (source_entry, dest_entry)) in
+        for (_i, (source_entry, dest_entry)) in
             source_table.iter().zip(dest_table.iter_mut()).enumerate()
         {
             if source_entry.flags().contains(PageTableFlags::PRESENT) {

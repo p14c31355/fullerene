@@ -23,10 +23,7 @@ pub use kernel::mapper::Mapper as KernelMapper;
 pub use memory_map::MemoryMapDescriptor;
 pub use process::table::ProcessPageTable;
 pub use raw::huge::map_range_with_huge_pages;
-pub use raw::utils::{
-    map_identity_range, map_range_4kiB, map_range_with_log_macro, map_to_higher_half_with_log,
-    map_to_higher_half_with_log_macro, unmap_page_range,
-};
+pub use raw::utils::{map_identity_range, map_range_4kiB, map_to_higher_half_with_log};
 pub use types::PageTableEntry as Pte;
 pub use types::*;
 pub type EfiMemoryDescriptor = memory_map::MemoryMapDescriptor;

@@ -367,7 +367,6 @@ dependencies = [
  "embedded-graphics",
  "goblin",
  "heapless",
- "lattice",
  "linked_list_allocator",
  "log",
  "memoffset",

@@ -31,6 +31,132 @@ pub const COLOR_TITLE_INACTIVE: u32 = 0x444444;
 pub const COLOR_ACCENT: u32 = 0xE6A817;
 pub const COLOR_DANGER: u32 = 0xD94A4A;
 
+// ── Dim lookup table ────────────────────────────────────────
+/// Pre‑computed dim table: `(v * 2) / 5` for each 0..=255 channel value.
+static DIM_TABLE: [u32; 256] = {
+    let mut tbl = [0u32; 256];
+    let mut i = 0u32;
+    while i < 256 {
+        tbl[i as usize] = (i * 2) / 5;
+        i += 1;
+    }
+    tbl
+};
+
+/// Apply dim (~40% luminance) to a colour using the pre‑computed table.
+#[inline]
+fn dim_color(color: u32) -> u32 {
+    let r = DIM_TABLE[((color >> 16) & 0xFF) as usize];
+    let g = DIM_TABLE[((color >> 8) & 0xFF) as usize];
+    let b = DIM_TABLE[(color & 0xFF) as usize];
+    (r << 16) | (g << 8) | b
+}
+
+// ── Title bar button caches ─────────────────────────────────
+/// Pre‑rendered 14×14 close button (red background + white X).
+static CLOSE_BUTTON_CACHE: [u32; 14 * 14] = build_close_button();
+/// Pre‑rendered 14×14 maximize button (green background + white square).
+static MAXIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_maximize_button();
+/// Pre‑rendered 14×14 minimize button (amber background + white line).
+static MINIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_minimize_button();
+
+const fn build_close_button() -> [u32; 14 * 14] {
+    let mut buf = [0u32; 14 * 14];
+    let mut r = 0;
+    while r < 14 {
+        let mut c = 0;
+        while c < 14 {
+            buf[r * 14 + c] = COLOR_DANGER;
+            c += 1;
+        }
+        r += 1;
+    }
+    // White X
+    let mut o = 0;
+    while o < 8 {
+        buf[(3 + o) * 14 + (3 + o)] = 0xFFFFFF;
+        buf[(10 - o) * 14 + (3 + o)] = 0xFFFFFF;
+        o += 1;
+    }
+    buf
+}
+
+const fn build_maximize_button() -> [u32; 14 * 14] {
+    let mut buf = [0u32; 14 * 14];
+    let mut r = 0;
+    while r < 14 {
+        let mut c = 0;
+        while c < 14 {
+            buf[r * 14 + c] = 0x338833;
+            c += 1;
+        }
+        r += 1;
+    }
+    // White square outline
+    let mut r = 3;
+    while r < 11 {
+        let mut c = 3;
+        while c < 11 {
+            let on_edge = r == 3 || r == 10 || c == 3 || c == 10;
+            if on_edge {
+                buf[r * 14 + c] = 0xFFFFFF;
+            }
+            c += 1;
+        }
+        r += 1;
+    }
+    buf
+}
+
+const fn build_minimize_button() -> [u32; 14 * 14] {
+    let mut buf = [0u32; 14 * 14];
+    let mut r = 0;
+    while r < 14 {
+        let mut c = 0;
+        while c < 14 {
+            buf[r * 14 + c] = COLOR_ACCENT;
+            c += 1;
+        }
+        r += 1;
+    }
+    // White horizontal line at the bottom
+    let mut c = 3;
+    while c < 11 {
+        buf[10 * 14 + c] = 0xFFFFFF;
+        c += 1;
+    }
+    buf
+}
+
+/// Blit a 14×14 cached button onto the framebuffer at (bx, by).
+#[inline]
+fn blit_button(fb: &mut [u32], fbw: u32, cache: &[u32; 14 * 14], bx: i32, by: i32) {
+    let fb_w = fbw as usize;
+    let fb_len = fb.len();
+    let fbh = (fb_len / fb_w) as i32;
+    if fbh == 0 {
+        return;
+    }
+    let fbw_i32 = fbw as i32;
+    for row in 0..14 {
+        let da = by + row;
+        if da < 0 || da >= fbh {
+            continue;
+        }
+        let row_base = (da as usize) * fb_w;
+        for col in 0..14 {
+            let dxa = bx + col;
+            if dxa < 0 || dxa >= fbw_i32 {
+                continue;
+            }
+            let idx = row_base + dxa as usize;
+            if idx < fb_len {
+                fb[idx] = cache[(row as usize) * 14 + col as usize];
+            }
+        }
+    }
+}
+
 // ── FPS overlay ─────────────────────────────────────────────
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -49,13 +175,65 @@ static RENDER_TICKS: AtomicU64 = AtomicU64::new(0);
 static mut PREV_DEBUG_TEXT: [u8; 32] = [0u8; 32];
 static mut PREV_DEBUG_LEN: usize = 0;
 
+// ── Inline formatting helpers (no heap) ────────────────────
+
+/// Write a byte slice into `buf` at `pos`. Returns the number of bytes written.
+fn write_str(buf: &mut [u8; 32], pos: &mut usize, s: &[u8]) -> usize {
+    let n = s.len().min(buf.len().saturating_sub(*pos));
+    buf[*pos..*pos + n].copy_from_slice(&s[..n]);
+    *pos += n;
+    n
+}
+
+/// Write a single byte into the buffer.
+fn write_byte(buf: &mut [u8; 32], pos: &mut usize, b: u8) -> usize {
+    if *pos < buf.len() {
+        buf[*pos] = b;
+        *pos += 1;
+        1
+    } else {
+        0
+    }
+}
+
+/// Write a u64 as decimal, padded to at least `min_digits` (0 = natural width).
+fn write_u64_fixed(buf: &mut [u8; 32], pos: &mut usize, mut v: u64, min_digits: usize) -> usize {
+    let mut tmp = [0u8; 20];
+    let mut i = 0usize;
+    if v == 0 {
+        tmp[i] = b'0';
+        i += 1;
+    }
+    while v > 0 {
+        tmp[i] = b'0' + (v % 10) as u8;
+        i += 1;
+        v /= 10;
+    }
+    // Pad to min_digits
+    while i < min_digits {
+        tmp[i] = b'0';
+        i += 1;
+    }
+    // tmp has digits reversed — write in correct order
+    let start = *pos;
+    for j in (0..i).rev() {
+        write_byte(buf, pos, tmp[j]);
+    }
+    *pos - start
+}
+
 pub fn notify_frame_presented(now_tick: u64) {
     let fc = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
     let last = LAST_FPS_TICK.load(Ordering::Relaxed);
-    if now_tick > last && (fc % 30 == 0) {
-        let delta = now_tick.saturating_sub(last);
-        if delta > 0 {
-            let fps = 30u64.saturating_mul(100).saturating_div(delta);
+    // Update FPS every FRAMES_PER_UPDATE frames, but also enforce a minimum
+    // time between updates so low-framerate environments don't show stale data.
+    const FRAMES_PER_UPDATE: u64 = 30;
+    if now_tick > last && (fc as u64 % FRAMES_PER_UPDATE == 0) {
+        let ticks_since = now_tick.saturating_sub(last);
+        if ticks_since > 0 {
+            let fps = FRAMES_PER_UPDATE
+                .saturating_mul(100)
+                .saturating_div(ticks_since);
             CURRENT_FPS_X100.store(fps, Ordering::Relaxed);
         }
         LAST_FPS_TICK.store(now_tick, Ordering::Relaxed);
@@ -219,21 +397,29 @@ impl Compositor {
             return;
         }
         let dc = draw_calls_last_frame();
-        let text = alloc::format!("FPS:{}.{:02} DC:{}", fps / 100, fps % 100, dc);
-
-        // Always redraw because the compositor clears the merged dirty rect\n        // background in Layer 0 — skipping the redraw would leave a blank\n        // rectangle over the dirty region.
+        // Inline formatting to avoid heap allocation
+        let mut buf = [0u8; 32];
+        let mut pos = 0usize;
+        let _ = write_str(&mut buf, &mut pos, b"FPS:");
+        write_u64_fixed(&mut buf, &mut pos, fps / 100, 1);
+        let _ = write_byte(&mut buf, &mut pos, b'.');
+        write_u64_fixed(&mut buf, &mut pos, fps % 100, 2);
+        let _ = write_str(&mut buf, &mut pos, b" DC:");
+        write_u64_fixed(&mut buf, &mut pos, dc, 0);
+        let text = &buf[..pos.min(32)];
 
         let x = fbw.saturating_sub(150);
         let y = 4u32;
-        for (i, ch) in text.bytes().enumerate() {
+        for (i, &ch) in text.iter().enumerate() {
             if ch < 32 || ch > 126 {
                 continue;
             }
+            let gl = crate::font::glyph_fast(ch);
             for row in 0..12 {
+                let py = y + row;
                 for col in 0..8 {
                     let px = x + (i as u32) * 8 + col;
-                    let py = y + row;
-                    if px < fbw && py < _fbh && crate::font::get_glyph_pixel(ch, row, col) {
+                    if px < fbw && py < _fbh && gl.pixel(row, col) {
                         fb[(py * fbw + px) as usize] = COLOR_ACCENT;
                     }
                 }
@@ -350,18 +536,11 @@ impl Compositor {
                     continue;
                 }
                 let color = sp[sb + sc as usize];
-                if win.focused {
-                    fb[db + dc as usize] = color;
+                fb[db + dc as usize] = if win.focused {
+                    color
                 } else {
-                    // Dim unfocused windows to ~40 % luminance
-                    let r = ((color >> 16) & 0xFF) as u32;
-                    let g = ((color >> 8) & 0xFF) as u32;
-                    let b = (color & 0xFF) as u32;
-                    let dim_r = (r * 2) / 5;
-                    let dim_g = (g * 2) / 5;
-                    let dim_b = (b * 2) / 5;
-                    fb[db + dc as usize] = (dim_r << 16) | (dim_g << 8) | dim_b;
-                }
+                    dim_color(color)
+                };
             }
         }
     }
@@ -463,110 +642,39 @@ impl Compositor {
         }
 
         // ── Title bar buttons (close / maximize / minimize) ──
+        // Use pre‑rendered cached textures for fast blitting.
 
-        // Close button (rightmost, red)
-        let close_x = win.x + win.width as i32 - 18;
-        let close_y = win.y + 3;
-        for r in 0..14i32 {
-            for c in 0..14i32 {
-                let da = close_y + r;
-                let dxa = close_x + c;
-                if da < cy as i32
-                    || da >= cey
-                    || dxa < cx as i32
-                    || dxa >= cex
-                    || da >= fh
-                    || dxa >= fw
-                {
-                    continue;
-                }
-                fb[(da as usize) * (fbw as usize) + dxa as usize] = COLOR_DANGER;
-            }
-        }
-        // White X on close button
-        for o in 0..8 {
-            let dxa = close_x + 3 + o;
-            let da1 = close_y + 3 + o;
-            let da2 = close_y + 10 - o;
-            if dxa >= cx as i32 && dxa < cex && dxa < fw {
-                if da1 >= cy as i32 && da1 < cey && da1 < fh {
-                    fb[(da1 as usize) * (fbw as usize) + dxa as usize] = 0xFFFFFF;
-                }
-                if da2 >= cy as i32 && da2 < cey && da2 < fh {
-                    fb[(da2 as usize) * (fbw as usize) + dxa as usize] = 0xFFFFFF;
-                }
-            }
-        }
-
-        // Maximize button (green, between minimize and close)
-        let max_x = win.x + win.width as i32 - 38;
-        let max_y = win.y + 3;
-        for r in 0..14i32 {
-            for c in 0..14i32 {
-                let da = max_y + r;
-                let dxa = max_x + c;
-                if da < cy as i32
-                    || da >= cey
-                    || dxa < cx as i32
-                    || dxa >= cex
-                    || da >= fh
-                    || dxa >= fw
-                {
-                    continue;
-                }
-                fb[(da as usize) * (fbw as usize) + dxa as usize] = 0x338833;
-            }
-        }
-        // Maximize icon: a small centred square
-        for r in 3..11 {
-            for c in 3..11 {
-                let da = max_y + r;
-                let dxa = max_x + c;
-                if da < cy as i32 || da >= cey || dxa < cx as i32 || dxa >= cex || da >= fh || dxa >= fw {
-                    continue;
-                }
-                let on_edge = r == 3 || r == 10 || c == 3 || c == 10;
-                if on_edge {
-                    fb[(da as usize) * (fbw as usize) + dxa as usize] = 0xFFFFFF;
-                }
-            }
-        }
-
-        // Minimize button (amber, next to maximize)
-        let min_x = win.x + win.width as i32 - 58;
-        let min_y = win.y + 3;
-        for r in 0..14i32 {
-            for c in 0..14i32 {
-                let da = min_y + r;
-                let dxa = min_x + c;
-                if da < cy as i32
-                    || da >= cey
-                    || dxa < cx as i32
-                    || dxa >= cex
-                    || da >= fh
-                    || dxa >= fw
-                {
-                    continue;
-                }
-                fb[(da as usize) * (fbw as usize) + dxa as usize] = COLOR_ACCENT;
-            }
-        }
-        // Minimize icon: a small horizontal line at the bottom
-        for c in 3..11 {
-            let da = min_y + 10;
-            let dxa = min_x + c;
-            if da >= cy as i32 && da < cey && dxa >= cx as i32 && dxa < cex && da < fh && dxa < fw {
-                fb[(da as usize) * (fbw as usize) + dxa as usize] = 0xFFFFFF;
-            }
-        }
+        blit_button(
+            fb,
+            fbw,
+            &CLOSE_BUTTON_CACHE,
+            win.x + win.width as i32 - 18,
+            win.y + 3,
+        );
+        blit_button(
+            fb,
+            fbw,
+            &MAXIMIZE_BUTTON_CACHE,
+            win.x + win.width as i32 - 38,
+            win.y + 3,
+        );
+        blit_button(
+            fb,
+            fbw,
+            &MINIMIZE_BUTTON_CACHE,
+            win.x + win.width as i32 - 58,
+            win.y + 3,
+        );
 
         // Title text (with padding from left)
+        // Uses glyph_fast to avoid per-pixel Mutex lock on font lookup
         let tx = win.x + WINDOW_PADDING as i32;
         let ty = win.y + WINDOW_PADDING as i32;
         for (i, ch) in title.bytes().enumerate() {
             if ch < 32 || ch > 126 {
                 continue;
             }
+            let gl = crate::font::glyph_fast(ch);
             let gx = tx + (i as i32) * 8;
             for row in 0..12 {
                 let da = ty + row;
@@ -578,7 +686,7 @@ impl Compositor {
                     if dxa < cx as i32 || dxa >= cex || dxa >= fw {
                         continue;
                     }
-                    if crate::font::get_glyph_pixel(ch, row as u32, col as u32) {
+                    if gl.pixel(row as u32, col as u32) {
                         fb[(da as usize) * (fbw as usize) + dxa as usize] = COLOR_TEXT;
                     }
                 }

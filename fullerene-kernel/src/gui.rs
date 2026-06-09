@@ -159,7 +159,11 @@ fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
     // Do NOT add an additional 2000 offset when the century register is present.
     let century = cmos_read(0x32);
     let full_year = if century != 0 {
-        let c = if use_bcd { bcd_to_bin(century) as u16 } else { century as u16 };
+        let c = if use_bcd {
+            bcd_to_bin(century) as u16
+        } else {
+            century as u16
+        };
         c * 100 + year_raw as u16
     } else {
         // No century register — assume 2000+ as fallback

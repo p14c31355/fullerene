@@ -8,7 +8,7 @@
 //!
 //! All rendering is done in software — no GPU / 3D acceleration required.
 
-use crate::compositor::{COLOR_TEXT, COLOR_PRIMARY};
+use crate::compositor::{COLOR_PRIMARY, COLOR_TEXT};
 use crate::window::Window;
 
 /// Shell state — determines which overlay to draw.
@@ -24,12 +24,7 @@ pub enum ShellState {
 ///
 /// `windows` provides the list of open windows for thumbnail rendering.
 /// `fb` is the current framebuffer (already containing rendered desktop).
-pub fn render_task_overview(
-    fb: &mut [u32],
-    fbw: u32,
-    fbh: u32,
-    windows: &[Window],
-) {
+pub fn render_task_overview(fb: &mut [u32], fbw: u32, fbh: u32, windows: &[Window]) {
     let fb_w = fbw as usize;
     let fb_h = fbh as usize;
 
@@ -99,7 +94,11 @@ pub fn render_task_overview(
         }
 
         // Window title below thumbnail
-        let title = window.title.as_ref().map(|t| t.as_str()).unwrap_or("Window");
+        let title = window
+            .title
+            .as_ref()
+            .map(|t| t.as_str())
+            .unwrap_or("Window");
         let label_x = tx + 2;
         let label_y = ty + thumb_h + 3;
         for (j, ch) in title.bytes().enumerate() {
@@ -128,15 +127,18 @@ pub fn render_task_overview(
     }
 
     // ── "Activities" label at top ──────────────────────────
-    render_label(fb, fbw, fbh, "Task Overview", (fbw / 2).saturating_sub(52), 10);
+    render_label(
+        fb,
+        fbw,
+        fbh,
+        "Task Overview",
+        (fbw / 2).saturating_sub(52),
+        10,
+    );
 }
 
 /// Render the App Grid overlay.
-pub fn render_app_grid(
-    fb: &mut [u32],
-    fbw: u32,
-    fbh: u32,
-) {
+pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32) {
     let fb_w = fbw as usize;
     let fb_h = fbh as usize;
 
@@ -168,11 +170,26 @@ pub fn render_app_grid(
     }
 
     let apps: &[AppEntry] = &[
-        AppEntry { label: "Terminal", color: 0x333344 },
-        AppEntry { label: "Clock", color: 0x333344 },
-        AppEntry { label: "Settings", color: 0x333344 },
-        AppEntry { label: "File Mgr", color: 0x333344 },
-        AppEntry { label: "About", color: 0x333344 },
+        AppEntry {
+            label: "Terminal",
+            color: 0x333344,
+        },
+        AppEntry {
+            label: "Clock",
+            color: 0x333344,
+        },
+        AppEntry {
+            label: "Settings",
+            color: 0x333344,
+        },
+        AppEntry {
+            label: "File Mgr",
+            color: 0x333344,
+        },
+        AppEntry {
+            label: "About",
+            color: 0x333344,
+        },
     ];
 
     let icon_size = 64u32;
@@ -196,15 +213,8 @@ pub fn render_app_grid(
             let py = ay + dy;
             for dx in 0..icon_size {
                 let px = ax + dx;
-                let is_border = dy == 0
-                    || dy == icon_size - 1
-                    || dx == 0
-                    || dx == icon_size - 1;
-                let color = if is_border {
-                    COLOR_PRIMARY
-                } else {
-                    app.color
-                };
+                let is_border = dy == 0 || dy == icon_size - 1 || dx == 0 || dx == icon_size - 1;
+                let color = if is_border { COLOR_PRIMARY } else { app.color };
                 let idx = (py as usize) * fb_w + px as usize;
                 if idx < fb.len() {
                     fb[idx] = color;
@@ -241,16 +251,18 @@ pub fn render_app_grid(
     }
 
     // Label
-    render_label(fb, fbw, fbh, "Applications", (fbw / 2).saturating_sub(54), 10);
+    render_label(
+        fb,
+        fbw,
+        fbh,
+        "Applications",
+        (fbw / 2).saturating_sub(54),
+        10,
+    );
 }
 
 /// Render the timezone selector overlay.
-pub fn render_timezone_selector(
-    fb: &mut [u32],
-    fbw: u32,
-    fbh: u32,
-    current_offset: i8,
-) {
+pub fn render_timezone_selector(fb: &mut [u32], fbw: u32, fbh: u32, current_offset: i8) {
     let fb_w = fbw as usize;
     let fb_h = fbh as usize;
 
@@ -292,8 +304,8 @@ pub fn render_timezone_selector(
     let entry_h = 24u32;
     let pad = 6u32;
     let start_y = 40u32;
-    let max_label_chars = 16u32;  // "UTC-12:00  PST" = 14 chars
-    let entry_w = max_label_chars * 8 + 16;  // 8px per char + padding
+    let max_label_chars = 16u32; // "UTC-12:00  PST" = 14 chars
+    let entry_w = max_label_chars * 8 + 16; // 8px per char + padding
 
     for (i, (label, offset)) in timezones.iter().enumerate() {
         let ex = fbw.saturating_sub(entry_w) / 2;
@@ -350,7 +362,14 @@ pub fn render_timezone_selector(
     }
 
     // Title
-    render_label(fb, fbw, fbh, "Select Timezone", (fbw / 2).saturating_sub(60), 10);
+    render_label(
+        fb,
+        fbw,
+        fbh,
+        "Select Timezone",
+        (fbw / 2).saturating_sub(60),
+        10,
+    );
 }
 
 /// Render a text label centred horizontally.

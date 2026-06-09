@@ -59,8 +59,10 @@ pub fn physical_to_virtual(physical_addr: usize) -> usize {
 /// # Safety
 /// The caller must ensure that the physical memory range is mapped and accessible.
 pub unsafe fn phys_to_slice(phys_addr: usize, len: usize) -> &'static [u8] {
-    let virt_addr = physical_to_virtual(phys_addr);
-    core::slice::from_raw_parts(virt_addr as *const u8, len)
+    unsafe {
+        let virt_addr = physical_to_virtual(phys_addr);
+        core::slice::from_raw_parts(virt_addr as *const u8, len)
+    }
 }
 
 /// Safely create a mutable slice from a physical address and length.
@@ -68,8 +70,10 @@ pub unsafe fn phys_to_slice(phys_addr: usize, len: usize) -> &'static [u8] {
 /// # Safety
 /// The caller must ensure that the physical memory range is mapped and accessible.
 pub unsafe fn phys_to_slice_mut(phys_addr: usize, len: usize) -> &'static mut [u8] {
-    let virt_addr = physical_to_virtual(phys_addr);
-    core::slice::from_raw_parts_mut(virt_addr as *mut u8, len)
+    unsafe {
+        let virt_addr = physical_to_virtual(phys_addr);
+        core::slice::from_raw_parts_mut(virt_addr as *mut u8, len)
+    }
 }
 
 /// Check if an address is in user space
@@ -143,8 +147,10 @@ pub unsafe fn user_slice(
     count: usize,
     allow_kernel: bool,
 ) -> Result<&'static [u8], SystemError> {
-    validate_user_buffer(ptr as usize, count, allow_kernel)?;
-    Ok(core::slice::from_raw_parts(ptr, count))
+    unsafe {
+        validate_user_buffer(ptr as usize, count, allow_kernel)?;
+        Ok(core::slice::from_raw_parts(ptr, count))
+    }
 }
 
 pub unsafe fn user_slice_mut(
@@ -152,8 +158,10 @@ pub unsafe fn user_slice_mut(
     count: usize,
     allow_kernel: bool,
 ) -> Result<&'static mut [u8], SystemError> {
-    validate_user_buffer(ptr as usize, count, allow_kernel)?;
-    Ok(core::slice::from_raw_parts_mut(ptr, count))
+    unsafe {
+        validate_user_buffer(ptr as usize, count, allow_kernel)?;
+        Ok(core::slice::from_raw_parts_mut(ptr, count))
+    }
 }
 
 pub fn create_framebuffer_config(

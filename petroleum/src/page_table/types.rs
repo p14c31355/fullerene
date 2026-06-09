@@ -578,12 +578,14 @@ impl PageTable {
     /// This is used by the page table walker which only reads entries.
     #[inline]
     pub unsafe fn as_mut_for_walking(&self) -> &mut PageTable {
-        // SAFETY: The caller guarantees no mutation occurs through this reference.
-        // This is required by the walker API which needs &mut for interior mutability
-        // of page table entries during mapping operations.
-        let ptr = self as *const PageTable;
-        let cell = &*(ptr as *const core::cell::UnsafeCell<PageTable>);
-        &mut *cell.get()
+        unsafe {
+            // SAFETY: The caller guarantees no mutation occurs through this reference.
+            // This is required by the walker API which needs &mut for interior mutability
+            // of page table entries during mapping operations.
+            let ptr = self as *const PageTable;
+            let cell = &*(ptr as *const core::cell::UnsafeCell<PageTable>);
+            &mut *cell.get()
+        }
     }
 }
 

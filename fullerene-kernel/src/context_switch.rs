@@ -69,6 +69,10 @@ pub extern "C" fn switch_context(
         "mov r9,  [rbx + 72]",
         "mov r10, [rbx + 80]",
         "mov r11, [rbx + 88]",
+        "mov r12, [rbx + 96]",
+        "mov r13, [rbx + 104]",
+        "mov r14, [rbx + 112]",
+        "mov r15, [rbx + 120]",
         // Restore rbx last (dereference from rbx before clobbering)
         "mov rbx, [rbx + 8]",
         // Pop saved context info (order reversed)
@@ -92,12 +96,13 @@ pub extern "C" fn switch_context(
         "iretq",
         "3:",
         // --- Kernel mode switch ---
-        // rax = saved_rsp (kernel rsp already restored, value not needed)
+        // rax = saved_rsp (kernel stack of target process)
         // r9 = saved_rflags
         // r8 = saved_rip
-        "push r9", // push rflags
-        "popfq",   // restore rflags
-        "jmp r8",  // jump to rip
+        "mov rsp, rax", // switch to target kernel stack
+        "push r9",      // push rflags
+        "popfq",        // restore rflags
+        "jmp r8",       // jump to rip on the new stack
     );
 }
 

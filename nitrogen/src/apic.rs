@@ -13,7 +13,7 @@ impl ApicOffsets {
     pub const LVT_LINT1: u32 = 0x360;
     pub const LVT_ERROR: u32 = 0x370;
     pub const LVT_PERF_COUNT: u32 = 0x340; // Performance monitoring counter LVT
-    pub const LVT_THERMAL: u32 = 0x330;    // Thermal sensor LVT
+    pub const LVT_THERMAL: u32 = 0x330; // Thermal sensor LVT
     pub const TMRDIV: u32 = 0x3E0;
     pub const TMRINITCNT: u32 = 0x380;
     pub const TMRCURRCNT: u32 = 0x390;
@@ -28,7 +28,7 @@ impl ApicFlags {
     pub const SW_ENABLE: u32 = 1 << 8;
     pub const DISABLE: u32 = 0x10000;
     pub const TIMER_PERIODIC: u32 = 1 << 17;
-    pub const TIMER_ONESHOT: u32 = 0;  // Bit 17 = 0 → one-shot mode
+    pub const TIMER_ONESHOT: u32 = 0; // Bit 17 = 0 → one-shot mode
     pub const TIMER_MASKED: u32 = 1 << 16;
 }
 

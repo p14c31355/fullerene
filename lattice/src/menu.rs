@@ -105,7 +105,7 @@ impl PopupMenu {
         });
 
         // Items
-        for (i, item) in self.items.iter().enumerate() {
+        for (i, _item) in self.items.iter().enumerate() {
             let item_y = self.y + MENU_BORDER + i as u32 * ITEM_HEIGHT;
             // Item background
             rects.push(OverlayRect {

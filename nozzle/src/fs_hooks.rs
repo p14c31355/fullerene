@@ -5,23 +5,16 @@
 //! `pwd` commands call into.
 
 use crate::exec::CommandContext;
-use alloc::string::String;
 use spin::Mutex;
 
 /// Callback for listing directories.
-pub static FS_LIST_FN: Mutex<
-    Option<fn(&mut CommandContext)>,
-> = Mutex::new(None);
+pub static FS_LIST_FN: Mutex<Option<fn(&mut CommandContext)>> = Mutex::new(None);
 
 /// Callback for reading file contents.
-pub static FS_READ_FN: Mutex<
-    Option<fn(&mut CommandContext, &str)>,
-> = Mutex::new(None);
+pub static FS_READ_FN: Mutex<Option<fn(&mut CommandContext, &str)>> = Mutex::new(None);
 
 /// Callback for printing the working directory.
-pub static FS_PWD_FN: Mutex<
-    Option<fn(&mut CommandContext)>,
-> = Mutex::new(None);
+pub static FS_PWD_FN: Mutex<Option<fn(&mut CommandContext)>> = Mutex::new(None);
 
 pub fn set_fs_list_fn(f: fn(&mut CommandContext)) {
     *FS_LIST_FN.lock() = Some(f);

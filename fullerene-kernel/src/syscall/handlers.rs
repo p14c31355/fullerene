@@ -6,16 +6,15 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
-use petroleum::{
-    common::memory::{user_slice, user_slice_mut},
-    write_serial_bytes,
-};
+use petroleum::common::memory::{user_slice, user_slice_mut};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
-// Global FD table mapping integer FDs to FileDesc
-static FD_TABLE: Mutex<BTreeMap<i32, crate::fs::FileDesc>> = Mutex::new(BTreeMap::new());
-static NEXT_FD: Mutex<i32> = Mutex::new(3); // Start after stdin/stdout/stderr
+// Global FD table mapping integer FDs to FileDesc.
+// Uses u32 to prevent negative FD wraparound attacks (a negative i32
+// would wrap to a large u32 and potentially alias another file).
+static FD_TABLE: Mutex<BTreeMap<u32, crate::fs::FileDesc>> = Mutex::new(BTreeMap::new());
+static NEXT_FD: Mutex<u32> = Mutex::new(3); // Start after stdin/stdout/stderr
 
 // POSIX-style open flags
 const O_RDONLY: i32 = 0;
@@ -163,6 +162,7 @@ fn syscall_fork() -> SyscallResult {
         user_stack: parent_user_stack, // Will be updated after copying
         entry_point: parent_entry_point,
         is_user: parent_context.is_user, // Inherit privilege level from parent
+        task_data: 0,
         exit_code: None,
         parent_id: Some(current_pid),
     };
@@ -212,8 +212,12 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
         }
     } else {
         // Attempt to read from the file descriptor using fs module
+        // Validate fd is non-negative early
+        if fd < 0 {
+            return Err(SyscallError::BadFileDescriptor);
+        }
         let mut fd_table = FD_TABLE.lock();
-        if let Some(file_desc) = fd_table.get_mut(&fd) {
+        if let Some(file_desc) = fd_table.get_mut(&(fd as u32)) {
             match crate::fs::read_file(file_desc, data) {
                 Ok(n) => Ok(n as u64),
                 Err(_) => Err(SyscallError::BadFileDescriptor),
@@ -238,7 +242,7 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
     // For stdout (fd 1) and stderr (fd 2), write to serial console
     if fd == 1 || fd == 2 {
         unsafe {
-            write_serial_bytes(0x3F8, 0x3FD, data);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, data);
         }
         Ok(count as u64)
     } else {
@@ -297,7 +301,7 @@ fn syscall_close(fd: core::ffi::c_int) -> SyscallResult {
 
     // Attempt to close the file descriptor using fs module
     let mut fd_table = FD_TABLE.lock();
-    if let Some(file_desc) = fd_table.remove(&fd) {
+    if let Some(file_desc) = fd_table.remove(&(fd as u32)) {
         match crate::fs::close_file(file_desc) {
             Ok(_) => Ok(0),
             Err(_) => Err(SyscallError::BadFileDescriptor),

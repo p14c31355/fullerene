@@ -134,10 +134,27 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("shutdown", "Shutdown the system", builtins::cmd_shutdown),
         ("calc", "Simple arithmetic calculator", builtins::cmd_calc),
         ("run", "Launch an external application", builtins::cmd_run),
-        ("taskmon", "Detailed task/process monitor", builtins::cmd_taskmon),
-        ("devices", "List registered hardware devices", builtins::cmd_devices),
+        (
+            "taskmon",
+            "Detailed task/process monitor",
+            builtins::cmd_taskmon
+        ),
+        (
+            "devices",
+            "List registered hardware devices",
+            builtins::cmd_devices
+        ),
         ("theme", "Show or change desktop theme", builtins::cmd_theme),
-        ("wallpaper", "Show or change desktop wallpaper", builtins::cmd_wallpaper),
-        ("badapple", "Play Bad Apple!! animation", builtins::cmd_badapple),
+        (
+            "wallpaper",
+            "Show or change desktop wallpaper",
+            builtins::cmd_wallpaper
+        ),
+        ("pci", "List PCI devices", builtins::cmd_pci),
+        (
+            "badapple",
+            "Play Bad Apple!! animation",
+            builtins::cmd_badapple
+        ),
     )
 }

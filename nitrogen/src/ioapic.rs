@@ -106,20 +106,24 @@ impl IoApic {
 
     /// Read from I/O APIC register (volatile)
     unsafe fn read(&self, reg: u8) -> u32 {
-        let reg_addr = self.base_addr as *mut u32;
-        let value_addr = (self.base_addr + 0x10) as *mut u32;
+        unsafe {
+            let reg_addr = self.base_addr as *mut u32;
+            let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        write_volatile(reg_addr, reg as u32);
-        read_volatile(value_addr)
+            write_volatile(reg_addr, reg as u32);
+            read_volatile(value_addr)
+        }
     }
 
     /// Write to I/O APIC register (volatile)
     unsafe fn write(&self, reg: u8, value: u32) {
-        let reg_addr = self.base_addr as *mut u32;
-        let value_addr = (self.base_addr + 0x10) as *mut u32;
+        unsafe {
+            let reg_addr = self.base_addr as *mut u32;
+            let value_addr = (self.base_addr + 0x10) as *mut u32;
 
-        write_volatile(reg_addr, reg as u32);
-        write_volatile(value_addr, value);
+            write_volatile(reg_addr, reg as u32);
+            write_volatile(value_addr, value);
+        }
     }
 
     /// Read redirection table entry
@@ -160,6 +164,8 @@ pub fn find_io_apic_base() -> u64 {
 
 /// Get local APIC ID from the LAPIC
 pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
-    let lapic_id_reg = (lapic_base + 0x20) as *const u32;
-    (read_volatile(lapic_id_reg) >> 24) as u8
+    unsafe {
+        let lapic_id_reg = (lapic_base + 0x20) as *const u32;
+        (read_volatile(lapic_id_reg) >> 24) as u8
+    }
 }

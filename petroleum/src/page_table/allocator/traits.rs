@@ -90,9 +90,11 @@ impl<'a, A: FrameAllocator> crate::page_table::raw::walker::FrameAlloc for Walke
 pub unsafe fn alloc_and_zero<A: FrameAllocator>(
     allocator: &mut A,
 ) -> Result<PhysFrame, AllocError> {
-    let frame = allocator.allocate()?;
-    core::ptr::write_bytes(frame.as_mut_ptr::<u8>(), 0, SIZE_4K as usize);
-    Ok(frame)
+    unsafe {
+        let frame = allocator.allocate()?;
+        core::ptr::write_bytes(frame.as_mut_ptr::<u8>(), 0, SIZE_4K as usize);
+        Ok(frame)
+    }
 }
 
 /// Extended frame allocator trait with additional operations.

@@ -7,6 +7,12 @@ pub mod graphics_alternatives {
     use crate::serial::_print;
     use alloc::vec::Vec;
 
+    /// Local shorthand for debug-logging. Replaces the verbose
+    /// `_print(format_args!(...))` idiom used throughout this module.
+    macro_rules! log_gop {
+        ($($arg:tt)*) => { _print(format_args!($($arg)*)) };
+    }
+
     const EFI_PCI_IO_PROTOCOL_GUID: [u8; 16] = [
         0x7b, 0x27, 0xcf, 0x04, 0xd7, 0x39, 0xd2, 0x4b, 0x9a, 0x3a, 0x00, 0x90, 0x27, 0x3f, 0xc1,
         0x4d,
@@ -51,7 +57,7 @@ pub mod graphics_alternatives {
 
     #[derive(Debug, Clone, Copy)]
     pub struct PciDevice {
-        pub handle: usize, // EFI_HANDLE
+        pub handle: usize,
         pub vendor_id: u16,
         pub device_id: u16,
         pub class_code: u8,
@@ -61,37 +67,26 @@ pub mod graphics_alternatives {
         pub function: u8,
     }
 
-    /// Try to detect VESA-compatible graphics hardware using PCI enumeration
     pub fn detect_vesa_graphics(
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        // First try VESA graphics detection
         if let Some(config) = detect_vesa_graphics_internal(bs) {
             return Some(config);
         }
-
-        // If VESA detection fails, try bare-metal detection
         info_log!("EFI PCI enumeration failed, trying bare-metal detection");
         detect_bare_metal_graphics(bs)
     }
 
-    /// Internal VESA graphics detection (original implementation)
     fn detect_vesa_graphics_internal(
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        _print(format_args!(
-            "[GOP-ALT] Detecting VESA graphics hardware...\n"
-        ));
+        log_gop!("[GOP-ALT] Detecting VESA graphics hardware...\n");
 
-        // Try PCI enumeration for graphics devices
         match enumerate_pci_graphics_devices(bs) {
             Ok(devices) if !devices.is_empty() => {
-                _print(format_args!(
-                    "[GOP-ALT] Found {} PCI graphics devices\n",
-                    devices.len()
-                ));
+                log_gop!("[GOP-ALT] Found {} PCI graphics devices\n", devices.len());
                 for device in devices {
-                    _print(format_args!(
+                    log_gop!(
                         "[GOP-ALT] Graphics device: {:04x}:{:04x}, class {:02x}.{:02x} at {:02x}:{:02x}:{:02x}\n",
                         device.vendor_id,
                         device.device_id,
@@ -100,47 +95,39 @@ pub mod graphics_alternatives {
                         device.bus,
                         device.device,
                         device.function
-                    ));
-
-                    // Check if this device supports linear framebuffer mode
+                    );
                     if let Some(fb_info) = probe_linear_framebuffer(&device, bs) {
-                        _print(format_args!(
+                        log_gop!(
                             "[GOP-ALT] Linear framebuffer found at {:#x}, {}x{}.\n",
-                            fb_info.address, fb_info.width, fb_info.height
-                        ));
+                            fb_info.address,
+                            fb_info.width,
+                            fb_info.height
+                        );
                         return Some(fb_info);
                     }
                 }
-                _print(format_args!(
-                    "[GOP-ALT] No linear framebuffers found on graphics devices\n"
-                ));
+                log_gop!("[GOP-ALT] No linear framebuffers found on graphics devices\n");
                 None
             }
             Ok(_) => {
-                _print(format_args!(
-                    "[GOP-ALT] No graphics devices found via PCI enumeration\n"
-                ));
+                log_gop!("[GOP-ALT] No graphics devices found via PCI enumeration\n");
                 None
             }
             Err(e) => {
-                _print(format_args!("[GOP-ALT] PCI enumeration failed: {:?}", e));
+                log_gop!("[GOP-ALT] PCI enumeration failed: {:?}", e);
                 None
             }
         }
     }
 
-    /// Enumerate PCI devices using EFI_PCI_IO_PROTOCOL
     fn enumerate_pci_graphics_devices(bs: &EfiBootServices) -> Result<Vec<PciDevice>, EfiStatus> {
-        _print(format_args!(
-            "[GOP-ALT] Starting PCI device enumeration...\n"
-        ));
+        log_gop!("[GOP-ALT] Starting PCI device enumeration...\n");
 
-        // First, enumerate all PCI_IO handles
         let mut handle_count: usize = 0;
         let mut handles: *mut usize = core::ptr::null_mut();
 
         let status = (bs.locate_handle_buffer)(
-            2, // ByProtocol
+            2,
             EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
             core::ptr::null_mut(),
             &mut handle_count,
@@ -148,30 +135,19 @@ pub mod graphics_alternatives {
         );
 
         if EfiStatus::from(status) != EfiStatus::Success || handles.is_null() {
-            _print(format_args!(
-                "[GOP-ALT] Failed to locate PCI_IO handles: {:#x}\n",
-                status
-            ));
+            log_gop!("[GOP-ALT] Failed to locate PCI_IO handles: {:#x}\n", status);
             return Err(EfiStatus::from(status));
         }
 
-        _print(format_args!(
-            "[GOP-ALT] Found {} PCI_IO protocol handles\n",
-            handle_count
-        ));
+        log_gop!("[GOP-ALT] Found {} PCI_IO protocol handles\n", handle_count);
 
         let mut devices = Vec::new();
-
-        // Process each PCI_IO handle
         for i in 0..handle_count {
             let handle = unsafe { *handles.add(i) };
-            _print(format_args!(
-                "[GOP-ALT] Checking PCI_IO handle {}: {:#x}\n",
-                i, handle
-            ));
+            log_gop!("[GOP-ALT] Checking PCI_IO handle {}: {:#x}\n", i, handle);
 
             if let Some(dev) = probe_pci_device_on_handle(bs, handle) {
-                _print(format_args!(
+                log_gop!(
                     "[GOP-ALT] Found PCI device: {:04x}:{:04x} at {:02x}:{:02x}:{:02x}, class {:02x}:{:02x}\n",
                     dev.vendor_id,
                     dev.device_id,
@@ -180,40 +156,31 @@ pub mod graphics_alternatives {
                     dev.function,
                     dev.class_code,
                     dev.subclass
-                ));
-
-                // Check if it's a graphics device (Display controller class, 0x03)
+                );
                 if dev.class_code == 0x03 {
-                    _print(format_args!("[GOP-ALT] Added graphics device to list\n"));
+                    log_gop!("[GOP-ALT] Added graphics device to list\n");
                     devices.push(dev);
                 }
             } else {
-                _print(format_args!(
-                    "[GOP-ALT] Failed to probe PCI device on handle {}\n",
-                    i
-                ));
+                log_gop!("[GOP-ALT] Failed to probe PCI device on handle {}\n", i);
             }
         }
 
-        // Free handle buffer
         if !handles.is_null() {
             (bs.free_pool)(handles as *mut core::ffi::c_void);
         }
 
-        _print(format_args!(
+        log_gop!(
             "[GOP-ALT] PCI enumeration complete, found {} graphics devices\n",
             devices.len()
-        ));
-
+        );
         Ok(devices)
     }
 
-    /// Probe PCI device information from a given handle
     fn probe_pci_device_on_handle(bs: &EfiBootServices, handle: usize) -> Option<PciDevice> {
         let guard = PciIoGuard::new(bs, handle).ok()?;
         let pci_io_ref = unsafe { &*guard.protocol };
 
-        // Read PCI configuration header using the proper protocol functions
         let mut vendor_id: u16 = 0;
         let mut device_id: u16 = 0;
         let mut class_code: u8 = 0;
@@ -221,59 +188,51 @@ pub mod graphics_alternatives {
 
         let read_status = (pci_io_ref.pci_read)(
             guard.protocol as *mut crate::common::EfiPciIoProtocol,
-            1, // Word width for vendor_id
-            0, // Offset 0
-            1, // 1 word
+            1,
+            0,
+            1,
             &mut vendor_id as *mut u16 as *mut core::ffi::c_void,
         );
-
         if EfiStatus::from(read_status) != EfiStatus::Success {
             return None;
         }
-
-        // Skip invalid devices
         if vendor_id == 0xFFFF || vendor_id == 0 {
             return None;
         }
 
         let read_status = (pci_io_ref.pci_read)(
             guard.protocol as *mut crate::common::EfiPciIoProtocol,
-            1, // Word width for device_id
-            2, // Offset 2
-            1, // 1 word
+            1,
+            2,
+            1,
             &mut device_id as *mut u16 as *mut core::ffi::c_void,
         );
-
         if EfiStatus::from(read_status) != EfiStatus::Success {
             return None;
         }
 
         let read_status = (pci_io_ref.pci_read)(
             guard.protocol as *mut crate::common::EfiPciIoProtocol,
-            0,   // Byte width for class_code
-            0xB, // Offset 0xB
-            1,   // 1 byte
+            0,
+            0xB,
+            1,
             &mut class_code as *mut u8 as *mut core::ffi::c_void,
         );
-
         if EfiStatus::from(read_status) != EfiStatus::Success {
             return None;
         }
 
         let read_status = (pci_io_ref.pci_read)(
             guard.protocol as *mut crate::common::EfiPciIoProtocol,
-            0,   // Byte width for subclass
-            0xA, // Offset 0xA
-            1,   // 1 byte
+            0,
+            0xA,
+            1,
             &mut subclass as *mut u8 as *mut core::ffi::c_void,
         );
-
         if EfiStatus::from(read_status) != EfiStatus::Success {
             return None;
         }
 
-        // Now we need to get bus/device/function info
-        // Use GetLocation function from the protocol
         let mut segment_num: usize = 0;
         let mut bus_num: usize = 0;
         let mut dev_num: usize = 0;
@@ -299,61 +258,52 @@ pub mod graphics_alternatives {
                 function: func_num as u8,
             })
         } else {
-            _print(format_args!(
-                "[GOP-ALT] GetLocation failed: {:#x}\n",
-                location_status
-            ));
+            log_gop!("[GOP-ALT] GetLocation failed: {:#x}\n", location_status);
             None
         }
     }
 
-    /// Probe for linear framebuffer on a graphics device
     fn probe_linear_framebuffer(
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        _print(format_args!(
+        log_gop!(
             "[GOP-ALT] Probing linear framebuffer on device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
-            device.vendor_id, device.device_id, device.bus, device.device, device.function
-        ));
+            device.vendor_id,
+            device.device_id,
+            device.bus,
+            device.device,
+            device.function
+        );
 
-        // Check for known virtio-gpu device IDs (vendor: 0x1af4, devices: 0x1050+)
         if device.vendor_id == 0x1af4 && device.device_id >= 0x1050 {
-            _print(format_args!(
-                "[GOP-ALT] Detected virtio-gpu device, attempting linear framebuffer setup\n"
-            ));
+            log_gop!("[GOP-ALT] Detected virtio-gpu device, attempting linear framebuffer setup\n");
             return probe_virtio_gpu_framebuffer(device, bs);
         }
 
-        // Check for other devices that might support linear framebuffers
         match (device.vendor_id, device.device_id) {
-            (0x1b36, 0x0100) => {
-                // QEMU QXL device
-                probe_qxl_framebuffer(device, bs)
-            }
+            (0x1b36, 0x0100) => probe_qxl_framebuffer(device, bs),
             (0x15ad, 0x0405) => {
-                // VMware SVGA II
-                _print(format_args!(
+                log_gop!(
                     "[GOP-ALT] Detected VMware SVGA device - linear framebuffer not implemented yet\n"
-                ));
+                );
                 None
             }
             (0x1234, 0x1111) | (0x1234, 0x1112) => {
-                // QEMU std VGA / Bochs VBE
-                _print(format_args!("[GOP-ALT] Detected QEMU std VGA device\n"));
+                log_gop!("[GOP-ALT] Detected QEMU std VGA device\n");
                 probe_std_vga_framebuffer(device, bs)
             }
             _ => {
-                _print(format_args!(
+                log_gop!(
                     "[GOP-ALT] Unknown graphics device ({:04x}:{:04x}), skipping\n",
-                    device.vendor_id, device.device_id
-                ));
+                    device.vendor_id,
+                    device.device_id
+                );
                 None
             }
         }
     }
 
-    /// Probe virtio-gpu device for linear framebuffer capability
     fn probe_virtio_gpu_framebuffer(
         device: &PciDevice,
         bs: &EfiBootServices,
@@ -361,24 +311,18 @@ pub mod graphics_alternatives {
         let guard = match PciIoGuard::new(bs, device.handle) {
             Ok(g) => g,
             Err(status) => {
-                _print(format_args!(
+                log_gop!(
                     "[GOP-ALT] Failed to open PCI_IO protocol for virtio-gpu: {:#x}\n",
                     status as usize
-                ));
+                );
                 return None;
             }
         };
 
-        _print(format_args!(
-            "[GOP-ALT] Successfully opened PCI_IO protocol\n"
-        ));
+        log_gop!("[GOP-ALT] Successfully opened PCI_IO protocol\n");
 
-        // Read PCI configuration to get BAR information
-        let mut config_buf = [0u32; 6]; // First 24 bytes (6 dwords) contain BAR0-BAR5
-
-        // Create a reference to the protocol for calling methods
+        let mut config_buf = [0u32; 6];
         let pci_io_ref = unsafe { &*guard.protocol };
-
         let read_result = crate::pci_read_bars!(pci_io_ref, guard.protocol, config_buf, 6, 0x10);
 
         if EfiStatus::from(read_result) != EfiStatus::Success {
@@ -386,15 +330,12 @@ pub mod graphics_alternatives {
             return None;
         }
 
-        // Analyze BAR0 (typically the framebuffer for virtio-gpu)
         let (bar0, bar0_type, is_memory) = crate::extract_bar_info!(config_buf, 0);
 
         if bar0 == 0 {
             error_log!("BAR0 is zero - invalid MMIO region");
             return None;
         }
-
-        // Check if BAR0 is a memory-mapped region
         if !is_memory {
             error_log!(
                 "BAR0 is I/O space (type: {}), expected memory space",
@@ -403,147 +344,118 @@ pub mod graphics_alternatives {
             return None;
         }
 
-        let is_64bit = (bar0_type & 0x4) != 0;
-        let fb_base_addr = if is_64bit {
-            // 64-bit BAR - combine BAR0 and BAR1
+        let fb_base_addr = if (bar0_type & 0x4) != 0 {
             let bar1 = config_buf[1];
             ((bar1 as u64) << 32) | (bar0 as u64 & 0xFFFFFFF0)
         } else {
             bar0 as u64
         };
 
-        // Fix logging - remove protocol debug since it's already converted to status
-        _print(format_args!(
+        log_gop!(
             "[GOP-ALT] BAR0: {:#x}, type: {}, fb_base: {:#x}, 64-bit: {}\n",
-            bar0, bar0_type, fb_base_addr, is_64bit
-        ));
+            bar0,
+            bar0_type,
+            fb_base_addr,
+            (bar0_type & 0x4) != 0
+        );
 
-        // For virtio-gpu, we need to initialize the device first
-        // This involves writing to the device registers in MMIO space
-        // But since we don't have the capability to write to MMIO yet,
-        // we'll assume a default configuration and try to read from a known offset
-
-        // For virtio-gpu in QEMU, default resolution is typically 1024x768 or 1280x720
-        // Try to detect by attempting to access the framebuffer
-        let standard_modes = [(1024, 768, 32), (1280, 720, 32), (800, 600, 32)];
-
-        for (width, height, bpp) in standard_modes.iter() {
-            let stride = *width; // Assume pixels_per_scan_line = width
-            let expected_fb_size = (*height * stride * bpp / 8) as u64;
-
-            // Try to validate framebuffer access (this is a very basic check)
+        for &(width, height, bpp) in &[(1024, 768, 32), (1280, 720, 32), (800, 600, 32)] {
+            let expected_fb_size = (height * width * bpp / 8) as u64;
             if probe_framebuffer_access(fb_base_addr, expected_fb_size) {
-                _print(format_args!(
+                log_gop!(
                     "[GOP-ALT] Detected working virtio-gpu framebuffer: {}x{} @ {:#x}\n",
-                    width, height, fb_base_addr
-                ));
-
+                    width,
+                    height,
+                    fb_base_addr
+                );
                 return Some(crate::common::FullereneFramebufferConfig {
                     address: fb_base_addr,
-                    width: *width,
-                    height: *height,
+                    width,
+                    height,
                     pixel_format:
                         crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                    bpp: *bpp,
-                    stride: stride,
+                    bpp,
+                    stride: width,
                 });
             }
         }
 
-        // If no standard mode worked, try to determine size by PCI register
-        // Read BAR0 size by writing all 1s and reading back (but we can't do that without PCI_IO write access)
-
-        _print(format_args!(
-            "[GOP-ALT] Could not determine virtio-gpu framebuffer configuration\n"
-        ));
-
+        log_gop!("[GOP-ALT] Could not determine virtio-gpu framebuffer configuration\n");
         None
     }
 
-    /// Probe QXL device for bare-metal framebuffer capability
     fn probe_qxl_framebuffer(
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        _print(format_args!("[BM-GFX] QXL bare-metal detection starting\n"));
+        log_gop!("[BM-GFX] QXL bare-metal detection starting\n");
 
         let guard = match PciIoGuard::new(bs, device.handle) {
             Ok(g) => g,
             Err(status) => {
-                _print(format_args!(
+                log_gop!(
                     "[BM-GFX] Failed to open PCI_IO protocol for QXL: {:#x}\n",
                     status as usize
-                ));
+                );
                 return None;
             }
         };
 
-        // Read PCI configuration to get BAR information
-        let mut config_buf = [0u32; 6]; // First 24 bytes (6 dwords) contain BAR0-BAR5
-
+        let mut config_buf = [0u32; 6];
         let pci_io_ref = unsafe { &*guard.protocol };
-
         let read_result = (pci_io_ref.pci_read)(
             guard.protocol,
-            2,    // Dword width
-            0x10, // Offset - BAR0 offset (0x10)
-            6,    // Count - 6 BARs
+            2,
+            0x10,
+            6,
             config_buf.as_mut_ptr() as *mut core::ffi::c_void,
         );
 
         if EfiStatus::from(read_result) != EfiStatus::Success {
-            _print(format_args!(
+            log_gop!(
                 "[BM-GFX] Failed to read PCI BARs for QXL: {:#x}\n",
                 read_result
-            ));
+            );
             return None;
         }
 
-        // For QXL, BAR1 typically contains the framebuffer address
-        let bar1 = config_buf[1] & 0xFFFFFFF0; // Mask off lower 4 bits (flags)
+        let bar1 = config_buf[1] & 0xFFFFFFF0;
         let bar1_type = config_buf[1] & 0xF;
 
         if bar1 == 0 {
-            _print(format_args!(
-                "[BM-GFX] BAR1 is zero - invalid framebuffer region\n"
-            ));
+            log_gop!("[BM-GFX] BAR1 is zero - invalid framebuffer region\n");
             return None;
         }
-
-        // Check if BAR1 is a memory-mapped region
         if bar1_type & 0x1 != 0 {
-            _print(format_args!(
+            log_gop!(
                 "[BM-GFX] BAR1 is I/O space (type: {}), expected memory space\n",
                 bar1_type
-            ));
+            );
             return None;
         }
 
         let fb_base_addr = bar1 as u64;
-        _print(format_args!("[BM-GFX] QXL BAR1: {:#x}\n", fb_base_addr));
+        log_gop!("[BM-GFX] QXL BAR1: {:#x}\n", fb_base_addr);
 
-        // Based on the log, 1024x768 mode was detected successfully
-        // Use this as the default mode for QXL
         let width = 1024;
         let height = 768;
         let bpp = 32;
-        let stride = width; // Assume pixels_per_scan_line = width
+        let stride = width;
 
-        _print(format_args!(
+        log_gop!(
             "[BM-GFX] Testing {}x{} mode at {:#x} (size: {}KB)\n",
             width,
             height,
             fb_base_addr,
             (height * stride * bpp / 8) / 1024
-        ));
+        );
 
-        // Validate framebuffer access
         if probe_framebuffer_access(fb_base_addr, (height * stride * bpp / 8) as u64) {
-            _print(format_args!(
+            log_gop!(
                 "[BM-GFX] QXL framebuffer mode {}x{} appears valid\n",
-                width, height
-            ));
-
+                width,
+                height
+            );
             Some(crate::common::FullereneFramebufferConfig {
                 address: fb_base_addr,
                 width,
@@ -554,181 +466,138 @@ pub mod graphics_alternatives {
                 stride,
             })
         } else {
-            _print(format_args!(
+            log_gop!(
                 "[BM-GFX] QXL framebuffer mode {}x{} is invalid\n",
-                width, height
-            ));
+                width,
+                height
+            );
             None
         }
     }
 
-    /// Detect graphics devices using bare-metal PCI enumeration
     fn detect_bare_metal_graphics(
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        _print(format_args!(
-            "[BM-GFX] Starting bare-metal graphics detection...\n"
-        ));
+        log_gop!("[BM-GFX] Starting bare-metal graphics detection...\n");
 
-        // Perform direct PCI enumeration to find graphics devices
-        // Based on the log, we expect to find 1 graphics device
         let devices = match enumerate_bare_metal_pci_devices() {
             Some(devices) if !devices.is_empty() => {
-                _print(format_args!(
+                log_gop!(
                     "[BM-GFX] Found {} graphics devices via direct PCI enumeration\n",
                     devices.len()
-                ));
+                );
                 devices
             }
             _ => {
-                _print(format_args!(
-                    "[BM-GFX] No graphics devices found via bare-metal detection\n"
-                ));
+                log_gop!("[BM-GFX] No graphics devices found via bare-metal detection\n");
                 return None;
             }
         };
 
-        // Process each detected device
         for device in devices.iter() {
-            _print(format_args!(
+            log_gop!(
                 "[BM-GFX] Probing device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
-                device.vendor_id, device.device_id, device.bus, device.device, device.function
-            ));
+                device.vendor_id,
+                device.device_id,
+                device.bus,
+                device.device,
+                device.function
+            );
 
-            // Attempt framebuffer detection for known device types.
-            // Use the device's actual handle from PCI enumeration, never a mock handle.
             match (device.vendor_id, device.device_id) {
                 (0x1af4, id) if id >= 0x1050 => {
-                    // virtio-gpu
-                    _print(format_args!(
-                        "[BM-GFX] Detected virtio-gpu, attempting framebuffer detection\n"
-                    ));
+                    log_gop!("[BM-GFX] Detected virtio-gpu, attempting framebuffer detection\n");
                     if let Some(fb_info) = probe_linear_framebuffer(device, bs) {
                         return Some(fb_info);
                     }
                 }
                 (0x1b36, 0x0100) => {
-                    // QXL
-                    _print(format_args!(
-                        "[BM-GFX] Detected QXL device, attempting framebuffer detection\n"
-                    ));
+                    log_gop!("[BM-GFX] Detected QXL device, attempting framebuffer detection\n");
                     if let Some(fb_info) = probe_qxl_framebuffer(device, bs) {
                         return Some(fb_info);
                     }
                 }
                 (0x1234, 0x1111) | (0x1234, 0x1112) => {
-                    // QEMU std VGA / Bochs VBE
-                    _print(format_args!(
+                    log_gop!(
                         "[BM-GFX] Detected std VGA device, attempting framebuffer detection\n"
-                    ));
+                    );
                     if let Some(fb_info) = probe_linear_framebuffer(device, bs) {
                         return Some(fb_info);
                     }
                 }
                 (0x1013, _) => {
-                    // Cirrus Logic VGA
-                    _print(format_args!(
+                    log_gop!(
                         "[BM-GFX] Detected Cirrus Logic VGA, skipping (no linear framebuffer)\n"
-                    ));
+                    );
                 }
                 (0x15ad, 0x0405) => {
-                    // VMware SVGA II
-                    _print(format_args!(
-                        "[BM-GFX] Detected VMware SVGA, not yet implemented\n"
-                    ));
+                    log_gop!("[BM-GFX] Detected VMware SVGA, not yet implemented\n");
                 }
                 _ => {
-                    _print(format_args!(
+                    log_gop!(
                         "[BM-GFX] Unknown graphics device ({:04x}:{:04x}), skipping\n",
-                        device.vendor_id, device.device_id
-                    ));
+                        device.vendor_id,
+                        device.device_id
+                    );
                 }
             }
         }
 
-        _print(format_args!(
-            "[BM-GFX] Bare-metal graphics detection completed without success\n"
-        ));
+        log_gop!("[BM-GFX] Bare-metal graphics detection completed without success\n");
         None
     }
 
-    /// Enumerate PCI devices using direct PCI configuration space reads.
-    /// This is used as a last-resort fallback when UEFI protocols are unavailable.
-    /// On real hardware (e.g. InsydeH2O), this must NOT return fake/mock devices.
     fn enumerate_bare_metal_pci_devices() -> Option<Vec<PciDevice>> {
-        _print(format_args!(
-            "[BM-GFX] Performing bare-metal PCI enumeration...\n"
-        ));
+        log_gop!("[BM-GFX] Performing bare-metal PCI enumeration...\n");
 
-        // Use actual direct PCI enumeration via port I/O.
-        // This only works when UEFI has not locked I/O ports and
-        // the PCI config space is accessible in the conventional way.
         let all_devices = crate::bare_metal_pci::enumerate_all_pci_devices();
-
-        // Filter to graphics devices only (class code 0x03)
         let graphics_devices: Vec<PciDevice> = all_devices
             .into_iter()
             .filter(|dev| dev.class_code == 0x03)
             .collect();
 
         if graphics_devices.is_empty() {
-            _print(format_args!(
-                "[BM-GFX] No graphics devices found via bare-metal PCI enumeration\n"
-            ));
+            log_gop!("[BM-GFX] No graphics devices found via bare-metal PCI enumeration\n");
             None
         } else {
-            _print(format_args!(
+            log_gop!(
                 "[BM-GFX] Found {} graphics devices via bare-metal PCI enumeration\n",
                 graphics_devices.len()
-            ));
+            );
             Some(graphics_devices)
         }
     }
 
-    /// Try to validate framebuffer access at the given address
     fn probe_framebuffer_access(address: u64, size: u64) -> bool {
-        // This is a very basic probe - in UEFI we should use proper memory mapping
-        // For now, we'll just try to read from the address and see if it's accessible
-
-        _print(format_args!(
+        log_gop!(
             "[GOP-ALT] Attempting to validate framebuffer access at {:#x} (size: {}KB)\n",
             address,
             size / 1024
-        ));
+        );
 
-        // Try reading first few bytes to see if memory is accessible
-        // We need to do this very carefully to avoid crashes
         let _ptr = address as *const u8;
 
-        // Check if the address looks valid (not null, not too high)
         if address == 0 || address >= 0xFFFFFFFFFFFFF000 {
-            _print(format_args!(
+            log_gop!(
                 "[GOP-ALT] Framebuffer address {:#x} appears invalid\n",
                 address
-            ));
+            );
             return false;
         }
 
-        // In UEFI, we should use memory services to allocate/map this range first
-        // For now, we'll assume the PCI_IO memory operations will handle this
-        // when we actually access the framebuffer later
-
-        _print(format_args!(
+        log_gop!(
             "[GOP-ALT] Framebuffer address {:#x} appears potentially valid\n",
             address
-        ));
-        true // Assume valid for now - real validation would need proper mem mapping
+        );
+        true
     }
 
-    /// Read PCI configuration register using EFI_PCI_IO_PROTOCOL
-    /// This function maps bus:device:function:register addressing to protocol calls
     pub fn pci_config_read_u32(
         bus: u8,
         device: u8,
         function: u8,
         register: u8,
     ) -> Result<u32, EfiStatus> {
-        // Get UEFI system table
         let system_table_ptr = crate::UEFI_SYSTEM_TABLE.lock().as_ref().cloned();
         let system_table = match system_table_ptr {
             Some(ptr) => unsafe { &*ptr.0 },
@@ -739,8 +608,6 @@ pub mod graphics_alternatives {
         };
 
         let bs = unsafe { &*system_table.boot_services };
-
-        // Build PCI handle for this device location
         let handle = ((bus as usize) << 8) | ((device as usize) << 3) | (function as usize);
 
         let mut pci_io: *mut core::ffi::c_void = core::ptr::null_mut();
@@ -748,9 +615,9 @@ pub mod graphics_alternatives {
             handle,
             graphics_alternatives::EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
             &mut pci_io,
-            0,    // AgentHandle
-            0,    // ControllerHandle
-            0x01, // EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL
+            0,
+            0,
+            0x01,
         );
 
         if EfiStatus::from(status) != EfiStatus::Success || pci_io.is_null() {
@@ -761,19 +628,17 @@ pub mod graphics_alternatives {
             return Err(EfiStatus::from(status));
         }
 
-        // Read using PCI_IO protocol
         let pci_io_ref = unsafe { &*(pci_io as *mut common::EfiPciIoProtocol) };
         let mut value: u32 = 0;
 
         let read_status = (pci_io_ref.pci_read)(
             pci_io as *mut common::EfiPciIoProtocol,
-            2, // Dword width
+            2,
             register as u64,
-            1, // Count
+            1,
             &mut value as *mut u32 as *mut core::ffi::c_void,
         );
 
-        // Close protocol
         (bs.close_protocol)(
             handle,
             graphics_alternatives::EFI_PCI_IO_PROTOCOL_GUID.as_ptr(),
@@ -788,67 +653,57 @@ pub mod graphics_alternatives {
                 "PCI: Read failed for {:02x}:{:02x}:{:02x}:{:02x}: {:#x}\n",
                 bus, device, function, register, read_status
             ));
-            return Err(EfiStatus::from(read_status));
+            Err(EfiStatus::from(read_status))
         }
     }
 
-    /// Probe std VGA (Bochs VBE) device for linear framebuffer capability
     fn probe_std_vga_framebuffer(
         device: &PciDevice,
         bs: &EfiBootServices,
     ) -> Option<crate::common::FullereneFramebufferConfig> {
-        _print(format_args!(
+        log_gop!(
             "[GOP-ALT] Probing std VGA framebuffer at {:02x}:{:02x}:{:02x}\n",
-            device.bus, device.device, device.function
-        ));
+            device.bus,
+            device.device,
+            device.function
+        );
 
         let guard = match PciIoGuard::new(bs, device.handle) {
             Ok(g) => g,
             Err(status) => {
-                _print(format_args!(
-                    "[GOP-ALT] Failed to open PCI_IO: {:#x}\n",
-                    status as usize
-                ));
+                log_gop!("[GOP-ALT] Failed to open PCI_IO: {:#x}\n", status as usize);
                 return None;
             }
         };
 
         let pci_io_ref = unsafe { &*guard.protocol };
-
-        // Read BAR0 (offset 0x10) to get framebuffer physical address
         let mut bar0_raw: u32 = 0;
         let read_result = (pci_io_ref.pci_read)(
             guard.protocol,
-            2,    // Dword
-            0x10, // BAR0 offset
-            1,    // 1 dword
+            2,
+            0x10,
+            1,
             &mut bar0_raw as *mut u32 as *mut core::ffi::c_void,
         );
 
         if EfiStatus::from(read_result) != EfiStatus::Success || (bar0_raw & 0xFFFFFFF0) == 0 {
-            _print(format_args!(
-                "[GOP-ALT] std VGA BAR0 invalid: {:#x}\n",
-                bar0_raw
-            ));
+            log_gop!("[GOP-ALT] std VGA BAR0 invalid: {:#x}\n", bar0_raw);
             return None;
         }
 
         let fb_addr = (bar0_raw & 0xFFFFFFF0) as u64;
-        _print(format_args!(
-            "[GOP-ALT] std VGA framebuffer at {:#x}\n",
-            fb_addr
-        ));
+        log_gop!("[GOP-ALT] std VGA framebuffer at {:#x}\n", fb_addr);
 
-        // Try standard resolutions starting from most common
-        let modes = [(1024, 768, 32), (800, 600, 32), (1280, 1024, 32)];
-        for &(width, height, bpp) in &modes {
+        for &(width, height, bpp) in &[(1024, 768, 32), (800, 600, 32), (1280, 1024, 32)] {
             let stride = width;
             let fb_size = (height as u64 * stride as u64 * bpp as u64 / 8) as u64;
             if probe_framebuffer_access(fb_addr, fb_size) {
-                _print(format_args!(
+                log_gop!(
                     "[GOP-ALT] std VGA framebuffer: {}x{} @ {:#x}\n",
-                    width, height, fb_addr
-                ));
+                    width,
+                    height,
+                    fb_addr
+                );
                 return Some(crate::common::FullereneFramebufferConfig {
                     address: fb_addr,
                     width,
@@ -863,7 +718,7 @@ pub mod graphics_alternatives {
         None
     }
 
-    /// Read from PCI configuration space (simplified - needs proper implementation)
+    #[allow(dead_code)]
     unsafe fn _port_read(_port: u16) -> u32 {
         0xFFFF_FFFF
     }

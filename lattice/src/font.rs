@@ -108,7 +108,7 @@ pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
     }
 
     let _header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+    let _flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let glyph_count = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
     let glyph_bytes = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
     let height = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
@@ -239,6 +239,19 @@ impl Glyph<'_> {
         let byte = self.rows[idx];
         byte & (0x80 >> col) != 0
     }
+
+    /// Return the raw bitmap byte for a given row (0..height).
+    /// Returns 0 if `row` is out of bounds.  Callers can test
+    /// individual bits with `byte & (0x80 >> col) != 0`.
+    #[inline]
+    pub fn row_byte(&self, row: u32) -> u8 {
+        let idx = row as usize;
+        if idx < self.rows.len() {
+            self.rows[idx]
+        } else {
+            0
+        }
+    }
 }
 
 /// Look up a glyph for printable ASCII (0x20–0x7E).
@@ -294,7 +307,25 @@ fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
     Glyph { rows }
 }
 
+/// Single glyph pixel lookup with per-call font selection.
+///
+/// For repeated pixel queries on the same character (e.g. rendering a glyph
+/// row-by-row), prefer [`glyph_fast`] to lock the font mutex once instead
+/// of on every pixel access.
 #[inline]
 pub fn get_glyph_pixel(ch: u8, row: u32, col: u32) -> bool {
     glyph(ch).pixel(row, col)
+}
+
+/// Return a `Glyph` for ASCII without Mutex contention per pixel.
+///
+/// This checks PSF once and returns either the PSF glyph or the embedded
+/// glyph, so callers can do many `.pixel()` calls without re‑locking.
+#[inline]
+pub fn glyph_fast(ch: u8) -> Glyph<'static> {
+    // Fast path: check PSF only once
+    if let Some(ref psf) = *PSF_FONT.lock() {
+        return psf_glyph(psf, ch);
+    }
+    embedded_glyph(ch)
 }

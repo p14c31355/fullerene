@@ -78,7 +78,7 @@ impl ProcessPageTable {
     pub fn initialize_with_frame_allocator(
         &mut self,
         phys_offset: VirtAddr,
-        frame_allocator: &mut BootInfoFrameAllocator,
+        _frame_allocator: &mut BootInfoFrameAllocator,
         _kernel_phys_start: u64,
     ) -> crate::common::logging::SystemResult<()> {
         if self.initialized {
@@ -132,19 +132,19 @@ impl PageTableHelper for ProcessPageTable {
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {}
                 Err(x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed) => {
-                    crate::write_serial_bytes!(
+                    crate::write_serial_bytes(
                         0x3F8,
                         0x3FD,
-                        b"DEBUG: [map_page] FrameAllocationFailed\n"
+                        b"DEBUG: [map_page] FrameAllocationFailed\n",
                     );
                     return Err(crate::common::logging::SystemError::FrameAllocationFailed);
                 }
                 Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {
                     // Split the 2MB huge page into 512 4KB pages, then retry the mapping.
-                    crate::write_serial_bytes!(
+                    crate::write_serial_bytes(
                         0x3F8,
                         0x3FD,
-                        b"DEBUG: [map_page] ParentEntryHugePage, splitting...\n"
+                        b"DEBUG: [map_page] ParentEntryHugePage, splitting...\n",
                     );
                     split_huge_page_2mb(mapper, virtual_addr, flags, frame_allocator)
                         .map_err(|_| crate::common::logging::SystemError::MappingFailed)?;
@@ -155,11 +155,11 @@ impl PageTableHelper for ProcessPageTable {
                         Ok(flush) => {
                             flush.flush();
                         }
-                        Err(e) => {
-                            crate::write_serial_bytes!(
+                        Err(_e) => {
+                            crate::write_serial_bytes(
                                 0x3F8,
                                 0x3FD,
-                                b"DEBUG: [map_page] Retry failed after split\n"
+                                b"DEBUG: [map_page] Retry failed after split\n",
                             );
                             return Err(crate::common::logging::SystemError::MappingFailed);
                         }
@@ -383,7 +383,7 @@ impl PageTableHelper for ProcessPageTable {
             self.pml4_frame = Some(current_pml4);
         }
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table minimal v2\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: clone_page_table minimal v2\n");
 
         let source_frame = if let Some(frame) = self.allocated_tables.get(&source_table) {
             *frame
@@ -395,27 +395,27 @@ impl PageTableHelper for ProcessPageTable {
         {
             self.pml4_frame.unwrap()
         } else {
-            crate::write_serial_bytes!(
+            crate::write_serial_bytes(
                 0x3F8,
                 0x3FD,
-                b"DEBUG: clone_page_table invalid source_table\n"
+                b"DEBUG: clone_page_table invalid source_table\n",
             );
             return Err(crate::common::logging::SystemError::InvalidArgument);
         };
-        crate::write_serial_bytes!(
+        crate::write_serial_bytes(
             0x3F8,
             0x3FD,
-            b"DEBUG: clone_page_table source_frame obtained\n"
+            b"DEBUG: clone_page_table source_frame obtained\n",
         );
 
         let new_frame = frame_allocator
             .allocate_frame()
             .ok_or(crate::common::logging::SystemError::FrameAllocationFailed)?;
 
-        crate::write_serial_bytes!(
+        crate::write_serial_bytes(
             0x3F8,
             0x3FD,
-            b"DEBUG: clone_page_table new_frame allocated\n"
+            b"DEBUG: clone_page_table new_frame allocated\n",
         );
 
         let mapper = self.mapper.as_mut().unwrap();
@@ -428,19 +428,19 @@ impl PageTableHelper for ProcessPageTable {
         // Debugging addresses
         let mut buf = [0u8; 16];
         let len = crate::serial::format_hex_to_buffer(phys_offset.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: phys_offset: 0x");
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: phys_offset: 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         let len = crate::serial::format_hex_to_buffer(src_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: src_va: 0x");
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: src_va: 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         let len = crate::serial::format_hex_to_buffer(dst_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: dst_va: 0x");
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: dst_va: 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         // Shallow copy: copy all entries from source to destination
         // This shares page tables between processes (kernel pages are shared, user pages will be copied on write later)
@@ -462,7 +462,7 @@ impl PageTableHelper for ProcessPageTable {
         self.allocated_tables
             .insert(new_frame.start_address().as_u64() as usize, new_frame);
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: clone_page_table shallow done\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: clone_page_table shallow done\n");
         Ok(new_frame.start_address().as_u64() as usize)
     }
 
@@ -657,56 +657,56 @@ impl ProcessPageTable {
 
         // Debug output for addresses
         let mut buf = [0u8; 16];
-        crate::write_serial_bytes!(
+        crate::write_serial_bytes(
             0x3F8,
             0x3FD,
-            b"DEBUG: [clone_recursive_fixed] source_va: 0x"
+            b"DEBUG: [clone_recursive_fixed] source_va: 0x",
         );
         let len = crate::serial::format_hex_to_buffer(source_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] dest_va: 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [clone_recursive_fixed] dest_va: 0x");
         let len = crate::serial::format_hex_to_buffer(dest_va.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         unsafe {
-            crate::write_serial_bytes!(
+            crate::write_serial_bytes(
                 0x3F8,
                 0x3FD,
-                b"DEBUG: [clone_recursive_fixed] writing dest table\n"
+                b"DEBUG: [clone_recursive_fixed] writing dest table\n",
             );
             let dest_ptr = dest_va.as_mut_ptr::<u8>() as *mut u8;
             core::ptr::write_bytes(dest_ptr, 0, 4096);
 
-            crate::write_serial_bytes!(
+            crate::write_serial_bytes(
                 0x3F8,
                 0x3FD,
-                b"DEBUG: [clone_recursive_fixed] reading source table\n"
+                b"DEBUG: [clone_recursive_fixed] reading source table\n",
             );
             let source_table = &*(source_va.as_ptr::<PageTable>());
             let dest_table = &mut *(dest_va.as_mut_ptr::<PageTable>());
 
-            crate::write_serial_bytes!(
+            crate::write_serial_bytes(
                 0x3F8,
                 0x3FD,
-                b"DEBUG: [clone_recursive_fixed] starting loop\n"
+                b"DEBUG: [clone_recursive_fixed] starting loop\n",
             );
-            for (i, (source_entry, dest_entry)) in
+            for (_i, (source_entry, dest_entry)) in
                 source_table.iter().zip(dest_table.iter_mut()).enumerate()
             {
                 if source_entry.flags().contains(PageTableFlags::PRESENT) {
-                    crate::write_serial_bytes!(
+                    crate::write_serial_bytes(
                         0x3F8,
                         0x3FD,
-                        b"DEBUG: [clone_recursive_fixed] processing present entry\n"
+                        b"DEBUG: [clone_recursive_fixed] processing present entry\n",
                     );
                     if level > 1 && !source_entry.flags().contains(PageTableFlags::HUGE_PAGE) {
-                        crate::write_serial_bytes!(
+                        crate::write_serial_bytes(
                             0x3F8,
                             0x3FD,
-                            b"DEBUG: [clone_recursive_fixed] recursing\n"
+                            b"DEBUG: [clone_recursive_fixed] recursing\n",
                         );
                         if let Some(child_frame) = extract_frame_if_present!(source_entry) {
                             let cloned_child_phys = Self::clone_page_table_recursive_fixed(
@@ -719,10 +719,10 @@ impl ProcessPageTable {
                                 cloned_tables,
                                 cloned_count,
                             )?;
-                            crate::write_serial_bytes!(
+                            crate::write_serial_bytes(
                                 0x3F8,
                                 0x3FD,
-                                b"DEBUG: [clone_recursive_fixed] recurse returned\n"
+                                b"DEBUG: [clone_recursive_fixed] recurse returned\n",
                             );
                             dest_entry.set_addr(cloned_child_phys, source_entry.flags());
                         }

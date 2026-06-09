@@ -43,7 +43,10 @@ fn main() -> io::Result<()> {
     extract_pcm_audio(&args.input, &args.pcm_out)?;
 
     // ── Step 2: Extract raw 1‑bit frames via ffmpeg pipe ──────
-    eprintln!("[2/3] Extracting & RLE‑compressing frames → {}", args.rle_out);
+    eprintln!(
+        "[2/3] Extracting & RLE‑compressing frames → {}",
+        args.rle_out
+    );
     convert_video_to_rle(&args.input, &args.rle_out)?;
 
     eprintln!("[3/3] Done.");
@@ -54,13 +57,19 @@ fn main() -> io::Result<()> {
 fn extract_pcm_audio(input: &str, output: &str) -> io::Result<()> {
     let status = Command::new("ffmpeg")
         .args([
-            "-v", "error",
-            "-i", input,
+            "-v",
+            "error",
+            "-i",
+            input,
             "-vn",
-            "-ac", "1",
-            "-ar", &AUDIO_SAMPLE_RATE.to_string(),
-            "-sample_fmt", "s16",
-            "-f", "s16le",
+            "-ac",
+            "1",
+            "-ar",
+            &AUDIO_SAMPLE_RATE.to_string(),
+            "-sample_fmt",
+            "s16",
+            "-f",
+            "s16le",
             "-y",
             output,
         ])
@@ -76,12 +85,17 @@ fn extract_pcm_audio(input: &str, output: &str) -> io::Result<()> {
 fn convert_video_to_rle(input: &str, output: &str) -> io::Result<()> {
     let mut ffmpeg = Command::new("ffmpeg")
         .args([
-            "-v", "error",
-            "-i", input,
+            "-v",
+            "error",
+            "-i",
+            input,
             "-an",
-            "-vf", &format!("scale={}:{},format=gray", FRAME_W, FRAME_H),
-            "-f", "rawvideo",
-            "-pix_fmt", "gray",
+            "-vf",
+            &format!("scale={}:{},format=gray", FRAME_W, FRAME_H),
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "gray",
             "-",
         ])
         .stdin(Stdio::null())
@@ -89,7 +103,10 @@ fn convert_video_to_rle(input: &str, output: &str) -> io::Result<()> {
         .stderr(Stdio::inherit())
         .spawn()?;
 
-    let stdout = ffmpeg.stdout.take().expect("failed to capture ffmpeg stdout");
+    let stdout = ffmpeg
+        .stdout
+        .take()
+        .expect("failed to capture ffmpeg stdout");
 
     let mut reader = io::BufReader::with_capacity(PIXELS_PER_FRAME * 256, stdout);
     let mut frame_buf = vec![0u8; PIXELS_PER_FRAME];

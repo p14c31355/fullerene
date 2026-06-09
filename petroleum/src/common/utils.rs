@@ -40,7 +40,7 @@ pub fn check_buffer_overflow(
 ///
 /// The caller must ensure that the resulting pointer is within the bounds of the allocated object.
 pub unsafe fn calculate_descriptor_ptr(ptr: *const u8, index: usize, size: usize) -> *const u8 {
-    ptr.add(index * size)
+    unsafe { ptr.add(index * size) }
 }
 
 /// Calculates the end address of a memory region given start address and page count.
@@ -58,7 +58,7 @@ pub unsafe fn calculate_metadata_ptr(
     total_size: usize,
     metadata_size: usize,
 ) -> *const u8 {
-    base.add(total_size - metadata_size)
+    unsafe { base.add(total_size - metadata_size) }
 }
 
 /// Calculates the number of pages needed to cover a given size, rounding up.
@@ -86,13 +86,15 @@ pub fn sign_extend_virt_addr(addr: u64) -> u64 {
 /// This is a highly unsafe operation that should only be used during early boot
 /// to handle cases where .bss is not cleared.
 pub unsafe fn reset_mutex_lock<T>(mutex: &Mutex<T>) {
-    // A spin::Mutex has the lock state (AtomicBool or similar) at the beginning of the struct.
-    // Use addr_of! to get the address without creating a reference, avoiding
-    // invalid_reference_casting lint.
-    // SAFETY: The caller guarantees this is a static Mutex that hasn't been locked yet,
-    // and writing 0 to the lock byte is safe during early boot initialization.
-    let lock_ptr = core::ptr::addr_of!(*mutex).cast::<u32>().cast_mut();
-    core::ptr::write_volatile(lock_ptr, 0);
+    unsafe {
+        // A spin::Mutex has the lock state (AtomicBool or similar) at the beginning of the struct.
+        // Use addr_of! to get the address without creating a reference, avoiding
+        // invalid_reference_casting lint.
+        // SAFETY: The caller guarantees this is a static Mutex that hasn't been locked yet,
+        // and writing 0 to the lock byte is safe during early boot initialization.
+        let lock_ptr = core::ptr::addr_of!(*mutex).cast::<u32>().cast_mut();
+        core::ptr::write_volatile(lock_ptr, 0);
+    }
 }
 
 #[cfg(test)]

@@ -132,9 +132,21 @@ pub fn get_color(name: &str) -> Option<u32> {
 /// List all available colour names.
 pub fn color_names() -> &'static [&'static str] {
     &[
-        "bg", "surface", "primary", "active", "text", "muted",
-        "border_active", "border_inactive", "title_active", "title_inactive",
-        "accent", "danger", "taskbar_bg", "taskbar_text",
-        "taskbar_active_bg", "taskbar_inactive_bg",
+        "bg",
+        "surface",
+        "primary",
+        "active",
+        "text",
+        "muted",
+        "border_active",
+        "border_inactive",
+        "title_active",
+        "title_inactive",
+        "accent",
+        "danger",
+        "taskbar_bg",
+        "taskbar_text",
+        "taskbar_active_bg",
+        "taskbar_inactive_bg",
     ]
 }

@@ -3,9 +3,9 @@
 //! Renders clickable icons on the desktop background layer,
 //! with labels and hit-testing for mouse events.
 
+use crate::compositor::COLOR_TEXT;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::compositor::COLOR_TEXT;
 
 /// A single desktop icon entry.
 #[derive(Debug, Clone)]

@@ -69,17 +69,20 @@ pub struct VirtioGpuCtrlHeader {
     pub ctx_id: u32,
     pub padding: u32,
 }
-impl VirtioGpuCtrlHeader {
-    pub fn to_le(self) -> Self {
-        Self {
-            type_: self.type_.to_le(),
-            flags: self.flags.to_le(),
-            fence_id: self.fence_id.to_le(),
-            ctx_id: self.ctx_id.to_le(),
-            padding: self.padding.to_le(),
+macro_rules! impl_to_le {
+    ($ty:ident { $($field:ident),+ $(,)? }) => {
+        impl $ty {
+            pub fn to_le(self) -> Self { Self { $($field: self.$field.to_le()),+ } }
         }
-    }
+    };
 }
+impl_to_le!(VirtioGpuCtrlHeader {
+    type_,
+    flags,
+    fence_id,
+    ctx_id,
+    padding
+});
 
 pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x0100;
 pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x0101;
@@ -96,17 +99,13 @@ pub struct VirtioGpuResourceCreate2d {
     pub width: u32,
     pub height: u32,
 }
-impl VirtioGpuResourceCreate2d {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            resource_id: self.resource_id.to_le(),
-            format: self.format.to_le(),
-            width: self.width.to_le(),
-            height: self.height.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuResourceCreate2d {
+    hdr,
+    resource_id,
+    format,
+    width,
+    height
+});
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -116,16 +115,12 @@ pub struct VirtioGpuRect {
     pub width: u32,
     pub height: u32,
 }
-impl VirtioGpuRect {
-    pub fn to_le(self) -> Self {
-        Self {
-            x: self.x.to_le(),
-            y: self.y.to_le(),
-            width: self.width.to_le(),
-            height: self.height.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuRect {
+    x,
+    y,
+    width,
+    height
+});
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -135,16 +130,12 @@ pub struct VirtioGpuSetScanout {
     pub scanout_id: u32,
     pub resource_id: u32,
 }
-impl VirtioGpuSetScanout {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            r: self.r.to_le(),
-            scanout_id: self.scanout_id.to_le(),
-            resource_id: self.resource_id.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuSetScanout {
+    hdr,
+    r,
+    scanout_id,
+    resource_id
+});
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VirtioGpuResourceFlush {
@@ -153,16 +144,12 @@ pub struct VirtioGpuResourceFlush {
     pub resource_id: u32,
     pub padding: u32,
 }
-impl VirtioGpuResourceFlush {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            r: self.r.to_le(),
-            resource_id: self.resource_id.to_le(),
-            padding: self.padding.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuResourceFlush {
+    hdr,
+    r,
+    resource_id,
+    padding
+});
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -171,15 +158,11 @@ pub struct VirtioGpuMemEntry {
     pub length: u32,
     pub padding: u32,
 }
-impl VirtioGpuMemEntry {
-    pub fn to_le(self) -> Self {
-        Self {
-            addr: self.addr.to_le(),
-            length: self.length.to_le(),
-            padding: self.padding.to_le(),
-        }
-    }
-}
+impl_to_le!(VirtioGpuMemEntry {
+    addr,
+    length,
+    padding
+});
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -189,16 +172,12 @@ pub struct AttachCmd {
     pub nr_entries: u32,
     pub entry: VirtioGpuMemEntry,
 }
-impl AttachCmd {
-    pub fn to_le(self) -> Self {
-        Self {
-            hdr: self.hdr.to_le(),
-            resource_id: self.resource_id.to_le(),
-            nr_entries: self.nr_entries.to_le(),
-            entry: self.entry.to_le(),
-        }
-    }
-}
+impl_to_le!(AttachCmd {
+    hdr,
+    resource_id,
+    nr_entries,
+    entry
+});
 
 /// VirtIO GPU hardware driver.
 ///
@@ -729,69 +708,71 @@ impl VirtioGpu {
     }
 
     unsafe fn submit_raw(&mut self, cmd_offset: u32, cmd_len: u32) {
-        log::info!(
-            "[VirtIO-GPU] submit_raw: next_desc={}, cmd_offset={}, cmd_len={}",
-            self.next_desc,
-            cmd_offset,
-            cmd_len
-        );
-        let d0 = self.next_desc;
-        let d1 = (self.next_desc + 1) % QUEUE_SIZE;
-        self.next_desc = (self.next_desc + 2) % QUEUE_SIZE;
-
-        let cmd_phys = self.cmd_buf_phys + cmd_offset as u64;
-        let resp_phys = self.resp_buf_phys;
-
-        let desc0 = &mut *self.desc_table.add(d0 as usize);
-        desc0.addr = cmd_phys.to_le();
-        desc0.len = cmd_len.to_le();
-        desc0.flags = VRING_DESC_F_NEXT.to_le();
-        desc0.next = d1.to_le();
-
-        let desc1 = &mut *self.desc_table.add(d1 as usize);
-        desc1.addr = resp_phys.to_le();
-        desc1.len = self.resp_buf_len.to_le();
-        desc1.flags = VRING_DESC_F_WRITE.to_le();
-        desc1.next = 0;
-
-        self.dma_fence();
-
-        let av = &mut *self.avail_ring;
-        let idx = u16::from_le(av.idx);
-        av.flags = 0u16.to_le();
-        let ring_idx = (idx % QUEUE_SIZE) as usize;
-        av.ring[ring_idx] = d0.to_le();
-        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        av.idx = idx.wrapping_add(1).to_le();
-
-        self.debug_submit_raw(cmd_phys, resp_phys, d0, d1, ring_idx);
-
-        // DMA fence: ensure all prior stores reach main memory for device DMA visibility
-        self.dma_fence();
-
-        // Notify: use the notify BAR base + notify capability offset + queue notify offset
-        let notify_off = self.get_notify_offset(0);
-        let notify_ptr = unsafe {
-            self.notify_bar_base
-                .add(self.notify_cap_offset as usize)
-                .add(notify_off) as *mut u32
-        };
-        // Modern mode: notify value is le32 queue index (not legacy u16)
-        let notify_val = 0u32.to_le();
-        log::info!(
-            "[VirtIO-GPU] NOTIFYING: addr={:#p}, val={:#x}",
-            notify_ptr,
-            notify_val
-        );
         unsafe {
-            core::ptr::write_volatile(notify_ptr, notify_val);
-        }
-        // MMIO read-back fence: InsydeH2O (and some KVM/QEMU configs) may
-        // buffer PCIe posted writes.  A volatile read from the common config
-        // forces the write to be flushed to the device before we start
-        // polling the used ring.
-        unsafe {
-            core::ptr::read_volatile(self.common_virt_absolute);
+            log::info!(
+                "[VirtIO-GPU] submit_raw: next_desc={}, cmd_offset={}, cmd_len={}",
+                self.next_desc,
+                cmd_offset,
+                cmd_len
+            );
+            let d0 = self.next_desc;
+            let d1 = (self.next_desc + 1) % QUEUE_SIZE;
+            self.next_desc = (self.next_desc + 2) % QUEUE_SIZE;
+
+            let cmd_phys = self.cmd_buf_phys + cmd_offset as u64;
+            let resp_phys = self.resp_buf_phys;
+
+            let desc0 = &mut *self.desc_table.add(d0 as usize);
+            desc0.addr = cmd_phys.to_le();
+            desc0.len = cmd_len.to_le();
+            desc0.flags = VRING_DESC_F_NEXT.to_le();
+            desc0.next = d1.to_le();
+
+            let desc1 = &mut *self.desc_table.add(d1 as usize);
+            desc1.addr = resp_phys.to_le();
+            desc1.len = self.resp_buf_len.to_le();
+            desc1.flags = VRING_DESC_F_WRITE.to_le();
+            desc1.next = 0;
+
+            self.dma_fence();
+
+            let av = &mut *self.avail_ring;
+            let idx = u16::from_le(av.idx);
+            av.flags = 0u16.to_le();
+            let ring_idx = (idx % QUEUE_SIZE) as usize;
+            av.ring[ring_idx] = d0.to_le();
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            av.idx = idx.wrapping_add(1).to_le();
+
+            self.debug_submit_raw(cmd_phys, resp_phys, d0, d1, ring_idx);
+
+            // DMA fence: ensure all prior stores reach main memory for device DMA visibility
+            self.dma_fence();
+
+            // Notify: use the notify BAR base + notify capability offset + queue notify offset
+            let notify_off = self.get_notify_offset(0);
+            let notify_ptr = unsafe {
+                self.notify_bar_base
+                    .add(self.notify_cap_offset as usize)
+                    .add(notify_off) as *mut u32
+            };
+            // Modern mode: notify value is le32 queue index (not legacy u16)
+            let notify_val = 0u32.to_le();
+            log::info!(
+                "[VirtIO-GPU] NOTIFYING: addr={:#p}, val={:#x}",
+                notify_ptr,
+                notify_val
+            );
+            unsafe {
+                core::ptr::write_volatile(notify_ptr, notify_val);
+            }
+            // MMIO read-back fence: InsydeH2O (and some KVM/QEMU configs) may
+            // buffer PCIe posted writes.  A volatile read from the common config
+            // forces the write to be flushed to the device before we start
+            // polling the used ring.
+            unsafe {
+                core::ptr::read_volatile(self.common_virt_absolute);
+            }
         }
     }
 

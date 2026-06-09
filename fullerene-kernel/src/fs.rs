@@ -10,9 +10,9 @@
 //!                 fs.rs → vfs.rs → FAT32 (future)
 //! ```
 
+use crate::vfs;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::vfs;
 
 /// Initialize the file system by mounting the VFS.
 pub fn init() {

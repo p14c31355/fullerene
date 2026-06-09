@@ -216,7 +216,9 @@ impl EventHandler for WmEventHandler {
                     render_cursor_only(prev_x, prev_y, *x, *y);
                     return true;
                 }
-                Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::TimeZoneSelector => {
+                Event::Input(InputEvent::MouseDown(_))
+                    if rt.shell_state == ShellState::TimeZoneSelector =>
+                {
                     // In timezone selector: determine which entry was clicked
                     let mouse = MOUSE_STATE.lock();
                     let cx = mouse.x as i32;
@@ -236,7 +238,8 @@ impl EventHandler for WmEventHandler {
                     for (i, offset) in timezones.iter().enumerate() {
                         let ey = start_y + (i as i32) * (entry_h + pad);
                         if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
-                            TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
+                            TIMEZONE_OFFSET_HOURS
+                                .store(*offset, core::sync::atomic::Ordering::Relaxed);
                             rt.shell_state = ShellState::Desktop;
                             rt.frame_due = true;
                             return true;
@@ -269,7 +272,8 @@ impl EventHandler for WmEventHandler {
                     let ax = pad + col * (icon_size + pad);
                     let ay = start_y + row * (icon_size + label_h + pad);
 
-                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
+                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h
+                    {
                         rt.shell_state = ShellState::TimeZoneSelector;
                         rt.frame_due = true;
                         return true;
@@ -387,52 +391,25 @@ impl EventHandler for ShellEventHandler {
     }
 }
 
-fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
-    use KeyCode::*;
-    Some(match key {
-        Enter => b'\n',
-        Space => b' ',
-        Backspace => 0x08,
-        Tab => b'\t',
-        A => b'a',
-        B => b'b',
-        C => b'c',
-        D => b'd',
-        E => b'e',
-        F => b'f',
-        G => b'g',
-        H => b'h',
-        I => b'i',
-        J => b'j',
-        K => b'k',
-        L => b'l',
-        M => b'm',
-        N => b'n',
-        O => b'o',
-        P => b'p',
-        Q => b'q',
-        R => b'r',
-        S => b's',
-        T => b't',
-        U => b'u',
-        V => b'v',
-        W => b'w',
-        X => b'x',
-        Y => b'y',
-        Z => b'z',
-        Digit0 => b'0',
-        Digit1 => b'1',
-        Digit2 => b'2',
-        Digit3 => b'3',
-        Digit4 => b'4',
-        Digit5 => b'5',
-        Digit6 => b'6',
-        Digit7 => b'7',
-        Digit8 => b'8',
-        Digit9 => b'9',
-        _ => return None,
-    })
+macro_rules! key_ascii {
+    ($($variant:ident => $ch:expr),+ $(,)?) => {
+        fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
+            use KeyCode::*;
+            Some(match key { $($variant => $ch,)+ _ => return None })
+        }
+    };
 }
+key_ascii!(
+    Enter => b'\n', Space => b' ', Backspace => 0x08, Tab => b'\t',
+    A => b'a', B => b'b', C => b'c', D => b'd', E => b'e', F => b'f',
+    G => b'g', H => b'h', I => b'i', J => b'j', K => b'k', L => b'l',
+    M => b'm', N => b'n', O => b'o', P => b'p', Q => b'q', R => b'r',
+    S => b's', T => b't', U => b'u', V => b'v', W => b'w', X => b'x',
+    Y => b'y', Z => b'z',
+    Digit0 => b'0', Digit1 => b'1', Digit2 => b'2', Digit3 => b'3',
+    Digit4 => b'4', Digit5 => b'5', Digit6 => b'6', Digit7 => b'7',
+    Digit8 => b'8', Digit9 => b'9',
+);
 
 // ── Input polling ────────────────────────────────────────────
 
@@ -538,8 +515,8 @@ fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
 
     if extended {
         match base {
-            0x1D => return KeyCode::Ctrl,      // RCtrl as Ctrl
-            0x38 => return KeyCode::Alt,        // RAlt as Alt
+            0x1D => return KeyCode::Ctrl, // RCtrl as Ctrl
+            0x38 => return KeyCode::Alt,  // RAlt as Alt
             0x5B => return KeyCode::SuperLeft,
             0x5C => return KeyCode::SuperRight,
             _ => {}
@@ -664,17 +641,29 @@ pub fn process_events() {
 
 // ── Clock update ─────────────────────────────────────────────
 
+/// Days in a given month, accounting for leap years.
+fn days_in_month(month: i16, year: i16) -> i16 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            if leap { 29 } else { 28 }
+        }
+        _ => 31,
+    }
+}
+
 /// Update the taskbar clock from the wall‑clock callback.
 /// Format: "YYYY MMDD HHMM" (e.g. "2026 0606 2200").
-/// Current timezone offset in hours (UTC + offset = local time).
-pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 = core::sync::atomic::AtomicI8::new(9);
+pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
+    core::sync::atomic::AtomicI8::new(9);
 
 pub fn update_clock() {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
 
     let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
         if let Some((year, month, day, mut hour, minute, _second)) = get_time() {
-            // Apply timezone offset
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;
             let mut local_month = month as i16;
@@ -689,18 +678,7 @@ pub fn update_clock() {
                 local_day += 1;
             }
 
-            // Handle day overflow — simple month-length table
-            let days_in_month = match local_month {
-                1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
-                4 | 6 | 9 | 11 => 30i16,
-                2 => {
-                    let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
-                    if leap { 29 } else { 28 }
-                }
-                _ => 31,
-            };
-
-            if local_day > days_in_month {
+            if local_day > days_in_month(local_month, local_year) {
                 local_day = 1;
                 local_month += 1;
                 if local_month > 12 {
@@ -713,16 +691,7 @@ pub fn update_clock() {
                     local_month = 12;
                     local_year -= 1;
                 }
-                let prev_days = match local_month {
-                    1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
-                    4 | 6 | 9 | 11 => 30i16,
-                    2 => {
-                        let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
-                        if leap { 29 } else { 28 }
-                    }
-                    _ => 31,
-                };
-                local_day = prev_days + local_day;
+                local_day = days_in_month(local_month, local_year) + local_day;
             }
 
             format!(
@@ -769,6 +738,11 @@ pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
 {
+    // Skip compositor when rendering is suspended (e.g. BadApple playback).
+    if *RENDERING_SUSPENDED.lock() {
+        return;
+    }
+
     let mut rt_lock = RUNTIME.lock();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
@@ -852,16 +826,24 @@ where
             if was_transition || (bw > 0 && bh > 0) {
                 let fb_w = fb_width as usize;
                 if was_transition {
-                    // Full-screen blit on transition
+                    // Full-screen blit on transition: non‑temporal store
                     let copy_len = fb_len.min(back.len());
-                    fb_pixels[..copy_len].copy_from_slice(&back[..copy_len]);
+                    unsafe {
+                        copy_to_fb_volatile(fb_pixels.as_mut_ptr(), back.as_ptr(), copy_len);
+                    }
                 } else {
                     let b_w = bw as usize;
                     for row in 0..bh {
                         let off = ((by + row) as usize) * fb_w + (bx as usize);
                         let len = b_w.min(fb_len.saturating_sub(off));
                         if len > 0 {
-                            fb_pixels[off..off + len].copy_from_slice(&back[off..off + len]);
+                            unsafe {
+                                copy_to_fb_volatile(
+                                    fb_pixels.as_mut_ptr().add(off),
+                                    back.as_ptr().add(off),
+                                    len,
+                                );
+                            }
                         }
                     }
                 }
@@ -877,9 +859,13 @@ where
                 render_app_grid(fb_pixels, fb_width, fb_height);
             }
             ShellState::TimeZoneSelector => {
-                let current_offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+                let current_offset =
+                    TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
                 lattice::shell_overlay::render_timezone_selector(
-                    fb_pixels, fb_width, fb_height, current_offset,
+                    fb_pixels,
+                    fb_width,
+                    fb_height,
+                    current_offset,
                 );
             }
             ShellState::Desktop => {}
@@ -921,10 +907,14 @@ fn save_cursor_backing(fb: &[u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
 
     for row in 0..sz {
         let dy = dst_y + row;
-        if dy < 0 || dy >= fbh as i32 { continue; }
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
         for col in 0..sz {
             let dx = dst_x + col;
-            if dx < 0 || dx >= fbw as i32 { continue; }
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
             let idx = (dy as usize) * fb_w + dx as usize;
             if idx < fb_len {
                 unsafe {
@@ -971,6 +961,22 @@ fn draw_cursor_on_fb(fb: &mut [u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
     }
 }
 
+/// Copy `len` u32 pixels from back‑buffer `src` to framebuffer `dst`.
+///
+/// Uses `core::ptr::copy_nonoverlapping` for maximum throughput.
+/// The caller must issue an `sfence` (or equivalent GPU flush) after
+/// the copy to make the writes globally visible for WC/UC framebuffers.
+///
+/// # Safety
+/// `dst` and `src` must be valid for `len` u32 reads/writes.
+/// Both pointers must be suitably aligned for u32 access (4 bytes).
+/// Regions must NOT overlap.
+unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
+    unsafe {
+        core::ptr::copy_nonoverlapping(src, dst, len);
+    }
+}
+
 /// Lightweight cursor-only redraw — no compositor, no overlay re‑render.
 ///
 /// Restores the pixels under the old cursor position from `CURSOR_BACKING`,
@@ -1009,7 +1015,8 @@ fn render_cursor_only(prev_x: i32, prev_y: i32, new_x: i32, new_y: i32) {
                 }
                 let idx = (dy as usize) * fb_w + dx as usize;
                 if idx < fb_len {
-                    let backing = unsafe { CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] };
+                    let backing =
+                        unsafe { CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] };
                     fb[idx] = backing;
                 }
             }
@@ -1108,7 +1115,8 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
                     // Extension failed — keep old size, don't risk OOM.
                     return;
                 } else {
-                    HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
+                    HEAP_EXTEND_RESERVE
+                        .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
                 }
             } else {
                 return;
@@ -1245,15 +1253,23 @@ pub fn set_render_fn(f: fn()) {
 fn runtime_tick_no_fb() {
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+
+    // Suppress rendering while suspended.
+    if *RENDERING_SUSPENDED.lock() {
+        return;
+    }
     poll_mouse_state();
     poll_keyboard();
     update_clock();
     chrono_tick(now);
     process_events();
 
-    let do_render = RUNTIME.lock().as_ref().map_or(false, |r| r.frame_due);
+    let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
+        let due = r.frame_due;
+        r.frame_due = false;
+        due
+    });
     if do_render {
-        RUNTIME.lock().as_mut().map(|r| r.frame_due = false);
         if let Some(render_fn) = *RENDER_FN.lock() {
             render_fn();
         }
@@ -1266,16 +1282,24 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
 {
+    // Skip tick when rendering is suspended (e.g. BadApple playback).
+    // Still update global tick to keep keyboard repeat timed.
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+    if *RENDERING_SUSPENDED.lock() {
+        return;
+    }
     poll_mouse_state();
     poll_keyboard();
     update_clock();
     chrono_tick(now);
     process_events();
 
-    let do_render = RUNTIME.lock().as_ref().map_or(false, |r| r.frame_due);
+    let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
+        let due = r.frame_due;
+        r.frame_due = false;
+        due
+    });
     if do_render {
-        RUNTIME.lock().as_mut().map(|r| r.frame_due = false);
         render(framebuffer_fn);
     }
 }
@@ -1287,6 +1311,24 @@ pub fn write_terminal(s: &str) {
     }
 }
 
+/// Global flag to temporarily suspend the compositor render pass.
+/// When set, `runtime_tick` and `render` will skip framebuffer
+/// writes so that another subsystem (e.g. BadApple) can drive the
+/// framebuffer exclusively.
+static RENDERING_SUSPENDED: spin::Mutex<bool> = spin::Mutex::new(false);
+
+/// Suspend solvent compositor rendering.
+/// Call before taking exclusive control of the framebuffer.
+pub fn suspend_rendering() {
+    *RENDERING_SUSPENDED.lock() = true;
+}
+
+/// Resume solvent compositor rendering.
+/// Call after releasing exclusive framebuffer control.
+pub fn resume_rendering() {
+    *RENDERING_SUSPENDED.lock() = false;
+}
+
 /// Trigger a full desktop redraw on the next render pass.
 /// Used by external subsystems (e.g. BadApple) to restore the
 /// desktop after direct framebuffer manipulation.
@@ -1295,4 +1337,21 @@ pub fn force_desktop_redraw() {
         r.desktop.force_full_redraw();
         r.frame_due = true;
     }
+}
+
+// ── Theme / wallpaper bridges (avoid kernel → lattice coupling) ─────
+
+pub use lattice::theme::{ThemeVariant, current_theme_variant, set_theme, toggle_theme};
+pub use lattice::wallpaper::{WallpaperMode, get_wallpaper, set_wallpaper};
+
+// ── Shell bootstrap (moved from kernel to respect dependency direction)
+
+/// Run the nozzle shell on the given terminal.
+/// This function lives in solvent so the kernel does not need to depend on
+/// nozzle / lattice directly (AGENTS.md §3).
+pub fn run_shell_on(terminal: &mut dyn nozzle::Terminal, prompt: &str) {
+    let commands = nozzle::default_commands();
+    let mut shell = nozzle::Shell::new(terminal, commands);
+    shell.set_prompt(prompt);
+    shell.run();
 }

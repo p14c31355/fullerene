@@ -115,7 +115,7 @@ impl KernelTransition for UefiToHigherHalf {
         let transition_args = world.to_transition_args();
         let frame = TransitionFrame {
             args: transition_args,
-            logic_fn: landing_zone_logic as usize,
+            logic_fn: landing_zone_logic as *const () as usize,
         };
         let lz: unsafe extern "sysv64" fn(*const TransitionFrame) -> ! =
             unsafe { core::mem::transmute(self.landing_zone) };
@@ -126,7 +126,7 @@ impl KernelTransition for UefiToHigherHalf {
 unsafe fn write_serial_hex(val: u64) {
     let mut buf = [0u8; 16];
     let len = crate::serial::format_hex_to_buffer(val, &mut buf, 16);
-    crate::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
+    crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
 }
 
 #[unsafe(no_mangle)]
@@ -147,18 +147,18 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             args.kernel_args
         };
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: Start\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"Logic: Start\n");
 
         if !args.load_idt.is_null() {
             let load_idt: fn() = core::mem::transmute(args.load_idt);
             load_idt();
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: IDT Loaded\n");
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"Logic: IDT Loaded\n");
         }
 
         if !args.load_gdt.is_null() {
             let load_gdt: fn() = core::mem::transmute(args.load_gdt);
             load_gdt();
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"Logic: GDT Loaded\n");
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"Logic: GDT Loaded\n");
         }
 
         let l4_phys = args.l4_frame;
@@ -166,13 +166,13 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         let local_phys_offset = VirtAddr::new(sign_extended_offset);
         let local_frame_allocator = args.allocator;
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"LZ: reached\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"LZ: reached\n");
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: entry=0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DBG: entry=0x");
         write_serial_hex(actual_kernel_entry as u64);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b" offset=0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b" offset=0x");
         write_serial_hex(local_phys_offset.as_u64());
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         // actual_kernel_entry may already be a higher-half virtual address (e.g. efi_main_stage2).
         // If it's already in the higher half (>= 0xFFFF8000_00000000), use it directly.
@@ -193,9 +193,9 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             "KernelArgs must be 16-byte aligned"
         );
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: entry_virt=0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DBG: entry_virt=0x");
         write_serial_hex(kernel_entry_virt);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         crate::flush_tlb_and_verify!();
 
@@ -216,7 +216,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         );
 
         if actual_kernel_entry == 0 {
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"ERROR: entry is 0!\n");
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"ERROR: entry is 0!\n");
             loop {
                 core::hint::spin_loop();
             }
@@ -309,9 +309,9 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             );
         }
 
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"DBG: jumping to 0x");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"DBG: jumping to 0x");
         write_serial_hex(kernel_entry_virt);
-        crate::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         crate::assembly::jump_to_kernel(
             kernel_entry_virt as usize,
