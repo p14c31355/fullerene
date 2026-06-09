@@ -129,8 +129,9 @@ unsafe fn configure_codec(mmio:*mut u8,codec:u8,dac:u8,pin:u8,stream:u8){
     let ac=corb_send_verb(mmio,codec,dac,VERB_GET_PARAM,PARAM_OUTPUT_AMP_CAP);
     let steps=ac as u8&0x7F; let gain=if steps>0{steps/2}else{0};
     corb_send_verb(mmio,codec,dac,VERB_SET_AMP_GAIN_MUTE,0x70|gain);
-    // 16-bit stereo: bits 7:4 = 0x1 (16-bit), bits 3:0 = 0x1 (2ch stereo)
-    corb_send_verb(mmio,codec,dac,VERB_SET_FMT,0x11);
+    // 8-bit mono: bits 7:4 = 0x0 (8-bit), bits 3:0 = 0x0 (1ch mono)
+    // The PCM data is raw 8-bit signed mono at 44100 Hz.
+    corb_send_verb(mmio,codec,dac,VERB_SET_FMT,0x00);
     corb_send_verb(mmio,codec,dac,VERB_SET_STREAM,stream);
     let pa=corb_send_verb(mmio,codec,pin,VERB_GET_PARAM,PARAM_OUTPUT_AMP_CAP);
     let psteps=pa as u8&0x7F; let pgain=if psteps>0{psteps/2}else{0};
@@ -196,7 +197,7 @@ fn hda_init(){
         log::info!("Sound: CORB/RIRB enabled (size={} entries)",corb_n);}
     let codec_addr:u8=0;
     unsafe{if let Some((dac,pin))=discover_codec(virt as *mut u8,codec_addr){
-        configure_codec(virt as *mut u8,codec_addr,dac,pin,1);}else{log::warn!("Sound: no codec widgets");}}
+        configure_codec(virt as *mut u8,codec_addr,dac,pin,0);}else{log::warn!("Sound: no codec widgets");}}
     let dma_pages=(DMA_BUF_SIZE as usize+4095)/4096;
     let Some((dma_phys,dma_virt))=alloc_dma_pages(dma_pages) else{return}; *HDA_DMA.lock()=dma_virt as usize;
     let bdl_sz=core::mem::size_of::<BdlEntry>() as u64*BDL_ENTRIES as u64;
@@ -215,7 +216,7 @@ fn hda_init(){
         for _ in 0..50000{if r32(m,sd+SD_CTL)&0x01==0{break}core::hint::spin_loop();}
         // Program format, BDL and stream settings
         w8(m,sd+SD_STS,0xFF);
-        w16(m,sd+SD_FMT,0x0281); // 16-bit stereo 44.1 kHz (bits 14:8=0x02=16-bit)
+        w16(m,sd+SD_FMT,0x4000); // 44.1 kHz 8-bit mono (bit14=BASE44, bits7:4=0=8-bit, bits3:0=0=1ch)
         w32(m,sd+SD_CBL,audio_sz);
         w16(m,sd+SD_LVI,BDL_ENTRIES as u16-1);
         w32(m,sd+SD_BDPL,dma_phys as u32); w32(m,sd+SD_BDPU,(dma_phys>>32) as u32);
@@ -223,7 +224,7 @@ fn hda_init(){
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
         w32(m,sd+SD_CTL,(1u32<<16)|0x02);
-        log::info!("Sound: stream started ({} B, fmt=0x0281)",audio_sz);}
+        log::info!("Sound: stream started ({} B, fmt=0x4000)",audio_sz);}
     HDA_READY.store(true,Ordering::Release); HDA_INIT_DONE.store(true,Ordering::Release);
 }
 

@@ -55,9 +55,10 @@ fn decode_rle_frame(data: &[u8], buf: &mut [u8], total: usize) {
 
 /// Draw a decoded RLE frame to the framebuffer.
 ///
-/// Uses volatile writes (`write_volatile`) which ensure each pixel store
-/// reaches the framebuffer without being cached or combined — safe for
-/// all memory types (WB, WT, WC, UC).
+/// Uses non‑temporal stores (`_mm_stream_si32`) which bypass the CPU
+/// cache and write directly to a WC buffer — safe and correct for all
+/// memory types (WB, WT, WC, UC).  An `_mm_sfence()` in `flush_gpu()`
+/// drains the WC buffer so the display controller sees every pixel.
 ///
 /// # Safety
 /// `fb` must point to a valid framebuffer of at least `fb_stride * fb_h` u32
@@ -81,8 +82,8 @@ unsafe fn draw_decoded_frame(
             let rx = col_map[fx];
             let g = src_row[rx] as u32;
             let pixel = 0xFF00_0000u32 | (g << 16) | (g << 8) | g;
-            // volatile write — reaches the framebuffer regardless of memory type
-            core::ptr::write_volatile(fb.add(row_off + fx), pixel);
+            // non‑temporal store bypasses cache; _mm_sfence in flush_gpu drains WC buffer
+            core::arch::x86_64::_mm_stream_si32(fb.add(row_off + fx) as *mut i32, pixel as i32);
         }
     }
 }
