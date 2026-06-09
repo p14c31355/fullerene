@@ -342,6 +342,14 @@ impl Desktop {
 
     // ── frame preparation ───────────────────────────────────
 
+    /// Push a dirty rect into the window manager queue.
+    ///
+    /// Use this to notify the compositor of regions that need repainting
+    /// (e.g. clock change → taskbar area).
+    pub fn push_dirty_rect(&mut self, rect: crate::scene::DirtyRect) {
+        self.wm.dirty_rects.push(rect);
+    }
+
     /// Returns `true` when the cached dirty-rect list is non-empty,
     /// i.e. the compositor has at least one region to repaint.
     ///

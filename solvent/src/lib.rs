@@ -20,6 +20,7 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt::Write;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
@@ -101,6 +102,67 @@ pub static WALL_CLOCK_FN: Mutex<Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>
 /// Register the wall‑clock callback.
 pub fn set_wall_clock_fn(f: fn() -> Option<(u16, u8, u8, u8, u8, u8)>) {
     *WALL_CLOCK_FN.lock() = Some(f);
+}
+
+// ── VFS / Process / Device callbacks (set by kernel) ──────────
+
+/// A single VFS directory entry returned by the kernel.
+#[derive(Debug, Clone)]
+pub struct VfsEntry {
+    pub name: String,
+    pub size: u64,
+    pub is_dir: bool,
+}
+
+/// A single process entry returned by the kernel.
+#[derive(Debug, Clone)]
+pub struct ProcessEntry {
+    pub pid: u64,
+    pub name: String,
+    pub state: ProcessStateKind,
+}
+
+/// Kernel-side process state (mirrors fullerene_kernel::process::ProcessState).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessStateKind {
+    Ready,
+    Running,
+    Blocked,
+    Terminated,
+}
+
+/// A single device entry returned by the kernel.
+#[derive(Debug, Clone)]
+pub struct DeviceEntry {
+    pub name: String,
+    pub dev_type: String,
+    pub enabled: bool,
+}
+
+/// Callback to list the contents of a VFS directory.
+/// Returns `Vec<VfsEntry>` on success, or an error string.
+pub static VFS_READDIR_FN: Mutex<Option<fn(path: &str) -> Result<Vec<VfsEntry>, &'static str>>> =
+    Mutex::new(None);
+
+/// Register the VFS readdir callback.
+pub fn set_vfs_readdir_fn(f: fn(path: &str) -> Result<Vec<VfsEntry>, &'static str>) {
+    *VFS_READDIR_FN.lock() = Some(f);
+}
+
+/// Callback to get the list of all processes.
+pub static PROCESS_LIST_FN: Mutex<Option<fn() -> Vec<ProcessEntry>>> = Mutex::new(None);
+
+/// Register the process list callback.
+pub fn set_process_list_fn(f: fn() -> Vec<ProcessEntry>) {
+    *PROCESS_LIST_FN.lock() = Some(f);
+}
+
+/// Callback to get the list of all devices.
+pub static DEVICE_LIST_FN: Mutex<Option<fn() -> Vec<DeviceEntry>>> = Mutex::new(None);
+
+/// Register the device list callback.
+pub fn set_device_list_fn(f: fn() -> Vec<DeviceEntry>) {
+    *DEVICE_LIST_FN.lock() = Some(f);
 }
 
 /// Latest wall‑clock string (updated each frame).
@@ -790,11 +852,6 @@ where
         }
     }
 
-    // Also keep overlay-active full redraw to avoid accumulation.
-    if rt.shell_state != ShellState::Desktop {
-        rt.desktop.force_full_redraw();
-    }
-
     render_terminal(rt, rt.term_window);
     rt.desktop.update_taskbar();
 
@@ -814,17 +871,40 @@ where
     }
     rt.back_len = fb_len;
 
-    // ── Skip compositor when nothing changed ──────────────────
-    // In Desktop mode the FRAME_TIMER fires every tick and calls
-    // render(), but if no window has moved and the clock text is stale
-    // the compositor has no work to do.  Cursor redraws are already
-    // handled by the lightweight render_cursor_only() in event handlers,
-    // so we can skip the heavy compositor pass entirely.
-    let has_dirty = rt.desktop.has_pending_dirty_rects();
-    let clock_dirty = rt.clock_changed;
-
-    if has_dirty || clock_dirty {
+    // ── Dirty-rectangle-based compositor scheduling ───────────
+    //
+    // The compositor (back‑buffer render + fb blit) is only performed
+    // when dirty regions exist.  When only the clock text changed, a
+    // targeted taskbar dirty rect is pushed so the compositor redraws
+    // just the taskbar area instead of the full screen.
+    //
+    // Cursor movements are handled by the lightweight
+    // render_cursor_only() in event handlers, avoiding the compositor
+    // pass entirely.
+    if rt.clock_changed {
+        // Push a dirty rect for the taskbar + top panel (clock area)
+        // so the compositor redraws only the affected regions.
         rt.clock_changed = false;
+        let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
+        // Taskbar (bottom)
+        rt.desktop
+            .push_dirty_rect(lattice::scene::DirtyRect::new(
+                0,
+                fb_height.saturating_sub(bar_h),
+                fb_width,
+                bar_h,
+            ));
+        // Top panel (top strip, ~24 px)
+        rt.desktop
+            .push_dirty_rect(lattice::scene::DirtyRect::new(0, 0, fb_width, 24));
+    }
+
+    // Re‑prepare to consume any new dirty rects pushed above.
+    rt.desktop.prepare_frame(fb_width, fb_height);
+
+    let has_dirty = rt.desktop.has_pending_dirty_rects();
+
+    if has_dirty {
 
         // On shell-state transitions, copy the ENTIRE back-buffer
         // to fb_pixels.  Shell overlays are drawn directly onto
@@ -1418,23 +1498,44 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
     }
 }
 
-/// Open a Task Manager window showing process list.
+/// Open a Task Manager window showing real process list from the kernel.
 fn open_task_manager_window(rt: &mut RuntimeState) {
-    // Build a textual task list
-    let task_list = alloc::format!(
-        "PID   NAME             STATE     TYPE\n\
-         ----  ----------------  --------  ----\n\
-         {:<4}  {:<16}  {:<8}  shell\n\
-         {:<4}  {:<16}  {:<8}  wm\n\
-         {:<4}  {:<16}  {:<8}  idle\n",
-        1,  "shell",          "active",
-        2,  "window-manager", "active",
-        99, "idle",           "sleep",
-    );
+    let task_list = if let Some(get_procs) = *PROCESS_LIST_FN.lock() {
+        let procs = get_procs();
+        let mut text = String::from(
+            "PID   NAME              STATE\n\
+             ----  ----------------  --------\n",
+        );
+        for p in &procs {
+            let state_str = match p.state {
+                ProcessStateKind::Ready => "ready",
+                ProcessStateKind::Running => "running",
+                ProcessStateKind::Blocked => "blocked",
+                ProcessStateKind::Terminated => "term",
+            };
+            // Truncate long names
+            let name_short = if p.name.len() > 16 {
+                &p.name[..16]
+            } else {
+                &p.name
+            };
+            let _ = core::write!(
+                &mut text,
+                " {:<4}  {:<16}  {:<8}\n",
+                p.pid, name_short, state_str
+            );
+        }
+        text
+    } else {
+        String::from(
+            "PID   NAME              STATE\n\
+             ----  ----------------  --------\n\
+             (no process list callback)\n",
+        )
+    };
 
-    // Create a window with the task list rendered as text
-    let cols = 50u32;
-    let rows = 20u32;
+    let cols = 44u32;
+    let rows = (task_list.lines().count() + 2) as u32;
     let win_w = cols * GLYPH_W;
     let win_h = rows * GLYPH_H;
     let id = rt.desktop.wm.create_titled_window(
@@ -1446,7 +1547,6 @@ fn open_task_manager_window(rt: &mut RuntimeState) {
         "Task Manager",
     );
 
-    // Render the task list into the window's surface
     if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let _ = render_text_into_surface(&mut w.surface, &task_list, cols, 0xCCCCCC, 0x0d0d1a);
     }
@@ -1455,23 +1555,43 @@ fn open_task_manager_window(rt: &mut RuntimeState) {
     rt.frame_due = true;
 }
 
-/// Open a Device Manager window.
+/// Open a Device Manager window showing real device list from the kernel.
 fn open_device_manager_window(rt: &mut RuntimeState) {
-    let device_text = alloc::string::String::from(
-        "DEVICE            TYPE        ENABLED\n\
-         ----------------  ----------  -------\n\
-         PS/2 Keyboard     input       yes\n\
-         PS/2 Mouse        input       yes\n\
-         AHCI Controller   storage     yes\n\
-         NVMe SSD          storage     yes\n\
-         virtio-gpu        display     yes\n\
-         Intel HDA         audio       yes\n\
-         PCI Bridge        bridge      yes\n\
-         USB xHCI          usb         yes\n",
-    );
+    let device_text = if let Some(get_devs) = *DEVICE_LIST_FN.lock() {
+        let devs = get_devs();
+        let mut text = String::from(
+            "DEVICE              TYPE        ENABLED\n\
+             ------------------  ----------  -------\n",
+        );
+        for d in &devs {
+            let enabled = if d.enabled { "yes" } else { "no" };
+            let name_short = if d.name.len() > 18 {
+                &d.name[..18]
+            } else {
+                &d.name
+            };
+            let type_short = if d.dev_type.len() > 10 {
+                &d.dev_type[..10]
+            } else {
+                &d.dev_type
+            };
+            let _ = core::write!(
+                &mut text,
+                " {:<18}  {:<10}  {:<7}\n",
+                name_short, type_short, enabled
+            );
+        }
+        text
+    } else {
+        String::from(
+            "DEVICE              TYPE        ENABLED\n\
+             ------------------  ----------  -------\n\
+             (no device list callback)\n",
+        )
+    };
 
-    let cols = 42u32;
-    let rows = 14u32;
+    let cols = 46u32;
+    let rows = (device_text.lines().count() + 2) as u32;
     let win_w = cols * GLYPH_W;
     let win_h = rows * GLYPH_H;
     let id = rt.desktop.wm.create_titled_window(
@@ -1491,26 +1611,60 @@ fn open_device_manager_window(rt: &mut RuntimeState) {
     rt.frame_due = true;
 }
 
-/// Open a File Manager window.
+/// Open a File Manager window showing real VFS directory listing.
+/// Uses the VFS_READDIR_FN callback registered by the kernel.
 fn open_file_manager_window(rt: &mut RuntimeState) {
-    let file_text = alloc::string::String::from(
-        "  Name              Size        Type\n\
-         ../../              --          dir\n\
-         ../                 --          dir\n\
-         README.md           1234 B      file\n\
-         CHANGELOG.md         567 B      file\n\
-         Cargo.toml           200 B      file\n\
-         Cargo.lock         10234 B      file\n\
-         flasks/              --          dir\n\
-         lattice/             --          dir\n\
-         solvent/             --          dir\n\
-         toluene/             --          dir\n\
-         docs/                --          dir\n\
-         target/              --          dir\n",
-    );
+    let vfs_path = "/";
+    let file_text = if let Some(readdir) = *VFS_READDIR_FN.lock() {
+        match readdir(vfs_path) {
+            Ok(entries) => {
+                let mut text = String::from(
+                    "  Name              Size        Type\n\
+                     ------------------  ----------  ----\n",
+                );
+                for e in &entries {
+                    let kind = if e.is_dir { "dir" } else { "file" };
+                    let size_str = if e.is_dir {
+                        String::from("--")
+                    } else if e.size >= 1024 * 1024 {
+                        format!("{}.{} MB", e.size / (1024 * 1024), (e.size / 1024) % 1024)
+                    } else if e.size >= 1024 {
+                        format!("{}.{} KB", e.size / 1024, (e.size % 1024) * 10 / 1024)
+                    } else {
+                        format!("{} B", e.size)
+                    };
+                    let name_short = if e.name.len() > 18 {
+                        &e.name[..18]
+                    } else {
+                        &e.name
+                    };
+                    let _ = core::write!(
+                        &mut text,
+                        "  {:<18}  {:<10}  {}\n",
+                        name_short, size_str, kind
+                    );
+                }
+                if entries.is_empty() {
+                    text.push_str("  (empty directory)\n");
+                }
+                text.push_str(&format!("\n  Path: {}\n  {} entries", vfs_path, entries.len()));
+                text
+            }
+            Err(e) => format!(
+                "  Error reading directory:\n  {} ({})\n",
+                vfs_path, e
+            ),
+        }
+    } else {
+        String::from(
+            "  Name              Size        Type\n\
+             ------------------  ----------  ----\n\
+             (no VFS readdir callback)\n",
+        )
+    };
 
-    let cols = 44u32;
-    let rows = 16u32;
+    let cols = 50u32;
+    let rows = (file_text.lines().count() + 3) as u32;
     let win_w = cols * GLYPH_W;
     let win_h = rows * GLYPH_H;
     let id = rt.desktop.wm.create_titled_window(
@@ -1543,7 +1697,7 @@ fn open_about_window(rt: &mut RuntimeState) {
          Version: 0.1.0\n\
          License: MIT/Apache-2.0\n\
          \n\
-         (c) 2024-2026\n",
+         (c) 2025-2026\n",
     );
 
     let cols = 32u32;
