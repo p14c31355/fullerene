@@ -42,7 +42,8 @@ pub fn collect_system_stats(
 ) -> SystemStats {
     let total_processes = get_total_processes();
     let active_processes = get_active_processes();
-    let (memory_used, _, _) = crate::page_table::raw::utils::get_memory_stats();
+    let allocator = crate::page_table::ALLOCATOR.lock();
+    let memory_used = allocator.used();
     let uptime_ticks = get_uptime_ticks();
     SystemStats {
         total_processes,

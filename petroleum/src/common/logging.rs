@@ -247,7 +247,7 @@ macro_rules! log_error {
 macro_rules! init_log {
     ($msg:literal) => {{
         let msg = concat!($msg, "\n");
-        $crate::write_serial_bytes!(0x3F8, 0x3FD, msg.as_bytes());
+        $crate::write_serial_bytes(0x3F8, 0x3FD, msg.as_bytes());
     }};
     ($fmt:expr $(, $($arg:tt)*)?) => {{
         $crate::serial::serial_log(format_args!(concat!($fmt, "\n") $(, $($arg)*)?));

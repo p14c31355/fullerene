@@ -18,7 +18,7 @@ macro_rules! write_rgb_value {
 // Helper macros to reduce repetitive serial logging in init functions
 macro_rules! log_step {
     ($msg:expr) => {
-        crate::write_serial_bytes!(0x3F8, 0x3FD, $msg.as_bytes());
+        crate::write_serial_bytes(0x3F8, 0x3FD, $msg.as_bytes());
     };
 }
 

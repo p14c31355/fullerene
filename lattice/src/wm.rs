@@ -1,7 +1,6 @@
 extern crate alloc;
 
 use crate::scene::DirtyRect;
-use crate::surface::Surface;
 use crate::window::{Window, WindowId};
 use alloc::string::String;
 use alloc::vec::Vec;

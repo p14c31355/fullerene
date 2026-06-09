@@ -5,7 +5,6 @@
 //! `pwd` commands call into.
 
 use crate::exec::CommandContext;
-use alloc::string::String;
 use spin::Mutex;
 
 /// Callback for listing directories.

@@ -245,13 +245,13 @@ impl<'a> InitSequence<'a> {
     pub fn run(&self) {
         for (_name, init_fn) in self.steps {
             // Use raw serial write to avoid potential deadlock in serial_log (Mutex)
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] About to init step\n");
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [InitSequence] About to init step\n");
 
             if let Err(e) = init_fn() {
-                crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step failed\n");
+                crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step failed\n");
                 panic!("{}", e);
             }
-            crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step done\n");
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step done\n");
         }
     }
 }

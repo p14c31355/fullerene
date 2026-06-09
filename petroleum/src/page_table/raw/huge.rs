@@ -166,7 +166,7 @@ pub unsafe fn map_range_with_huge_pages<
     flags: x86_64::structures::paging::PageTableFlags,
     behavior: &str,
 ) -> Result<(), x86_64::structures::paging::mapper::MapToError<x86_64::structures::paging::Size4KiB>>
-{
+{ unsafe {
     use x86_64::structures::paging::{Mapper, Page, PhysFrame, Size2MiB, Size4KiB};
 
     let mut current_page = 0;
@@ -212,4 +212,4 @@ pub unsafe fn map_range_with_huge_pages<
         current_page += 1;
     }
     Ok(())
-}
+}}

@@ -728,7 +728,7 @@ impl VirtioGpu {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     }
 
-    unsafe fn submit_raw(&mut self, cmd_offset: u32, cmd_len: u32) {
+    unsafe fn submit_raw(&mut self, cmd_offset: u32, cmd_len: u32) { unsafe {
         log::info!(
             "[VirtIO-GPU] submit_raw: next_desc={}, cmd_offset={}, cmd_len={}",
             self.next_desc,
@@ -793,7 +793,7 @@ impl VirtioGpu {
         unsafe {
             core::ptr::read_volatile(self.common_virt_absolute);
         }
-    }
+    }}
 
     pub fn flush(&mut self, w: u32, h: u32) {
         if self.desc_table.is_null() || self.cmd_buf.is_null() {

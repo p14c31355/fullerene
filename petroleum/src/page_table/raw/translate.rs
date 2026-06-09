@@ -79,7 +79,7 @@ pub fn dump_page_table_walk<W: core::fmt::Write>(
         fault_virt.as_u64()
     );
 
-    let root = unsafe { &*(root_virt.as_u64() as *const PageTable) };
+    let _root = unsafe { &*(root_virt.as_u64() as *const PageTable) };
     let root_mut = unsafe { &mut *(root_virt.as_u64() as *mut PageTable) };
 
     let virt = match CanonicalVirtAddr::new(fault_virt.as_u64()) {

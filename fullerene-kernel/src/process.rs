@@ -281,13 +281,13 @@ pub fn init(heap_start: usize, heap_end: usize) {
     mem_debug!("Process: init start\n");
 
     let mut buf = [0u8; 16];
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [Process::init] Heap range: 0x");
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [Process::init] Heap range: 0x");
     let len = petroleum::serial::format_hex_to_buffer(heap_start as u64, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b" - 0x");
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b" - 0x");
     let len = petroleum::serial::format_hex_to_buffer(heap_end as u64, &mut buf, 16);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-    petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
     // Build idle process completely from static storage (no heap allocation at all).
     // Process::new calls Box::new(ProcessContext) which would fail, so we
@@ -322,8 +322,8 @@ pub fn init(heap_start: usize, heap_end: usize) {
         mem_debug!("Process: idle context RIP: 0x");
         let mut buf = [0u8; 16];
         let len = petroleum::serial::format_hex_to_buffer(idle_addr.as_u64(), &mut buf, 16);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, &buf[..len]);
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"\n");
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
         // Take ownership of static context via Box::from_raw (no heap allocation)
         let ctx_box: Box<ProcessContext> = Box::from_raw(ctx_ptr);

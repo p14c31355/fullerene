@@ -5,7 +5,6 @@
 //! commands (`reboot`, `shutdown`).
 
 use crate::exec::CommandContext;
-use alloc::string::String;
 use spin::Mutex;
 
 /// Callback for system info commands: receives the command name

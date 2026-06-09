@@ -403,7 +403,7 @@ impl PciScanner {
                 }
                 if let Some(pci_device) = PciDevice::new(0, device, function) {
                     // Check if this is a PCI-to-PCI bridge (class 0x06, subclass 0x04)
-                    let header_type = PciConfigSpace::read_config_byte(0, device, function, 0x0E);
+                    let _header_type = PciConfigSpace::read_config_byte(0, device, function, 0x0E);
                     let class = PciConfigSpace::read_config_byte(0, device, function, 0x0B);
                     let subclass = PciConfigSpace::read_config_byte(0, device, function, 0x0A);
 

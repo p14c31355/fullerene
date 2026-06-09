@@ -6,10 +6,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
-use petroleum::{
-    common::memory::{user_slice, user_slice_mut},
-    write_serial_bytes,
-};
+use petroleum::common::memory::{user_slice, user_slice_mut};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -245,7 +242,7 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
     // For stdout (fd 1) and stderr (fd 2), write to serial console
     if fd == 1 || fd == 2 {
         unsafe {
-            write_serial_bytes(0x3F8, 0x3FD, data);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, data);
         }
         Ok(count as u64)
     } else {

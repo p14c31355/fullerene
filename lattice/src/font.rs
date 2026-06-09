@@ -108,7 +108,7 @@ pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
     }
 
     let _header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
+    let _flags = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
     let glyph_count = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
     let glyph_bytes = u32::from_le_bytes([data[20], data[21], data[22], data[23]]);
     let height = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);

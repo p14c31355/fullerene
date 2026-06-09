@@ -17,7 +17,7 @@ macro_rules! trace {
 }
 
 /// Walk the 4-level page table by hand (best-effort, lock-free).
-unsafe fn debug_page_walk(vaddr: VirtAddr, phys_offset: VirtAddr) {
+unsafe fn debug_page_walk(vaddr: VirtAddr, phys_offset: VirtAddr) { unsafe {
     let pt_flags = x86_64::structures::paging::PageTableFlags::PRESENT;
     let l4 = crate::page_table::active_level_4_table(phys_offset);
     let l4_idx = vaddr.p4_index();
@@ -88,7 +88,7 @@ unsafe fn debug_page_walk(vaddr: VirtAddr, phys_offset: VirtAddr) {
         l1e.addr().as_u64(),
         l1e.flags()
     );
-}
+}}
 
 /// Check if a virtual address is mapped in the page table.
 /// Returns true if the page is present (either as a 4k page, 2MB huge page, or 1GB huge page).
@@ -96,7 +96,7 @@ unsafe fn is_page_mapped(
     l4: &x86_64::structures::paging::PageTable,
     vaddr: VirtAddr,
     phys_offset: VirtAddr,
-) -> bool {
+) -> bool { unsafe {
     let l4_idx = vaddr.p4_index();
     let l3_idx = vaddr.p3_index();
     let l2_idx = vaddr.p2_index();
@@ -136,7 +136,7 @@ unsafe fn is_page_mapped(
 
     let l1e = &l1[l1_idx];
     l1e.flags().contains(PageTableFlags::PRESENT)
-}
+}}
 
 /// Creates the primary UEFI framebuffer console if available, returns None if fallback to VGA is needed.
 pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFramebufferWriter> {

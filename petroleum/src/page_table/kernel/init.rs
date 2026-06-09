@@ -22,7 +22,7 @@ pub unsafe fn map_page_4k_l1(
     flags: PageTableFlags,
     frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
     phys_offset: VirtAddr,
-) -> Result<(), &'static str> {
+) -> Result<(), &'static str> { unsafe {
     let l4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
     let l3_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
     let l2_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
@@ -115,7 +115,7 @@ pub unsafe fn map_page_4k_l1(
     let l1 = unsafe { &mut *l1_virt };
     l1[l1_idx].set_addr(phys, flags);
     Ok(())
-}
+}}
 
 /// Map a range of 4KB pages, using map_page_4k_l1 for each.
 unsafe fn map_range_4k(
@@ -126,14 +126,14 @@ unsafe fn map_range_4k(
     flags: PageTableFlags,
     frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
     phys_offset: VirtAddr,
-) -> Result<(), &'static str> {
+) -> Result<(), &'static str> { unsafe {
     for i in 0..page_count {
         let virt = VirtAddr::new(virt_start.as_u64() + i * 4096);
         let phys = PhysAddr::new(phys_start.as_u64() + i * 4096);
         map_page_4k_l1(l4, virt, phys, flags, frame_allocator, phys_offset)?;
     }
     Ok(())
-}
+}}
 
 /// Map a range of 2MB huge pages by inserting a L2 huge-page entry.
 /// Both virt_start and phys_start must be 2MB-aligned.
@@ -146,7 +146,7 @@ unsafe fn map_range_2mb_huge(
     page_count: u64,
     flags: PageTableFlags,
     frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
-) -> Result<(), &'static str> {
+) -> Result<(), &'static str> { unsafe {
     let flags_2mb = flags | PageTableFlags::HUGE_PAGE;
     for i in 0..page_count {
         let virt = VirtAddr::new(virt_start.as_u64() + i * 2 * 1024 * 1024);
@@ -187,7 +187,7 @@ unsafe fn map_range_2mb_huge(
         }
     }
     Ok(())
-}
+}}
 
 /// Initialize page tables by creating a new L4 table and jumping to the kernel.
 #[repr(C)]
@@ -211,7 +211,7 @@ pub unsafe extern "C" fn init_and_jump(
     l4_phys_reg: u64,
     entry_virt_reg: usize,
     phys_offset_reg: u64,
-) -> ! {
+) -> ! { unsafe {
     let args = &*args_ptr;
     let physical_memory_offset = VirtAddr::new(phys_offset_reg);
     let frame_allocator = &mut *args.frame_allocator;
@@ -226,7 +226,7 @@ pub unsafe extern "C" fn init_and_jump(
 
     crate::serial::_print(format_args!("IAJ: entered\n"));
     // Log the physical address of this function to verify it's within the identity map range
-    let this_func_addr = init_and_jump as usize;
+    let this_func_addr = init_and_jump as *const () as usize;
     crate::serial::_print(format_args!("IAJ: this_func_phys={:#x}\n", this_func_addr));
 
     // Based on the success pattern, reset the segment registers to clean the execution environment.
@@ -468,7 +468,7 @@ pub unsafe extern "C" fn init_and_jump(
         entry = in(reg) entry_virt,
         options(noreturn),
     );
-}
+}}
 
 /// Legacy init function - kept for compatibility.
 ///
@@ -476,14 +476,14 @@ pub unsafe extern "C" fn init_and_jump(
 /// from the bootloader, creating an OffsetPageTable mapper for it.
 pub unsafe fn init<A: FrameAllocator<Size4KiB>, F>(
     physical_memory_offset: VirtAddr,
-    frame_allocator: &mut A,
-    kernel_phys_start: u64,
+    _frame_allocator: &mut A,
+    _kernel_phys_start: u64,
     _early_mappings: Option<F>,
 ) -> OffsetPageTable<'static>
 where
     F: FnOnce(&mut OffsetPageTable, &mut A),
-{
-    crate::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init] entered\n");
+{ unsafe {
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init] entered\n");
 
     // Store the statics for later reuse
     PAGE_TABLE_INITIALIZED.store(true, Ordering::SeqCst);
@@ -501,11 +501,11 @@ where
     let mapper = OffsetPageTable::new(&mut *l4_higher_ptr, physical_memory_offset);
 
     mapper
-}
+}}
 
-pub unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
+pub unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable { unsafe {
     let cr3 = Cr3::read().0.start_address();
     let phys = cr3.as_u64();
     let l4_ptr = (physical_memory_offset.as_u64() + phys) as *mut PageTable;
     &mut *l4_ptr
-}
+}}

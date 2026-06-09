@@ -274,8 +274,8 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
 }
 
 pub fn setup_kernel_location(
-    memory_map: *mut core::ffi::c_void,
-    memory_map_size: usize,
+    _memory_map: *mut core::ffi::c_void,
+    _memory_map_size: usize,
     kernel_virt_addr: u64,
 ) -> PhysAddr {
     // Read descriptor_size from the beginning of the memory map

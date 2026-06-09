@@ -145,7 +145,7 @@ pub use crate::boot::{create_primary_console, initialize_vga_fallback};
 /// `system_table` must be valid if provided (non-null).
 pub unsafe fn init_early_framebuffer(
     system_table: Option<*mut crate::common::EfiSystemTable>,
-) -> Option<EarlyFramebufferInfo> {
+) -> Option<EarlyFramebufferInfo> { unsafe {
     // 1. UEFI GOP
     if let Some(st) = system_table {
         if let Some(config) = detect_uefi_gop(st) {
@@ -176,4 +176,4 @@ pub unsafe fn init_early_framebuffer(
 
     // 3. VGA mode 13h
     detect_vga_mode_13h()
-}
+}}

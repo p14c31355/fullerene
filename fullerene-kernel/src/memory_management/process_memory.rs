@@ -38,9 +38,9 @@ impl ProcessMemoryManagerImpl {
             x86_64::structures::paging::Size4KiB,
         >,
     ) -> SystemResult<()> {
-        petroleum::write_serial_bytes!(0x3F8, 0x3FD, b"DEBUG: [init_page_table] entered\n");
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_page_table] entered\n");
         let kernel_root = pt_manager.current_page_table();
-        petroleum::write_serial_bytes!(
+        petroleum::write_serial_bytes(
             0x3F8,
             0x3FD,
             b"DEBUG: [init_page_table] calling clone_page_table\n"

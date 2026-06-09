@@ -26,7 +26,7 @@ const COM1_DATA: u16 = 0x3F8;
 const COM1_STATUS: u16 = 0x3FD;
 
 /// Write raw bytes to the serial port (blocking, with timeout).
-unsafe fn write_serial_raw(bytes: &[u8]) {
+unsafe fn write_serial_raw(bytes: &[u8]) { unsafe {
     #[cfg(not(any(feature = "std", test)))]
     {
         use x86_64::instructions::port::Port;
@@ -44,7 +44,7 @@ unsafe fn write_serial_raw(bytes: &[u8]) {
     {
         let _ = bytes;
     }
-}
+}}
 
 // ── VGA text buffer ────────────────────────────────────────────────────
 const VGA_ADDRESS: *mut u16 = 0xB8000 as *mut u16;

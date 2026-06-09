@@ -116,7 +116,7 @@ impl FramebufferInstaller {
         color: u32,
         w: isize,
         h: isize,
-    ) {
+    ) { unsafe {
         // 5x7 bitmap for C, 6, 0 (monospaced)
         let glyph: [u8; 7] = match ch {
             b'C' => [
@@ -142,7 +142,7 @@ impl FramebufferInstaller {
                 }
             }
         }
-    }
+    }}
 }
 
 /// Generic helper for detecting standard framebuffer modes
