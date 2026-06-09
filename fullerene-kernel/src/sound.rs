@@ -351,11 +351,30 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let psteps = pa as u8 & 0x7F;
     let pgain = if psteps > 0 { psteps / 2 } else { 0 };
     corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE, (0x70 | pgain) as u16);
-    corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0xC0u16);
-    let cap = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16);
-    if cap != 0xFFFF_FFFF && (cap >> 16) & 1 != 0 {
-        corb_send_verb(mmio, codec, pin, VERB_SET_EAPD, 0x02);
+    // Query pin capabilities to check EAPD support (bit 16)
+    let pin_cap = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16);
+    let eapd_capable = pin_cap != 0xFFFF_FFFF && (pin_cap >> 16) & 1 != 0;
+    log::info!(
+        "Sound: pin 0x{:x} cap=0x{:08x} eapd_capable={}",
+        pin, pin_cap, eapd_capable
+    );
+    // Power up external amplifier BEFORE enabling pin output.
+    // On many notebook codecs (ALC286 etc.) EAPD controls the
+    // internal speaker amplifier power — without this the output
+    // stays silent even though the stream and DMA are running.
+    if eapd_capable {
+        let eapd_res = corb_send_verb(mmio, codec, pin, VERB_SET_EAPD, 0x02);
+        log::info!("Sound: SET_EAPD pin=0x{:x} result=0x{:08x}", pin, eapd_res);
     }
+    // Enable pin output (0x40 = Output Enable only, matching Linux
+    // behaviour for fixed-function speakers).  Do NOT set HP Enable
+    // (bit 7) on speaker pins — it is semantically wrong and some
+    // codecs may behave unexpectedly.
+    let pin_ctl_res = corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0x40u16);
+    log::info!(
+        "Sound: SET_PIN_CTL pin=0x{:x} val=0x40 result=0x{:08x}",
+        pin, pin_ctl_res
+    );
     log::info!("Sound: codec done DAC=0x{:x} Pin=0x{:x}", dac, pin);
 }
 
