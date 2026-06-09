@@ -80,15 +80,60 @@ pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferC
     Once::new();
 
 pub const QEMU_CONFIGS: [QemuConfig; 9] = [
-    QemuConfig { address: 0xFC000000, width: 1024, height: 768, bpp: 32 },
-    QemuConfig { address: 0xFD000000, width: 1024, height: 768, bpp: 32 },
-    QemuConfig { address: 0xE0000000, width: 1024, height: 768, bpp: 32 },
-    QemuConfig { address: 0xC0000000, width: 1024, height: 768, bpp: 32 },
-    QemuConfig { address: 0xF0000000, width: 1024, height: 768, bpp: 32 },
-    QemuConfig { address: 0xE0000000, width: 800, height: 600, bpp: 32 },
-    QemuConfig { address: 0xF0000000, width: 800, height: 600, bpp: 32 },
-    QemuConfig { address: 0xFD000000, width: 800, height: 600, bpp: 32 },
-    QemuConfig { address: 0xC0000000, width: 800, height: 600, bpp: 32 },
+    QemuConfig {
+        address: 0xFC000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xFD000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xE0000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xC0000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xF0000000,
+        width: 1024,
+        height: 768,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xE0000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xF0000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xFD000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    },
+    QemuConfig {
+        address: 0xC0000000,
+        width: 800,
+        height: 600,
+        bpp: 32,
+    },
 ];
 
 #[derive(Clone, Copy)]

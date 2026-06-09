@@ -512,40 +512,44 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 }
 
 /// Generic framebuffer buffer clear operation
-pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) { unsafe {
-    let fb_ptr = address as *mut T;
-    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-    let elements_per_line = (stride / bytes_per_pixel) as usize;
-    let count = elements_per_line * height as usize;
-    for i in 0..count {
-        core::ptr::write_volatile(fb_ptr.add(i), bg_color);
+pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
+    unsafe {
+        let fb_ptr = address as *mut T;
+        let bytes_per_pixel = core::mem::size_of::<T>() as u32;
+        let elements_per_line = (stride / bytes_per_pixel) as usize;
+        let count = elements_per_line * height as usize;
+        for i in 0..count {
+            core::ptr::write_volatile(fb_ptr.add(i), bg_color);
+        }
     }
-}}
+}
 
 /// Generic framebuffer buffer scroll up operation.
 ///
 /// Shifts the entire framebuffer up by 8 scan lines using `T`-sized
 /// volatile accesses (much fewer operations than byte-by-byte).
 /// The last 8 scan lines are filled with `bg_color`.
-pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) { unsafe {
-    let bpp = core::mem::size_of::<T>() as u32;
-    let pixels_per_line = (stride / bpp) as usize;
-    let shift_pixels = 10 * pixels_per_line;
-    let total_pixels = pixels_per_line * height as usize;
+pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
+    unsafe {
+        let bpp = core::mem::size_of::<T>() as u32;
+        let pixels_per_line = (stride / bpp) as usize;
+        let shift_pixels = 10 * pixels_per_line;
+        let total_pixels = pixels_per_line * height as usize;
 
-    let fb_ptr = address as *mut T;
+        let fb_ptr = address as *mut T;
 
-    // Use volatile copy for MMIO (wider T reduces loop count)
-    for i in 0..(total_pixels.saturating_sub(shift_pixels)) {
-        let src = fb_ptr.add(shift_pixels + i);
-        let dst = fb_ptr.add(i);
-        core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
+        // Use volatile copy for MMIO (wider T reduces loop count)
+        for i in 0..(total_pixels.saturating_sub(shift_pixels)) {
+            let src = fb_ptr.add(shift_pixels + i);
+            let dst = fb_ptr.add(i);
+            core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
+        }
+
+        // Clear last 8 lines
+        let clear_start = (height.saturating_sub(8) as usize) * pixels_per_line;
+        let clear_count = 8 * pixels_per_line;
+        for i in 0..clear_count {
+            core::ptr::write_volatile(fb_ptr.add(clear_start + i), bg_color);
+        }
     }
-
-    // Clear last 8 lines
-    let clear_start = (height.saturating_sub(8) as usize) * pixels_per_line;
-    let clear_count = 8 * pixels_per_line;
-    for i in 0..clear_count {
-        core::ptr::write_volatile(fb_ptr.add(clear_start + i), bg_color);
-    }
-}}
+}

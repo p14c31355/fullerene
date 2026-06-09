@@ -86,42 +86,44 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
     pages: u64,
     flags: PageTableFlags,
     behavior: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    for i in 0..pages {
-        let p_addr = phys + i * 4096;
-        let v_addr = virt + i * 4096;
-        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
-        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
-        match mapper.map_to(page, frame, flags, allocator) {
-            Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
-                existing_frame,
-            )) => {
-                // Check if the existing mapping matches the requested one
-                if existing_frame != frame {
-                    if behavior == "panic" {
-                        panic!(
-                            "Mapping error: existing frame {:?} differs from requested {:?}",
-                            existing_frame, frame
-                        );
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe {
+        for i in 0..pages {
+            let p_addr = phys + i * 4096;
+            let v_addr = virt + i * 4096;
+            let page = Page::<Size4KiB>::containing_address(VirtAddr::new(v_addr));
+            let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
+            match mapper.map_to(page, frame, flags, allocator) {
+                Ok(flush) => flush.flush(),
+                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
+                    existing_frame,
+                )) => {
+                    // Check if the existing mapping matches the requested one
+                    if existing_frame != frame {
+                        if behavior == "panic" {
+                            panic!(
+                                "Mapping error: existing frame {:?} differs from requested {:?}",
+                                existing_frame, frame
+                            );
+                        } else {
+                            return Err(
+                                x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
+                                    existing_frame,
+                                ),
+                            );
+                        }
                     } else {
-                        return Err(
-                            x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
-                                existing_frame,
-                            ),
-                        );
+                        x86_64::instructions::tlb::flush(page.start_address());
                     }
-                } else {
-                    x86_64::instructions::tlb::flush(page.start_address());
                 }
+                Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
+                Err(e) if behavior == "panic" => panic!("Mapping error: {:?}", e),
+                Err(e) => return Err(e),
             }
-            Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage) => {}
-            Err(e) if behavior == "panic" => panic!("Mapping error: {:?}", e),
-            Err(e) => return Err(e),
         }
+        Ok(())
     }
-    Ok(())
-}}
+}
 
 pub unsafe fn map_to_higher_half_with_log(
     mapper: &mut x86_64::structures::paging::OffsetPageTable,
@@ -130,17 +132,19 @@ pub unsafe fn map_to_higher_half_with_log(
     phys_start: u64,
     num_pages: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    map_range_4kiB(
-        mapper,
-        frame_allocator,
-        phys_start,
-        phys_offset.as_u64() + phys_start,
-        num_pages,
-        flags,
-        "panic",
-    )
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe {
+        map_range_4kiB(
+            mapper,
+            frame_allocator,
+            phys_start,
+            phys_offset.as_u64() + phys_start,
+            num_pages,
+            flags,
+            "panic",
+        )
+    }
+}
 
 pub unsafe fn map_identity_range(
     mapper: &mut x86_64::structures::paging::OffsetPageTable,
@@ -148,17 +152,19 @@ pub unsafe fn map_identity_range(
     phys_start: u64,
     num_pages: u64,
     flags: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    map_range_4kiB(
-        mapper,
-        frame_allocator,
-        phys_start,
-        phys_start,
-        num_pages,
-        flags,
-        "panic",
-    )
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe {
+        map_range_4kiB(
+            mapper,
+            frame_allocator,
+            phys_start,
+            phys_start,
+            num_pages,
+            flags,
+            "panic",
+        )
+    }
+}
 
 #[deprecated(note = "use map_identity_range")]
 pub unsafe fn map_identity_range_checked(
@@ -167,9 +173,9 @@ pub unsafe fn map_identity_range_checked(
     p: u64,
     n: u64,
     f: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    map_identity_range(m, a, p, n, f)
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe { map_identity_range(m, a, p, n, f) }
+}
 
 #[deprecated(note = "use map_range_4kiB")]
 pub unsafe fn map_range_with_log_macro(
@@ -180,9 +186,9 @@ pub unsafe fn map_range_with_log_macro(
     n: u64,
     f: PageTableFlags,
     b: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    map_range_4kiB(m, a, p, v, n, f, b)
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe { map_range_4kiB(m, a, p, v, n, f, b) }
+}
 
 #[deprecated(note = "use map_to_higher_half_with_log")]
 pub unsafe fn map_to_higher_half_with_log_macro(
@@ -192,9 +198,9 @@ pub unsafe fn map_to_higher_half_with_log_macro(
     ps: u64,
     np: u64,
     fl: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    map_to_higher_half_with_log(m, fa, po, ps, np, fl)
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe { map_to_higher_half_with_log(m, fa, po, ps, np, fl) }
+}
 
 #[deprecated(note = "use map_range_4kiB")]
 pub unsafe fn map_page_range(
@@ -204,9 +210,9 @@ pub unsafe fn map_page_range(
     v: u64,
     n: u64,
     f: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    map_range_4kiB(m, a, p, v, n, f, "continue")
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe { map_range_4kiB(m, a, p, v, n, f, "continue") }
+}
 
 #[deprecated(note = "use kernel::mapper::unmap_page")]
 pub fn unmap_page_range(
@@ -238,9 +244,9 @@ pub unsafe fn map_range_with_huge_pages(
     n: u64,
     f: PageTableFlags,
     b: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> { unsafe {
-    crate::page_table::raw::huge::map_range_with_huge_pages(m, a, p, v, n, f, b)
-}}
+) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
+    unsafe { crate::page_table::raw::huge::map_range_with_huge_pages(m, a, p, v, n, f, b) }
+}
 
 // ── Macros ──────────────────────────────────────────────────
 

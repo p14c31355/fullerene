@@ -150,7 +150,8 @@ pub fn load_program(
                             frame.start_address().as_u64() as usize,
                             page_flags,
                             petroleum::page_table::constants::get_frame_allocator_mut(),
-                        ).map_err(|_| LoadError::OutOfMemory)?;
+                        )
+                        .map_err(|_| LoadError::OutOfMemory)?;
                     }
 
                     // Switch to process page table to copy segment data.

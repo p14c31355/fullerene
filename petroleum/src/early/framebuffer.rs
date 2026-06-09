@@ -145,35 +145,37 @@ pub use crate::boot::{create_primary_console, initialize_vga_fallback};
 /// `system_table` must be valid if provided (non-null).
 pub unsafe fn init_early_framebuffer(
     system_table: Option<*mut crate::common::EfiSystemTable>,
-) -> Option<EarlyFramebufferInfo> { unsafe {
-    // 1. UEFI GOP
-    if let Some(st) = system_table {
-        if let Some(config) = detect_uefi_gop(st) {
+) -> Option<EarlyFramebufferInfo> {
+    unsafe {
+        // 1. UEFI GOP
+        if let Some(st) = system_table {
+            if let Some(config) = detect_uefi_gop(st) {
+                return Some(EarlyFramebufferInfo {
+                    config,
+                    from_uefi: true,
+                });
+            }
+        }
+
+        // 2. QEMU std-vga
+        if let Some(qemu_info) = detect_qemu_std_vga() {
+            let config = FullereneFramebufferConfig {
+                address: qemu_info.address,
+                width: qemu_info.width,
+                height: qemu_info.height,
+                pixel_format: qemu_info
+                    .pixel_format
+                    .unwrap_or(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor),
+                bpp: 32,
+                stride: qemu_info.stride,
+            };
             return Some(EarlyFramebufferInfo {
                 config,
-                from_uefi: true,
+                from_uefi: false,
             });
         }
-    }
 
-    // 2. QEMU std-vga
-    if let Some(qemu_info) = detect_qemu_std_vga() {
-        let config = FullereneFramebufferConfig {
-            address: qemu_info.address,
-            width: qemu_info.width,
-            height: qemu_info.height,
-            pixel_format: qemu_info
-                .pixel_format
-                .unwrap_or(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor),
-            bpp: 32,
-            stride: qemu_info.stride,
-        };
-        return Some(EarlyFramebufferInfo {
-            config,
-            from_uefi: false,
-        });
+        // 3. VGA mode 13h
+        detect_vga_mode_13h()
     }
-
-    // 3. VGA mode 13h
-    detect_vga_mode_13h()
-}}
+}

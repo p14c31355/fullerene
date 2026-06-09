@@ -34,7 +34,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] Entering efi_main_real_logic\n"
+        b"DEBUG: [uefi_entry] Entering efi_main_real_logic\n",
     );
 
     let captured_args_ptr = args_ptr;
@@ -55,13 +55,13 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] About to dereference system_table (virt)\n"
+        b"DEBUG: [uefi_entry] About to dereference system_table (virt)\n",
     );
     let system_table_ref = unsafe { &*system_table_virt };
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] system_table dereferenced successfully\n"
+        b"DEBUG: [uefi_entry] system_table dereferenced successfully\n",
     );
 
     let mut ctx = UefiInitContext {
@@ -79,26 +79,26 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] Calling early_initialization\n"
+        b"DEBUG: [uefi_entry] Calling early_initialization\n",
     );
     let kernel_phys_start = ctx.early_initialization();
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] early_initialization returned\n"
+        b"DEBUG: [uefi_entry] early_initialization returned\n",
     );
 
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] Calling memory_management_initialization\n"
+        b"DEBUG: [uefi_entry] Calling memory_management_initialization\n",
     );
     let (physical_memory_offset, heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start);
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] memory_management_initialization returned\n"
+        b"DEBUG: [uefi_entry] memory_management_initialization returned\n",
     );
 
     crate::gdt::load();
@@ -112,13 +112,13 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] Allocator setup completed\n"
+        b"DEBUG: [uefi_entry] Allocator setup completed\n",
     );
 
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
-        b"DEBUG: [uefi_entry] Performing world switch to kernel\n"
+        b"DEBUG: [uefi_entry] Performing world switch to kernel\n",
     );
 
     let cr3 = x86_64::registers::control::Cr3::read();

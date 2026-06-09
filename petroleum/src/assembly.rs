@@ -37,17 +37,19 @@ impl TransitionFrame {
 }
 
 #[inline(always)]
-pub unsafe fn setup_segments() { unsafe {
-    core::arch::asm!(
-        "mov ax, 0x10",
-        "mov ds, ax",
-        "mov es, ax",
-        "mov fs, ax",
-        "mov gs, ax",
-        "mov ss, ax",
-        options(preserves_flags)
-    );
-}}
+pub unsafe fn setup_segments() {
+    unsafe {
+        core::arch::asm!(
+            "mov ax, 0x10",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            "mov ss, ax",
+            options(preserves_flags)
+        );
+    }
+}
 
 #[unsafe(no_mangle)]
 #[inline(never)]
@@ -57,28 +59,34 @@ pub unsafe extern "C" fn jump_to_kernel_with_stack(
     entry: usize,
     l4_phys: u64,
     phys_offset: u64,
-) -> ! { unsafe {
-    core::arch::asm!(
-        "mov rdi, {0}", "mov rsi, {1}", "mov rdx, {2}", "mov rcx, {3}", "mov r8, {4}",
-        "jmp {3}",
-        in(reg) args_ptr, in(reg) stack_top, in(reg) l4_phys, in(reg) entry, in(reg) phys_offset,
-        options(noreturn)
-    );
-}}
+) -> ! {
+    unsafe {
+        core::arch::asm!(
+            "mov rdi, {0}", "mov rsi, {1}", "mov rdx, {2}", "mov rcx, {3}", "mov r8, {4}",
+            "jmp {3}",
+            in(reg) args_ptr, in(reg) stack_top, in(reg) l4_phys, in(reg) entry, in(reg) phys_offset,
+            options(noreturn)
+        );
+    }
+}
 
 #[inline(always)]
-pub unsafe fn prepare_for_kernel_jump() { unsafe {
-    x86_64::instructions::interrupts::disable();
-    setup_segments();
-    core::arch::asm!("and rsp, -16", options(preserves_flags));
-}}
+pub unsafe fn prepare_for_kernel_jump() {
+    unsafe {
+        x86_64::instructions::interrupts::disable();
+        setup_segments();
+        core::arch::asm!("and rsp, -16", options(preserves_flags));
+    }
+}
 
-pub unsafe extern "C" fn jump_with_new_stack(stack_ptr: u64, entry: usize) -> ! { unsafe {
-    core::arch::asm!(
-        "mov rsp, {stack}", "jmp {entry}",
-        stack = in(reg) stack_ptr, entry = in(reg) entry, options(noreturn)
-    )
-}}
+pub unsafe extern "C" fn jump_with_new_stack(stack_ptr: u64, entry: usize) -> ! {
+    unsafe {
+        core::arch::asm!(
+            "mov rsp, {stack}", "jmp {entry}",
+            stack = in(reg) stack_ptr, entry = in(reg) entry, options(noreturn)
+        )
+    }
+}
 
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
@@ -99,9 +107,11 @@ pub unsafe extern "C" fn jump_to_kernel(
     entry: usize,
     args: *const KernelArgs,
     phys_offset: u64,
-) -> ! { unsafe {
-    prepare_for_kernel_jump();
-    core::arch::asm!(
-        "jmp {entry}", entry = in(reg) entry, in("rdi") args, in("rsi") phys_offset, options(noreturn)
-    );
-}}
+) -> ! {
+    unsafe {
+        prepare_for_kernel_jump();
+        core::arch::asm!(
+            "jmp {entry}", entry = in(reg) entry, in("rdi") args, in("rsi") phys_offset, options(noreturn)
+        );
+    }
+}

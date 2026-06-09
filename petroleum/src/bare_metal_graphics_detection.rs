@@ -11,42 +11,67 @@ pub mod bare_metal_graphics_detection {
         log_bm!("[BM-GFX] Starting bare-metal graphics detection...\n");
 
         let graphics_devices = crate::bare_metal_pci::enumerate_graphics_devices();
-        log_bm!("[BM-GFX] Found {} graphics devices via direct PCI enumeration\n", graphics_devices.len());
+        log_bm!(
+            "[BM-GFX] Found {} graphics devices via direct PCI enumeration\n",
+            graphics_devices.len()
+        );
 
         for device in graphics_devices.iter() {
-            log_bm!("[BM-GFX] Probing device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
-                device.vendor_id, device.device_id, device.bus, device.device, device.function);
+            log_bm!(
+                "[BM-GFX] Probing device {:04x}:{:04x} at {:02x}:{:02x}:{:02x}\n",
+                device.vendor_id,
+                device.device_id,
+                device.bus,
+                device.device,
+                device.function
+            );
 
             match (device.vendor_id, device.device_id) {
                 (0x1af4, id) if id >= 0x1050 => {
-                    log_bm!("[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n");
+                    log_bm!(
+                        "[BM-GFX] Detected virtio-gpu, attempting bare-metal framebuffer detection\n"
+                    );
                     if let Some(config) = detect_bare_metal_virtio_gpu_framebuffer(device) {
-                        log_bm!("[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n");
+                        log_bm!(
+                            "[BM-GFX] Bare-metal virtio-gpu framebuffer detection successful!\n"
+                        );
                         return Some(config);
                     }
                 }
                 (0x1b36, 0x0100) => {
-                    log_bm!("[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n");
+                    log_bm!(
+                        "[BM-GFX] Detected QXL device, attempting bare-metal framebuffer detection\n"
+                    );
                     if let Some(config) = detect_bare_metal_qxl_framebuffer(device) {
                         log_bm!("[BM-GFX] Bare-metal QXL framebuffer detection successful!\n");
                         return Some(config);
                     }
                 }
                 (0x1013, _) => {
-                    log_bm!("[BM-GFX] Detected Cirrus Logic VGA device, attempting bare-metal framebuffer detection\n");
+                    log_bm!(
+                        "[BM-GFX] Detected Cirrus Logic VGA device, attempting bare-metal framebuffer detection\n"
+                    );
                     if let Some(config) = detect_bare_metal_cirrus_framebuffer(device) {
-                        log_bm!("[BM-GFX] Bare-metal Cirrus VGA framebuffer detection successful!\n");
+                        log_bm!(
+                            "[BM-GFX] Bare-metal Cirrus VGA framebuffer detection successful!\n"
+                        );
                         return Some(config);
                     }
                 }
                 (0x15ad, 0x0405) => {
-                    log_bm!("[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n");
+                    log_bm!(
+                        "[BM-GFX] Detected VMware SVGA, attempting bare-metal framebuffer detection\n"
+                    );
                     if let Some(config) = detect_bare_metal_vmware_svga_framebuffer(device) {
-                        log_bm!("[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n");
+                        log_bm!(
+                            "[BM-GFX] Bare-metal VMware SVGA framebuffer detection successful!\n"
+                        );
                         return Some(config);
                     }
                 }
-                _ => { log_bm!("[BM-GFX] Unknown graphics device type, skipping\n"); }
+                _ => {
+                    log_bm!("[BM-GFX] Unknown graphics device type, skipping\n");
+                }
             }
         }
 
@@ -136,9 +161,12 @@ pub mod bare_metal_graphics_detection {
 
         log_bm!("[BM-GFX] Trying standard VGA mode 13h (320x200x8) for Cirrus\n");
         let vga_config = crate::common::memory::create_framebuffer_config(
-            0xA0000, 320, 200,
+            0xA0000,
+            320,
+            200,
             crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            8, 320,
+            8,
+            320,
         );
 
         let test_ptr = 0xA0000 as *mut u8;

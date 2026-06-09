@@ -7,7 +7,9 @@ use nitrogen::port::{HardwarePorts, PortWriter, VgaPortOps};
 
 /// Write RGB triples for palette setup (DRY helper).
 fn write_rgb(writer: &mut PortWriter<u8>, val: u8) {
-    for _ in 0..3 { writer.write_safe(val); }
+    for _ in 0..3 {
+        writer.write_safe(val);
+    }
 }
 
 /// Write a register pair to an index/data port pair.
@@ -19,7 +21,10 @@ fn write_reg(index_port: u16, data_port: u16, index: u8, value: u8) {
 /// Reset the attribute controller flip-flop and return VgaPortOps.
 fn attr_ops() -> VgaPortOps {
     let _ = PortWriter::<u8>::new(HardwarePorts::STATUS).read_safe();
-    VgaPortOps::new(HardwarePorts::ATTRIBUTE_INDEX, HardwarePorts::ATTRIBUTE_INDEX)
+    VgaPortOps::new(
+        HardwarePorts::ATTRIBUTE_INDEX,
+        HardwarePorts::ATTRIBUTE_INDEX,
+    )
 }
 
 /// Write attribute registers and enable video output.
@@ -55,8 +60,10 @@ pub fn setup_cirrus_vga_mode() {
     setup_vga_mode_13h();
     let mut idx = PortWriter::<u8>::new(0x3C4);
     let mut dat = PortWriter::<u8>::new(0x3C5);
-    idx.write_safe(0x06); dat.write_safe(0x12);
-    idx.write_safe(0x1E); dat.write_safe(0x01);
+    idx.write_safe(0x06);
+    dat.write_safe(0x12);
+    idx.write_safe(0x1E);
+    dat.write_safe(0x01);
     log_serial("Cirrus VGA: Cirrus-specific initialization complete\n");
 }
 
@@ -81,7 +88,10 @@ pub fn detect_cirrus_vga() -> bool {
     for bus in 0..2u8 {
         for device in 0..32u8 {
             if crate::bare_metal_pci::pci_config_read_word(bus, device, 0, 0x00) == CIRRUS_VID {
-                crate::serial::serial_log(format_args!("VGA Detection: Cirrus VGA device found at bus:device = {}:{}\n", bus, device));
+                crate::serial::serial_log(format_args!(
+                    "VGA Detection: Cirrus VGA device found at bus:device = {}:{}\n",
+                    bus, device
+                ));
                 return true;
             }
         }
@@ -100,14 +110,28 @@ pub fn setup_vga_text_mode() {
         GRAPHICS_TEXT_CONFIG, HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA
     );
     // Cursor registers
-    write_reg(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA, 0x0A, 0x0E);
-    write_reg(HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA, 0x0B, 0x0F);
+    write_reg(
+        HardwarePorts::CRTC_INDEX,
+        HardwarePorts::CRTC_DATA,
+        0x0A,
+        0x0E,
+    );
+    write_reg(
+        HardwarePorts::CRTC_INDEX,
+        HardwarePorts::CRTC_DATA,
+        0x0B,
+        0x0F,
+    );
     write_attr(ATTRIBUTE_TEXT_CONFIG);
     log_serial("VGA text mode setup: Complete\n");
 }
 
-pub fn init_vga_graphics() { setup_vga_mode_13h(); }
-pub fn init_vga_text_mode() { setup_vga_text_mode(); }
+pub fn init_vga_graphics() {
+    setup_vga_mode_13h();
+}
+pub fn init_vga_text_mode() {
+    setup_vga_text_mode();
+}
 
 pub fn setup_palette() {
     let mut dac_idx = PortWriter::<u8>::new(HardwarePorts::DAC_INDEX);

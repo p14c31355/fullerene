@@ -116,33 +116,35 @@ impl FramebufferInstaller {
         color: u32,
         w: isize,
         h: isize,
-    ) { unsafe {
-        // 5x7 bitmap for C, 6, 0 (monospaced)
-        let glyph: [u8; 7] = match ch {
-            b'C' => [
-                0b01110, 0b10001, 0b10000, 0b10000, 0b10001, 0b01110, 0b00000,
-            ],
-            b'6' => [
-                0b01110, 0b10001, 0b10000, 0b11110, 0b10001, 0b01110, 0b00000,
-            ],
-            b'0' => [
-                0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000,
-            ],
-            _ => [0u8; 7],
-        };
-        for row in 0..7usize {
-            for col in 0..5usize {
-                if (glyph[row] >> (4 - col)) & 1 != 0 {
-                    let px = ox + col as isize;
-                    let py = oy + row as isize;
-                    if px >= 0 && px < w && py >= 0 && py < h {
-                        let idx = (py as usize) * stride_pixels + (px as usize);
-                        fb.add(idx).write_volatile(color);
+    ) {
+        unsafe {
+            // 5x7 bitmap for C, 6, 0 (monospaced)
+            let glyph: [u8; 7] = match ch {
+                b'C' => [
+                    0b01110, 0b10001, 0b10000, 0b10000, 0b10001, 0b01110, 0b00000,
+                ],
+                b'6' => [
+                    0b01110, 0b10001, 0b10000, 0b11110, 0b10001, 0b01110, 0b00000,
+                ],
+                b'0' => [
+                    0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000,
+                ],
+                _ => [0u8; 7],
+            };
+            for row in 0..7usize {
+                for col in 0..5usize {
+                    if (glyph[row] >> (4 - col)) & 1 != 0 {
+                        let px = ox + col as isize;
+                        let py = oy + row as isize;
+                        if px >= 0 && px < w && py >= 0 && py < h {
+                            let idx = (py as usize) * stride_pixels + (px as usize);
+                            fb.add(idx).write_volatile(color);
+                        }
                     }
                 }
             }
         }
-    }}
+    }
 }
 
 /// Generic helper for detecting standard framebuffer modes

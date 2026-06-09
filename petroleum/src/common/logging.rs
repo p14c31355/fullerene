@@ -19,7 +19,9 @@ pub struct FullereneLogger {
 
 impl FullereneLogger {
     pub const fn new() -> Self {
-        Self { level: log::LevelFilter::Warn }
+        Self {
+            level: log::LevelFilter::Warn,
+        }
     }
 }
 
@@ -44,7 +46,10 @@ pub fn init_global_logger() -> Result<(), log::SetLoggerError> {
     log::set_logger(&LOGGER)?;
     log::set_max_level(LOGGER.level);
     LOGGER_INITIALIZED.call_once(|| {});
-    crate::serial::serial_log(format_args!("[INIT] Logger initialized at level {:?}\n", LOGGER.level));
+    crate::serial::serial_log(format_args!(
+        "[INIT] Logger initialized at level {:?}\n",
+        LOGGER.level
+    ));
     Ok(())
 }
 
@@ -99,10 +104,18 @@ impl ErrorLogging for ErrorLogger {
     fn log_error(&self, error: &SystemError, context: &'static str) {
         log::error!("{}: {}", *error as u64, context);
     }
-    fn log_warning(&self, message: &'static str) { log::warn!("{}", message); }
-    fn log_info(&self, message: &'static str) { log::info!("{}", message); }
-    fn log_debug(&self, message: &'static str) { log::debug!("{}", message); }
-    fn log_trace(&self, message: &'static str) { log::trace!("{}", message); }
+    fn log_warning(&self, message: &'static str) {
+        log::warn!("{}", message);
+    }
+    fn log_info(&self, message: &'static str) {
+        log::info!("{}", message);
+    }
+    fn log_debug(&self, message: &'static str) {
+        log::debug!("{}", message);
+    }
+    fn log_trace(&self, message: &'static str) {
+        log::trace!("{}", message);
+    }
 }
 
 pub static ERROR_LOGGER: ErrorLogger = ErrorLogger;

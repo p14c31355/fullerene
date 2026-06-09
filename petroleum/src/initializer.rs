@@ -174,7 +174,12 @@ pub trait MemoryManager {
     fn free_pages(&mut self, address: usize, count: usize) -> SystemResult<()>;
     fn total_memory(&self) -> usize;
     fn available_memory(&self) -> usize;
-    fn map_address(&mut self, virtual_addr: usize, physical_addr: usize, count: usize) -> SystemResult<()>;
+    fn map_address(
+        &mut self,
+        virtual_addr: usize,
+        physical_addr: usize,
+        count: usize,
+    ) -> SystemResult<()>;
     fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()>;
     fn virtual_to_physical(&self, virtual_addr: usize) -> SystemResult<usize>;
     fn init_paging(&mut self) -> SystemResult<()>;

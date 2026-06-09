@@ -17,78 +17,80 @@ macro_rules! trace {
 }
 
 /// Walk the 4-level page table by hand (best-effort, lock-free).
-unsafe fn debug_page_walk(vaddr: VirtAddr, phys_offset: VirtAddr) { unsafe {
-    let pt_flags = x86_64::structures::paging::PageTableFlags::PRESENT;
-    let l4 = crate::page_table::active_level_4_table(phys_offset);
-    let l4_idx = vaddr.p4_index();
-    let l3_idx = vaddr.p3_index();
-    let l2_idx = vaddr.p2_index();
-    let l1_idx = vaddr.p1_index();
-    // Use references to avoid moving non-Copy PageTableEntry
-    let l4e = &(*l4)[l4_idx];
-    trace!(
-        "  L4[{:?}]: addr=0x{:x} flags={:?}\n",
-        l4_idx,
-        l4e.addr().as_u64(),
-        l4e.flags()
-    );
-    if !l4e.flags().contains(pt_flags) {
-        trace!("  → L4 !PRESENT\n");
-        return;
+unsafe fn debug_page_walk(vaddr: VirtAddr, phys_offset: VirtAddr) {
+    unsafe {
+        let pt_flags = x86_64::structures::paging::PageTableFlags::PRESENT;
+        let l4 = crate::page_table::active_level_4_table(phys_offset);
+        let l4_idx = vaddr.p4_index();
+        let l3_idx = vaddr.p3_index();
+        let l2_idx = vaddr.p2_index();
+        let l1_idx = vaddr.p1_index();
+        // Use references to avoid moving non-Copy PageTableEntry
+        let l4e = &(*l4)[l4_idx];
+        trace!(
+            "  L4[{:?}]: addr=0x{:x} flags={:?}\n",
+            l4_idx,
+            l4e.addr().as_u64(),
+            l4e.flags()
+        );
+        if !l4e.flags().contains(pt_flags) {
+            trace!("  → L4 !PRESENT\n");
+            return;
+        }
+        let l3_phys = l4e.addr().as_u64() + phys_offset.as_u64();
+        let l3_ptr = l3_phys as *const x86_64::structures::paging::PageTable;
+        let l3 = &*l3_ptr;
+        let l3e = &(*l3)[l3_idx];
+        trace!(
+            "  L3[{:?}]: addr=0x{:x} flags={:?}\n",
+            l3_idx,
+            l3e.addr().as_u64(),
+            l3e.flags()
+        );
+        if !l3e.flags().contains(pt_flags) {
+            trace!("  → L3 !PRESENT\n");
+            return;
+        }
+        if l3e
+            .flags()
+            .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
+        {
+            trace!("  → 1GiB page\n");
+            return;
+        }
+        let l2_phys = l3e.addr().as_u64() + phys_offset.as_u64();
+        let l2_ptr = l2_phys as *const x86_64::structures::paging::PageTable;
+        let l2 = &*l2_ptr;
+        let l2e = &(*l2)[l2_idx];
+        trace!(
+            "  L2[{:?}]: addr=0x{:x} flags={:?}\n",
+            l2_idx,
+            l2e.addr().as_u64(),
+            l2e.flags()
+        );
+        if !l2e.flags().contains(pt_flags) {
+            trace!("  → L2 !PRESENT\n");
+            return;
+        }
+        if l2e
+            .flags()
+            .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
+        {
+            trace!("  → 2MiB page\n");
+            return;
+        }
+        let l1_phys = l2e.addr().as_u64() + phys_offset.as_u64();
+        let l1_ptr = l1_phys as *const x86_64::structures::paging::PageTable;
+        let l1 = &*l1_ptr;
+        let l1e = &(*l1)[l1_idx];
+        trace!(
+            "  L1[{:?}]: addr=0x{:x} flags={:?}\n",
+            l1_idx,
+            l1e.addr().as_u64(),
+            l1e.flags()
+        );
     }
-    let l3_phys = l4e.addr().as_u64() + phys_offset.as_u64();
-    let l3_ptr = l3_phys as *const x86_64::structures::paging::PageTable;
-    let l3 = &*l3_ptr;
-    let l3e = &(*l3)[l3_idx];
-    trace!(
-        "  L3[{:?}]: addr=0x{:x} flags={:?}\n",
-        l3_idx,
-        l3e.addr().as_u64(),
-        l3e.flags()
-    );
-    if !l3e.flags().contains(pt_flags) {
-        trace!("  → L3 !PRESENT\n");
-        return;
-    }
-    if l3e
-        .flags()
-        .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
-    {
-        trace!("  → 1GiB page\n");
-        return;
-    }
-    let l2_phys = l3e.addr().as_u64() + phys_offset.as_u64();
-    let l2_ptr = l2_phys as *const x86_64::structures::paging::PageTable;
-    let l2 = &*l2_ptr;
-    let l2e = &(*l2)[l2_idx];
-    trace!(
-        "  L2[{:?}]: addr=0x{:x} flags={:?}\n",
-        l2_idx,
-        l2e.addr().as_u64(),
-        l2e.flags()
-    );
-    if !l2e.flags().contains(pt_flags) {
-        trace!("  → L2 !PRESENT\n");
-        return;
-    }
-    if l2e
-        .flags()
-        .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
-    {
-        trace!("  → 2MiB page\n");
-        return;
-    }
-    let l1_phys = l2e.addr().as_u64() + phys_offset.as_u64();
-    let l1_ptr = l1_phys as *const x86_64::structures::paging::PageTable;
-    let l1 = &*l1_ptr;
-    let l1e = &(*l1)[l1_idx];
-    trace!(
-        "  L1[{:?}]: addr=0x{:x} flags={:?}\n",
-        l1_idx,
-        l1e.addr().as_u64(),
-        l1e.flags()
-    );
-}}
+}
 
 /// Check if a virtual address is mapped in the page table.
 /// Returns true if the page is present (either as a 4k page, 2MB huge page, or 1GB huge page).
@@ -96,47 +98,49 @@ unsafe fn is_page_mapped(
     l4: &x86_64::structures::paging::PageTable,
     vaddr: VirtAddr,
     phys_offset: VirtAddr,
-) -> bool { unsafe {
-    let l4_idx = vaddr.p4_index();
-    let l3_idx = vaddr.p3_index();
-    let l2_idx = vaddr.p2_index();
-    let l1_idx = vaddr.p1_index();
+) -> bool {
+    unsafe {
+        let l4_idx = vaddr.p4_index();
+        let l3_idx = vaddr.p3_index();
+        let l2_idx = vaddr.p2_index();
+        let l1_idx = vaddr.p1_index();
 
-    let l4e = &l4[l4_idx];
-    if !l4e.flags().contains(PageTableFlags::PRESENT) {
-        return false;
-    }
-    let l3_phys = l4e.addr().as_u64() + phys_offset.as_u64();
-    let l3_ptr = l3_phys as *const x86_64::structures::paging::PageTable;
-    let l3 = &*l3_ptr;
+        let l4e = &l4[l4_idx];
+        if !l4e.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+        let l3_phys = l4e.addr().as_u64() + phys_offset.as_u64();
+        let l3_ptr = l3_phys as *const x86_64::structures::paging::PageTable;
+        let l3 = &*l3_ptr;
 
-    let l3e = &l3[l3_idx];
-    if !l3e.flags().contains(PageTableFlags::PRESENT) {
-        return false;
-    }
-    if l3e.flags().contains(PageTableFlags::HUGE_PAGE) {
-        // 1GB huge page covers this address
-        return true;
-    }
-    let l2_phys = l3e.addr().as_u64() + phys_offset.as_u64();
-    let l2_ptr = l2_phys as *const x86_64::structures::paging::PageTable;
-    let l2 = &*l2_ptr;
+        let l3e = &l3[l3_idx];
+        if !l3e.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+        if l3e.flags().contains(PageTableFlags::HUGE_PAGE) {
+            // 1GB huge page covers this address
+            return true;
+        }
+        let l2_phys = l3e.addr().as_u64() + phys_offset.as_u64();
+        let l2_ptr = l2_phys as *const x86_64::structures::paging::PageTable;
+        let l2 = &*l2_ptr;
 
-    let l2e = &l2[l2_idx];
-    if !l2e.flags().contains(PageTableFlags::PRESENT) {
-        return false;
-    }
-    if l2e.flags().contains(PageTableFlags::HUGE_PAGE) {
-        // 2MB huge page covers this address
-        return true;
-    }
-    let l1_phys = l2e.addr().as_u64() + phys_offset.as_u64();
-    let l1_ptr = l1_phys as *const x86_64::structures::paging::PageTable;
-    let l1 = &*l1_ptr;
+        let l2e = &l2[l2_idx];
+        if !l2e.flags().contains(PageTableFlags::PRESENT) {
+            return false;
+        }
+        if l2e.flags().contains(PageTableFlags::HUGE_PAGE) {
+            // 2MB huge page covers this address
+            return true;
+        }
+        let l1_phys = l2e.addr().as_u64() + phys_offset.as_u64();
+        let l1_ptr = l1_phys as *const x86_64::structures::paging::PageTable;
+        let l1 = &*l1_ptr;
 
-    let l1e = &l1[l1_idx];
-    l1e.flags().contains(PageTableFlags::PRESENT)
-}}
+        let l1e = &l1[l1_idx];
+        l1e.flags().contains(PageTableFlags::PRESENT)
+    }
+}
 
 /// Creates the primary UEFI framebuffer console if available, returns None if fallback to VGA is needed.
 pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFramebufferWriter> {

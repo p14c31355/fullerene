@@ -59,35 +59,37 @@ pub fn is_heap_initialized() -> bool {
 ///
 /// * `ptr` - Pointer to the start of the heap memory region
 /// * `size` - Size of the heap memory region in bytes
-pub unsafe fn init_global_heap(ptr: *mut u8, size: usize) { unsafe {
-    #[cfg(all(not(feature = "std"), not(test)))]
-    {
-        // Check if already initialized by testing if allocator is empty
-        // (LockedHeap::empty() creates an allocator with size 0)
-        if ALLOCATOR.lock().size() > 0 {
-            return;
+pub unsafe fn init_global_heap(ptr: *mut u8, size: usize) {
+    unsafe {
+        #[cfg(all(not(feature = "std"), not(test)))]
+        {
+            // Check if already initialized by testing if allocator is empty
+            // (LockedHeap::empty() creates an allocator with size 0)
+            if ALLOCATOR.lock().size() > 0 {
+                return;
+            }
+
+            // Debug output
+            let mut buf = [0u8; 16];
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_global_heap] ptr: 0x");
+            let len = crate::serial::format_hex_to_buffer(ptr as u64, &mut buf, 16);
+            crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b", size: 0x");
+            let len = crate::serial::format_hex_to_buffer(size as u64, &mut buf, 16);
+            crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+
+            // Initialize the allocator
+            ALLOCATOR.lock().init(ptr, size);
+
+            // NOTE: Do NOT call set_heap_range here because this is called before the world switch.
+            // The heap range will be set in init_common after the world switch.
+
+            // Mark as initialized
+            HEAP_INITIALIZED.store(true, Ordering::SeqCst);
         }
-
-        // Debug output
-        let mut buf = [0u8; 16];
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [init_global_heap] ptr: 0x");
-        let len = crate::serial::format_hex_to_buffer(ptr as u64, &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b", size: 0x");
-        let len = crate::serial::format_hex_to_buffer(size as u64, &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-
-        // Initialize the allocator
-        ALLOCATOR.lock().init(ptr, size);
-
-        // NOTE: Do NOT call set_heap_range here because this is called before the world switch.
-        // The heap range will be set in init_common after the world switch.
-
-        // Mark as initialized
-        HEAP_INITIALIZED.store(true, Ordering::SeqCst);
     }
-}}
+}
 
 /// Allocate heap memory from EFI memory map
 ///
@@ -123,36 +125,39 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 /// # Panics
 ///
 /// Panics if the heap has not been initialized.
-pub unsafe fn extend_global_heap(additional: usize) { unsafe {
-    #[cfg(all(not(feature = "std"), not(test)))]
-    {
-        let mut alloc = ALLOCATOR.lock();
-        let old_top = alloc.top() as usize;
-        alloc.extend(additional);
-        // Update the tracked heap range so page-fault detection still works.
-        let new_top = alloc.top() as usize;
-        drop(alloc);
-        crate::common::memory::set_heap_range(
-            crate::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst),
-            new_top - crate::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst),
-        );
+pub unsafe fn extend_global_heap(additional: usize) {
+    unsafe {
+        #[cfg(all(not(feature = "std"), not(test)))]
+        {
+            let mut alloc = ALLOCATOR.lock();
+            let old_top = alloc.top() as usize;
+            alloc.extend(additional);
+            // Update the tracked heap range so page-fault detection still works.
+            let new_top = alloc.top() as usize;
+            drop(alloc);
+            crate::common::memory::set_heap_range(
+                crate::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst),
+                new_top
+                    - crate::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst),
+            );
 
-        // Debug output
-        let mut buf = [0u8; 16];
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [extend_global_heap] old_top=0x");
-        let len = crate::serial::format_hex_to_buffer(old_top as u64, &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b" new_top=0x");
-        let len = crate::serial::format_hex_to_buffer(new_top as u64, &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-    }
+            // Debug output
+            let mut buf = [0u8; 16];
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [extend_global_heap] old_top=0x");
+            let len = crate::serial::format_hex_to_buffer(old_top as u64, &mut buf, 16);
+            crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b" new_top=0x");
+            let len = crate::serial::format_hex_to_buffer(new_top as u64, &mut buf, 16);
+            crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+            crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+        }
 
-    #[cfg(any(feature = "std", test))]
-    {
-        let _ = additional;
+        #[cfg(any(feature = "std", test))]
+        {
+            let _ = additional;
+        }
     }
-}}
+}
 
 /// Return the current top address of the global heap.
 ///

@@ -43,7 +43,7 @@ impl ProcessMemoryManagerImpl {
         petroleum::write_serial_bytes(
             0x3F8,
             0x3FD,
-            b"DEBUG: [init_page_table] calling clone_page_table\n"
+            b"DEBUG: [init_page_table] calling clone_page_table\n",
         );
         let new_root = pt_manager.clone_page_table(kernel_root, frame_allocator)?;
         // Don't switch CR3 - just store the new root for later context switch.

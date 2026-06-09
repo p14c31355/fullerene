@@ -8,8 +8,8 @@
 
 use alloc::boxed::Box;
 use nitrogen::pci::{PciConfigSpace, PciScanner};
-use nitrogen::virtio::gpu::{self, VirtioGpu, VringAvail, VringDesc, VringUsed};
 use nitrogen::virtio::cap::{self, VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG};
+use nitrogen::virtio::gpu::{self, VirtioGpu, VringAvail, VringDesc, VringUsed};
 use petroleum::graphics::UefiFramebufferWriter;
 use petroleum::page_table::constants::get_frame_allocator_mut;
 
@@ -30,7 +30,9 @@ impl ContiguousFrameGuard {
             .ok()? as u64;
         Some(Self { phys, pages })
     }
-    fn phys(&self) -> u64 { self.phys }
+    fn phys(&self) -> u64 {
+        self.phys
+    }
     /// Disarm the guard so the frames persist after return.
     fn forget(mut self) -> u64 {
         let phys = self.phys;
@@ -57,16 +59,29 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
     // 1. PCI probe
     let mut scanner = PciScanner::new();
     let _ = scanner.scan_all_buses();
-    let gpu_dev = scanner.get_devices().iter()
+    let gpu_dev = scanner
+        .get_devices()
+        .iter()
         .find(|d| d.vendor_id == 0x1af4 && d.device_id == 0x1050)
         .cloned()?;
-    log::info!("virtio-gpu: found at {:02x}:{:02x}.{:01x}", gpu_dev.bus, gpu_dev.device, gpu_dev.function);
+    log::info!(
+        "virtio-gpu: found at {:02x}:{:02x}.{:01x}",
+        gpu_dev.bus,
+        gpu_dev.device,
+        gpu_dev.function
+    );
 
     // 2. Capability parsing
     let caps = cap::get_virtio_caps(&gpu_dev);
     cap::dump_capabilities(&gpu_dev);
-    let common_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_COMMON_CFG).cloned()?;
-    let notify_cap = caps.iter().find(|c| c.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG).cloned()?;
+    let common_cap = caps
+        .iter()
+        .find(|c| c.cfg_type == VIRTIO_PCI_CAP_COMMON_CFG)
+        .cloned()?;
+    let notify_cap = caps
+        .iter()
+        .find(|c| c.cfg_type == VIRTIO_PCI_CAP_NOTIFY_CFG)
+        .cloned()?;
 
     // 3. BAR info
     let bar_info = gpu_dev.get_bar_info(common_cap.bar)?;
@@ -75,14 +90,32 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
 
     let cmd = PciConfigSpace::read_from_device(gpu_dev.bus, gpu_dev.device, gpu_dev.function)?;
     let val = (cmd.status as u32) << 16 | (cmd.command as u32 | 0x0004); // bus-master
-    PciConfigSpace::write_config_dword_raw(gpu_dev.bus, gpu_dev.device, gpu_dev.function, 0x04, val);
+    PciConfigSpace::write_config_dword_raw(
+        gpu_dev.bus,
+        gpu_dev.device,
+        gpu_dev.function,
+        0x04,
+        val,
+    );
 
     // 4. Map MMIO BARs
     {
         let mut mm = crate::memory_management::get_memory_manager().lock();
         let mm = mm.as_mut().expect("MemoryManager not initialized");
-        if mm.map_mmio_region(bar_info.address as usize, COMMON_VIRT_BASE, bar_info.size as usize).is_err()
-            || mm.map_mmio_region(notify_bar_info.address as usize, NOTIFY_VIRT_BASE, notify_bar_info.size as usize).is_err()
+        if mm
+            .map_mmio_region(
+                bar_info.address as usize,
+                COMMON_VIRT_BASE,
+                bar_info.size as usize,
+            )
+            .is_err()
+            || mm
+                .map_mmio_region(
+                    notify_bar_info.address as usize,
+                    NOTIFY_VIRT_BASE,
+                    notify_bar_info.size as usize,
+                )
+                .is_err()
         {
             return None;
         }
@@ -98,10 +131,24 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
     let resp_guard = ContiguousFrameGuard::allocate(1)?;
     let resp_phys = resp_guard.phys();
     let resp_buf = (resp_phys + off) as *mut u8;
-    unsafe { core::ptr::write_bytes(cmd_buf, 0, 4096); core::ptr::write_bytes(resp_buf, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(cmd_buf, 0, 4096);
+        core::ptr::write_bytes(resp_buf, 0, 4096);
+    }
 
     // 6. Initialise GPU device
-    let mut gpu = gpu::init_virtio_gpu(common_ptr, notify_ptr, gpu_dev.clone(), common_cap.bar, cmd_buf, cmd_phys, 4096, resp_buf, resp_phys, 4096)?;
+    let mut gpu = gpu::init_virtio_gpu(
+        common_ptr,
+        notify_ptr,
+        gpu_dev.clone(),
+        common_cap.bar,
+        cmd_buf,
+        cmd_phys,
+        4096,
+        resp_buf,
+        resp_phys,
+        4096,
+    )?;
 
     // 7. Queue memory
     let desc_guard = ContiguousFrameGuard::allocate(1)?;
@@ -110,19 +157,35 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
     let avail_virt = (avail_guard.phys() + off) as *mut VringAvail;
     let used_guard = ContiguousFrameGuard::allocate(1)?;
     let used_virt = (used_guard.phys() + off) as *mut VringUsed;
-    gpu.setup_queue(0, desc_virt, desc_guard.phys(), avail_virt, avail_guard.phys(), used_virt, used_guard.phys());
+    gpu.setup_queue(
+        0,
+        desc_virt,
+        desc_guard.phys(),
+        avail_virt,
+        avail_guard.phys(),
+        used_virt,
+        used_guard.phys(),
+    );
 
     // Disarm guards — GPU+queue owns these buffers
-    cmd_guard.forget(); resp_guard.forget();
-    desc_guard.forget(); avail_guard.forget(); used_guard.forget();
+    cmd_guard.forget();
+    resp_guard.forget();
+    desc_guard.forget();
+    avail_guard.forget();
+    used_guard.forget();
 
     // 8. Framebuffer info
     let fb_config = {
-        let opt = petroleum::FULLERENE_FRAMEBUFFER_CONFIG.get()
+        let opt = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
+            .get()
             .and_then(|m| m.lock().clone());
         opt.unwrap_or(petroleum::common::FullereneFramebufferConfig {
-            address: 0x40000000, width: 1024, height: 768, stride: 1024,
-            pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            address: 0x40000000,
+            width: 1024,
+            height: 768,
+            stride: 1024,
+            pixel_format:
+                petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
             bpp: 32,
         })
     };
@@ -164,6 +227,10 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
     let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
     let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
 
-    log::info!("virtio-gpu: display {}x{} ready", fb_config.width, fb_config.height);
+    log::info!(
+        "virtio-gpu: display {}x{} ready",
+        fb_config.width,
+        fb_config.height
+    );
     Some((Box::new(gpu), renderer))
 }
