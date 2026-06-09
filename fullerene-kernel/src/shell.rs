@@ -116,10 +116,10 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str("Example: calc (2+3)*4\n");
         }
         "theme" => {
-            let current = lattice::theme::current_theme_variant();
+            let current = solvent::current_theme_variant();
             let name = match current {
-                lattice::theme::ThemeVariant::Dark => "dark",
-                lattice::theme::ThemeVariant::Light => "light",
+                solvent::ThemeVariant::Dark => "dark",
+                solvent::ThemeVariant::Light => "light",
             };
             let msg = format!("Current theme: {}\n", name);
             ctx.terminal.write_str(&msg);
@@ -127,11 +127,11 @@ fn register_nozzle_hooks() {
                 .write_str("Usage: theme toggle | theme dark | theme light\n");
         }
         "wallpaper" => {
-            let current = lattice::wallpaper::get_wallpaper();
+            let current = solvent::get_wallpaper();
             let name = match current {
-                lattice::wallpaper::WallpaperMode::SolidColor => "solid",
-                lattice::wallpaper::WallpaperMode::GridPattern => "grid",
-                lattice::wallpaper::WallpaperMode::Gradient => "gradient",
+                solvent::WallpaperMode::SolidColor => "solid",
+                solvent::WallpaperMode::GridPattern => "grid",
+                solvent::WallpaperMode::Gradient => "gradient",
             };
             let msg = format!("Current wallpaper: {}\n", name);
             ctx.terminal.write_str(&msg);
@@ -210,30 +210,30 @@ fn register_nozzle_hooks() {
         }
     });
 
-    // Sys control hooks — theme/wallpaper/reboot/shutdown
+    // Sys control hooks — theme/wallpaper/reboot/shutdown (via solvent bridges)
     nozzle::sys_hooks::set_sys_ctl_fn(|cmd| match cmd {
         "theme dark" => {
-            lattice::theme::set_theme(lattice::theme::ThemeVariant::Dark);
+            solvent::set_theme(solvent::ThemeVariant::Dark);
             solvent::force_desktop_redraw();
         }
         "theme light" => {
-            lattice::theme::set_theme(lattice::theme::ThemeVariant::Light);
+            solvent::set_theme(solvent::ThemeVariant::Light);
             solvent::force_desktop_redraw();
         }
         "theme toggle" => {
-            lattice::theme::toggle_theme();
+            solvent::toggle_theme();
             solvent::force_desktop_redraw();
         }
         "wallpaper solid" => {
-            lattice::wallpaper::set_wallpaper(lattice::wallpaper::WallpaperMode::SolidColor);
+            solvent::set_wallpaper(solvent::WallpaperMode::SolidColor);
             solvent::force_desktop_redraw();
         }
         "wallpaper grid" => {
-            lattice::wallpaper::set_wallpaper(lattice::wallpaper::WallpaperMode::GridPattern);
+            solvent::set_wallpaper(solvent::WallpaperMode::GridPattern);
             solvent::force_desktop_redraw();
         }
         "wallpaper gradient" => {
-            lattice::wallpaper::set_wallpaper(lattice::wallpaper::WallpaperMode::Gradient);
+            solvent::set_wallpaper(solvent::WallpaperMode::Gradient);
             solvent::force_desktop_redraw();
         }
         "reboot" => {
@@ -270,24 +270,14 @@ fn register_nozzle_hooks() {
 
 /// Main shell entry point — called from the scheduler as a kernel process.
 pub fn shell_main() {
-    use nozzle::Shell;
-
     petroleum::debug_log!("Shell main started");
 
     register_nozzle_hooks();
 
     if solvent::is_initialized() {
-        let mut term = solvent::LatticeTerminal;
-        let commands = nozzle::default_commands();
-        let mut shell = Shell::new(&mut term, commands);
-        shell.set_prompt("fullerene> ");
-        shell.run();
+        solvent::run_shell_on(&mut solvent::LatticeTerminal, "fullerene> ");
     } else {
-        let mut term = KernelTerminal;
-        let commands = nozzle::default_commands();
-        let mut shell = Shell::new(&mut term, commands);
-        shell.set_prompt("fullerene> ");
-        shell.run();
+        solvent::run_shell_on(&mut KernelTerminal, "fullerene> ");
     }
 }
 

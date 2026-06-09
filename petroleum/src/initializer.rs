@@ -166,39 +166,32 @@ pub trait HardwareDevice: Initializable + ErrorLogging {
     }
 }
 
-// Placeholder for syscall-related traits that may need to be defined
-pub trait SyscallHandler {
-    fn handle_syscall(&mut self, syscall_number: usize, args: &[usize]) -> SystemResult<usize>;
-}
-
-// Placeholder for logging-related traits that may need to be defined
-pub trait Logger {
-    fn log(&self, level: crate::common::logging::LogLevel, message: &str);
-}
-
-pub trait ErrorLogging {
-    fn log_error(&self, error: &SystemError, context: &'static str);
-    fn log_warning(&self, message: &'static str);
-    fn log_info(&self, message: &'static str);
-    fn log_debug(&self, message: &'static str);
-    fn log_trace(&self, message: &'static str);
-}
+// Re-export ErrorLogging from the logging module to avoid duplication
+pub use crate::common::logging::ErrorLogging;
 
 pub trait MemoryManager {
     fn allocate_pages(&mut self, count: usize) -> SystemResult<usize>;
     fn free_pages(&mut self, address: usize, count: usize) -> SystemResult<()>;
     fn total_memory(&self) -> usize;
     fn available_memory(&self) -> usize;
-    fn map_address(
-        &mut self,
-        virtual_addr: usize,
-        physical_addr: usize,
-        count: usize,
-    ) -> SystemResult<()>;
+    fn map_address(&mut self, virtual_addr: usize, physical_addr: usize, count: usize) -> SystemResult<()>;
     fn unmap_address(&mut self, virtual_addr: usize, count: usize) -> SystemResult<()>;
     fn virtual_to_physical(&self, virtual_addr: usize) -> SystemResult<usize>;
     fn init_paging(&mut self) -> SystemResult<()>;
     fn page_size(&self) -> usize;
+}
+
+pub trait FrameAllocator {
+    fn allocate_frame(&mut self) -> SystemResult<usize>;
+    fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()>;
+    fn allocate_contiguous_frames(&mut self, count: usize) -> SystemResult<usize>;
+    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()>;
+    fn total_frames(&self) -> usize;
+    fn available_frames(&self) -> usize;
+    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()>;
+    fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()>;
+    fn is_frame_available(&self, frame_addr: usize) -> bool;
+    fn frame_size(&self) -> usize;
 }
 
 pub trait ProcessMemoryManager {
@@ -218,19 +211,6 @@ pub trait ProcessMemoryManager {
         size: usize,
     ) -> SystemResult<()>;
     fn current_process_id(&self) -> usize;
-}
-
-pub trait FrameAllocator {
-    fn allocate_frame(&mut self) -> SystemResult<usize>;
-    fn free_frame(&mut self, frame_addr: usize) -> SystemResult<()>;
-    fn allocate_contiguous_frames(&mut self, count: usize) -> SystemResult<usize>;
-    fn free_contiguous_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()>;
-    fn total_frames(&self) -> usize;
-    fn available_frames(&self) -> usize;
-    fn reserve_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()>;
-    fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()>;
-    fn is_frame_available(&self, frame_addr: usize) -> bool;
-    fn frame_size(&self) -> usize;
 }
 
 pub struct InitSequence<'a> {

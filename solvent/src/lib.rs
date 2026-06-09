@@ -1344,3 +1344,20 @@ pub fn force_desktop_redraw() {
         r.frame_due = true;
     }
 }
+
+// ── Theme / wallpaper bridges (avoid kernel → lattice coupling) ─────
+
+pub use lattice::theme::{ThemeVariant, current_theme_variant, set_theme, toggle_theme};
+pub use lattice::wallpaper::{WallpaperMode, get_wallpaper, set_wallpaper};
+
+// ── Shell bootstrap (moved from kernel to respect dependency direction)
+
+/// Run the nozzle shell on the given terminal.
+/// This function lives in solvent so the kernel does not need to depend on
+/// nozzle / lattice directly (AGENTS.md §3).
+pub fn run_shell_on(terminal: &mut dyn nozzle::Terminal, prompt: &str) {
+    let commands = nozzle::default_commands();
+    let mut shell = nozzle::Shell::new(terminal, commands);
+    shell.set_prompt(prompt);
+    shell.run();
+}
