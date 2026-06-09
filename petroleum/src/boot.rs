@@ -249,7 +249,10 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
             "fb_config: phys=0x{:x}, virt=0x{:x}, {}x{} bpp={} stride={}\n",
             fb_phys, fb_virt, fb_width, fb_height, fb_bpp, fb_stride
         );
-        trace!("fb_byte_size={} bytes, fb_pages={}\n", fb_byte_size, fb_pages);
+        trace!(
+            "fb_byte_size={} bytes, fb_pages={}\n",
+            fb_byte_size, fb_pages
+        );
 
         // Debugging: Verify stride matches expected bytes-per-line
         let expected_stride = (fb_width as u64 * (fb_bpp as u64 / 8)) as u32;
@@ -279,7 +282,12 @@ pub fn create_primary_console() -> Option<crate::graphics::framebuffer::UefiFram
                 let v = x86_64::VirtAddr::new(fb_virt + i as u64 * 4096);
                 let p = x86_64::PhysAddr::new(fb_phys + i as u64 * 4096);
                 let _ = crate::early::mapper::map_page_4k_l1(
-                    l4, v, p, fb_flags, frame_allocator, phys_offset,
+                    l4,
+                    v,
+                    p,
+                    fb_flags,
+                    frame_allocator,
+                    phys_offset,
                 );
             }
         }

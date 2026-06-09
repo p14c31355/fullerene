@@ -45,13 +45,19 @@ impl UnifiedMemoryManager {
         // instead of the OffsetPageTable mapper which cannot handle
         // ParentEntryHugePage at all.
         let l4_virt = self.page_table_manager.current_page_table() as u64 + off;
-        let l4 = unsafe { &mut *(l4_virt as *mut x86_64::structures::paging::page_table::PageTable) };
+        let l4 =
+            unsafe { &mut *(l4_virt as *mut x86_64::structures::paging::page_table::PageTable) };
         let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
         let phys_offset = x86_64::VirtAddr::new(off);
 
         unsafe {
             petroleum::page_table::kernel::init::map_page_4k_l1(
-                l4, virt, phys, flags, frame_alloc, phys_offset,
+                l4,
+                virt,
+                phys,
+                flags,
+                frame_alloc,
+                phys_offset,
             )
         }
         .map_err(|_| SystemError::MappingFailed)?;

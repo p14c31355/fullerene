@@ -38,7 +38,7 @@ pub mod memory_management;
 pub mod nvme;
 pub mod process;
 pub mod scheduler;
-    pub mod shell;
+pub mod shell;
 pub mod slab;
 pub mod sound;
 pub mod syscall;

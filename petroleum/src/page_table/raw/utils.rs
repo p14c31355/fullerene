@@ -94,13 +94,22 @@ pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
         let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(p_addr));
         match mapper.map_to(page, frame, flags, allocator) {
             Ok(flush) => flush.flush(),
-            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(existing_frame)) => {
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
+                existing_frame,
+            )) => {
                 // Check if the existing mapping matches the requested one
                 if existing_frame != frame {
                     if behavior == "panic" {
-                        panic!("Mapping error: existing frame {:?} differs from requested {:?}", existing_frame, frame);
+                        panic!(
+                            "Mapping error: existing frame {:?} differs from requested {:?}",
+                            existing_frame, frame
+                        );
                     } else {
-                        return Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(existing_frame));
+                        return Err(
+                            x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(
+                                existing_frame,
+                            ),
+                        );
                     }
                 } else {
                     x86_64::instructions::tlb::flush(page.start_address());

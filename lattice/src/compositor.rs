@@ -105,7 +105,9 @@ pub fn notify_frame_presented(now_tick: u64) {
     if now_tick > last && (fc as u64 % FRAMES_PER_UPDATE == 0) {
         let ticks_since = now_tick.saturating_sub(last);
         if ticks_since > 0 {
-            let fps = FRAMES_PER_UPDATE.saturating_mul(100).saturating_div(ticks_since);
+            let fps = FRAMES_PER_UPDATE
+                .saturating_mul(100)
+                .saturating_div(ticks_since);
             CURRENT_FPS_X100.store(fps, Ordering::Relaxed);
         }
         LAST_FPS_TICK.store(now_tick, Ordering::Relaxed);
@@ -580,7 +582,13 @@ impl Compositor {
             for c in 3..11 {
                 let da = max_y + r;
                 let dxa = max_x + c;
-                if da < cy as i32 || da >= cey || dxa < cx as i32 || dxa >= cex || da >= fh || dxa >= fw {
+                if da < cy as i32
+                    || da >= cey
+                    || dxa < cx as i32
+                    || dxa >= cex
+                    || da >= fh
+                    || dxa >= fw
+                {
                     continue;
                 }
                 let on_edge = r == 3 || r == 10 || c == 3 || c == 10;

@@ -21,7 +21,9 @@ const RLE_HDR_SIZE: usize = 16;
 fn calibrate_tsc_per_ms() -> u64 {
     const TSC_CAL_WINDOW: u64 = 250_000_000; // ≈ 100 ms @ 2.5 GHz
     const FALLBACK: u64 = 2_500_000; // assume 2.5 GHz
-    unsafe { x86_64::_mm_lfence(); }
+    unsafe {
+        x86_64::_mm_lfence();
+    }
     let start = unsafe { x86_64::_rdtsc() };
     loop {
         if unsafe { x86_64::_rdtsc() }.wrapping_sub(start) >= TSC_CAL_WINDOW {
@@ -255,15 +257,8 @@ pub fn play_badapple() {
     if use_hda {
         let drain_deadline =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
-        while pcm_off < pcm_total
-            && unsafe { x86_64::_rdtsc() } < drain_deadline
-        {
-            crate::sound::hda_feed_pcm(
-                &BADAPPLE_PCM[pcm_off..],
-                &mut pcm_off,
-                pcm_total,
-                HALF,
-            );
+        while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < drain_deadline {
+            crate::sound::hda_feed_pcm(&BADAPPLE_PCM[pcm_off..], &mut pcm_off, pcm_total, HALF);
             if crate::sound::hda_poll_block(Some(audio_feed_tsc)) {
                 continue;
             }

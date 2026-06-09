@@ -234,10 +234,7 @@ impl TaskManager {
         out.push_str("----  ----------------  --------  ----\n");
         for e in entries.iter() {
             let ttype = if e.is_user { "user" } else { "kern" };
-            let line = alloc::format!(
-                "{:<4}  {:<16}  {:<8}  {}\n",
-                e.pid, e.name, e.state, ttype
-            );
+            let line = alloc::format!("{:<4}  {:<16}  {:<8}  {}\n", e.pid, e.name, e.state, ttype);
             out.push_str(&line);
         }
         out

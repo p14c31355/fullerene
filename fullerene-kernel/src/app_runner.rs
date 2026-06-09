@@ -74,8 +74,8 @@ pub fn launch(name: &str) -> Result<u64, AppError> {
         // This is intentional: process names are kernel-lifetime objects.
         let static_name: &'static str =
             Box::leak(alloc::string::String::from(name).into_boxed_str());
-        let pid = crate::loader::load_program(&data, static_name)
-            .map_err(|_| AppError::LoadFailed)?;
+        let pid =
+            crate::loader::load_program(&data, static_name).map_err(|_| AppError::LoadFailed)?;
         log::info!("Launched VFS app '{}' as PID {}", name, pid.0);
         return Ok(pid.0);
     }
@@ -88,8 +88,7 @@ fn launch_binary(name: &'static str, data: &[u8]) -> Result<u64, AppError> {
         return Err(AppError::NotYetAvailable);
     }
 
-    let pid = crate::loader::load_program(data, name)
-        .map_err(|_| AppError::LoadFailed)?;
+    let pid = crate::loader::load_program(data, name).map_err(|_| AppError::LoadFailed)?;
 
     log::info!("Launched app '{}' as PID {}", name, pid.0);
 

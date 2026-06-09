@@ -447,17 +447,14 @@ impl PciScanner {
                     }
                     if let Some(pci_device) = PciDevice::new(bus, device, function) {
                         // Check for nested PCI bridges
-                        let class =
-                            PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
+                        let class = PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
                         let subclass =
                             PciConfigSpace::read_config_byte(bus, device, function, 0x0A);
 
                         if class == 0x06 && subclass == 0x04 {
                             let secondary_bus =
                                 PciConfigSpace::read_config_byte(bus, device, function, 0x19);
-                            if secondary_bus > bus
-                                && !buses_to_scan[secondary_bus as usize]
-                            {
+                            if secondary_bus > bus && !buses_to_scan[secondary_bus as usize] {
                                 buses_to_scan[secondary_bus as usize] = true;
                             }
                         }

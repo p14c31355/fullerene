@@ -896,7 +896,8 @@ impl UefiInitContext {
         *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt as *mut u32);
 
         petroleum::debug_log!(
-            "DEBUG: [map_mmio] LOCAL_APIC_ADDRESS set to virt={:#x}\n", lapic_virt
+            "DEBUG: [map_mmio] LOCAL_APIC_ADDRESS set to virt={:#x}\n",
+            lapic_virt
         );
 
         // Validate and log framebuffer config
@@ -920,7 +921,11 @@ impl UefiInitContext {
             let fb_virt = config.address + phys_offset_val;
             petroleum::debug_log!(
                 "DEBUG: [map_mmio] FB config OK: phys={:#x} virt={:#x} {}x{}x{}\n",
-                config.address, fb_virt, config.width, config.height, config.bpp
+                config.address,
+                fb_virt,
+                config.width,
+                config.height,
+                config.bpp
             );
         }
 

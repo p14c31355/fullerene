@@ -216,7 +216,9 @@ impl EventHandler for WmEventHandler {
                     render_cursor_only(prev_x, prev_y, *x, *y);
                     return true;
                 }
-                Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::TimeZoneSelector => {
+                Event::Input(InputEvent::MouseDown(_))
+                    if rt.shell_state == ShellState::TimeZoneSelector =>
+                {
                     // In timezone selector: determine which entry was clicked
                     let mouse = MOUSE_STATE.lock();
                     let cx = mouse.x as i32;
@@ -236,7 +238,8 @@ impl EventHandler for WmEventHandler {
                     for (i, offset) in timezones.iter().enumerate() {
                         let ey = start_y + (i as i32) * (entry_h + pad);
                         if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
-                            TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
+                            TIMEZONE_OFFSET_HOURS
+                                .store(*offset, core::sync::atomic::Ordering::Relaxed);
                             rt.shell_state = ShellState::Desktop;
                             rt.frame_due = true;
                             return true;
@@ -269,7 +272,8 @@ impl EventHandler for WmEventHandler {
                     let ax = pad + col * (icon_size + pad);
                     let ay = start_y + row * (icon_size + label_h + pad);
 
-                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
+                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h
+                    {
                         rt.shell_state = ShellState::TimeZoneSelector;
                         rt.frame_due = true;
                         return true;
@@ -538,8 +542,8 @@ fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
 
     if extended {
         match base {
-            0x1D => return KeyCode::Ctrl,      // RCtrl as Ctrl
-            0x38 => return KeyCode::Alt,        // RAlt as Alt
+            0x1D => return KeyCode::Ctrl, // RCtrl as Ctrl
+            0x38 => return KeyCode::Alt,  // RAlt as Alt
             0x5B => return KeyCode::SuperLeft,
             0x5C => return KeyCode::SuperRight,
             _ => {}
@@ -667,7 +671,8 @@ pub fn process_events() {
 /// Update the taskbar clock from the wall‑clock callback.
 /// Format: "YYYY MMDD HHMM" (e.g. "2026 0606 2200").
 /// Current timezone offset in hours (UTC + offset = local time).
-pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 = core::sync::atomic::AtomicI8::new(9);
+pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
+    core::sync::atomic::AtomicI8::new(9);
 
 pub fn update_clock() {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
@@ -694,7 +699,8 @@ pub fn update_clock() {
                 1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
                 4 | 6 | 9 | 11 => 30i16,
                 2 => {
-                    let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
+                    let leap =
+                        (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
                     if leap { 29 } else { 28 }
                 }
                 _ => 31,
@@ -717,7 +723,8 @@ pub fn update_clock() {
                     1 | 3 | 5 | 7 | 8 | 10 | 12 => 31i16,
                     4 | 6 | 9 | 11 => 30i16,
                     2 => {
-                        let leap = (local_year % 4 == 0 && local_year % 100 != 0) || (local_year % 400 == 0);
+                        let leap = (local_year % 4 == 0 && local_year % 100 != 0)
+                            || (local_year % 400 == 0);
                         if leap { 29 } else { 28 }
                     }
                     _ => 31,
@@ -855,11 +862,7 @@ where
                     // Full-screen blit on transition: non‑temporal store
                     let copy_len = fb_len.min(back.len());
                     unsafe {
-                        copy_to_fb_volatile(
-                            fb_pixels.as_mut_ptr(),
-                            back.as_ptr(),
-                            copy_len,
-                        );
+                        copy_to_fb_volatile(fb_pixels.as_mut_ptr(), back.as_ptr(), copy_len);
                     }
                 } else {
                     let b_w = bw as usize;
@@ -889,9 +892,13 @@ where
                 render_app_grid(fb_pixels, fb_width, fb_height);
             }
             ShellState::TimeZoneSelector => {
-                let current_offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+                let current_offset =
+                    TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
                 lattice::shell_overlay::render_timezone_selector(
-                    fb_pixels, fb_width, fb_height, current_offset,
+                    fb_pixels,
+                    fb_width,
+                    fb_height,
+                    current_offset,
                 );
             }
             ShellState::Desktop => {}
@@ -933,10 +940,14 @@ fn save_cursor_backing(fb: &[u32], fbw: u32, fbh: u32, cx: i32, cy: i32) {
 
     for row in 0..sz {
         let dy = dst_y + row;
-        if dy < 0 || dy >= fbh as i32 { continue; }
+        if dy < 0 || dy >= fbh as i32 {
+            continue;
+        }
         for col in 0..sz {
             let dx = dst_x + col;
-            if dx < 0 || dx >= fbw as i32 { continue; }
+            if dx < 0 || dx >= fbw as i32 {
+                continue;
+            }
             let idx = (dy as usize) * fb_w + dx as usize;
             if idx < fb_len {
                 unsafe {
@@ -1038,7 +1049,8 @@ fn render_cursor_only(prev_x: i32, prev_y: i32, new_x: i32, new_y: i32) {
                 }
                 let idx = (dy as usize) * fb_w + dx as usize;
                 if idx < fb_len {
-                    let backing = unsafe { CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] };
+                    let backing =
+                        unsafe { CURSOR_BACKING[(row as usize) * (sz as usize) + col as usize] };
                     fb[idx] = backing;
                 }
             }
@@ -1137,7 +1149,8 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
                     // Extension failed — keep old size, don't risk OOM.
                     return;
                 } else {
-                    HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
+                    HEAP_EXTEND_RESERVE
+                        .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
                 }
             } else {
                 return;

@@ -80,7 +80,9 @@ pub fn send_eoi() {
 /// does NOT configure the timer or IO APIC; those are set up later by
 /// [`init_apic`].
 pub fn init_apic_hw_only() {
-    petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Masking APIC LVTs early\n"));
+    petroleum::serial::serial_log(format_args!(
+        "[init_apic_hw_only] Masking APIC LVTs early\n"
+    ));
 
     unsafe {
         reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
@@ -100,7 +102,8 @@ pub fn init_apic_hw_only() {
 
     if base_addr < 0xFFFF_8000_0000_0000 || (base_addr & 0xFFF) != 0 {
         petroleum::serial::serial_log(format_args!(
-            "[init_apic_hw_only] Invalid APIC base {:#x}, skipping\n", base_addr
+            "[init_apic_hw_only] Invalid APIC base {:#x}, skipping\n",
+            base_addr
         ));
         return;
     }
@@ -163,7 +166,8 @@ pub fn init_apic() {
         if !ptr.is_null() {
             let addr = ptr as u64;
             petroleum::serial::serial_log(format_args!(
-                "DEBUG: [init_apic] Using pre-mapped LAPIC at {:#x}\n", addr
+                "DEBUG: [init_apic] Using pre-mapped LAPIC at {:#x}\n",
+                addr
             ));
             addr
         } else {
@@ -239,11 +243,10 @@ pub fn init_apic() {
     let io_apic_virt_base =
         IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
 
-    if io_apic_virt_base >= 0xFFFF_8000_0000_0000
-        && io_apic_virt_base < 0xFFFF_FFFF_FFFF_F000
-    {
+    if io_apic_virt_base >= 0xFFFF_8000_0000_0000 && io_apic_virt_base < 0xFFFF_FFFF_FFFF_F000 {
         petroleum::serial::serial_log(format_args!(
-            "Initializing I/O APIC at virt={:#x}\n", io_apic_virt_base
+            "Initializing I/O APIC at virt={:#x}\n",
+            io_apic_virt_base
         ));
         init_io_apic(base_addr, io_apic_virt_base);
     } else {

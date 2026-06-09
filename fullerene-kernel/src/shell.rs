@@ -4,9 +4,9 @@
 //! `KernelTerminal` that bridges the abstract `nozzle::Terminal`
 //! trait to the kernel's raw syscall I/O.
 
-use alloc::{format, string::String};
-use alloc::string::ToString;
 use crate::syscall::kernel_syscall;
+use alloc::string::ToString;
+use alloc::{format, string::String};
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
@@ -20,50 +20,46 @@ pub fn init() {
 /// Register kernel implementations for nozzle's filesystem and system hooks.
 fn register_nozzle_hooks() {
     // FS hooks — wire into kernel VFS
-    nozzle::fs_hooks::set_fs_list_fn(|ctx| {
-        match crate::vfs::readdir("/") {
-            Ok(entries) => {
-                for ent in entries {
-                    let line = if ent.is_dir {
-                        format!("  {}/\n", ent.name)
-                    } else {
-                        format!("  {}  ({} bytes)\n", ent.name, ent.size)
-                    };
-                    ctx.terminal.write_str(&line);
-                }
+    nozzle::fs_hooks::set_fs_list_fn(|ctx| match crate::vfs::readdir("/") {
+        Ok(entries) => {
+            for ent in entries {
+                let line = if ent.is_dir {
+                    format!("  {}/\n", ent.name)
+                } else {
+                    format!("  {}  ({} bytes)\n", ent.name, ent.size)
+                };
+                ctx.terminal.write_str(&line);
             }
-            Err(e) => {
-                let msg = format!("ls: {}\n", e);
-                ctx.terminal.write_str(&msg);
-            }
+        }
+        Err(e) => {
+            let msg = format!("ls: {}\n", e);
+            ctx.terminal.write_str(&msg);
         }
     });
 
-    nozzle::fs_hooks::set_fs_read_fn(|ctx, path| {
-        match crate::vfs::open(path, 0) {
-            Ok(fd) => {
-                let mut buf = [0u8; 512];
-                loop {
-                    match crate::vfs::read(fd.fd, &mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            ctx.terminal
-                                .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
-                        }
-                        Err(e) => {
-                            let msg = format!("cat: {}\n", e);
-                            ctx.terminal.write_str(&msg);
-                            break;
-                        }
+    nozzle::fs_hooks::set_fs_read_fn(|ctx, path| match crate::vfs::open(path, 0) {
+        Ok(fd) => {
+            let mut buf = [0u8; 512];
+            loop {
+                match crate::vfs::read(fd.fd, &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        ctx.terminal
+                            .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
+                    }
+                    Err(e) => {
+                        let msg = format!("cat: {}\n", e);
+                        ctx.terminal.write_str(&msg);
+                        break;
                     }
                 }
-                let _ = crate::vfs::close(fd.fd);
-                ctx.terminal.write_str("\n");
             }
-            Err(e) => {
-                let msg = format!("cat: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
-            }
+            let _ = crate::vfs::close(fd.fd);
+            ctx.terminal.write_str("\n");
+        }
+        Err(e) => {
+            let msg = format!("cat: {}: {}\n", path, e);
+            ctx.terminal.write_str(&msg);
         }
     });
 
@@ -95,13 +91,16 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str(&list);
         }
         "devices" => {
-            if let Some(ref manager) = *crate::hardware::device_manager::get_device_manager().lock() {
+            if let Some(ref manager) = *crate::hardware::device_manager::get_device_manager().lock()
+            {
                 let devs = manager.list_devices();
                 if devs.is_empty() {
                     ctx.terminal.write_str("No devices registered.\n");
                 } else {
-                    ctx.terminal.write_str("DEVICE            TYPE        ENABLED\n");
-                    ctx.terminal.write_str("----------------  ----------  -------\n");
+                    ctx.terminal
+                        .write_str("DEVICE            TYPE        ENABLED\n");
+                    ctx.terminal
+                        .write_str("----------------  ----------  -------\n");
                     for d in devs {
                         let status = if d.enabled { "yes" } else { "no" };
                         let line = format!("{:<16}  {:<10}  {}\n", d.name, d.device_type, status);
@@ -124,7 +123,8 @@ fn register_nozzle_hooks() {
             };
             let msg = format!("Current theme: {}\n", name);
             ctx.terminal.write_str(&msg);
-            ctx.terminal.write_str("Usage: theme toggle | theme dark | theme light\n");
+            ctx.terminal
+                .write_str("Usage: theme toggle | theme dark | theme light\n");
         }
         "wallpaper" => {
             let current = lattice::wallpaper::get_wallpaper();
@@ -135,7 +135,8 @@ fn register_nozzle_hooks() {
             };
             let msg = format!("Current wallpaper: {}\n", name);
             ctx.terminal.write_str(&msg);
-            ctx.terminal.write_str("Usage: wallpaper solid | grid | gradient\n");
+            ctx.terminal
+                .write_str("Usage: wallpaper solid | grid | gradient\n");
         }
         "windows" => {
             if solvent::is_initialized() {
@@ -144,17 +145,14 @@ fn register_nozzle_hooks() {
                 ctx.terminal
                     .write_str("Use the GUI to interact with windows.\n");
             } else {
-                ctx.terminal
-                    .write_str("Windowing system not active.\n");
+                ctx.terminal.write_str("Windowing system not active.\n");
             }
         }
         "dmesg" => {
-            ctx.terminal
-                .write_str("=== Kernel trace buffer ===\n");
+            ctx.terminal.write_str("=== Kernel trace buffer ===\n");
             let events = crate::tracing::snapshot();
             if events.is_empty() {
-                ctx.terminal
-                    .write_str("(no trace events recorded)\n");
+                ctx.terminal.write_str("(no trace events recorded)\n");
             } else {
                 for ev in events {
                     let cat = core::str::from_utf8(&ev.category)
@@ -175,17 +173,23 @@ fn register_nozzle_hooks() {
         "pci" => {
             use alloc::format;
             use nitrogen::pci::PciScanner;
-            ctx.terminal.write_str("BUS  DEV  FUN  VENDOR  DEVICE  CLASS      SUBCLASS  DESCRIPTION\n");
-            ctx.terminal.write_str("---- ---- ----  ------  ------  ---------  --------  -----------\n");
+            ctx.terminal
+                .write_str("BUS  DEV  FUN  VENDOR  DEVICE  CLASS      SUBCLASS  DESCRIPTION\n");
+            ctx.terminal
+                .write_str("---- ---- ----  ------  ------  ---------  --------  -----------\n");
             let mut scanner = PciScanner::new();
             if scanner.scan_all_buses().is_ok() {
                 for dev in scanner.get_devices() {
                     let desc = pci_device_description(dev.class_code, dev.subclass);
                     let line = format!(
                         "{:<4}  {:<4} {:<4}  0x{:04x} 0x{:04x}  0x{:02x}       0x{:02x}       {}\n",
-                        dev.bus, dev.device, dev.function,
-                        dev.vendor_id, dev.device_id,
-                        dev.class_code, dev.subclass,
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev.vendor_id,
+                        dev.device_id,
+                        dev.class_code,
+                        dev.subclass,
                         desc,
                     );
                     ctx.terminal.write_str(&line);
@@ -195,7 +199,8 @@ fn register_nozzle_hooks() {
             }
         }
         "badapple" => {
-            ctx.terminal.write_str("Playing Bad Apple!! (press any key to stop)...\n");
+            ctx.terminal
+                .write_str("Playing Bad Apple!! (press any key to stop)...\n");
             crate::badapple::play_badapple();
             ctx.terminal.write_str("Bad Apple finished.\n");
         }
@@ -235,7 +240,8 @@ fn register_nozzle_hooks() {
             petroleum::serial::serial_log(format_args!("Reboot requested via shell\n"));
             unsafe {
                 let port: u16 = 0x64;
-                while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02 != 0 {}
+                while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02 != 0 {
+                }
                 x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
             }
         }

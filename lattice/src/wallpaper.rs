@@ -4,8 +4,8 @@
 //! wallpaper.  Wallpaper state is managed globally so it can be changed
 //! at runtime from a settings app or shell command.
 
-use spin::Mutex;
 use crate::theme;
+use spin::Mutex;
 
 /// Wallpaper mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +83,9 @@ pub fn render_wallpaper(
             // Fill the solid background colour
             for row in cy..cy + ch {
                 let y = row;
-                if y >= fb_height { continue; }
+                if y >= fb_height {
+                    continue;
+                }
                 let rs = (y as usize) * fb_w;
                 let start = rs + cx as usize;
                 let end = (rs + (cx + cw) as usize).min(fb.len());
@@ -94,7 +96,9 @@ pub fn render_wallpaper(
             // Fill background, then draw a subtle lattice grid.
             for row in cy..cy + ch {
                 let y = row;
-                if y >= fb_height { continue; }
+                if y >= fb_height {
+                    continue;
+                }
                 let rs = (y as usize) * fb_w;
                 let start = rs + cx as usize;
                 let end = (rs + (cx + cw) as usize).min(fb.len());
@@ -106,11 +110,15 @@ pub fn render_wallpaper(
 
             for row in cy..cy + ch {
                 let y = row;
-                if y >= fb_height { continue; }
+                if y >= fb_height {
+                    continue;
+                }
                 let rs = (y as usize) * fb_w;
                 for col in cx..cx + cw {
                     let x = col;
-                    if x >= fb_width { continue; }
+                    if x >= fb_width {
+                        continue;
+                    }
                     let on_grid_x = (x % grid_spacing) < 2;
                     let on_grid_y = (y % grid_spacing) < 2;
                     if on_grid_x || on_grid_y {
@@ -128,7 +136,9 @@ pub fn render_wallpaper(
             let to = colors.surface;
             for row in cy..cy + ch {
                 let y = row;
-                if y >= fb_height { continue; }
+                if y >= fb_height {
+                    continue;
+                }
                 let t = (y as u64 * 256 / fb_h as u64).min(255) as u32;
                 let color = blend(from, to, t as u8);
                 let rs = (y as usize) * fb_w;

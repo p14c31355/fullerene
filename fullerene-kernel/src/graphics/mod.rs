@@ -94,7 +94,12 @@ pub fn init_graphics() {
 
         petroleum::serial::serial_log(format_args!(
             "[graphics] BARs: common_bar={}, addr={:#x}, offset={:#x}; notify_bar={}, addr={:#x}, offset={:#x}\n",
-            common_bar, bar_info.address, common_offset, notify_bar, notify_bar_info.address, notify_offset
+            common_bar,
+            bar_info.address,
+            common_offset,
+            notify_bar,
+            notify_bar_info.address,
+            notify_offset
         ));
 
         let common_virt = 0xffff800060000000u64 as usize;
@@ -102,33 +107,46 @@ pub fn init_graphics() {
 
         // Enable memory access AND bus mastering
         let mut config = nitrogen::pci::PciConfigSpace::read_from_device(
-            gpu_device.bus, gpu_device.device, gpu_device.function,
+            gpu_device.bus,
+            gpu_device.device,
+            gpu_device.function,
         )
         .expect("Failed to read config");
         let cmd = config.command;
         let stat = config.status;
         petroleum::serial::serial_log(format_args!(
-            "[graphics] Pre-enable: Command={:#x}, Status={:#x}\n", cmd, stat
+            "[graphics] Pre-enable: Command={:#x}, Status={:#x}\n",
+            cmd, stat
         ));
         config.enable_memory_access(gpu_device.bus, gpu_device.device, gpu_device.function);
         config.command |= 0x0004;
         let val = (config.status as u32) << 16 | (config.command as u32);
         nitrogen::pci::PciConfigSpace::write_config_dword(
-            &mut config, gpu_device.bus, gpu_device.device, gpu_device.function, 0x04, val,
+            &mut config,
+            gpu_device.bus,
+            gpu_device.device,
+            gpu_device.function,
+            0x04,
+            val,
         );
 
         // Map the full BARs — if this fails, fall through to GOP.
         let bars_ok = {
             let mut mm = crate::memory_management::get_memory_manager().lock();
             let mm = mm.as_mut().expect("MemoryManager not initialized");
-            mm.map_mmio_region(bar_info.address as usize, common_virt, bar_info.size as usize)
-                .is_ok()
-                && mm.map_mmio_region(
-                    notify_bar_info.address as usize,
-                    notify_virt,
-                    notify_bar_info.size as usize,
-                )
-                .is_ok()
+            mm.map_mmio_region(
+                bar_info.address as usize,
+                common_virt,
+                bar_info.size as usize,
+            )
+            .is_ok()
+                && mm
+                    .map_mmio_region(
+                        notify_bar_info.address as usize,
+                        notify_virt,
+                        notify_bar_info.size as usize,
+                    )
+                    .is_ok()
         };
 
         'virtio: {
@@ -201,15 +219,18 @@ pub fn init_graphics() {
                     let fb_config = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
                         .get()
                         .and_then(|mutex| mutex.lock().clone());
-                    let (fb_phys, fb_width, fb_height, fb_stride, fb_pixel_format) =
-                        if let Some(ref c) = fb_config {
-                            (c.address, c.width, c.height, c.stride, Some(c.pixel_format))
-                        } else {
-                            (
+                    let (fb_phys, fb_width, fb_height, fb_stride, fb_pixel_format) = if let Some(
+                        ref c,
+                    ) =
+                        fb_config
+                    {
+                        (c.address, c.width, c.height, c.stride, Some(c.pixel_format))
+                    } else {
+                        (
                                 0x40000000u64, 1024u32, 768u32, 1024u32,
                                 Some(petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
                             )
-                        };
+                    };
 
                     let fb_virt = fb_phys + off;
                     let fb_byte_size = (fb_stride as u64) * (fb_height as u64);
@@ -256,10 +277,9 @@ pub fn init_graphics() {
                             fb_info.stride * fb_info.height,
                         ) {
                             Ok(()) => {
-                                let writer =
-                                    petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(
-                                        fb_info,
-                                    );
+                                let writer = petroleum::graphics::framebuffer::FramebufferWriter::<
+                                    u32,
+                                >::new(fb_info);
                                 let renderer =
                                     petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(
                                         writer,
@@ -313,7 +333,9 @@ pub fn init_graphics() {
         let fb_size = (fb_config.stride as u64 * fb_config.height as u64) as usize;
         petroleum::debug_log!(
             "[graphics] GOP fallback: phys={:#x} virt={:#x} size={}\n",
-            fb_phys, fb_virt, fb_size
+            fb_phys,
+            fb_virt,
+            fb_size
         );
 
         // Do NOT call safe_map_page for WC remap on real hardware.
@@ -328,18 +350,12 @@ pub fn init_graphics() {
             if fb_config.bpp == 8 {
                 // VGA mode 13h — reinitialize the DAC palette.
                 // ExitBootServices may have reset it to all-black.
-                petroleum::debug_log!(
-                    "[graphics] 8bpp VGA mode 13h — reinit palette & fill\n"
-                );
+                petroleum::debug_log!("[graphics] 8bpp VGA mode 13h — reinit palette & fill\n");
                 // Re-run mode-13h setup (sets palette + registers)
                 petroleum::graphics::setup::setup_vga_mode_13h();
                 // Fill the framebuffer with a diagnostic pattern
-                let fb_slice = unsafe {
-                    core::slice::from_raw_parts_mut(
-                        fb_virt as *mut u8,
-                        fb_size,
-                    )
-                };
+                let fb_slice =
+                    unsafe { core::slice::from_raw_parts_mut(fb_virt as *mut u8, fb_size) };
                 for y in 0..fb_config.height.min(200) as usize {
                     for x in 0..fb_config.width.min(320) as usize {
                         let color: u8 = match y / 40 {
@@ -425,7 +441,9 @@ pub fn flush_gpu() {
         // `sfence` orders NT stores ahead of it (movnti → WC buffer → sfence →
         // globally visible).  Regular fences (mfence) also work but sfence is
         // the correct companion to _mm_stream_si32 / movnti.
-        unsafe { core::arch::x86_64::_mm_sfence(); }
+        unsafe {
+            core::arch::x86_64::_mm_sfence();
+        }
     }
 }
 

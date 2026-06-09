@@ -48,7 +48,10 @@ fn tokenize(expr: &str) -> Option<alloc::vec::Vec<Token>> {
             b'0'..=b'9' => {
                 let mut val: i64 = 0;
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    val = match val.checked_mul(10).and_then(|v| v.checked_add((bytes[i] - b'0') as i64)) {
+                    val = match val
+                        .checked_mul(10)
+                        .and_then(|v| v.checked_add((bytes[i] - b'0') as i64))
+                    {
                         Some(v) => v,
                         None => return None, // Overflow
                     };
