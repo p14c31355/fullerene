@@ -121,7 +121,7 @@ pub fn render_wallpaper(
                     let mut gx = first_col;
                     while gx < cx + cw && gx < fb_width {
                         let col_start = rs + gx as usize;
-                        let col_end = (col_start + grid_thickness as usize).min(fb.len());
+                        let col_end = (col_start + grid_thickness as usize).min(rs + fb_width as usize);
                         fb[col_start..col_end].fill(grid_color);
                         gx += grid_spacing;
                     }
