@@ -430,7 +430,10 @@ impl EventHandler for TerminalInputHandler {
     }
 }
 
-/// Shell event handler — manages Super key double‑tap and Esc transitions.
+/// Track whether a Super key is currently held (for shortcuts).
+static SUPER_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Shell event handler — manages Super key double‑tap, Super+T tiling toggle, and Esc transitions.
 struct ShellEventHandler;
 
 impl EventHandler for ShellEventHandler {
@@ -444,6 +447,8 @@ impl EventHandler for ShellEventHandler {
         match event {
             Event::Input(InputEvent::KeyDown(KeyCode::SuperLeft))
             | Event::Input(InputEvent::KeyDown(KeyCode::SuperRight)) => {
+                SUPER_HELD.store(true, core::sync::atomic::Ordering::Relaxed);
+                // Double‑tap Super to cycle through overlays
                 match rt.shell_state {
                     ShellState::Desktop => {
                         rt.shell_state = ShellState::TaskOverview;
@@ -464,12 +469,32 @@ impl EventHandler for ShellEventHandler {
                 }
                 return true;
             }
+            Event::Input(InputEvent::KeyUp(KeyCode::SuperLeft))
+            | Event::Input(InputEvent::KeyUp(KeyCode::SuperRight)) => {
+                SUPER_HELD.store(false, core::sync::atomic::Ordering::Relaxed);
+                return false;
+            }
+            Event::Input(InputEvent::KeyDown(KeyCode::T))
+                if SUPER_HELD.load(core::sync::atomic::Ordering::Relaxed)
+                    && rt.shell_state == ShellState::Desktop =>
+            {
+                // Super+T: toggle tiling mode
+                let (fw, fh) = *FB_DIMS.lock();
+                let (ww, wh) = rt.desktop.work_area(fw, fh);
+                rt.desktop.wm.toggle_tiling();
+                rt.desktop.wm.retile(ww, wh);
+                rt.desktop.force_full_redraw();
+                rt.frame_due = true;
+                return true;
+            }
             Event::Input(InputEvent::KeyDown(KeyCode::Escape)) => {
                 if rt.shell_state != ShellState::Desktop {
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
+                // Also clear Super held on Escape (stuck modifier guard)
+                SUPER_HELD.store(false, core::sync::atomic::Ordering::Relaxed);
             }
             _ => {}
         }
@@ -1491,6 +1516,14 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
         }
         DesktopAction::About => {
             open_about_window(rt);
+        }
+        DesktopAction::ToggleTiling => {
+            let (fw, fh) = *FB_DIMS.lock();
+            let (ww, wh) = rt.desktop.work_area(fw, fh);
+            rt.desktop.wm.toggle_tiling();
+            rt.desktop.wm.retile(ww, wh);
+            rt.desktop.force_full_redraw();
+            rt.frame_due = true;
         }
         DesktopAction::Separator => {
             // Separator line — no action

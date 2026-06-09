@@ -206,6 +206,10 @@ pub fn desktop_context_menu() -> alloc::vec::Vec<MenuItem> {
             action: alloc::string::String::from("file_manager")
         },
         MenuItem {
+            label: alloc::string::String::from("Toggle Tiling"),
+            action: alloc::string::String::from("toggle_tiling")
+        },
+        MenuItem {
             label: alloc::string::String::from("──"),
             action: alloc::string::String::from("separator")
         },

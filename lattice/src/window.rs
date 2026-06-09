@@ -5,7 +5,7 @@ use alloc::string::String;
 ///
 /// Using an integer ID instead of direct references keeps the WM in control
 /// of window lifetime and avoids shared‑ownership complexity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WindowId(pub u64);
 
 impl WindowId {

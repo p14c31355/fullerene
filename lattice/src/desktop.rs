@@ -6,7 +6,7 @@ use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
 use crate::wm::WindowManager;
 
-/// Actions that can be dispatched from desktop menus (context menu, system menu, etc.).
+    /// Actions that can be dispatched from desktop menus (context menu, system menu, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopAction {
     NewTerminal,
@@ -14,6 +14,7 @@ pub enum DesktopAction {
     TaskManager,
     DeviceManager,
     FileManager,
+    ToggleTiling,
     Refresh,
     About,
     Separator,
@@ -28,6 +29,7 @@ impl DesktopAction {
             "task_manager" => DesktopAction::TaskManager,
             "device_manager" => DesktopAction::DeviceManager,
             "file_manager" => DesktopAction::FileManager,
+            "toggle_tiling" => DesktopAction::ToggleTiling,
             "refresh" => DesktopAction::Refresh,
             "about" => DesktopAction::About,
             "separator" => DesktopAction::Separator,
