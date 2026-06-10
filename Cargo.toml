@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "bonder", "chronoline", "flasks", "fullerene-kernel", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene"]
+members = ["apps/rle_player", "bellows", "bonder", "chronoline", "flasks", "fullerene-kernel", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene"]
 
 [profile.dev]
 panic = "abort"

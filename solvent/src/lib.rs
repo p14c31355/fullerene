@@ -1627,6 +1627,67 @@ fn render_text_into_surface(
 pub use lattice::theme::{ThemeVariant, current_theme_variant, set_theme, toggle_theme};
 pub use lattice::wallpaper::{WallpaperMode, get_wallpaper, set_wallpaper};
 
+// ── Window API (for external apps like RLE Player) ────────────────
+
+/// Create a new titled window on the desktop and return its ID.
+///
+/// The returned [`WindowId`] can be used with the other window API
+/// functions to draw into the surface, trigger redraws, or close
+/// the window.
+pub fn create_window(
+    title: impl Into<alloc::string::String>,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Option<WindowId> {
+    RUNTIME
+        .lock()
+        .as_mut()
+        .map(|rt| rt.desktop.wm.create_titled_window(x, y, width, height, 0x000000, title))
+}
+
+/// Get a mutable reference to a window's surface pixels.
+///
+/// Returns `None` if the window does not exist or is minimized.
+pub fn with_window_surface<F, R>(id: WindowId, f: F) -> Option<R>
+where
+    F: FnOnce(&mut [u32], u32, u32) -> R,
+{
+    RUNTIME.lock().as_mut().and_then(|rt| {
+        let w = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id)?;
+        if w.minimized {
+            return None;
+        }
+        let width = w.surface.width();
+        let height = w.surface.height();
+        Some(f(w.surface.pixels_mut(), width, height))
+    })
+}
+
+/// Mark a window's surface as dirty so it will be redrawn on the
+/// next compositor pass.
+pub fn invalidate_window(id: WindowId) {
+    if let Some(ref mut rt) = *RUNTIME.lock() {
+        rt.desktop.invalidate_window(id);
+        rt.frame_due = true;
+        rt.term_dirty = true;
+    }
+}
+
+/// Close (remove) a window from the desktop.
+pub fn close_window(id: WindowId) -> bool {
+    RUNTIME
+        .lock()
+        .as_mut()
+        .map_or(false, |rt| rt.desktop.wm.close_window(id))
+}
+
+/// Get the current framebuffer dimensions.
+pub fn framebuffer_dims() -> (u32, u32) {
+    *FB_DIMS.lock()
+}
+
 // ── Shell bootstrap (moved from kernel to respect dependency direction)
 
 /// Run the nozzle shell on the given terminal.

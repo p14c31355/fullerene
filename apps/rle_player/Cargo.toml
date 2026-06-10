@@ -1,0 +1,10 @@
+[package]
+name = "rle_player"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nitrogen = { path = "../../nitrogen" }
+
+[lib]
+path = "src/lib.rs"

@@ -1,183 +1,107 @@
-//! Bad Apple!! — shadow-art video + HDA PCM audio playback
+//! Bad Apple!! — shadow-art video + HDA PCM audio playback.
 //!
-//! Optimised rendering path:
-//! - Aspect‑ratio‑preserving letterbox / pillarbox rendering.
-//! - Hard threshold for true black‑and‑white silhouette.
-//! - Non‑temporal stores (`_mm_stream_si32`) for framebuffer writes.
-//! - TSC‑based frame pacing with ~1 ms audio feed granularity.
+//! Now uses the RLE Player library and renders into a Solvent window
+//! on the desktop instead of directly into the framebuffer.
+//!
+//! # Architecture
+//!
+//! ```text
+//! badapple.rle + badapple.pcm (embedded)
+//!     ↓
+//! rle_player::RleFile::parse()
+//!     ↓
+//! solvent::create_window("Bad Apple", ...)
+//!     ↓
+//! decode frame → draw into window surface → invalidate → compositor redraws
+//!     ↓
+//! sound::hda_feed_pcm (audio)
+//!     ↓
+//! on exit → solvent::close_window()
+//! ```
+//!
+//! This is Fullerene's first GUI application — playing a video
+//! inside a window on the desktop, rather than taking over the
+//! entire framebuffer.
+
 use alloc::vec::Vec;
 use core::arch::x86_64;
 
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
 const PCM_BYTES_PER_SEC: u32 = 96000; // 16-bit mono × 48000 Hz
-const RLE_MAGIC: &[u8; 4] = b"BARL";
-const RLE_HDR_SIZE: usize = 16;
+
+/// Default threshold for hard black/white silhouette.
 const THRESHOLD: u8 = 128;
 
-// ── Timing ──────────────────────────────────────────────────────
+/// Default window size for the Bad Apple player.
+const WINDOW_WIDTH: u32 = 640;
+const WINDOW_HEIGHT: u32 = 480;
 
-/// Return a fixed TSC ticks-per-millisecond estimate (2.5 GHz).
-///
-/// Accurate calibration requires an external hardware timer (PIT / APIC);
-/// without one we simply assume a 2.5 GHz clock to avoid wasting ~100 ms
-/// spinning at boot for a value that always rounds to the same constant.
+/// Return a fixed TSC ticks-per-millisecond estimate (2.5 GHz).
 fn calibrate_tsc_per_ms() -> u64 {
-    2_500_000 // assume 2.5 GHz
-}
-
-// ── RLE decode ──────────────────────────────────────────────────
-
-/// Decode one RLE frame into `buf` (length must be ≥ `total = fw*fh`).
-#[inline]
-fn decode_rle_frame(data: &[u8], buf: &mut [u8], total: usize) {
-    let mut p = 0usize;
-    let mut c = 0usize;
-    while c + 3 <= data.len() && p < total {
-        let fill = data[c];
-        let rl = u16::from_le_bytes([data[c + 1], data[c + 2]]) as usize;
-        c += 3;
-        let end = (p + rl).min(total);
-        buf[p..end].fill(fill);
-        p = end;
-    }
-}
-
-// ── Framebuffer drawing ─────────────────────────────────────────
-
-/// Draw a decoded RLE frame into a sub‑region of the framebuffer,
-/// preserving the source aspect ratio via nearest‑neighbour scaling
-/// and applying a hard black/white threshold for true silhouette.
-///
-/// # Safety
-/// `fb` must point to a valid framebuffer of at least `fb_stride * fb_h` u32
-/// elements.  `decode` must be at least `fw * fh` bytes.  The destination
-/// rectangle (`off_x`, `off_y`, `draw_w`, `draw_h`) must lie entirely within
-/// the framebuffer.
-#[inline]
-unsafe fn draw_decoded_frame(
-    fb: *mut u32,
-    fb_stride: usize,
-    fw: usize,
-    fh: usize,
-    decode: &[u8],
-    off_x: usize,
-    off_y: usize,
-    draw_w: usize,
-    draw_h: usize,
-) {
-    for dy in 0..draw_h {
-        let sy = dy * fh / draw_h;
-        let src_row = &decode[sy * fw..];
-        let row_off = (off_y + dy) * fb_stride + off_x;
-        for dx in 0..draw_w {
-            let sx = dx * fw / draw_w;
-            // Hard threshold: sample >= 128 → white, else black
-            let g = if src_row[sx] >= THRESHOLD { 255u32 } else { 0u32 };
-            let pixel = 0xFF00_0000u32 | (g << 16) | (g << 8) | g;
-            core::ptr::write_volatile(fb.add(row_off + dx), pixel);
-        }
-    }
+    2_500_000 // assume 2.5 GHz
 }
 
 pub fn play_badapple() {
-    log::info!("Bad Apple playback started");
-    let data = BADAPPLE_RLE;
-    if data.len() < RLE_HDR_SIZE || &data[..4] != RLE_MAGIC {
-        log::error!("Bad Apple: invalid RLE");
-        return;
-    }
-    let ver = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    if ver != 1 {
-        log::error!("Bad Apple: version {}", ver);
-        return;
-    }
-    let fc = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let fw = u16::from_le_bytes([data[12], data[13]]) as usize;
-    let fh = u16::from_le_bytes([data[14], data[15]]) as usize;
-    if fc == 0 {
-        log::error!("Bad Apple: zero frames");
-        return;
-    }
-    let n = fc as usize;
-    let ds = RLE_HDR_SIZE + n * 2;
-    if ds >= data.len() {
-        log::error!("Bad Apple: RLE data exceeds file");
-        return;
-    }
+    petroleum::serial::serial_log(format_args!("Bad Apple playback started (window mode)\n"));
+    log::info!("Bad Apple playback started (window mode)");
 
-    // ── Parse frame offsets ──────────────────────────────────
-    let mut offs = Vec::with_capacity(n);
-    let mut o: u64 = ds as u64;
-    for i in 0..n {
-        let cs =
-            u16::from_le_bytes([data[RLE_HDR_SIZE + i * 2], data[RLE_HDR_SIZE + i * 2 + 1]]) as u64;
-        offs.push(o);
-        o = o.saturating_add(cs);
-    }
-
-    // ── Framebuffer info ─────────────────────────────────────
-    let (fb, fbs, fbh) = {
-        let g = crate::graphics::PRIMARY_RENDERER.lock();
-        let r = match g.as_ref() {
-            Some(r) => r,
-            None => {
-                log::error!("Bad Apple: no renderer");
-                return;
-            }
-        };
-        let i = r.get_info();
-        (
-            i.address as *mut u32,
-            (i.stride as usize) / 4,
-            i.height as usize,
-        )
+    // ── Parse RLE file via rle_player library ──────────────
+    let rle = match rle_player::RleFile::parse(BADAPPLE_RLE) {
+        Ok(r) => r,
+        Err(e) => {
+            petroleum::serial::serial_log(format_args!("Bad Apple: RLE parse error: {:?}\n", e));
+            log::error!("Bad Apple: RLE parse error: {:?}", e);
+            return;
+        }
     };
-    if fb.is_null() || fbs == 0 || fbh == 0 {
-        log::error!("Bad Apple: invalid fb");
-        return;
-    }
+
+    let n = rle.frame_count as usize;
+    let fw = rle.frame_width as u32;
+    let fh = rle.frame_height as u32;
     if fw == 0 || fh == 0 {
+        petroleum::serial::serial_log(format_args!("Bad Apple: zero frame size\n"));
         log::error!("Bad Apple: zero frame size");
         return;
     }
 
-    // ── Compute letterbox / pillarbox draw region ────────────
-    // Source aspect ratio (fw : fh) is preserved.
-    let src_aspect = fw as f64 / fh as f64;
-    let dst_aspect = fbs as f64 / fbh as f64;
-    let (draw_w, draw_h, off_x, off_y) = if dst_aspect > src_aspect {
-        // Screen is wider → pillarbox (black bars left/right)
-        let h = fbh;
-        let w = ((fbh as f64 * src_aspect) as usize).max(1);
-        (w, h, (fbs.saturating_sub(w)) / 2, 0)
-    } else {
-        // Screen is taller → letterbox (black bars top/bottom)
-        let w = fbs;
-        let h = ((fbs as f64 / src_aspect) as usize).max(1);
-        (w, h, 0, (fbh.saturating_sub(h)) / 2)
+    // ── Create a window on the desktop ─────────────────────
+    let win_id = match solvent::create_window("Bad Apple", 100, 80, WINDOW_WIDTH, WINDOW_HEIGHT) {
+        Some(id) => {
+            petroleum::serial::serial_log(format_args!("Bad Apple: window created (id={:?})\n", id));
+            id
+        }
+        None => {
+            petroleum::serial::serial_log(format_args!("Bad Apple: failed to create window\n"));
+            log::error!("Bad Apple: failed to create window");
+            return;
+        }
     };
 
-    // ── Decode buffer ────────────────────────────────────────
-    let decode_total = fw * fh;
+    // ── Force an immediate full desktop redraw so the
+    //     window frame (title bar, border) appears at once ──
+    solvent::force_desktop_redraw();
+    crate::gui::render();
+
+    // ── Decode buffer ──────────────────────────────────────
+    let decode_total = rle.total_pixels();
     let mut decode_buf = alloc::vec![0u8; decode_total];
 
-    // ── Fill framebuffer black ───────────────────────────────
-    let fb_len = fbs * fbh;
-    unsafe {
-        for i in 0..fb_len {
-            core::ptr::write_volatile(fb.add(i), 0xFF00_0000u32);
-        }
-    }
-    crate::graphics::flush_gpu();
+    // ── Compute letterbox / pillarbox draw region ──────────
+    let (draw_w, draw_h, off_x, off_y) =
+        rle_player::compute_letterbox(fw, fh, WINDOW_WIDTH, WINDOW_HEIGHT);
+    petroleum::serial::serial_log(format_args!(
+        "Bad Apple: src={}x{} dst={}x{} letterbox=({},{},{},{})\n",
+        fw, fh, WINDOW_WIDTH, WINDOW_HEIGHT, draw_w, draw_h, off_x, off_y,
+    ));
 
-    // ── Timing calibration ───────────────────────────────────
+    // ── Timing calibration ─────────────────────────────────
     let tsc_per_ms = calibrate_tsc_per_ms();
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
     let frame_interval_ms: u64 = dur_ms / (n as u64).max(1);
     let frame_interval_tsc = frame_interval_ms.saturating_mul(tsc_per_ms);
-    // Audio feed every ~1 ms (paced by TSC)
+    // Audio feed every ~1 ms (paced by TSC)
     let audio_feed_tsc = tsc_per_ms;
     const HALF: usize = 16368;
     log::info!(
@@ -187,16 +111,17 @@ pub fn play_badapple() {
         frame_interval_ms,
         tsc_per_ms,
     );
+    petroleum::serial::serial_log(format_args!(
+        "Bad Apple: {} frames, {:.1}s, {}ms/f\n",
+        n,
+        dur_ms as f64 / 1000.0,
+        frame_interval_ms,
+    ));
 
     let use_hda = crate::sound::hda_available();
     nitrogen::ps2::keyboard::flush_input();
 
-    // ── Suppress solvent compositor during playback ──────────
-    // Prevent the desktop compositor from overwriting our
-    // direct framebuffer writes.  Restore on exit.
-    solvent::suspend_rendering();
-
-    // ── Pre‑fill DMA ring buffer both halves ─────────────────
+    // ── Pre‑fill DMA ring buffer both halves ───────────────
     let mut pcm_off: usize = 0;
     if use_hda {
         let e0 = HALF.min(pcm_total);
@@ -209,66 +134,78 @@ pub fn play_badapple() {
             crate::sound::hda_write_direct(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
             pcm_off = e1;
         }
-        // Tell the feed loop DMA is still in half 0 so it won't
-        // overwrite the pre‑filled data before DMA has consumed it.
         crate::sound::hda_reset_prefill_tracking();
     }
 
-    // ── Main playback loop ───────────────────────────────────
+    // ── Main playback loop ─────────────────────────────────
     let mut idx = 0usize;
     let mut last_audio_feed = unsafe { x86_64::_rdtsc() };
-    while idx < n && idx < offs.len() {
-        // Abort on any keyboard input (ASCII keys, arrows, modifiers, …)
+    while idx < n {
+        // Abort on any keyboard input
         if nitrogen::ps2::keyboard::input_available()
             || nitrogen::ps2::keyboard::raw_key_available()
         {
+            petroleum::serial::serial_log(format_args!("Bad Apple aborted at frame {}\n", idx));
             log::info!("Bad Apple aborted");
             nitrogen::ps2::keyboard::flush_input();
             break;
         }
 
-        // ── Render current frame ──
-        let fo = offs[idx] as usize;
-        let no = if idx + 1 < offs.len() {
-            offs[idx + 1] as usize
-        } else {
-            data.len()
-        };
-        if fo < data.len() && no <= data.len() {
-            decode_rle_frame(&data[fo..no], &mut decode_buf, decode_total);
-            unsafe {
-                draw_decoded_frame(
-                    fb, fbs, fw, fh, &decode_buf, off_x, off_y, draw_w, draw_h,
-                );
-            }
-            crate::graphics::flush_gpu();
+        // ── Decode frame ───────────────────────────────
+        if let Err(e) = rle.decode_frame(idx, &mut decode_buf) {
+            log::error!("Bad Apple: decode error at frame {}: {:?}", idx, e);
+            break;
         }
+
+        // ── Draw into the window surface ────────────────
+        let draw_ok = solvent::with_window_surface(win_id, |pixels, w, h| {
+            rle_player::draw_decoded_frame(
+                pixels,
+                w,
+                fw,
+                fh,
+                &decode_buf,
+                off_x,
+                off_y,
+                draw_w.min(w),
+                draw_h.min(h),
+                THRESHOLD,
+            );
+            true
+        });
+        if draw_ok.is_none() {
+            petroleum::serial::serial_log(format_args!(
+                "Bad Apple: with_window_surface returned None at frame {}\n", idx,
+            ));
+            break;
+        }
+
+        // Trigger compositor redraw for this window
+        solvent::invalidate_window(win_id);
+
+        // Render the frame via gui::render (more direct than runtime_tick)
+        crate::gui::render();
 
         idx += 1;
 
-        // ── Frame pacing (TSC‑based busy‑wait) ───────────────
-        let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
+        // ── Frame pacing (TSC‑based busy‑wait) ─────────────
+        let now = unsafe { x86_64::_rdtsc() };
+        let frame_deadline = now.wrapping_add(frame_interval_tsc);
         while unsafe { x86_64::_rdtsc() } < frame_deadline {
-            // Feed audio every audio_feed_tsc ticks.
             let now = unsafe { x86_64::_rdtsc() };
             if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
                 last_audio_feed = now;
                 crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             }
-            // `hda_tick` reads the HDA LPIB register via MMIO.
-            // On QEMU/KVM this forces a VM exit, giving the host
-            // a chance to advance the HDA device model (DMA
-            // position, BCIS) without blocking the CPU like `hlt`.
             crate::sound::hda_tick();
         }
     }
 
-    // ── Drain remaining PCM ──────────────────────────────────
+    // ── Drain remaining PCM ────────────────────────────────
     if use_hda {
         let drain_deadline =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < drain_deadline {
-            // Allow keyboard abort during drain
             if nitrogen::ps2::keyboard::input_available()
                 || nitrogen::ps2::keyboard::raw_key_available()
             {
@@ -282,14 +219,16 @@ pub fn play_badapple() {
             }
             core::hint::spin_loop();
         }
-        // Send silence to complete any in‑flight DMA buffer
         for _ in 0..4 {
             crate::sound::hda_feed_silence(HALF);
             crate::sound::hda_poll_delay(tsc_per_ms, 100);
         }
     }
 
-    solvent::resume_rendering();
+    // ── Cleanup: close window, force desktop redraw ────────
+    solvent::close_window(win_id);
     solvent::force_desktop_redraw();
+    crate::gui::render();
     log::info!("Bad Apple finished ({} frames)", idx);
+    petroleum::serial::serial_log(format_args!("Bad Apple finished ({} frames)\n", idx));
 }
