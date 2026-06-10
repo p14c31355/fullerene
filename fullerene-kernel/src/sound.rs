@@ -586,18 +586,15 @@ fn hda_init() {
     HDA_INIT_DONE.store(true, Ordering::Release);
 }
 
-/// Read HDA LPIB to force a VM exit (QEMU/KVM) so the device
-/// model can advance DMA state.  Returns the raw LPIB value.
-pub fn hda_tick() -> u32 {
-    if !HDA_READY.load(Ordering::Acquire) {
-        return 0;
+/// Force a VM exit on QEMU/KVM so the device model can advance
+/// HDA DMA state.  We read the PIC master IMR (I/O port 0x21)
+/// because I/O-port accesses always trap on KVM, whereas MMIO
+/// reads from the HDA BAR may be satisfied directly via EPT
+/// without any exit (depending on QEMU's memory region layout).
+pub fn hda_tick() {
+    unsafe {
+        x86_64::instructions::port::PortReadOnly::<u8>::new(0x21).read();
     }
-    let virt = *HDA_VIRT.lock();
-    if virt == 0 {
-        return 0;
-    }
-    let sd = *HDA_SD.lock();
-    unsafe { r32(virt as *mut u8, sd + SD_LPIB) }
 }
 
 pub fn hda_available() -> bool {

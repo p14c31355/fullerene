@@ -163,12 +163,16 @@ pub fn flush_gpu() {
         // We use regular volatile writes (not NT stores) because the
         // real‑hardware GOP framebuffer is WB‑mapped and NT stores to
         // WB memory have implementation‑defined visibility semantics.
-        // `mfence` ensures all prior stores are globally visible before
-        // the display controller reads them.
+        // `mfence` ensures all prior stores are globally visible.
         unsafe {
             core::arch::x86_64::_mm_mfence();
         }
     }
+    // Force a VM exit so QEMU/KVM can update the display (GTK/SDL
+    // window) and advance the HDA device model.  Without this the
+    // framebuffer writes and audio DMA progress are invisible to
+    // the host until the next interrupt (keyboard, timer).
+    crate::sound::hda_tick();
 }
 
 /// Helper to write to the primary renderer (with VGA fallback).
