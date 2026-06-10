@@ -10,7 +10,7 @@ use core::arch::x86_64;
 
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
-const PCM_BYTES_PER_SEC: u32 = 44100;
+const PCM_BYTES_PER_SEC: u32 = 96000; // 16-bit mono × 48000 Hz
 const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_HDR_SIZE: usize = 16;
 const THRESHOLD: u8 = 128;
@@ -75,7 +75,7 @@ unsafe fn draw_decoded_frame(
             // Hard threshold: sample >= 128 → white, else black
             let g = if src_row[sx] >= THRESHOLD { 255u32 } else { 0u32 };
             let pixel = 0xFF00_0000u32 | (g << 16) | (g << 8) | g;
-            core::arch::x86_64::_mm_stream_si32(fb.add(row_off + dx) as *mut i32, pixel as i32);
+            core::ptr::write_volatile(fb.add(row_off + dx), pixel);
         }
     }
 }
@@ -209,6 +209,9 @@ pub fn play_badapple() {
             crate::sound::hda_write_direct(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
             pcm_off = e1;
         }
+        // Tell the feed loop DMA is still in half 0 so it won't
+        // overwrite the pre‑filled data before DMA has consumed it.
+        crate::sound::hda_reset_prefill_tracking();
     }
 
     // ── Main playback loop ───────────────────────────────────
@@ -246,13 +249,17 @@ pub fn play_badapple() {
         // ── Frame pacing (TSC‑based busy‑wait) ───────────────
         let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
         while unsafe { x86_64::_rdtsc() } < frame_deadline {
-            // Feed audio at ~1 ms granularity
+            // Feed audio every audio_feed_tsc ticks.
             let now = unsafe { x86_64::_rdtsc() };
             if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
                 last_audio_feed = now;
                 crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             }
-            core::hint::spin_loop();
+            // `hda_tick` reads the HDA LPIB register via MMIO.
+            // On QEMU/KVM this forces a VM exit, giving the host
+            // a chance to advance the HDA device model (DMA
+            // position, BCIS) without blocking the CPU like `hlt`.
+            crate::sound::hda_tick();
         }
     }
 
@@ -261,6 +268,14 @@ pub fn play_badapple() {
         let drain_deadline =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < drain_deadline {
+            // Allow keyboard abort during drain
+            if nitrogen::ps2::keyboard::input_available()
+                || nitrogen::ps2::keyboard::raw_key_available()
+            {
+                log::info!("Bad Apple aborted (during drain)");
+                nitrogen::ps2::keyboard::flush_input();
+                break;
+            }
             crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             if crate::sound::hda_poll_block(Some(audio_feed_tsc)) {
                 continue;

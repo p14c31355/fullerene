@@ -186,6 +186,34 @@ pub fn desktop_context_menu() -> alloc::vec::Vec<MenuItem> {
             action: alloc::string::String::from("new_terminal")
         },
         MenuItem {
+            label: alloc::string::String::from("New Shell"),
+            action: alloc::string::String::from("new_shell")
+        },
+        MenuItem {
+            label: alloc::string::String::from("──"),
+            action: alloc::string::String::from("separator")
+        },
+        MenuItem {
+            label: alloc::string::String::from("Task Manager"),
+            action: alloc::string::String::from("task_manager")
+        },
+        MenuItem {
+            label: alloc::string::String::from("Device Manager"),
+            action: alloc::string::String::from("device_manager")
+        },
+        MenuItem {
+            label: alloc::string::String::from("File Manager"),
+            action: alloc::string::String::from("file_manager")
+        },
+        MenuItem {
+            label: alloc::string::String::from("Toggle Tiling"),
+            action: alloc::string::String::from("toggle_tiling")
+        },
+        MenuItem {
+            label: alloc::string::String::from("──"),
+            action: alloc::string::String::from("separator")
+        },
+        MenuItem {
             label: alloc::string::String::from("Refresh"),
             action: alloc::string::String::from("refresh")
         },

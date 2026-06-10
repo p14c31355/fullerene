@@ -320,6 +320,12 @@ impl Compositor {
             inc_draw_calls();
         }
 
+        // Draw menu text on top of overlay rectangles
+        if let Some(menu) = scene.active_menu {
+            menu.render_text(framebuffer, fb_width, fb_height);
+            inc_draw_calls();
+        }
+
         // ── Layer 3: System UI ───────────────────────────
         // Taskbar
         if let Some(tb) = scene.taskbar {
@@ -332,7 +338,11 @@ impl Compositor {
             inc_draw_calls();
         }
 
-        // Cursor
+        // Cursor — drawn in the back‑buffer so the compositor owns
+        // cursor rendering exclusively.  The dirty rect for the old and
+        // new cursor positions is already pushed by prepare_frame(), so
+        // the compositor redraws both the restored old area and the new
+        // cursor position in a single pass.
         if let Some(c) = scene.cursor {
             if c.visible {
                 Self::draw_cursor_clipped(framebuffer, fb_width, fb_height, c, dx, dy, dw, dh);
@@ -509,12 +519,19 @@ impl Compositor {
         };
         let wdx = win.x;
         let wdy = win.y + to;
+        // Draw the surface (client area).  The window may be larger
+        // than the surface (e.g. after tiling).  Surface pixels are
+        // drawn once; any remaining area is filled with the surface's
+        // background colour.
+        let sw = src.width() as i32;
+        let sh = src.height() as i32;
+        let bg_fallback = src.get_pixel(0, 0).unwrap_or(0x000000);
         let sxs = 0i32.max(-wdx);
         let sys = 0i32.max(-wdy);
-        let sxe = (src.width() as i64)
+        let sxe = (win.width as i64)
             .min((fbw as i64).saturating_sub(wdx as i64))
             .max(0) as i32;
-        let sye = (src.height() as i64)
+        let sye = (win.height as i64)
             .min((fbh as i64).saturating_sub(wdy as i64))
             .max(0) as i32;
         if sxs >= sxe || sys >= sye {
@@ -528,14 +545,23 @@ impl Compositor {
             if dr < cy as i32 || dr >= cey {
                 continue;
             }
-            let sb = (sr as usize) * (src.width() as usize);
             let db = (dr as usize) * (fbw as usize);
+            let in_surface_row = sr < sh;
+            let sb = if in_surface_row {
+                (sr as usize) * (sw as usize)
+            } else {
+                0
+            };
             for sc in sxs..sxe {
                 let dc = wdx + sc;
                 if dc < cx as i32 || dc >= cex {
                     continue;
                 }
-                let color = sp[sb + sc as usize];
+                let color = if in_surface_row && sc < sw {
+                    sp[sb + sc as usize]
+                } else {
+                    bg_fallback
+                };
                 fb[db + dc as usize] = if win.focused {
                     color
                 } else {

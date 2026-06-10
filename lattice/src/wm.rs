@@ -5,6 +5,24 @@ use crate::window::{Window, WindowId};
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Tiling layout mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TilingMode {
+    /// Windows are free‑floating (default).
+    Floating,
+    /// Master‑stack layout: focused window on the left, others stacked on the right.
+    MasterStack,
+}
+
+impl TilingMode {
+    pub fn toggle(&self) -> Self {
+        match self {
+            TilingMode::Floating => TilingMode::MasterStack,
+            TilingMode::MasterStack => TilingMode::Floating,
+        }
+    }
+}
+
 /// Drag state machine.
 #[derive(Debug, Clone)]
 pub enum DragState {
@@ -31,6 +49,12 @@ pub struct WindowManager {
     resize_handle: u32,
     /// Accumulated dirty rectangles since last `consume_dirty_rects`.
     pub(crate) dirty_rects: Vec<DirtyRect>,
+    /// Current tiling mode.
+    pub tiling_mode: TilingMode,
+    /// Saved floating positions for tiled windows: (x, y, w, h).
+    floating_restore: alloc::collections::BTreeMap<WindowId, (i32, i32, u32, u32)>,
+    /// Cached work area dimensions (width, height) for retiling.
+    work_area: Option<(u32, u32)>,
 }
 
 const RESIZE_HANDLE_SIZE: u32 = 16;
@@ -59,7 +83,15 @@ impl WindowManager {
             drag: DragState::None,
             resize_handle: RESIZE_HANDLE_SIZE,
             dirty_rects: Vec::new(),
+            tiling_mode: TilingMode::Floating,
+            floating_restore: alloc::collections::BTreeMap::new(),
+            work_area: None,
         }
+    }
+
+    /// Set the work area dimensions for retiling.
+    pub fn set_work_area(&mut self, width: u32, height: u32) {
+        self.work_area = Some((width, height));
     }
 
     pub fn windows(&self) -> &[Window] {
@@ -148,6 +180,14 @@ impl WindowManager {
         self.focused = Some(id);
         self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
+
+        // Retile if in MasterStack mode
+        if self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
+
         id
     }
 
@@ -171,6 +211,14 @@ impl WindowManager {
                 self.focused = None;
             }
         }
+
+        // Retile if in MasterStack mode
+        if removed && self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
+
         removed
     }
 
@@ -194,6 +242,13 @@ impl WindowManager {
         self.focused = Some(id);
         self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
+
+        // Retile if in MasterStack mode (Z-order changed)
+        if self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
     }
 
     pub fn window_at(&self, x: i32, y: i32) -> Option<WindowId> {
@@ -366,6 +421,14 @@ impl WindowManager {
                 }
             }
         }
+
+        // Retile if in MasterStack mode (visibility changed)
+        if self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
+
         true
     }
 
@@ -379,6 +442,9 @@ impl WindowManager {
         }
         w.minimized = false;
         self.raise_to_top(id);
+
+        // Note: raise_to_top already calls retile if needed, so no need to call it again here
+
         true
     }
 
@@ -425,6 +491,122 @@ impl WindowManager {
     /// Get a list of window IDs in Z-order (bottom to top).
     pub fn z_order(&self) -> alloc::vec::Vec<WindowId> {
         self.windows.iter().map(|w| w.id).collect()
+    }
+
+    // ── Tiling ────────────────────────────────────────────
+
+    /// Toggle tiling mode and re‑arrange windows.
+    pub fn toggle_tiling(&mut self) {
+        match self.tiling_mode {
+            TilingMode::Floating => {
+                self.tiling_mode = TilingMode::MasterStack;
+            }
+            TilingMode::MasterStack => {
+                self.tiling_mode = TilingMode::Floating;
+                // Restore floating positions
+                self.restore_floating();
+                return;
+            }
+        }
+    }
+
+    /// Arrange visible (non‑minimized) windows in master‑stack layout.
+    ///
+    /// Called after any window operation that may change the set of
+    /// visible windows: create, close, focus change, or maximize toggle.
+    ///
+    /// `work_width` / `work_height` define the usable area (screen minus taskbar).
+    pub fn retile(&mut self, work_width: u32, work_height: u32) {
+        if self.tiling_mode != TilingMode::MasterStack {
+            return;
+        }
+
+        let visible: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|w| !w.minimized)
+            .map(|w| w.id)
+            .collect();
+
+        if visible.is_empty() {
+            return;
+        }
+
+        // Save floating positions before tiling.
+        for &id in &visible {
+            self.floating_restore
+                .entry(id)
+                .or_insert_with(|| {
+                    self.windows
+                        .iter()
+                        .find(|w| w.id == id)
+                        .map(|w| (w.x, w.y, w.width, w.height))
+                        .unwrap_or((0, 0, 80, 40))
+                });
+        }
+
+        let margin = 4u32;
+        let gap = 4u32;
+        let left = margin as i32;
+        let top = margin as i32;
+        let usable_w = work_width.saturating_sub(margin * 2);
+        let usable_h = work_height.saturating_sub(margin * 2);
+
+        // Master occupies left 60%
+        let master_w = usable_w * 3 / 5;
+        let stack_w = usable_w - master_w - gap;
+        let stack_left = left + master_w as i32 + gap as i32;
+
+        // Master window = last in Z‑order (most recently focused).
+        let master_id = *visible.last().unwrap();
+
+        if let Some(mw) = self.windows.iter_mut().find(|w| w.id == master_id) {
+            mw.x = left;
+            mw.y = top;
+            mw.width = master_w;
+            mw.height = usable_h;
+            self.dirty_rects.push(window_dirty_rect(mw));
+        }
+
+        // Stack: remaining windows tiled vertically on the right.
+        let stack_ids: Vec<WindowId> = visible
+            .iter()
+            .copied()
+            .filter(|&id| id != master_id)
+            .collect();
+
+        if !stack_ids.is_empty() {
+            let count = stack_ids.len() as u32;
+            let each_h = (usable_h.saturating_sub(gap * (count.saturating_sub(1)))) / count;
+
+            for (i, &id) in stack_ids.iter().enumerate() {
+                let stack_y = top + ((i as u32) * (each_h + gap)) as i32;
+                if let Some(sw) = self.windows.iter_mut().find(|w| w.id == id) {
+                    sw.x = stack_left;
+                    sw.y = stack_y;
+                    sw.width = stack_w;
+                    sw.height = each_h;
+                    self.dirty_rects.push(window_dirty_rect(sw));
+                }
+            }
+        }
+    }
+
+    /// Restore windows to their saved floating positions and clear the cache.
+    fn restore_floating(&mut self) {
+        if self.floating_restore.is_empty() {
+            return;
+        }
+        for (&id, &(x, y, w, h)) in &self.floating_restore {
+            if let Some(win) = self.windows.iter_mut().find(|w| w.id == id) {
+                win.x = x;
+                win.y = y;
+                win.width = w;
+                win.height = h;
+                self.dirty_rects.push(window_dirty_rect(win));
+            }
+        }
+        self.floating_restore.clear();
     }
 }
 

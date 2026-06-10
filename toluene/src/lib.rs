@@ -22,9 +22,12 @@
 //! });
 //! ```
 
+extern crate alloc;
+
 pub mod app;
 pub mod calc;
 pub mod clock;
+pub mod exec;
 pub mod sys;
 pub mod ui;
 

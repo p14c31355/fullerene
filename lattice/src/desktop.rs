@@ -6,6 +6,44 @@ use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
 use crate::wm::WindowManager;
 
+    /// Actions that can be dispatched from desktop menus (context menu, system menu, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopAction {
+    NewTerminal,
+    NewShell,
+    TaskManager,
+    DeviceManager,
+    FileManager,
+    ToggleTiling,
+    Refresh,
+    About,
+    SysInfo,
+    Shutdown,
+    Reboot,
+    Separator,
+}
+
+impl DesktopAction {
+    /// Parse an action string from a menu item into a `DesktopAction`.
+    pub fn from_str(s: &str) -> Option<Self> {
+        Some(match s {
+            "new_terminal" => DesktopAction::NewTerminal,
+            "new_shell" => DesktopAction::NewShell,
+            "task_manager" => DesktopAction::TaskManager,
+            "device_manager" => DesktopAction::DeviceManager,
+            "file_manager" => DesktopAction::FileManager,
+            "toggle_tiling" => DesktopAction::ToggleTiling,
+            "refresh" => DesktopAction::Refresh,
+            "about" => DesktopAction::About,
+            "sysinfo" => DesktopAction::SysInfo,
+            "shutdown" => DesktopAction::Shutdown,
+            "reboot" => DesktopAction::Reboot,
+            "separator" => DesktopAction::Separator,
+            _ => return None,
+        })
+    }
+}
+
 /// Desktop session — pure state, no rendering.
 ///
 /// `Desktop` is a **façade** that owns the `WindowManager`, `Cursor`,
@@ -46,6 +84,10 @@ pub struct Desktop {
     /// Cached overlay rectangles for the active menu (populated in prepare_frame).
     menu_overlays_cache: alloc::vec::Vec<crate::scene::OverlayRect>,
 
+    /// The action of the most recently clicked menu item.
+    /// Cleared after being consumed by the runtime.
+    pub menu_action_pending: Option<DesktopAction>,
+
     // ── Clock state ────────────────────────────────────────
     /// Current clock text "HH:MM:SS".
     pub clock_text: alloc::string::String,
@@ -80,6 +122,7 @@ impl Desktop {
             active_menu: None,
             menu_is_system: false,
             menu_overlays_cache: alloc::vec::Vec::new(),
+            menu_action_pending: None,
             clock_text: alloc::string::String::new(),
             desktop_icons: crate::desktop_icons::DesktopIconLayer::new(),
             top_panel: crate::top_panel::TopPanel::new(),
@@ -121,14 +164,27 @@ impl Desktop {
         if let Some(ref menu) = self.active_menu {
             let cx = self.cursor.x;
             let cy = self.cursor.y;
-            if let Some(_idx) = menu.hit_test(cx, cy) {
-                // Menu item clicked — handle action
-                // (action dispatch is done by Solvent via process_menu_action)
+            // Capture menu bounds before dismissing (needed for dirty rect)
+            let menu_x = menu.x;
+            let menu_y = menu.y;
+            let menu_w = menu.width;
+            let menu_h = menu.height;
+
+            if let Some(idx) = menu.hit_test(cx, cy) {
+                // Menu item clicked — capture action for the runtime
+                if idx < menu.items.len() {
+                    self.menu_action_pending =
+                        DesktopAction::from_str(&menu.items[idx].action);
+                }
                 self.active_menu = None;
+                // Push dirty rect so compositor redraws the old menu area
+                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
                 return;
             }
             // Click outside menu — dismiss
             self.active_menu = None;
+            // Push dirty rect so compositor redraws the old menu area
+            self.wm.dirty_rects.push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
             return;
         }
 
@@ -153,10 +209,26 @@ impl Desktop {
             let id = window.id;
             if window.hit_close_button(self.cursor.x, self.cursor.y) {
                 self.wm.close_window(id);
+                // Push a dirty rect for the entire taskbar area so the
+                // compositor redraws the taskbar (removing the stale button).
+                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
+                    0,
+                    fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT),
+                    fb_width,
+                    crate::taskbar::TASKBAR_HEIGHT,
+                ));
                 return;
             }
             if window.hit_minimize_button(self.cursor.x, self.cursor.y) {
                 self.wm.minimize_window(id);
+                // Push a dirty rect for the entire taskbar area so the
+                // compositor redraws the taskbar (updating button states).
+                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
+                    0,
+                    fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT),
+                    fb_width,
+                    crate::taskbar::TASKBAR_HEIGHT,
+                ));
                 return;
             }
             if window.hit_maximize_button(self.cursor.x, self.cursor.y) {
@@ -270,13 +342,26 @@ impl Desktop {
     }
 
     /// Update the taskbar entries from the current window list.
-    pub fn update_taskbar(&mut self) {
+    ///
+    /// Returns `true` when the entry list changed (count or order).
+    pub fn update_taskbar(&mut self) -> bool {
+        let prev_count = self.taskbar.entries.len();
         self.taskbar.update_from_windows(self.wm.windows());
         // Update clock text on taskbar
         self.taskbar.clock_text = self.clock_text.clone();
+        let new_count = self.taskbar.entries.len();
+        new_count != prev_count
     }
 
     // ── frame preparation ───────────────────────────────────
+
+    /// Push a dirty rect into the window manager queue.
+    ///
+    /// Use this to notify the compositor of regions that need repainting
+    /// (e.g. clock change → taskbar area).
+    pub fn push_dirty_rect(&mut self, rect: crate::scene::DirtyRect) {
+        self.wm.dirty_rects.push(rect);
+    }
 
     /// Returns `true` when the cached dirty-rect list is non-empty,
     /// i.e. the compositor has at least one region to repaint.
@@ -355,6 +440,7 @@ impl Desktop {
             taskbar: Some(&self.taskbar),
             overlays: &self.menu_overlays_cache,
             desktop_icons: Some(&self.desktop_icons),
+            active_menu: self.active_menu.as_ref(),
             layered: true,
         }
     }

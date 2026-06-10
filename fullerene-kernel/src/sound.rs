@@ -90,22 +90,22 @@ static HDA_INIT_DONE: AtomicBool = AtomicBool::new(false);
 static HDA_CORB_ENTRIES: Mutex<usize> = Mutex::new(256);
 
 unsafe fn r32(m: *mut u8, o: usize) -> u32 {
-    core::ptr::read_volatile(m.add(o) as *const u32)
+    unsafe { core::ptr::read_volatile(m.add(o) as *const u32) }
 }
 unsafe fn w32(m: *mut u8, o: usize, v: u32) {
-    core::ptr::write_volatile(m.add(o) as *mut u32, v)
+    unsafe { core::ptr::write_volatile(m.add(o) as *mut u32, v) }
 }
 unsafe fn r16(m: *mut u8, o: usize) -> u16 {
-    core::ptr::read_volatile(m.add(o) as *const u16)
+    unsafe { core::ptr::read_volatile(m.add(o) as *const u16) }
 }
 unsafe fn w16(m: *mut u8, o: usize, v: u16) {
-    core::ptr::write_volatile(m.add(o) as *mut u16, v)
+    unsafe { core::ptr::write_volatile(m.add(o) as *mut u16, v) }
 }
 unsafe fn r8(m: *mut u8, o: usize) -> u8 {
-    core::ptr::read_volatile(m.add(o))
+    unsafe { core::ptr::read_volatile(m.add(o)) }
 }
 unsafe fn w8(m: *mut u8, o: usize, v: u8) {
-    core::ptr::write_volatile(m.add(o), v)
+    unsafe { core::ptr::write_volatile(m.add(o), v) }
 }
 
 fn alloc_dma_pages(pages: usize) -> Option<(u64, *mut u8)> {
@@ -128,14 +128,32 @@ fn alloc_dma_pages(pages: usize) -> Option<(u64, *mut u8)> {
 
 /// Probe for HDA controller across all PCI buses.
 ///
-/// On real hardware (InsydeH2O) the HDA controller may reside on a bus other
-/// than 0, so we iterate bus 0..=255, skipping buses that don't exist.
+/// On real hardware (InsydeH2O) there are often two HDA controllers:
+///
+/// | BDF       | Vendor:Device | Role                      |
+/// |-----------|---------------|---------------------------|
+/// | 00:03.0   | 8086:160c     | Intel Display Audio (HDMI)|
+/// | 00:1b.0   | 8086:9ca0     | Wildcat Point-LP (PCH)    |
+///
+/// The Display Audio controller appears first during bus scan (device 3 <
+/// device 27), but it has no codec attached → STATESTS bit 0 is 0.  We
+/// therefore enumerate **all** HDA controllers, log BAR0 / GCAP / STATESTS
+/// for each, and prefer the one with a connected codec (STATESTS & 0x0001).
 fn probe_hda() -> Option<(u8, u8, u8, u64)> {
     use nitrogen::pci::PciConfigSpace;
+    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+
     /// Check whether a PCI bus exists by probing device 0 function 0.
     fn bus_exists(bus: u8) -> bool {
         PciConfigSpace::read_config_word(bus, 0, 0, 0) != 0xFFFF
     }
+
+    // Accumulate the "last seen" HDA as a fallback when no codec-connected
+    // candidate is found.  Because we iterate device numbers in ascending
+    // order, the last entry corresponds to the highest device number
+    // (i.e. the PCH HDA rather than the CPU Display Audio).
+    let mut fallback: Option<(u8, u8, u8, u64)> = None;
+
     for bus in 0..=255u8 {
         if bus > 0 && !bus_exists(bus) {
             continue;
@@ -147,7 +165,9 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             if dev.class_code != 0x04 || dev.subclass != 0x03 {
                 continue;
             }
-            let bar0 = dev.read_bar(0)?;
+            let Some(bar0) = dev.read_bar(0) else {
+                continue;
+            };
             dev.enable_memory_access();
             let Some(mut cfg) = PciConfigSpace::read_from_device(bus, d, 0) else {
                 continue;
@@ -155,17 +175,41 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             cfg.command |= 0x0004;
             let v = (cfg.status as u32) << 16 | (cfg.command as u32);
             PciConfigSpace::write_config_dword(&mut cfg, bus, d, 0, 0x04, v);
+
+            // ── Quick MMIO probe ──────────────────────────────────
+            let mmio = (bar0 + off) as *mut u8;
+            let gcap = unsafe { r32(mmio, GCAP) };
+            let states = unsafe { r16(mmio, STATESTS) };
+
             log::info!(
-                "Sound: HDA found at {:04x}:{:02x}.{}, MMIO=0x{:x}",
-                bus,
-                d,
-                0,
-                bar0
+                "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x}",
+                bus, d, 0,
+                dev.vendor_id, dev.device_id,
+                bar0,
+                gcap,
+                states
             );
-            return Some((bus, d, 0, bar0));
+
+            // Codec #0 connected → this is the real audio controller.
+            if states & 0x0001 != 0 {
+                log::info!(
+                    "Sound: selecting HDA {:04x}:{:02x}.{} (codec connected)",
+                    bus, d, 0
+                );
+                return Some((bus, d, 0, bar0));
+            }
+
+            fallback = Some((bus, d, 0, bar0));
         }
     }
-    None
+
+    if let Some(ref b) = fallback {
+        log::info!(
+            "Sound: falling back to HDA {:04x}:{:02x}.{} (no codec detected on any HDA)",
+            b.0, b.1, b.2
+        );
+    }
+    fallback
 }
 
 pub fn init() {
@@ -205,22 +249,22 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     };
     let cmd = ((codec as u32) << 28) | ((node as u32) << 20) | cmd_val;
     for _ in 0..1000 {
-        let wp = r16(mmio, CORBWP) as usize;
-        let rp = r16(mmio, CORBRP) as usize & 0xFF;
+        let wp = unsafe { r16(mmio, CORBWP) } as usize;
+        let rp = unsafe { r16(mmio, CORBRP) } as usize & 0xFF;
         if (wp + 1) % corb_n != rp {
             break;
         }
         core::hint::spin_loop();
     }
-    let wp = r16(mmio, CORBWP) as usize;
+    let wp = unsafe { r16(mmio, CORBWP) } as usize;
     let next_wp = (wp + 1) % corb_n;
-    core::ptr::write_volatile(corb.add(next_wp), cmd);
-    w16(mmio, CORBWP, next_wp as u16);
-    let rirb_wp_before = r16(mmio, RIRBWP) & 0xFF;
+    unsafe { core::ptr::write_volatile(corb.add(next_wp), cmd) };
+    unsafe { w16(mmio, CORBWP, next_wp as u16) };
+    let rirb_wp_before = unsafe { r16(mmio, RIRBWP) } & 0xFF;
     for _ in 0..50_000 {
-        let rirb_wp = r16(mmio, RIRBWP) & 0xFF;
+        let rirb_wp = unsafe { r16(mmio, RIRBWP) } & 0xFF;
         if rirb_wp != rirb_wp_before {
-            let resp = core::ptr::read_volatile(rirb.add(rirb_wp as usize));
+            let resp = unsafe { core::ptr::read_volatile(rirb.add(rirb_wp as usize)) };
             if (resp >> 63) & 1 == 0 {
                 return (resp >> 32) as u32;
             }
@@ -237,7 +281,7 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
 }
 
 unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
-    let sub = corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
+    let sub = unsafe { corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16) };
     if sub == 0xFFFF_FFFF {
         return None;
     }
@@ -250,7 +294,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     log::info!("Sound: root children {}-{}", start, end);
     let mut afg: Option<u8> = None;
     for n in start..=end {
-        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16);
+        let cap = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16) };
         if cap == 0xFFFF_FFFF {
             continue;
         }
@@ -261,7 +305,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
         }
     }
     let afg = afg?;
-    let sub = corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16);
+    let sub = unsafe { corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16) };
     if sub == 0xFFFF_FFFF {
         return None;
     }
@@ -275,16 +319,32 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     let mut dac: Option<u8> = None;
     let mut pin: Option<u8> = None;
     for n in start..=end {
-        let cap = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16);
+        let cap = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16) };
         if cap == 0xFFFF_FFFF {
             continue;
         }
         let t = (cap >> 20) & 0xF;
-        if t == WTYPE_AUDIO_OUTPUT && dac.is_none() {
+        if t == WTYPE_AUDIO_OUTPUT {
+            // Prefer later DACs — on many codecs (e.g. ALC286) the
+            // first DAC (0x02) is for headphones while a later one
+            // (0x03) drives the internal speaker.
             dac = Some(n);
         }
-        if t == WTYPE_PIN_COMPLEX && pin.is_none() {
-            pin = Some(n);
+        if t == WTYPE_PIN_COMPLEX {
+            // Query pin capabilities to ensure this pin supports
+            // output (bit 4 = OUT).  Skip input-only pins (e.g.
+            // internal mic 0x12 on ALC286) so we don't mis-route
+            // audio to a microphone.
+            let pincap =
+                unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_PIN_CAP as u16) };
+            if pincap != 0xFFFF_FFFF && (pincap & (1 << 4)) != 0 {
+                pin = Some(n);
+            } else {
+                log::info!(
+                    "Sound: pin 0x{:x} cap=0x{:08x} — skipping (no OUT)",
+                    n, pincap
+                );
+            }
         }
     }
     match (dac, pin) {
@@ -294,24 +354,43 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
 }
 
 unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8) {
-    let ac = corb_send_verb(mmio, codec, dac, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
+    let ac = unsafe { corb_send_verb(mmio, codec, dac, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16) };
     let steps = ac as u8 & 0x7F;
     let gain = if steps > 0 { steps / 2 } else { 0 };
-    corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, (0x70 | gain) as u16);
-    // 8-bit signed mono at 44100 Hz:
-    // bit[7] = 1 → signed, bits[6:4] = 0 → 8-bit container,
+    unsafe { corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, (0x70 | gain) as u16) };
+    // 16-bit signed mono at 48000 Hz:
+    // bit[7] = 0 → 48 kHz base, bits[6:4] = 1 → 16-bit container,
     // bit[3:0] = 0 → 1 channel
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x80u16);
-    corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
-    let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
+    unsafe { corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x10u16) };
+    unsafe { corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16) };
+    let pa = unsafe { corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16) };
     let psteps = pa as u8 & 0x7F;
     let pgain = if psteps > 0 { psteps / 2 } else { 0 };
-    corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE, (0x70 | pgain) as u16);
-    corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0xC0u16);
-    let cap = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16);
-    if cap != 0xFFFF_FFFF && (cap >> 16) & 1 != 0 {
-        corb_send_verb(mmio, codec, pin, VERB_SET_EAPD, 0x02);
+    unsafe { corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE, (0x70 | pgain) as u16) };
+    // Query pin capabilities to check EAPD support (bit 16)
+    let pin_cap = unsafe { corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16) };
+    let eapd_capable = pin_cap != 0xFFFF_FFFF && (pin_cap >> 16) & 1 != 0;
+    log::info!(
+        "Sound: pin 0x{:x} cap=0x{:08x} eapd_capable={}",
+        pin, pin_cap, eapd_capable
+    );
+    // Power up external amplifier BEFORE enabling pin output.
+    // On many notebook codecs (ALC286 etc.) EAPD controls the
+    // internal speaker amplifier power — without this the output
+    // stays silent even though the stream and DMA are running.
+    if eapd_capable {
+        let eapd_res = unsafe { corb_send_verb(mmio, codec, pin, VERB_SET_EAPD, 0x02) };
+        log::info!("Sound: SET_EAPD pin=0x{:x} result=0x{:08x}", pin, eapd_res);
     }
+    // Enable pin output (0x40 = Output Enable only, matching Linux
+    // behaviour for fixed-function speakers).  Do NOT set HP Enable
+    // (bit 7) on speaker pins — it is semantically wrong and some
+    // codecs may behave unexpectedly.
+    let pin_ctl_res = unsafe { corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0x40u16) };
+    log::info!(
+        "Sound: SET_PIN_CTL pin=0x{:x} val=0x40 result=0x{:08x}",
+        pin, pin_ctl_res
+    );
     log::info!("Sound: codec done DAC=0x{:x} Pin=0x{:x}", dac, pin);
 }
 
@@ -458,13 +537,13 @@ fn hda_init() {
             addr_lo: audio_phys as u32,
             addr_hi: (audio_phys >> 32) as u32,
             length: half,
-            flags: 0,
+            flags: 0x01, // IOC — signal completion via BCIS
         };
         *bdl.add(1) = BdlEntry {
             addr_lo: (audio_phys + half as u64) as u32,
             addr_hi: ((audio_phys + half as u64) >> 32) as u32,
             length: half,
-            flags: 0,
+            flags: 0x01, // IOC
         };
     }
     unsafe {
@@ -490,10 +569,9 @@ fn hda_init() {
         }
         // Program format, BDL and stream settings
         w8(m, sd + SD_STS, 0xFF);
-        // 44.1 kHz 8-bit mono:
-        // bit7 BASE=1 (44.1kHz), bits6:4 BITS=0 (8-bit), bits3:0 CHAN=0 (1ch)
-        // bits15:14 MULT=0 (1x — no oversampling)
-        w16(m, sd + SD_FMT, 0x0080);
+        // 48 kHz 16-bit mono:
+        // bit7 BASE=0 (48kHz), bits6:4 BITS=1 (16-bit), bits3:0 CHAN=0 (1ch)
+        w16(m, sd + SD_FMT, 0x0010);
         w32(m, sd + SD_CBL, audio_sz);
         w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
         w32(m, sd + SD_BDPL, dma_phys as u32);
@@ -501,11 +579,22 @@ fn hda_init() {
         // Store fence: ensure BDL / DMA buffer writes are visible
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
-        w32(m, sd + SD_CTL, (1u32 << 16) | 0x02);
-        log::info!("Sound: stream started ({} B, fmt=0x0080)", audio_sz);
+        w32(m, sd + SD_CTL, (1u32 << 16) | 0x06);
+        log::info!("Sound: stream started ({} B, fmt=0x0010)", audio_sz);
     }
     HDA_READY.store(true, Ordering::Release);
     HDA_INIT_DONE.store(true, Ordering::Release);
+}
+
+/// Force a VM exit on QEMU/KVM so the device model can advance
+/// HDA DMA state.  We read the PIC master IMR (I/O port 0x21)
+/// because I/O-port accesses always trap on KVM, whereas MMIO
+/// reads from the HDA BAR may be satisfied directly via EPT
+/// without any exit (depending on QEMU's memory region layout).
+pub fn hda_tick() {
+    unsafe {
+        x86_64::instructions::port::PortReadOnly::<u8>::new(0x21).read();
+    }
 }
 
 pub fn hda_available() -> bool {
@@ -532,6 +621,16 @@ pub fn hda_write_direct(offset: u32, samples: &[u8]) -> usize {
     n
 }
 
+/// After pre‑filling both halves of the DMA buffer, reset the
+/// LPIB tracking so `hda_feed_samples` knows DMA starts from
+/// half 0 and won't overwrite pre‑filled data.
+pub fn hda_reset_prefill_tracking() {
+    // DMA starts at offset 0 → pretend we last observed it in
+    // the first half so the gate blocks writes until it crosses
+    // into the second half.
+    HDA_LAST_LPIB.store(0, Ordering::Relaxed);
+}
+
 pub fn hda_feed_samples(samples: &[u8]) -> usize {
     hda_init();
     if !HDA_READY.load(Ordering::Acquire) {
@@ -547,18 +646,37 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     let half = *HDA_HALF.lock();
     let sd = *HDA_SD.lock();
 
-    let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
-    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
+    // ── Determine safe write half from LPIB ─────────────────
+    // LPIB normalised to [0, audio_sz) tells us which half DMA
+    // is reading → we may write the *other* half.
+    let lpib_raw = unsafe { r32(mmio, sd + SD_LPIB) };
+    let lpib = lpib_raw.wrapping_rem(*HDA_AUDIO_SZ.lock());
+    let write_off = if lpib < half { half } else { 0 };
 
-    let dma_in_first = lpib < half;
-    let write_off = if dma_in_first { half } else { 0 };
-    // Only write if DMA has crossed half boundary
-    if last == write_off {
+    // BCIS (hardware IOC) provides a strong “half-done” signal.
+    let sts = unsafe { r8(mmio, sd + SD_STS) };
+    if sts & 0x04 != 0 {
+        unsafe { w8(mmio, sd + SD_STS, 0x04); }
+    }
+
+    // ── Time‑based fallback guard ───────────────────────────
+    // QEMU sometimes stalls HDA state updates inside tight
+    // spin‑loops; a key‑press (IRQ) briefly unblocks it.
+    // Compare raw LPIB against the last *raw* value so that a
+    // monotonically‑increasing counter still triggers a write
+    // every ~half bytes, preventing total stall.
+    let last_raw = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
+    let delta = lpib_raw.wrapping_sub(last_raw);
+    // Allow writing if raw LPIB advanced by at least half bytes
+    // (hardware crossed the boundary even if normalised view
+    // looks identical due to wrapping) OR if BCIS was observed.
+    let crossed = delta >= half || (sts & 0x04) != 0;
+    if !crossed {
         return 0;
     }
-    // Track the actual DMA position so hda_poll/hda_poll_block can
-    // reliably detect when the controller crosses the half-buffer boundary.
-    HDA_LAST_LPIB.store(lpib as u64, Ordering::Relaxed);
+
+    // Record raw LPIB for next delta comparison.
+    HDA_LAST_LPIB.store(lpib_raw as u64, Ordering::Relaxed);
 
     let write_max = half as usize;
     let n = samples.len().min(write_max);
@@ -576,23 +694,20 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
 }
 
 pub fn hda_poll() {
-    if !HDA_READY.load(Ordering::Acquire) {
-        return;
-    }
-    let virt = *HDA_VIRT.lock();
-    if virt == 0 {
-        return;
-    }
-    let mmio = virt as *mut u8;
-    let half = *HDA_HALF.lock();
-    let sd = *HDA_SD.lock();
-    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
     loop {
-        let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
-        let a = lpib < half;
-        let b = last < half;
-        if a != b {
-            break;
+        if !HDA_READY.load(Ordering::Acquire) {
+            return;
+        }
+        let virt = *HDA_VIRT.lock();
+        if virt == 0 {
+            return;
+        }
+        let mmio = virt as *mut u8;
+        let sd = *HDA_SD.lock();
+        // Read SD_STS first before calling hda_feed_samples
+        let sts = unsafe { r8(mmio, sd + SD_STS) };
+        if sts & 0x04 != 0 {
+            break; // BCIS set → half-buffer complete
         }
         core::hint::spin_loop();
     }
@@ -609,19 +724,15 @@ pub fn hda_poll_block(timeout_tsc: Option<u64>) -> bool {
         return false;
     }
     let mmio = virt as *mut u8;
-    let half = *HDA_HALF.lock();
     let sd = *HDA_SD.lock();
-    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
     let deadline = match timeout_tsc {
         Some(d) => unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(d),
         None => u64::MAX,
     };
     loop {
-        let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
-        let a = lpib < half;
-        let b = last < half;
-        if a != b {
-            return true;
+        let sts = unsafe { r8(mmio, sd + SD_STS) };
+        if sts & 0x04 != 0 {
+            return true; // BCIS set
         }
         if timeout_tsc.is_some() && unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
             return false;

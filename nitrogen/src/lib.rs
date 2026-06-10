@@ -25,5 +25,6 @@ pub mod ioapic;
 pub mod pci;
 pub mod pic;
 pub mod port;
+pub mod iwlwifi;
 pub mod ps2;
 pub mod virtio;

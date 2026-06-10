@@ -128,8 +128,10 @@ impl FramebufferInstaller {
                     let px = ox + col as isize;
                     let py = oy + row as isize;
                     if px >= 0 && px < w && py >= 0 && py < h {
-                        fb.add((py as usize) * stride_pixels + (px as usize))
-                            .write_volatile(color);
+                        unsafe {
+                            fb.add((py as usize) * stride_pixels + (px as usize))
+                                .write_volatile(color);
+                        }
                     }
                 }
             }

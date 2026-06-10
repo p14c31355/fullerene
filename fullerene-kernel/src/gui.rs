@@ -37,6 +37,59 @@ pub fn init() {
     // Register the wall-clock callback (CMOS RTC).
     solvent::set_wall_clock_fn(read_cmos_time);
 
+    // Register VFS readdir callback — bridges the kernel VFS to solvent.
+    solvent::set_vfs_readdir_fn(|path| {
+        let entries = crate::vfs::readdir(path).map_err(|e| {
+            // log::warn!("VFS readdir: {} → {}", path, e);
+            e
+        })?;
+        let mut result = alloc::vec::Vec::new();
+        for vn in entries {
+            result.push(solvent::VfsEntry {
+                name: vn.name,
+                size: vn.size,
+                is_dir: vn.is_dir,
+            });
+        }
+        Ok(result)
+    });
+
+    // Register process list callback — bridges process manager to solvent.
+    solvent::set_process_list_fn(|| {
+        let mut result = alloc::vec::Vec::new();
+        crate::process::PROCESS_MANAGER.with_list(|list| {
+            for (pid, proc) in list.iter() {
+                let state = match proc.state {
+                    crate::process::ProcessState::Ready => solvent::ProcessStateKind::Ready,
+                    crate::process::ProcessState::Running => solvent::ProcessStateKind::Running,
+                    crate::process::ProcessState::Blocked => solvent::ProcessStateKind::Blocked,
+                    crate::process::ProcessState::Terminated => solvent::ProcessStateKind::Terminated,
+                };
+                result.push(solvent::ProcessEntry {
+                    pid: pid.0,
+                    name: alloc::string::String::from(proc.name),
+                    state,
+                });
+            }
+        });
+        result
+    });
+
+    // Register device list callback — bridges device manager to solvent.
+    solvent::set_device_list_fn(|| {
+        let mut result = alloc::vec::Vec::new();
+        if let Some(mgr) = crate::hardware::device_manager::get_device_manager().lock().as_ref() {
+            for di in mgr.list_devices() {
+                result.push(solvent::DeviceEntry {
+                    name: alloc::string::String::from(di.name),
+                    dev_type: alloc::string::String::from(di.device_type),
+                    enabled: di.enabled,
+                });
+            }
+        }
+        result
+    });
+
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 }

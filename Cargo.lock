@@ -141,6 +141,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
+name = "bonder"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -592,6 +600,7 @@ checksum = "c3c8dda44ff03a2f238717214da50f65d5a53b45cd213a7370424ffdb6fae815"
 name = "nitrogen"
 version = "0.1.0"
 dependencies = [
+ "bonder",
  "log",
  "ps2-mouse",
  "spin 0.10.0",

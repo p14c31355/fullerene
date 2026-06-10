@@ -1,4 +1,5 @@
 use crate::cursor::Cursor;
+use crate::menu::PopupMenu;
 use crate::window::Window;
 
 /// A rectangular dirty/update region in pixel coordinates.
@@ -75,6 +76,9 @@ pub struct Scene<'a> {
     /// Desktop icons (drawn on the background layer, behind windows).
     pub desktop_icons: Option<&'a crate::desktop_icons::DesktopIconLayer>,
 
+    /// Active popup menu (for text rendering on top of overlay rects).
+    pub active_menu: Option<&'a PopupMenu>,
+
     /// Whether to use layer-based rendering order.
     pub layered: bool,
 }
@@ -99,6 +103,7 @@ impl<'a> Scene<'a> {
             taskbar: None,
             overlays: &[],
             desktop_icons: None,
+            active_menu: None,
             layered: false,
         }
     }
@@ -117,6 +122,7 @@ impl<'a> Scene<'a> {
             taskbar: None,
             overlays: &[],
             desktop_icons: None,
+            active_menu: None,
             layered: false,
         }
     }
