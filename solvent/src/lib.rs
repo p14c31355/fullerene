@@ -22,6 +22,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
 use core::fmt::Write;
+use core::sync::atomic::AtomicPtr;
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
@@ -189,6 +190,11 @@ static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
 
+/// Cached framebuffer pointer for lightweight cursor updates in overlay mode.
+static LAST_FB_PTR: AtomicPtr<u32> = AtomicPtr::new(core::ptr::null_mut());
+/// Cached framebuffer dimensions matching LAST_FB_PTR.
+static LAST_FB_DIMS: Mutex<(u32, u32)> = Mutex::new((0, 0));
+
 pub struct RuntimeState {
     pub desktop: Desktop,
     pub term_window: WindowId,
@@ -206,6 +212,13 @@ pub struct RuntimeState {
 
     /// Whether the clock text changed since the last compositor pass.
     pub clock_changed: bool,
+
+    /// Lightweight cursor save buffer (16×16 pixels) for overlay mode
+    /// cursor movement without full re‑renders.
+    pub cursor_save_buf: [u32; 256],
+    pub cursor_save_x: i32,
+    pub cursor_save_y: i32,
+    pub cursor_save_valid: bool,
 }
 
 pub fn init() {
@@ -252,6 +265,10 @@ pub fn init() {
         term_dirty: true,
         shell_state: ShellState::Desktop,
         clock_changed: false,
+        cursor_save_buf: [0u32; 256],
+        cursor_save_x: 0,
+        cursor_save_y: 0,
+        cursor_save_valid: false,
     });
 }
 
@@ -274,12 +291,14 @@ impl EventHandler for WmEventHandler {
         // In shell overlay modes, route mouse events to overlay handling.
         if rt.shell_state != ShellState::Desktop {
             match event {
-                // In overlay mode, only move the cursor — do NOT trigger a
-                // full render.  The cached framebuffer (LAST_FB) already
-                // contains the overlay.  We erase the old cursor position and
-                // draw the new one directly.
+                // In overlay mode, move the cursor and trigger a render
+                // so the cursor is redrawn at its new position.
+                // `mouse_move` also tracks cursor_moved for dirty-rect
+                // optimisation; wm.on_mouse_move is a no‑op because drag
+                // state is always None in overlay mode.
                 Event::Input(InputEvent::MouseMove { x, y }) => {
-                    rt.desktop.set_cursor(*x, *y);
+                    rt.desktop.mouse_move(*x, *y);
+                    cursor_lightweight_update(rt);
                     return true;
                 }
                 Event::Input(InputEvent::MouseDown(_))
@@ -363,7 +382,17 @@ impl EventHandler for WmEventHandler {
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 rt.desktop.mouse_move(*x, *y);
-                rt.frame_due = true;
+                cursor_lightweight_update(rt);
+                // Only schedule a full render when a drag is in
+                // progress (the WM generates dirty rects that must
+                // be composited).  Pure cursor movement is handled
+                // by the lightweight update above.
+                if !matches!(
+                    rt.desktop.wm.drag_state(),
+                    lattice::wm::DragState::None
+                ) || rt.desktop.has_pending_dirty_rects() {
+                    rt.frame_due = true;
+                }
                 true
             }
             Event::Input(InputEvent::MouseDown(btn)) => {
@@ -519,6 +548,95 @@ key_ascii!(
     Digit4 => b'4', Digit5 => b'5', Digit6 => b'6', Digit7 => b'7',
     Digit8 => b'8', Digit9 => b'9',
 );
+
+// ── Lightweight cursor update ───────────────────────────────
+
+/// Update only the cursor on the cached framebuffer without
+/// re‑rendering the entire scene.  Uses a small save buffer
+/// to restore the old cursor position and draw the new one.
+///
+/// Used in both Desktop and shell overlay modes to avoid full
+/// compositor passes on every mouse-move tick.
+fn cursor_lightweight_update(rt: &mut RuntimeState) {
+    let fb_ptr = LAST_FB_PTR.load(core::sync::atomic::Ordering::Relaxed);
+    if fb_ptr.is_null() {
+        // Fallback: request a full render pass.
+        rt.frame_due = true;
+        return;
+    }
+    let (fbw, fbh) = *LAST_FB_DIMS.lock();
+    if fbw == 0 || fbh == 0 {
+        return;
+    }
+
+    let cur = &rt.desktop.cursor;
+    if !cur.visible {
+        return;
+    }
+
+    let cur_sz = lattice::cursor::Cursor::SIZE as i32;
+    let new_x = cur.x - lattice::cursor::Cursor::HOTSPOT_X;
+    let new_y = cur.y - lattice::cursor::Cursor::HOTSPOT_Y;
+
+    let fbw_i = fbw as i32;
+    let fbh_i = fbh as i32;
+    let fb_len = (fbw as usize).saturating_mul(fbh as usize);
+
+    unsafe {
+        let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
+
+        // Restore the old cursor area.
+        if rt.cursor_save_valid {
+            let sx = rt.cursor_save_x;
+            let sy = rt.cursor_save_y;
+            for row in 0..cur_sz {
+                let dy = sy + row;
+                if dy < 0 || dy >= fbh_i {
+                    continue;
+                }
+                for col in 0..cur_sz {
+                    let dx = sx + col;
+                    if dx < 0 || dx >= fbw_i {
+                        continue;
+                    }
+                    let idx = (dy * fbw_i + dx) as usize;
+                    if idx < fb_len {
+                        fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
+                    }
+                }
+            }
+        }
+
+        // Save the pixels under the new cursor position.
+        rt.cursor_save_x = new_x;
+        rt.cursor_save_y = new_y;
+        for row in 0..cur_sz {
+            let sy = new_y + row;
+            for col in 0..cur_sz {
+                let val = if sy >= 0 && sy < fbh_i {
+                    let sx = new_x + col;
+                    if sx >= 0 && sx < fbw_i {
+                        let idx = (sy * fbw_i + sx) as usize;
+                        if idx < fb_len {
+                            fb[idx]
+                        } else {
+                            0
+                        }
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+                rt.cursor_save_buf[(row * cur_sz + col) as usize] = val;
+            }
+        }
+        rt.cursor_save_valid = true;
+
+        // Draw the cursor at the new position.
+        Compositor::draw_cursor_direct(fb, fbw, fbh, cur);
+    }
+}
 
 // ── Input polling ────────────────────────────────────────────
 
@@ -891,6 +1009,10 @@ where
     // Cache FB dimensions for maximize toggle
     *FB_DIMS.lock() = (fb_width, fb_height);
 
+    // Cache framebuffer pointer for lightweight cursor updates in overlay mode.
+    LAST_FB_PTR.store(fb_pixels.as_mut_ptr(), core::sync::atomic::Ordering::Relaxed);
+    *LAST_FB_DIMS.lock() = (fb_width, fb_height);
+
     // Push clock‑change or taskbar‑change dirty rects BEFORE prepare_frame
     // so they are consumed together with all other dirty rects (cursor
     // movement, window D&D, menu show/dismiss).  A second prepare_frame call
@@ -995,6 +1117,55 @@ where
             rt.desktop.top_panel.render(fb_pixels, fb_width, fb_height);
         }
 
+        // ── Re‑seed the cursor save buffer BEFORE drawing the cursor ──
+        // The save buffer must capture the clean framebuffer (overlay +
+        // desktop) without the cursor, so the next lightweight update can
+        // restore the old area correctly.
+        if rt.desktop.cursor.visible {
+            let fb_ptr =
+                LAST_FB_PTR.load(core::sync::atomic::Ordering::Relaxed);
+            if !fb_ptr.is_null() {
+                let cur_sz = lattice::cursor::Cursor::SIZE as i32;
+                let cx = rt.desktop.cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
+                let cy = rt.desktop.cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
+                let fbw_i = fb_width as i32;
+                let fbh_i = fb_height as i32;
+                let fb_len = (fb_width as usize)
+                    .saturating_mul(fb_height as usize);
+                unsafe {
+                    let fb =
+                        core::slice::from_raw_parts(fb_ptr, fb_len);
+                    for row in 0..cur_sz {
+                        let sy = cy + row;
+                        for col in 0..cur_sz {
+                            let val =
+                                if sy >= 0 && sy < fbh_i {
+                                    let sx = cx + col;
+                                    if sx >= 0 && sx < fbw_i {
+                                        let idx =
+                                            (sy * fbw_i + sx) as usize;
+                                        if idx < fb_len {
+                                            fb[idx]
+                                        } else {
+                                            0
+                                        }
+                                    } else {
+                                        0
+                                    }
+                                } else {
+                                    0
+                                };
+                            rt.cursor_save_buf
+                                [(row * cur_sz + col) as usize] = val;
+                        }
+                    }
+                }
+                rt.cursor_save_x = cx;
+                rt.cursor_save_y = cy;
+                rt.cursor_save_valid = true;
+            }
+        }
+
         // ── Cursor on top of shell overlays ────────────────
         // Shell overlays are drawn directly onto fb_pixels AFTER the
         // compositor back‑buffer blit.  Any overlay that covers the
@@ -1003,10 +1174,7 @@ where
         // last layer so it is always visible.
         if rt.desktop.cursor.visible {
             use lattice::compositor::Compositor;
-            let scene = rt.desktop.scene();
-            if let Some(cursor) = scene.cursor {
-                Compositor::draw_cursor_direct(fb_pixels, fb_width, fb_height, cursor);
-            }
+            Compositor::draw_cursor_direct(fb_pixels, fb_width, fb_height, &rt.desktop.cursor);
         }
     }
 }

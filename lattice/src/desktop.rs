@@ -439,7 +439,13 @@ impl Desktop {
     pub fn scene(&self) -> Scene<'_> {
         Scene {
             windows: self.wm.windows(),
-            cursor: Some(&self.cursor),
+            // Cursor is drawn by solvent::render() via
+            // `draw_cursor_direct` as the final layer.
+            // Including it here would cause the compositor to
+            // render it into the back‑buffer, which then gets
+            // captured by the lightweight‑update save buffer,
+            // producing ghost cursors after overlay transitions.
+            cursor: None,
             bg_color: self.bg_color,
             dirty_rects: &self.dirty_cache,
             taskbar: Some(&self.taskbar),
