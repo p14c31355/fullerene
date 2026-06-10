@@ -89,23 +89,25 @@ static HDA_INIT_DONE: AtomicBool = AtomicBool::new(false);
 /// Used by `corb_send_verb` for circular‑buffer wrap.
 static HDA_CORB_ENTRIES: Mutex<usize> = Mutex::new(256);
 
-unsafe fn r32(m: *mut u8, o: usize) -> u32 {
-    unsafe { core::ptr::read_volatile(m.add(o) as *const u32) }
-}
-unsafe fn w32(m: *mut u8, o: usize, v: u32) {
-    unsafe { core::ptr::write_volatile(m.add(o) as *mut u32, v) }
-}
-unsafe fn r16(m: *mut u8, o: usize) -> u16 {
-    unsafe { core::ptr::read_volatile(m.add(o) as *const u16) }
-}
-unsafe fn w16(m: *mut u8, o: usize, v: u16) {
-    unsafe { core::ptr::write_volatile(m.add(o) as *mut u16, v) }
-}
-unsafe fn r8(m: *mut u8, o: usize) -> u8 {
-    unsafe { core::ptr::read_volatile(m.add(o)) }
-}
-unsafe fn w8(m: *mut u8, o: usize, v: u8) {
-    unsafe { core::ptr::write_volatile(m.add(o), v) }
+macro_rules! mmio {
+    (r32 $m:expr, $o:expr) => {
+        unsafe { core::ptr::read_volatile($m.add($o) as *const u32) }
+    };
+    (w32 $m:expr, $o:expr, $v:expr) => {
+        unsafe { core::ptr::write_volatile($m.add($o) as *mut u32, $v) }
+    };
+    (r16 $m:expr, $o:expr) => {
+        unsafe { core::ptr::read_volatile($m.add($o) as *const u16) }
+    };
+    (w16 $m:expr, $o:expr, $v:expr) => {
+        unsafe { core::ptr::write_volatile($m.add($o) as *mut u16, $v) }
+    };
+    (r8 $m:expr, $o:expr) => {
+        unsafe { core::ptr::read_volatile($m.add($o)) }
+    };
+    (w8 $m:expr, $o:expr, $v:expr) => {
+        unsafe { core::ptr::write_volatile($m.add($o), $v) }
+    };
 }
 
 fn alloc_dma_pages(pages: usize) -> Option<(u64, *mut u8)> {
@@ -178,8 +180,8 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
 
             // ── Quick MMIO probe ──────────────────────────────────
             let mmio = (bar0 + off) as *mut u8;
-            let gcap = unsafe { r32(mmio, GCAP) };
-            let states = unsafe { r16(mmio, STATESTS) };
+            let gcap = unsafe { mmio!(r32 mmio, GCAP) };
+            let states = unsafe { mmio!(r16 mmio, STATESTS) };
 
             log::info!(
                 "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x}",
@@ -256,20 +258,20 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     };
     let cmd = ((codec as u32) << 28) | ((node as u32) << 20) | cmd_val;
     for _ in 0..1000 {
-        let wp = unsafe { r16(mmio, CORBWP) } as usize;
-        let rp = unsafe { r16(mmio, CORBRP) } as usize & 0xFF;
+        let wp = unsafe { mmio!(r16 mmio, CORBWP) } as usize;
+        let rp = unsafe { mmio!(r16 mmio, CORBRP) } as usize & 0xFF;
         if (wp + 1) % corb_n != rp {
             break;
         }
         core::hint::spin_loop();
     }
-    let wp = unsafe { r16(mmio, CORBWP) } as usize;
+    let wp = unsafe { mmio!(r16 mmio, CORBWP) } as usize;
     let next_wp = (wp + 1) % corb_n;
     unsafe { core::ptr::write_volatile(corb.add(next_wp), cmd) };
-    unsafe { w16(mmio, CORBWP, next_wp as u16) };
-    let rirb_wp_before = unsafe { r16(mmio, RIRBWP) } & 0xFF;
+    unsafe { mmio!(w16 mmio, CORBWP, next_wp as u16) };
+    let rirb_wp_before = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
     for _ in 0..50_000 {
-        let rirb_wp = unsafe { r16(mmio, RIRBWP) } & 0xFF;
+        let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
         if rirb_wp != rirb_wp_before {
             let resp = unsafe { core::ptr::read_volatile(rirb.add(rirb_wp as usize)) };
             if (resp >> 63) & 1 == 0 {
@@ -480,7 +482,7 @@ fn hda_init() {
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
     let virt = (phys + off) as usize;
     *HDA_VIRT.lock() = virt;
-    let gctest = unsafe { r32(virt as *mut u8, GCAP) };
+    let gctest = unsafe { mmio!(r32 virt as *mut u8, GCAP) };
     if gctest == 0 || gctest == 0xFFFF_FFFF {
         log::warn!("Sound: GCAP invalid");
         *HDA_PHYS.lock() = 0;
@@ -489,23 +491,23 @@ fn hda_init() {
     log::info!("Sound: GCAP=0x{:x}", gctest);
     let (iss, oss) = unsafe {
         let m = virt as *mut u8;
-        w32(m, GCTL, 0);
+        mmio!(w32 m, GCTL, 0);
         for _ in 0..2000 {
             core::hint::spin_loop();
         }
-        w32(m, GCTL, 1);
+        mmio!(w32 m, GCTL, 1);
         for _ in 0..20000 {
-            if r32(m, GCTL) & 1 != 0 {
+            if mmio!(r32 m, GCTL) & 1 != 0 {
                 break;
             }
         }
-        if r32(m, GCTL) & 1 == 0 {
+        if mmio!(r32 m, GCTL) & 1 == 0 {
             log::warn!("Sound: controller reset timeout");
             return;
         }
-        w16(m, STATESTS, 0x000F);
-        w32(m, INTCTL, 0);
-        let gcap = r32(m, GCAP);
+        mmio!(w16 m, STATESTS, 0x000F);
+        mmio!(w32 m, INTCTL, 0);
+        let gcap = mmio!(r32 m, GCAP);
         ((gcap >> 8) & 0xF, (gcap >> 12) & 0xF)
     };
     log::info!("Sound: ISS={} OSS={}", iss, oss);
@@ -528,7 +530,8 @@ fn hda_init() {
     // But first we must ensure the controller supports it; if not,
     // fall back to 2 entries (00b) or 16 entries (01b).
     let gcap = unsafe {
-        r16(virt as *mut u8, GCAP + 2) as u32 | ((r16(virt as *mut u8, GCAP) as u32) << 16)
+        mmio!(r16 virt as *mut u8, GCAP + 2) as u32
+            | ((mmio!(r16 virt as *mut u8, GCAP) as u32) << 16)
     };
     // Full 32-bit GCAP.  CORB size capability in bits 7:4.
     let corb_szcap = (gcap >> 4) & 0xF; // 0=2, 1=16, 2=256 entries
@@ -557,32 +560,32 @@ fn hda_init() {
     unsafe {
         let m = virt as *mut u8;
         // Stop CORB/RIRB DMA engines before programming
-        w32(m, CORBCTL, 0);
-        w32(m, RIRBCTL, 0);
-        w32(m, CORBLBASE, corb_phys as u32);
-        w32(m, CORBUBASE, (corb_phys >> 32) as u32);
+        mmio!(w32 m, CORBCTL, 0);
+        mmio!(w32 m, RIRBCTL, 0);
+        mmio!(w32 m, CORBLBASE, corb_phys as u32);
+        mmio!(w32 m, CORBUBASE, (corb_phys >> 32) as u32);
         // CORB Read Pointer Reset via bit 15, then clear RP/WP
-        w16(m, CORBRP, 0x8000);
+        mmio!(w16 m, CORBRP, 0x8000);
         for _ in 0..200 {
             core::hint::spin_loop();
         }
-        w16(m, CORBRP, 0);
-        w16(m, CORBWP, 0);
+        mmio!(w16 m, CORBRP, 0);
+        mmio!(w16 m, CORBWP, 0);
         // Enable CORB DMA with the correct size
-        w32(m, CORBCTL, 0x02 | corb_sz_bits);
-        w32(m, RIRBLBASE, rirb_phys as u32);
-        w32(m, RIRBUBASE, (rirb_phys >> 32) as u32);
+        mmio!(w32 m, CORBCTL, 0x02 | corb_sz_bits);
+        mmio!(w32 m, RIRBLBASE, rirb_phys as u32);
+        mmio!(w32 m, RIRBUBASE, (rirb_phys >> 32) as u32);
         // RIRBWP reset: set bit 15 (RIRBRST) then clear
-        w16(m, RIRBWP, 0x8000);
+        mmio!(w16 m, RIRBWP, 0x8000);
         for _ in 0..200 {
             core::hint::spin_loop();
         }
         // Read back to confirm reset is released, then zero WP
-        if r16(m, RIRBWP) & 0x8000 != 0 {
-            w16(m, RIRBWP, 0);
+        if mmio!(r16 m, RIRBWP) & 0x8000 != 0 {
+            mmio!(w16 m, RIRBWP, 0);
         }
         // Enable RIRB DMA with the correct size
-        w32(m, RIRBCTL, 0x02 | rirb_sz_bits);
+        mmio!(w32 m, RIRBCTL, 0x02 | rirb_sz_bits);
         log::info!("Sound: CORB/RIRB enabled (size={} entries)", corb_n);
     }
     let codec_addr: u8 = 0;
@@ -625,36 +628,36 @@ fn hda_init() {
         let m = virt as *mut u8;
         let sd = *HDA_SD.lock();
         // Stop any previous stream, then clear status
-        w32(m, sd + SD_CTL, 0);
+        mmio!(w32 m, sd + SD_CTL, 0);
         for _ in 0..2000 {
             core::hint::spin_loop();
         }
-        w8(m, sd + SD_STS, 0xFF); // clear all status bits (WC)
+        mmio!(w8 m, sd + SD_STS, 0xFF); // clear all status bits (WC)
         // Reset stream
-        w32(m, sd + SD_CTL, 0x01);
+        mmio!(w32 m, sd + SD_CTL, 0x01);
         for _ in 0..2000 {
             core::hint::spin_loop();
         }
         // Wait for reset to complete
         for _ in 0..50000 {
-            if r32(m, sd + SD_CTL) & 0x01 == 0 {
+            if mmio!(r32 m, sd + SD_CTL) & 0x01 == 0 {
                 break;
             }
             core::hint::spin_loop();
         }
         // Program format, BDL and stream settings
-        w8(m, sd + SD_STS, 0xFF);
+        mmio!(w8 m, sd + SD_STS, 0xFF);
         // 48 kHz 16-bit mono:
         // bit7 BASE=0 (48kHz), bits6:4 BITS=1 (16-bit), bits3:0 CHAN=0 (1ch)
-        w16(m, sd + SD_FMT, 0x0010);
-        w32(m, sd + SD_CBL, audio_sz);
-        w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
-        w32(m, sd + SD_BDPL, dma_phys as u32);
-        w32(m, sd + SD_BDPU, (dma_phys >> 32) as u32);
+        mmio!(w16 m, sd + SD_FMT, 0x0010);
+        mmio!(w32 m, sd + SD_CBL, audio_sz);
+        mmio!(w16 m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
+        mmio!(w32 m, sd + SD_BDPL, dma_phys as u32);
+        mmio!(w32 m, sd + SD_BDPU, (dma_phys >> 32) as u32);
         // Store fence: ensure BDL / DMA buffer writes are visible
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
-        w32(m, sd + SD_CTL, (1u32 << 16) | 0x06);
+        mmio!(w32 m, sd + SD_CTL, (1u32 << 16) | 0x06);
         log::info!("Sound: stream started ({} B, fmt=0x0010)", audio_sz);
     }
     HDA_READY.store(true, Ordering::Release);
@@ -724,15 +727,15 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     // ── Determine safe write half from LPIB ─────────────────
     // LPIB normalised to [0, audio_sz) tells us which half DMA
     // is reading → we may write the *other* half.
-    let lpib_raw = unsafe { r32(mmio, sd + SD_LPIB) };
+    let lpib_raw = unsafe { mmio!(r32 mmio, sd + SD_LPIB) };
     let lpib = lpib_raw.wrapping_rem(*HDA_AUDIO_SZ.lock());
     let write_off = if lpib < half { half } else { 0 };
 
     // BCIS (hardware IOC) provides a strong “half-done” signal.
-    let sts = unsafe { r8(mmio, sd + SD_STS) };
+    let sts = unsafe { mmio!(r8 mmio, sd + SD_STS) };
     if sts & 0x04 != 0 {
         unsafe {
-            w8(mmio, sd + SD_STS, 0x04);
+            mmio!(w8 mmio, sd + SD_STS, 0x04);
         }
     }
 
@@ -782,7 +785,7 @@ pub fn hda_poll() {
         let mmio = virt as *mut u8;
         let sd = *HDA_SD.lock();
         // Read SD_STS first before calling hda_feed_samples
-        let sts = unsafe { r8(mmio, sd + SD_STS) };
+        let sts = unsafe { mmio!(r8 mmio, sd + SD_STS) };
         if sts & 0x04 != 0 {
             break; // BCIS set → half-buffer complete
         }
@@ -807,7 +810,7 @@ pub fn hda_poll_block(timeout_tsc: Option<u64>) -> bool {
         None => u64::MAX,
     };
     loop {
-        let sts = unsafe { r8(mmio, sd + SD_STS) };
+        let sts = unsafe { mmio!(r8 mmio, sd + SD_STS) };
         if sts & 0x04 != 0 {
             return true; // BCIS set
         }
@@ -863,7 +866,7 @@ pub fn hda_playback_progress() -> Option<u64> {
     }
     let sd = *HDA_SD.lock();
     let mmio = virt as *mut u8;
-    let raw = unsafe { r32(mmio, sd + SD_LPIB) };
+    let raw = unsafe { mmio!(r32 mmio, sd + SD_LPIB) };
     Some(raw as u64)
 }
 

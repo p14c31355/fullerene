@@ -1290,17 +1290,14 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
     use lattice::desktop::DesktopAction;
     match action {
         DesktopAction::NewTerminal => {
-            // Create a new terminal window
             let id = rt
                 .desktop
                 .wm
                 .create_titled_window(60, 50, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
-            // Focus the new window
             rt.desktop.wm.raise_to_top(id);
             rt.frame_due = true;
         }
         DesktopAction::NewShell => {
-            // Create a new shell window (same dimensions as terminal)
             let id = rt
                 .desktop
                 .wm
@@ -1308,22 +1305,14 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
             rt.desktop.wm.raise_to_top(id);
             rt.frame_due = true;
         }
-        DesktopAction::TaskManager => {
-            open_task_manager_window(rt);
-        }
-        DesktopAction::DeviceManager => {
-            open_device_manager_window(rt);
-        }
-        DesktopAction::FileManager => {
-            open_file_manager_window(rt);
-        }
+        DesktopAction::TaskManager => open_info_window(rt, InfoWindow::TaskManager),
+        DesktopAction::DeviceManager => open_info_window(rt, InfoWindow::DeviceManager),
+        DesktopAction::FileManager => open_info_window(rt, InfoWindow::FileManager),
         DesktopAction::Refresh => {
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
-        DesktopAction::About => {
-            open_about_window(rt);
-        }
+        DesktopAction::About => open_info_window(rt, InfoWindow::About),
         DesktopAction::ToggleTiling => {
             let (fw, fh) = *FB_DIMS.lock();
             let (ww, wh) = rt.desktop.work_area(fw, fh);
@@ -1332,22 +1321,167 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
-        DesktopAction::SysInfo => {
-            // TODO: Implement system information display
-        }
-        DesktopAction::Shutdown => {
-            // TODO: Implement shutdown functionality
-        }
-        DesktopAction::Reboot => {
-            // TODO: Implement reboot functionality
-        }
-        DesktopAction::Separator => {
-            // Separator line — no action
-        }
+        DesktopAction::SysInfo => {}  // TODO
+        DesktopAction::Shutdown => {} // TODO
+        DesktopAction::Reboot => {}   // TODO
+        DesktopAction::Separator => {}
         DesktopAction::ChangeWallpaperSettings => {
-            open_wallpaper_settings_window(rt);
+            open_info_window(rt, InfoWindow::WallpaperSettings)
         }
     }
+}
+
+/// Kind of system information window.
+#[derive(Clone, Copy)]
+enum InfoWindow {
+    TaskManager,
+    DeviceManager,
+    FileManager,
+    About,
+    WallpaperSettings,
+}
+
+impl InfoWindow {
+    fn params(self) -> (&'static str, i32, i32, u32, u32, u32, u32) {
+        match self {
+            Self::TaskManager => ("Task Manager", 120, 80, 44, 2, 0x0d0d1a, 0xCCCCCC),
+            Self::DeviceManager => ("Device Manager", 140, 100, 46, 2, 0x0d1a0d, 0xCCFFCC),
+            Self::FileManager => ("File Manager", 160, 120, 50, 3, 0x1a1a0d, 0xFFFFCC),
+            Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
+            Self::WallpaperSettings => ("Wallpaper Settings", 200, 110, 26, 1, 0x1a1a2e, 0xCCCCCC),
+        }
+    }
+}
+
+fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
+    let text = match kind {
+        InfoWindow::TaskManager => {
+            let Some(get_procs) = *PROCESS_LIST_FN.lock() else {
+                return show_text_window(
+                    rt,
+                    "Task Manager",
+                    120,
+                    80,
+                    44,
+                    2,
+                    0x0d0d1a,
+                    0xCCCCCC,
+                    "PID   NAME              STATE\n----  ----------------  --------\n (no process list callback)\n",
+                );
+            };
+            let procs = get_procs();
+            let mut s =
+                String::from("PID   NAME              STATE\n----  ----------------  --------\n");
+            for p in &procs {
+                let state = match p.state {
+                    ProcessStateKind::Ready => "ready",
+                    ProcessStateKind::Running => "running",
+                    ProcessStateKind::Blocked => "blocked",
+                    ProcessStateKind::Terminated => "term",
+                };
+                let _ = core::write!(
+                    &mut s,
+                    " {:<4}  {:<16}  {:<8}\n",
+                    p.pid,
+                    truncate_to_chars(&p.name, 16),
+                    state
+                );
+            }
+            s
+        }
+        InfoWindow::DeviceManager => {
+            let Some(get_devs) = *DEVICE_LIST_FN.lock() else {
+                return show_text_window(
+                    rt,
+                    "Device Manager",
+                    140,
+                    100,
+                    46,
+                    2,
+                    0x0d1a0d,
+                    0xCCFFCC,
+                    "DEVICE              TYPE        ENABLED\n------------------  ----------  -------\n (no device list callback)\n",
+                );
+            };
+            let devs = get_devs();
+            let mut s = String::from(
+                "DEVICE              TYPE        ENABLED\n------------------  ----------  -------\n",
+            );
+            for d in &devs {
+                let n = &d.name[..d.name.len().min(18)];
+                let t = &d.dev_type[..d.dev_type.len().min(10)];
+                let _ = core::write!(
+                    &mut s,
+                    " {:<18}  {:<10}  {:<7}\n",
+                    n,
+                    t,
+                    if d.enabled { "yes" } else { "no" }
+                );
+            }
+            s
+        }
+        InfoWindow::FileManager => {
+            let Some(readdir) = *VFS_READDIR_FN.lock() else {
+                return show_text_window(
+                    rt,
+                    "File Manager",
+                    160,
+                    120,
+                    50,
+                    3,
+                    0x1a1a0d,
+                    0xFFFFCC,
+                    "  Name              Size        Type\n------------------  ----------  ----\n (no VFS readdir callback)\n",
+                );
+            };
+            match readdir("/") {
+                Ok(entries) => {
+                    let mut s = String::from(
+                        "  Name              Size        Type\n------------------  ----------  ----\n",
+                    );
+                    for e in &entries {
+                        let size = if e.is_dir {
+                            String::from("--")
+                        } else if e.size >= 1048576 {
+                            format!("{}.{} MB", e.size / 1048576, (e.size / 1024) % 1024)
+                        } else if e.size >= 1024 {
+                            format!("{}.{} KB", e.size / 1024, (e.size % 1024) * 10 / 1024)
+                        } else {
+                            format!("{} B", e.size)
+                        };
+                        let n = {
+                            let l = (0..=18)
+                                .rev()
+                                .find(|&l| e.name.is_char_boundary(l))
+                                .unwrap_or(0);
+                            &e.name[..l]
+                        };
+                        let _ = core::write!(
+                            &mut s,
+                            "  {:<18}  {:<10}  {}\n",
+                            n,
+                            size,
+                            if e.is_dir { "dir" } else { "file" }
+                        );
+                    }
+                    if entries.is_empty() {
+                        s.push_str("  (empty directory)\n");
+                    }
+                    s.push_str(&format!("\n  Path: {}\n  {} entries", "/", entries.len()));
+                    s
+                }
+                Err(e) => format!("  Error reading directory:\n  {} ({})\n", "/", e),
+            }
+        }
+        InfoWindow::About => String::from(
+            "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
+        ),
+        InfoWindow::WallpaperSettings => String::from(
+            "  Wallpaper Settings\n ===================\n\n [ ] Beach\n [ ] Mountain\n [ ] City\n ───────────────────\n [ ] Solid Color\n [ ] Grid Pattern\n [ ] Gradient\n\n Use 'wallpaper <name>'\n in terminal to switch.\n\n Ex: wallpaper beach\n",
+        ),
+    };
+    let (title, x, y, cols, extra_rows, bg, fg) = kind.params();
+    show_text_window(rt, title, x, y, cols, extra_rows, bg, fg, &text);
 }
 
 /// Common helper: create a titled window, fill its surface with `text`,
@@ -1373,178 +1507,6 @@ fn show_text_window(
     }
     rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
-}
-
-fn open_task_manager_window(rt: &mut RuntimeState) {
-    let text = if let Some(get_procs) = *PROCESS_LIST_FN.lock() {
-        let procs = get_procs();
-        let mut s =
-            String::from("PID   NAME              STATE\n----  ----------------  --------\n");
-        for p in &procs {
-            let state = match p.state {
-                ProcessStateKind::Ready => "ready",
-                ProcessStateKind::Running => "running",
-                ProcessStateKind::Blocked => "blocked",
-                ProcessStateKind::Terminated => "term",
-            };
-            let _ = core::write!(
-                &mut s,
-                " {:<4}  {:<16}  {:<8}\n",
-                p.pid,
-                truncate_to_chars(&p.name, 16),
-                state
-            );
-        }
-        s
-    } else {
-        String::from(
-            "PID   NAME              STATE\n----  ----------------  --------\n (no process list callback)\n",
-        )
-    };
-    show_text_window(
-        rt,
-        "Task Manager",
-        120,
-        80,
-        44,
-        2,
-        0x0d0d1a,
-        0xCCCCCC,
-        &text,
-    );
-}
-
-fn open_device_manager_window(rt: &mut RuntimeState) {
-    let text = if let Some(get_devs) = *DEVICE_LIST_FN.lock() {
-        let devs = get_devs();
-        let mut s = String::from(
-            "DEVICE              TYPE        ENABLED\n------------------  ----------  -------\n",
-        );
-        for d in &devs {
-            let n = if d.name.len() > 18 {
-                &d.name[..18]
-            } else {
-                &d.name
-            };
-            let t = if d.dev_type.len() > 10 {
-                &d.dev_type[..10]
-            } else {
-                &d.dev_type
-            };
-            let _ = core::write!(
-                &mut s,
-                " {:<18}  {:<10}  {:<7}\n",
-                n,
-                t,
-                if d.enabled { "yes" } else { "no" }
-            );
-        }
-        s
-    } else {
-        String::from(
-            "DEVICE              TYPE        ENABLED\n------------------  ----------  -------\n (no device list callback)\n",
-        )
-    };
-    show_text_window(
-        rt,
-        "Device Manager",
-        140,
-        100,
-        46,
-        2,
-        0x0d1a0d,
-        0xCCFFCC,
-        &text,
-    );
-}
-
-fn open_file_manager_window(rt: &mut RuntimeState) {
-    let path = "/";
-    let text = if let Some(readdir) = *VFS_READDIR_FN.lock() {
-        match readdir(path) {
-            Ok(entries) => {
-                let mut s = String::from(
-                    "  Name              Size        Type\n------------------  ----------  ----\n",
-                );
-                for e in &entries {
-                    let size = if e.is_dir {
-                        String::from("--")
-                    } else if e.size >= 1048576 {
-                        format!("{}.{} MB", e.size / 1048576, (e.size / 1024) % 1024)
-                    } else if e.size >= 1024 {
-                        format!("{}.{} KB", e.size / 1024, (e.size % 1024) * 10 / 1024)
-                    } else {
-                        format!("{} B", e.size)
-                    };
-                    let n = {
-                        let mut l = 18;
-                        while l > 0 && !e.name.is_char_boundary(l) {
-                            l -= 1;
-                        }
-                        &e.name[..l]
-                    };
-                    let _ = core::write!(
-                        &mut s,
-                        "  {:<18}  {:<10}  {}\n",
-                        n,
-                        size,
-                        if e.is_dir { "dir" } else { "file" }
-                    );
-                }
-                if entries.is_empty() {
-                    s.push_str("  (empty directory)\n");
-                }
-                s.push_str(&format!("\n  Path: {}\n  {} entries", path, entries.len()));
-                s
-            }
-            Err(e) => format!("  Error reading directory:\n  {} ({})\n", path, e),
-        }
-    } else {
-        String::from(
-            "  Name              Size        Type\n------------------  ----------  ----\n (no VFS readdir callback)\n",
-        )
-    };
-    show_text_window(
-        rt,
-        "File Manager",
-        160,
-        120,
-        50,
-        3,
-        0x1a1a0d,
-        0xFFFFCC,
-        &text,
-    );
-}
-
-fn open_about_window(rt: &mut RuntimeState) {
-    let text = "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n";
-    show_text_window(
-        rt,
-        "About Fullerene",
-        180,
-        140,
-        32,
-        0,
-        0x1a0d1a,
-        0xFFCCFF,
-        text,
-    );
-}
-
-fn open_wallpaper_settings_window(rt: &mut RuntimeState) {
-    let text = "  Wallpaper Settings\n ===================\n\n [ ] Beach\n [ ] Mountain\n [ ] City\n ───────────────────\n [ ] Solid Color\n [ ] Grid Pattern\n [ ] Gradient\n\n Use 'wallpaper <name>'\n in terminal to switch.\n\n Ex: wallpaper beach\n";
-    show_text_window(
-        rt,
-        "Wallpaper Settings",
-        200,
-        110,
-        26,
-        1,
-        0x1a1a2e,
-        0xCCCCCC,
-        text,
-    );
 }
 
 /// Render a multi-line text string into a Surface.

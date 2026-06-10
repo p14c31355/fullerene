@@ -130,34 +130,8 @@ impl WindowManager {
         height: u32,
         color: u32,
     ) -> WindowId {
-        let id = WindowId(self.next_id);
-        self.next_id += 1;
-        self.create_with_id(id, x, y, width, height, color)
+        self.create_window_impl(|id| Window::new(id, x, y, width, height, color))
     }
-
-    fn create_with_id(
-        &mut self,
-        id: WindowId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-        color: u32,
-    ) -> WindowId {
-        let mut window = Window::new(id, x, y, width, height, color);
-        if let Some(prev) = self.focused {
-            if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
-                w.focused = false;
-                self.dirty_rects.push(window_dirty_rect(w));
-            }
-        }
-        window.focused = true;
-        self.focused = Some(id);
-        self.dirty_rects.push(window_dirty_rect(&window));
-        self.windows.push(window);
-        id
-    }
-
     pub fn create_titled_window(
         &mut self,
         x: i32,
@@ -167,9 +141,18 @@ impl WindowManager {
         color: u32,
         title: impl Into<String>,
     ) -> WindowId {
+        self.create_window_impl(|id| Window::new_with_title(id, x, y, width, height, color, title))
+    }
+
+    fn create_window_impl(&mut self, f: impl FnOnce(WindowId) -> Window) -> WindowId {
         let id = WindowId(self.next_id);
         self.next_id += 1;
-        let mut window = Window::new_with_title(id, x, y, width, height, color, title);
+        self.push_window(f(id));
+        self.maybe_retile();
+        id
+    }
+
+    fn push_window(&mut self, mut window: Window) {
         if let Some(prev) = self.focused {
             if let Some(w) = self.windows.iter_mut().find(|w| w.id == prev) {
                 w.focused = false;
@@ -177,18 +160,17 @@ impl WindowManager {
             }
         }
         window.focused = true;
-        self.focused = Some(id);
+        self.focused = Some(window.id);
         self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
+    }
 
-        // Retile if in MasterStack mode
+    fn maybe_retile(&mut self) {
         if self.tiling_mode == TilingMode::MasterStack {
             if let Some((ww, wh)) = self.work_area {
                 self.retile(ww, wh);
             }
         }
-
-        id
     }
 
     pub fn remove_window(&mut self, id: WindowId) -> bool {

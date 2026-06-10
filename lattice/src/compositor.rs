@@ -52,6 +52,26 @@ fn dim_color(color: u32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
+/// Alpha-blend a source pixel over a destination pixel, writing the result.
+macro_rules! alpha_blend {
+    ($dst:expr, $src:expr) => {{
+        let bg = $dst;
+        let s = $src;
+        let a = ((s >> 24) & 0xFF) as u32;
+        if a == 0 {
+            continue;
+        }
+        if a == 255 {
+            $dst = s;
+            continue;
+        }
+        let ia = 255 - a;
+        $dst = ((((s >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255) << 16
+            | ((((s >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255) << 8
+            | (((s & 0xFF) * a + (bg & 0xFF) * ia) / 255);
+    }};
+}
+
 // ── Title bar button caches ─────────────────────────────────
 /// Pre‑rendered 14×14 close button (red background + white X).
 static CLOSE_BUTTON_CACHE: [u32; 14 * 14] = build_close_button();
@@ -134,6 +154,48 @@ fn blit_button(fb: &mut [u32], fbw: u32, cache: &[u32; 14 * 14], bx: i32, by: i3
             if idx < fb_len {
                 fb[idx] = cache[(row as usize) * 14 + col as usize];
             }
+        }
+    }
+}
+
+fn draw_cursor_impl(
+    fb: &mut [u32],
+    fbw: u32,
+    fbh: u32,
+    cur: &Cursor,
+    cx: u32,
+    cy: u32,
+    cw: u32,
+    ch: u32,
+) {
+    let pixels = Cursor::shape();
+    let sz = Cursor::SIZE as i32;
+    let dst_x = cur.x - Cursor::HOTSPOT_X;
+    let dst_y = cur.y - Cursor::HOTSPOT_Y;
+    let sx_s = 0i32.max(-dst_x);
+    let sy_s = 0i32.max(-dst_y);
+    let sx_e = sz.min(fbw as i32 - dst_x);
+    let sy_e = sz.min(fbh as i32 - dst_y);
+    if sx_s >= sx_e || sy_s >= sy_e {
+        return;
+    }
+    let cex = (cx + cw) as i32;
+    let cey = (cy + ch) as i32;
+    for row in sy_s..sy_e {
+        let dy = dst_y + row;
+        if dy < cy as i32 || dy >= cey {
+            continue;
+        }
+        for col in sx_s..sx_e {
+            let dx = dst_x + col;
+            if dx < cx as i32 || dx >= cex {
+                continue;
+            }
+            let s = pixels[(row as usize) * (sz as usize) + col as usize];
+            if s == 0 {
+                continue;
+            }
+            alpha_blend!(fb[(dy as usize) * (fbw as usize) + dx as usize], s);
         }
     }
 }
@@ -420,50 +482,9 @@ impl Compositor {
 
     // ── Cursor ────────────────────────────────────────────
 
-    /// Draw the cursor directly onto the framebuffer without clipping.
-    ///
-    /// Used when the cursor needs to be rendered on top of shell overlays
-    /// (e.g. TaskOverview, AppGrid) which are drawn onto the framebuffer
-    /// after the compositor back‑buffer blit.
     pub fn draw_cursor_direct(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor) {
-        let pixels = Cursor::shape();
-        let sz = Cursor::SIZE as i32;
-        let dst_x = cur.x - Cursor::HOTSPOT_X;
-        let dst_y = cur.y - Cursor::HOTSPOT_Y;
-        let sx_s = 0i32.max(-dst_x);
-        let sy_s = 0i32.max(-dst_y);
-        let sx_e = sz.min(fbw as i32 - dst_x);
-        let sy_e = sz.min(fbh as i32 - dst_y);
-        if sx_s >= sx_e || sy_s >= sy_e {
-            return;
-        }
-        for row in sy_s..sy_e {
-            let dy = dst_y + row;
-            for col in sx_s..sx_e {
-                let dx = dst_x + col;
-                let s = pixels[(row as usize) * (sz as usize) + col as usize];
-                if s == 0 {
-                    continue;
-                }
-                let idx = (dy as usize) * (fbw as usize) + dx as usize;
-                let bg = fb[idx];
-                let sa = ((s >> 24) & 0xFF) as u32;
-                if sa == 0 {
-                    continue;
-                }
-                if sa == 255 {
-                    fb[idx] = s;
-                    continue;
-                }
-                let ia = 255 - sa;
-                let r = (((s >> 16) & 0xFF) * sa + ((bg >> 16) & 0xFF) * ia) / 255;
-                let g = (((s >> 8) & 0xFF) * sa + ((bg >> 8) & 0xFF) * ia) / 255;
-                let b = ((s & 0xFF) * sa + (bg & 0xFF) * ia) / 255;
-                fb[idx] = (r << 16) | (g << 8) | b;
-            }
-        }
+        draw_cursor_impl(fb, fbw, fbh, cur, 0, 0, fbw, fbh);
     }
-
     fn draw_cursor_clipped(
         fb: &mut [u32],
         fbw: u32,
@@ -474,51 +495,7 @@ impl Compositor {
         cw: u32,
         ch: u32,
     ) {
-        let pixels = Cursor::shape();
-        let sz = Cursor::SIZE as i32;
-        let dst_x = cur.x - Cursor::HOTSPOT_X;
-        let dst_y = cur.y - Cursor::HOTSPOT_Y;
-        let sx_s = 0i32.max(-dst_x);
-        let sy_s = 0i32.max(-dst_y);
-        let sx_e = sz.min(fbw as i32 - dst_x);
-        let sy_e = sz.min(fbh as i32 - dst_y);
-        if sx_s >= sx_e || sy_s >= sy_e {
-            return;
-        }
-        let cex = (cx + cw) as i32;
-        let cey = (cy + ch) as i32;
-        for row in sy_s..sy_e {
-            let dy = dst_y + row;
-            if dy < cy as i32 || dy >= cey {
-                continue;
-            }
-            for col in sx_s..sx_e {
-                let dx = dst_x + col;
-                if dx < cx as i32 || dx >= cex {
-                    continue;
-                }
-                let s = pixels[(row as usize) * (sz as usize) + col as usize];
-                if s == 0 {
-                    continue;
-                }
-                let idx = (dy as usize) * (fbw as usize) + dx as usize;
-                // Semi‑transparent blending
-                let bg = fb[idx];
-                let sa = ((s >> 24) & 0xFF) as u32;
-                if sa == 0 {
-                    continue;
-                }
-                if sa == 255 {
-                    fb[idx] = s;
-                    continue;
-                }
-                let ia = 255 - sa;
-                let r = (((s >> 16) & 0xFF) * sa + ((bg >> 16) & 0xFF) * ia) / 255;
-                let g = (((s >> 8) & 0xFF) * sa + ((bg >> 8) & 0xFF) * ia) / 255;
-                let b = ((s & 0xFF) * sa + (bg & 0xFF) * ia) / 255;
-                fb[idx] = (r << 16) | (g << 8) | b;
-            }
-        }
+        draw_cursor_impl(fb, fbw, fbh, cur, cx, cy, cw, ch);
     }
 
     // ── Window drawing ────────────────────────────────────
