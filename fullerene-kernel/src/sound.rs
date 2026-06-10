@@ -358,10 +358,10 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let steps = ac as u8 & 0x7F;
     let gain = if steps > 0 { steps / 2 } else { 0 };
     corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, (0x70 | gain) as u16);
-    // 16-bit signed mono at 44100 Hz:
-    // bit[7] = 1 → signed, bits[6:4] = 1 → 16-bit container,
+    // 16-bit signed mono at 48000 Hz:
+    // bit[7] = 0 → 48 kHz base, bits[6:4] = 1 → 16-bit container,
     // bit[3:0] = 0 → 1 channel
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x90u16);
+    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x10u16);
     corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
     let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
     let psteps = pa as u8 & 0x7F;
@@ -537,13 +537,13 @@ fn hda_init() {
             addr_lo: audio_phys as u32,
             addr_hi: (audio_phys >> 32) as u32,
             length: half,
-            flags: 0,
+            flags: 0x01, // IOC — signal completion via BCIS
         };
         *bdl.add(1) = BdlEntry {
             addr_lo: (audio_phys + half as u64) as u32,
             addr_hi: ((audio_phys + half as u64) >> 32) as u32,
             length: half,
-            flags: 0,
+            flags: 0x01, // IOC
         };
     }
     unsafe {
@@ -569,10 +569,9 @@ fn hda_init() {
         }
         // Program format, BDL and stream settings
         w8(m, sd + SD_STS, 0xFF);
-        // 44.1 kHz 16-bit mono:
-        // bit7 BASE=1 (44.1kHz), bits6:4 BITS=1 (16-bit), bits3:0 CHAN=0 (1ch)
-        // bits15:14 MULT=0 (1x — no oversampling)
-        w16(m, sd + SD_FMT, 0x0090);
+        // 48 kHz 16-bit mono:
+        // bit7 BASE=0 (48kHz), bits6:4 BITS=1 (16-bit), bits3:0 CHAN=0 (1ch)
+        w16(m, sd + SD_FMT, 0x0010);
         w32(m, sd + SD_CBL, audio_sz);
         w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
         w32(m, sd + SD_BDPL, dma_phys as u32);
@@ -581,7 +580,7 @@ fn hda_init() {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
         w32(m, sd + SD_CTL, (1u32 << 16) | 0x02);
-        log::info!("Sound: stream started ({} B, fmt=0x0080)", audio_sz);
+        log::info!("Sound: stream started ({} B, fmt=0x0010)", audio_sz);
     }
     HDA_READY.store(true, Ordering::Release);
     HDA_INIT_DONE.store(true, Ordering::Release);
@@ -626,17 +625,31 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     let half = *HDA_HALF.lock();
     let sd = *HDA_SD.lock();
 
-    let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
-    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
-
-    let dma_in_first = lpib < half;
-    let write_off = if dma_in_first { half } else { 0 };
-    // Only write if DMA has crossed half boundary
-    if last == write_off {
-        return 0;
+    // ── Wait for BDL IOC (BCIS in SD_STS bit 2) ─────────────
+    // Each BDL entry has IOC=1 → BCIS fires when the entry is done
+    // and the DMA engine moves to the next entry.  This is more
+    // reliable than LPIB polling, which is broken on QEMU and
+    // certain Intel PCH revisions (accumulating / non-wrapping).
+    let sts = unsafe { r8(mmio, sd + SD_STS) };
+    if sts & 0x04 == 0 {
+        return 0; // no half-buffer completion yet
     }
-    // Track the actual DMA position so hda_poll/hda_poll_block can
-    // reliably detect when the controller crosses the half-buffer boundary.
+    // Clear BCIS (write-1-to-clear)
+    unsafe { w8(mmio, sd + SD_STS, 0x04); }
+
+    // BCIS fired → DMA just finished a BDL entry and moved to the
+    // next one.  Use LPIB only to decide *direction* (which half
+    // DMA is currently reading → write the *opposite* half).
+    // LPIB is a cumulative byte counter that wraps at the buffer
+    // size, but some controllers (QEMU, certain PCH) may continue
+    // counting past the buffer.  Force-wrap with remainder so the
+    // "< half" comparison stays correct across multiple cycles.
+    let lpib_raw = unsafe { r32(mmio, sd + SD_LPIB) };
+    let lpib = lpib_raw.wrapping_rem(*HDA_AUDIO_SZ.lock());
+    let write_off = if lpib < half { half } else { 0 };
+
+    // Update the poll tracking state so hda_poll / hda_poll_block
+    // can also detect progress.
     HDA_LAST_LPIB.store(lpib as u64, Ordering::Relaxed);
 
     let write_max = half as usize;
@@ -655,23 +668,26 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
 }
 
 pub fn hda_poll() {
-    if !HDA_READY.load(Ordering::Acquire) {
-        return;
-    }
-    let virt = *HDA_VIRT.lock();
-    if virt == 0 {
-        return;
-    }
-    let mmio = virt as *mut u8;
-    let half = *HDA_HALF.lock();
-    let sd = *HDA_SD.lock();
-    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
     loop {
-        let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
-        let a = lpib < half;
-        let b = last < half;
-        if a != b {
-            break;
+        if hda_feed_samples(&[]) > 0 {
+            // feed_samples returned non-zero just to signal BCIS;
+            // but with empty slice it always returns 0.
+            // We just need the side-effect of BCIS acknowledgement.
+        }
+        // Check if BCIS fired (via hda_feed_samples side-effect is
+        // not sufficient since it returns 0 for empty).  Poll directly.
+        if !HDA_READY.load(Ordering::Acquire) {
+            return;
+        }
+        let virt = *HDA_VIRT.lock();
+        if virt == 0 {
+            return;
+        }
+        let mmio = virt as *mut u8;
+        let sd = *HDA_SD.lock();
+        let sts = unsafe { r8(mmio, sd + SD_STS) };
+        if sts & 0x04 != 0 {
+            break; // BCIS set → half-buffer complete
         }
         core::hint::spin_loop();
     }
@@ -688,19 +704,15 @@ pub fn hda_poll_block(timeout_tsc: Option<u64>) -> bool {
         return false;
     }
     let mmio = virt as *mut u8;
-    let half = *HDA_HALF.lock();
     let sd = *HDA_SD.lock();
-    let last = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
     let deadline = match timeout_tsc {
         Some(d) => unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(d),
         None => u64::MAX,
     };
     loop {
-        let lpib = unsafe { r32(mmio, sd + SD_LPIB) };
-        let a = lpib < half;
-        let b = last < half;
-        if a != b {
-            return true;
+        let sts = unsafe { r8(mmio, sd + SD_STS) };
+        if sts & 0x04 != 0 {
+            return true; // BCIS set
         }
         if timeout_tsc.is_some() && unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
             return false;

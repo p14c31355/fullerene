@@ -10,7 +10,7 @@ use core::arch::x86_64;
 
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
-const PCM_BYTES_PER_SEC: u32 = 88200; // 16-bit mono × 44100 Hz
+const PCM_BYTES_PER_SEC: u32 = 96000; // 16-bit mono × 48000 Hz
 const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_HDR_SIZE: usize = 16;
 const THRESHOLD: u8 = 128;
