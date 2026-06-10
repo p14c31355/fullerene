@@ -159,12 +159,14 @@ pub fn flush_gpu() {
             gpu.flush(info.width, info.height);
         }
     } else {
-        // No VirtIO-GPU → flush non-temporal stores to the framebuffer.
-        // `sfence` orders NT stores ahead of it (movnti → WC buffer → sfence →
-        // globally visible).  Regular fences (mfence) also work but sfence is
-        // the correct companion to _mm_stream_si32 / movnti.
+        // No VirtIO-GPU → flush stores to the framebuffer.
+        // We use regular volatile writes (not NT stores) because the
+        // real‑hardware GOP framebuffer is WB‑mapped and NT stores to
+        // WB memory have implementation‑defined visibility semantics.
+        // `mfence` ensures all prior stores are globally visible before
+        // the display controller reads them.
         unsafe {
-            core::arch::x86_64::_mm_sfence();
+            core::arch::x86_64::_mm_mfence();
         }
     }
 }

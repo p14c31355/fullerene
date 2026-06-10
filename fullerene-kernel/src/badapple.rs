@@ -75,7 +75,7 @@ unsafe fn draw_decoded_frame(
             // Hard threshold: sample >= 128 → white, else black
             let g = if src_row[sx] >= THRESHOLD { 255u32 } else { 0u32 };
             let pixel = 0xFF00_0000u32 | (g << 16) | (g << 8) | g;
-            core::arch::x86_64::_mm_stream_si32(fb.add(row_off + dx) as *mut i32, pixel as i32);
+            core::ptr::write_volatile(fb.add(row_off + dx), pixel);
         }
     }
 }
@@ -261,6 +261,14 @@ pub fn play_badapple() {
         let drain_deadline =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < drain_deadline {
+            // Allow keyboard abort during drain
+            if nitrogen::ps2::keyboard::input_available()
+                || nitrogen::ps2::keyboard::raw_key_available()
+            {
+                log::info!("Bad Apple aborted (during drain)");
+                nitrogen::ps2::keyboard::flush_input();
+                break;
+            }
             crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             if crate::sound::hda_poll_block(Some(audio_feed_tsc)) {
                 continue;
