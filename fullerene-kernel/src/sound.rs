@@ -586,6 +586,20 @@ fn hda_init() {
     HDA_INIT_DONE.store(true, Ordering::Release);
 }
 
+/// Read HDA LPIB to force a VM exit (QEMU/KVM) so the device
+/// model can advance DMA state.  Returns the raw LPIB value.
+pub fn hda_tick() -> u32 {
+    if !HDA_READY.load(Ordering::Acquire) {
+        return 0;
+    }
+    let virt = *HDA_VIRT.lock();
+    if virt == 0 {
+        return 0;
+    }
+    let sd = *HDA_SD.lock();
+    unsafe { r32(virt as *mut u8, sd + SD_LPIB) }
+}
+
 pub fn hda_available() -> bool {
     *HDA_PHYS.lock() != 0
 }
@@ -610,6 +624,16 @@ pub fn hda_write_direct(offset: u32, samples: &[u8]) -> usize {
     n
 }
 
+/// After pre‑filling both halves of the DMA buffer, reset the
+/// LPIB tracking so `hda_feed_samples` knows DMA starts from
+/// half 0 and won't overwrite pre‑filled data.
+pub fn hda_reset_prefill_tracking() {
+    // DMA starts at offset 0 → pretend we last observed it in
+    // the first half so the gate blocks writes until it crosses
+    // into the second half.
+    HDA_LAST_LPIB.store(0, Ordering::Relaxed);
+}
+
 pub fn hda_feed_samples(samples: &[u8]) -> usize {
     hda_init();
     if !HDA_READY.load(Ordering::Acquire) {
@@ -625,32 +649,37 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     let half = *HDA_HALF.lock();
     let sd = *HDA_SD.lock();
 
-    // ── Wait for BDL IOC (BCIS in SD_STS bit 2) ─────────────
-    // Each BDL entry has IOC=1 → BCIS fires when the entry is done
-    // and the DMA engine moves to the next entry.  This is more
-    // reliable than LPIB polling, which is broken on QEMU and
-    // certain Intel PCH revisions (accumulating / non-wrapping).
-    let sts = unsafe { r8(mmio, sd + SD_STS) };
-    if sts & 0x04 == 0 {
-        return 0; // no half-buffer completion yet
-    }
-    // Clear BCIS (write-1-to-clear)
-    unsafe { w8(mmio, sd + SD_STS, 0x04); }
-
-    // BCIS fired → DMA just finished a BDL entry and moved to the
-    // next one.  Use LPIB only to decide *direction* (which half
-    // DMA is currently reading → write the *opposite* half).
-    // LPIB is a cumulative byte counter that wraps at the buffer
-    // size, but some controllers (QEMU, certain PCH) may continue
-    // counting past the buffer.  Force-wrap with remainder so the
-    // "< half" comparison stays correct across multiple cycles.
+    // ── Determine safe write half from LPIB ─────────────────
+    // LPIB normalised to [0, audio_sz) tells us which half DMA
+    // is reading → we may write the *other* half.
     let lpib_raw = unsafe { r32(mmio, sd + SD_LPIB) };
     let lpib = lpib_raw.wrapping_rem(*HDA_AUDIO_SZ.lock());
     let write_off = if lpib < half { half } else { 0 };
 
-    // Update the poll tracking state so hda_poll / hda_poll_block
-    // can also detect progress.
-    HDA_LAST_LPIB.store(lpib as u64, Ordering::Relaxed);
+    // BCIS (hardware IOC) provides a strong “half-done” signal.
+    let sts = unsafe { r8(mmio, sd + SD_STS) };
+    if sts & 0x04 != 0 {
+        unsafe { w8(mmio, sd + SD_STS, 0x04); }
+    }
+
+    // ── Time‑based fallback guard ───────────────────────────
+    // QEMU sometimes stalls HDA state updates inside tight
+    // spin‑loops; a key‑press (IRQ) briefly unblocks it.
+    // Compare raw LPIB against the last *raw* value so that a
+    // monotonically‑increasing counter still triggers a write
+    // every ~half bytes, preventing total stall.
+    let last_raw = HDA_LAST_LPIB.load(Ordering::Relaxed) as u32;
+    let delta = lpib_raw.wrapping_sub(last_raw);
+    // Allow writing if raw LPIB advanced by at least half bytes
+    // (hardware crossed the boundary even if normalised view
+    // looks identical due to wrapping) OR if BCIS was observed.
+    let crossed = delta >= half || (sts & 0x04) != 0;
+    if !crossed {
+        return 0;
+    }
+
+    // Record raw LPIB for next delta comparison.
+    HDA_LAST_LPIB.store(lpib_raw as u64, Ordering::Relaxed);
 
     let write_max = half as usize;
     let n = samples.len().min(write_max);

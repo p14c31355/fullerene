@@ -209,6 +209,9 @@ pub fn play_badapple() {
             crate::sound::hda_write_direct(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
             pcm_off = e1;
         }
+        // Tell the feed loop DMA is still in half 0 so it won't
+        // overwrite the pre‑filled data before DMA has consumed it.
+        crate::sound::hda_reset_prefill_tracking();
     }
 
     // ── Main playback loop ───────────────────────────────────
@@ -246,13 +249,17 @@ pub fn play_badapple() {
         // ── Frame pacing (TSC‑based busy‑wait) ───────────────
         let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
         while unsafe { x86_64::_rdtsc() } < frame_deadline {
-            // Feed audio at ~1 ms granularity
+            // Feed audio every audio_feed_tsc ticks.
             let now = unsafe { x86_64::_rdtsc() };
             if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
                 last_audio_feed = now;
                 crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             }
-            core::hint::spin_loop();
+            // `hda_tick` reads the HDA LPIB register via MMIO.
+            // On QEMU/KVM this forces a VM exit, giving the host
+            // a chance to advance the HDA device model (DMA
+            // position, BCIS) without blocking the CPU like `hlt`.
+            crate::sound::hda_tick();
         }
     }
 
