@@ -543,7 +543,8 @@ impl NetDevice for VirtioNetDevice {
         }
 
         let data_offset = VirtioNetHdr::SIZE;
-        let data_len = total - data_offset;
+        let max_data_len = RX_BUF_SIZE_ALIGNED.saturating_sub(data_offset);
+        let data_len = total.saturating_sub(data_offset).min(max_data_len);
         let copy_len = data_len.min(buf.len());
 
         // Copy payload from the RX buffer (skipping virtio_net_hdr)
