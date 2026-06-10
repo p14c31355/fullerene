@@ -46,29 +46,17 @@ const fn blend_const(a: u32, b: u32, t: u8) -> u32 {
 
 /// Manual clamp for u8: `if v > max { max } else { v }`.
 const fn clamp_u8(v: u8, max: u8) -> u8 {
-    if v > max {
-        max
-    } else {
-        v
-    }
+    if v > max { max } else { v }
 }
 
 /// Manual clamp for u32: `if v > max { max } else { v }`.
 const fn clamp_u32_val(v: u32, max: u32) -> u32 {
-    if v > max {
-        max
-    } else {
-        v
-    }
+    if v > max { max } else { v }
 }
 
 /// Manual min for u8.
 const fn min_u8(a: u8, b: u8) -> u8 {
-    if a < b {
-        a
-    } else {
-        b
-    }
+    if a < b { a } else { b }
 }
 
 // Preset dimensions (tileable, power-of-two-friendly for alignment).
@@ -167,12 +155,14 @@ const fn gen_mountain() -> ([u32; MOUNTAIN_WU * MOUNTAIN_HU], u32, u32) {
                 let m1_top = horizon as i32 - p1_h;
                 let m1_half_w = p1_h * 3 / 2;
                 let inside_m1 = yi >= m1_top
-                    && (xi - p1_cx).abs() <= (m1_half_w as i64 * (yi - m1_top) as i64 / p1_h as i64) as i32;
+                    && (xi - p1_cx).abs()
+                        <= (m1_half_w as i64 * (yi - m1_top) as i64 / p1_h as i64) as i32;
                 // Mountain 2: triangle from p2_cx
                 let m2_top = horizon as i32 - p2_h;
                 let m2_half_w = p2_h;
                 let inside_m2 = yi >= m2_top
-                    && (xi - p2_cx).abs() <= (m2_half_w as i64 * (yi - m2_top) as i64 / p2_h as i64) as i32;
+                    && (xi - p2_cx).abs()
+                        <= (m2_half_w as i64 * (yi - m2_top) as i64 / p2_h as i64) as i32;
 
                 if inside_m1 {
                     let shade = ((yi - m1_top) as u32 * 80 / p1_h as u32) as u8;
@@ -223,7 +213,11 @@ const fn gen_city() -> ([u32; CITY_WU * CITY_HU], u32, u32) {
             } else {
                 // City buildings
                 let bld_idx = x / col_per_building;
-                let bld_idx = if bld_idx < buildings.len() { bld_idx } else { buildings.len() - 1 };
+                let bld_idx = if bld_idx < buildings.len() {
+                    bld_idx
+                } else {
+                    buildings.len() - 1
+                };
                 let bld_h = buildings[bld_idx] as usize * CITY_HU / 100;
                 let bld_top = CITY_HU - bld_h;
                 let in_building = y >= bld_top;
@@ -307,10 +301,9 @@ pub fn get_wallpaper() -> WallpaperMode {
 /// Look up a wallpaper preset by name (case-insensitive).
 pub fn find_preset(name: &str) -> Option<usize> {
     let name_lower = name.to_lowercase();
-    wallpaper_presets().iter().position(|p| {
-        p.name.to_lowercase() == name_lower.as_str()
-            || p.name == name_lower.as_str()
-    })
+    wallpaper_presets()
+        .iter()
+        .position(|p| p.name.to_lowercase() == name_lower.as_str() || p.name == name_lower.as_str())
 }
 
 /// Get the background colour for the wallpaper.

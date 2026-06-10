@@ -27,9 +27,9 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use log::{LevelFilter, Log, Metadata, Record};
 use spin::Mutex as SpinMutex;
 
+use crate::NetDevice;
 use crate::ethernet::{EtherType, MacAddress};
 use crate::ipv4::{IpProtocol, Ipv4Addr};
-use crate::NetDevice;
 
 /// Ethernet MTU (1500) minus Ethernet header (14) + IPv4 header (20) + UDP header (8).
 const MAX_LOG_PAYLOAD: usize = 1500 - 14 - 20 - 8;

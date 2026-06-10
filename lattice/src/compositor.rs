@@ -60,18 +60,18 @@ static MAXIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_maximize_button();
 /// Pre‑rendered 14×14 minimize button (amber background + white line).
 static MINIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_minimize_button();
 
+/// Fill a 14x14 buffer with a solid colour.
+const fn fill_14x14(buf: &mut [u32; 14 * 14], color: u32) {
+    let mut i = 0;
+    while i < 14 * 14 {
+        buf[i] = color;
+        i += 1;
+    }
+}
+
 const fn build_close_button() -> [u32; 14 * 14] {
     let mut buf = [0u32; 14 * 14];
-    let mut r = 0;
-    while r < 14 {
-        let mut c = 0;
-        while c < 14 {
-            buf[r * 14 + c] = COLOR_DANGER;
-            c += 1;
-        }
-        r += 1;
-    }
-    // White X
+    fill_14x14(&mut buf, COLOR_DANGER);
     let mut o = 0;
     while o < 8 {
         buf[(3 + o) * 14 + (3 + o)] = 0xFFFFFF;
@@ -83,22 +83,12 @@ const fn build_close_button() -> [u32; 14 * 14] {
 
 const fn build_maximize_button() -> [u32; 14 * 14] {
     let mut buf = [0u32; 14 * 14];
-    let mut r = 0;
-    while r < 14 {
-        let mut c = 0;
-        while c < 14 {
-            buf[r * 14 + c] = 0x338833;
-            c += 1;
-        }
-        r += 1;
-    }
-    // White square outline
+    fill_14x14(&mut buf, 0x338833);
     let mut r = 3;
     while r < 11 {
         let mut c = 3;
         while c < 11 {
-            let on_edge = r == 3 || r == 10 || c == 3 || c == 10;
-            if on_edge {
+            if r == 3 || r == 10 || c == 3 || c == 10 {
                 buf[r * 14 + c] = 0xFFFFFF;
             }
             c += 1;
@@ -110,16 +100,7 @@ const fn build_maximize_button() -> [u32; 14 * 14] {
 
 const fn build_minimize_button() -> [u32; 14 * 14] {
     let mut buf = [0u32; 14 * 14];
-    let mut r = 0;
-    while r < 14 {
-        let mut c = 0;
-        while c < 14 {
-            buf[r * 14 + c] = COLOR_ACCENT;
-            c += 1;
-        }
-        r += 1;
-    }
-    // White horizontal line at the bottom
+    fill_14x14(&mut buf, COLOR_ACCENT);
     let mut c = 3;
     while c < 11 {
         buf[10 * 14 + c] = 0xFFFFFF;
@@ -439,6 +420,50 @@ impl Compositor {
 
     // ── Cursor ────────────────────────────────────────────
 
+    /// Draw the cursor directly onto the framebuffer without clipping.
+    ///
+    /// Used when the cursor needs to be rendered on top of shell overlays
+    /// (e.g. TaskOverview, AppGrid) which are drawn onto the framebuffer
+    /// after the compositor back‑buffer blit.
+    pub fn draw_cursor_direct(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor) {
+        let pixels = Cursor::shape();
+        let sz = Cursor::SIZE as i32;
+        let dst_x = cur.x - Cursor::HOTSPOT_X;
+        let dst_y = cur.y - Cursor::HOTSPOT_Y;
+        let sx_s = 0i32.max(-dst_x);
+        let sy_s = 0i32.max(-dst_y);
+        let sx_e = sz.min(fbw as i32 - dst_x);
+        let sy_e = sz.min(fbh as i32 - dst_y);
+        if sx_s >= sx_e || sy_s >= sy_e {
+            return;
+        }
+        for row in sy_s..sy_e {
+            let dy = dst_y + row;
+            for col in sx_s..sx_e {
+                let dx = dst_x + col;
+                let s = pixels[(row as usize) * (sz as usize) + col as usize];
+                if s == 0 {
+                    continue;
+                }
+                let idx = (dy as usize) * (fbw as usize) + dx as usize;
+                let bg = fb[idx];
+                let sa = ((s >> 24) & 0xFF) as u32;
+                if sa == 0 {
+                    continue;
+                }
+                if sa == 255 {
+                    fb[idx] = s;
+                    continue;
+                }
+                let ia = 255 - sa;
+                let r = (((s >> 16) & 0xFF) * sa + ((bg >> 16) & 0xFF) * ia) / 255;
+                let g = (((s >> 8) & 0xFF) * sa + ((bg >> 8) & 0xFF) * ia) / 255;
+                let b = ((s & 0xFF) * sa + (bg & 0xFF) * ia) / 255;
+                fb[idx] = (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+
     fn draw_cursor_clipped(
         fb: &mut [u32],
         fbw: u32,
@@ -562,11 +587,7 @@ impl Compositor {
                 } else {
                     bg_fallback
                 };
-                fb[db + dc as usize] = if win.focused {
-                    color
-                } else {
-                    dim_color(color)
-                };
+                fb[db + dc as usize] = if win.focused { color } else { dim_color(color) };
             }
         }
     }

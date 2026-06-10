@@ -534,15 +534,13 @@ impl WindowManager {
 
         // Save floating positions before tiling.
         for &id in &visible {
-            self.floating_restore
-                .entry(id)
-                .or_insert_with(|| {
-                    self.windows
-                        .iter()
-                        .find(|w| w.id == id)
-                        .map(|w| (w.x, w.y, w.width, w.height))
-                        .unwrap_or((0, 0, 80, 40))
-                });
+            self.floating_restore.entry(id).or_insert_with(|| {
+                self.windows
+                    .iter()
+                    .find(|w| w.id == id)
+                    .map(|w| (w.x, w.y, w.width, w.height))
+                    .unwrap_or((0, 0, 80, 40))
+            });
         }
 
         let margin = 4u32;

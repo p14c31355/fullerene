@@ -176,11 +176,7 @@ impl IwlWifiDevice {
         let hw_rev_raw = unsafe { core::ptr::read_volatile(mmio.add(CSR_HW_REV as usize)) };
         let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
 
-        log::info!(
-            "iwlwifi: HW_REV={:#06x} (raw={:#010x})",
-            hw_rev,
-            hw_rev_raw,
-        );
+        log::info!("iwlwifi: HW_REV={:#06x} (raw={:#010x})", hw_rev, hw_rev_raw,);
 
         // ── stop and reset the device ───────────────────────────────
         unsafe {
@@ -198,10 +194,7 @@ impl IwlWifiDevice {
             }
 
             // Software reset
-            core::ptr::write_volatile(
-                mmio.add(CSR_RESET as usize),
-                CSR_RESET_BIT_SW,
-            );
+            core::ptr::write_volatile(mmio.add(CSR_RESET as usize), CSR_RESET_BIT_SW);
             for _ in 0..200_000 {
                 core::hint::spin_loop();
             }
@@ -215,10 +208,7 @@ impl IwlWifiDevice {
 
         // ── enable MAC clock ────────────────────────────────────────
         unsafe {
-            core::ptr::write_volatile(
-                mmio.add(CSR_GP_CNTRL as usize),
-                CSR_GP_CNTRL_MAC_ACCESS_EN,
-            );
+            core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_EN);
         }
 
         // Wait for clock to stabilise
@@ -264,7 +254,12 @@ impl IwlWifiDevice {
 
         log::info!(
             "iwlwifi: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
         );
 
         // ── mask all interrupts (for now) ───────────────────────────

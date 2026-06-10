@@ -3,23 +3,15 @@
 #[macro_export]
 macro_rules! save_sysv64_registers {
     () => {
-        "push rdi
-         push rsi
-         push rdx
-         push rcx
-         push r8
-         push r9
-         push r10
-         push r11"
+        "push rdi\npush rsi\npush rdx\npush rcx\npush r8\npush r9\npush r10\npush r11"
     };
 }
 
 #[macro_export]
 macro_rules! bitmap_chunk_bit {
     ($frame:expr) => {{
-        let chunk_index = $frame / 64;
-        let bit_index = $frame % 64;
-        (chunk_index, bit_index)
+        let i = $frame / 64;
+        (i, $frame % 64)
     }};
 }
 
@@ -36,26 +28,26 @@ macro_rules! bit_ops {
         }
     };
     (bitmap_set_free, $bitmap:expr, $frame:expr) => {
-        if let Some(ref mut bitmap) = $bitmap {
-            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] &= !(1 << bit_index);
+        if let Some(ref mut bm) = $bitmap {
+            let (c, b) = bitmap_chunk_bit!($frame);
+            if c < bm.len() {
+                bm[c] &= !(1 << b);
             }
         }
     };
     (bitmap_set_used, $bitmap:expr, $frame:expr) => {
-        if let Some(ref mut bitmap) = $bitmap {
-            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
-            if chunk_index < bitmap.len() {
-                bitmap[chunk_index] |= 1 << bit_index;
+        if let Some(ref mut bm) = $bitmap {
+            let (c, b) = bitmap_chunk_bit!($frame);
+            if c < bm.len() {
+                bm[c] |= 1 << b;
             }
         }
     };
     (bitmap_is_free, $bitmap:expr, $frame:expr) => {
-        if let Some(ref bitmap) = $bitmap {
-            let (chunk_index, bit_index) = bitmap_chunk_bit!($frame);
-            if chunk_index < bitmap.len() {
-                (bitmap[chunk_index] & (1 << bit_index)) == 0
+        if let Some(ref bm) = $bitmap {
+            let (c, b) = bitmap_chunk_bit!($frame);
+            if c < bm.len() {
+                (bm[c] & (1 << b)) == 0
             } else {
                 false
             }
@@ -130,7 +122,7 @@ macro_rules! ensure_with_msg {
 macro_rules! option_to_result {
     ($option:expr, $error:expr) => {
         match $option {
-            Some(value) => Ok(value),
+            Some(v) => Ok(v),
             None => {
                 $crate::log_error!($error, "Option was None");
                 Err(*$error)
@@ -143,7 +135,7 @@ macro_rules! option_to_result {
 macro_rules! try_or_log {
     ($expr:expr, $context:expr) => {
         match $expr {
-            Ok(value) => value,
+            Ok(v) => v,
             Err(e) => {
                 $crate::log_error!(e, $context);
                 return Err(e);
@@ -222,22 +214,10 @@ macro_rules! health_check {
 }
 
 #[macro_export]
-macro_rules! periodic_fs_log {
-    ($filename:expr, $interval_ticks:expr, $current_tick:expr, $($stats_expr:tt)*) => {{
-        static LAST_LOG_TICK: spin::Mutex<u64> = spin::Mutex::new(0);
-        petroleum::check_periodic!(LAST_LOG_TICK, $interval_ticks, $current_tick, {
-            let log_content = alloc::format!($($stats_expr)*);
-            log::info!("{}", log_content);
-        });
-    }};
-}
+macro_rules! periodic_fs_log { ($filename:expr, $interval_ticks:expr, $current_tick:expr, $($stats_expr:tt)*) => {{ static LAST: spin::Mutex<u64> = spin::Mutex::new(0); petroleum::check_periodic!(LAST, $interval_ticks, $current_tick, { log::info!("{}", alloc::format!($($stats_expr)*)); }); }}; }
 
 #[macro_export]
-macro_rules! maintenance_tasks {
-    ($current_tick:expr, $(($interval:expr, $fn_call:expr)),* $(,)?) => {
-        $( petroleum::periodic_task!($current_tick, $interval, { $fn_call }); )*
-    };
-}
+macro_rules! maintenance_tasks { ($current_tick:expr, $(($interval:expr, $fn_call:expr)),* $(,)?) => { $( petroleum::periodic_task!($current_tick, $interval, { $fn_call }); )* }; }
 
 #[macro_export]
 macro_rules! impl_error_from {
@@ -264,11 +244,7 @@ macro_rules! error_variant_map {
 }
 
 #[macro_export]
-macro_rules! error_chain {
-    ($src:ty, $dst:ty, $( $pat:pat => $result:expr ),* $(,)?) => {
-        impl From<$src> for $dst { fn from(error: $src) -> Self { match error { $( $pat => $result, )* } } }
-    };
-}
+macro_rules! error_chain { ($src:ty, $dst:ty, $( $pat:pat => $result:expr ),* $(,)?) => { impl From<$src> for $dst { fn from(error: $src) -> Self { match error { $( $pat => $result, )* } } } }; }
 
 #[macro_export]
 macro_rules! check_uefi_status {
@@ -338,59 +314,22 @@ macro_rules! init_system_component {
 }
 
 #[macro_export]
-macro_rules! define_periodic_task {
-    ($name:ident, $interval:expr, $task_fn:expr) => {
-        fn $name(tick: u64, iter: u64) { $task_fn(tick, iter); }
-        lazy_static::lazy_static! {
-            static ref $name: PeriodicTask = PeriodicTask { interval: $interval, last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)), task: $name };
-        }
-    };
-}
+macro_rules! define_periodic_task { ($name:ident, $interval:expr, $task_fn:expr) => { fn $name(tick: u64, iter: u64) { $task_fn(tick, iter); } lazy_static::lazy_static! { static ref $name: PeriodicTask = PeriodicTask { interval: $interval, last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)), task: $name }; } }; }
 
 #[macro_export]
-macro_rules! define_periodic_tasks {
-    ($task_ty:ident, $(($interval:expr, $task_fn:ident, $desc:expr)),* $(,)?) => {
-        lazy_static::lazy_static! {
-            static ref PERIODIC_TASKS: [$task_ty; count!($($task_fn),*)] = [
-                $($task_ty { interval: $interval, last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)), task: $task_fn, description: $desc },)*
-            ];
-        }
-    };
-}
+macro_rules! define_periodic_tasks { ($task_ty:ident, $(($interval:expr, $task_fn:ident, $desc:expr)),* $(,)?) => { lazy_static::lazy_static! { static ref PERIODIC_TASKS: [$task_ty; count!($($task_fn),*)] = [ $($task_ty { interval: $interval, last_tick: alloc::sync::Arc::new(spin::Mutex::new(0)), task: $task_fn, description: $desc },)* ]; } }; }
 
 #[macro_export]
 macro_rules! count { () => { 0 }; ($head:expr $(, $tail:expr)*) => { 1 + count!($($tail),*) }; }
 
 #[macro_export]
-macro_rules! define_vbox_settings {
-    ($vm_name:expr, $(($args:expr, $failure_msg:expr)),* $(,)?) => {{
-        $( let status = ::std::process::Command::new("VBoxManage").arg("modifyvm").arg($vm_name).args($args).status()?;
-           if !status.success() { return Err(::std::io::Error::new(::std::io::ErrorKind::Other, $failure_msg)); } )*
-        Ok(()) as ::std::io::Result<()>
-    }};
-}
+macro_rules! define_vbox_settings { ($vm_name:expr, $(($args:expr, $failure_msg:expr)),* $(,)?) => {{ $( let status = ::std::process::Command::new("VBoxManage").arg("modifyvm").arg($vm_name).args($args).status()?; if !status.success() { return Err(::std::io::Error::new(::std::io::ErrorKind::Other, $failure_msg)); } )* Ok(()) as ::std::io::Result<()> }}; }
 
 #[macro_export]
-macro_rules! build_package {
-    ($package:expr, $target:expr, [$($features:expr),* $(,)?]) => {{
-        let mut args = vec!["+nightly", "build", "-q", "-Zbuild-std=core,alloc"];
-        $( args.push($features); )*
-        args.extend_from_slice(&["--package", $package, "--target", $target, "--profile", "dev"]);
-        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?;
-        let parent_dir = std::path::Path::new(&manifest_dir).parent().unwrap();
-        let status = std::process::Command::new("cargo")
-            .current_dir(parent_dir).args(&args).status()?;
-        if !status.success() { return Err(std::io::Error::other(concat!($package, " build failed"))); }
-        Ok(())
-    }};
-}
+macro_rules! build_package { ($package:expr, $target:expr, [$($features:expr),* $(,)?]) => {{ let mut args = vec!["+nightly", "build", "-q", "-Zbuild-std=core,alloc"]; $( args.push($features); )* args.extend_from_slice(&["--package", $package, "--target", $target, "--profile", "dev"]); let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")?; let parent_dir = std::path::Path::new(&manifest_dir).parent().unwrap(); let status = std::process::Command::new("cargo").current_dir(parent_dir).args(&args).status()?; if !status.success() { return Err(std::io::Error::other(concat!($package, " build failed"))); } Ok(()) }}; }
 
 #[macro_export]
-macro_rules! create_iso_files {
-    ($(($source:expr, $dest:expr)),* $(,)?) => {
-        vec![ $( isobemak::IsoImageFile { source: $source.clone(), destination: $dest.to_string() }, )* ]
-    };
-}
+macro_rules! create_iso_files { ($(($source:expr, $dest:expr)),* $(,)?) => { vec![ $( isobemak::IsoImageFile { source: $source.clone(), destination: $dest.to_string() }, )* ] }; }
 
 #[macro_export]
 macro_rules! bootloader_expect {

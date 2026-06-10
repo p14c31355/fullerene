@@ -6,7 +6,7 @@ use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
 use crate::wm::WindowManager;
 
-    /// Actions that can be dispatched from desktop menus (context menu, system menu, etc.).
+/// Actions that can be dispatched from desktop menus (context menu, system menu, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopAction {
     NewTerminal,
@@ -175,18 +175,21 @@ impl Desktop {
             if let Some(idx) = menu.hit_test(cx, cy) {
                 // Menu item clicked — capture action for the runtime
                 if idx < menu.items.len() {
-                    self.menu_action_pending =
-                        DesktopAction::from_str(&menu.items[idx].action);
+                    self.menu_action_pending = DesktopAction::from_str(&menu.items[idx].action);
                 }
                 self.active_menu = None;
                 // Push dirty rect so compositor redraws the old menu area
-                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
+                self.wm
+                    .dirty_rects
+                    .push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
                 return;
             }
             // Click outside menu — dismiss
             self.active_menu = None;
             // Push dirty rect so compositor redraws the old menu area
-            self.wm.dirty_rects.push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
+            self.wm
+                .dirty_rects
+                .push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
             return;
         }
 

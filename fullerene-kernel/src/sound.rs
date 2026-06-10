@@ -183,8 +183,11 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
 
             log::info!(
                 "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x}",
-                bus, d, 0,
-                dev.vendor_id, dev.device_id,
+                bus,
+                d,
+                0,
+                dev.vendor_id,
+                dev.device_id,
                 bar0,
                 gcap,
                 states
@@ -194,7 +197,9 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             if states & 0x0001 != 0 {
                 log::info!(
                     "Sound: selecting HDA {:04x}:{:02x}.{} (codec connected)",
-                    bus, d, 0
+                    bus,
+                    d,
+                    0
                 );
                 return Some((bus, d, 0, bar0));
             }
@@ -206,7 +211,9 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
     if let Some(ref b) = fallback {
         log::info!(
             "Sound: falling back to HDA {:04x}:{:02x}.{} (no codec detected on any HDA)",
-            b.0, b.1, b.2
+            b.0,
+            b.1,
+            b.2
         );
     }
     fallback
@@ -281,7 +288,15 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
 }
 
 unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
-    let sub = unsafe { corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16) };
+    let sub = unsafe {
+        corb_send_verb(
+            mmio,
+            codec,
+            0,
+            VERB_GET_PARAM,
+            PARAM_SUBORDINATE_COUNT as u16,
+        )
+    };
     if sub == 0xFFFF_FFFF {
         return None;
     }
@@ -294,7 +309,15 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     log::info!("Sound: root children {}-{}", start, end);
     let mut afg: Option<u8> = None;
     for n in start..=end {
-        let cap = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16) };
+        let cap = unsafe {
+            corb_send_verb(
+                mmio,
+                codec,
+                n,
+                VERB_GET_PARAM,
+                PARAM_AUDIO_WIDGET_CAP as u16,
+            )
+        };
         if cap == 0xFFFF_FFFF {
             continue;
         }
@@ -305,7 +328,15 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
         }
     }
     let afg = afg?;
-    let sub = unsafe { corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT as u16) };
+    let sub = unsafe {
+        corb_send_verb(
+            mmio,
+            codec,
+            afg,
+            VERB_GET_PARAM,
+            PARAM_SUBORDINATE_COUNT as u16,
+        )
+    };
     if sub == 0xFFFF_FFFF {
         return None;
     }
@@ -319,7 +350,15 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     let mut dac: Option<u8> = None;
     let mut pin: Option<u8> = None;
     for n in start..=end {
-        let cap = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP as u16) };
+        let cap = unsafe {
+            corb_send_verb(
+                mmio,
+                codec,
+                n,
+                VERB_GET_PARAM,
+                PARAM_AUDIO_WIDGET_CAP as u16,
+            )
+        };
         if cap == 0xFFFF_FFFF {
             continue;
         }
@@ -342,7 +381,8 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
             } else {
                 log::info!(
                     "Sound: pin 0x{:x} cap=0x{:08x} — skipping (no OUT)",
-                    n, pincap
+                    n,
+                    pincap
                 );
             }
         }
@@ -354,25 +394,59 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
 }
 
 unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8) {
-    let ac = unsafe { corb_send_verb(mmio, codec, dac, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16) };
+    let ac = unsafe {
+        corb_send_verb(
+            mmio,
+            codec,
+            dac,
+            VERB_GET_PARAM,
+            PARAM_OUTPUT_AMP_CAP as u16,
+        )
+    };
     let steps = ac as u8 & 0x7F;
     let gain = if steps > 0 { steps / 2 } else { 0 };
-    unsafe { corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, (0x70 | gain) as u16) };
+    unsafe {
+        corb_send_verb(
+            mmio,
+            codec,
+            dac,
+            VERB_SET_AMP_GAIN_MUTE,
+            (0x70 | gain) as u16,
+        )
+    };
     // 16-bit signed mono at 48000 Hz:
     // bit[7] = 0 → 48 kHz base, bits[6:4] = 1 → 16-bit container,
     // bit[3:0] = 0 → 1 channel
     unsafe { corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x10u16) };
     unsafe { corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16) };
-    let pa = unsafe { corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16) };
+    let pa = unsafe {
+        corb_send_verb(
+            mmio,
+            codec,
+            pin,
+            VERB_GET_PARAM,
+            PARAM_OUTPUT_AMP_CAP as u16,
+        )
+    };
     let psteps = pa as u8 & 0x7F;
     let pgain = if psteps > 0 { psteps / 2 } else { 0 };
-    unsafe { corb_send_verb(mmio, codec, pin, VERB_SET_AMP_GAIN_MUTE, (0x70 | pgain) as u16) };
+    unsafe {
+        corb_send_verb(
+            mmio,
+            codec,
+            pin,
+            VERB_SET_AMP_GAIN_MUTE,
+            (0x70 | pgain) as u16,
+        )
+    };
     // Query pin capabilities to check EAPD support (bit 16)
     let pin_cap = unsafe { corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16) };
     let eapd_capable = pin_cap != 0xFFFF_FFFF && (pin_cap >> 16) & 1 != 0;
     log::info!(
         "Sound: pin 0x{:x} cap=0x{:08x} eapd_capable={}",
-        pin, pin_cap, eapd_capable
+        pin,
+        pin_cap,
+        eapd_capable
     );
     // Power up external amplifier BEFORE enabling pin output.
     // On many notebook codecs (ALC286 etc.) EAPD controls the
@@ -389,7 +463,8 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let pin_ctl_res = unsafe { corb_send_verb(mmio, codec, pin, VERB_SET_PIN_CTL, 0x40u16) };
     log::info!(
         "Sound: SET_PIN_CTL pin=0x{:x} val=0x40 result=0x{:08x}",
-        pin, pin_ctl_res
+        pin,
+        pin_ctl_res
     );
     log::info!("Sound: codec done DAC=0x{:x} Pin=0x{:x}", dac, pin);
 }
@@ -656,7 +731,9 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     // BCIS (hardware IOC) provides a strong “half-done” signal.
     let sts = unsafe { r8(mmio, sd + SD_STS) };
     if sts & 0x04 != 0 {
-        unsafe { w8(mmio, sd + SD_STS, 0x04); }
+        unsafe {
+            w8(mmio, sd + SD_STS, 0x04);
+        }
     }
 
     // ── Time‑based fallback guard ───────────────────────────

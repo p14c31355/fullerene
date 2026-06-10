@@ -226,8 +226,7 @@ impl VirtioNetDevice {
 
         let common_virt = (common_bar_addr + common_cap.offset as u64) as *mut u32;
         let notify_bar_base = notify_bar_addr as *mut u8;
-        let device_cfg_virt =
-            (device_cfg_bar_addr + device_cfg_cap.offset as u64) as *mut u8;
+        let device_cfg_virt = (device_cfg_bar_addr + device_cfg_cap.offset as u64) as *mut u8;
 
         let notify_cap_offset = notify_cap.offset;
         let notify_off_multiplier = notify_cap.notify_off_multiplier;
@@ -236,9 +235,8 @@ impl VirtioNetDevice {
         let common_mut = |off: u32, val: u32| unsafe {
             core::ptr::write_volatile(common_virt.add(off as usize), val);
         };
-        let common_get = |off: u32| unsafe {
-            core::ptr::read_volatile(common_virt.add(off as usize))
-        };
+        let common_get =
+            |off: u32| unsafe { core::ptr::read_volatile(common_virt.add(off as usize)) };
 
         // Reset
         common_mut(0x14 / 4, 0);
@@ -270,7 +268,10 @@ impl VirtioNetDevice {
 
         let status = common_get(0x14 / 4);
         if (status & VIRTIO_STATUS_FEATURES_OK) == 0 {
-            log::warn!("virtio-net: FEATURES_OK not set by device (status={:#x})", status);
+            log::warn!(
+                "virtio-net: FEATURES_OK not set by device (status={:#x})",
+                status
+            );
             return Err(VirtioNetError::DeviceNotReady);
         }
 
@@ -288,13 +289,24 @@ impl VirtioNetDevice {
 
         log::info!(
             "virtio-net: MAC {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+            mac[0],
+            mac[1],
+            mac[2],
+            mac[3],
+            mac[4],
+            mac[5],
         );
 
         // ── allocate virtqueue memory ────────────────────────────────
 
-        let tx_desc_box =
-            Box::new([VringDesc { addr: 0, len: 0, flags: 0, next: 0 }; QUEUE_SIZE as usize]);
+        let tx_desc_box = Box::new(
+            [VringDesc {
+                addr: 0,
+                len: 0,
+                flags: 0,
+                next: 0,
+            }; QUEUE_SIZE as usize],
+        );
         let tx_avail_box = Box::new(VringAvail {
             flags: 0,
             idx: 0,
@@ -308,8 +320,14 @@ impl VirtioNetDevice {
             avail_event: 0,
         });
 
-        let rx_desc_box =
-            Box::new([VringDesc { addr: 0, len: 0, flags: 0, next: 0 }; QUEUE_SIZE as usize]);
+        let rx_desc_box = Box::new(
+            [VringDesc {
+                addr: 0,
+                len: 0,
+                flags: 0,
+                next: 0,
+            }; QUEUE_SIZE as usize],
+        );
         let rx_avail_box = Box::new(VringAvail {
             flags: 0,
             idx: 0,
@@ -489,7 +507,9 @@ impl VirtioNetDevice {
         let initial_used = self.tx_last_used;
         for _ in 0..10_000_000 {
             let used_idx = unsafe {
-                u16::from_le(core::ptr::read_volatile(core::ptr::addr_of!((*self.tx.used).idx)))
+                u16::from_le(core::ptr::read_volatile(core::ptr::addr_of!(
+                    (*self.tx.used).idx
+                )))
             };
             if used_idx != self.tx_last_used {
                 self.tx_last_used = used_idx;
@@ -521,9 +541,8 @@ impl NetDevice for VirtioNetDevice {
 
     fn poll_frame(&mut self, buf: &mut [u8]) -> Result<Option<usize>, NetError> {
         let used = unsafe { &*self.rx.used };
-        let used_idx = u16::from_le(unsafe {
-            core::ptr::read_volatile(core::ptr::addr_of!(used.idx))
-        });
+        let used_idx =
+            u16::from_le(unsafe { core::ptr::read_volatile(core::ptr::addr_of!(used.idx)) });
 
         // No new frames
         if used_idx == self.rx_last_used {
@@ -532,9 +551,7 @@ impl NetDevice for VirtioNetDevice {
 
         // Consume one entry from the used ring
         let ring_slot = (self.rx_last_used % self.rx.actual_size) as usize;
-        let elem = unsafe {
-            core::ptr::read_volatile(core::ptr::addr_of!(used.ring[ring_slot]))
-        };
+        let elem = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(used.ring[ring_slot])) };
         let total = u32::from_le(elem.len) as usize;
         let desc_id = u32::from_le(elem.id) as usize;
 
@@ -620,9 +637,7 @@ fn setup_virtqueue(
     let common_mut = |off: u32, val: u32| unsafe {
         core::ptr::write_volatile(common_virt.add(off as usize), val);
     };
-    let common_get = |off: u32| unsafe {
-        core::ptr::read_volatile(common_virt.add(off as usize))
-    };
+    let common_get = |off: u32| unsafe { core::ptr::read_volatile(common_virt.add(off as usize)) };
 
     // Select queue
     common_mut(0x16 / 4, idx as u32);
@@ -633,7 +648,11 @@ fn setup_virtqueue(
     }
 
     let max_size = common_get(0x18 / 4) as u16;
-    let actual = if max_size == 0 { QUEUE_SIZE } else { max_size.min(QUEUE_SIZE) };
+    let actual = if max_size == 0 {
+        QUEUE_SIZE
+    } else {
+        max_size.min(QUEUE_SIZE)
+    };
     res.actual_size = actual;
 
     // Record notify offset

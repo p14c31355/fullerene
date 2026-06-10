@@ -77,18 +77,17 @@ impl RleFile {
             return Err(RleError::Truncated);
         }
 
-    let mut frame_offsets = Vec::with_capacity(n);
-    let mut off: u64 = data_start as u64;
-    for i in 0..n {
-        let cs = u16::from_le_bytes([
-            data[RLE_HDR_SIZE + i * 2],
-            data[RLE_HDR_SIZE + i * 2 + 1],
-        ]) as u64;
-        frame_offsets.push(off);
-        off = off.saturating_add(cs);
-    }
+        let mut frame_offsets = Vec::with_capacity(n);
+        let mut off: u64 = data_start as u64;
+        for i in 0..n {
+            let cs =
+                u16::from_le_bytes([data[RLE_HDR_SIZE + i * 2], data[RLE_HDR_SIZE + i * 2 + 1]])
+                    as u64;
+            frame_offsets.push(off);
+            off = off.saturating_add(cs);
+        }
 
-    Ok(Self {
+        Ok(Self {
             frame_count: fc,
             frame_width: fw,
             frame_height: fh,
@@ -195,7 +194,11 @@ pub fn draw_decoded_frame(
             if sx >= fw_u {
                 continue;
             }
-            let g = if src_row[sx] >= threshold { 255u32 } else { 0u32 };
+            let g = if src_row[sx] >= threshold {
+                255u32
+            } else {
+                0u32
+            };
             let pixel = 0xFF00_0000u32 | (g << 16) | (g << 8) | g;
             pixels[row_off + dx] = pixel;
         }
@@ -206,12 +209,7 @@ pub fn draw_decoded_frame(
 /// source aspect ratio within the destination rectangle.
 ///
 /// Returns `(draw_w, draw_h, off_x, off_y)`.
-pub fn compute_letterbox(
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-) -> (u32, u32, u32, u32) {
+pub fn compute_letterbox(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32, u32, u32) {
     let src_aspect = src_w as f64 / src_h as f64;
     let dst_aspect = dst_w as f64 / dst_h as f64;
 

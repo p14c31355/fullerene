@@ -109,7 +109,10 @@ pub fn play_badapple() {
     // ── Create a window on the desktop ─────────────────────
     let win_id = match solvent::create_window("Bad Apple", 100, 80, WINDOW_WIDTH, WINDOW_HEIGHT) {
         Some(id) => {
-            petroleum::serial::serial_log(format_args!("Bad Apple: window created (id={:?})\n", id));
+            petroleum::serial::serial_log(format_args!(
+                "Bad Apple: window created (id={:?})\n",
+                id
+            ));
             id
         }
         None => {
@@ -136,7 +139,11 @@ pub fn play_badapple() {
             }
         };
         let i = r.get_info();
-        (i.address as *mut u32, (i.stride as usize) / 4, i.height as usize)
+        (
+            i.address as *mut u32,
+            (i.stride as usize) / 4,
+            i.height as usize,
+        )
     };
     if fb_ptr.is_null() || fb_stride == 0 || fb_height == 0 {
         petroleum::serial::serial_log(format_args!("Bad Apple: invalid fb\n"));
@@ -208,7 +215,10 @@ pub fn play_badapple() {
     let audio_feed_tsc = tsc_per_ms;
     petroleum::serial::serial_log(format_args!(
         "Bad Apple: {} frames, {:.1}s, {}ms/f, {}tsc/f\n",
-        n, dur_ms as f64 / 1000.0, frame_interval_ms, frame_interval_tsc,
+        n,
+        dur_ms as f64 / 1000.0,
+        frame_interval_ms,
+        frame_interval_tsc,
     ));
 
     // ── Main playback loop (LPIB‑synced with TSC watchdog) ─
@@ -273,7 +283,9 @@ pub fn play_badapple() {
                 }
                 // TSC watchdog: fall back if LPIB isn't advancing.
                 if unsafe { x86_64::_rdtsc() } > deadline {
-                    petroleum::serial::serial_log(format_args!("Bad Apple: LPIB stalled, using TSC\n"));
+                    petroleum::serial::serial_log(format_args!(
+                        "Bad Apple: LPIB stalled, using TSC\n"
+                    ));
                     lpib_valid = false;
                     break;
                 }
@@ -288,8 +300,7 @@ pub fn play_badapple() {
                     break;
                 }
             }
-            let frame_deadline =
-                unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
+            let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
             while unsafe { x86_64::_rdtsc() } < frame_deadline {
                 let now = unsafe { x86_64::_rdtsc() };
                 if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
@@ -306,7 +317,8 @@ pub fn play_badapple() {
             Err(rle_player::RleError::FrameOutOfRange) => break,
             Err(e) => {
                 petroleum::serial::serial_log(format_args!(
-                    "Bad Apple: decode error frame {}: {:?}\n", idx, e,
+                    "Bad Apple: decode error frame {}: {:?}\n",
+                    idx, e,
                 ));
                 break;
             }

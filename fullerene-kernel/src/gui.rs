@@ -63,7 +63,9 @@ pub fn init() {
                     crate::process::ProcessState::Ready => solvent::ProcessStateKind::Ready,
                     crate::process::ProcessState::Running => solvent::ProcessStateKind::Running,
                     crate::process::ProcessState::Blocked => solvent::ProcessStateKind::Blocked,
-                    crate::process::ProcessState::Terminated => solvent::ProcessStateKind::Terminated,
+                    crate::process::ProcessState::Terminated => {
+                        solvent::ProcessStateKind::Terminated
+                    }
                 };
                 result.push(solvent::ProcessEntry {
                     pid: pid.0,
@@ -78,7 +80,10 @@ pub fn init() {
     // Register device list callback — bridges device manager to solvent.
     solvent::set_device_list_fn(|| {
         let mut result = alloc::vec::Vec::new();
-        if let Some(mgr) = crate::hardware::device_manager::get_device_manager().lock().as_ref() {
+        if let Some(mgr) = crate::hardware::device_manager::get_device_manager()
+            .lock()
+            .as_ref()
+        {
             for di in mgr.list_devices() {
                 result.push(solvent::DeviceEntry {
                     name: alloc::string::String::from(di.name),
