@@ -95,9 +95,13 @@ impl<'a> UdpLogger<'a> {
             log::Level::Trace => 'T',
         };
 
-        // Truncate the message
+        // Truncate the message safely on UTF-8 character boundaries
         let max_payload = MAX_LOG_MESSAGE - 6; // "[X] \n" overhead
-        let content = if msg.len() > max_payload { &msg[..max_payload] } else { msg };
+        let mut limit = max_payload;
+        while limit > 0 && !msg.is_char_boundary(limit) {
+            limit -= 1;
+        }
+        let content = &msg[..limit];
 
         // write! into a String never fails (infallible allocator)
         let _ = write!(msg_buf, "[{}] {}\n", level_char, content);
