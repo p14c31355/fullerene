@@ -28,37 +28,58 @@ const WINDOW_HEIGHT: u32 = 480;
 const TITLE_BAR_H: i32 = 20;
 
 /// Calibrate TSC ticks-per-millisecond using the HDA DMA progress
-/// (LPIB register).  The HDA controller continuously advances LPIB
-/// as it reads from the DMA ring buffer at 96000 bytes/sec.
-///
-/// We measure how many TSC ticks elapse while LPIB advances by
-/// ~half the DMA buffer, giving ~170 ms of measurement at 48 kHz.
+/// (LPIB register).  Falls back to 3 GHz when HDA is absent or
+/// the DMA engine is not advancing (common on real hardware where
+/// the codec or stream setup may not complete).
 fn calibrate_tsc_per_ms() -> u64 {
     if !crate::sound::hda_available() {
-        return 3_000_000; // fallback: assume 3 GHz
+        return 3_000_000;
     }
-    let audio_sz: u32 = 32704; // DMA_BUF_SIZE - BDL overhead
-    let half = audio_sz / 2; // ~16352
-    let mut prev = crate::sound::hda_playback_progress().unwrap_or(0);
+    // Quick sanity: if LPIB doesn't move at all within ~100 ms
+    // the DMA engine is stalled — bail out immediately.
     let t0 = unsafe { x86_64::_rdtsc() };
-    let deadline = t0.wrapping_add(10_000_000_000); // ~4 s timeout
+    let mut lpib = crate::sound::hda_playback_progress().unwrap_or(0);
+    let settle = t0.wrapping_add(300_000_000); // ~100 ms at 3 GHz
     loop {
         if let Some(cur) = crate::sound::hda_playback_progress() {
-            let delta = cur.wrapping_sub(prev);
-            if delta >= half as u64 {
+            if cur != lpib {
+                break; // LPIB is moving
+            }
+            lpib = cur;
+        }
+        if unsafe { x86_64::_rdtsc() } > settle {
+            return 3_000_000; // stalled
+        }
+        core::hint::spin_loop();
+    }
+    // LPIB is advancing — measure half‑buffer worth of progress.
+    let half = 16352u64;
+    let t0 = unsafe { x86_64::_rdtsc() };
+    let deadline = t0.wrapping_add(3_000_000_000); // ~1 s at 3 GHz
+    let mut prev = lpib;
+    let mut total = 0u64;
+    loop {
+        if let Some(cur) = crate::sound::hda_playback_progress() {
+            // LPIB wraps at audio_sz (32704); detect wrap via
+            // subtraction underflow and accumulate correctly.
+            let delta = if cur >= prev {
+                cur - prev
+            } else {
+                (32704u64 - prev) + cur
+            };
+            total += delta;
+            prev = cur;
+            if total >= half {
                 break;
             }
-            prev = cur;
         }
         if unsafe { x86_64::_rdtsc() } > deadline {
             return 3_000_000;
         }
-        crate::sound::hda_tick();
+        core::hint::spin_loop();
     }
-    let t1 = unsafe { x86_64::_rdtsc() };
-    let ticks = t1.wrapping_sub(t0);
-    // half bytes at 96000 bytes/sec → half/96 ms
-    let ms = (half as u64).saturating_mul(1000) / 96_000;
+    let ticks = unsafe { x86_64::_rdtsc() }.wrapping_sub(t0);
+    let ms = half.saturating_mul(1000) / 96_000; // half bytes @ 96000 B/s → ms
     if ms == 0 {
         return 3_000_000;
     }
@@ -190,27 +211,41 @@ pub fn play_badapple() {
         n, dur_ms as f64 / 1000.0, frame_interval_ms, frame_interval_tsc,
     ));
 
-    // ── Main playback loop (LPIB‑synced) ──────────────────
+    // ── Main playback loop (LPIB‑synced with TSC watchdog) ─
     //
-    // Instead of TSC‑based pacing, we clock video frames against
-    // the HDA DMA playback position (LPIB).  LPIB advances at the
-    // hardware sample rate (48000 Hz × 2 bytes = 96000 bytes/sec)
-    // and is therefore an exact clock — no TSC calibration needed.
+    // Primary clock: HDA LPIB (96000 bytes/sec hardware rate).
+    // Fallback: TSC‑based pacing when HDA is absent or DMA stalls.
     //
     // `consumed` tracks total bytes the HDA controller has read
-    // from the DMA ring buffer since playback started.  Each frame
-    // corresponds to `pcm_per_frame` bytes.
+    // from the DMA ring buffer since playback started.
     let pcm_per_frame = (pcm_total as u64) / (n as u64).max(1);
     let mut consumed: u64 = 0;
-    let mut last_lpib: u64 = crate::sound::hda_playback_progress().unwrap_or(0);
+    let mut last_lpib: u64 = 0;
+    let mut lpib_valid = false;
+    if use_hda {
+        if let Some(cur) = crate::sound::hda_playback_progress() {
+            last_lpib = cur;
+            lpib_valid = true;
+        }
+    }
     let audio_sz: u64 = 32704;
     let mut idx = 0usize;
     let mut last_audio_feed = unsafe { x86_64::_rdtsc() };
     'outer: while idx < n {
-        if use_hda {
-            // Wait until the HDA hardware has played enough audio
-            // bytes to warrant displaying the next frame.
+        // Abort on ASCII key.
+        if nitrogen::ps2::keyboard::input_available() {
+            if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
+                petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
+                log::info!("Bad Apple aborted");
+                break;
+            }
+        }
+
+        if use_hda && lpib_valid {
+            // ── LPIB‑synced wait ─────────────────────────
             let target = (idx as u64 + 1).saturating_mul(pcm_per_frame);
+            let deadline =
+                unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc.saturating_mul(3));
             loop {
                 if nitrogen::ps2::keyboard::input_available() {
                     if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
@@ -223,12 +258,11 @@ pub fn play_badapple() {
                 if let Some(cur) = crate::sound::hda_playback_progress() {
                     let delta = cur.wrapping_sub(last_lpib);
                     last_lpib = cur;
-                    // LPIB wraps at audio_sz; handle one wrap.
                     if delta < audio_sz {
                         consumed = consumed.saturating_add(delta);
                     }
                 }
-                // Feed audio when possible.
+                // Feed audio.
                 let now = unsafe { x86_64::_rdtsc() };
                 if now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
                     last_audio_feed = now;
@@ -237,20 +271,31 @@ pub fn play_badapple() {
                 if consumed >= target {
                     break;
                 }
+                // TSC watchdog: fall back if LPIB isn't advancing.
+                if unsafe { x86_64::_rdtsc() } > deadline {
+                    petroleum::serial::serial_log(format_args!("Bad Apple: LPIB stalled, using TSC\n"));
+                    lpib_valid = false;
+                    break;
+                }
                 crate::sound::hda_tick();
             }
-        } else {
-            // No HDA — TSC fallback.
+        }
+
+        if !use_hda || !lpib_valid {
+            // ── TSC‑based pacing ──────────────────────────
             if nitrogen::ps2::keyboard::input_available() {
                 if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
-                    petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
-                    log::info!("Bad Apple aborted");
                     break;
                 }
             }
             let frame_deadline =
                 unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
             while unsafe { x86_64::_rdtsc() } < frame_deadline {
+                let now = unsafe { x86_64::_rdtsc() };
+                if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
+                    last_audio_feed = now;
+                    crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
+                }
                 core::hint::spin_loop();
             }
         }
