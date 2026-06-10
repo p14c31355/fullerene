@@ -769,6 +769,27 @@ pub fn hda_feed_pcm(pcm: &[u8], pcm_off: &mut usize, pcm_total: usize, half: usi
     fed
 }
 
+/// Return the total number of PCM bytes the HDA hardware has
+/// consumed (played back) since the stream was started.
+///
+/// Reads the raw SD_LPIB register which the controller updates
+/// in real time.  The returned value wraps at `audio_sz` bytes
+/// (the DMA ring‑buffer size), but for frame‑sync purposes the
+/// caller can track wraps using `pcm_fed` comparison.
+pub fn hda_playback_progress() -> Option<u64> {
+    if !HDA_READY.load(Ordering::Acquire) {
+        return None;
+    }
+    let virt = *HDA_VIRT.lock();
+    if virt == 0 {
+        return None;
+    }
+    let sd = *HDA_SD.lock();
+    let mmio = virt as *mut u8;
+    let raw = unsafe { r32(mmio, sd + SD_LPIB) };
+    Some(raw as u64)
+}
+
 /// Feed silence into the HDA half‑buffer.
 pub fn hda_feed_silence(half: usize) -> usize {
     // Allocate a zeroed buffer on the stack sized to match the half buffer.

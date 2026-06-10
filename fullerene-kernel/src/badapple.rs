@@ -5,6 +5,10 @@
 //! framebuffer at the window's client‑area coordinates, bypassing the
 //! compositor for maximum frame rate.
 //!
+//! **TSC calibration**: measures actual CPU clock against the HDA DMA
+//! progress (LPIB register) so frame pacing is accurate regardless of
+//! host CPU speed.
+//!
 //! On exit the desktop is fully repainted via `force_desktop_redraw()` +
 //! `gui::render()`.
 
@@ -23,9 +27,42 @@ const WINDOW_HEIGHT: u32 = 480;
 /// Title bar height — must match `lattice::compositor::TITLE_BAR_HEIGHT`.
 const TITLE_BAR_H: i32 = 20;
 
-/// Return a fixed TSC ticks-per-millisecond estimate (2.5 GHz).
+/// Calibrate TSC ticks-per-millisecond using the HDA DMA progress
+/// (LPIB register).  The HDA controller continuously advances LPIB
+/// as it reads from the DMA ring buffer at 96000 bytes/sec.
+///
+/// We measure how many TSC ticks elapse while LPIB advances by
+/// ~half the DMA buffer, giving ~170 ms of measurement at 48 kHz.
 fn calibrate_tsc_per_ms() -> u64 {
-    2_500_000
+    if !crate::sound::hda_available() {
+        return 3_000_000; // fallback: assume 3 GHz
+    }
+    let audio_sz: u32 = 32704; // DMA_BUF_SIZE - BDL overhead
+    let half = audio_sz / 2; // ~16352
+    let mut prev = crate::sound::hda_playback_progress().unwrap_or(0);
+    let t0 = unsafe { x86_64::_rdtsc() };
+    let deadline = t0.wrapping_add(10_000_000_000); // ~4 s timeout
+    loop {
+        if let Some(cur) = crate::sound::hda_playback_progress() {
+            let delta = cur.wrapping_sub(prev);
+            if delta >= half as u64 {
+                break;
+            }
+            prev = cur;
+        }
+        if unsafe { x86_64::_rdtsc() } > deadline {
+            return 3_000_000;
+        }
+        crate::sound::hda_tick();
+    }
+    let t1 = unsafe { x86_64::_rdtsc() };
+    let ticks = t1.wrapping_sub(t0);
+    // half bytes at 96000 bytes/sec → half/96 ms
+    let ms = (half as u64).saturating_mul(1000) / 96_000;
+    if ms == 0 {
+        return 3_000_000;
+    }
+    ticks / ms
 }
 
 pub fn play_badapple() {
@@ -61,7 +98,6 @@ pub fn play_badapple() {
     };
 
     // Draw the window frame (title bar, border) once via the compositor.
-    // After this, video frames are drawn directly into the framebuffer.
     solvent::force_desktop_redraw();
     crate::gui::render();
 
@@ -90,9 +126,8 @@ pub fn play_badapple() {
     }
 
     // Compute the client-area rectangle in framebuffer coordinates.
-    // Window position (x=100, y=80), plus title bar height.
     let fb_x = 100i32;
-    let fb_y = 80 + TITLE_BAR_H; // skip title bar
+    let fb_y = 80 + TITLE_BAR_H;
 
     // ── Decode buffer ──────────────────────────────────────
     let decode_total = rle.total_pixels();
@@ -107,24 +142,18 @@ pub fn play_badapple() {
     ));
 
     // ── Timing ─────────────────────────────────────────────
-    let tsc_per_ms = calibrate_tsc_per_ms();
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
     let frame_interval_ms: u64 = dur_ms / (n as u64).max(1);
-    let frame_interval_tsc = frame_interval_ms.saturating_mul(tsc_per_ms);
-    let audio_feed_tsc = tsc_per_ms;
     const HALF: usize = 16368;
-    petroleum::serial::serial_log(format_args!(
-        "Bad Apple: {} frames, {:.1}s, {}ms/f\n",
-        n, dur_ms as f64 / 1000.0, frame_interval_ms,
-    ));
 
     let use_hda = crate::sound::hda_available();
 
-    // ── Drain input (ignore any key buffered before playback) ──
+    // ── Drain input ────────────────────────────────────────
     nitrogen::ps2::keyboard::flush_input();
 
-    // ── Pre‑fill DMA ring buffer ───────────────────────────
+    // ── Pre‑fill DMA ring buffer both halves ───────────────
+    // (also triggers hda_init via hda_write_direct)
     let mut pcm_off: usize = 0;
     if use_hda {
         let e0 = HALF.min(pcm_total);
@@ -140,28 +169,93 @@ pub fn play_badapple() {
         crate::sound::hda_reset_prefill_tracking();
     }
 
-    // ── Main playback loop ─────────────────────────────────
+    // ── TSC calibration (HDA LPIB‑based) ──────────────────
+    // Must run AFTER hda_init (triggered by hda_write_direct above)
+    // so that the DMA engine is running and LPIB is advancing.
+    let tsc_per_ms = if use_hda {
+        calibrate_tsc_per_ms()
+    } else {
+        3_000_000 // fallback: 3 GHz
+    };
+    petroleum::serial::serial_log(format_args!(
+        "Bad Apple: TSC/ms={} (~{:.1} GHz)\n",
+        tsc_per_ms,
+        tsc_per_ms as f64 / 1_000_000.0,
+    ));
+
+    let frame_interval_tsc = frame_interval_ms.saturating_mul(tsc_per_ms);
+    let audio_feed_tsc = tsc_per_ms;
+    petroleum::serial::serial_log(format_args!(
+        "Bad Apple: {} frames, {:.1}s, {}ms/f, {}tsc/f\n",
+        n, dur_ms as f64 / 1000.0, frame_interval_ms, frame_interval_tsc,
+    ));
+
+    // ── Main playback loop (LPIB‑synced) ──────────────────
+    //
+    // Instead of TSC‑based pacing, we clock video frames against
+    // the HDA DMA playback position (LPIB).  LPIB advances at the
+    // hardware sample rate (48000 Hz × 2 bytes = 96000 bytes/sec)
+    // and is therefore an exact clock — no TSC calibration needed.
+    //
+    // `consumed` tracks total bytes the HDA controller has read
+    // from the DMA ring buffer since playback started.  Each frame
+    // corresponds to `pcm_per_frame` bytes.
+    let pcm_per_frame = (pcm_total as u64) / (n as u64).max(1);
+    let mut consumed: u64 = 0;
+    let mut last_lpib: u64 = crate::sound::hda_playback_progress().unwrap_or(0);
+    let audio_sz: u64 = 32704;
     let mut idx = 0usize;
     let mut last_audio_feed = unsafe { x86_64::_rdtsc() };
-    while idx < n {
-        // Abort on any **ASCII** keyboard input — modifiers and
-        // non‑printing keys are ignored so Super/Meta do not
-        // accidentally stop playback.
-        //
-        // `read_char` returns `None` for non‑ASCII keys (arrows,
-        // modifiers, function keys), so we only abort when an
-        // actual character is available.
-        if nitrogen::ps2::keyboard::input_available() {
-            if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
-                petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
-                log::info!("Bad Apple aborted");
-                break;
+    'outer: while idx < n {
+        if use_hda {
+            // Wait until the HDA hardware has played enough audio
+            // bytes to warrant displaying the next frame.
+            let target = (idx as u64 + 1).saturating_mul(pcm_per_frame);
+            loop {
+                if nitrogen::ps2::keyboard::input_available() {
+                    if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
+                        petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
+                        log::info!("Bad Apple aborted");
+                        break 'outer;
+                    }
+                }
+                // Update consumed-bytes counter from LPIB.
+                if let Some(cur) = crate::sound::hda_playback_progress() {
+                    let delta = cur.wrapping_sub(last_lpib);
+                    last_lpib = cur;
+                    // LPIB wraps at audio_sz; handle one wrap.
+                    if delta < audio_sz {
+                        consumed = consumed.saturating_add(delta);
+                    }
+                }
+                // Feed audio when possible.
+                let now = unsafe { x86_64::_rdtsc() };
+                if now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
+                    last_audio_feed = now;
+                    crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
+                }
+                if consumed >= target {
+                    break;
+                }
+                crate::sound::hda_tick();
             }
-            // Modifier or non‑printing key — ignore, but consume.
+        } else {
+            // No HDA — TSC fallback.
+            if nitrogen::ps2::keyboard::input_available() {
+                if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
+                    petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
+                    log::info!("Bad Apple aborted");
+                    break;
+                }
+            }
+            let frame_deadline =
+                unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
+            while unsafe { x86_64::_rdtsc() } < frame_deadline {
+                core::hint::spin_loop();
+            }
         }
 
-        // ── Decode frame ───────────────────────────────
-        // Skips frames whose RLE data runs past EOF (original behaviour).
+        // ── Decode & draw frame ─────────────────────────
         let drawn = match rle.decode_frame(idx, &mut decode_buf) {
             Ok(d) => d,
             Err(rle_player::RleError::FrameOutOfRange) => break,
@@ -173,9 +267,7 @@ pub fn play_badapple() {
             }
         };
 
-        // Only draw the frame when data was actually decoded.
         if drawn {
-            // ── Draw directly into the framebuffer ─────────
             unsafe {
                 rle_player::draw_decoded_frame(
                     core::slice::from_raw_parts_mut(fb_ptr, fb_stride * fb_height),
@@ -194,17 +286,6 @@ pub fn play_badapple() {
         }
 
         idx += 1;
-
-        // ── Frame pacing + audio feed ──────────────────
-        let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
-        while unsafe { x86_64::_rdtsc() } < frame_deadline {
-            let now = unsafe { x86_64::_rdtsc() };
-            if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
-                last_audio_feed = now;
-                crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
-            }
-            crate::sound::hda_tick();
-        }
     }
 
     // ── Drain remaining PCM ────────────────────────────────
