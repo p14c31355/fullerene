@@ -324,11 +324,27 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
             continue;
         }
         let t = (cap >> 20) & 0xF;
-        if t == WTYPE_AUDIO_OUTPUT && dac.is_none() {
+        if t == WTYPE_AUDIO_OUTPUT {
+            // Prefer later DACs — on many codecs (e.g. ALC286) the
+            // first DAC (0x02) is for headphones while a later one
+            // (0x03) drives the internal speaker.
             dac = Some(n);
         }
-        if t == WTYPE_PIN_COMPLEX && pin.is_none() {
-            pin = Some(n);
+        if t == WTYPE_PIN_COMPLEX {
+            // Query pin capabilities to ensure this pin supports
+            // output (bit 4 = OUT).  Skip input-only pins (e.g.
+            // internal mic 0x12 on ALC286) so we don't mis-route
+            // audio to a microphone.
+            let pincap =
+                corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_PIN_CAP as u16);
+            if pincap != 0xFFFF_FFFF && (pincap & (1 << 4)) != 0 {
+                pin = Some(n);
+            } else {
+                log::info!(
+                    "Sound: pin 0x{:x} cap=0x{:08x} — skipping (no OUT)",
+                    n, pincap
+                );
+            }
         }
     }
     match (dac, pin) {
