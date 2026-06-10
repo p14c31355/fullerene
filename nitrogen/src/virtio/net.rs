@@ -510,7 +510,7 @@ impl NetDevice for VirtioNetDevice {
         self.tx_buf[..VirtioNetHdr::SIZE].fill(0);
         self.tx_buf[VirtioNetHdr::SIZE..total].copy_from_slice(frame);
 
-        self.submit_tx(self.tx_buf_phys, total as u32);
+        self.submit_tx(self.tx_buf_phys, total as u32)?;
 
         Ok(())
     }
