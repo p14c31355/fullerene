@@ -1470,11 +1470,11 @@ fn open_file_manager_window(rt: &mut RuntimeState) {
                     } else {
                         format!("{} B", e.size)
                     };
-                    let name_short = if e.name.len() > 18 {
-                        &e.name[..18]
-                    } else {
-                        &e.name
-                    };
+                    let mut limit = 18;
+                    while limit > 0 && !e.name.is_char_boundary(limit) {
+                        limit -= 1;
+                    }
+                    let name_short = &e.name[..limit];
                     let _ = core::write!(
                         &mut text,
                         "  {:<18}  {:<10}  {}\n",
