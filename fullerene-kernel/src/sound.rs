@@ -358,10 +358,10 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let steps = ac as u8 & 0x7F;
     let gain = if steps > 0 { steps / 2 } else { 0 };
     corb_send_verb(mmio, codec, dac, VERB_SET_AMP_GAIN_MUTE, (0x70 | gain) as u16);
-    // 8-bit signed mono at 44100 Hz:
-    // bit[7] = 1 → signed, bits[6:4] = 0 → 8-bit container,
+    // 16-bit signed mono at 44100 Hz:
+    // bit[7] = 1 → signed, bits[6:4] = 1 → 16-bit container,
     // bit[3:0] = 0 → 1 channel
-    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x80u16);
+    corb_send_verb(mmio, codec, dac, VERB_SET_FMT, 0x90u16);
     corb_send_verb(mmio, codec, dac, VERB_SET_STREAM, stream as u16);
     let pa = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP as u16);
     let psteps = pa as u8 & 0x7F;
@@ -569,10 +569,10 @@ fn hda_init() {
         }
         // Program format, BDL and stream settings
         w8(m, sd + SD_STS, 0xFF);
-        // 44.1 kHz 8-bit mono:
-        // bit7 BASE=1 (44.1kHz), bits6:4 BITS=0 (8-bit), bits3:0 CHAN=0 (1ch)
+        // 44.1 kHz 16-bit mono:
+        // bit7 BASE=1 (44.1kHz), bits6:4 BITS=1 (16-bit), bits3:0 CHAN=0 (1ch)
         // bits15:14 MULT=0 (1x — no oversampling)
-        w16(m, sd + SD_FMT, 0x0080);
+        w16(m, sd + SD_FMT, 0x0090);
         w32(m, sd + SD_CBL, audio_sz);
         w16(m, sd + SD_LVI, BDL_ENTRIES as u16 - 1);
         w32(m, sd + SD_BDPL, dma_phys as u32);
