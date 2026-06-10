@@ -1,27 +1,12 @@
 //! Bad Apple!! — shadow-art video + HDA PCM audio playback.
 //!
-//! Now uses the RLE Player library and renders into a Solvent window
-//! on the desktop instead of directly into the framebuffer.
+//! **Hybrid rendering**: the window frame (title bar, border) is drawn once
+//! via the compositor.  After that, each frame is written directly into the
+//! framebuffer at the window's client‑area coordinates, bypassing the
+//! compositor for maximum frame rate.
 //!
-//! # Architecture
-//!
-//! ```text
-//! badapple.rle + badapple.pcm (embedded)
-//!     ↓
-//! rle_player::RleFile::parse()
-//!     ↓
-//! solvent::create_window("Bad Apple", ...)
-//!     ↓
-//! decode frame → draw into window surface → invalidate → compositor redraws
-//!     ↓
-//! sound::hda_feed_pcm (audio)
-//!     ↓
-//! on exit → solvent::close_window()
-//! ```
-//!
-//! This is Fullerene's first GUI application — playing a video
-//! inside a window on the desktop, rather than taking over the
-//! entire framebuffer.
+//! On exit the desktop is fully repainted via `force_desktop_redraw()` +
+//! `gui::render()`.
 
 use alloc::vec::Vec;
 use core::arch::x86_64;
@@ -29,39 +14,37 @@ use core::arch::x86_64;
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
 const PCM_BYTES_PER_SEC: u32 = 96000; // 16-bit mono × 48000 Hz
-
-/// Default threshold for hard black/white silhouette.
 const THRESHOLD: u8 = 128;
 
-/// Default window size for the Bad Apple player.
+/// Default window size (client area) for the Bad Apple player.
 const WINDOW_WIDTH: u32 = 640;
 const WINDOW_HEIGHT: u32 = 480;
 
-/// Return a fixed TSC ticks-per-millisecond estimate (2.5 GHz).
+/// Title bar height — must match `lattice::compositor::TITLE_BAR_HEIGHT`.
+const TITLE_BAR_H: i32 = 20;
+
+/// Return a fixed TSC ticks-per-millisecond estimate (2.5 GHz).
 fn calibrate_tsc_per_ms() -> u64 {
-    2_500_000 // assume 2.5 GHz
+    2_500_000
 }
 
 pub fn play_badapple() {
-    petroleum::serial::serial_log(format_args!("Bad Apple playback started (window mode)\n"));
-    log::info!("Bad Apple playback started (window mode)");
+    petroleum::serial::serial_log(format_args!("Bad Apple playback started (hybrid mode)\n"));
+    log::info!("Bad Apple playback started (hybrid mode)");
 
-    // ── Parse RLE file via rle_player library ──────────────
+    // ── Parse RLE ──────────────────────────────────────────
     let rle = match rle_player::RleFile::parse(BADAPPLE_RLE) {
         Ok(r) => r,
         Err(e) => {
-            petroleum::serial::serial_log(format_args!("Bad Apple: RLE parse error: {:?}\n", e));
-            log::error!("Bad Apple: RLE parse error: {:?}", e);
+            petroleum::serial::serial_log(format_args!("Bad Apple: parse error: {:?}\n", e));
             return;
         }
     };
-
     let n = rle.frame_count as usize;
     let fw = rle.frame_width as u32;
     let fh = rle.frame_height as u32;
     if fw == 0 || fh == 0 {
         petroleum::serial::serial_log(format_args!("Bad Apple: zero frame size\n"));
-        log::error!("Bad Apple: zero frame size");
         return;
     }
 
@@ -73,55 +56,75 @@ pub fn play_badapple() {
         }
         None => {
             petroleum::serial::serial_log(format_args!("Bad Apple: failed to create window\n"));
-            log::error!("Bad Apple: failed to create window");
             return;
         }
     };
 
-    // ── Force an immediate full desktop redraw so the
-    //     window frame (title bar, border) appears at once ──
+    // Draw the window frame (title bar, border) once via the compositor.
+    // After this, video frames are drawn directly into the framebuffer.
     solvent::force_desktop_redraw();
     crate::gui::render();
+
+    // ── Framebuffer info (for direct writes) ────────────────
+    let (fb_ptr, fb_stride, fb_height) = {
+        let g = crate::graphics::PRIMARY_RENDERER.lock();
+        let r = match g.as_ref() {
+            Some(r) => r,
+            None => {
+                petroleum::serial::serial_log(format_args!("Bad Apple: no renderer\n"));
+                solvent::close_window(win_id);
+                solvent::force_desktop_redraw();
+                crate::gui::render();
+                return;
+            }
+        };
+        let i = r.get_info();
+        (i.address as *mut u32, (i.stride as usize) / 4, i.height as usize)
+    };
+    if fb_ptr.is_null() || fb_stride == 0 || fb_height == 0 {
+        petroleum::serial::serial_log(format_args!("Bad Apple: invalid fb\n"));
+        solvent::close_window(win_id);
+        solvent::force_desktop_redraw();
+        crate::gui::render();
+        return;
+    }
+
+    // Compute the client-area rectangle in framebuffer coordinates.
+    // Window position (x=100, y=80), plus title bar height.
+    let fb_x = 100i32;
+    let fb_y = 80 + TITLE_BAR_H; // skip title bar
 
     // ── Decode buffer ──────────────────────────────────────
     let decode_total = rle.total_pixels();
     let mut decode_buf = alloc::vec![0u8; decode_total];
 
-    // ── Compute letterbox / pillarbox draw region ──────────
+    // ── Letterbox region ───────────────────────────────────
     let (draw_w, draw_h, off_x, off_y) =
         rle_player::compute_letterbox(fw, fh, WINDOW_WIDTH, WINDOW_HEIGHT);
     petroleum::serial::serial_log(format_args!(
-        "Bad Apple: src={}x{} dst={}x{} letterbox=({},{},{},{})\n",
+        "Bad Apple: src={}x{} clip={}x{} letterbox=({},{},{},{})\n",
         fw, fh, WINDOW_WIDTH, WINDOW_HEIGHT, draw_w, draw_h, off_x, off_y,
     ));
 
-    // ── Timing calibration ─────────────────────────────────
+    // ── Timing ─────────────────────────────────────────────
     let tsc_per_ms = calibrate_tsc_per_ms();
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
     let frame_interval_ms: u64 = dur_ms / (n as u64).max(1);
     let frame_interval_tsc = frame_interval_ms.saturating_mul(tsc_per_ms);
-    // Audio feed every ~1 ms (paced by TSC)
     let audio_feed_tsc = tsc_per_ms;
     const HALF: usize = 16368;
-    log::info!(
-        "Bad Apple: {} frames, {:.1}s, {}ms/f, TSC/ms={}",
-        n,
-        dur_ms as f64 / 1000.0,
-        frame_interval_ms,
-        tsc_per_ms,
-    );
     petroleum::serial::serial_log(format_args!(
         "Bad Apple: {} frames, {:.1}s, {}ms/f\n",
-        n,
-        dur_ms as f64 / 1000.0,
-        frame_interval_ms,
+        n, dur_ms as f64 / 1000.0, frame_interval_ms,
     ));
 
     let use_hda = crate::sound::hda_available();
+
+    // ── Drain input (ignore any key buffered before playback) ──
     nitrogen::ps2::keyboard::flush_input();
 
-    // ── Pre‑fill DMA ring buffer both halves ───────────────
+    // ── Pre‑fill DMA ring buffer ───────────────────────────
     let mut pcm_off: usize = 0;
     if use_hda {
         let e0 = HALF.min(pcm_total);
@@ -141,56 +144,59 @@ pub fn play_badapple() {
     let mut idx = 0usize;
     let mut last_audio_feed = unsafe { x86_64::_rdtsc() };
     while idx < n {
-        // Abort on any keyboard input
-        if nitrogen::ps2::keyboard::input_available()
-            || nitrogen::ps2::keyboard::raw_key_available()
-        {
-            petroleum::serial::serial_log(format_args!("Bad Apple aborted at frame {}\n", idx));
-            log::info!("Bad Apple aborted");
-            nitrogen::ps2::keyboard::flush_input();
-            break;
+        // Abort on any **ASCII** keyboard input — modifiers and
+        // non‑printing keys are ignored so Super/Meta do not
+        // accidentally stop playback.
+        //
+        // `read_char` returns `None` for non‑ASCII keys (arrows,
+        // modifiers, function keys), so we only abort when an
+        // actual character is available.
+        if nitrogen::ps2::keyboard::input_available() {
+            if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
+                petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
+                log::info!("Bad Apple aborted");
+                break;
+            }
+            // Modifier or non‑printing key — ignore, but consume.
         }
 
         // ── Decode frame ───────────────────────────────
-        if let Err(e) = rle.decode_frame(idx, &mut decode_buf) {
-            log::error!("Bad Apple: decode error at frame {}: {:?}", idx, e);
-            break;
+        // Skips frames whose RLE data runs past EOF (original behaviour).
+        let drawn = match rle.decode_frame(idx, &mut decode_buf) {
+            Ok(d) => d,
+            Err(rle_player::RleError::FrameOutOfRange) => break,
+            Err(e) => {
+                petroleum::serial::serial_log(format_args!(
+                    "Bad Apple: decode error frame {}: {:?}\n", idx, e,
+                ));
+                break;
+            }
+        };
+
+        // Only draw the frame when data was actually decoded.
+        if drawn {
+            // ── Draw directly into the framebuffer ─────────
+            unsafe {
+                rle_player::draw_decoded_frame(
+                    core::slice::from_raw_parts_mut(fb_ptr, fb_stride * fb_height),
+                    fb_stride as u32,
+                    fw,
+                    fh,
+                    &decode_buf,
+                    (fb_x + off_x as i32).max(0) as u32,
+                    (fb_y + off_y as i32).max(0) as u32,
+                    draw_w,
+                    draw_h,
+                    THRESHOLD,
+                );
+            }
+            crate::graphics::flush_gpu();
         }
-
-        // ── Draw into the window surface ────────────────
-        let draw_ok = solvent::with_window_surface(win_id, |pixels, w, h| {
-            rle_player::draw_decoded_frame(
-                pixels,
-                w,
-                fw,
-                fh,
-                &decode_buf,
-                off_x,
-                off_y,
-                draw_w.min(w),
-                draw_h.min(h),
-                THRESHOLD,
-            );
-            true
-        });
-        if draw_ok.is_none() {
-            petroleum::serial::serial_log(format_args!(
-                "Bad Apple: with_window_surface returned None at frame {}\n", idx,
-            ));
-            break;
-        }
-
-        // Trigger compositor redraw for this window
-        solvent::invalidate_window(win_id);
-
-        // Render the frame via gui::render (more direct than runtime_tick)
-        crate::gui::render();
 
         idx += 1;
 
-        // ── Frame pacing (TSC‑based busy‑wait) ─────────────
-        let now = unsafe { x86_64::_rdtsc() };
-        let frame_deadline = now.wrapping_add(frame_interval_tsc);
+        // ── Frame pacing + audio feed ──────────────────
+        let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
         while unsafe { x86_64::_rdtsc() } < frame_deadline {
             let now = unsafe { x86_64::_rdtsc() };
             if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
@@ -206,12 +212,10 @@ pub fn play_badapple() {
         let drain_deadline =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < drain_deadline {
-            if nitrogen::ps2::keyboard::input_available()
-                || nitrogen::ps2::keyboard::raw_key_available()
-            {
-                log::info!("Bad Apple aborted (during drain)");
-                nitrogen::ps2::keyboard::flush_input();
-                break;
+            if nitrogen::ps2::keyboard::input_available() {
+                if nitrogen::ps2::keyboard::read_char().is_some() {
+                    break;
+                }
             }
             crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             if crate::sound::hda_poll_block(Some(audio_feed_tsc)) {
@@ -225,7 +229,7 @@ pub fn play_badapple() {
         }
     }
 
-    // ── Cleanup: close window, force desktop redraw ────────
+    // ── Restore desktop ────────────────────────────────────
     solvent::close_window(win_id);
     solvent::force_desktop_redraw();
     crate::gui::render();

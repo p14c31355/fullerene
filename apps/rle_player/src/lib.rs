@@ -107,7 +107,14 @@ impl RleFile {
     ///
     /// `buf` must be at least `self.total_pixels()` bytes.
     /// Each byte is a greyscale value (0=black, 255=white).
-    pub fn decode_frame(&self, frame_idx: usize, buf: &mut [u8]) -> Result<(), RleError> {
+    ///
+    /// Returns `Ok(true)` when the frame was successfully decoded.
+    /// Returns `Ok(false)` when the frame's data runs past EOF
+    /// (the caller should skip drawing this frame — matches original
+    /// `badapple.rs` where `no > data.len()` was a no‑op).
+    /// Returns `Err(RleError::FrameOutOfRange)` when `frame_idx` is
+    /// beyond the frame count.
+    pub fn decode_frame(&self, frame_idx: usize, buf: &mut [u8]) -> Result<bool, RleError> {
         if frame_idx >= self.frame_offsets.len() {
             return Err(RleError::FrameOutOfRange);
         }
@@ -117,12 +124,13 @@ impl RleFile {
         } else {
             self.data.len()
         };
+        // Skip frames whose data ran past EOF (original badapple.rs behaviour).
         if fo >= self.data.len() || no > self.data.len() {
-            return Err(RleError::Truncated);
+            return Ok(false);
         }
         let chunk = &self.data[fo..no];
         decode_rle_inner(chunk, buf, self.total_pixels);
-        Ok(())
+        Ok(true)
     }
 }
 
