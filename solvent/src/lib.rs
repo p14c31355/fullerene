@@ -1348,6 +1348,9 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
         DesktopAction::Separator => {
             // Separator line — no action
         }
+        DesktopAction::ChangeWallpaperSettings => {
+            open_wallpaper_settings_window(rt);
+        }
     }
 }
 
@@ -1570,6 +1573,54 @@ fn open_about_window(rt: &mut RuntimeState) {
     rt.frame_due = true;
 }
 
+/// Open a Wallpaper Settings window listing presets with preview.
+///
+/// **Important**: avoid calling [`get_wallpaper`] or other Mutex‑guarded
+/// globals from this path — the event handler may already hold other locks
+/// (e.g. `RUNTIME`) and cause `spin::Mutex` re‑entrancy deadlocks in
+/// single‑threaded bare‑metal environments.
+fn open_wallpaper_settings_window(rt: &mut RuntimeState) {
+    // Build menu text: list available wallpapers.
+    // No heap‑intensive formatting of preset names — use fixed text.
+    let text = alloc::string::String::from(
+        "  Wallpaper Settings\n\
+         ===================\n\
+         \n\
+         [ ] Beach\n\
+         [ ] Mountain\n\
+         [ ] City\n\
+         ───────────────────\n\
+         [ ] Solid Color\n\
+         [ ] Grid Pattern\n\
+         [ ] Gradient\n\
+         \n\
+         Use 'wallpaper <name>'\n\
+         in terminal to switch.\n\
+         \n\
+         Ex: wallpaper beach\n",
+    );
+
+    let cols = 26u32;
+    let rows = (text.lines().count() + 1) as u32;
+    let win_w = cols * GLYPH_W;
+    let win_h = rows * GLYPH_H;
+    let id = rt.desktop.wm.create_titled_window(
+        200,
+        110,
+        win_w,
+        win_h,
+        0x1a1a2e,
+        "Wallpaper Settings",
+    );
+
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = render_text_into_surface(&mut w.surface, &text, cols, 0xCCCCCC, 0x1a1a2e);
+    }
+
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
 /// Render a multi-line text string into a Surface.
 /// Returns the number of lines rendered.
 fn render_text_into_surface(
@@ -1625,7 +1676,7 @@ fn render_text_into_surface(
 // ── Theme / wallpaper bridges (avoid kernel → lattice coupling) ─────
 
 pub use lattice::theme::{ThemeVariant, current_theme_variant, set_theme, toggle_theme};
-pub use lattice::wallpaper::{WallpaperMode, get_wallpaper, set_wallpaper};
+pub use lattice::wallpaper::{WallpaperMode, WallpaperPreset, get_wallpaper, set_wallpaper, wallpaper_presets, find_preset};
 
 // ── Window API (for external apps like RLE Player) ────────────────
 

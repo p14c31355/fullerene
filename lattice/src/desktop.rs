@@ -21,6 +21,7 @@ pub enum DesktopAction {
     Shutdown,
     Reboot,
     Separator,
+    ChangeWallpaperSettings,
 }
 
 impl DesktopAction {
@@ -39,6 +40,7 @@ impl DesktopAction {
             "shutdown" => DesktopAction::Shutdown,
             "reboot" => DesktopAction::Reboot,
             "separator" => DesktopAction::Separator,
+            "change_wallpaper" => DesktopAction::ChangeWallpaperSettings,
             _ => return None,
         })
     }
