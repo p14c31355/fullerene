@@ -122,27 +122,23 @@ fn send_raw_frame(target: &str, message: &str) -> Result<(), String> {
 
 /// Simple mode: send only the log string directly over UDP.
 fn send_simple(target: &str, message: &str) -> Result<(), String> {
-    let sender = RawUdpSender::new(target).map_err(|e| format!("connection failed: {e}"))?;
-    let sender = SpinMutex::new(sender);
-    let sender: &'static SpinMutex<RawUdpSender> = Box::leak(Box::new(sender));
+    let mut sender = RawUdpSender::new(target).map_err(|e| format!("connection failed: {e}"))?;
 
-    let src_ip = Ipv4Addr::new(192, 168, 1, 100);
-    let src_port = 51401u16;
-    let (dst_ip_str, dst_port_str) = target.split_once(':').unwrap_or(("127.0.0.1", "51400"));
-    let dst_ip = Ipv4Addr::parse(dst_ip_str).ok_or("failed to parse destination IP")?;
-    let dst_port: u16 = dst_port_str.parse().map_err(|_| "failed to parse destination port")?;
+    // Send raw UDP datagrams directly without Ethernet/IP/UDP framing
+    let messages = [
+        format!("[I] {}\n", message),
+        format!("[E] test error: {}\n", message),
+        format!("[W] test warn: {}\n", message),
+    ];
 
-    let logger = UdpLogger::new(sender, dst_ip, dst_port, src_ip, src_port);
-    let logger: &'static UdpLogger = Box::leak(Box::new(logger));
+    for msg in &messages {
+        sender.sock.send(msg.as_bytes()).map_err(|e| format!("send failed: {e}"))?;
+    }
 
-    bonder::logger::init(logger, log::LevelFilter::Info)
-        .map_err(|e| format!("logger init: {e}"))?;
+    let (_, dst_port_str) = target.split_once(':').unwrap_or(("127.0.0.1", "51400"));
+    let dst_port: u16 = dst_port_str.parse().unwrap_or(51400);
 
-    log::info!("{}", message);
-    log::error!("test error: {}", message);
-    log::warn!("test warn: {}", message);
-
-    println!("Log string sent to {target} (check with nc -u -l {dst_port})");
+    println!("Raw UDP datagrams sent to {target} (check with nc -u -l {dst_port})");
     Ok(())
 }
 

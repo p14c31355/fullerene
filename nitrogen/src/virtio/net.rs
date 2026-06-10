@@ -464,7 +464,7 @@ impl VirtioNetDevice {
         self.notify(0);
     }
 
-    fn submit_tx(&mut self, phys: u64, len: u32) {
+    fn submit_tx(&mut self, phys: u64, len: u32) -> Result<(), NetError> {
         let desc_idx = self.tx.next_desc % self.tx.actual_size;
         self.tx.next_desc = self.tx.next_desc.wrapping_add(1);
 
@@ -486,16 +486,20 @@ impl VirtioNetDevice {
         self.notify(1);
 
         // Wait for used ring update
+        let initial_used = self.tx_last_used;
         for _ in 0..10_000_000 {
             let used_idx = unsafe {
                 u16::from_le(core::ptr::read_volatile(core::ptr::addr_of!((*self.tx.used).idx)))
             };
             if used_idx != self.tx_last_used {
                 self.tx_last_used = used_idx;
-                break;
+                return Ok(());
             }
             core::hint::spin_loop();
         }
+
+        // Timeout: used ring never advanced
+        Err(NetError::SendFailed)
     }
 }
 
@@ -526,35 +530,42 @@ impl NetDevice for VirtioNetDevice {
             return Ok(None);
         }
 
-        // Consume one entry
-        let slot = (self.rx_last_used % self.rx.actual_size) as usize;
+        // Consume one entry from the used ring
+        let ring_slot = (self.rx_last_used % self.rx.actual_size) as usize;
         let elem = unsafe {
-            core::ptr::read_volatile(core::ptr::addr_of!(used.ring[slot]))
+            core::ptr::read_volatile(core::ptr::addr_of!(used.ring[ring_slot]))
         };
         let total = u32::from_le(elem.len) as usize;
+        let desc_id = u32::from_le(elem.id) as usize;
 
         // Advance consumer index
         self.rx_last_used = self.rx_last_used.wrapping_add(1);
 
         if total <= VirtioNetHdr::SIZE {
             // Empty or header-only frame — re-make the descriptor available
-            self.refill_rx_slot(slot);
+            self.refill_rx_slot(desc_id);
             return Ok(None);
         }
 
         let data_offset = VirtioNetHdr::SIZE;
         let max_data_len = RX_BUF_SIZE_ALIGNED.saturating_sub(data_offset);
         let data_len = total.saturating_sub(data_offset).min(max_data_len);
-        let copy_len = data_len.min(buf.len());
+
+        // Check if buffer is large enough
+        if data_len > buf.len() {
+            // Buffer too small - refill the slot and return error
+            self.refill_rx_slot(desc_id);
+            return Err(NetError::BufferTooSmall);
+        }
 
         // Copy payload from the RX buffer (skipping virtio_net_hdr)
-        let rx_buf_slice = &self.rx_bufs[slot];
-        buf[..copy_len].copy_from_slice(&rx_buf_slice[data_offset..data_offset + copy_len]);
+        let rx_buf_slice = &self.rx_bufs[desc_id];
+        buf[..data_len].copy_from_slice(&rx_buf_slice[data_offset..data_offset + data_len]);
 
         // Re-make this descriptor available for the device
-        self.refill_rx_slot(slot);
+        self.refill_rx_slot(desc_id);
 
-        Ok(Some(copy_len))
+        Ok(Some(data_len))
     }
 
     fn mac_address(&self) -> [u8; 6] {

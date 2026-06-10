@@ -46,6 +46,13 @@ pub fn exec_shell_command(input: &str) -> alloc::string::String {
     }
 }
 
+// ── Utility Functions ────────────────────────────────────────
+
+/// Truncate a string to at most `n` characters (not bytes), safely handling UTF-8 boundaries.
+fn truncate_to_chars(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
 // ── Constants ────────────────────────────────────────────────
 
 /// Default terminal columns.
@@ -1329,6 +1336,15 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
+        DesktopAction::SysInfo => {
+            // TODO: Implement system information display
+        }
+        DesktopAction::Shutdown => {
+            // TODO: Implement shutdown functionality
+        }
+        DesktopAction::Reboot => {
+            // TODO: Implement reboot functionality
+        }
         DesktopAction::Separator => {
             // Separator line — no action
         }
@@ -1350,12 +1366,8 @@ fn open_task_manager_window(rt: &mut RuntimeState) {
                 ProcessStateKind::Blocked => "blocked",
                 ProcessStateKind::Terminated => "term",
             };
-            // Truncate long names
-            let name_short = if p.name.len() > 16 {
-                &p.name[..16]
-            } else {
-                &p.name
-            };
+            // Truncate long names safely at char boundaries
+            let name_short = truncate_to_chars(&p.name, 16);
             let _ = core::write!(
                 &mut text,
                 " {:<4}  {:<16}  {:<8}\n",

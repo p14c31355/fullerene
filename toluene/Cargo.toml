@@ -18,9 +18,11 @@ path = "tests/unit_tests.rs"
 required-features = ["test"]
 
 [features]
-default = []
+default = ["vfs", "kernel-syscall"]
 binary = []
 test = []
+vfs = []
+kernel-syscall = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -135,7 +135,7 @@ fn udp_checksum(
 /// Build a UDP datagram and write it into `dst`.
 ///
 /// Returns the total byte count (UDP header + payload).
-/// Returns `None` if `dst` is too small.
+/// Returns `None` if `dst` is too small or if the payload exceeds UDP limits.
 pub fn build_datagram(
     src: Ipv4Addr,
     dst_addr: Ipv4Addr,
@@ -145,6 +145,12 @@ pub fn build_datagram(
     dst: &mut [u8],
 ) -> Option<usize> {
     let total = UdpHeader::SIZE + payload.len();
+
+    // Validate that total fits into u16 for UDP length field
+    if total > u16::MAX as usize {
+        return None;
+    }
+
     if dst.len() < total {
         return None;
     }

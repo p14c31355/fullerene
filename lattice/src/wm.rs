@@ -53,6 +53,8 @@ pub struct WindowManager {
     pub tiling_mode: TilingMode,
     /// Saved floating positions for tiled windows: (x, y, w, h).
     floating_restore: alloc::collections::BTreeMap<WindowId, (i32, i32, u32, u32)>,
+    /// Cached work area dimensions (width, height) for retiling.
+    work_area: Option<(u32, u32)>,
 }
 
 const RESIZE_HANDLE_SIZE: u32 = 16;
@@ -83,7 +85,13 @@ impl WindowManager {
             dirty_rects: Vec::new(),
             tiling_mode: TilingMode::Floating,
             floating_restore: alloc::collections::BTreeMap::new(),
+            work_area: None,
         }
+    }
+
+    /// Set the work area dimensions for retiling.
+    pub fn set_work_area(&mut self, width: u32, height: u32) {
+        self.work_area = Some((width, height));
     }
 
     pub fn windows(&self) -> &[Window] {
@@ -172,6 +180,14 @@ impl WindowManager {
         self.focused = Some(id);
         self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
+
+        // Retile if in MasterStack mode
+        if self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
+
         id
     }
 
@@ -195,6 +211,14 @@ impl WindowManager {
                 self.focused = None;
             }
         }
+
+        // Retile if in MasterStack mode
+        if removed && self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
+
         removed
     }
 
@@ -218,6 +242,13 @@ impl WindowManager {
         self.focused = Some(id);
         self.dirty_rects.push(window_dirty_rect(&window));
         self.windows.push(window);
+
+        // Retile if in MasterStack mode (Z-order changed)
+        if self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
     }
 
     pub fn window_at(&self, x: i32, y: i32) -> Option<WindowId> {
@@ -390,6 +421,14 @@ impl WindowManager {
                 }
             }
         }
+
+        // Retile if in MasterStack mode (visibility changed)
+        if self.tiling_mode == TilingMode::MasterStack {
+            if let Some((ww, wh)) = self.work_area {
+                self.retile(ww, wh);
+            }
+        }
+
         true
     }
 
@@ -403,6 +442,9 @@ impl WindowManager {
         }
         w.minimized = false;
         self.raise_to_top(id);
+
+        // Note: raise_to_top already calls retile if needed, so no need to call it again here
+
         true
     }
 

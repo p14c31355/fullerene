@@ -17,6 +17,9 @@ pub enum DesktopAction {
     ToggleTiling,
     Refresh,
     About,
+    SysInfo,
+    Shutdown,
+    Reboot,
     Separator,
 }
 
@@ -32,6 +35,9 @@ impl DesktopAction {
             "toggle_tiling" => DesktopAction::ToggleTiling,
             "refresh" => DesktopAction::Refresh,
             "about" => DesktopAction::About,
+            "sysinfo" => DesktopAction::SysInfo,
+            "shutdown" => DesktopAction::Shutdown,
+            "reboot" => DesktopAction::Reboot,
             "separator" => DesktopAction::Separator,
             _ => return None,
         })

@@ -74,7 +74,11 @@ pub type Result<T> = core::result::Result<T, ExecError>;
 ///
 /// * `path` - Path to the ELF binary in the VFS.
 /// * `args` - Command-line arguments passed to the new process.
-pub fn spawn(path: &str, _args: &[&str]) -> Result<Pid> {
+pub fn spawn(path: &str, args: &[&str]) -> Result<Pid> {
+    // Currently args are not supported by the exec ABI
+    if !args.is_empty() {
+        return Err(ExecError::Unsupported);
+    }
     spawn_internal(path)
 }
 
@@ -96,40 +100,19 @@ fn spawn_internal(path: &str) -> Result<Pid> {
 }
 
 /// Read a file from the VFS into a buffer.
+#[cfg(feature = "vfs")]
 fn read_file(path: &str) -> Result<Vec<u8>> {
-    // Use the kernel's VFS syscall interface through petroleum
-    // For now, this is a thin wrapper.  The actual implementation
-    // goes through petroleum::common::vfs or the syscall interface.
+    // VFS support not yet implemented in petroleum
+    let _ = path;
+    Err(ExecError::Unsupported)
+}
 
-    // syscall: open(path, O_RDONLY)
-    // syscall: read(fd, buf, len) in a loop until EOF
-    // syscall: close(fd)
-
-    // Placeholder: use petroleum's vfs module if available
-    #[cfg(feature = "vfs")]
-    {
-        use petroleum::common::vfs;
-        let fd = vfs::open(path, 0).map_err(|_| ExecError::NotFound)?;
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 512];
-        loop {
-            let n = vfs::read(fd, &mut chunk).map_err(|_| ExecError::IoError)?;
-            if n == 0 {
-                break;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-        }
-        let _ = vfs::close(fd);
-        return Ok(buf);
-    }
-
-    #[cfg(not(feature = "vfs"))]
-    {
-        // Without VFS support, this is a stub.
-        // Real implementation requires petroleum's vfs or raw syscalls.
-        let _ = path;
-        Err(ExecError::NotFound)
-    }
+#[cfg(not(feature = "vfs"))]
+fn read_file(path: &str) -> Result<Vec<u8>> {
+    // Without VFS support, this is a stub.
+    // Real implementation requires petroleum's vfs or raw syscalls.
+    let _ = path;
+    Err(ExecError::Unsupported)
 }
 
 /// Load an ELF binary from raw bytes and execute it as a new process.
@@ -168,40 +151,20 @@ fn load_and_exec(name: &str, data: &[u8]) -> Result<Pid> {
 /// 2. Maps LOAD segments into the new process's address space
 /// 3. Creates a process with the entry point
 /// 4. Returns the PID
+#[cfg(feature = "kernel-syscall")]
 fn exec_syscall(name: &str, data: &[u8]) -> Result<Pid> {
-    // Use the kernel's loader via a syscall or direct function call.
-    // In the Fullerene kernel, the loader is at fullerene-kernel/src/loader.rs
-    // and app_runner.rs.  Here in the SDK we provide a clean API.
-    //
-    // The actual implementation bridges to petroleum syscalls:
-    //   syscall: SYS_EXEC (name_ptr, name_len, data_ptr, data_len) → pid
+    // exec syscall not yet implemented in petroleum
+    let _ = name;
+    let _ = data;
+    Err(ExecError::Unsupported)
+}
 
-    // For now, use the syscall interface if available
-    #[cfg(feature = "kernel-syscall")]
-    {
-        use petroleum::common::syscall;
-        let pid = syscall::exec(name.as_ptr() as u64, name.len() as u64,
-                                 data.as_ptr() as u64, data.len() as u64);
-        if pid < 0 {
-            Err(match pid {
-                -1 => ExecError::NotFound,
-                -2 => ExecError::InvalidFormat,
-                -3 => ExecError::OutOfMemory,
-                -4 => ExecError::PermissionDenied,
-                _ => ExecError::IoError,
-            })
-        } else {
-            Ok(Pid(pid as u64))
-        }
-    }
-
-    #[cfg(not(feature = "kernel-syscall"))]
-    {
-        // Stub: without kernel syscall support, return NotFound
-        let _ = name;
-        let _ = data;
-        Err(ExecError::NotFound)
-    }
+#[cfg(not(feature = "kernel-syscall"))]
+fn exec_syscall(name: &str, data: &[u8]) -> Result<Pid> {
+    // Stub: without kernel syscall support, return Unsupported
+    let _ = name;
+    let _ = data;
+    Err(ExecError::Unsupported)
 }
 
 /// Wait for a spawned process to terminate.
@@ -212,28 +175,34 @@ pub fn wait(pid: Pid) -> Result<i32> {
 }
 
 /// Internal wait implementation.
+#[cfg(feature = "kernel-syscall")]
 fn wait_internal(pid: Pid) -> Result<i32> {
-    #[cfg(feature = "kernel-syscall")]
-    {
-        use petroleum::common::syscall;
-        let exit_code = syscall::waitpid(pid.0, 0);
-        Ok(exit_code as i32)
-    }
-    #[cfg(not(feature = "kernel-syscall"))]
-    {
-        let _ = pid;
-        Ok(0)
-    }
+    // waitpid syscall not yet implemented in petroleum
+    let _ = pid;
+    Err(ExecError::Unsupported)
+}
+
+#[cfg(not(feature = "kernel-syscall"))]
+fn wait_internal(pid: Pid) -> Result<i32> {
+    let _ = pid;
+    Err(ExecError::Unsupported)
 }
 
 /// Check if a binary at the given path exists and is a valid executable.
 pub fn is_executable(path: &str) -> bool {
     match read_file(path) {
         Ok(data) => {
-            !data.is_empty()
-                && data.len() >= 4
-                && &data[0..4] == b"\x7FELF"
-                && data.get(4) == Some(&2)
+            // Check ELF magic, ELFCLASS64, and e_type (ET_EXEC=2 or ET_DYN=3)
+            if data.len() < 18 || &data[0..4] != b"\x7FELF" || data.get(4) != Some(&2) {
+                return false;
+            }
+            // e_type at offset 16 (2 bytes, little-endian)
+            let e_type = u16::from_le_bytes([
+                *data.get(16).unwrap_or(&0),
+                *data.get(17).unwrap_or(&0),
+            ]);
+            // ET_EXEC = 2, ET_DYN = 3 (position-independent executable)
+            e_type == 2 || e_type == 3
         }
         Err(_) => false,
     }
