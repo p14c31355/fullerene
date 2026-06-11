@@ -51,8 +51,8 @@ static LOGGER: FullereneLogger = FullereneLogger::new();
 static LOGGER_INITIALIZED: spin::Once<()> = spin::Once::new();
 
 /// Optional hook registered by the kernel to capture log messages
-/// for in‑OS display (e.g. `dmesg`).
-pub static LOG_HOOK: spin::Mutex<Option<fn(log::Level, &str)>> = spin::Mutex::new(None);
+/// for in-OS display (e.g. dmesg).
+pub static LOG_HOOK: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 pub fn init_global_logger() -> Result<(), log::SetLoggerError> {
     log::set_logger(&LOGGER)?;
