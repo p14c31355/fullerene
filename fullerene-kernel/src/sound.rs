@@ -495,7 +495,7 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     // list so the audio actually reaches the pin.
     let pin_con_count = unsafe {
         let r = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, 0x0Eu16 /* connection list len */);
-        r & 0x7F
+        if r == 0xFFFF_FFFF { 0 } else { r & 0x7F }
     };
     if pin_con_count > 0 && pin_con_count != 0xFFFF_FFFF {
         // Iterate the pin's connection list entries; look for a
