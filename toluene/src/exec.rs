@@ -130,10 +130,7 @@ fn load_and_exec(name: &str, data: &[u8]) -> Result<Pid> {
 
     // Verify it's an executable (ET_EXEC)
     // e_type is at offset 16 (2 bytes, little-endian)
-    let e_type = u16::from_le_bytes([
-        *data.get(16).unwrap_or(&0),
-        *data.get(17).unwrap_or(&0),
-    ]);
+    let e_type = u16::from_le_bytes([*data.get(16).unwrap_or(&0), *data.get(17).unwrap_or(&0)]);
     if e_type != 2 {
         // ET_EXEC = 2
         return Err(ExecError::InvalidFormat);
@@ -197,10 +194,8 @@ pub fn is_executable(path: &str) -> bool {
                 return false;
             }
             // e_type at offset 16 (2 bytes, little-endian)
-            let e_type = u16::from_le_bytes([
-                *data.get(16).unwrap_or(&0),
-                *data.get(17).unwrap_or(&0),
-            ]);
+            let e_type =
+                u16::from_le_bytes([*data.get(16).unwrap_or(&0), *data.get(17).unwrap_or(&0)]);
             // ET_EXEC = 2, ET_DYN = 3 (position-independent executable)
             e_type == 2 || e_type == 3
         }

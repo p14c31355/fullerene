@@ -745,35 +745,33 @@ impl VirtioGpu {
             av.idx = idx.wrapping_add(1).to_le();
 
             self.debug_submit_raw(cmd_phys, resp_phys, d0, d1, ring_idx);
-
-            // DMA fence: ensure all prior stores reach main memory for device DMA visibility
             self.dma_fence();
 
-            // Notify: use the notify BAR base + notify capability offset + queue notify offset
             let notify_off = self.get_notify_offset(0);
-            let notify_ptr = unsafe {
-                self.notify_bar_base
-                    .add(self.notify_cap_offset as usize)
-                    .add(notify_off) as *mut u32
-            };
-            // Modern mode: notify value is le32 queue index (not legacy u16)
-            let notify_val = 0u32.to_le();
-            log::info!(
-                "[VirtIO-GPU] NOTIFYING: addr={:#p}, val={:#x}",
-                notify_ptr,
-                notify_val
-            );
-            unsafe {
-                core::ptr::write_volatile(notify_ptr, notify_val);
-            }
-            // MMIO read-back fence: InsydeH2O (and some KVM/QEMU configs) may
-            // buffer PCIe posted writes.  A volatile read from the common config
-            // forces the write to be flushed to the device before we start
-            // polling the used ring.
-            unsafe {
-                core::ptr::read_volatile(self.common_virt_absolute);
-            }
+            let notify_ptr = self
+                .notify_bar_base
+                .add(self.notify_cap_offset as usize)
+                .add(notify_off) as *mut u32;
+            core::ptr::write_volatile(notify_ptr, 0u32.to_le());
+            core::ptr::read_volatile(self.common_virt_absolute);
         }
+    }
+
+    /// Copy `cmd` to cmd_buf, submit it to VirtIO, and wait for completion.
+    /// Returns true if the command completed successfully (no timeout).
+    unsafe fn submit_gpu_cmd<T>(&mut self, cmd: &T) -> bool {
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                cmd as *const T as *const u8,
+                self.cmd_buf,
+                core::mem::size_of::<T>(),
+            );
+        }
+        let before = self.read_used_idx();
+        unsafe {
+            self.submit_raw(0, core::mem::size_of::<T>() as u32);
+        }
+        self.wait_used(before)
     }
 
     pub fn flush(&mut self, w: u32, h: u32) {
@@ -818,127 +816,85 @@ impl VirtioGpu {
             return Err(VirtioGpuError::CommandFailed);
         }
 
-        let get_display_info = VirtioGpuCtrlHeader {
-            type_: VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
-            flags: 0,
-            fence_id: 0,
-            ctx_id: 0,
-            padding: 0,
+        macro_rules! submit_or_fail {
+            ($cmd:expr, $name:literal) => {
+                unsafe {
+                    if !self.submit_gpu_cmd(&$cmd.to_le()) {
+                        log::info!(concat!("[VirtIO-GPU] ERROR: ", $name, " timed out"));
+                        return Err(VirtioGpuError::CommandFailed);
+                    }
+                }
+            };
         }
-        .to_le();
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &get_display_info as *const _ as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<VirtioGpuCtrlHeader>(),
-            );
-        }
-        let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(0, core::mem::size_of::<VirtioGpuCtrlHeader>() as u32);
-        }
-        if !self.wait_used(before) {
-            log::info!("[VirtIO-GPU] ERROR: GET_DISPLAY_INFO timed out");
-            return Err(VirtioGpuError::CommandFailed);
-        }
+
+        submit_or_fail!(
+            VirtioGpuCtrlHeader {
+                type_: VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+                flags: 0,
+                fence_id: 0,
+                ctx_id: 0,
+                padding: 0
+            },
+            "GET_DISPLAY_INFO"
+        );
 
         self.resource_id = 1;
-        let create2d = VirtioGpuResourceCreate2d {
-            hdr: VirtioGpuCtrlHeader {
-                type_: VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: 0,
-                padding: 0,
-            },
-            resource_id: self.resource_id,
-            format: 2,
-            width: w,
-            height: h,
-        }
-        .to_le();
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &create2d as *const _ as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<VirtioGpuResourceCreate2d>(),
-            );
-        }
-        let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(0, core::mem::size_of::<VirtioGpuResourceCreate2d>() as u32);
-        }
-        if !self.wait_used(before) {
-            log::info!("[VirtIO-GPU] ERROR: RESOURCE_CREATE_2D timed out");
-            return Err(VirtioGpuError::CommandFailed);
-        }
-
-        let attach_cmd = AttachCmd {
-            hdr: VirtioGpuCtrlHeader {
-                type_: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: 0,
-                padding: 0,
-            },
-            resource_id: self.resource_id,
-            nr_entries: 1,
-            entry: VirtioGpuMemEntry {
-                addr: fb,
-                length: sz,
-                padding: 0,
-            },
-        }
-        .to_le();
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &attach_cmd as *const _ as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<AttachCmd>(),
-            );
-        }
-        let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(0, core::mem::size_of::<AttachCmd>() as u32);
-        }
-        if !self.wait_used(before) {
-            log::info!("[VirtIO-GPU] ERROR: RESOURCE_ATTACH_BACKING timed out");
-            return Err(VirtioGpuError::CommandFailed);
-        }
-
-        let set_scanout = VirtioGpuSetScanout {
-            hdr: VirtioGpuCtrlHeader {
-                type_: VIRTIO_GPU_CMD_SET_SCANOUT,
-                flags: 0,
-                fence_id: 0,
-                ctx_id: 0,
-                padding: 0,
-            },
-            r: VirtioGpuRect {
-                x: 0,
-                y: 0,
+        submit_or_fail!(
+            VirtioGpuResourceCreate2d {
+                hdr: VirtioGpuCtrlHeader {
+                    type_: VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0
+                },
+                resource_id: self.resource_id,
+                format: 2,
                 width: w,
-                height: h,
+                height: h
             },
-            scanout_id: 0,
-            resource_id: self.resource_id,
-        }
-        .to_le();
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                &set_scanout as *const _ as *const u8,
-                self.cmd_buf,
-                core::mem::size_of::<VirtioGpuSetScanout>(),
-            );
-        }
-        let before = self.read_used_idx();
-        unsafe {
-            self.submit_raw(0, core::mem::size_of::<VirtioGpuSetScanout>() as u32);
-        }
-        if !self.wait_used(before) {
-            log::info!("[VirtIO-GPU] ERROR: SET_SCANOUT timed out");
-            return Err(VirtioGpuError::CommandFailed);
-        }
+            "RESOURCE_CREATE_2D"
+        );
+        submit_or_fail!(
+            AttachCmd {
+                hdr: VirtioGpuCtrlHeader {
+                    type_: VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0
+                },
+                resource_id: self.resource_id,
+                nr_entries: 1,
+                entry: VirtioGpuMemEntry {
+                    addr: fb,
+                    length: sz,
+                    padding: 0
+                }
+            },
+            "RESOURCE_ATTACH_BACKING"
+        );
+        submit_or_fail!(
+            VirtioGpuSetScanout {
+                hdr: VirtioGpuCtrlHeader {
+                    type_: VIRTIO_GPU_CMD_SET_SCANOUT,
+                    flags: 0,
+                    fence_id: 0,
+                    ctx_id: 0,
+                    padding: 0
+                },
+                r: VirtioGpuRect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h
+                },
+                scanout_id: 0,
+                resource_id: self.resource_id
+            },
+            "SET_SCANOUT"
+        );
+
         self.flush(w, h);
         Ok(())
     }

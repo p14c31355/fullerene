@@ -63,7 +63,9 @@ pub fn init() {
                     crate::process::ProcessState::Ready => solvent::ProcessStateKind::Ready,
                     crate::process::ProcessState::Running => solvent::ProcessStateKind::Running,
                     crate::process::ProcessState::Blocked => solvent::ProcessStateKind::Blocked,
-                    crate::process::ProcessState::Terminated => solvent::ProcessStateKind::Terminated,
+                    crate::process::ProcessState::Terminated => {
+                        solvent::ProcessStateKind::Terminated
+                    }
                 };
                 result.push(solvent::ProcessEntry {
                     pid: pid.0,
@@ -78,7 +80,10 @@ pub fn init() {
     // Register device list callback — bridges device manager to solvent.
     solvent::set_device_list_fn(|| {
         let mut result = alloc::vec::Vec::new();
-        if let Some(mgr) = crate::hardware::device_manager::get_device_manager().lock().as_ref() {
+        if let Some(mgr) = crate::hardware::device_manager::get_device_manager()
+            .lock()
+            .as_ref()
+        {
             for di in mgr.list_devices() {
                 result.push(solvent::DeviceEntry {
                     name: alloc::string::String::from(di.name),
@@ -89,6 +94,17 @@ pub fn init() {
         }
         result
     });
+
+    // Calibrate TSC ticks per millisecond using the PIT (8254).
+    // PIT channel 2 is free‑running and connected to the speaker
+    // gate, so we can read its counter without disturbing audio.
+    let tsc_per_ms = calibrate_tsc_with_pit();
+    petroleum::serial::serial_log(format_args!(
+        "TSC calibration: {} ticks/ms (~{:.1} GHz)\n",
+        tsc_per_ms,
+        tsc_per_ms as f64 / 1_000_000.0,
+    ));
+    solvent::set_tsc_per_ms(tsc_per_ms);
 
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
@@ -230,4 +246,95 @@ fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
     }
 
     Some((full_year, month, day, hour, minute, second))
+}
+
+// ── TSC calibration via PIT channel 2 ────────────────────────
+
+/// Measure TSC ticks per millisecond using the PIT channel 2
+/// (which is left free‑running by the PC speaker code).
+///
+/// Channel 2 is configured in rate‑generator mode by the BIOS
+/// with divisor 0 (effectively 65536), giving ~18.2 Hz.
+/// We read the LATCH command → current count twice to measure
+/// elapsed time.
+fn calibrate_tsc_with_pit() -> u64 {
+    // Ensure PIT channel 2 gate is enabled (bit 0 of System Control Port B
+    // at 0x61).  The BIOS may leave it disabled, causing the counter to
+    // stall and the calibration to fall back to 3 GHz.
+    let original_61 = unsafe {
+        x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read()
+    };
+    unsafe {
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+            .write(original_61 | 0x01);
+    }
+
+    // Read current count from PIT channel 2 via latch command.
+    fn pit_read_count() -> Option<u16> {
+        unsafe {
+            // Latch counter for channel 2 using standard Counter Latch Command (0x80)
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x43).write(0x80);
+            // Read low then high byte
+            let lo = x86_64::instructions::port::PortReadOnly::<u8>::new(0x42).read();
+            let hi = x86_64::instructions::port::PortReadOnly::<u8>::new(0x42).read();
+            let count = u16::from_le_bytes([lo, hi]);
+            // 0 means the counter wrapped — valid for our decay count.
+            Some(count)
+        }
+    }
+
+    let t0 = unsafe { core::arch::x86_64::_rdtsc() };
+    let c0 = match pit_read_count() {
+        Some(c) => c,
+        None => {
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+                    .write(original_61);
+            }
+            return 3_000_000;
+        }
+    };
+
+    // Measure 20 ms of PIT ticks (23864 counts at 1.193182 MHz).
+    // This is more robust than waiting for a full wrap, which can be
+    // missed if the VM or CPU is preempted for >55 ms.
+    let target_ticks: u16 = 23864;
+    loop {
+        let cur = match pit_read_count() {
+            Some(c) => c,
+            None => return 3_000_000,
+        };
+        let elapsed = c0.wrapping_sub(cur);
+        if elapsed >= target_ticks {
+            break;
+        }
+        // TSC watchdog: 1 second timeout at 3 GHz
+        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(t0) > 3_000_000_000 {
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+                    .write(original_61);
+            }
+            return 3_000_000; // stalled
+        }
+        core::hint::spin_loop();
+    }
+
+    // Restore original PIT gate state
+    unsafe {
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+            .write(original_61);
+    }
+
+    let ticks = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(t0);
+    let ms_elapsed = 20u64;
+    let result = ticks / ms_elapsed;
+    // Sanity check: reject values outside 100 MHz … 10 GHz.
+    if result < 100_000 || result > 10_000_000 {
+        petroleum::serial::serial_log(format_args!(
+            "TSC PIT calib rejected ({:.1} GHz), using fallback\n",
+            result as f64 / 1_000_000.0,
+        ));
+        return 3_000_000;
+    }
+    result
 }

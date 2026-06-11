@@ -132,11 +132,15 @@ fn register_nozzle_hooks() {
                 solvent::WallpaperMode::SolidColor => "solid",
                 solvent::WallpaperMode::GridPattern => "grid",
                 solvent::WallpaperMode::Gradient => "gradient",
+                solvent::WallpaperMode::Preset(idx) => {
+                    let presets = solvent::wallpaper_presets();
+                    presets.get(idx).map_or("unknown", |p| p.name)
+                }
             };
             let msg = format!("Current wallpaper: {}\n", name);
             ctx.terminal.write_str(&msg);
             ctx.terminal
-                .write_str("Usage: wallpaper solid | grid | gradient\n");
+                .write_str("Usage: wallpaper solid | grid | gradient | beach | mountain | city\n");
         }
         "windows" => {
             if solvent::is_initialized() {
@@ -235,6 +239,15 @@ fn register_nozzle_hooks() {
         "wallpaper gradient" => {
             solvent::set_wallpaper(solvent::WallpaperMode::Gradient);
             solvent::force_desktop_redraw();
+        }
+        _ if cmd.starts_with("wallpaper ") => {
+            let name = &cmd[10..];
+            if let Some(idx) = solvent::find_preset(name) {
+                solvent::set_wallpaper(solvent::WallpaperMode::Preset(idx));
+                solvent::force_desktop_redraw();
+            } else {
+                solvent::write_terminal("wallpaper: preset not found\n");
+            }
         }
         "reboot" => {
             petroleum::serial::serial_log(format_args!("Reboot requested via shell\n"));

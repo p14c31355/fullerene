@@ -104,7 +104,9 @@ fn send_raw_frame(target: &str, message: &str) -> Result<(), String> {
     // Destination: 127.0.0.1:51400 (parsed from CLI argument)
     let (dst_ip_str, dst_port_str) = target.split_once(':').unwrap_or(("127.0.0.1", "51400"));
     let dst_ip = Ipv4Addr::parse(dst_ip_str).ok_or("failed to parse destination IP")?;
-    let dst_port: u16 = dst_port_str.parse().map_err(|_| "failed to parse destination port")?;
+    let dst_port: u16 = dst_port_str
+        .parse()
+        .map_err(|_| "failed to parse destination port")?;
 
     let logger = UdpLogger::new(dev, dst_ip, dst_port, src_ip, src_port);
     let logger: &'static UdpLogger = Box::leak(Box::new(logger));
@@ -132,7 +134,10 @@ fn send_simple(target: &str, message: &str) -> Result<(), String> {
     ];
 
     for msg in &messages {
-        sender.sock.send(msg.as_bytes()).map_err(|e| format!("send failed: {e}"))?;
+        sender
+            .sock
+            .send(msg.as_bytes())
+            .map_err(|e| format!("send failed: {e}"))?;
     }
 
     let (_, dst_port_str) = target.split_once(':').unwrap_or(("127.0.0.1", "51400"));

@@ -52,6 +52,30 @@ fn dim_color(color: u32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
+/// Alpha-blend a source pixel over a destination pixel, writing the result.
+/// Returns the blending was performed (useful for callers to `continue` in
+/// tight loops).
+macro_rules! alpha_blend {
+    ($dst:expr, $src:expr) => {{
+        let s = $src;
+        let a = ((s >> 24) & 0xFF) as u32;
+        if a == 255 {
+            $dst = s;
+            false // fully opaque — no further blending needed
+        } else if a > 0 {
+            let bg = $dst;
+            let ia = 255 - a;
+            let r = (((s >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255;
+            let g = (((s >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255;
+            let b = ((s & 0xFF) * a + (bg & 0xFF) * ia) / 255;
+            $dst = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
+            false
+        } else {
+            true // fully transparent — caller should `continue`
+        }
+    }};
+}
+
 // ── Title bar button caches ─────────────────────────────────
 /// Pre‑rendered 14×14 close button (red background + white X).
 static CLOSE_BUTTON_CACHE: [u32; 14 * 14] = build_close_button();
@@ -60,18 +84,18 @@ static MAXIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_maximize_button();
 /// Pre‑rendered 14×14 minimize button (amber background + white line).
 static MINIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_minimize_button();
 
+/// Fill a 14x14 buffer with a solid colour.
+const fn fill_14x14(buf: &mut [u32; 14 * 14], color: u32) {
+    let mut i = 0;
+    while i < 14 * 14 {
+        buf[i] = color;
+        i += 1;
+    }
+}
+
 const fn build_close_button() -> [u32; 14 * 14] {
     let mut buf = [0u32; 14 * 14];
-    let mut r = 0;
-    while r < 14 {
-        let mut c = 0;
-        while c < 14 {
-            buf[r * 14 + c] = COLOR_DANGER;
-            c += 1;
-        }
-        r += 1;
-    }
-    // White X
+    fill_14x14(&mut buf, COLOR_DANGER);
     let mut o = 0;
     while o < 8 {
         buf[(3 + o) * 14 + (3 + o)] = 0xFFFFFF;
@@ -83,22 +107,12 @@ const fn build_close_button() -> [u32; 14 * 14] {
 
 const fn build_maximize_button() -> [u32; 14 * 14] {
     let mut buf = [0u32; 14 * 14];
-    let mut r = 0;
-    while r < 14 {
-        let mut c = 0;
-        while c < 14 {
-            buf[r * 14 + c] = 0x338833;
-            c += 1;
-        }
-        r += 1;
-    }
-    // White square outline
+    fill_14x14(&mut buf, 0x338833);
     let mut r = 3;
     while r < 11 {
         let mut c = 3;
         while c < 11 {
-            let on_edge = r == 3 || r == 10 || c == 3 || c == 10;
-            if on_edge {
+            if r == 3 || r == 10 || c == 3 || c == 10 {
                 buf[r * 14 + c] = 0xFFFFFF;
             }
             c += 1;
@@ -110,16 +124,7 @@ const fn build_maximize_button() -> [u32; 14 * 14] {
 
 const fn build_minimize_button() -> [u32; 14 * 14] {
     let mut buf = [0u32; 14 * 14];
-    let mut r = 0;
-    while r < 14 {
-        let mut c = 0;
-        while c < 14 {
-            buf[r * 14 + c] = COLOR_ACCENT;
-            c += 1;
-        }
-        r += 1;
-    }
-    // White horizontal line at the bottom
+    fill_14x14(&mut buf, COLOR_ACCENT);
     let mut c = 3;
     while c < 11 {
         buf[10 * 14 + c] = 0xFFFFFF;
@@ -153,6 +158,48 @@ fn blit_button(fb: &mut [u32], fbw: u32, cache: &[u32; 14 * 14], bx: i32, by: i3
             if idx < fb_len {
                 fb[idx] = cache[(row as usize) * 14 + col as usize];
             }
+        }
+    }
+}
+
+fn draw_cursor_impl(
+    fb: &mut [u32],
+    fbw: u32,
+    fbh: u32,
+    cur: &Cursor,
+    cx: u32,
+    cy: u32,
+    cw: u32,
+    ch: u32,
+) {
+    let pixels = Cursor::shape();
+    let sz = Cursor::SIZE as i32;
+    let dst_x = cur.x - Cursor::HOTSPOT_X;
+    let dst_y = cur.y - Cursor::HOTSPOT_Y;
+    let sx_s = 0i32.max(-dst_x);
+    let sy_s = 0i32.max(-dst_y);
+    let sx_e = sz.min(fbw as i32 - dst_x);
+    let sy_e = sz.min(fbh as i32 - dst_y);
+    if sx_s >= sx_e || sy_s >= sy_e {
+        return;
+    }
+    let cex = (cx + cw) as i32;
+    let cey = (cy + ch) as i32;
+    for row in sy_s..sy_e {
+        let dy = dst_y + row;
+        if dy < cy as i32 || dy >= cey {
+            continue;
+        }
+        for col in sx_s..sx_e {
+            let dx = dst_x + col;
+            if dx < cx as i32 || dx >= cex {
+                continue;
+            }
+            let s = pixels[(row as usize) * (sz as usize) + col as usize];
+            if s == 0 {
+                continue;
+            }
+            alpha_blend!(fb[(dy as usize) * (fbw as usize) + dx as usize], s);
         }
     }
 }
@@ -439,6 +486,9 @@ impl Compositor {
 
     // ── Cursor ────────────────────────────────────────────
 
+    pub fn draw_cursor_direct(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor) {
+        draw_cursor_impl(fb, fbw, fbh, cur, 0, 0, fbw, fbh);
+    }
     fn draw_cursor_clipped(
         fb: &mut [u32],
         fbw: u32,
@@ -449,51 +499,7 @@ impl Compositor {
         cw: u32,
         ch: u32,
     ) {
-        let pixels = Cursor::shape();
-        let sz = Cursor::SIZE as i32;
-        let dst_x = cur.x - Cursor::HOTSPOT_X;
-        let dst_y = cur.y - Cursor::HOTSPOT_Y;
-        let sx_s = 0i32.max(-dst_x);
-        let sy_s = 0i32.max(-dst_y);
-        let sx_e = sz.min(fbw as i32 - dst_x);
-        let sy_e = sz.min(fbh as i32 - dst_y);
-        if sx_s >= sx_e || sy_s >= sy_e {
-            return;
-        }
-        let cex = (cx + cw) as i32;
-        let cey = (cy + ch) as i32;
-        for row in sy_s..sy_e {
-            let dy = dst_y + row;
-            if dy < cy as i32 || dy >= cey {
-                continue;
-            }
-            for col in sx_s..sx_e {
-                let dx = dst_x + col;
-                if dx < cx as i32 || dx >= cex {
-                    continue;
-                }
-                let s = pixels[(row as usize) * (sz as usize) + col as usize];
-                if s == 0 {
-                    continue;
-                }
-                let idx = (dy as usize) * (fbw as usize) + dx as usize;
-                // Semi‑transparent blending
-                let bg = fb[idx];
-                let sa = ((s >> 24) & 0xFF) as u32;
-                if sa == 0 {
-                    continue;
-                }
-                if sa == 255 {
-                    fb[idx] = s;
-                    continue;
-                }
-                let ia = 255 - sa;
-                let r = (((s >> 16) & 0xFF) * sa + ((bg >> 16) & 0xFF) * ia) / 255;
-                let g = (((s >> 8) & 0xFF) * sa + ((bg >> 8) & 0xFF) * ia) / 255;
-                let b = ((s & 0xFF) * sa + (bg & 0xFF) * ia) / 255;
-                fb[idx] = (r << 16) | (g << 8) | b;
-            }
-        }
+        draw_cursor_impl(fb, fbw, fbh, cur, cx, cy, cw, ch);
     }
 
     // ── Window drawing ────────────────────────────────────
@@ -562,11 +568,7 @@ impl Compositor {
                 } else {
                     bg_fallback
                 };
-                fb[db + dc as usize] = if win.focused {
-                    color
-                } else {
-                    dim_color(color)
-                };
+                fb[db + dc as usize] = if win.focused { color } else { dim_color(color) };
             }
         }
     }

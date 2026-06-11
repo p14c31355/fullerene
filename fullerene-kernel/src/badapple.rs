@@ -1,128 +1,172 @@
-//! Bad Apple!! — shadow-art video + HDA PCM audio playback
+//! Bad Apple!! — shadow-art video + HDA PCM audio playback.
 //!
-//! Optimised rendering path:
-//! - Aspect‑ratio‑preserving letterbox / pillarbox rendering.
-//! - Hard threshold for true black‑and‑white silhouette.
-//! - Non‑temporal stores (`_mm_stream_si32`) for framebuffer writes.
-//! - TSC‑based frame pacing with ~1 ms audio feed granularity.
+//! **Hybrid rendering**: the window frame (title bar, border) is drawn once
+//! via the compositor.  After that, each frame is written directly into the
+//! framebuffer at the window's client‑area coordinates, bypassing the
+//! compositor for maximum frame rate.
+//!
+//! **TSC calibration**: measures actual CPU clock against the HDA DMA
+//! progress (LPIB register) so frame pacing is accurate regardless of
+//! host CPU speed.
+//!
+//! On exit the desktop is fully repainted via `force_desktop_redraw()` +
+//! `gui::render()`.
+
 use alloc::vec::Vec;
 use core::arch::x86_64;
 
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
 const PCM_BYTES_PER_SEC: u32 = 96000; // 16-bit mono × 48000 Hz
-const RLE_MAGIC: &[u8; 4] = b"BARL";
-const RLE_HDR_SIZE: usize = 16;
 const THRESHOLD: u8 = 128;
 
-// ── Timing ──────────────────────────────────────────────────────
+/// Default window size (client area) for the Bad Apple player.
+const WINDOW_WIDTH: u32 = 640;
+const WINDOW_HEIGHT: u32 = 480;
 
-/// Return a fixed TSC ticks-per-millisecond estimate (2.5 GHz).
-///
-/// Accurate calibration requires an external hardware timer (PIT / APIC);
-/// without one we simply assume a 2.5 GHz clock to avoid wasting ~100 ms
-/// spinning at boot for a value that always rounds to the same constant.
+/// Title bar height — must match `lattice::compositor::TITLE_BAR_HEIGHT`.
+const TITLE_BAR_H: i32 = 20;
+
+/// Calibrate TSC ticks-per-millisecond using the HDA DMA progress
+/// (LPIB register).  Falls back to 3 GHz when HDA is absent or
+/// the DMA engine is not advancing (common on real hardware where
+/// the codec or stream setup may not complete).
 fn calibrate_tsc_per_ms() -> u64 {
-    2_500_000 // assume 2.5 GHz
-}
-
-// ── RLE decode ──────────────────────────────────────────────────
-
-/// Decode one RLE frame into `buf` (length must be ≥ `total = fw*fh`).
-#[inline]
-fn decode_rle_frame(data: &[u8], buf: &mut [u8], total: usize) {
-    let mut p = 0usize;
-    let mut c = 0usize;
-    while c + 3 <= data.len() && p < total {
-        let fill = data[c];
-        let rl = u16::from_le_bytes([data[c + 1], data[c + 2]]) as usize;
-        c += 3;
-        let end = (p + rl).min(total);
-        buf[p..end].fill(fill);
-        p = end;
+    if !crate::sound::hda_available() {
+        return 3_000_000;
     }
-}
-
-// ── Framebuffer drawing ─────────────────────────────────────────
-
-/// Draw a decoded RLE frame into a sub‑region of the framebuffer,
-/// preserving the source aspect ratio via nearest‑neighbour scaling
-/// and applying a hard black/white threshold for true silhouette.
-///
-/// # Safety
-/// `fb` must point to a valid framebuffer of at least `fb_stride * fb_h` u32
-/// elements.  `decode` must be at least `fw * fh` bytes.  The destination
-/// rectangle (`off_x`, `off_y`, `draw_w`, `draw_h`) must lie entirely within
-/// the framebuffer.
-#[inline]
-unsafe fn draw_decoded_frame(
-    fb: *mut u32,
-    fb_stride: usize,
-    fw: usize,
-    fh: usize,
-    decode: &[u8],
-    off_x: usize,
-    off_y: usize,
-    draw_w: usize,
-    draw_h: usize,
-) {
-    for dy in 0..draw_h {
-        let sy = dy * fh / draw_h;
-        let src_row = &decode[sy * fw..];
-        let row_off = (off_y + dy) * fb_stride + off_x;
-        for dx in 0..draw_w {
-            let sx = dx * fw / draw_w;
-            // Hard threshold: sample >= 128 → white, else black
-            let g = if src_row[sx] >= THRESHOLD { 255u32 } else { 0u32 };
-            let pixel = 0xFF00_0000u32 | (g << 16) | (g << 8) | g;
-            core::ptr::write_volatile(fb.add(row_off + dx), pixel);
+    // audio_sz = DMA_BUF_SIZE - bdl_sz = 32768 - 32 = 32736;
+    const AUDIO_SZ: u64 = 32736;
+    // Quick sanity: if LPIB doesn't move at all within ~100 ms
+    // the DMA engine is stalled — bail out immediately.
+    // Also reject bogus LPIB values that are outside the valid
+    // ring‑buffer range (some HDA implementations may report
+    // garbage at start‑up).
+    let t0 = unsafe { x86_64::_rdtsc() };
+    let lpib0 = match crate::sound::hda_playback_progress() {
+        Some(v) if v < AUDIO_SZ => v,
+        _ => return 3_000_000,
+    };
+    let mut prev = lpib0;
+    let settle_ms = 300_000_000u64; // ~100 ms at 3 GHz
+    loop {
+        if let Some(cur) = crate::sound::hda_playback_progress() {
+            if cur >= AUDIO_SZ {
+                return 3_000_000; // garbage — LPIB outside ring buffer
+            }
+            if cur != prev {
+                break; // LPIB is moving
+            }
+            prev = cur;
         }
+        if unsafe { x86_64::_rdtsc() }.wrapping_sub(t0) >= settle_ms {
+            return 3_000_000; // stalled
+        }
+        core::hint::spin_loop();
     }
+    // LPIB is advancing — measure half‑buffer worth of progress.
+    const CALIB_HALF: u64 = AUDIO_SZ / 2; // 16368
+    let t0 = unsafe { x86_64::_rdtsc() };
+    let deadline_ms = 3_000_000_000u64; // ~1 s at 3 GHz
+    let mut total = 0u64;
+    loop {
+        if let Some(cur) = crate::sound::hda_playback_progress() {
+            if cur >= AUDIO_SZ {
+                return 3_000_000;
+            }
+            // LPIB wraps at audio_sz; detect wrap via
+            // subtraction underflow and accumulate correctly.
+            let delta = if cur >= prev {
+                cur - prev
+            } else {
+                (AUDIO_SZ - prev) + cur
+            };
+            total += delta;
+            prev = cur;
+            if total >= CALIB_HALF {
+                break;
+            }
+        }
+        if unsafe { x86_64::_rdtsc() }.wrapping_sub(t0) >= deadline_ms {
+            return 3_000_000;
+        }
+        core::hint::spin_loop();
+    }
+    let ticks = unsafe { x86_64::_rdtsc() }.wrapping_sub(t0);
+    // 16368 bytes played at 96000 bytes/s → ms
+    let ms = CALIB_HALF.saturating_mul(1000) / 96_000;
+    if ms == 0 {
+        return 3_000_000;
+    }
+    let result = ticks / ms;
+    // Sanity‑check the calibration result: a well‑behaved TSC must be
+    // within 100 MHz … 10 GHz.  Outside this range the LPIB data is
+    // likely unreliable; fall back to 3 GHz.
+    if result < 100_000 || result > 10_000_000 {
+        petroleum::serial::serial_log(format_args!(
+            "Bad Apple: TSC calib rejected ({:.1} GHz), using fallback\n",
+            result as f64 / 1_000_000.0,
+        ));
+        return 3_000_000;
+    }
+    result
 }
 
 pub fn play_badapple() {
-    log::info!("Bad Apple playback started");
-    let data = BADAPPLE_RLE;
-    if data.len() < RLE_HDR_SIZE || &data[..4] != RLE_MAGIC {
-        log::error!("Bad Apple: invalid RLE");
-        return;
-    }
-    let ver = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    if ver != 1 {
-        log::error!("Bad Apple: version {}", ver);
-        return;
-    }
-    let fc = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let fw = u16::from_le_bytes([data[12], data[13]]) as usize;
-    let fh = u16::from_le_bytes([data[14], data[15]]) as usize;
-    if fc == 0 {
-        log::error!("Bad Apple: zero frames");
-        return;
-    }
-    let n = fc as usize;
-    let ds = RLE_HDR_SIZE + n * 2;
-    if ds >= data.len() {
-        log::error!("Bad Apple: RLE data exceeds file");
+    petroleum::serial::serial_log(format_args!("Bad Apple playback started (hybrid mode)\n"));
+    log::info!("Bad Apple playback started (hybrid mode)");
+
+    // ── Parse RLE ──────────────────────────────────────────
+    let rle = match rle_player::RleFile::parse(BADAPPLE_RLE) {
+        Ok(r) => r,
+        Err(e) => {
+            petroleum::serial::serial_log(format_args!("Bad Apple: parse error: {:?}\n", e));
+            return;
+        }
+    };
+    let n = rle.frame_count as usize;
+    let fw = rle.frame_width as u32;
+    let fh = rle.frame_height as u32;
+    if fw == 0 || fh == 0 {
+        petroleum::serial::serial_log(format_args!("Bad Apple: zero frame size\n"));
         return;
     }
 
-    // ── Parse frame offsets ──────────────────────────────────
-    let mut offs = Vec::with_capacity(n);
-    let mut o: u64 = ds as u64;
-    for i in 0..n {
-        let cs =
-            u16::from_le_bytes([data[RLE_HDR_SIZE + i * 2], data[RLE_HDR_SIZE + i * 2 + 1]]) as u64;
-        offs.push(o);
-        o = o.saturating_add(cs);
-    }
+    // ── Create a window on the desktop ─────────────────────
+    let win_id = match solvent::create_window("Bad Apple", 100, 80, WINDOW_WIDTH, WINDOW_HEIGHT) {
+        Some(id) => {
+            petroleum::serial::serial_log(format_args!(
+                "Bad Apple: window created (id={:?})\n",
+                id
+            ));
+            id
+        }
+        None => {
+            petroleum::serial::serial_log(format_args!("Bad Apple: failed to create window\n"));
+            return;
+        }
+    };
 
-    // ── Framebuffer info ─────────────────────────────────────
-    let (fb, fbs, fbh) = {
+    // Draw the window frame (title bar, border) once via the compositor.
+    solvent::force_desktop_redraw();
+    crate::gui::render();
+
+    // Window frame is now on screen.  Suspend solvent rendering
+    // so the scheduler's runtime_tick does NOT compete with our
+    // direct framebuffer writes during the main playback loop.
+    solvent::suspend_rendering();
+
+    // ── Framebuffer info (for direct writes) ────────────────
+    let (fb_ptr, fb_stride, fb_height) = {
         let g = crate::graphics::PRIMARY_RENDERER.lock();
         let r = match g.as_ref() {
             Some(r) => r,
             None => {
-                log::error!("Bad Apple: no renderer");
+                petroleum::serial::serial_log(format_args!("Bad Apple: no renderer\n"));
+                solvent::close_window(win_id);
+                solvent::resume_rendering();
+                solvent::force_desktop_redraw();
+                crate::gui::render();
                 return;
             }
         };
@@ -133,70 +177,47 @@ pub fn play_badapple() {
             i.height as usize,
         )
     };
-    if fb.is_null() || fbs == 0 || fbh == 0 {
-        log::error!("Bad Apple: invalid fb");
-        return;
-    }
-    if fw == 0 || fh == 0 {
-        log::error!("Bad Apple: zero frame size");
+    if fb_ptr.is_null() || fb_stride == 0 || fb_height == 0 {
+        petroleum::serial::serial_log(format_args!("Bad Apple: invalid fb\n"));
+        solvent::close_window(win_id);
+        solvent::resume_rendering();
+        solvent::force_desktop_redraw();
+        crate::gui::render();
         return;
     }
 
-    // ── Compute letterbox / pillarbox draw region ────────────
-    // Source aspect ratio (fw : fh) is preserved.
-    let src_aspect = fw as f64 / fh as f64;
-    let dst_aspect = fbs as f64 / fbh as f64;
-    let (draw_w, draw_h, off_x, off_y) = if dst_aspect > src_aspect {
-        // Screen is wider → pillarbox (black bars left/right)
-        let h = fbh;
-        let w = ((fbh as f64 * src_aspect) as usize).max(1);
-        (w, h, (fbs.saturating_sub(w)) / 2, 0)
-    } else {
-        // Screen is taller → letterbox (black bars top/bottom)
-        let w = fbs;
-        let h = ((fbs as f64 / src_aspect) as usize).max(1);
-        (w, h, 0, (fbh.saturating_sub(h)) / 2)
-    };
+    // Compute the client-area rectangle in framebuffer coordinates.
+    let fb_x = 100i32;
+    let fb_y = 80 + TITLE_BAR_H;
 
-    // ── Decode buffer ────────────────────────────────────────
-    let decode_total = fw * fh;
+    // ── Decode buffer ──────────────────────────────────────
+    let decode_total = rle.total_pixels();
     let mut decode_buf = alloc::vec![0u8; decode_total];
 
-    // ── Fill framebuffer black ───────────────────────────────
-    let fb_len = fbs * fbh;
-    unsafe {
-        for i in 0..fb_len {
-            core::ptr::write_volatile(fb.add(i), 0xFF00_0000u32);
-        }
-    }
-    crate::graphics::flush_gpu();
+    // ── Letterbox region ───────────────────────────────────
+    let (draw_w, draw_h, off_x, off_y) =
+        rle_player::compute_letterbox(fw, fh, WINDOW_WIDTH, WINDOW_HEIGHT);
+    petroleum::serial::serial_log(format_args!(
+        "Bad Apple: src={}x{} clip={}x{} letterbox=({},{},{},{})\n",
+        fw, fh, WINDOW_WIDTH, WINDOW_HEIGHT, draw_w, draw_h, off_x, off_y,
+    ));
 
-    // ── Timing calibration ───────────────────────────────────
-    let tsc_per_ms = calibrate_tsc_per_ms();
+    // ── Timing ─────────────────────────────────────────────
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
     let frame_interval_ms: u64 = dur_ms / (n as u64).max(1);
-    let frame_interval_tsc = frame_interval_ms.saturating_mul(tsc_per_ms);
-    // Audio feed every ~1 ms (paced by TSC)
-    let audio_feed_tsc = tsc_per_ms;
+    // audio_sz = DMA_BUF_SIZE(32768) - bdl_sz(sizeof(BdlEntry)*2=32) = 32736
+    // half = audio_sz / 2 = 16368
+    // These must match sound.rs: HDA_AUDIO_SZ and HDA_HALF.
     const HALF: usize = 16368;
-    log::info!(
-        "Bad Apple: {} frames, {:.1}s, {}ms/f, TSC/ms={}",
-        n,
-        dur_ms as f64 / 1000.0,
-        frame_interval_ms,
-        tsc_per_ms,
-    );
 
     let use_hda = crate::sound::hda_available();
+
+    // ── Drain input ────────────────────────────────────────
     nitrogen::ps2::keyboard::flush_input();
 
-    // ── Suppress solvent compositor during playback ──────────
-    // Prevent the desktop compositor from overwriting our
-    // direct framebuffer writes.  Restore on exit.
-    solvent::suspend_rendering();
-
-    // ── Pre‑fill DMA ring buffer both halves ─────────────────
+    // ── Pre‑fill DMA ring buffer both halves ───────────────
+    // (also triggers hda_init via hda_write_direct)
     let mut pcm_off: usize = 0;
     if use_hda {
         let e0 = HALF.min(pcm_total);
@@ -209,72 +230,192 @@ pub fn play_badapple() {
             crate::sound::hda_write_direct(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
             pcm_off = e1;
         }
-        // Tell the feed loop DMA is still in half 0 so it won't
-        // overwrite the pre‑filled data before DMA has consumed it.
         crate::sound::hda_reset_prefill_tracking();
     }
 
-    // ── Main playback loop ───────────────────────────────────
+    // ── TSC calibration (HDA LPIB‑based) ──────────────────
+    // Must run AFTER hda_init (triggered by hda_write_direct above)
+    // so that the DMA engine is running and LPIB is advancing.
+    let tsc_per_ms = if use_hda {
+        calibrate_tsc_per_ms()
+    } else {
+        3_000_000 // fallback: 3 GHz
+    };
+    petroleum::serial::serial_log(format_args!(
+        "Bad Apple: TSC/ms={} (~{:.1} GHz)\n",
+        tsc_per_ms,
+        tsc_per_ms as f64 / 1_000_000.0,
+    ));
+
+    let frame_interval_tsc = frame_interval_ms.saturating_mul(tsc_per_ms);
+    let audio_feed_tsc = tsc_per_ms;
+    petroleum::serial::serial_log(format_args!(
+        "Bad Apple: {} frames, {:.1}s, {}ms/f, {}tsc/f\n",
+        n,
+        dur_ms as f64 / 1000.0,
+        frame_interval_ms,
+        frame_interval_tsc,
+    ));
+
+    // ── Main playback loop (LPIB‑synced with TSC watchdog) ─
+    //
+    // Primary clock: HDA LPIB (96000 bytes/sec hardware rate).
+    // Fallback: TSC‑based pacing when HDA is absent or DMA stalls.
+    //
+    // `consumed` tracks total bytes the HDA controller has read
+    // from the DMA ring buffer since playback started.
+    // Because LPIB wraps at audio_sz (32736), we maintain a
+    // `wraps` counter to reconstruct a monotonically increasing
+    // position in the logical PCM byte stream.
+    let pcm_per_frame = (pcm_total as u64) / (n as u64).max(1);
+    let mut consumed: u64 = 0;
+    let mut last_lpib: u64 = 0;
+    let mut wraps: u64 = 0;
+    let mut lpib_valid = false;
+    if use_hda {
+        if let Some(cur) = crate::sound::hda_playback_progress() {
+            if cur < 32736 {
+                last_lpib = cur;
+                lpib_valid = true;
+            }
+        }
+    }
+    // Must match sound.rs: audio_sz = DMA_BUF_SIZE(32768) - bdl_sz(32) = 32736
+    let audio_sz: u64 = 32736;
     let mut idx = 0usize;
     let mut last_audio_feed = unsafe { x86_64::_rdtsc() };
-    while idx < n && idx < offs.len() {
-        // Abort on any keyboard input (ASCII keys, arrows, modifiers, …)
-        if nitrogen::ps2::keyboard::input_available()
-            || nitrogen::ps2::keyboard::raw_key_available()
-        {
-            log::info!("Bad Apple aborted");
-            nitrogen::ps2::keyboard::flush_input();
-            break;
+    'outer: while idx < n {
+        // Abort on ASCII key.
+        if nitrogen::ps2::keyboard::input_available() {
+            if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
+                petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
+                log::info!("Bad Apple aborted");
+                break;
+            }
         }
 
-        // ── Render current frame ──
-        let fo = offs[idx] as usize;
-        let no = if idx + 1 < offs.len() {
-            offs[idx + 1] as usize
-        } else {
-            data.len()
+        if use_hda && lpib_valid {
+            // ── LPIB‑synced wait ─────────────────────────
+            let target = (idx as u64 + 1).saturating_mul(pcm_per_frame);
+            let loop_start = unsafe { x86_64::_rdtsc() };
+            let watchdog_ms = frame_interval_tsc.saturating_mul(3);
+            loop {
+                if nitrogen::ps2::keyboard::input_available() {
+                    if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
+                        petroleum::serial::serial_log(format_args!("Bad Apple aborted\n"));
+                        log::info!("Bad Apple aborted");
+                        break 'outer;
+                    }
+                }
+                // Update consumed-bytes counter from LPIB.
+                // LPIB wraps at audio_sz — detect wrap by
+                // seeing cur < last_lpib (LPIB moved backwards),
+                // which means the controller crossed the ring‑buffer
+                // boundary.  We track wrap count separately so
+                // consumed = wraps * audio_sz + cur is always
+                // monotonically increasing.
+                if let Some(cur) = crate::sound::hda_playback_progress() {
+                    // Reject garbage LPIB values
+                    if cur >= audio_sz {
+                        petroleum::serial::serial_log(format_args!(
+                            "Bad Apple: bogus LPIB {}, using TSC fallback\n",
+                            cur,
+                        ));
+                        lpib_valid = false;
+                        break;
+                    }
+                    // Detect wrap: LPIB moved backwards by more than
+                    // half the buffer (spurious small regressions
+                    // are noise).
+                    if cur < last_lpib && (last_lpib - cur) > audio_sz / 2 {
+                        wraps = wraps.saturating_add(1);
+                    }
+                    last_lpib = cur;
+                    // consumed = total bytes in logical stream
+                    consumed = wraps.saturating_mul(audio_sz).saturating_add(cur);
+                }
+                // Feed audio.
+                let now = unsafe { x86_64::_rdtsc() };
+                if now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
+                    last_audio_feed = now;
+                    crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
+                }
+                if consumed >= target {
+                    break;
+                }
+                // TSC watchdog: fall back if LPIB isn't advancing.
+                if unsafe { x86_64::_rdtsc() }.wrapping_sub(loop_start) >= watchdog_ms {
+                    petroleum::serial::serial_log(format_args!(
+                        "Bad Apple: LPIB stalled, using TSC\n"
+                    ));
+                    lpib_valid = false;
+                    break;
+                }
+                crate::sound::hda_tick();
+            }
+        }
+
+        if !use_hda || !lpib_valid {
+            // ── TSC‑based pacing ──────────────────────────
+            if nitrogen::ps2::keyboard::input_available() {
+                if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
+                    break;
+                }
+            }
+            let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
+            while unsafe { x86_64::_rdtsc() } < frame_deadline {
+                let now = unsafe { x86_64::_rdtsc() };
+                if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
+                    last_audio_feed = now;
+                    crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
+                }
+                core::hint::spin_loop();
+            }
+        }
+
+        // ── Decode & draw frame ─────────────────────────
+        let drawn = match rle.decode_frame(idx, &mut decode_buf) {
+            Ok(d) => d,
+            Err(rle_player::RleError::FrameOutOfRange) => break,
+            Err(e) => {
+                petroleum::serial::serial_log(format_args!(
+                    "Bad Apple: decode error frame {}: {:?}\n",
+                    idx, e,
+                ));
+                break;
+            }
         };
-        if fo < data.len() && no <= data.len() {
-            decode_rle_frame(&data[fo..no], &mut decode_buf, decode_total);
+
+        if drawn {
             unsafe {
-                draw_decoded_frame(
-                    fb, fbs, fw, fh, &decode_buf, off_x, off_y, draw_w, draw_h,
+                rle_player::draw_decoded_frame(
+                    core::slice::from_raw_parts_mut(fb_ptr, fb_stride * fb_height),
+                    fb_stride as u32,
+                    fw,
+                    fh,
+                    &decode_buf,
+                    (fb_x + off_x as i32).max(0) as u32,
+                    (fb_y + off_y as i32).max(0) as u32,
+                    draw_w,
+                    draw_h,
+                    THRESHOLD,
                 );
             }
             crate::graphics::flush_gpu();
         }
 
         idx += 1;
-
-        // ── Frame pacing (TSC‑based busy‑wait) ───────────────
-        let frame_deadline = unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc);
-        while unsafe { x86_64::_rdtsc() } < frame_deadline {
-            // Feed audio every audio_feed_tsc ticks.
-            let now = unsafe { x86_64::_rdtsc() };
-            if use_hda && now.wrapping_sub(last_audio_feed) >= audio_feed_tsc {
-                last_audio_feed = now;
-                crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
-            }
-            // `hda_tick` reads the HDA LPIB register via MMIO.
-            // On QEMU/KVM this forces a VM exit, giving the host
-            // a chance to advance the HDA device model (DMA
-            // position, BCIS) without blocking the CPU like `hlt`.
-            crate::sound::hda_tick();
-        }
     }
 
-    // ── Drain remaining PCM ──────────────────────────────────
+    // ── Drain remaining PCM ────────────────────────────────
     if use_hda {
         let drain_deadline =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < drain_deadline {
-            // Allow keyboard abort during drain
-            if nitrogen::ps2::keyboard::input_available()
-                || nitrogen::ps2::keyboard::raw_key_available()
-            {
-                log::info!("Bad Apple aborted (during drain)");
-                nitrogen::ps2::keyboard::flush_input();
-                break;
+            if nitrogen::ps2::keyboard::input_available() {
+                if nitrogen::ps2::keyboard::read_char().is_some() {
+                    break;
+                }
             }
             crate::sound::hda_feed_pcm(BADAPPLE_PCM, &mut pcm_off, pcm_total, HALF);
             if crate::sound::hda_poll_block(Some(audio_feed_tsc)) {
@@ -282,14 +423,17 @@ pub fn play_badapple() {
             }
             core::hint::spin_loop();
         }
-        // Send silence to complete any in‑flight DMA buffer
         for _ in 0..4 {
             crate::sound::hda_feed_silence(HALF);
             crate::sound::hda_poll_delay(tsc_per_ms, 100);
         }
     }
 
+    // ── Restore desktop ────────────────────────────────────
     solvent::resume_rendering();
+    solvent::close_window(win_id);
     solvent::force_desktop_redraw();
+    crate::gui::render();
     log::info!("Bad Apple finished ({} frames)", idx);
+    petroleum::serial::serial_log(format_args!("Bad Apple finished ({} frames)\n", idx));
 }

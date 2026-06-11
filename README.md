@@ -2,7 +2,7 @@
 
 ---
 
-![](docs/assets/fullerene_202605210700_desktop.png)
+![](docs/history/fullerene_202605210700_desktop.png)
 
 [development_history](docs/history)
 

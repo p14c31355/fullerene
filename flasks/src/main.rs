@@ -243,7 +243,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         "-m".to_string(),
         "4G".to_string(),
         "-cpu".to_string(),
-        "qemu64,+smap,-invtsc".to_string(),
+        "qemu64,+smap,+invtsc".to_string(),
         "-smp".to_string(),
         "1".to_string(),
         "-M".to_string(),

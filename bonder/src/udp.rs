@@ -66,13 +66,7 @@ impl PseudoHeader {
 ///
 /// Applies the IP checksum algorithm over: pseudo-header + UDP header + payload.
 /// Returns 0xFFFF when the result would be 0 (RFC 768: 0 means "checksum disabled").
-fn udp_checksum(
-    src: Ipv4Addr,
-    dst: Ipv4Addr,
-    src_port: u16,
-    dst_port: u16,
-    payload: &[u8],
-) -> u16 {
+fn udp_checksum(src: Ipv4Addr, dst: Ipv4Addr, src_port: u16, dst_port: u16, payload: &[u8]) -> u16 {
     let total_len = UdpHeader::SIZE + payload.len();
     let pseudo = PseudoHeader {
         src: src.0,
@@ -125,11 +119,7 @@ fn udp_checksum(
     }
 
     let cs = !(sum as u16);
-    if cs == 0 {
-        0xFFFF
-    } else {
-        cs
-    }
+    if cs == 0 { 0xFFFF } else { cs }
 }
 
 /// Build a UDP datagram and write it into `dst`.
