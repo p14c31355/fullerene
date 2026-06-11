@@ -1653,7 +1653,7 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
                         let size = if e.is_dir {
                             String::from("--")
                         } else if e.size >= 1048576 {
-                            format!("{}.{} MB", e.size / 1048576, (e.size / 1024) % 1024)
+                            format!("{}.{} MB", e.size / 1048576, ((e.size % 1048576) * 10) / 1048576)
                         } else if e.size >= 1024 {
                             format!("{}.{} KB", e.size / 1024, (e.size % 1024) * 10 / 1024)
                         } else {
