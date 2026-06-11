@@ -294,42 +294,39 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
         core::hint::spin_loop();
     }
     // ── Ensure CORB/RIRB DMA engines are running ─────────────────
-    // Real hardware may have encountered a previous memory error
-    // (CORBMEI / RIRBMEI) that stopped the DMA engines.  We must
-    // clear the MEI bits (WC) and re-enable the engines before
-    // sending a new verb.
-    let corb_ctl = unsafe { mmio!(r32 mmio, CORBCTL) };
-    if corb_ctl & 0x0100 != 0 {
-        // CORBMEI set — clear it (WC) and restart the CORB engine
-        unsafe { mmio!(w32 mmio, CORBCTL, corb_ctl | 0x0100) };
-        log::info!("Sound: CORBMEI cleared, restarting CORB DMA");
+    // HDA register map defines CORBCTL (byte at offset 0x4C),
+    // CORBSTS (byte at 0x4D), and CORBSIZE (byte at 0x4E) as three
+    // separate 1‑byte registers.  We access them individually.
+    //   CORBCTL[0] = CORBMEI (RW1C, write 1 to clear)
+    //   CORBCTL[1] = CORBRUN (1 = DMA running)
+    //   CORBSIZE[1:0] = buffer size code (2/16/256 entries)
+    // Same layout for RIRB starting at offset 0x5C.
+    let corb_ctl_byte = unsafe { mmio!(r8 mmio, CORBCTL) };
+    if corb_ctl_byte & 0x01 != 0 {
+        // CORBMEI set — clear it by writing 1 (RW1C) and restart.
+        unsafe { mmio!(w8 mmio, CORBCTL, 0x02 | (corb_ctl_byte & 1)) };
+        log::info!("Sound: CORBMEI cleared (byte CTL=0x{:02x})", corb_ctl_byte);
     }
-    let rirb_ctl_check = unsafe { mmio!(r32 mmio, RIRBCTL) };
-    if rirb_ctl_check & 0x0100 != 0 {
-        // RIRBMEI set — clear it (WC) and restart the RIRB engine
-        unsafe { mmio!(w32 mmio, RIRBCTL, rirb_ctl_check | 0x0100) };
-        log::info!("Sound: RIRBMEI cleared, restarting RIRB DMA");
+    let rirb_ctl_byte = unsafe { mmio!(r8 mmio, RIRBCTL) };
+    if rirb_ctl_byte & 0x01 != 0 {
+        unsafe { mmio!(w8 mmio, RIRBCTL, 0x02 | (rirb_ctl_byte & 1)) };
+        log::info!("Sound: RIRBMEI cleared (byte CTL=0x{:02x})", rirb_ctl_byte);
     }
-    // Re-read to confirm we are running
-    let corb_ctl2 = unsafe { mmio!(r32 mmio, CORBCTL) };
-    let rirb_ctl2 = unsafe { mmio!(r32 mmio, RIRBCTL) };
-    if corb_ctl2 & 0x0002 == 0 || corb_ctl2 & 0x0100 != 0 {
-        // Not running or MEI still set — attempt full restart
-        // HDA spec §4.8: write size+MEI+run in one go
-        let corb_sz = (corb_ctl2 >> 16) & 0x03;
-        unsafe {
-            mmio!(w32 mmio, CORBCTL, 0x0102 | (corb_sz << 16));
-            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        }
-        log::info!("Sound: CORB restart: CTL=0x{:08x}", corb_ctl2);
+    // Re-check: CORBRUN must be 1 for DMA to proceed.
+    let corb_ctl2 = unsafe { mmio!(r8 mmio, CORBCTL) };
+    let rirb_ctl2 = unsafe { mmio!(r8 mmio, RIRBCTL) };
+    if corb_ctl2 & 0x02 == 0 {
+        // CORB not running — full re-initialisation needed.
+        let corb_sz_byte = unsafe { mmio!(r8 mmio, CORBCTL + 2) } & 0x03;
+        unsafe { mmio!(w8 mmio, CORBCTL, 0x02 | corb_sz_byte) };
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        log::info!("Sound: CORB restarted (CTL=0x{:02x} SZ={})", corb_ctl2, corb_sz_byte);
     }
-    if rirb_ctl2 & 0x0002 == 0 || rirb_ctl2 & 0x0100 != 0 {
-        let rirb_sz = (rirb_ctl2 >> 16) & 0x03;
-        unsafe {
-            mmio!(w32 mmio, RIRBCTL, 0x0102 | (rirb_sz << 16));
-            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-        }
-        log::info!("Sound: RIRB restart: CTL=0x{:08x}", rirb_ctl2);
+    if rirb_ctl2 & 0x02 == 0 {
+        let rirb_sz_byte = unsafe { mmio!(r8 mmio, RIRBCTL + 2) } & 0x03;
+        unsafe { mmio!(w8 mmio, RIRBCTL, 0x02 | rirb_sz_byte) };
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        log::info!("Sound: RIRB restarted (CTL=0x{:02x} SZ={})", rirb_ctl2, rirb_sz_byte);
     }
 
     let wp = unsafe { mmio!(r16 mmio, CORBWP) } as usize;
