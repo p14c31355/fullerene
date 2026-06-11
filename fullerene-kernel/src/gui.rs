@@ -261,8 +261,8 @@ fn calibrate_tsc_with_pit() -> u64 {
     // Read current count from PIT channel 2 via latch command.
     fn pit_read_count() -> Option<u16> {
         unsafe {
-            // Latch counter for channel 2
-            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x43).write(0xC0);
+            // Latch counter for channel 2 using standard Counter Latch Command (0x80)
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x43).write(0x80);
             // Read low then high byte
             let lo = x86_64::instructions::port::PortReadOnly::<u8>::new(0x42).read();
             let hi = x86_64::instructions::port::PortReadOnly::<u8>::new(0x42).read();
