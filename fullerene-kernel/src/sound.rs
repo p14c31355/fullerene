@@ -785,8 +785,8 @@ unsafe fn dump_codec_inventory(mmio: *mut u8, codec: u8) {
 /// bits 3:0=VRef.
 const VERB_GET_PIN_CTL: u32 = 0xF07;
 
-/// Read the current EAPD state via verb F0D.
-const VERB_GET_EAPD: u32 = 0xF0D;
+/// Read the current EAPD state via verb F0C.
+const VERB_GET_EAPD: u32 = 0xF0C;
 
 unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
     // ── Dump full codec inventory before discovery ──────────
@@ -1195,26 +1195,25 @@ fn hda_init() {
         let m = virt as *mut u8;
         // ── Skip full controller reset (CRST cycle) ────────────────
         // The controller was already in a working state when we probed
-        // it (STATESTS showed a connected codec).  Performing a full
-        // CRST cycle on many Realtek + Intel PCH combos causes the
-        // codec to enter reset and never come back (STATESTS → 0),
-        // even after > 1 s wait.  We therefore leave the controller
-        // as-is and only clear the status bits + disable interrupts.
+        // it (STATESTS showed a connected codec).  STATEESTS is a RW1C
+        // state-change bitmap, not a persistent codec-present signal.
+        // We capture it BEFORE clearing so the diagnostic cache has a
+        // meaningful snapshot of the pre-init attachment state.
+        let sts_pre_clear = mmio!(r16 m, STATESTS);
         mmio!(w16 m, STATESTS, 0x000F);
         mmio!(w32 m, INTCTL, 0);
-        let sts_after = mmio!(r16 m, STATESTS);
         log::info!(
             "Sound: STATESTS (no CRST) = 0x{:04x} (SDIN0={} SDIN1={} SDIN2={} SDIN3={})",
-            sts_after,
-            if sts_after & 0x0001 != 0 { 1u8 } else { 0u8 },
-            if sts_after & 0x0002 != 0 { 1u8 } else { 0u8 },
-            if sts_after & 0x0004 != 0 { 1u8 } else { 0u8 },
-            if sts_after & 0x0008 != 0 { 1u8 } else { 0u8 },
+            sts_pre_clear,
+            if sts_pre_clear & 0x0001 != 0 { 1u8 } else { 0u8 },
+            if sts_pre_clear & 0x0002 != 0 { 1u8 } else { 0u8 },
+            if sts_pre_clear & 0x0004 != 0 { 1u8 } else { 0u8 },
+            if sts_pre_clear & 0x0008 != 0 { 1u8 } else { 0u8 },
         );
         let gcap_full = mmio!(r32 m, GCAP);
         let iss = (gcap_full >> 8) & 0xF;
         let oss = (gcap_full >> 12) & 0xF;
-        (iss, oss, gcap_full, sts_after)
+        (iss, oss, gcap_full, sts_pre_clear)
     };
     log::info!("Sound: ISS={} OSS={}", iss, oss);
     // ── Populate diagnostic cache ──────────────────────────────

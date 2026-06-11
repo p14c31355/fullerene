@@ -77,20 +77,9 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
 ///
 /// This is called from the `dmesg` shell command handler.
 pub fn write_to<W: fmt::Write>(writer: &mut W) -> fmt::Result {
-    let guard = KLOG_BUF.lock();
-    let ring = &*guard;
-    for i in 0..ring.len {
-        let idx = (ring.head + i) % KLOG_CAPACITY;
-        let b = ring.buf[idx];
-        // Safety: we only store valid UTF-8 sequences
-        // (all input goes through fmt::Write or is valid ASCII).
-        // Write one byte at a time through fmt::Write
-        let mut tmp = [0u8; 1];
-        tmp[0] = b;
-        let s = core::str::from_utf8(&tmp[..]).map_err(|_| fmt::Error)?;
-        writer.write_str(s)?;
-    }
-    Ok(())
+    let snap = snapshot();
+    let s = core::str::from_utf8(&snap).map_err(|_| fmt::Error)?;
+    writer.write_str(s)
 }
 
 /// Return the current size (in bytes) of the kernel log buffer.

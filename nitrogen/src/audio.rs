@@ -66,16 +66,22 @@ pub trait AudioDevice {
     /// have a more efficient direct byte path (e.g. DMA into a ring
     /// buffer that uses `&[u8]` natively).
     fn feed_bytes(&mut self, bytes: &[u8]) -> usize {
-        // SAFETY: &[u8] re-interpreted as &[i16] — caller must ensure
-        // alignment and that bytes represent valid i16 PCM data.
-        let len = bytes.len() / core::mem::size_of::<i16>();
+        let i16_size = core::mem::size_of::<i16>();
+        let len = bytes.len() / i16_size;
         if len == 0 {
+            return 0;
+        }
+        // SAFETY: `from_raw_parts` requires correct alignment for i16.
+        // Reject unaligned input — callers must provide 2‑byte‑aligned
+        // PCM data (e.g. static arrays or allocated buffers).
+        let align = core::mem::align_of::<i16>();
+        if bytes.as_ptr() as usize % align != 0 {
             return 0;
         }
         let samples =
             unsafe { core::slice::from_raw_parts(bytes.as_ptr() as *const i16, len) };
         let frames = self.write_samples(samples);
-        frames * self.channels() as usize * core::mem::size_of::<i16>()
+        frames * self.channels() as usize * i16_size
     }
 }
 
@@ -198,21 +204,32 @@ impl PcmMixer {
 ///
 /// # Memory ordering
 ///
-/// - `write_head` / `read_tail` use `Relaxed` for the fast path plus a
-///   single `Release`/`Acquire` fence on each side.
-pub struct BufferQueue<const N: usize> {
-    buf: [u8; N],
-    /// Next write position (only written by producer).
-    write_head: AtomicUsize,
-    /// Next read position (only written by consumer).
-    read_tail: AtomicUsize,
-}
+    /// - `write_head` / `read_tail` use `Relaxed` for the fast path plus a
+    ///   single `Release`/`Acquire` fence on each side.
+    pub struct BufferQueue<const N: usize> {
+        // SAFETY: backed by UnsafeCell because the buffer is mutated
+        // through shared references (&self) by both producer and consumer
+        // via raw pointers (SPSC contract).  Sync is implemented manually
+        // because the AtomicUsize heads provide sufficient synchronisation.
+        buf: core::cell::UnsafeCell<[u8; N]>,
+        /// Next write position (only written by producer).
+        write_head: AtomicUsize,
+        /// Next read position (only written by consumer).
+        read_tail: AtomicUsize,
+    }
 
-impl<const N: usize> BufferQueue<N> {
-    /// Create an empty buffer queue.
-    pub const fn new() -> Self {
-        Self {
-            buf: [0u8; N],
+    // SAFETY: BufferQueue is Sync because the SPSC contract ensures
+    // mutually exclusive access to each logical region: the producer
+    // only writes between write_head and read_tail (wrapping), and the
+    // consumer only reads between read_tail and write_head.  The atomic
+    // heads provide happens-before synchronisation.
+    unsafe impl<const N: usize> Sync for BufferQueue<N> {}
+
+    impl<const N: usize> BufferQueue<N> {
+        /// Create an empty buffer queue.
+        pub const fn new() -> Self {
+            Self {
+                buf: core::cell::UnsafeCell::new([0u8; N]),
             write_head: AtomicUsize::new(0),
             read_tail: AtomicUsize::new(0),
         }
@@ -247,7 +264,7 @@ impl<const N: usize> BufferQueue<N> {
         let first_chunk = (N - w_idx).min(n);
         // SAFETY: we hold unique write access up to w+n.
         unsafe {
-            let ptr = self.buf.as_ptr() as *mut u8;
+            let ptr = self.buf.get() as *mut u8;
             core::ptr::copy_nonoverlapping(
                 data.as_ptr(),
                 ptr.add(w_idx),
@@ -280,7 +297,7 @@ impl<const N: usize> BufferQueue<N> {
         let first_chunk = (N - r_idx).min(n);
         // SAFETY: we hold unique read access up to r+n.
         unsafe {
-            let ptr = self.buf.as_ptr();
+            let ptr = self.buf.get() as *mut u8;
             core::ptr::copy_nonoverlapping(
                 ptr.add(r_idx),
                 dst.as_mut_ptr(),

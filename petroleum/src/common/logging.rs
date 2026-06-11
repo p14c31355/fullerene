@@ -35,7 +35,10 @@ impl log::Log for FullereneLogger {
             let msg = alloc::format!("[{}] {}\n", record.level(), record.args());
             crate::serial::serial_log(format_args!("{}", msg));
             // Forward to kernel log hook (dmesg) when registered.
-            if let Some(hook) = *LOG_HOOK.lock() {
+            // Copy the function pointer out of the lock first to avoid
+            // deadlock if the callback itself triggers logging.
+            let hook = *LOG_HOOK.lock();
+            if let Some(hook) = hook {
                 hook(record.level(), &msg);
             }
         }
