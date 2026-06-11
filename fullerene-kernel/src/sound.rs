@@ -482,8 +482,8 @@ unsafe fn dump_codec_inventory(mmio: *mut u8, codec: u8) {
         log::warn!("Sound:  Cannot read subordinate count — aborting inventory");
         return;
     }
-    let start_root = ((sub >> 16) & 0xFF) as u8;
-    let count_root = (sub & 0xFF) as u8;
+    let start_root = ((sub >> 16) & 0xFF) as usize;
+    let count_root = (sub & 0xFF) as usize;
     if count_root == 0 {
         log::warn!("Sound:  Root has no subordinate nodes");
         return;
