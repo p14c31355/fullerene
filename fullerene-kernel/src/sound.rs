@@ -293,17 +293,70 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
         }
         core::hint::spin_loop();
     }
+    // ── Ensure CORB/RIRB DMA engines are running ─────────────────
+    // Real hardware may have encountered a previous memory error
+    // (CORBMEI / RIRBMEI) that stopped the DMA engines.  We must
+    // clear the MEI bits (WC) and re-enable the engines before
+    // sending a new verb.
+    let corb_ctl = unsafe { mmio!(r32 mmio, CORBCTL) };
+    if corb_ctl & 0x0002 != 0 {
+        // CORBMEI set — clear it (WC) and restart the CORB engine
+        unsafe { mmio!(w32 mmio, CORBCTL, corb_ctl | 0x0002) };
+        log::info!("Sound: CORBMEI cleared, restarting CORB DMA");
+    }
+    let rirb_ctl_check = unsafe { mmio!(r32 mmio, RIRBCTL) };
+    if rirb_ctl_check & 0x0002 != 0 {
+        // RIRBMEI set — clear it (WC) and restart the RIRB engine
+        unsafe { mmio!(w32 mmio, RIRBCTL, rirb_ctl_check | 0x0002) };
+        log::info!("Sound: RIRBMEI cleared, restarting RIRB DMA");
+    }
+    // Re-read to confirm we are running
+    let corb_ctl2 = unsafe { mmio!(r32 mmio, CORBCTL) };
+    let rirb_ctl2 = unsafe { mmio!(r32 mmio, RIRBCTL) };
+    if corb_ctl2 & 0x0001 == 0 || corb_ctl2 & 0x0002 != 0 {
+        // Not running or MEI still set — attempt full restart
+        // HDA spec §4.8: write size+MEI+run in one go
+        let corb_sz = (corb_ctl2 >> 8) & 0x03;
+        unsafe {
+            mmio!(w32 mmio, CORBCTL, 0x0002 | (corb_sz << 8));
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        }
+        log::info!("Sound: CORB restart: CTL=0x{:08x}", corb_ctl2);
+    }
+    if rirb_ctl2 & 0x0001 == 0 || rirb_ctl2 & 0x0002 != 0 {
+        let rirb_sz = (rirb_ctl2 >> 8) & 0x03;
+        unsafe {
+            mmio!(w32 mmio, RIRBCTL, 0x0002 | (rirb_sz << 8));
+            core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        }
+        log::info!("Sound: RIRB restart: CTL=0x{:08x}", rirb_ctl2);
+    }
+
     let wp = unsafe { mmio!(r16 mmio, CORBWP) } as usize;
     let next_wp = (wp + 1) % corb_n;
+    // Write the CORB entry, then issue a full memory fence.
+    // Without mfence, the write may still be in the CPU store buffer
+    // when the HDA controller reads it via DMA → memory error → CORBMEI
     unsafe { core::ptr::write_volatile(corb.add(next_wp), cmd) };
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     unsafe { mmio!(w16 mmio, CORBWP, next_wp as u16) };
     let rirb_wp_before = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
     for _ in 0..50_000 {
         let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
         if rirb_wp != rirb_wp_before {
             let resp = unsafe { core::ptr::read_volatile(rirb.add(rirb_wp as usize)) };
-            if (resp >> 63) & 1 == 0 {
-                return (resp >> 32) as u32;
+            let unsol = (resp >> 63) & 1;
+            if unsol == 0 {
+                let raw = (resp >> 32) as u32;
+                // Log first successful verb response for debugging
+                // (only for the initial discovery probes)
+                if verb == VERB_GET_PARAM && payload <= 0x12 {
+                    log::info!(
+                        "Sound: verb OK c={} n={:#x} v={:#03x} → raw=0x{:08x}",
+                        codec, node, verb, raw
+                    );
+                }
+                return raw;
             }
         }
         core::hint::spin_loop();
@@ -1101,6 +1154,25 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     log::info!("Sound: codec done DAC=0x{:x} Pin=0x{:x}", dac, pin);
 }
 
+/// Cached HDA diagnostic info, preserved across `hda_init` calls.
+pub static HDA_DIAG: Mutex<HdaDiagInfo> = Mutex::new(HdaDiagInfo {
+    gcap: 0,
+    gcap64: false,
+    corb_phys: 0,
+    rirb_phys: 0,
+    states_after_crst: 0,
+    populated: false,
+});
+
+pub struct HdaDiagInfo {
+    pub gcap: u32,
+    pub gcap64: bool,
+    pub corb_phys: u64,
+    pub rirb_phys: u64,
+    pub states_after_crst: u16,
+    pub populated: bool,
+}
+
 fn hda_init() {
     if HDA_INIT_DONE.load(Ordering::Acquire) {
         return;
@@ -1119,13 +1191,13 @@ fn hda_init() {
         return;
     }
     log::info!("Sound: GCAP=0x{:x}", gctest);
-    let (iss, oss) = unsafe {
+    let (iss, oss, gcap_full, sts_post_crst) = unsafe {
         let m = virt as *mut u8;
         // ── Controller reset (CRST) with extended wait ─────────────────
         // HDA spec §4.3: Turn off CRST, wait >= 100 μs, then set CRST=1.
-        // The controller acknowledges via CRST bit read-back, but the
-        // codec may need up to **250 ms** after CRST before it responds
-        // to the first CORB verb (HDA spec §4.3, Codec Initialization).
+        // The controller acknowledges via CRST bit read-back, but
+        // Realtek codecs (ALC2xx) may need up to **500 ms** after CRST
+        // before they respond to the first CORB verb.
         mmio!(w32 m, GCTL, 0);
         // 1 ms delay (CRST off settling)
         for _ in 0..20000 {
@@ -1144,27 +1216,53 @@ fn hda_init() {
             return;
         }
         // ── Codec wake-up delay (post-CRST) ──────────────────────────
-        // On many Realtek parts (ALC2xx), the first CORB verb may fail
-        // if sent within < 50 ms of CRST.  250 ms covers worst cases.
         let crst_ready = unsafe { core::arch::x86_64::_rdtsc() };
-        let deadline = crst_ready.wrapping_add(800_000_000u64); // ~266 ms at 3 GHz
+        // 1 second delay — some ALC2xx + PCH combos need up to 800 ms
+        // before the codec de-asserts reset and responds to CORB.
+        let deadline = crst_ready.wrapping_add(3_000_000_000u64); // ~1 s at 3 GHz
         while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
             core::hint::spin_loop();
         }
-        log::info!("Sound: CRST done, codec wake-up delay complete");
+        log::info!("Sound: CRST done, codec wake-up delay complete (1000 ms)");
         mmio!(w16 m, STATESTS, 0x000F);
-        // Log pre-CORB STATESTS to see wired codec bits
+        // Log pre-CORB STATESTS to see wired codec bits (SDIN0‑3)
         let sts_after = mmio!(r16 m, STATESTS);
         log::info!(
-            "Sound: STATESTS after CRST+clear=0x{:04x} (SDIN0={})",
+            "Sound: STATESTS after CRST+clear=0x{:04x} (SDIN0={} SDIN1={} SDIN2={} SDIN3={})",
             sts_after,
-            sts_after & 0x0001
+            if sts_after & 0x0001 != 0 { 1u8 } else { 0u8 },
+            if sts_after & 0x0002 != 0 { 1u8 } else { 0u8 },
+            if sts_after & 0x0004 != 0 { 1u8 } else { 0u8 },
+            if sts_after & 0x0008 != 0 { 1u8 } else { 0u8 },
         );
+        // If no codec responds, wait another 500 ms and re-check.
+        if sts_after & 0x000F == 0 {
+            let recheck_loop = unsafe { core::arch::x86_64::_rdtsc() };
+            let recheck_deadline = recheck_loop.wrapping_add(1_500_000_000u64);
+            while unsafe { core::arch::x86_64::_rdtsc() } < recheck_deadline {
+                core::hint::spin_loop();
+            }
+            let sts_recheck = mmio!(r16 m, STATESTS);
+            log::info!(
+                "Sound: STATESTS recheck after 500ms=0x{:04x}",
+                sts_recheck
+            );
+        }
         mmio!(w32 m, INTCTL, 0);
-        let gcap = mmio!(r32 m, GCAP);
-        ((gcap >> 8) & 0xF, (gcap >> 12) & 0xF)
+        let gcap_full = mmio!(r32 m, GCAP);
+        let iss = (gcap_full >> 8) & 0xF;
+        let oss = (gcap_full >> 12) & 0xF;
+        (iss, oss, gcap_full, sts_after)
     };
     log::info!("Sound: ISS={} OSS={}", iss, oss);
+    // ── Populate diagnostic cache ──────────────────────────────
+    {
+        let mut diag = HDA_DIAG.lock();
+        diag.gcap = gcap_full;
+        diag.gcap64 = gcap_full & 1 != 0;
+        diag.states_after_crst = sts_post_crst;
+        diag.populated = true;
+    }
     if oss == 0 {
         log::warn!("Sound: no output streams");
         return;
@@ -1216,6 +1314,19 @@ fn hda_init() {
         // Stop CORB/RIRB DMA engines before programming
         mmio!(w32 m, CORBCTL, 0);
         mmio!(w32 m, RIRBCTL, 0);
+        // ── Update diagnostic cache with DMA addresses ─────────
+        {
+            let mut diag = HDA_DIAG.lock();
+            diag.corb_phys = corb_phys;
+            diag.rirb_phys = rirb_phys;
+        }
+        log::info!(
+            "Sound: CORB phys=0x{:016x} RIRB phys=0x{:016x}",
+            corb_phys, rirb_phys
+        );
+        // Check 64-bit support: GCAP bit 0
+        let gcap64 = mmio!(r32 m, GCAP) & 1;
+        log::info!("Sound: HDA 64-bit support (GCAP bit0)={}", gcap64);
         mmio!(w32 m, CORBLBASE, corb_phys as u32);
         mmio!(w32 m, CORBUBASE, (corb_phys >> 32) as u32);
         // CORB Read Pointer Reset via bit 15, then clear RP/WP

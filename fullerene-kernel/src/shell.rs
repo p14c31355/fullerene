@@ -164,6 +164,24 @@ fn register_nozzle_hooks() {
                 }
                 ctx.terminal.write_str("=== End kernel log ===\n");
             }
+            // ── HDA diagnostic info (read directly, no lock contention) ──
+            {
+                let diag = crate::sound::HDA_DIAG.lock();
+                if diag.populated {
+                    ctx.terminal.write_str("\n=== HDA diagnostic ===\n");
+                    let line = alloc::format!(
+                        "GCAP: 0x{:08x}  (64-bit: {})\nCORB phys: 0x{:016x}\nRIRB phys: 0x{:016x}\nSTATESTS after CRST: 0x{:04x} (SDIN0={})\n",
+                        diag.gcap,
+                        if diag.gcap64 { "YES" } else { "NO" },
+                        diag.corb_phys,
+                        diag.rirb_phys,
+                        diag.states_after_crst,
+                        if diag.states_after_crst & 0x0001 != 0 { 1u8 } else { 0u8 },
+                    );
+                    ctx.terminal.write_str(&line);
+                    ctx.terminal.write_str("=== End HDA diagnostic ===\n");
+                }
+            }
             ctx.terminal.write_str("\n=== Kernel trace buffer ===\n");
             let events = crate::tracing::snapshot();
             if events.is_empty() {
