@@ -12,6 +12,7 @@
 //! ```
 
 use core::fmt;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 /// Maximum number of bytes in the ring buffer.
@@ -30,6 +31,12 @@ struct KLogRing {
     len: usize,
 }
 
+/// Reentrancy guard: set to `true` while `write_fmt` or `write_bytes`
+/// is holding the `KLOG_BUF` lock.  Nested calls (e.g. a log message
+/// emitted while formatting another log message) are forwarded to the
+/// serial port instead of attempting to re-acquire the mutex.
+static IN_KLOG: AtomicBool = AtomicBool::new(false);
+
 /// Write a formatted message to the kernel log buffer.
 ///
 /// This is the primary entry point.  Use it like `write!`:
@@ -38,14 +45,26 @@ struct KLogRing {
 /// klog_fmt!(format_args!("Sound: Hello {}\n", name));
 /// ```
 pub fn write_fmt(args: fmt::Arguments<'_>) {
+    if IN_KLOG.swap(true, Ordering::Acquire) {
+        // Reentrant call — fall back to serial output to avoid deadlock.
+        petroleum::serial::serial_log(args);
+        return;
+    }
     let mut guard = KLOG_BUF.lock();
     let ring = &mut *guard;
     let mut writer = KLogWriter { ring, pos: 0 };
     let _ = fmt::Write::write_fmt(&mut writer, args);
+    drop(guard);
+    IN_KLOG.store(false, Ordering::Release);
 }
 
 /// Write a raw byte slice to the kernel log buffer.
 pub fn write_bytes(bytes: &[u8]) {
+    if IN_KLOG.swap(true, Ordering::Acquire) {
+        // Reentrant call — fall back to serial output.
+        petroleum::serial::serial_log(format_args!("{}", core::str::from_utf8(bytes).unwrap_or("(binary)")));
+        return;
+    }
     let mut guard = KLOG_BUF.lock();
     let ring = &mut *guard;
     for &b in bytes {
@@ -59,6 +78,8 @@ pub fn write_bytes(bytes: &[u8]) {
             ring.head = (ring.head + 1) % KLOG_CAPACITY;
         }
     }
+    drop(guard);
+    IN_KLOG.store(false, Ordering::Release);
 }
 
 /// Return the entire kernel log as an owned `Vec<u8>`.
@@ -76,10 +97,33 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
 /// Write kernel log to a `Terminal`-compatible writer.
 ///
 /// This is called from the `dmesg` shell command handler.
+/// Invalid UTF-8 sequences (which can occur when the ring buffer
+/// wraps during multi-byte character writes) are replaced with the
+/// Unicode replacement character ``.
 pub fn write_to<W: fmt::Write>(writer: &mut W) -> fmt::Result {
     let snap = snapshot();
-    let s = core::str::from_utf8(&snap).map_err(|_| fmt::Error)?;
-    writer.write_str(s)
+    let mut chunk = &snap[..];
+    while !chunk.is_empty() {
+        match core::str::from_utf8(chunk) {
+            Ok(s) => {
+                writer.write_str(s)?;
+                break;
+            }
+            Err(e) => {
+                let valid_len = e.valid_up_to();
+                if valid_len > 0 {
+                    // SAFETY: the first `valid_len` bytes are valid UTF-8.
+                    writer.write_str(unsafe {
+                        core::str::from_utf8_unchecked(&chunk[..valid_len])
+                    })?;
+                }
+                writer.write_str("")?;
+                let error_len = e.error_len().unwrap_or(1);
+                chunk = &chunk[valid_len + error_len..];
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Return the current size (in bytes) of the kernel log buffer.
