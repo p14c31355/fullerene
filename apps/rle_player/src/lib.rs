@@ -117,6 +117,9 @@ impl RleFile {
     /// Returns `Err(RleError::FrameOutOfRange)` when `frame_idx` is
     /// beyond the frame count.
     pub fn decode_frame(&self, frame_idx: usize, buf: &mut [u8]) -> Result<bool, RleError> {
+        if buf.len() < self.total_pixels {
+            return Err(RleError::TooShort);
+        }
         if frame_idx >= self.frame_offsets.len() {
             return Err(RleError::FrameOutOfRange);
         }
@@ -181,6 +184,10 @@ pub fn draw_decoded_frame(
     let draw_h_u = draw_h as usize;
     let off_x_u = off_x as usize;
     let off_y_u = off_y as usize;
+
+    if decode.len() < fw_u.saturating_mul(fh_u) {
+        return;
+    }
 
     for dy in 0..draw_h_u {
         let sy = dy * fh_u / draw_h_u;

@@ -48,7 +48,7 @@ fn calibrate_tsc_per_ms() -> u64 {
         _ => return 3_000_000,
     };
     let mut prev = lpib0;
-    let settle = t0.wrapping_add(300_000_000); // ~100 ms at 3 GHz
+    let settle_ms = 300_000_000u64; // ~100 ms at 3 GHz
     loop {
         if let Some(cur) = crate::sound::hda_playback_progress() {
             if cur >= AUDIO_SZ {
@@ -59,7 +59,7 @@ fn calibrate_tsc_per_ms() -> u64 {
             }
             prev = cur;
         }
-        if unsafe { x86_64::_rdtsc() } > settle {
+        if unsafe { x86_64::_rdtsc() }.wrapping_sub(t0) >= settle_ms {
             return 3_000_000; // stalled
         }
         core::hint::spin_loop();
@@ -67,7 +67,7 @@ fn calibrate_tsc_per_ms() -> u64 {
     // LPIB is advancing — measure half‑buffer worth of progress.
     const CALIB_HALF: u64 = AUDIO_SZ / 2; // 16368
     let t0 = unsafe { x86_64::_rdtsc() };
-    let deadline = t0.wrapping_add(3_000_000_000); // ~1 s at 3 GHz
+    let deadline_ms = 3_000_000_000u64; // ~1 s at 3 GHz
     let mut total = 0u64;
     loop {
         if let Some(cur) = crate::sound::hda_playback_progress() {
@@ -87,7 +87,7 @@ fn calibrate_tsc_per_ms() -> u64 {
                 break;
             }
         }
-        if unsafe { x86_64::_rdtsc() } > deadline {
+        if unsafe { x86_64::_rdtsc() }.wrapping_sub(t0) >= deadline_ms {
             return 3_000_000;
         }
         core::hint::spin_loop();
@@ -297,8 +297,8 @@ pub fn play_badapple() {
         if use_hda && lpib_valid {
             // ── LPIB‑synced wait ─────────────────────────
             let target = (idx as u64 + 1).saturating_mul(pcm_per_frame);
-            let deadline =
-                unsafe { x86_64::_rdtsc() }.wrapping_add(frame_interval_tsc.saturating_mul(3));
+            let loop_start = unsafe { x86_64::_rdtsc() };
+            let watchdog_ms = frame_interval_tsc.saturating_mul(3);
             loop {
                 if nitrogen::ps2::keyboard::input_available() {
                     if let Some(_ch) = nitrogen::ps2::keyboard::read_char() {
@@ -344,7 +344,7 @@ pub fn play_badapple() {
                     break;
                 }
                 // TSC watchdog: fall back if LPIB isn't advancing.
-                if unsafe { x86_64::_rdtsc() } > deadline {
+                if unsafe { x86_64::_rdtsc() }.wrapping_sub(loop_start) >= watchdog_ms {
                     petroleum::serial::serial_log(format_args!(
                         "Bad Apple: LPIB stalled, using TSC\n"
                     ));
