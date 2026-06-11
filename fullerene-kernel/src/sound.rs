@@ -195,9 +195,15 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             let Some(mut cfg) = PciConfigSpace::read_from_device(bus, d, 0) else {
                 continue;
             };
-            cfg.command |= 0x0004;
+            // Ensure both Memory Space (bit 1) AND Bus Mastering (bit 2)
+            // are set.  CORB/RIRB DMA requires Bus Mastering; without it
+            // all verbs timeout on real hardware (QEMU is lenient).
+            cfg.command |= 0x0006;
             let v = (cfg.status as u32) << 16 | (cfg.command as u32);
             PciConfigSpace::write_config_dword(&mut cfg, bus, d, 0, 0x04, v);
+            // Re-read PCI command to confirm it stuck
+            let cmd_after =
+                PciConfigSpace::read_config_word(bus, d, 0, 4);
 
             // ── Quick MMIO probe ──────────────────────────────────
             let mmio = (bar0 + off) as *mut u8;
@@ -205,7 +211,7 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             let states = unsafe { mmio!(r16 mmio, STATESTS) };
 
             log::info!(
-                "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x}",
+                "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x} CMD=0x{:04x}",
                 bus,
                 d,
                 0,
@@ -213,7 +219,8 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
                 dev.device_id,
                 bar0,
                 gcap,
-                states
+                states,
+                cmd_after,
             );
 
             // Codec #0 connected → this is the real audio controller.
@@ -301,11 +308,22 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
         }
         core::hint::spin_loop();
     }
+    // Dump CORB/RIRB register state for timeout diagnosis
+    let corb_ctl = unsafe { mmio!(r32 mmio, CORBCTL) };
+    let rirb_ctl = unsafe { mmio!(r32 mmio, RIRBCTL) };
+    let corb_wp = unsafe { mmio!(r16 mmio, CORBWP) };
+    let corb_rp = unsafe { mmio!(r16 mmio, CORBRP) };
+    let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) };
     log::warn!(
-        "Sound: verb timeout c={} n={:#x} v={:#03x}",
+        "Sound: verb timeout c={} n={:#x} v={:#03x} p={:#x}",
         codec,
         node,
-        verb
+        verb,
+        payload
+    );
+    log::warn!(
+        "Sound:  CORB CTL=0x{:08x} WP=0x{:04x} RP=0x{:04x}  RIRB CTL=0x{:08x} WP=0x{:04x}",
+        corb_ctl, corb_wp, corb_rp, rirb_ctl, rirb_wp
     );
     0xFFFF_FFFF
 }
@@ -1103,21 +1121,45 @@ fn hda_init() {
     log::info!("Sound: GCAP=0x{:x}", gctest);
     let (iss, oss) = unsafe {
         let m = virt as *mut u8;
+        // ── Controller reset (CRST) with extended wait ─────────────────
+        // HDA spec §4.3: Turn off CRST, wait >= 100 μs, then set CRST=1.
+        // The controller acknowledges via CRST bit read-back, but the
+        // codec may need up to **250 ms** after CRST before it responds
+        // to the first CORB verb (HDA spec §4.3, Codec Initialization).
         mmio!(w32 m, GCTL, 0);
-        for _ in 0..2000 {
+        // 1 ms delay (CRST off settling)
+        for _ in 0..20000 {
             core::hint::spin_loop();
         }
         mmio!(w32 m, GCTL, 1);
-        for _ in 0..20000 {
+        // Wait for CRST bit to be set (controller side)
+        for _ in 0..100_000 {
             if mmio!(r32 m, GCTL) & 1 != 0 {
                 break;
             }
+            core::hint::spin_loop();
         }
         if mmio!(r32 m, GCTL) & 1 == 0 {
-            log::warn!("Sound: controller reset timeout");
+            log::warn!("Sound: controller reset timeout (CRST never set)");
             return;
         }
+        // ── Codec wake-up delay (post-CRST) ──────────────────────────
+        // On many Realtek parts (ALC2xx), the first CORB verb may fail
+        // if sent within < 50 ms of CRST.  250 ms covers worst cases.
+        let crst_ready = unsafe { core::arch::x86_64::_rdtsc() };
+        let deadline = crst_ready.wrapping_add(800_000_000u64); // ~266 ms at 3 GHz
+        while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
+            core::hint::spin_loop();
+        }
+        log::info!("Sound: CRST done, codec wake-up delay complete");
         mmio!(w16 m, STATESTS, 0x000F);
+        // Log pre-CORB STATESTS to see wired codec bits
+        let sts_after = mmio!(r16 m, STATESTS);
+        log::info!(
+            "Sound: STATESTS after CRST+clear=0x{:04x} (SDIN0={})",
+            sts_after,
+            sts_after & 0x0001
+        );
         mmio!(w32 m, INTCTL, 0);
         let gcap = mmio!(r32 m, GCAP);
         ((gcap >> 8) & 0xF, (gcap >> 12) & 0xF)
@@ -1198,7 +1240,23 @@ fn hda_init() {
         }
         // Enable RIRB DMA with the correct size
         mmio!(w32 m, RIRBCTL, 0x02 | rirb_sz_bits);
+        // ── Verify CORB/RIRB register state after enable ──────────
+        let corb_ctl = mmio!(r32 m, CORBCTL);
+        let rirb_ctl = mmio!(r32 m, RIRBCTL);
+        let corb_rp = mmio!(r16 m, CORBRP);
+        let corb_wp_after = mmio!(r16 m, CORBWP);
+        let rirb_wp_after = mmio!(r16 m, RIRBWP);
+        log::info!(
+            "Sound: CORB CTL=0x{:08x} RP=0x{:04x} WP=0x{:04x}  RIRB CTL=0x{:08x} WP=0x{:04x}",
+            corb_ctl, corb_rp, corb_wp_after, rirb_ctl, rirb_wp_after
+        );
         log::info!("Sound: CORB/RIRB enabled (size={} entries)", corb_n);
+        // ── Short delay after CORB/RIRB enable ────────────────────
+        // Some Intel PCH HDA controllers require a brief settling
+        // period after DMA enable before the first verb is accepted.
+        for _ in 0..50000 {
+            core::hint::spin_loop();
+        }
     }
     let codec_addr: u8 = 0;
     unsafe {
