@@ -590,10 +590,12 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
                     // Unmute the mixer input for the DAC channel.
                     // VERB_SET_AMP_GAIN_MUTE on a mixer selects
                     // input index via bits [12:8], gain [7:0].
-                    // 0x7000 → set input index 0, output channel 0,
-                    // gain=0, mute=0.
+                    // bit15=0 (input amp), bit14=reserved (must be 0),
+                    // bit13=SetLeft, bit12=SetRight, bits[11:8]=Index,
+                    // bit7=Mute(0=unmute), bits[6:0]=Gain.
+                    // 0x3000 → SetLeft + SetRight, index=0, gain=0, unmute.
                     // Mixer input amp: SetLeft(bit13) + SetRight(bit12) + Index(bits[11:8])
-                    let unmute_payload = 0x7000u16 | ((mix_ci as u16) << 8); // index, gain=0, unmute
+                    let unmute_payload = 0x3000u16 | ((mix_ci as u16) << 8);
                     let r2 = unsafe {
                         corb_send_verb(
                             mmio,
