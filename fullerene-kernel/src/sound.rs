@@ -325,7 +325,7 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     }
     if rirb_ctl2 & 0x02 == 0 {
         let rirb_sz_byte = unsafe { mmio!(r8 mmio, RIRBCTL + 2) } & 0x03;
-        unsafe { mmio!(w8 mmio, RIRBCTL, 0x02 | rirb_sz_byte) };
+        unsafe { mmio!(w8 mmio, RIRBCTL, 0x02) };
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         log::info!("Sound: RIRB restarted (CTL=0x{:02x} SZ={})", rirb_ctl2, rirb_sz_byte);
     }
