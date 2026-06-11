@@ -133,15 +133,15 @@ impl PcmMixer {
         // Nearest‑neighbour resampling ratio.
         // For each output frame index j, input frame index =
         //   floor(j * in_rate / out_rate)
-        let ratio_num = in_rate as u64;
-        let ratio_den = self.out_rate as u64;
+        let ratio_num = in_rate as u128;
+        let ratio_den = self.out_rate as u128;
 
         let max_out_frames = output.len() / self.out_channels as usize;
         let mut out_frame = 0usize;
 
         while out_frame < max_out_frames {
             let in_frame =
-                ((out_frame as u64 * ratio_num) / ratio_den) as usize;
+                ((out_frame as u128 * ratio_num) / ratio_den) as usize;
             if in_frame >= in_frames {
                 break;
             }
