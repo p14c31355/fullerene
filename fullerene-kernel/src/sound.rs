@@ -442,15 +442,21 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
             PARAM_OUTPUT_AMP_CAP as u16,
         )
     };
-    let steps = ac as u8 & 0x7F;
-    let gain = if steps > 0 { steps / 2 } else { 0 };
+    // amp_cap response: bits[31]=mute, [22:16]=stepsize, [14:8]=nsteps, [6:0]=offset
+    let offset = (ac & 0x7F) as u8;
+    let nsteps = ((ac >> 8) & 0x7F) as u8;
+    let gain = if nsteps > 0 { offset } else { 0 };
     unsafe {
+        // VERB_SET_AMP_GAIN_MUTE payload:
+        //   bit15=SetOut(1 for output amp), bit13=SetLeft, bit12=SetRight,
+        //   bit7=Mute(0=unmute), bits[6:0]=Gain.
+        // 0xB000 = SetOut + SetLeft + SetRight.
         corb_send_verb(
             mmio,
             codec,
             dac,
             VERB_SET_AMP_GAIN_MUTE,
-            (0x70 | gain) as u16,
+            0xB000u16 | gain as u16,
         )
     };
     // 16-bit signed mono at 48000 Hz:
@@ -467,15 +473,17 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
             PARAM_OUTPUT_AMP_CAP as u16,
         )
     };
-    let psteps = pa as u8 & 0x7F;
-    let pgain = if psteps > 0 { psteps / 2 } else { 0 };
+    let p_offset = (pa & 0x7F) as u8;
+    let p_nsteps = ((pa >> 8) & 0x7F) as u8;
+    let pgain = if p_nsteps > 0 { p_offset } else { 0 };
     unsafe {
+        // Pin output amp → SetOut(bit15) + SetLeft(bit13) + SetRight(bit12)
         corb_send_verb(
             mmio,
             codec,
             pin,
             VERB_SET_AMP_GAIN_MUTE,
-            (0x70 | pgain) as u16,
+            0xB000u16 | pgain as u16,
         )
     };
     // ── Route DAC → Pin through correct mixer ─────────────────
@@ -572,7 +580,8 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
                     // input index via bits [12:8], gain [7:0].
                     // 0x7000 → set input index 0, output channel 0,
                     // gain=0, mute=0.
-                    let unmute_payload = ((mix_ci << 8) | 0x00) as u16; // index, gain=0, unmute
+                    // Mixer input amp: SetLeft(bit13) + SetRight(bit12) + Index(bits[11:8])
+                    let unmute_payload = 0x3000u16 | ((mix_ci as u16) << 8); // index, gain=0, unmute
                     let r2 = unsafe {
                         corb_send_verb(
                             mmio,
@@ -744,7 +753,9 @@ fn hda_init() {
     let codec_addr: u8 = 0;
     unsafe {
         if let Some((dac, pin)) = discover_codec(virt as *mut u8, codec_addr) {
-            configure_codec(virt as *mut u8, codec_addr, dac, pin, 0);
+            // Stream tag 1 — HDA stream IDs are 1‑based; 0 means "no stream"
+            // and causes real hardware to silently ignore the DMA engine.
+            configure_codec(virt as *mut u8, codec_addr, dac, pin, 1);
         } else {
             log::warn!("Sound: no codec widgets");
         }
