@@ -1193,62 +1193,24 @@ fn hda_init() {
     log::info!("Sound: GCAP=0x{:x}", gctest);
     let (iss, oss, gcap_full, sts_post_crst) = unsafe {
         let m = virt as *mut u8;
-        // ── Controller reset (CRST) with extended wait ─────────────────
-        // HDA spec §4.3: Turn off CRST, wait >= 100 μs, then set CRST=1.
-        // The controller acknowledges via CRST bit read-back, but
-        // Realtek codecs (ALC2xx) may need up to **500 ms** after CRST
-        // before they respond to the first CORB verb.
-        mmio!(w32 m, GCTL, 0);
-        // 1 ms delay (CRST off settling)
-        for _ in 0..20000 {
-            core::hint::spin_loop();
-        }
-        mmio!(w32 m, GCTL, 1);
-        // Wait for CRST bit to be set (controller side)
-        for _ in 0..100_000 {
-            if mmio!(r32 m, GCTL) & 1 != 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if mmio!(r32 m, GCTL) & 1 == 0 {
-            log::warn!("Sound: controller reset timeout (CRST never set)");
-            return;
-        }
-        // ── Codec wake-up delay (post-CRST) ──────────────────────────
-        let crst_ready = unsafe { core::arch::x86_64::_rdtsc() };
-        // 1 second delay — some ALC2xx + PCH combos need up to 800 ms
-        // before the codec de-asserts reset and responds to CORB.
-        let deadline = crst_ready.wrapping_add(3_000_000_000u64); // ~1 s at 3 GHz
-        while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
-            core::hint::spin_loop();
-        }
-        log::info!("Sound: CRST done, codec wake-up delay complete (1000 ms)");
+        // ── Skip full controller reset (CRST cycle) ────────────────
+        // The controller was already in a working state when we probed
+        // it (STATESTS showed a connected codec).  Performing a full
+        // CRST cycle on many Realtek + Intel PCH combos causes the
+        // codec to enter reset and never come back (STATESTS → 0),
+        // even after > 1 s wait.  We therefore leave the controller
+        // as-is and only clear the status bits + disable interrupts.
         mmio!(w16 m, STATESTS, 0x000F);
-        // Log pre-CORB STATESTS to see wired codec bits (SDIN0‑3)
+        mmio!(w32 m, INTCTL, 0);
         let sts_after = mmio!(r16 m, STATESTS);
         log::info!(
-            "Sound: STATESTS after CRST+clear=0x{:04x} (SDIN0={} SDIN1={} SDIN2={} SDIN3={})",
+            "Sound: STATESTS (no CRST) = 0x{:04x} (SDIN0={} SDIN1={} SDIN2={} SDIN3={})",
             sts_after,
             if sts_after & 0x0001 != 0 { 1u8 } else { 0u8 },
             if sts_after & 0x0002 != 0 { 1u8 } else { 0u8 },
             if sts_after & 0x0004 != 0 { 1u8 } else { 0u8 },
             if sts_after & 0x0008 != 0 { 1u8 } else { 0u8 },
         );
-        // If no codec responds, wait another 500 ms and re-check.
-        if sts_after & 0x000F == 0 {
-            let recheck_loop = unsafe { core::arch::x86_64::_rdtsc() };
-            let recheck_deadline = recheck_loop.wrapping_add(1_500_000_000u64);
-            while unsafe { core::arch::x86_64::_rdtsc() } < recheck_deadline {
-                core::hint::spin_loop();
-            }
-            let sts_recheck = mmio!(r16 m, STATESTS);
-            log::info!(
-                "Sound: STATESTS recheck after 500ms=0x{:04x}",
-                sts_recheck
-            );
-        }
-        mmio!(w32 m, INTCTL, 0);
         let gcap_full = mmio!(r32 m, GCAP);
         let iss = (gcap_full >> 8) & 0xF;
         let oss = (gcap_full >> 12) & 0xF;
