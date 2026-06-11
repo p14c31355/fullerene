@@ -299,15 +299,15 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     // clear the MEI bits (WC) and re-enable the engines before
     // sending a new verb.
     let corb_ctl = unsafe { mmio!(r32 mmio, CORBCTL) };
-    if corb_ctl & 0x0002 != 0 {
+    if corb_ctl & 0x0100 != 0 {
         // CORBMEI set — clear it (WC) and restart the CORB engine
-        unsafe { mmio!(w32 mmio, CORBCTL, corb_ctl | 0x0002) };
+        unsafe { mmio!(w32 mmio, CORBCTL, corb_ctl | 0x0100) };
         log::info!("Sound: CORBMEI cleared, restarting CORB DMA");
     }
     let rirb_ctl_check = unsafe { mmio!(r32 mmio, RIRBCTL) };
-    if rirb_ctl_check & 0x0002 != 0 {
+    if rirb_ctl_check & 0x0100 != 0 {
         // RIRBMEI set — clear it (WC) and restart the RIRB engine
-        unsafe { mmio!(w32 mmio, RIRBCTL, rirb_ctl_check | 0x0002) };
+        unsafe { mmio!(w32 mmio, RIRBCTL, rirb_ctl_check | 0x0100) };
         log::info!("Sound: RIRBMEI cleared, restarting RIRB DMA");
     }
     // Re-read to confirm we are running
