@@ -301,16 +301,17 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     //   CORBCTL[1] = CORBRUN (1 = DMA running)
     //   CORBSIZE[1:0] = buffer size code (2/16/256 entries)
     // Same layout for RIRB starting at offset 0x5C.
-    let corb_ctl_byte = unsafe { mmio!(r8 mmio, CORBCTL) };
-    if corb_ctl_byte & 0x01 != 0 {
-        // CORBMEI set — clear it by writing 1 (RW1C) and restart.
-        unsafe { mmio!(w8 mmio, CORBCTL, 0x02 | (corb_ctl_byte & 1)) };
-        log::info!("Sound: CORBMEI cleared (byte CTL=0x{:02x})", corb_ctl_byte);
+    let corb_sts_byte = unsafe { mmio!(r8 mmio, CORBCTL + 1) };
+    if corb_sts_byte & 0x01 != 0 {
+        // CORBMEI is in CORBSTS (offset 0x4D). Clear it by writing 1 (RW1C).
+        unsafe { mmio!(w8 mmio, CORBCTL + 1, 0x01) };
+        log::info!("Sound: CORBMEI cleared");
     }
-    let rirb_ctl_byte = unsafe { mmio!(r8 mmio, RIRBCTL) };
-    if rirb_ctl_byte & 0x01 != 0 {
-        unsafe { mmio!(w8 mmio, RIRBCTL, 0x02 | (rirb_ctl_byte & 1)) };
-        log::info!("Sound: RIRBMEI cleared (byte CTL=0x{:02x})", rirb_ctl_byte);
+    let rirb_sts_byte = unsafe { mmio!(r8 mmio, RIRBCTL + 1) };
+    if rirb_sts_byte & 0x01 != 0 {
+        // RIRBMEI is in RIRBSTS (offset 0x5D). Clear it by writing 1 (RW1C).
+        unsafe { mmio!(w8 mmio, RIRBCTL + 1, 0x01) };
+        log::info!("Sound: RIRBMEI cleared");
     }
     // Re-check: CORBRUN must be 1 for DMA to proceed.
     let corb_ctl2 = unsafe { mmio!(r8 mmio, CORBCTL) };
