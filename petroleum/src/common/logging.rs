@@ -40,7 +40,10 @@ impl log::Log for FullereneLogger {
             const BUF_CAP: usize = 256;
             let mut buf = [0u8; BUF_CAP];
             let len = {
-                let mut writer = StackWriter { buf: &mut buf[..], pos: 0 };
+                let mut writer = StackWriter {
+                    buf: &mut buf[..],
+                    pos: 0,
+                };
                 let _ = write!(writer, "[{}] {}\n", record.level(), record.args());
                 writer.pos
             };

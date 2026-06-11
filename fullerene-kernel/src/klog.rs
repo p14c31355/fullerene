@@ -62,7 +62,10 @@ pub fn write_fmt(args: fmt::Arguments<'_>) {
 pub fn write_bytes(bytes: &[u8]) {
     if IN_KLOG.swap(true, Ordering::Acquire) {
         // Reentrant call — fall back to serial output.
-        petroleum::serial::serial_log(format_args!("{}", core::str::from_utf8(bytes).unwrap_or("(binary)")));
+        petroleum::serial::serial_log(format_args!(
+            "{}",
+            core::str::from_utf8(bytes).unwrap_or("(binary)")
+        ));
         return;
     }
     let mut guard = KLOG_BUF.lock();

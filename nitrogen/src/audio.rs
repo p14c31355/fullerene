@@ -78,8 +78,7 @@ pub trait AudioDevice {
         if bytes.as_ptr() as usize % align != 0 {
             return 0;
         }
-        let samples =
-            unsafe { core::slice::from_raw_parts(bytes.as_ptr() as *const i16, len) };
+        let samples = unsafe { core::slice::from_raw_parts(bytes.as_ptr() as *const i16, len) };
         let frames = self.write_samples(samples);
         frames * self.channels() as usize * i16_size
     }
@@ -121,13 +120,7 @@ impl PcmMixer {
     /// # Returns
     ///
     /// Number of **output frames** actually written.
-    pub fn mix(
-        &self,
-        input: &[i16],
-        in_rate: u32,
-        in_channels: u8,
-        output: &mut [i16],
-    ) -> usize {
+    pub fn mix(&self, input: &[i16], in_rate: u32, in_channels: u8, output: &mut [i16]) -> usize {
         if in_rate == 0 || in_channels == 0 || self.out_channels == 0 || self.out_rate == 0 {
             return 0;
         }
@@ -146,8 +139,7 @@ impl PcmMixer {
         let mut out_frame = 0usize;
 
         while out_frame < max_out_frames {
-            let in_frame =
-                ((out_frame as u128 * ratio_num) / ratio_den) as usize;
+            let in_frame = ((out_frame as u128 * ratio_num) / ratio_den) as usize;
             if in_frame >= in_frames {
                 break;
             }
@@ -204,37 +196,40 @@ impl PcmMixer {
 ///
 /// # Memory ordering
 ///
-    /// - `write_head` / `read_tail` use `Relaxed` for the fast path plus a
-    ///   single `Release`/`Acquire` fence on each side.
-    pub struct BufferQueue<const N: usize> {
-        // SAFETY: backed by UnsafeCell because the buffer is mutated
-        // through shared references (&self) by both producer and consumer
-        // via raw pointers (SPSC contract).  Sync is implemented manually
-        // because the AtomicUsize heads provide sufficient synchronisation.
-        buf: core::cell::UnsafeCell<[u8; N]>,
-        /// Next write position (only written by producer).
-        write_head: AtomicUsize,
-        /// Next read position (only written by consumer).
-        read_tail: AtomicUsize,
-    }
+/// - `write_head` / `read_tail` use `Relaxed` for the fast path plus a
+///   single `Release`/`Acquire` fence on each side.
+pub struct BufferQueue<const N: usize> {
+    // SAFETY: backed by UnsafeCell because the buffer is mutated
+    // through shared references (&self) by both producer and consumer
+    // via raw pointers (SPSC contract).  Sync is implemented manually
+    // because the AtomicUsize heads provide sufficient synchronisation.
+    buf: core::cell::UnsafeCell<[u8; N]>,
+    /// Next write position (only written by producer).
+    write_head: AtomicUsize,
+    /// Next read position (only written by consumer).
+    read_tail: AtomicUsize,
+}
 
-    // SAFETY: BufferQueue is Sync because the SPSC contract ensures
-    // mutually exclusive access to each logical region: the producer
-    // only writes between write_head and read_tail (wrapping), and the
-    // consumer only reads between read_tail and write_head.  The atomic
-    // heads provide happens-before synchronisation.
-    unsafe impl<const N: usize> Sync for BufferQueue<N> {}
+// SAFETY: BufferQueue is Sync because the SPSC contract ensures
+// mutually exclusive access to each logical region: the producer
+// only writes between write_head and read_tail (wrapping), and the
+// consumer only reads between read_tail and write_head.  The atomic
+// heads provide happens-before synchronisation.
+unsafe impl<const N: usize> Sync for BufferQueue<N> {}
 
-    impl<const N: usize> BufferQueue<N> {
-        /// Create an empty buffer queue.
-        pub const fn new() -> Self {
-            assert!(N.is_power_of_two(), "BufferQueue capacity N must be a power of two");
-            Self {
-                buf: core::cell::UnsafeCell::new([0u8; N]),
-                write_head: AtomicUsize::new(0),
-                read_tail: AtomicUsize::new(0),
-            }
+impl<const N: usize> BufferQueue<N> {
+    /// Create an empty buffer queue.
+    pub const fn new() -> Self {
+        assert!(
+            N.is_power_of_two(),
+            "BufferQueue capacity N must be a power of two"
+        );
+        Self {
+            buf: core::cell::UnsafeCell::new([0u8; N]),
+            write_head: AtomicUsize::new(0),
+            read_tail: AtomicUsize::new(0),
         }
+    }
 
     /// Number of bytes currently available for reading.
     pub fn available(&self) -> usize {
@@ -266,11 +261,7 @@ impl PcmMixer {
         // SAFETY: we hold unique write access up to w+n.
         unsafe {
             let ptr = self.buf.get() as *mut u8;
-            core::ptr::copy_nonoverlapping(
-                data.as_ptr(),
-                ptr.add(w_idx),
-                first_chunk,
-            );
+            core::ptr::copy_nonoverlapping(data.as_ptr(), ptr.add(w_idx), first_chunk);
             if first_chunk < n {
                 core::ptr::copy_nonoverlapping(
                     data.as_ptr().add(first_chunk),
@@ -299,11 +290,7 @@ impl PcmMixer {
         // SAFETY: we hold unique read access up to r+n.
         unsafe {
             let ptr = self.buf.get() as *mut u8;
-            core::ptr::copy_nonoverlapping(
-                ptr.add(r_idx),
-                dst.as_mut_ptr(),
-                first_chunk,
-            );
+            core::ptr::copy_nonoverlapping(ptr.add(r_idx), dst.as_mut_ptr(), first_chunk);
             if first_chunk < n {
                 core::ptr::copy_nonoverlapping(
                     ptr,
@@ -354,11 +341,7 @@ mod tests {
         q.read(&mut tmp); // w=4, r=4
         q.write(b"efghij"); // should write 4+2=6, wrap: "efgh"+"ij"→6 bytes
         let avail = q.available();
-        assert!(
-            avail == 6,
-            "expected 6 available, got {}",
-            avail
-        );
+        assert!(avail == 6, "expected 6 available, got {}", avail);
         let mut dst = [0u8; 8];
         let r = q.read(&mut dst);
         assert_eq!(r, 6);

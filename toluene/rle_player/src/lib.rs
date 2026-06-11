@@ -242,10 +242,20 @@ pub fn compute_letterbox(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32
     if dw * sh > sw * dh {
         // Destination is wider → pillarbox (black bars left/right)
         let w = (dh * sw / sh).max(1);
-        (w as u32, dst_h, ((dst_w as u64).saturating_sub(w) / 2) as u32, 0)
+        (
+            w as u32,
+            dst_h,
+            ((dst_w as u64).saturating_sub(w) / 2) as u32,
+            0,
+        )
     } else {
         // Destination is taller → letterbox (black bars top/bottom)
         let h = (dw * sh / sw).max(1);
-        (dst_w, h as u32, 0, ((dst_h as u64).saturating_sub(h) / 2) as u32)
+        (
+            dst_w,
+            h as u32,
+            0,
+            ((dst_h as u64).saturating_sub(h) / 2) as u32,
+        )
     }
 }

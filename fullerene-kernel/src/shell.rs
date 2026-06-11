@@ -176,7 +176,11 @@ fn register_nozzle_hooks() {
                         diag.corb_phys,
                         diag.rirb_phys,
                         diag.states_after_crst,
-                        if diag.states_after_crst & 0x0001 != 0 { 1u8 } else { 0u8 },
+                        if diag.states_after_crst & 0x0001 != 0 {
+                            1u8
+                        } else {
+                            0u8
+                        },
                     );
                     ctx.terminal.write_str(&line);
                     ctx.terminal.write_str("=== End HDA diagnostic ===\n");
