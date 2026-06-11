@@ -319,7 +319,7 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     if corb_ctl2 & 0x02 == 0 {
         // CORB not running — full re-initialisation needed.
         let corb_sz_byte = unsafe { mmio!(r8 mmio, CORBCTL + 2) } & 0x03;
-        unsafe { mmio!(w8 mmio, CORBCTL, 0x02 | corb_sz_byte) };
+        unsafe { mmio!(w8 mmio, CORBCTL, 0x02) };
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         log::info!("Sound: CORB restarted (CTL=0x{:02x} SZ={})", corb_ctl2, corb_sz_byte);
     }
