@@ -395,44 +395,27 @@ fn widget_type_name(wtype: u32) -> &'static str {
 }
 
 /// Dump all pin capabilities as a human-readable flag string.
-fn pin_cap_str(pincap: u32) -> &'static str {
-    // Allocate a static buffer per invocation (single‑threaded kernel).
-    // We use 6 static string slices to cover all bits we care about.
-    static mut PIN_CAP_BUF: [u8; 128] = [0; 128];
-    let buf = unsafe { &mut PIN_CAP_BUF[..] };
-    let mut pos = 0;
-    macro_rules! push {
-        ($s:expr) => {
-            let s = $s;
-            let len = s.len();
-            if pos + len < buf.len() {
-                buf[pos..pos + len].copy_from_slice(s.as_bytes());
-                pos += len;
-            }
-        };
+fn pin_cap_str(pincap: u32) -> alloc::string::String {
+    let mut s = alloc::string::String::new();
+    if pincap & (1 << 0) != 0 { s.push_str("ImpSense "); }
+    if pincap & (1 << 1) != 0 { s.push_str("TrigReq "); }
+    if pincap & (1 << 2) != 0 { s.push_str("PresDet "); }
+    if pincap & (1 << 4) != 0 { s.push_str("OUT "); }
+    if pincap & (1 << 5) != 0 { s.push_str("IN "); }
+    if pincap & (1 << 6) != 0 { s.push_str("Balanced "); }
+    if pincap & (1 << 7) != 0 { s.push_str("HP-Drv "); }
+    if pincap & (1 << 8) != 0 { s.push_str("Vref "); }
+    if pincap & (1 << 16) != 0 { s.push_str("EAPD "); }
+    if pincap & (1 << 24) != 0 { s.push_str("DP "); }
+    if pincap & (1 << 25) != 0 { s.push_str("HDMI "); }
+    if s.is_empty() {
+        s.push_str("(none)");
     }
-    if pincap & (1 << 0) != 0 { push!("ImpSense "); }
-    if pincap & (1 << 1) != 0 { push!("TrigReq "); }
-    if pincap & (1 << 2) != 0 { push!("PresDet "); }
-    if pincap & (1 << 4) != 0 { push!("OUT "); }
-    if pincap & (1 << 5) != 0 { push!("IN "); }
-    if pincap & (1 << 6) != 0 { push!("Balanced "); }
-    if pincap & (1 << 7) != 0 { push!("HP-Drv "); }
-    if pincap & (1 << 8) != 0 { push!("Vref "); }
-    if pincap & (1 << 16) != 0 { push!("EAPD "); }
-    if pincap & (1 << 24) != 0 { push!("DP "); }
-    if pincap & (1 << 25) != 0 { push!("HDMI "); }
-    if pos == 0 {
-        push!("(none)");
-    }
-    buf[pos] = 0;
-    unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
+    s
 }
 
 /// Decode Pin Default Configuration word (verb F1C response).
-fn pin_default_str(cfg: u32) -> &'static str {
-    static mut PD_BUF: [u8; 256] = [0; 256];
-    let buf = unsafe { &mut PD_BUF[..] };
+fn pin_default_str(cfg: u32) -> alloc::string::String {
     let location = (cfg >> 24) & 0x3F;
     let device = (cfg >> 20) & 0xF;
     let conn_type = (cfg >> 16) & 0xF;
@@ -457,42 +440,16 @@ fn pin_default_str(cfg: u32) -> &'static str {
         _ => "?",
     };
     let is_connected = def_assoc != 0xF;
-    // Use core::fmt::Write on a fixed buffer
-    unsafe {
-        let buf_slice = &mut buf[..];
-        let mut w = WriteToBuf { buf: buf_slice, pos: 0 };
-        use core::fmt::Write;
-        let _ = write!(w,
-            "{}(dev={}, color={:#x}, conn={}, loc={:#x}, misc={:#x}, seq={})",
-            if is_connected { "" } else { "UNCONNECTED " },
-            device_name,
-            color,
-            conn_name,
-            location,
-            misc,
-            sequence,
-        );
-        let len = w.pos;
-        buf[len] = 0;
-        core::str::from_utf8_unchecked(&buf[..len])
-    }
-}
-
-struct WriteToBuf<'a> {
-    buf: &'a mut [u8],
-    pos: usize,
-}
-impl<'a> core::fmt::Write for WriteToBuf<'a> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let bytes = s.as_bytes();
-        let end = self.pos + bytes.len();
-        if end > self.buf.len() {
-            return Err(core::fmt::Error);
-        }
-        self.buf[self.pos..end].copy_from_slice(bytes);
-        self.pos = end;
-        Ok(())
-    }
+    alloc::format!(
+        "{}(dev={}, color={:#x}, conn={}, loc={:#x}, misc={:#x}, seq={})",
+        if is_connected { "" } else { "UNCONNECTED " },
+        device_name,
+        color,
+        conn_name,
+        location,
+        misc,
+        sequence,
+    )
 }
 
 /// Dump a comprehensive inventory of every widget node reachable from
