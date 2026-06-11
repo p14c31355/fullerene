@@ -258,6 +258,17 @@ fn read_cmos_time() -> Option<(u16, u8, u8, u8, u8, u8)> {
 /// We read the LATCH command → current count twice to measure
 /// elapsed time.
 fn calibrate_tsc_with_pit() -> u64 {
+    // Ensure PIT channel 2 gate is enabled (bit 0 of System Control Port B
+    // at 0x61).  The BIOS may leave it disabled, causing the counter to
+    // stall and the calibration to fall back to 3 GHz.
+    let original_61 = unsafe {
+        x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read()
+    };
+    unsafe {
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+            .write(original_61 | 0x01);
+    }
+
     // Read current count from PIT channel 2 via latch command.
     fn pit_read_count() -> Option<u16> {
         unsafe {
@@ -275,7 +286,13 @@ fn calibrate_tsc_with_pit() -> u64 {
     let t0 = unsafe { core::arch::x86_64::_rdtsc() };
     let c0 = match pit_read_count() {
         Some(c) => c,
-        None => return 3_000_000, // PIT unavailable — fall back to 3 GHz
+        None => {
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+                    .write(original_61);
+            }
+            return 3_000_000;
+        }
     };
 
     // Measure 20 ms of PIT ticks (23864 counts at 1.193182 MHz).
@@ -293,9 +310,19 @@ fn calibrate_tsc_with_pit() -> u64 {
         }
         // TSC watchdog: 1 second timeout at 3 GHz
         if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(t0) > 3_000_000_000 {
+            unsafe {
+                x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+                    .write(original_61);
+            }
             return 3_000_000; // stalled
         }
         core::hint::spin_loop();
+    }
+
+    // Restore original PIT gate state
+    unsafe {
+        x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+            .write(original_61);
     }
 
     let ticks = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(t0);

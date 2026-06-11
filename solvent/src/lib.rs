@@ -207,7 +207,18 @@ static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
 
-/// Cached framebuffer pointer (as usize) and dimensions for lightweight cursor updates.
+/// Cached framebuffer pointer (as `usize`) and dimensions for lightweight
+/// cursor updates in overlay mode.
+///
+/// # Safety invariant
+///
+/// The stored pointer is only valid while the kernel's primary framebuffer
+/// remains mapped.  It is refreshed on every `render()` call via
+/// `get_framebuffer_slice()`, which always returns the same `&'static mut`
+/// slice from the kernel's `PRIMARY_RENDERER`.  The pointer is therefore
+/// valid for the entire lifetime of the system after the first frame has
+/// been rendered.  `cursor_lightweight_update` checks for `(0,0,0)` before
+/// dereferencing.
 static LAST_FB: Mutex<(usize, u32, u32)> = Mutex::new((0, 0, 0));
 
 pub struct RuntimeState {

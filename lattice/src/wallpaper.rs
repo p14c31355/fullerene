@@ -362,11 +362,17 @@ pub fn render_wallpaper(
                 let pixels = preset.pixels;
                 for row_offset in 0..ch {
                     let y = cy + row_offset;
+                    if y >= fb_height {
+                        continue;
+                    }
                     let src_y = (y % preset.height) as usize;
                     let rs = (y as usize) * fb_w;
                     let src_row_start = src_y * pw;
                     for col_offset in 0..cw {
                         let x = cx + col_offset;
+                        if x >= fb_width {
+                            continue;
+                        }
                         let src_x = (x % preset.width) as usize;
                         let color = pixels[src_row_start + src_x];
                         fb[rs + x as usize] = color;
