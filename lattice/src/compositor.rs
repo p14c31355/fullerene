@@ -53,22 +53,25 @@ fn dim_color(color: u32) -> u32 {
 }
 
 /// Alpha-blend a source pixel over a destination pixel, writing the result.
+/// Returns the blending was performed (useful for callers to `continue` in
+/// tight loops).
 macro_rules! alpha_blend {
     ($dst:expr, $src:expr) => {{
-        let bg = $dst;
         let s = $src;
         let a = ((s >> 24) & 0xFF) as u32;
-        if a == 0 {
-            continue;
-        }
         if a == 255 {
             $dst = s;
-            continue;
+            false // fully opaque — no further blending needed
+        } else if a > 0 {
+            let bg = $dst;
+            let ia = 255 - a;
+            $dst = ((((s >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255) << 16
+                | ((((s >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255) << 8
+                | (((s & 0xFF) * a + (bg & 0xFF) * ia) / 255);
+            false
+        } else {
+            true // fully transparent — caller should `continue`
         }
-        let ia = 255 - a;
-        $dst = ((((s >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255) << 16
-            | ((((s >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255) << 8
-            | (((s & 0xFF) * a + (bg & 0xFF) * ia) / 255);
     }};
 }
 

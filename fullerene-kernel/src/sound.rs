@@ -1046,13 +1046,12 @@ pub fn hda_playback_progress() -> Option<u64> {
 }
 
 /// Feed silence into the HDA half‑buffer.
+///
+/// Uses a static zeroed buffer to avoid allocating 16 KiB on the kernel
+/// stack, which could trigger a stack overflow (kernel stacks are often
+/// limited to 8–16 KiB total).
 pub fn hda_feed_silence(half: usize) -> usize {
-    // Allocate a zeroed buffer on the stack sized to match the half buffer.
-    // The maximum half size is derived from DMA_BUF_SIZE minus BDL overhead:
-    // sizeof(BdlEntry) = 16, BDL_ENTRIES = 2 → bdl_sz = 32
-    // audio_sz = DMA_BUF_SIZE - bdl_sz = 32768 - 32 = 32736
-    // half = audio_sz / 2 = 16368
     const MAX_SILENCE: usize = 16368;
-    let buf = [0u8; MAX_SILENCE];
-    hda_feed_samples(&buf[..half.min(MAX_SILENCE)])
+    static SILENCE_BUF: [u8; MAX_SILENCE] = [0; MAX_SILENCE];
+    hda_feed_samples(&SILENCE_BUF[..half.min(MAX_SILENCE)])
 }

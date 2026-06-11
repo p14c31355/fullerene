@@ -245,6 +245,8 @@ fn register_nozzle_hooks() {
             if let Some(idx) = solvent::find_preset(name) {
                 solvent::set_wallpaper(solvent::WallpaperMode::Preset(idx));
                 solvent::force_desktop_redraw();
+            } else {
+                solvent::write_terminal("wallpaper: preset not found\n");
             }
         }
         "reboot" => {

@@ -278,16 +278,17 @@ fn calibrate_tsc_with_pit() -> u64 {
         None => return 3_000_000, // PIT unavailable — fall back to 3 GHz
     };
 
-    // Spin until the counter wraps at least once (~55 ms).
-    // PIT channel 2 counts down from 65535 to 0 at ~1.193 MHz
-    // → ~18.2 Hz.  One wrap ≈ 55 ms.
+    // Measure 20 ms of PIT ticks (23864 counts at 1.193182 MHz).
+    // This is more robust than waiting for a full wrap, which can be
+    // missed if the VM or CPU is preempted for >55 ms.
+    let target_ticks: u16 = 23864;
     loop {
         let cur = match pit_read_count() {
             Some(c) => c,
             None => return 3_000_000,
         };
-        // Counter wrapped: now > old (65535 → 0 jump detected).
-        if cur > c0 {
+        let elapsed = c0.wrapping_sub(cur);
+        if elapsed >= target_ticks {
             break;
         }
         // TSC watchdog: 1 second timeout at 3 GHz
@@ -298,12 +299,7 @@ fn calibrate_tsc_with_pit() -> u64 {
     }
 
     let ticks = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(t0);
-    // PIT channel 2: 1.193182 MHz → one full 65536‑count cycle = 65536 / 1.193182 ≈ 54,925 µs
-    // Approximately 55 ms per wrap.
-    let ms_elapsed = 55u64;
-    if ms_elapsed == 0 {
-        return 3_000_000;
-    }
+    let ms_elapsed = 20u64;
     let result = ticks / ms_elapsed;
     // Sanity check: reject values outside 100 MHz … 10 GHz.
     if result < 100_000 || result > 10_000_000 {

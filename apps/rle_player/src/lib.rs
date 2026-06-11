@@ -220,6 +220,9 @@ pub fn draw_decoded_frame(
 ///
 /// Returns `(draw_w, draw_h, off_x, off_y)`.
 pub fn compute_letterbox(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32, u32, u32) {
+    if src_h == 0 || dst_h == 0 || src_w == 0 || dst_w == 0 {
+        return (0, 0, 0, 0);
+    }
     let src_aspect = src_w as f64 / src_h as f64;
     let dst_aspect = dst_w as f64 / dst_h as f64;
 
