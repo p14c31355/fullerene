@@ -207,10 +207,8 @@ static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
 
-/// Cached framebuffer pointer for lightweight cursor updates in overlay mode.
-static LAST_FB_PTR: AtomicPtr<u32> = AtomicPtr::new(core::ptr::null_mut());
-/// Cached framebuffer dimensions matching LAST_FB_PTR.
-static LAST_FB_DIMS: Mutex<(u32, u32)> = Mutex::new((0, 0));
+/// Cached framebuffer pointer (as usize) and dimensions for lightweight cursor updates.
+static LAST_FB: Mutex<(usize, u32, u32)> = Mutex::new((0, 0, 0));
 
 pub struct RuntimeState {
     pub desktop: Desktop,
