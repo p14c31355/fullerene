@@ -552,16 +552,22 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
                 if r == 0xFFFF_FFFF { 0 } else { r & 0x7F }
             };
             for mix_ci in 0..mix_con_count.min(16) {
-                let mix_src = unsafe {
+                let mix_chunk_idx = (mix_ci / 4) * 4;
+                let mix_resp = unsafe {
                     corb_send_verb(
                         mmio,
                         codec,
                         con_node,
                         VERB_GET_CONNECTION_LIST_ENTRY,
-                        mix_ci as u16,
+                        mix_chunk_idx as u16,
                     )
                 };
-                if mix_src != 0xFFFF_FFFF && (mix_src & 0x7F) as u8 == dac {
+                if mix_resp == 0xFFFF_FFFF {
+                    continue;
+                }
+                let mix_shift = (mix_ci % 4) * 8;
+                let mix_src = ((mix_resp >> mix_shift) & 0x7F) as u8;
+                if mix_src == dac {
                     // Found mixer that has our DAC as input →
                     // select this mixer on the pin and unmute
                     // the mixer input for our DAC.
