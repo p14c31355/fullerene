@@ -338,16 +338,22 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     unsafe { core::ptr::write_volatile(corb.add(next_wp), cmd) };
     core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     unsafe { mmio!(w16 mmio, CORBWP, next_wp as u16) };
-    let rirb_wp_before = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
-    for _ in 0..50_000 {
-        let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
-        if rirb_wp != rirb_wp_before {
-            let resp = unsafe { core::ptr::read_volatile(rirb.add(rirb_wp as usize)) };
+    // ── Read all pending RIRB entries incrementally ─────────
+    // If the hardware writes multiple responses (e.g. a solicited
+    // response followed by an unsolicited one) before this CPU
+    // reads RIRBWP, the write pointer will have advanced past the
+    // solicited entry.  We must walk from the last known read
+    // position to the current write pointer to avoid missing it.
+    let rirb_n: usize = 256; // RIRB entries — same as CORB
+    let mut _curr_rp = unsafe { mmio!(r16 mmio, RIRBWP) } as usize & 0xFF;
+    for _iter in 0..100_000 {
+        let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) } as usize & 0xFF;
+        while _curr_rp != rirb_wp {
+            _curr_rp = (_curr_rp + 1) % rirb_n;
+            let resp = unsafe { core::ptr::read_volatile(rirb.add(_curr_rp)) };
             let unsol = (resp >> 63) & 1;
             if unsol == 0 {
                 let raw = (resp >> 32) as u32;
-                // Log first successful verb response for debugging
-                // (only for the initial discovery probes)
                 if verb == VERB_GET_PARAM && payload <= 0x12 {
                     log::info!(
                         "Sound: verb OK c={} n={:#x} v={:#03x} → raw=0x{:08x}",
@@ -482,8 +488,8 @@ unsafe fn dump_codec_inventory(mmio: *mut u8, codec: u8) {
         log::warn!("Sound:  Cannot read subordinate count — aborting inventory");
         return;
     }
-    let start_root = ((sub >> 16) & 0xFF) as usize;
-    let count_root = (sub & 0xFF) as usize;
+    let start_root = ((sub >> 16) & 0xFF) as u8;
+    let count_root = (sub & 0xFF) as u8;
     if count_root == 0 {
         log::warn!("Sound:  Root has no subordinate nodes");
         return;
@@ -1245,7 +1251,6 @@ fn hda_init() {
         if gcap64 == 0 && ((corb_phys >> 32) != 0 || (rirb_phys >> 32) != 0) {
             log::error!("Sound: Physical addresses exceed 32-bit limit but controller does not support 64-bit addressing! Aborting HDA init.");
             return;
-        }
         }
         mmio!(w32 m, CORBLBASE, corb_phys as u32);
         mmio!(w32 m, CORBUBASE, (corb_phys >> 32) as u32);

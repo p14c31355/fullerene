@@ -32,14 +32,26 @@ impl log::Log for FullereneLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            let msg = alloc::format!("[{}] {}\n", record.level(), record.args());
+            // Format into a stack-allocated buffer to avoid dynamic
+            // allocation inside the global logger (which can deadlock
+            // if invoked from interrupt context while the allocator
+            // lock is held by a thread in process context).
+            use core::fmt::Write;
+            const BUF_CAP: usize = 256;
+            let mut buf = [0u8; BUF_CAP];
+            let len = {
+                let mut writer = StackWriter { buf: &mut buf[..], pos: 0 };
+                let _ = write!(writer, "[{}] {}\n", record.level(), record.args());
+                writer.pos
+            };
+            let msg = core::str::from_utf8(&buf[..len]).unwrap_or("[log error]");
             crate::serial::serial_log(format_args!("{}", msg));
             // Forward to kernel log hook (dmesg) when registered.
             // Copy the function pointer out of the lock first to avoid
             // deadlock if the callback itself triggers logging.
             let hook = *LOG_HOOK.lock();
             if let Some(hook) = hook {
-                hook(record.level(), &msg);
+                hook(record.level(), msg);
             }
         }
     }
@@ -204,6 +216,25 @@ macro_rules! declare_init {
     ($mod_name:expr) => {{
         $crate::serial::serial_log(format_args!("{} initialized\n", $mod_name));
     }};
+}
+
+/// Stack-allocated `fmt::Write` target.
+struct StackWriter<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> core::fmt::Write for StackWriter<'a> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let bytes = s.as_bytes();
+        let end = self.pos + bytes.len();
+        if end > self.buf.len() {
+            return Err(core::fmt::Error);
+        }
+        self.buf[self.pos..end].copy_from_slice(bytes);
+        self.pos = end;
+        Ok(())
+    }
 }
 
 /// Enhanced logging macro for common patterns.
