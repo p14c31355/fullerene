@@ -90,14 +90,6 @@ fn calibrate_tsc_per_ms() -> u64 {
 }
 
 pub fn play_badapple() {
-    // Suspend solvent compositor rendering so the scheduler's
-    // runtime_tick does NOT compete with our direct framebuffer writes.
-    // Without this, every scheduler tick triggers a solvent render
-    // pass that writes to the same framebuffer we're drawing on,
-    // causing visual corruption and potential deadlocks when the
-    // compositor tries to read window state we've modified.
-    solvent::suspend_rendering();
-
     petroleum::serial::serial_log(format_args!("Bad Apple playback started (hybrid mode)\n"));
     log::info!("Bad Apple playback started (hybrid mode)");
 
@@ -106,7 +98,6 @@ pub fn play_badapple() {
         Ok(r) => r,
         Err(e) => {
             petroleum::serial::serial_log(format_args!("Bad Apple: parse error: {:?}\n", e));
-            solvent::resume_rendering();
             return;
         }
     };
@@ -115,7 +106,6 @@ pub fn play_badapple() {
     let fh = rle.frame_height as u32;
     if fw == 0 || fh == 0 {
         petroleum::serial::serial_log(format_args!("Bad Apple: zero frame size\n"));
-        solvent::resume_rendering();
         return;
     }
 
@@ -130,7 +120,6 @@ pub fn play_badapple() {
         }
         None => {
             petroleum::serial::serial_log(format_args!("Bad Apple: failed to create window\n"));
-            solvent::resume_rendering();
             return;
         }
     };
@@ -138,6 +127,11 @@ pub fn play_badapple() {
     // Draw the window frame (title bar, border) once via the compositor.
     solvent::force_desktop_redraw();
     crate::gui::render();
+
+    // Window frame is now on screen.  Suspend solvent rendering
+    // so the scheduler's runtime_tick does NOT compete with our
+    // direct framebuffer writes during the main playback loop.
+    solvent::suspend_rendering();
 
     // ── Framebuffer info (for direct writes) ────────────────
     let (fb_ptr, fb_stride, fb_height) = {
