@@ -230,7 +230,7 @@ pub struct RuntimeState {
 
     /// Lightweight cursor save buffer (16×16 pixels) for overlay mode
     /// cursor movement without full re‑renders.
-    pub cursor_save_buf: [u32; 256],
+    pub cursor_save_buf: [u32; lattice::cursor::Cursor::SIZE * lattice::cursor::Cursor::SIZE],
     pub cursor_save_x: i32,
     pub cursor_save_y: i32,
     pub cursor_save_valid: bool,
