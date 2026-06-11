@@ -404,7 +404,7 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
                     corb_send_verb(mmio, codec, n, 0xF1C, 0)
                 };
                 let is_connected = pin_default != 0xFFFF_FFFF
-                    && ((pin_default >> 30) & 0xF) != 0xF;
+                    && ((pin_default >> 4) & 0xF) != 0xF;
                 if (pincap >> 16) & 1 != 0 && is_connected {
                     pin = Some(n); // connected EAPD pin always wins
                 } else if pin.is_none()
