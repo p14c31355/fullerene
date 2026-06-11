@@ -35,17 +35,29 @@ fn calibrate_tsc_per_ms() -> u64 {
     if !crate::sound::hda_available() {
         return 3_000_000;
     }
-    // Quick sanity: if LPIB doesn't move at all within ~100 ms
+    // audio_sz = DMA_BUF_SIZE - bdl_sz = 32768 - 32 = 32736;
+    const AUDIO_SZ: u64 = 32736;
+    // Quick sanity: if LPIB doesn't move at all within ~100 ms
     // the DMA engine is stalled — bail out immediately.
+    // Also reject bogus LPIB values that are outside the valid
+    // ring‑buffer range (some HDA implementations may report
+    // garbage at start‑up).
     let t0 = unsafe { x86_64::_rdtsc() };
-    let mut lpib = crate::sound::hda_playback_progress().unwrap_or(0);
-    let settle = t0.wrapping_add(300_000_000); // ~100 ms at 3 GHz
+    let lpib0 = match crate::sound::hda_playback_progress() {
+        Some(v) if v < AUDIO_SZ => v,
+        _ => return 3_000_000,
+    };
+    let mut prev = lpib0;
+    let settle = t0.wrapping_add(300_000_000); // ~100 ms at 3 GHz
     loop {
         if let Some(cur) = crate::sound::hda_playback_progress() {
-            if cur != lpib {
+            if cur >= AUDIO_SZ {
+                return 3_000_000; // garbage — LPIB outside ring buffer
+            }
+            if cur != prev {
                 break; // LPIB is moving
             }
-            lpib = cur;
+            prev = cur;
         }
         if unsafe { x86_64::_rdtsc() } > settle {
             return 3_000_000; // stalled
@@ -53,16 +65,15 @@ fn calibrate_tsc_per_ms() -> u64 {
         core::hint::spin_loop();
     }
     // LPIB is advancing — measure half‑buffer worth of progress.
-    // audio_sz = DMA_BUF_SIZE - bdl_sz = 32768 - 32 = 32736;
-    // half = audio_sz / 2 = 16368.
-    const AUDIO_SZ: u64 = 32736;
     const CALIB_HALF: u64 = AUDIO_SZ / 2; // 16368
     let t0 = unsafe { x86_64::_rdtsc() };
     let deadline = t0.wrapping_add(3_000_000_000); // ~1 s at 3 GHz
-    let mut prev = lpib;
     let mut total = 0u64;
     loop {
         if let Some(cur) = crate::sound::hda_playback_progress() {
+            if cur >= AUDIO_SZ {
+                return 3_000_000;
+            }
             // LPIB wraps at audio_sz; detect wrap via
             // subtraction underflow and accumulate correctly.
             let delta = if cur >= prev {
@@ -82,11 +93,23 @@ fn calibrate_tsc_per_ms() -> u64 {
         core::hint::spin_loop();
     }
     let ticks = unsafe { x86_64::_rdtsc() }.wrapping_sub(t0);
-    let ms = CALIB_HALF.saturating_mul(1000) / 96_000; // half bytes @ 96000 B/s → ms
+    // 16368 bytes played at 96000 bytes/s → ms
+    let ms = CALIB_HALF.saturating_mul(1000) / 96_000;
     if ms == 0 {
         return 3_000_000;
     }
-    ticks / ms
+    let result = ticks / ms;
+    // Sanity‑check the calibration result: a well‑behaved TSC must be
+    // within 100 MHz … 10 GHz.  Outside this range the LPIB data is
+    // likely unreliable; fall back to 3 GHz.
+    if result < 100_000 || result > 10_000_000 {
+        petroleum::serial::serial_log(format_args!(
+            "Bad Apple: TSC calib rejected ({:.1} GHz), using fallback\n",
+            result as f64 / 1_000_000.0,
+        ));
+        return 3_000_000;
+    }
+    result
 }
 
 pub fn play_badapple() {
@@ -241,14 +264,20 @@ pub fn play_badapple() {
     //
     // `consumed` tracks total bytes the HDA controller has read
     // from the DMA ring buffer since playback started.
+    // Because LPIB wraps at audio_sz (32736), we maintain a
+    // `wraps` counter to reconstruct a monotonically increasing
+    // position in the logical PCM byte stream.
     let pcm_per_frame = (pcm_total as u64) / (n as u64).max(1);
     let mut consumed: u64 = 0;
     let mut last_lpib: u64 = 0;
+    let mut wraps: u64 = 0;
     let mut lpib_valid = false;
     if use_hda {
         if let Some(cur) = crate::sound::hda_playback_progress() {
-            last_lpib = cur;
-            lpib_valid = true;
+            if cur < 32736 {
+                last_lpib = cur;
+                lpib_valid = true;
+            }
         }
     }
     // Must match sound.rs: audio_sz = DMA_BUF_SIZE(32768) - bdl_sz(32) = 32736
@@ -279,12 +308,31 @@ pub fn play_badapple() {
                     }
                 }
                 // Update consumed-bytes counter from LPIB.
+                // LPIB wraps at audio_sz — detect wrap by
+                // seeing cur < last_lpib (LPIB moved backwards),
+                // which means the controller crossed the ring‑buffer
+                // boundary.  We track wrap count separately so
+                // consumed = wraps * audio_sz + cur is always
+                // monotonically increasing.
                 if let Some(cur) = crate::sound::hda_playback_progress() {
-                    let delta = cur.wrapping_sub(last_lpib);
-                    last_lpib = cur;
-                    if delta < audio_sz {
-                        consumed = consumed.saturating_add(delta);
+                    // Reject garbage LPIB values
+                    if cur >= audio_sz {
+                        petroleum::serial::serial_log(format_args!(
+                            "Bad Apple: bogus LPIB {}, using TSC fallback\n",
+                            cur,
+                        ));
+                        lpib_valid = false;
+                        break;
                     }
+                    // Detect wrap: LPIB moved backwards by more than
+                    // half the buffer (spurious small regressions
+                    // are noise).
+                    if cur < last_lpib && (last_lpib - cur) > audio_sz / 2 {
+                        wraps = wraps.saturating_add(1);
+                    }
+                    last_lpib = cur;
+                    // consumed = total bytes in logical stream
+                    consumed = wraps.saturating_mul(audio_sz).saturating_add(cur);
                 }
                 // Feed audio.
                 let now = unsafe { x86_64::_rdtsc() };

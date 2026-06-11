@@ -53,6 +53,8 @@ const VERB_SET_AMP_GAIN_MUTE: u32 = 0x003;
 const VERB_SET_PIN_CTL: u32 = 0x707;
 const VERB_SET_STREAM: u32 = 0x706;
 const VERB_SET_EAPD: u32 = 0x70C;
+const VERB_SET_CONNECTION_SELECT: u32 = 0x701;
+const VERB_GET_CONNECTION_LIST_ENTRY: u32 = 0xF02;
 const PARAM_SUBORDINATE_COUNT: u8 = 0x04;
 const PARAM_AUDIO_WIDGET_CAP: u8 = 0x09;
 const PARAM_OUTPUT_AMP_CAP: u8 = 0x12;
@@ -60,6 +62,7 @@ const PARAM_PIN_CAP: u8 = 0x0C;
 const WTYPE_AUDIO_OUTPUT: u32 = 0x0;
 const WTYPE_PIN_COMPLEX: u32 = 0x4;
 const WTYPE_AFG: u32 = 0x1;
+const WTYPE_AUDIO_MIXER: u32 = 0x2;
 const CORB_ENTRIES: usize = 256;
 const RIRB_ENTRIES: usize = 256;
 
@@ -366,6 +369,14 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
         }
         let t = (cap >> 20) & 0xF;
         if t == WTYPE_AUDIO_OUTPUT {
+            // Skip digital converters (SPDIF) — bit 9 of wcaps.
+            // 0x02/0x03 on ALC286 are analog (wcaps 0x41d, bit9=0);
+            // 0x06 is digital (wcaps 0x611, bit9=1) and must be
+            // skipped so audio goes through the analog speaker path.
+            if (cap >> 9) & 1 != 0 {
+                log::info!("Sound: skipping digital DAC 0x{:x}", n);
+                continue;
+            }
             // Prefer later DACs — on many codecs (e.g. ALC286) the
             // first DAC (0x02) is for headphones while a later one
             // (0x03) drives the internal speaker.
@@ -379,7 +390,23 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
             let pincap =
                 unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_PIN_CAP as u16) };
             if pincap != 0xFFFF_FFFF && (pincap & (1 << 4)) != 0 {
-                pin = Some(n);
+                // Prefer pins with EAPD (amplifier power control, bit 16)
+                // — these are typically internal speakers on notebook
+                // codecs (e.g. ALC286 pin 0x14).  An EAPD-capable pin
+                // always wins over a non-EAPD pin, otherwise last seen
+                // wins (which favours higher node numbers, i.e. jacks).
+                if (pincap >> 16) & 1 != 0 {
+                    pin = Some(n); // EAPD pin always wins
+                } else if pin.is_none()
+                    || pin.map_or(false, |p| {
+                        let pc = unsafe {
+                            corb_send_verb(mmio, codec, p, VERB_GET_PARAM, PARAM_PIN_CAP as u16)
+                        };
+                        (pc >> 16) & 1 == 0
+                    })
+                {
+                    pin = Some(n);
+                }
             } else {
                 log::info!(
                     "Sound: pin 0x{:x} cap=0x{:08x} — skipping (no OUT)",
@@ -441,6 +468,122 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
             (0x70 | pgain) as u16,
         )
     };
+    // ── Route DAC → Pin through correct mixer ─────────────────
+    // Many HDA codecs (ALC286 etc.) have multiple mixer widgets
+    // between DACs and pin complexes.  The pin may default to a
+    // mixer that connects to a different DAC (e.g. headphone DAC
+    // 0x02 → mixer 0x0c → speaker pin 0x14).  We need to select
+    // the mixer that contains our chosen DAC in its connection
+    // list so the audio actually reaches the pin.
+    let pin_con_count = unsafe {
+        let r = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, 0x0Eu16 /* connection list len */);
+        r & 0x7F
+    };
+    if pin_con_count > 0 && pin_con_count != 0xFFFF_FFFF {
+        // Iterate the pin's connection list entries; look for a
+        // mixer that includes our DAC as an input.
+        'pin_con: for con_idx in 0..pin_con_count.min(16) {
+            let con_node = unsafe {
+                corb_send_verb(mmio, codec, pin, VERB_GET_CONNECTION_LIST_ENTRY, con_idx as u16)
+            };
+            if con_node == 0xFFFF_FFFF {
+                continue;
+            }
+            let con_node = (con_node & 0x7F) as u8;
+            // Check if this connection node is a mixer
+            let con_wcap = unsafe {
+                corb_send_verb(
+                    mmio,
+                    codec,
+                    con_node,
+                    VERB_GET_PARAM,
+                    PARAM_AUDIO_WIDGET_CAP as u16,
+                )
+            };
+            if con_wcap == 0xFFFF_FFFF {
+                continue;
+            }
+            let con_type = (con_wcap >> 20) & 0xF;
+            if con_type != WTYPE_AUDIO_MIXER {
+                // Direct connection from DAC to pin — no mixer
+                // needed; keep current selection (or set to this
+                // index if it matches our DAC).
+                if con_node == dac {
+                    let r = unsafe {
+                        corb_send_verb(mmio, codec, pin, VERB_SET_CONNECTION_SELECT, con_idx as u16)
+                    };
+                    log::info!(
+                        "Sound: SET_CONN pin=0x{:x} → DAC 0x{:x} (direct) result=0x{:08x}",
+                        pin,
+                        con_node,
+                        r
+                    );
+                }
+                continue;
+            }
+            // This is a mixer — check its own connection list for
+            // our DAC.
+            let mix_con_count = unsafe {
+                let r = corb_send_verb(
+                    mmio,
+                    codec,
+                    con_node,
+                    VERB_GET_PARAM,
+                    0x0Eu16, /* connection list len */
+                );
+                r & 0x7F
+            };
+            for mix_ci in 0..mix_con_count.min(16) {
+                let mix_src = unsafe {
+                    corb_send_verb(
+                        mmio,
+                        codec,
+                        con_node,
+                        VERB_GET_CONNECTION_LIST_ENTRY,
+                        mix_ci as u16,
+                    )
+                };
+                if mix_src != 0xFFFF_FFFF && (mix_src & 0x7F) as u8 == dac {
+                    // Found mixer that has our DAC as input →
+                    // select this mixer on the pin and unmute
+                    // the mixer input for our DAC.
+                    let r = unsafe {
+                        corb_send_verb(mmio, codec, pin, VERB_SET_CONNECTION_SELECT, con_idx as u16)
+                    };
+                    log::info!(
+                        "Sound: SET_CONN pin=0x{:x} → mixer 0x{:x} (DAC 0x{:x}) result=0x{:08x}",
+                        pin,
+                        con_node,
+                        dac,
+                        r
+                    );
+                    // Unmute the mixer input for the DAC channel.
+                    // VERB_SET_AMP_GAIN_MUTE on a mixer selects
+                    // input index via bits [12:8], gain [7:0].
+                    // 0x7000 → set input index 0, output channel 0,
+                    // gain=0, mute=0.
+                    let unmute_payload = ((mix_ci << 8) | 0x00) as u16; // index, gain=0, unmute
+                    let r2 = unsafe {
+                        corb_send_verb(
+                            mmio,
+                            codec,
+                            con_node,
+                            VERB_SET_AMP_GAIN_MUTE,
+                            unmute_payload,
+                        )
+                    };
+                    log::info!(
+                        "Sound: UNMUTE mixer 0x{:x} input {} result=0x{:08x}",
+                        con_node,
+                        mix_ci,
+                        r2
+                    );
+                    break 'pin_con;
+                }
+            }
+        }
+    }
+
     // Query pin capabilities to check EAPD support (bit 16)
     let pin_cap = unsafe { corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, PARAM_PIN_CAP as u16) };
     let eapd_capable = pin_cap != 0xFFFF_FFFF && (pin_cap >> 16) & 1 != 0;
