@@ -1021,9 +1021,8 @@ where
     // Cache FB dimensions for maximize toggle
     *FB_DIMS.lock() = (fb_width, fb_height);
 
-    // Cache framebuffer pointer for lightweight cursor updates in overlay mode.
-    LAST_FB_PTR.store(fb_pixels.as_mut_ptr(), core::sync::atomic::Ordering::Relaxed);
-    *LAST_FB_DIMS.lock() = (fb_width, fb_height);
+    // Cache framebuffer pointer and dimensions for lightweight cursor updates in overlay mode.
+    *LAST_FB.lock() = (fb_pixels.as_mut_ptr() as usize, fb_width, fb_height);
 
     // Push clock‑change or taskbar‑change dirty rects BEFORE prepare_frame
     // so they are consumed together with all other dirty rects (cursor
