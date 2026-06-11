@@ -549,7 +549,7 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
                     VERB_GET_PARAM,
                     0x0Eu16, /* connection list len */
                 );
-                r & 0x7F
+                if r == 0xFFFF_FFFF { 0 } else { r & 0x7F }
             };
             for mix_ci in 0..mix_con_count.min(16) {
                 let mix_src = unsafe {
