@@ -280,7 +280,7 @@ pub fn init() {
         term_dirty: true,
         shell_state: ShellState::Desktop,
         clock_changed: false,
-        cursor_save_buf: [0u32; 256],
+        cursor_save_buf: [0u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
         cursor_save_x: 0,
         cursor_save_y: 0,
         cursor_save_valid: false,
