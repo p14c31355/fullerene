@@ -337,6 +337,11 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
         );
     }
 
+    // ── Capture RIRBWP *before* writing CORBWP ─────────────
+    // On fast hardware the controller may write the response before
+    // we read RIRBWP after the CORBWP update, causing curr_rp to
+    // start at the post-response value and miss the solicited entry.
+    let _curr_rp_before = unsafe { mmio!(r16 mmio, RIRBWP) } as usize & 0xFF;
     let wp = unsafe { mmio!(r16 mmio, CORBWP) } as usize;
     let next_wp = (wp + 1) % corb_n;
     // Write the CORB entry, then issue a full memory fence.
@@ -352,7 +357,7 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     // solicited entry.  We must walk from the last known read
     // position to the current write pointer to avoid missing it.
     let rirb_n: usize = 256; // RIRB entries — same as CORB
-    let mut _curr_rp = unsafe { mmio!(r16 mmio, RIRBWP) } as usize & 0xFF;
+    let mut _curr_rp = _curr_rp_before;
     for _iter in 0..100_000 {
         let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) } as usize & 0xFF;
         while _curr_rp != rirb_wp {
