@@ -122,7 +122,7 @@ pub fn write_to<W: fmt::Write>(writer: &mut W) -> fmt::Result {
                         core::str::from_utf8_unchecked(&chunk[..valid_len])
                     })?;
                 }
-                writer.write_str("")?;
+                writer.write_str("\u{FFFD}")?;
                 let error_len = e.error_len().unwrap_or(1);
                 chunk = &chunk[valid_len + error_len..];
             }
