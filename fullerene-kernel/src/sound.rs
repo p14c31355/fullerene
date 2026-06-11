@@ -581,7 +581,7 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
                     // 0x7000 → set input index 0, output channel 0,
                     // gain=0, mute=0.
                     // Mixer input amp: SetLeft(bit13) + SetRight(bit12) + Index(bits[11:8])
-                    let unmute_payload = 0x3000u16 | ((mix_ci as u16) << 8); // index, gain=0, unmute
+                    let unmute_payload = 0x7000u16 | ((mix_ci as u16) << 8); // index, gain=0, unmute
                     let r2 = unsafe {
                         corb_send_verb(
                             mmio,
