@@ -122,7 +122,7 @@ impl PcmMixer {
         in_channels: u8,
         output: &mut [i16],
     ) -> usize {
-        if in_rate == 0 || in_channels == 0 || self.out_channels == 0 {
+        if in_rate == 0 || in_channels == 0 || self.out_channels == 0 || self.out_rate == 0 {
             return 0;
         }
         let in_frames = input.len() / in_channels as usize;
