@@ -65,9 +65,10 @@ macro_rules! alpha_blend {
         } else if a > 0 {
             let bg = $dst;
             let ia = 255 - a;
-            $dst = ((((s >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255) << 16
-                | ((((s >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255) << 8
-                | (((s & 0xFF) * a + (bg & 0xFF) * ia) / 255);
+            let r = (((s >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255;
+            let g = (((s >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255;
+            let b = ((s & 0xFF) * a + (bg & 0xFF) * ia) / 255;
+            $dst = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
             false
         } else {
             true // fully transparent — caller should `continue`
