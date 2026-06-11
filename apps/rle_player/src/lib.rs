@@ -72,7 +72,10 @@ impl RleFile {
         let fh = u16::from_le_bytes([data[14], data[15]]);
         let n = fc as usize;
 
-        let data_start = RLE_HDR_SIZE + n * 2;
+        let data_start = n
+            .checked_mul(2)
+            .and_then(|val| RLE_HDR_SIZE.checked_add(val))
+            .ok_or(RleError::Truncated)?;
         if data_start >= data.len() {
             return Err(RleError::Truncated);
         }
