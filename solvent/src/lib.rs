@@ -573,16 +573,13 @@ key_ascii!(
 /// Used in both Desktop and shell overlay modes to avoid full
 /// compositor passes on every mouse-move tick.
 fn cursor_lightweight_update(rt: &mut RuntimeState) {
-    let fb_ptr = LAST_FB_PTR.load(core::sync::atomic::Ordering::Relaxed);
-    if fb_ptr.is_null() {
+    let (fb_addr, fbw, fbh) = *LAST_FB.lock();
+    if fb_addr == 0 || fbw == 0 || fbh == 0 {
         // Fallback: request a full render pass.
         rt.frame_due = true;
         return;
     }
-    let (fbw, fbh) = *LAST_FB_DIMS.lock();
-    if fbw == 0 || fbh == 0 {
-        return;
-    }
+    let fb_ptr = fb_addr as *mut u32;
 
     let cur = &rt.desktop.cursor;
     if !cur.visible {
