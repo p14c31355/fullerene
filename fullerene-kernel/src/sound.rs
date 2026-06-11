@@ -395,8 +395,18 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
                 // codecs (e.g. ALC286 pin 0x14).  An EAPD-capable pin
                 // always wins over a non-EAPD pin, otherwise last seen
                 // wins (which favours higher node numbers, i.e. jacks).
-                if (pincap >> 16) & 1 != 0 {
-                    pin = Some(n); // EAPD pin always wins
+                // Read pin default configuration (verb F1C) to check
+                // if this pin is actually connected (DefAssociation != 0xf).
+                // Pins 0x17/0x1a on ALC286 have EAPD but are unconnected
+                // (DefAssociation=0xf); selecting them would send audio to
+                // a dead output.
+                let pin_default = unsafe {
+                    corb_send_verb(mmio, codec, n, 0xF1C, 0)
+                };
+                let is_connected = pin_default != 0xFFFF_FFFF
+                    && ((pin_default >> 30) & 0xF) != 0xF;
+                if (pincap >> 16) & 1 != 0 && is_connected {
+                    pin = Some(n); // connected EAPD pin always wins
                 } else if pin.is_none()
                     || pin.map_or(false, |p| {
                         let pc = unsafe {
@@ -916,7 +926,15 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     n
 }
 
+/// Poll for HDA half‑buffer completion.
+///
+/// Never blocks indefinitely: an internal TSC watchdog (~100 ms at
+/// 3 GHz) forces a return so the caller doesn't hang if the DMA
+/// engine stalls (common on real hardware when the stream has been
+/// stopped or the codec is not producing BCIS interrupts).
 pub fn hda_poll() {
+    let deadline =
+        unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(300_000_000); // ~100 ms at 3 GHz
     loop {
         if !HDA_READY.load(Ordering::Acquire) {
             return;
@@ -931,6 +949,9 @@ pub fn hda_poll() {
         let sts = unsafe { mmio!(r8 mmio, sd + SD_STS) };
         if sts & 0x04 != 0 {
             break; // BCIS set → half-buffer complete
+        }
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+            return; // timeout — don't hang forever
         }
         core::hint::spin_loop();
     }
