@@ -1255,8 +1255,12 @@ fn hda_init() {
         }
         mmio!(w16 m, CORBRP, 0);
         mmio!(w16 m, CORBWP, 0);
-        // Enable CORB DMA with the correct size
-        mmio!(w32 m, CORBCTL, 0x02 | corb_sz_bits);
+        // Enable CORB DMA engine (CORBRUN=1).
+        // HDA register map: CORBCTL at 0x4C, CORBSIZE at 0x4E.
+        // We write CTL and SIZE as separate byte writes to avoid
+        // accidentally corrupting CORBSTS (0x4D).
+        mmio!(w8 m, CORBCTL, 0x02);
+        mmio!(w8 m, CORBCTL + 2, corb_sz as u8);
         mmio!(w32 m, RIRBLBASE, rirb_phys as u32);
         mmio!(w32 m, RIRBUBASE, (rirb_phys >> 32) as u32);
         // RIRBWP reset: set bit 15 (RIRBRST) then clear
@@ -1268,17 +1272,20 @@ fn hda_init() {
         if mmio!(r16 m, RIRBWP) & 0x8000 != 0 {
             mmio!(w16 m, RIRBWP, 0);
         }
-        // Enable RIRB DMA with the correct size
-        mmio!(w32 m, RIRBCTL, 0x02 | rirb_sz_bits);
+        // Enable RIRB DMA with the correct size.
+        mmio!(w8 m, RIRBCTL, 0x02);
+        mmio!(w8 m, RIRBCTL + 2, corb_sz as u8);
         // ── Verify CORB/RIRB register state after enable ──────────
-        let corb_ctl = mmio!(r32 m, CORBCTL);
-        let rirb_ctl = mmio!(r32 m, RIRBCTL);
+        let corb_ctl = mmio!(r8 m, CORBCTL);
+        let corb_sz_readback = mmio!(r8 m, CORBCTL + 2);
+        let rirb_ctl = mmio!(r8 m, RIRBCTL);
+        let rirb_sz_readback = mmio!(r8 m, RIRBCTL + 2);
         let corb_rp = mmio!(r16 m, CORBRP);
         let corb_wp_after = mmio!(r16 m, CORBWP);
         let rirb_wp_after = mmio!(r16 m, RIRBWP);
         log::info!(
-            "Sound: CORB CTL=0x{:08x} RP=0x{:04x} WP=0x{:04x}  RIRB CTL=0x{:08x} WP=0x{:04x}",
-            corb_ctl, corb_rp, corb_wp_after, rirb_ctl, rirb_wp_after
+            "Sound: CORB CTL=0x{:02x} SZ={} RP=0x{:04x} WP=0x{:04x}  RIRB CTL=0x{:02x} SZ={} WP=0x{:04x}",
+            corb_ctl, corb_sz_readback, corb_rp, corb_wp_after, rirb_ctl, rirb_sz_readback, rirb_wp_after
         );
         log::info!("Sound: CORB/RIRB enabled (size={} entries)", corb_n);
         // ── Short delay after CORB/RIRB enable ────────────────────
