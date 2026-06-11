@@ -195,8 +195,17 @@ pub fn draw_decoded_frame(
             continue;
         }
         let src_row = &decode[sy * fw_u..];
-        let row_off = (off_y_u + dy) * stride + off_x_u;
-        if row_off + draw_w_u > pixels.len() {
+        let Some(row_off) = off_y_u
+            .checked_add(dy)
+            .and_then(|y| y.checked_mul(stride))
+            .and_then(|val| val.checked_add(off_x_u))
+        else {
+            continue;
+        };
+        let Some(end_off) = row_off.checked_add(draw_w_u) else {
+            continue;
+        };
+        if end_off > pixels.len() {
             continue;
         }
         for dx in 0..draw_w_u {

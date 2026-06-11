@@ -501,13 +501,19 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
         // Iterate the pin's connection list entries; look for a
         // mixer that includes our DAC as an input.
         'pin_con: for con_idx in 0..pin_con_count.min(16) {
-            let con_node = unsafe {
-                corb_send_verb(mmio, codec, pin, VERB_GET_CONNECTION_LIST_ENTRY, con_idx as u16)
+            // HDA spec §7.1.2: Get Connection List Entry offset must be a
+            // multiple of 4.  Each 32-bit response packs up to four 8-bit
+            // connection entries at byte positions [7:0], [15:8], [23:16],
+            // [31:24].
+            let chunk_idx = (con_idx / 4) * 4;
+            let resp = unsafe {
+                corb_send_verb(mmio, codec, pin, VERB_GET_CONNECTION_LIST_ENTRY, chunk_idx as u16)
             };
-            if con_node == 0xFFFF_FFFF {
+            if resp == 0xFFFF_FFFF {
                 continue;
             }
-            let con_node = (con_node & 0x7F) as u8;
+            let shift = (con_idx % 4) * 8;
+            let con_node = ((resp >> shift) & 0x7F) as u8;
             // Check if this connection node is a mixer
             let con_wcap = unsafe {
                 corb_send_verb(
