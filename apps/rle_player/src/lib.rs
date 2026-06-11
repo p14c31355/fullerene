@@ -223,18 +223,20 @@ pub fn compute_letterbox(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32
     if src_h == 0 || dst_h == 0 || src_w == 0 || dst_w == 0 {
         return (0, 0, 0, 0);
     }
-    let src_aspect = src_w as f64 / src_h as f64;
-    let dst_aspect = dst_w as f64 / dst_h as f64;
+    // Pure integer arithmetic avoids floating‑point (soft‑float / SSE
+    // complications in a #![no_std] kernel environment).
+    let sw = src_w as u64;
+    let sh = src_h as u64;
+    let dw = dst_w as u64;
+    let dh = dst_h as u64;
 
-    if dst_aspect > src_aspect {
+    if dw * sh > sw * dh {
         // Destination is wider → pillarbox (black bars left/right)
-        let h = dst_h;
-        let w = ((dst_h as f64 * src_aspect) as u32).max(1);
-        (w, h, (dst_w.saturating_sub(w)) / 2, 0)
+        let w = (dh * sw / sh).max(1);
+        (w as u32, dst_h, ((dst_w as u64).saturating_sub(w) / 2) as u32, 0)
     } else {
         // Destination is taller → letterbox (black bars top/bottom)
-        let w = dst_w;
-        let h = ((dst_w as f64 / src_aspect) as u32).max(1);
-        (w, h, 0, (dst_h.saturating_sub(h)) / 2)
+        let h = (dw * sh / sw).max(1);
+        (dst_w, h as u32, 0, ((dst_h as u64).saturating_sub(h) / 2) as u32)
     }
 }
