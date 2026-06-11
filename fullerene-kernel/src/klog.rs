@@ -87,9 +87,14 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
     let guard = KLOG_BUF.lock();
     let ring = &*guard;
     let mut result = alloc::vec::Vec::with_capacity(ring.len);
-    for i in 0..ring.len {
-        let idx = (ring.head + i) % KLOG_CAPACITY;
-        result.push(ring.buf[idx]);
+    if ring.len > 0 {
+        let end = ring.head + ring.len;
+        if end <= KLOG_CAPACITY {
+            result.extend_from_slice(&ring.buf[ring.head..end]);
+        } else {
+            result.extend_from_slice(&ring.buf[ring.head..KLOG_CAPACITY]);
+            result.extend_from_slice(&ring.buf[0..(end % KLOG_CAPACITY)]);
+        }
     }
     result
 }
