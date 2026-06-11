@@ -762,6 +762,11 @@ fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
     const BASE: [KeyCode; 128] = {
         use KeyCode::*;
         let mut t = [Unknown(0); 128];
+        let mut i = 0;
+        while i < 128 {
+            t[i] = Unknown(i as u32);
+            i += 1;
+        }
         t[0x01] = Escape;
         t[0x02] = Digit1;
         t[0x03] = Digit2;
