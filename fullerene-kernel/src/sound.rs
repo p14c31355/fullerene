@@ -313,20 +313,20 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
     // Re-read to confirm we are running
     let corb_ctl2 = unsafe { mmio!(r32 mmio, CORBCTL) };
     let rirb_ctl2 = unsafe { mmio!(r32 mmio, RIRBCTL) };
-    if corb_ctl2 & 0x0001 == 0 || corb_ctl2 & 0x0002 != 0 {
+    if corb_ctl2 & 0x0002 == 0 || corb_ctl2 & 0x0100 != 0 {
         // Not running or MEI still set — attempt full restart
         // HDA spec §4.8: write size+MEI+run in one go
-        let corb_sz = (corb_ctl2 >> 8) & 0x03;
+        let corb_sz = (corb_ctl2 >> 16) & 0x03;
         unsafe {
-            mmio!(w32 mmio, CORBCTL, 0x0002 | (corb_sz << 8));
+            mmio!(w32 mmio, CORBCTL, 0x0102 | (corb_sz << 16));
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         }
         log::info!("Sound: CORB restart: CTL=0x{:08x}", corb_ctl2);
     }
-    if rirb_ctl2 & 0x0001 == 0 || rirb_ctl2 & 0x0002 != 0 {
-        let rirb_sz = (rirb_ctl2 >> 8) & 0x03;
+    if rirb_ctl2 & 0x0002 == 0 || rirb_ctl2 & 0x0100 != 0 {
+        let rirb_sz = (rirb_ctl2 >> 16) & 0x03;
         unsafe {
-            mmio!(w32 mmio, RIRBCTL, 0x0002 | (rirb_sz << 8));
+            mmio!(w32 mmio, RIRBCTL, 0x0102 | (rirb_sz << 16));
             core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         }
         log::info!("Sound: RIRB restart: CTL=0x{:08x}", rirb_ctl2);
