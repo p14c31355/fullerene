@@ -228,12 +228,13 @@ impl PcmMixer {
     impl<const N: usize> BufferQueue<N> {
         /// Create an empty buffer queue.
         pub const fn new() -> Self {
+            assert!(N.is_power_of_two(), "BufferQueue capacity N must be a power of two");
             Self {
                 buf: core::cell::UnsafeCell::new([0u8; N]),
-            write_head: AtomicUsize::new(0),
-            read_tail: AtomicUsize::new(0),
+                write_head: AtomicUsize::new(0),
+                read_tail: AtomicUsize::new(0),
+            }
         }
-    }
 
     /// Number of bytes currently available for reading.
     pub fn available(&self) -> usize {
