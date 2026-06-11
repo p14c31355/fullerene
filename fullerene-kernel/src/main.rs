@@ -44,5 +44,6 @@ pub mod sound;
 pub mod syscall;
 pub mod task;
 pub mod tracing;
+pub mod klog;
 pub mod vfs;
 pub mod virtio_gpu;

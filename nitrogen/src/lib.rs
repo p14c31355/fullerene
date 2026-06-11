@@ -21,6 +21,7 @@
 extern crate alloc;
 
 pub mod apic;
+pub mod audio;
 pub mod ioapic;
 pub mod iwlwifi;
 pub mod pci;

@@ -32,7 +32,12 @@ impl log::Log for FullereneLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            crate::serial::serial_log(format_args!("[{}] {}\n", record.level(), record.args()));
+            let msg = alloc::format!("[{}] {}\n", record.level(), record.args());
+            crate::serial::serial_log(format_args!("{}", msg));
+            // Forward to kernel log hook (dmesg) when registered.
+            if let Some(hook) = *LOG_HOOK.lock() {
+                hook(record.level(), &msg);
+            }
         }
     }
 
@@ -41,6 +46,10 @@ impl log::Log for FullereneLogger {
 
 static LOGGER: FullereneLogger = FullereneLogger::new();
 static LOGGER_INITIALIZED: spin::Once<()> = spin::Once::new();
+
+/// Optional hook registered by the kernel to capture log messages
+/// for in‑OS display (e.g. `dmesg`).
+pub static LOG_HOOK: spin::Mutex<Option<fn(log::Level, &str)>> = spin::Mutex::new(None);
 
 pub fn init_global_logger() -> Result<(), log::SetLoggerError> {
     log::set_logger(&LOGGER)?;

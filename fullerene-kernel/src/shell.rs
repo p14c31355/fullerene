@@ -153,7 +153,18 @@ fn register_nozzle_hooks() {
             }
         }
         "dmesg" => {
-            ctx.terminal.write_str("=== Kernel trace buffer ===\n");
+            let klog_len = crate::klog::len();
+            if klog_len > 0 {
+                ctx.terminal.write_str("=== Kernel log ===\n");
+                let snap = crate::klog::snapshot();
+                let s = core::str::from_utf8(&snap).unwrap_or("(binary data)\n");
+                ctx.terminal.write_str(s);
+                if !s.ends_with('\n') {
+                    ctx.terminal.write_str("\n");
+                }
+                ctx.terminal.write_str("=== End kernel log ===\n");
+            }
+            ctx.terminal.write_str("\n=== Kernel trace buffer ===\n");
             let events = crate::tracing::snapshot();
             if events.is_empty() {
                 ctx.terminal.write_str("(no trace events recorded)\n");
