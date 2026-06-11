@@ -130,7 +130,7 @@ impl RleFile {
             self.data.len()
         };
         // Skip frames whose data ran past EOF (original badapple.rs behaviour).
-        if fo >= self.data.len() || no > self.data.len() {
+        if fo >= self.data.len() || no > self.data.len() || fo > no {
             return Ok(false);
         }
         let chunk = &self.data[fo..no];
