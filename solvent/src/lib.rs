@@ -1133,9 +1133,9 @@ where
         // desktop) without the cursor, so the next lightweight update can
         // restore the old area correctly.
         if rt.desktop.cursor.visible {
-            let fb_ptr =
-                LAST_FB_PTR.load(core::sync::atomic::Ordering::Relaxed);
-            if !fb_ptr.is_null() {
+            let (fb_addr, _, _) = *LAST_FB.lock();
+            if fb_addr != 0 {
+                let fb_ptr = fb_addr as *mut u32;
                 let cur_sz = lattice::cursor::Cursor::SIZE as i32;
                 let cx = rt.desktop.cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
                 let cy = rt.desktop.cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
