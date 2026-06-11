@@ -53,23 +53,26 @@ fn calibrate_tsc_per_ms() -> u64 {
         core::hint::spin_loop();
     }
     // LPIB is advancing — measure half‑buffer worth of progress.
-    let half = 16352u64;
+    // audio_sz = DMA_BUF_SIZE - bdl_sz = 32768 - 32 = 32736;
+    // half = audio_sz / 2 = 16368.
+    const AUDIO_SZ: u64 = 32736;
+    const CALIB_HALF: u64 = AUDIO_SZ / 2; // 16368
     let t0 = unsafe { x86_64::_rdtsc() };
     let deadline = t0.wrapping_add(3_000_000_000); // ~1 s at 3 GHz
     let mut prev = lpib;
     let mut total = 0u64;
     loop {
         if let Some(cur) = crate::sound::hda_playback_progress() {
-            // LPIB wraps at audio_sz (32704); detect wrap via
+            // LPIB wraps at audio_sz; detect wrap via
             // subtraction underflow and accumulate correctly.
             let delta = if cur >= prev {
                 cur - prev
             } else {
-                (32704u64 - prev) + cur
+                (AUDIO_SZ - prev) + cur
             };
             total += delta;
             prev = cur;
-            if total >= half {
+            if total >= CALIB_HALF {
                 break;
             }
         }
@@ -79,7 +82,7 @@ fn calibrate_tsc_per_ms() -> u64 {
         core::hint::spin_loop();
     }
     let ticks = unsafe { x86_64::_rdtsc() }.wrapping_sub(t0);
-    let ms = half.saturating_mul(1000) / 96_000; // half bytes @ 96000 B/s → ms
+    let ms = CALIB_HALF.saturating_mul(1000) / 96_000; // half bytes @ 96000 B/s → ms
     if ms == 0 {
         return 3_000_000;
     }
@@ -87,6 +90,14 @@ fn calibrate_tsc_per_ms() -> u64 {
 }
 
 pub fn play_badapple() {
+    // Suspend solvent compositor rendering so the scheduler's
+    // runtime_tick does NOT compete with our direct framebuffer writes.
+    // Without this, every scheduler tick triggers a solvent render
+    // pass that writes to the same framebuffer we're drawing on,
+    // causing visual corruption and potential deadlocks when the
+    // compositor tries to read window state we've modified.
+    solvent::suspend_rendering();
+
     petroleum::serial::serial_log(format_args!("Bad Apple playback started (hybrid mode)\n"));
     log::info!("Bad Apple playback started (hybrid mode)");
 
@@ -95,6 +106,7 @@ pub fn play_badapple() {
         Ok(r) => r,
         Err(e) => {
             petroleum::serial::serial_log(format_args!("Bad Apple: parse error: {:?}\n", e));
+            solvent::resume_rendering();
             return;
         }
     };
@@ -103,6 +115,7 @@ pub fn play_badapple() {
     let fh = rle.frame_height as u32;
     if fw == 0 || fh == 0 {
         petroleum::serial::serial_log(format_args!("Bad Apple: zero frame size\n"));
+        solvent::resume_rendering();
         return;
     }
 
@@ -117,6 +130,7 @@ pub fn play_badapple() {
         }
         None => {
             petroleum::serial::serial_log(format_args!("Bad Apple: failed to create window\n"));
+            solvent::resume_rendering();
             return;
         }
     };
@@ -133,6 +147,7 @@ pub fn play_badapple() {
             None => {
                 petroleum::serial::serial_log(format_args!("Bad Apple: no renderer\n"));
                 solvent::close_window(win_id);
+                solvent::resume_rendering();
                 solvent::force_desktop_redraw();
                 crate::gui::render();
                 return;
@@ -148,6 +163,7 @@ pub fn play_badapple() {
     if fb_ptr.is_null() || fb_stride == 0 || fb_height == 0 {
         petroleum::serial::serial_log(format_args!("Bad Apple: invalid fb\n"));
         solvent::close_window(win_id);
+        solvent::resume_rendering();
         solvent::force_desktop_redraw();
         crate::gui::render();
         return;
@@ -173,6 +189,9 @@ pub fn play_badapple() {
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BYTES_PER_SEC as u64;
     let frame_interval_ms: u64 = dur_ms / (n as u64).max(1);
+    // audio_sz = DMA_BUF_SIZE(32768) - bdl_sz(sizeof(BdlEntry)*2=32) = 32736
+    // half = audio_sz / 2 = 16368
+    // These must match sound.rs: HDA_AUDIO_SZ and HDA_HALF.
     const HALF: usize = 16368;
 
     let use_hda = crate::sound::hda_available();
@@ -238,7 +257,8 @@ pub fn play_badapple() {
             lpib_valid = true;
         }
     }
-    let audio_sz: u64 = 32704;
+    // Must match sound.rs: audio_sz = DMA_BUF_SIZE(32768) - bdl_sz(32) = 32736
+    let audio_sz: u64 = 32736;
     let mut idx = 0usize;
     let mut last_audio_feed = unsafe { x86_64::_rdtsc() };
     'outer: while idx < n {
@@ -368,6 +388,7 @@ pub fn play_badapple() {
     }
 
     // ── Restore desktop ────────────────────────────────────
+    solvent::resume_rendering();
     solvent::close_window(win_id);
     solvent::force_desktop_redraw();
     crate::gui::render();

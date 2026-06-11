@@ -1494,7 +1494,21 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
         DesktopAction::Reboot => {}   // TODO
         DesktopAction::Separator => {}
         DesktopAction::ChangeWallpaperSettings => {
-            open_info_window(rt, InfoWindow::WallpaperSettings)
+            // Cycle through wallpaper presets: SolidColor → Grid → Gradient → Preset 0 → 1 → 2 → SolidColor...
+            // This avoids opening a new window while still inside the mouse-down event
+            // handler (which would re-enter the WM and risk deadlocks on the RUNTIME Mutex).
+            let next = match get_wallpaper() {
+                WallpaperMode::SolidColor => WallpaperMode::GridPattern,
+                WallpaperMode::GridPattern => WallpaperMode::Gradient,
+                WallpaperMode::Gradient => WallpaperMode::Preset(0),
+                WallpaperMode::Preset(0) => WallpaperMode::Preset(1),
+                WallpaperMode::Preset(1) => WallpaperMode::Preset(2),
+                WallpaperMode::Preset(2) => WallpaperMode::SolidColor,
+                _ => WallpaperMode::GridPattern,
+            };
+            set_wallpaper(next);
+            rt.desktop.force_full_redraw();
+            rt.frame_due = true;
         }
     }
 }
