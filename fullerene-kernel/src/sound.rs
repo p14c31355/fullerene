@@ -1285,6 +1285,9 @@ fn hda_init() {
         // Check 64-bit support: GCAP bit 0
         let gcap64 = mmio!(r32 m, GCAP) & 1;
         log::info!("Sound: HDA 64-bit support (GCAP bit0)={}", gcap64);
+        if gcap64 == 0 && ((corb_phys >> 32) != 0 || (rirb_phys >> 32) != 0) {
+            log::warn!("Sound: Physical addresses exceed 32-bit limit but controller does not support 64-bit addressing!");
+        }
         mmio!(w32 m, CORBLBASE, corb_phys as u32);
         mmio!(w32 m, CORBUBASE, (corb_phys >> 32) as u32);
         // CORB Read Pointer Reset via bit 15, then clear RP/WP
