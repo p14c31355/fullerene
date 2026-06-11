@@ -21,6 +21,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
+use core::arch::x86_64;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use lattice::compositor::{Compositor, RenderTarget};
@@ -83,16 +84,32 @@ const CURSOR_TIMER_ID: TimerId = TimerId(1);
 const MOUSE_SENSITIVITY: i16 = 6;
 /// Interval (ticks) between forced compositor passes on Desktop.
 ///
-/// Setting this too low (e.g. 1) causes the compositor to re‑render on
-/// every scheduler tick, even when nothing has changed.  Raising it to
-/// 8 (~62.5 fps at 500 Hz tick) keeps the clock and cursor responsive
-/// while reducing unnecessary framebuffer copies.
+/// The tick‑based timer is a coarse fallback; actual frame pacing is
+/// enforced via TSC in `chrono_tick` so that real‑time FPS stays
+/// consistent across QEMU (emulated) and real hardware (native).
 const FRAME_INTERVAL_TICKS: u64 = 8;
+/// Target frame interval: 16.7 ms (~60 FPS).
+const FRAME_INTERVAL_MS: u64 = 17;
+/// Conservative TSC‑per‑ms floor (2.5 GHz).  Set by the kernel during
+/// early boot via `set_tsc_per_ms()`.  This guarantees ≤60 FPS on any
+/// x86‑64 CPU from the last decade.
+static TSC_PER_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(3_000_000);
 const FRAME_TIMER_ID: TimerId = TimerId(2);
 
 /// Maximum framebuffer size covering 4K (3840×2160). BSS static buffer;
 /// displays exceeding this will skip rendering to avoid overflowing.
 const MAX_FB_PIXELS: usize = 3840 * 2160;
+
+/// Set the TSC‑per‑millisecond value from the kernel.
+/// Called during early boot so the compositor can pace frames in real
+/// time regardless of whether the yield‑loop runs at 500 Hz (QEMU TCG)
+/// or 50 kHz (bare metal).
+pub fn set_tsc_per_ms(val: u64) {
+    TSC_PER_MS.store(val, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Last render TSC timestamp (for real‑time frame pacing).
+static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Callback to extend the kernel heap.
 pub static HEAP_EXTEND_FN: Mutex<Option<fn(additional: usize) -> Result<(), ()>>> =
@@ -1376,9 +1393,26 @@ fn runtime_tick_no_fb() {
     chrono_tick(now);
     process_events();
 
+    // ── TSC‑based frame pacing ──────────────────────────────
+    // `frame_due` may be set by the tick‑based FRAME_TIMER or by
+    // event handlers.  On bare metal the yield loop can run at
+    // 50 kHz, so we additionally gate on real elapsed time (TSC)
+    // to cap at ≈60 fps and avoid burning CPU / GPU bandwidth.
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
-        r.frame_due = false;
+        if due {
+            let tsc_per_ms = TSC_PER_MS.load(core::sync::atomic::Ordering::Relaxed);
+            let frame_tsc = tsc_per_ms.saturating_mul(FRAME_INTERVAL_MS);
+            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+            let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+            if now_tsc.wrapping_sub(last) < frame_tsc {
+                // Too soon — re‑que the frame and skip rendering.
+                r.frame_due = true;
+                return false;
+            }
+            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+            r.frame_due = false;
+        }
         due
     });
     if do_render {
