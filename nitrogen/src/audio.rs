@@ -173,8 +173,8 @@ impl PcmMixer {
             return 0;
         }
         // ceil(input_frames * out_rate / in_rate)
-        let num = input_frames as u64 * self.out_rate as u64;
-        let den = in_rate as u64;
+        let num = input_frames as u128 * self.out_rate as u128;
+        let den = in_rate as u128;
         ((num + den - 1) / den) as usize
     }
 
