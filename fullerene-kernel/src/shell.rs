@@ -157,8 +157,8 @@ fn register_nozzle_hooks() {
             if klog_len > 0 {
                 ctx.terminal.write_str("=== Kernel log ===\n");
                 let snap = crate::klog::snapshot();
-                let s = core::str::from_utf8(&snap).unwrap_or("(binary data)\n");
-                ctx.terminal.write_str(s);
+                let s = alloc::string::String::from_utf8_lossy(&snap);
+                ctx.terminal.write_str(&s);
                 if !s.ends_with('\n') {
                     ctx.terminal.write_str("\n");
                 }
