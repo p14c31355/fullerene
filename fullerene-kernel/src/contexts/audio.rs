@@ -134,9 +134,9 @@ impl AudioContext {
             .is_some_and(|c| c.poll(timeout))
     }
     pub fn poll_delay(&self, tsc_per_ms: u64, ms: u64) {
-        let dl =
-            unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(tsc_per_ms.saturating_mul(ms));
-        while unsafe { core::arch::x86_64::_rdtsc() } < dl {
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
+        let duration = tsc_per_ms.saturating_mul(ms);
+        while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < duration {
             self.poll_block(Some(0));
             core::hint::spin_loop();
         }
