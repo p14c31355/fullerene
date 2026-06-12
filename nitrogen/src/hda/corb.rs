@@ -213,6 +213,9 @@ impl CorbEngine {
     ) -> u32 {
         let corb = self.corb_virt;
         let rirb = self.rirb_virt;
+        if corb.is_null() || rirb.is_null() {
+            return 0xFFFF_FFFF;
+        }
         let corb_n = self.corb_entries;
 
         // Encode the verb command word

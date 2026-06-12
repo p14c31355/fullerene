@@ -176,6 +176,9 @@ impl DmaEngine {
     /// Write PCM bytes at a specific offset into the DMA buffer
     /// (used for pre‑fill).  Returns bytes written.
     pub fn write_at(&self, offset: u32, samples: &[u8]) -> usize {
+        if self.dma_virt.is_null() {
+            return 0;
+        }
         let total = self.audio_size as usize;
         let max_len = total.saturating_sub(offset as usize);
         let n = samples.len().min(max_len);

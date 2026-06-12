@@ -32,7 +32,7 @@ impl RouteFinder {
     ) -> Option<(u8, u8)> {
         let mut dacs: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
         let mut best_pin: Option<u8> = None;
-        let mut best_pin_has_eapd = false;
+        let mut best_score: u8 = 0;
 
         for w in &graph.widgets {
             if w.widget_type == widget_type::AUDIO_OUTPUT {
@@ -54,16 +54,21 @@ impl RouteFinder {
                 }
 
                 let has_eapd = (w.pin_cap >> 16) & 1 != 0;
-                // Check if connected (DefaultAssociation != 0xF)
                 let is_connected =
                     w.pin_default != 0xFFFF_FFFF && ((w.pin_default >> 8) & 0xF) != 0xF;
 
-                if has_eapd && is_connected {
-                    // EAPD + connected: always wins
+                // Scoring: connected EAPD (4) > connected non-EAPD (3) >
+                // unconnected EAPD (2) > unconnected non-EAPD (1)
+                let score: u8 = match (has_eapd, is_connected) {
+                    (true, true) => 4,
+                    (false, true) => 3,
+                    (true, false) => 2,
+                    (false, false) => 1,
+                };
+
+                if score > best_score {
                     best_pin = Some(w.node_id);
-                    best_pin_has_eapd = true;
-                } else if best_pin.is_none() || (!best_pin_has_eapd) {
-                    best_pin = Some(w.node_id);
+                    best_score = score;
                 }
             }
         }
@@ -144,22 +149,24 @@ impl RouteFinder {
         // includes our DAC as input.
         if let Some(pin_w) = graph.get_widget(pin) {
             'pin_con: for (con_idx, &con_node) in pin_w.connections.iter().enumerate() {
+                // Direct connection to DAC — handle before widget lookup,
+                // because the DAC widget IS in the graph and would never
+                // reach the None branch below.
+                if con_node == dac {
+                    let r = corb.send_verb(
+                        mmio, 0, pin,
+                        verbs::SET_CONNECTION_SELECT, con_idx as u16,
+                    );
+                    log::info!(
+                        "HDA: SET_CONN pin=0x{:x} → DAC 0x{:x} (direct) result=0x{:08x}",
+                        pin, con_node, r
+                    );
+                    break 'pin_con;
+                }
+
                 let con_w = match graph.get_widget(con_node) {
                     Some(w) => w,
-                    None => {
-                        // Direct connection to DAC?
-                        if con_node == dac {
-                            let r = corb.send_verb(
-                                mmio, 0, pin,
-                                verbs::SET_CONNECTION_SELECT, con_idx as u16,
-                            );
-                            log::info!(
-                                "HDA: SET_CONN pin=0x{:x} → DAC 0x{:x} (direct) result=0x{:08x}",
-                                pin, con_node, r
-                            );
-                        }
-                        continue;
-                    }
+                    None => continue,
                 };
 
                 if con_w.widget_type != widget_type::AUDIO_MIXER {

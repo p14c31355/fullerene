@@ -109,8 +109,19 @@ pub fn hda_tick() {
 }
 
 /// Lazy initialisation: bring up CORB/RIRB, enumerate codec, start DMA.
-/// Safe to call multiple times — subsequent calls are no‑ops.
+///
+/// Initialisation is attempted exactly once.  Even if the first attempt
+/// fails (e.g. GCAP invalid, no output streams, codec not found), we
+/// mark it as done so that repeated `hda_write_direct` / `hda_feed_samples`
+/// calls do not leak DMA pages on each retry.
 fn hda_init() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static INIT_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+    if INIT_ATTEMPTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
     let mut guard = HDA_CTRL.lock();
     let ctrl = match guard.as_mut() {
         Some(c) => c,
