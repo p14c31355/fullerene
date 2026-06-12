@@ -49,7 +49,7 @@ impl FramebufferContext {
         Some(unsafe {
             core::slice::from_raw_parts_mut(
                 info.address as *mut u32,
-                info.width as usize * info.height as usize,
+                (info.stride as usize / 4) * info.height as usize,
             )
         })
     }
