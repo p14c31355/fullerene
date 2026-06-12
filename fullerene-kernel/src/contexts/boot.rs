@@ -13,6 +13,23 @@ unsafe impl Send for BootContext {}
 unsafe impl Sync for BootContext {}
 
 impl BootContext {
+    const fn empty() -> Self {
+        Self {
+            framebuffer_config: FullereneFramebufferConfig {
+                address: 0,
+                width: 0,
+                height: 0,
+                pixel_format:
+                    petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                bpp: 0,
+                stride: 0,
+            },
+            memory_map: None,
+            rsdp_address: 0,
+            kernel_args: core::ptr::null(),
+        }
+    }
+
     pub unsafe fn new(
         kernel_args: *const petroleum::assembly::KernelArgs,
         memory_map: Option<&'static [MemoryMapDescriptor]>,
@@ -60,7 +77,7 @@ impl BootContext {
 
 static BOOT: Mutex<Option<BootContext>> = Mutex::new(None);
 pub fn init_boot() {
-    *BOOT.lock() = Some(unsafe { BootContext::new(core::ptr::null(), None, 0) });
+    *BOOT.lock() = Some(BootContext::empty());
 }
 pub fn get_boot() -> &'static Mutex<Option<BootContext>> {
     &BOOT

@@ -1,9 +1,5 @@
 //! Graphics subsystem — thin bridge to [`crate::contexts::FramebufferContext`].
-//! All state lives in [`FramebufferContext`]; this module provides the public API
-//! for existing callers (`gui.rs`, `scheduler.rs`, `badapple.rs`).
-use crate::contexts::framebuffer::{
-    FramebufferContext, get_framebuffer, with_framebuffer, with_framebuffer_mut,
-};
+use crate::contexts::framebuffer::{get_framebuffer, with_framebuffer_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -11,6 +7,11 @@ static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 pub fn init_graphics() {
     if GRAPHICS_INITIALIZED.swap(true, Ordering::SeqCst) {
         return;
+    }
+
+    // Ensure FramebufferContext exists.
+    if get_framebuffer().lock().is_none() {
+        crate::contexts::framebuffer::init_framebuffer();
     }
 
     // Path 1: VirtIO-GPU
@@ -41,10 +42,10 @@ pub fn init_graphics() {
                 pixel_format: Some(fb_config.pixel_format),
                 colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
             };
-            let w = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
-            let r = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(w);
+            let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
             with_framebuffer_mut(|fb| {
-                fb.renderer = Some(r);
+                fb.renderer =
+                    Some(petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer));
                 fb.bpp = fb_config.bpp;
             });
             return;
@@ -54,14 +55,17 @@ pub fn init_graphics() {
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
     let vga_phys = petroleum::page_table::constants::VGA_MEMORY_START;
     let vga_virt = vga_phys + off;
-    let vga_flags = x86_64::structures::paging::PageTableFlags::NO_CACHE
-        | x86_64::structures::paging::PageTableFlags::PRESENT
-        | x86_64::structures::paging::PageTableFlags::WRITABLE
-        | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
     {
         let mut mm = crate::memory_management::get_memory_manager().lock();
         let mm = mm.as_mut().unwrap();
-        let _ = mm.safe_map_page(vga_virt as usize, vga_phys as usize, vga_flags);
+        let _ = mm.safe_map_page(
+            vga_virt as usize,
+            vga_phys as usize,
+            x86_64::structures::paging::PageTableFlags::NO_CACHE
+                | x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+        );
     }
     let mut vga = petroleum::graphics::text::VgaBuffer::with_address(vga_virt as usize);
     vga.enable();

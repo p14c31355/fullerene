@@ -94,7 +94,10 @@ impl FramebufferContext {
 
 static FRAMEBUFFER: Mutex<Option<FramebufferContext>> = Mutex::new(None);
 pub fn init_framebuffer() {
-    *FRAMEBUFFER.lock() = Some(FramebufferContext::new());
+    let mut g = FRAMEBUFFER.lock();
+    if g.is_none() {
+        *g = Some(FramebufferContext::new());
+    }
 }
 pub fn get_framebuffer() -> &'static Mutex<Option<FramebufferContext>> {
     &FRAMEBUFFER
