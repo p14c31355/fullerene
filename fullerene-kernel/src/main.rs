@@ -33,6 +33,7 @@ pub mod heap;
 pub mod init;
 pub mod interrupts;
 pub mod keyboard;
+pub mod klog;
 pub mod loader;
 pub mod memory_management;
 pub mod nvme;

@@ -55,14 +55,32 @@ const VERB_SET_STREAM: u32 = 0x706;
 const VERB_SET_EAPD: u32 = 0x70C;
 const VERB_SET_CONNECTION_SELECT: u32 = 0x701;
 const VERB_GET_CONNECTION_LIST_ENTRY: u32 = 0xF02;
-const PARAM_SUBORDINATE_COUNT: u8 = 0x04;
-const PARAM_AUDIO_WIDGET_CAP: u8 = 0x09;
-const PARAM_OUTPUT_AMP_CAP: u8 = 0x12;
-const PARAM_PIN_CAP: u8 = 0x0C;
+const VERB_GET_PIN_SENSE: u32 = 0xF09;
+const VERB_GET_AMP_GAIN_MUTE: u32 = 0x00B;
+const VERB_GET_POWER_STATE: u32 = 0xF05;
+const VERB_GET_CONFIG_DEFAULT: u32 = 0xF1C;
+const VERB_GET_SUBSYSTEM_ID: u32 = 0xF20;
+const PARAM_VENDOR_ID: u16 = 0x00;
+const PARAM_REVISION_ID: u16 = 0x02;
+const PARAM_SUBORDINATE_COUNT: u16 = 0x04;
+const PARAM_AUDIO_WIDGET_CAP: u16 = 0x09;
+const PARAM_PCM: u16 = 0x0A;
+const PARAM_STREAM: u16 = 0x0B;
+const PARAM_PIN_CAP: u16 = 0x0C;
+const PARAM_INPUT_AMP_CAP: u16 = 0x0D;
+const PARAM_OUTPUT_AMP_CAP: u16 = 0x12;
+const PARAM_CONNECTION_LIST_LEN: u16 = 0x0E;
+const PARAM_POWER_STATE: u16 = 0x0F;
 const WTYPE_AUDIO_OUTPUT: u32 = 0x0;
-const WTYPE_PIN_COMPLEX: u32 = 0x4;
-const WTYPE_AFG: u32 = 0x1;
+const WTYPE_AUDIO_INPUT: u32 = 0x1;
 const WTYPE_AUDIO_MIXER: u32 = 0x2;
+const WTYPE_AUDIO_SELECTOR: u32 = 0x3;
+const WTYPE_PIN_COMPLEX: u32 = 0x4;
+const WTYPE_POWER_WIDGET: u32 = 0x5;
+const WTYPE_VOLUME_KNOB: u32 = 0x6;
+const WTYPE_BEEP_GENERATOR: u32 = 0x7;
+const WTYPE_VENDOR_DEFINED: u32 = 0xF;
+const WTYPE_AFG: u32 = 0x1;
 const CORB_ENTRIES: usize = 256;
 const RIRB_ENTRIES: usize = 256;
 
@@ -177,9 +195,14 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             let Some(mut cfg) = PciConfigSpace::read_from_device(bus, d, 0) else {
                 continue;
             };
-            cfg.command |= 0x0004;
+            // Ensure both Memory Space (bit 1) AND Bus Mastering (bit 2)
+            // are set.  CORB/RIRB DMA requires Bus Mastering; without it
+            // all verbs timeout on real hardware (QEMU is lenient).
+            cfg.command |= 0x0006;
             let v = (cfg.status as u32) << 16 | (cfg.command as u32);
             PciConfigSpace::write_config_dword(&mut cfg, bus, d, 0, 0x04, v);
+            // Re-read PCI command to confirm it stuck
+            let cmd_after = PciConfigSpace::read_config_word(bus, d, 0, 4);
 
             // ── Quick MMIO probe ──────────────────────────────────
             let mmio = (bar0 + off) as *mut u8;
@@ -187,7 +210,7 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
             let states = unsafe { mmio!(r16 mmio, STATESTS) };
 
             log::info!(
-                "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x}",
+                "Sound: HDA {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x} CMD=0x{:04x}",
                 bus,
                 d,
                 0,
@@ -195,7 +218,8 @@ fn probe_hda() -> Option<(u8, u8, u8, u64)> {
                 dev.device_id,
                 bar0,
                 gcap,
-                states
+                states,
+                cmd_after,
             );
 
             // Codec #0 connected → this is the real audio controller.
@@ -268,31 +292,529 @@ unsafe fn corb_send_verb(mmio: *mut u8, codec: u8, node: u8, verb: u32, payload:
         }
         core::hint::spin_loop();
     }
+    // ── Ensure CORB/RIRB DMA engines are running ─────────────────
+    // HDA register map defines CORBCTL (byte at offset 0x4C),
+    // CORBSTS (byte at 0x4D), and CORBSIZE (byte at 0x4E) as three
+    // separate 1‑byte registers.  We access them individually.
+    //   CORBCTL[0] = CORBMEI (RW1C, write 1 to clear)
+    //   CORBCTL[1] = CORBRUN (1 = DMA running)
+    //   CORBSIZE[1:0] = buffer size code (2/16/256 entries)
+    // Same layout for RIRB starting at offset 0x5C.
+    let corb_sts_byte = unsafe { mmio!(r8 mmio, CORBCTL + 1) };
+    if corb_sts_byte & 0x01 != 0 {
+        // CORBMEI is in CORBSTS (offset 0x4D). Clear it by writing 1 (RW1C).
+        unsafe { mmio!(w8 mmio, CORBCTL + 1, 0x01) };
+        log::info!("Sound: CORBMEI cleared");
+    }
+    let rirb_sts_byte = unsafe { mmio!(r8 mmio, RIRBCTL + 1) };
+    if rirb_sts_byte & 0x01 != 0 {
+        // RIRBMEI is in RIRBSTS (offset 0x5D). Clear it by writing 1 (RW1C).
+        unsafe { mmio!(w8 mmio, RIRBCTL + 1, 0x01) };
+        log::info!("Sound: RIRBMEI cleared");
+    }
+    // Re-check: CORBRUN must be 1 for DMA to proceed.
+    let corb_ctl2 = unsafe { mmio!(r8 mmio, CORBCTL) };
+    let rirb_ctl2 = unsafe { mmio!(r8 mmio, RIRBCTL) };
+    if corb_ctl2 & 0x02 == 0 {
+        // CORB not running — full re-initialisation needed.
+        let corb_sz_byte = unsafe { mmio!(r8 mmio, CORBCTL + 2) } & 0x03;
+        unsafe { mmio!(w8 mmio, CORBCTL, 0x02) };
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        log::info!(
+            "Sound: CORB restarted (CTL=0x{:02x} SZ={})",
+            corb_ctl2,
+            corb_sz_byte
+        );
+    }
+    if rirb_ctl2 & 0x02 == 0 {
+        let rirb_sz_byte = unsafe { mmio!(r8 mmio, RIRBCTL + 2) } & 0x03;
+        unsafe { mmio!(w8 mmio, RIRBCTL, 0x02) };
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        log::info!(
+            "Sound: RIRB restarted (CTL=0x{:02x} SZ={})",
+            rirb_ctl2,
+            rirb_sz_byte
+        );
+    }
+
+    // ── Capture RIRBWP *before* writing CORBWP ─────────────
+    // On fast hardware the controller may write the response before
+    // we read RIRBWP after the CORBWP update, causing curr_rp to
+    // start at the post-response value and miss the solicited entry.
+    let _curr_rp_before = unsafe { mmio!(r16 mmio, RIRBWP) } as usize & 0xFF;
     let wp = unsafe { mmio!(r16 mmio, CORBWP) } as usize;
     let next_wp = (wp + 1) % corb_n;
+    // Write the CORB entry, then issue a full memory fence.
+    // Without mfence, the write may still be in the CPU store buffer
+    // when the HDA controller reads it via DMA → memory error → CORBMEI
     unsafe { core::ptr::write_volatile(corb.add(next_wp), cmd) };
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
     unsafe { mmio!(w16 mmio, CORBWP, next_wp as u16) };
-    let rirb_wp_before = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
-    for _ in 0..50_000 {
-        let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) } & 0xFF;
-        if rirb_wp != rirb_wp_before {
-            let resp = unsafe { core::ptr::read_volatile(rirb.add(rirb_wp as usize)) };
-            if (resp >> 63) & 1 == 0 {
-                return (resp >> 32) as u32;
+    // ── Read all pending RIRB entries incrementally ─────────
+    // If the hardware writes multiple responses (e.g. a solicited
+    // response followed by an unsolicited one) before this CPU
+    // reads RIRBWP, the write pointer will have advanced past the
+    // solicited entry.  We must walk from the last known read
+    // position to the current write pointer to avoid missing it.
+    let rirb_n: usize = 256; // RIRB entries — same as CORB
+    let mut _curr_rp = _curr_rp_before;
+    for _iter in 0..100_000 {
+        let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) } as usize & 0xFF;
+        while _curr_rp != rirb_wp {
+            _curr_rp = (_curr_rp + 1) % rirb_n;
+            let resp = unsafe { core::ptr::read_volatile(rirb.add(_curr_rp)) };
+            let unsol = (resp >> 63) & 1;
+            if unsol == 0 {
+                let raw = (resp >> 32) as u32;
+                if verb == VERB_GET_PARAM && payload <= 0x12 {
+                    log::info!(
+                        "Sound: verb OK c={} n={:#x} v={:#03x} → raw=0x{:08x}",
+                        codec,
+                        node,
+                        verb,
+                        raw
+                    );
+                }
+                return raw;
             }
         }
         core::hint::spin_loop();
     }
+    // Dump CORB/RIRB register state for timeout diagnosis
+    let corb_ctl = unsafe { mmio!(r32 mmio, CORBCTL) };
+    let rirb_ctl = unsafe { mmio!(r32 mmio, RIRBCTL) };
+    let corb_wp = unsafe { mmio!(r16 mmio, CORBWP) };
+    let corb_rp = unsafe { mmio!(r16 mmio, CORBRP) };
+    let rirb_wp = unsafe { mmio!(r16 mmio, RIRBWP) };
     log::warn!(
-        "Sound: verb timeout c={} n={:#x} v={:#03x}",
+        "Sound: verb timeout c={} n={:#x} v={:#03x} p={:#x}",
         codec,
         node,
-        verb
+        verb,
+        payload
+    );
+    log::warn!(
+        "Sound:  CORB CTL=0x{:08x} WP=0x{:04x} RP=0x{:04x}  RIRB CTL=0x{:08x} WP=0x{:04x}",
+        corb_ctl,
+        corb_wp,
+        corb_rp,
+        rirb_ctl,
+        rirb_wp
     );
     0xFFFF_FFFF
 }
 
+/// Widget type name for logging.
+fn widget_type_name(wtype: u32) -> &'static str {
+    match wtype {
+        WTYPE_AUDIO_OUTPUT => "AudioOut",
+        WTYPE_AUDIO_INPUT => "AudioIn",
+        WTYPE_AUDIO_MIXER => "Mixer",
+        WTYPE_AUDIO_SELECTOR => "Selector",
+        WTYPE_PIN_COMPLEX => "Pin",
+        WTYPE_POWER_WIDGET => "Power",
+        WTYPE_VOLUME_KNOB => "VolumeKnob",
+        WTYPE_BEEP_GENERATOR => "BeepGen",
+        WTYPE_VENDOR_DEFINED => "VendorDef",
+        _ => "Unknown",
+    }
+}
+
+/// Dump all pin capabilities as a human-readable flag string.
+fn pin_cap_str(pincap: u32) -> alloc::string::String {
+    let mut s = alloc::string::String::new();
+    if pincap & (1 << 0) != 0 {
+        s.push_str("ImpSense ");
+    }
+    if pincap & (1 << 1) != 0 {
+        s.push_str("TrigReq ");
+    }
+    if pincap & (1 << 2) != 0 {
+        s.push_str("PresDet ");
+    }
+    if pincap & (1 << 4) != 0 {
+        s.push_str("OUT ");
+    }
+    if pincap & (1 << 5) != 0 {
+        s.push_str("IN ");
+    }
+    if pincap & (1 << 6) != 0 {
+        s.push_str("Balanced ");
+    }
+    if pincap & (1 << 7) != 0 {
+        s.push_str("HP-Drv ");
+    }
+    if pincap & (1 << 8) != 0 {
+        s.push_str("Vref ");
+    }
+    if pincap & (1 << 16) != 0 {
+        s.push_str("EAPD ");
+    }
+    if pincap & (1 << 24) != 0 {
+        s.push_str("DP ");
+    }
+    if pincap & (1 << 25) != 0 {
+        s.push_str("HDMI ");
+    }
+    if s.is_empty() {
+        s.push_str("(none)");
+    }
+    s
+}
+
+/// Decode Pin Default Configuration word (verb F1C response).
+fn pin_default_str(cfg: u32) -> alloc::string::String {
+    let location = (cfg >> 24) & 0x3F;
+    let device = (cfg >> 20) & 0xF;
+    let conn_type = (cfg >> 16) & 0xF;
+    let color = (cfg >> 12) & 0xF;
+    let misc = (cfg >> 8) & 0xF;
+    let def_assoc = (cfg >> 4) & 0xF;
+    let sequence = cfg & 0xF;
+    let device_name = match device {
+        0x0 => "LineOut",
+        0x1 => "Speaker",
+        0x2 => "HPOut",
+        0x3 => "CD",
+        0x4 => "SPDIFOut",
+        0x5 => "DigitalOther",
+        0x6 => "ModemLine",
+        0x7 => "ModemHandset",
+        0x8 => "LineIn",
+        0x9 => "AUX",
+        0xA => "MicIn",
+        0xB => "Telephony",
+        0xC => "SPDIFIn",
+        0xD => "DigitalOtherIn",
+        0xE => "ReservedE",
+        0xF => "Other",
+        _ => "?",
+    };
+    let conn_name = match conn_type {
+        0x0 => "Unknown",
+        0x1 => "1/8\"",
+        0x2 => "1/4\"",
+        0x3 => "ATAPI",
+        0x4 => "RCA",
+        0x5 => "Optical",
+        0x6 => "OtherDigital",
+        0x7 => "OtherAnalog",
+        0x8 => "DIN",
+        0x9 => "XLR",
+        0xF => "Other",
+        _ => "?",
+    };
+    let is_connected = def_assoc != 0xF;
+    alloc::format!(
+        "{}(dev={}, color={:#x}, conn={}, loc={:#x}, misc={:#x}, seq={})",
+        if is_connected { "" } else { "UNCONNECTED " },
+        device_name,
+        color,
+        conn_name,
+        location,
+        misc,
+        sequence,
+    )
+}
+
+/// Dump a comprehensive inventory of every widget node reachable from
+/// the AFG.  This includes:
+///
+/// - Codec vendor / device / revision IDs
+/// - Per‑widget: node id, wcaps, type, connection list, pin caps & default,
+///   amp caps (input + output), current amp state, current power state,
+///   current pin control, EAPD state.
+///
+/// The output is intentionally verbose so that real‑hardware silent‑output
+/// bugs (wrong DAC→Pin routing, muted amp, powered‑down EAPD, etc.) can be
+/// diagnosed from the serial log alone.
+unsafe fn dump_codec_inventory(mmio: *mut u8, codec: u8) {
+    let vid = unsafe { corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_VENDOR_ID) };
+    let rid = unsafe { corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_REVISION_ID) };
+    let sub = unsafe { corb_send_verb(mmio, codec, 0, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT) };
+    log::info!("Sound: === CODEC INVENTORY (codec={}) ===", codec);
+    log::info!(
+        "Sound:  Vendor=0x{:08x} Rev=0x{:08x} SubCnt=0x{:08x}",
+        vid,
+        rid,
+        sub
+    );
+    if sub == 0xFFFF_FFFF {
+        log::warn!("Sound:  Cannot read subordinate count — aborting inventory");
+        return;
+    }
+    let start_root = ((sub >> 16) & 0xFF) as u8;
+    let count_root = (sub & 0xFF) as u8;
+    if count_root == 0 {
+        log::warn!("Sound:  Root has no subordinate nodes");
+        return;
+    }
+    let end_root = start_root + count_root - 1;
+
+    // Find AFG
+    let mut afg: Option<u8> = None;
+    for n in start_root..=end_root {
+        let wc = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP) };
+        if wc == 0xFFFF_FFFF {
+            continue;
+        }
+        let t = (wc >> 20) & 0xF;
+        log::info!(
+            "Sound:  Root node=0x{:02x} wcaps=0x{:08x} type={}({})",
+            n,
+            wc,
+            widget_type_name(t),
+            t
+        );
+        if t == WTYPE_AFG {
+            afg = Some(n);
+        }
+    }
+    let afg = match afg {
+        Some(a) => a,
+        None => {
+            log::warn!("Sound:  No AFG found — aborting inventory");
+            return;
+        }
+    };
+
+    // AFG subordinate nodes
+    let sub2 = unsafe { corb_send_verb(mmio, codec, afg, VERB_GET_PARAM, PARAM_SUBORDINATE_COUNT) };
+    if sub2 == 0xFFFF_FFFF {
+        log::warn!("Sound:  Cannot read AFG subordinate count");
+        return;
+    }
+    let start_afg = ((sub2 >> 16) & 0xFF) as u8;
+    let count_afg = (sub2 & 0xFF) as u8;
+    if count_afg == 0 {
+        log::warn!("Sound:  AFG has no subordinate nodes");
+        return;
+    }
+    let end_afg = start_afg + count_afg - 1;
+
+    log::info!("Sound:  AFG nodes {}-{}:", start_afg, end_afg);
+    for n in start_afg..=end_afg {
+        let wc = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_AUDIO_WIDGET_CAP) };
+        if wc == 0xFFFF_FFFF {
+            log::info!("Sound:  node=0x{:02x} *** NO RESPONSE ***", n);
+            continue;
+        }
+        let t = (wc >> 20) & 0xF;
+        log::info!(
+            "Sound:  ┌─ node=0x{:02x} wcaps=0x{:08x} type={}({})",
+            n,
+            wc,
+            widget_type_name(t),
+            t
+        );
+
+        // ── Common: connection list ─────────────────────────
+        let con_len = unsafe {
+            let r = corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_CONNECTION_LIST_LEN);
+            if r == 0xFFFF_FFFF { 0 } else { r & 0x7F }
+        };
+        if con_len > 0 {
+            log::info!("Sound:  │ connections ({}):", con_len);
+            for ci in 0..con_len.min(16) {
+                let chunk = (ci / 4) * 4;
+                let r = unsafe {
+                    corb_send_verb(mmio, codec, n, VERB_GET_CONNECTION_LIST_ENTRY, chunk as u16)
+                };
+                if r == 0xFFFF_FFFF {
+                    continue;
+                }
+                let shift = (ci % 4) * 8;
+                let src = ((r >> shift) & 0x7F) as u8;
+                // Distinguish range vs. single entry (bit 7 of entry set → range)
+                let is_range = (r >> shift) & 0x80 != 0;
+                log::info!(
+                    "Sound:  │   [{}] → 0x{:02x}{}",
+                    ci,
+                    src,
+                    if is_range { " (range)" } else { "" }
+                );
+            }
+        }
+
+        // ── Common: current power state ─────────────────────
+        let ps = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_POWER_STATE, 0) };
+        if ps != 0xFFFF_FFFF {
+            log::info!("Sound:  │ PowerState=0x{:08x}", ps);
+        }
+
+        // ── Type‑specific parameters ─────────────────────────
+        match t {
+            WTYPE_AUDIO_OUTPUT | WTYPE_AUDIO_INPUT | WTYPE_AUDIO_MIXER | WTYPE_AUDIO_SELECTOR => {
+                // Output amp cap (DACs, mixers, selectors, pins)
+                let oac =
+                    unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_OUTPUT_AMP_CAP) };
+                if oac != 0xFFFF_FFFF {
+                    let mute_capable = (oac >> 31) & 1;
+                    let step_size = (oac >> 16) & 0x7F;
+                    let num_steps = (oac >> 8) & 0x7F;
+                    let offset = oac & 0x7F;
+                    log::info!(
+                        "Sound:  │ OutAmpCap=0x{:08x} mute={} stepSize={} nSteps={} offset={}",
+                        oac,
+                        mute_capable,
+                        step_size,
+                        num_steps,
+                        offset
+                    );
+                }
+
+                // Input amp cap (mixers, selectors, ADC)
+                if t == WTYPE_AUDIO_MIXER || t == WTYPE_AUDIO_SELECTOR || t == WTYPE_AUDIO_INPUT {
+                    let iac = unsafe {
+                        corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_INPUT_AMP_CAP)
+                    };
+                    if iac != 0xFFFF_FFFF {
+                        log::info!(
+                            "Sound:  │ InAmpCap=0x{:08x} mute={} stepSize={} nSteps={} offset={}",
+                            iac,
+                            (iac >> 31) & 1,
+                            (iac >> 16) & 0x7F,
+                            (iac >> 8) & 0x7F,
+                            iac & 0x7F
+                        );
+                    }
+                }
+
+                // Current amp state (read back)
+                // Output amp: get left + right
+                let amp_out =
+                    unsafe { corb_send_verb(mmio, codec, n, VERB_GET_AMP_GAIN_MUTE, 0x8000) };
+                if amp_out != 0xFFFF_FFFF {
+                    let muted = (amp_out >> 7) & 1;
+                    let gain = amp_out & 0x7F;
+                    log::info!(
+                        "Sound:  │ CurOutAmp=0x{:04x} mute={} gain={}",
+                        amp_out,
+                        muted,
+                        gain
+                    );
+                }
+                // Input amp for mixers: read index 0
+                if t == WTYPE_AUDIO_MIXER || t == WTYPE_AUDIO_SELECTOR {
+                    for inp_idx in 0..con_len.min(4) {
+                        let amp_in = unsafe {
+                            corb_send_verb(
+                                mmio,
+                                codec,
+                                n,
+                                VERB_GET_AMP_GAIN_MUTE,
+                                (inp_idx as u16) << 8,
+                            )
+                        };
+                        if amp_in != 0xFFFF_FFFF {
+                            let muted = (amp_in >> 7) & 1;
+                            let gain = amp_in & 0x7F;
+                            log::info!(
+                                "Sound:  │ CurInAmp[{}]=0x{:04x} mute={} gain={}",
+                                inp_idx,
+                                amp_in,
+                                muted,
+                                gain
+                            );
+                        }
+                    }
+                }
+
+                // PCM / stream format support
+                let pcm = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_PCM) };
+                if pcm != 0xFFFF_FFFF {
+                    log::info!("Sound:  │ PCM=0x{:08x}", pcm);
+                }
+                let stream =
+                    unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_STREAM) };
+                if stream != 0xFFFF_FFFF {
+                    log::info!("Sound:  │ Stream=0x{:08x}", stream);
+                }
+            }
+            WTYPE_PIN_COMPLEX => {
+                let pincap =
+                    unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PARAM, PARAM_PIN_CAP) };
+                if pincap != 0xFFFF_FFFF {
+                    log::info!(
+                        "Sound:  │ PinCap=0x{:08x} [{}]",
+                        pincap,
+                        pin_cap_str(pincap)
+                    );
+                }
+
+                let pin_def = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_CONFIG_DEFAULT, 0) };
+                if pin_def != 0xFFFF_FFFF {
+                    log::info!(
+                        "Sound:  │ PinDefault=0x{:08x} → {}",
+                        pin_def,
+                        pin_default_str(pin_def)
+                    );
+                }
+
+                // Current pin control value
+                let pin_ctl = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PIN_CTL, 0) };
+                if pin_ctl != 0xFFFF_FFFF {
+                    let out = pin_ctl & (1 << 6) != 0;
+                    let hp = pin_ctl & (1 << 7) != 0;
+                    let in_en = pin_ctl & (1 << 5) != 0;
+                    let vref = (pin_ctl >> 8) & 0xFF;
+                    let eapd_raw = (pin_ctl >> 16) & 0xFF;
+                    log::info!(
+                        "Sound:  │ CurPinCtl=0x{:02x} OUT={} HP={} IN={} VRef=0x{:02x} EAPD=0x{:02x}",
+                        pin_ctl,
+                        out,
+                        hp,
+                        in_en,
+                        vref,
+                        eapd_raw
+                    );
+                }
+
+                // EAPD current state (if supported)
+                if pincap != 0xFFFF_FFFF && (pincap >> 16) & 1 != 0 {
+                    let eapd_state = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_EAPD, 0) };
+                    if eapd_state != 0xFFFF_FFFF {
+                        log::info!("Sound:  │ CurEAPD=0x{:02x}", eapd_state & 0xFF);
+                    }
+                }
+
+                // Pin sense
+                let sense = unsafe { corb_send_verb(mmio, codec, n, VERB_GET_PIN_SENSE, 0) };
+                if sense != 0xFFFF_FFFF {
+                    let present = (sense >> 31) & 1;
+                    log::info!("Sound:  │ PinSense=0x{:08x} present={}", sense, present);
+                }
+            }
+            _ => {}
+        }
+        log::info!("Sound:  └─ end node=0x{:02x}", n);
+    }
+
+    // ── Subsystem ID (SSID) ─────────────────────────────────
+    let ssid = unsafe { corb_send_verb(mmio, codec, 0, VERB_GET_SUBSYSTEM_ID, 0) };
+    if ssid != 0xFFFF_FFFF {
+        log::info!(
+            "Sound:  SubsystemID: {:04x}:{:04x}",
+            (ssid >> 16) & 0xFFFF,
+            ssid & 0xFFFF
+        );
+    }
+
+    log::info!("Sound: === END CODEC INVENTORY ===");
+}
+
+/// Read the current pin control value via verb F07.
+/// payload: bit 7=LR (0=drive left/right same), bit 6=OutputEn, bit 5=InputEn,
+/// bits 3:0=VRef.
+const VERB_GET_PIN_CTL: u32 = 0xF07;
+
+/// Read the current EAPD state via verb F0C.
+const VERB_GET_EAPD: u32 = 0xF0C;
+
 unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
+    // ── Dump full codec inventory before discovery ──────────
+    unsafe { dump_codec_inventory(mmio, codec) };
+
     let sub = unsafe {
         corb_send_verb(
             mmio,
@@ -400,11 +922,8 @@ unsafe fn discover_codec(mmio: *mut u8, codec: u8) -> Option<(u8, u8)> {
                 // Pins 0x17/0x1a on ALC286 have EAPD but are unconnected
                 // (DefAssociation=0xf); selecting them would send audio to
                 // a dead output.
-                let pin_default = unsafe {
-                    corb_send_verb(mmio, codec, n, 0xF1C, 0)
-                };
-                let is_connected = pin_default != 0xFFFF_FFFF
-                    && ((pin_default >> 8) & 0xF) != 0xF;
+                let pin_default = unsafe { corb_send_verb(mmio, codec, n, 0xF1C, 0) };
+                let is_connected = pin_default != 0xFFFF_FFFF && ((pin_default >> 8) & 0xF) != 0xF;
                 if (pincap >> 16) & 1 != 0 && is_connected {
                     pin = Some(n); // connected EAPD pin always wins
                 } else if pin.is_none()
@@ -446,6 +965,14 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let offset = (ac & 0x7F) as u8;
     let nsteps = ((ac >> 8) & 0x7F) as u8;
     let gain = if nsteps > 0 { offset } else { 0 };
+    log::info!(
+        "Sound: DAC 0x{:x} amp cap=0x{:08x} offset={} nsteps={} gain={}",
+        dac,
+        ac,
+        offset,
+        nsteps,
+        gain
+    );
     unsafe {
         // VERB_SET_AMP_GAIN_MUTE payload:
         //   bit15=SetOut(1 for output amp), bit13=SetLeft, bit12=SetRight,
@@ -476,6 +1003,14 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     let p_offset = (pa & 0x7F) as u8;
     let p_nsteps = ((pa >> 8) & 0x7F) as u8;
     let pgain = if p_nsteps > 0 { p_offset } else { 0 };
+    log::info!(
+        "Sound: Pin 0x{:x} amp cap=0x{:08x} offset={} nsteps={} pgain={}",
+        pin,
+        pa,
+        p_offset,
+        p_nsteps,
+        pgain
+    );
     unsafe {
         // Pin output amp → SetOut(bit15) + SetLeft(bit13) + SetRight(bit12)
         corb_send_verb(
@@ -494,7 +1029,13 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     // the mixer that contains our chosen DAC in its connection
     // list so the audio actually reaches the pin.
     let pin_con_count = unsafe {
-        let r = corb_send_verb(mmio, codec, pin, VERB_GET_PARAM, 0x0Eu16 /* connection list len */);
+        let r = corb_send_verb(
+            mmio,
+            codec,
+            pin,
+            VERB_GET_PARAM,
+            0x0Eu16, /* connection list len */
+        );
         if r == 0xFFFF_FFFF { 0 } else { r & 0x7F }
     };
     if pin_con_count > 0 && pin_con_count != 0xFFFF_FFFF {
@@ -507,7 +1048,13 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
             // [31:24].
             let chunk_idx = (con_idx / 4) * 4;
             let resp = unsafe {
-                corb_send_verb(mmio, codec, pin, VERB_GET_CONNECTION_LIST_ENTRY, chunk_idx as u16)
+                corb_send_verb(
+                    mmio,
+                    codec,
+                    pin,
+                    VERB_GET_CONNECTION_LIST_ENTRY,
+                    chunk_idx as u16,
+                )
             };
             if resp == 0xFFFF_FFFF {
                 continue;
@@ -590,10 +1137,12 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
                     // Unmute the mixer input for the DAC channel.
                     // VERB_SET_AMP_GAIN_MUTE on a mixer selects
                     // input index via bits [12:8], gain [7:0].
-                    // 0x7000 → set input index 0, output channel 0,
-                    // gain=0, mute=0.
+                    // bit15=0 (input amp), bit14=reserved (must be 0),
+                    // bit13=SetLeft, bit12=SetRight, bits[11:8]=Index,
+                    // bit7=Mute(0=unmute), bits[6:0]=Gain.
+                    // 0x3000 → SetLeft + SetRight, index=0, gain=0, unmute.
                     // Mixer input amp: SetLeft(bit13) + SetRight(bit12) + Index(bits[11:8])
-                    let unmute_payload = 0x7000u16 | ((mix_ci as u16) << 8); // index, gain=0, unmute
+                    let unmute_payload = 0x3000u16 | ((mix_ci as u16) << 8);
                     let r2 = unsafe {
                         corb_send_verb(
                             mmio,
@@ -645,6 +1194,25 @@ unsafe fn configure_codec(mmio: *mut u8, codec: u8, dac: u8, pin: u8, stream: u8
     log::info!("Sound: codec done DAC=0x{:x} Pin=0x{:x}", dac, pin);
 }
 
+/// Cached HDA diagnostic info, preserved across `hda_init` calls.
+pub static HDA_DIAG: Mutex<HdaDiagInfo> = Mutex::new(HdaDiagInfo {
+    gcap: 0,
+    gcap64: false,
+    corb_phys: 0,
+    rirb_phys: 0,
+    states_after_crst: 0,
+    populated: false,
+});
+
+pub struct HdaDiagInfo {
+    pub gcap: u32,
+    pub gcap64: bool,
+    pub corb_phys: u64,
+    pub rirb_phys: u64,
+    pub states_after_crst: u16,
+    pub populated: bool,
+}
+
 fn hda_init() {
     if HDA_INIT_DONE.load(Ordering::Acquire) {
         return;
@@ -663,28 +1231,55 @@ fn hda_init() {
         return;
     }
     log::info!("Sound: GCAP=0x{:x}", gctest);
-    let (iss, oss) = unsafe {
+    let (iss, oss, gcap_full, sts_post_crst) = unsafe {
         let m = virt as *mut u8;
-        mmio!(w32 m, GCTL, 0);
-        for _ in 0..2000 {
-            core::hint::spin_loop();
-        }
-        mmio!(w32 m, GCTL, 1);
-        for _ in 0..20000 {
-            if mmio!(r32 m, GCTL) & 1 != 0 {
-                break;
-            }
-        }
-        if mmio!(r32 m, GCTL) & 1 == 0 {
-            log::warn!("Sound: controller reset timeout");
-            return;
-        }
+        // ── Skip full controller reset (CRST cycle) ────────────────
+        // The controller was already in a working state when we probed
+        // it (STATESTS showed a connected codec).  STATEESTS is a RW1C
+        // state-change bitmap, not a persistent codec-present signal.
+        // We capture it BEFORE clearing so the diagnostic cache has a
+        // meaningful snapshot of the pre-init attachment state.
+        let sts_pre_clear = mmio!(r16 m, STATESTS);
         mmio!(w16 m, STATESTS, 0x000F);
         mmio!(w32 m, INTCTL, 0);
-        let gcap = mmio!(r32 m, GCAP);
-        ((gcap >> 8) & 0xF, (gcap >> 12) & 0xF)
+        log::info!(
+            "Sound: STATESTS (no CRST) = 0x{:04x} (SDIN0={} SDIN1={} SDIN2={} SDIN3={})",
+            sts_pre_clear,
+            if sts_pre_clear & 0x0001 != 0 {
+                1u8
+            } else {
+                0u8
+            },
+            if sts_pre_clear & 0x0002 != 0 {
+                1u8
+            } else {
+                0u8
+            },
+            if sts_pre_clear & 0x0004 != 0 {
+                1u8
+            } else {
+                0u8
+            },
+            if sts_pre_clear & 0x0008 != 0 {
+                1u8
+            } else {
+                0u8
+            },
+        );
+        let gcap_full = mmio!(r32 m, GCAP);
+        let iss = (gcap_full >> 8) & 0xF;
+        let oss = (gcap_full >> 12) & 0xF;
+        (iss, oss, gcap_full, sts_pre_clear)
     };
     log::info!("Sound: ISS={} OSS={}", iss, oss);
+    // ── Populate diagnostic cache ──────────────────────────────
+    {
+        let mut diag = HDA_DIAG.lock();
+        diag.gcap = gcap_full;
+        diag.gcap64 = gcap_full & 1 != 0;
+        diag.states_after_crst = sts_post_crst;
+        diag.populated = true;
+    }
     if oss == 0 {
         log::warn!("Sound: no output streams");
         return;
@@ -736,6 +1331,25 @@ fn hda_init() {
         // Stop CORB/RIRB DMA engines before programming
         mmio!(w32 m, CORBCTL, 0);
         mmio!(w32 m, RIRBCTL, 0);
+        // ── Update diagnostic cache with DMA addresses ─────────
+        {
+            let mut diag = HDA_DIAG.lock();
+            diag.corb_phys = corb_phys;
+            diag.rirb_phys = rirb_phys;
+        }
+        log::info!(
+            "Sound: CORB phys=0x{:016x} RIRB phys=0x{:016x}",
+            corb_phys,
+            rirb_phys
+        );
+        // Check 64-bit support: GCAP bit 0
+        let gcap64 = mmio!(r32 m, GCAP) & 1;
+        if gcap64 == 0 && ((corb_phys >> 32) != 0 || (rirb_phys >> 32) != 0) {
+            log::error!(
+                "Sound: Physical addresses exceed 32-bit limit but controller does not support 64-bit addressing! Aborting HDA init."
+            );
+            return;
+        }
         mmio!(w32 m, CORBLBASE, corb_phys as u32);
         mmio!(w32 m, CORBUBASE, (corb_phys >> 32) as u32);
         // CORB Read Pointer Reset via bit 15, then clear RP/WP
@@ -745,8 +1359,12 @@ fn hda_init() {
         }
         mmio!(w16 m, CORBRP, 0);
         mmio!(w16 m, CORBWP, 0);
-        // Enable CORB DMA with the correct size
-        mmio!(w32 m, CORBCTL, 0x02 | corb_sz_bits);
+        // Enable CORB DMA engine (CORBRUN=1).
+        // HDA register map: CORBCTL at 0x4C, CORBSIZE at 0x4E.
+        // We write CTL and SIZE as separate byte writes to avoid
+        // accidentally corrupting CORBSTS (0x4D).
+        mmio!(w8 m, CORBCTL, 0x02);
+        mmio!(w8 m, CORBCTL + 2, corb_sz as u8);
         mmio!(w32 m, RIRBLBASE, rirb_phys as u32);
         mmio!(w32 m, RIRBUBASE, (rirb_phys >> 32) as u32);
         // RIRBWP reset: set bit 15 (RIRBRST) then clear
@@ -758,9 +1376,34 @@ fn hda_init() {
         if mmio!(r16 m, RIRBWP) & 0x8000 != 0 {
             mmio!(w16 m, RIRBWP, 0);
         }
-        // Enable RIRB DMA with the correct size
-        mmio!(w32 m, RIRBCTL, 0x02 | rirb_sz_bits);
+        // Enable RIRB DMA with the correct size.
+        mmio!(w8 m, RIRBCTL, 0x02);
+        mmio!(w8 m, RIRBCTL + 2, corb_sz as u8);
+        // ── Verify CORB/RIRB register state after enable ──────────
+        let corb_ctl = mmio!(r8 m, CORBCTL);
+        let corb_sz_readback = mmio!(r8 m, CORBCTL + 2);
+        let rirb_ctl = mmio!(r8 m, RIRBCTL);
+        let rirb_sz_readback = mmio!(r8 m, RIRBCTL + 2);
+        let corb_rp = mmio!(r16 m, CORBRP);
+        let corb_wp_after = mmio!(r16 m, CORBWP);
+        let rirb_wp_after = mmio!(r16 m, RIRBWP);
+        log::info!(
+            "Sound: CORB CTL=0x{:02x} SZ={} RP=0x{:04x} WP=0x{:04x}  RIRB CTL=0x{:02x} SZ={} WP=0x{:04x}",
+            corb_ctl,
+            corb_sz_readback,
+            corb_rp,
+            corb_wp_after,
+            rirb_ctl,
+            rirb_sz_readback,
+            rirb_wp_after
+        );
         log::info!("Sound: CORB/RIRB enabled (size={} entries)", corb_n);
+        // ── Short delay after CORB/RIRB enable ────────────────────
+        // Some Intel PCH HDA controllers require a brief settling
+        // period after DMA enable before the first verb is accepted.
+        for _ in 0..50000 {
+            core::hint::spin_loop();
+        }
     }
     let codec_addr: u8 = 0;
     unsafe {
@@ -907,7 +1550,7 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
     let lpib = lpib_raw.wrapping_rem(*HDA_AUDIO_SZ.lock());
     let write_off = if lpib < half { half } else { 0 };
 
-    // BCIS (hardware IOC) provides a strong “half-done” signal.
+    // BCIS (hardware IOC) provides a strong "half‑done" signal.
     let sts = unsafe { mmio!(r8 mmio, sd + SD_STS) };
     if sts & 0x04 != 0 {
         unsafe {
@@ -956,8 +1599,7 @@ pub fn hda_feed_samples(samples: &[u8]) -> usize {
 /// engine stalls (common on real hardware when the stream has been
 /// stopped or the codec is not producing BCIS interrupts).
 pub fn hda_poll() {
-    let deadline =
-        unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(300_000_000); // ~100 ms at 3 GHz
+    let deadline = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(300_000_000); // ~100 ms at 3 GHz
     loop {
         if !HDA_READY.load(Ordering::Acquire) {
             return;

@@ -241,7 +241,8 @@ pub struct RuntimeState {
 
     /// Lightweight cursor save buffer (16×16 pixels) for overlay mode
     /// cursor movement without full re‑renders.
-    pub cursor_save_buf: [u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
+    pub cursor_save_buf:
+        [u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
     pub cursor_save_x: i32,
     pub cursor_save_y: i32,
     pub cursor_save_valid: bool,
@@ -291,7 +292,8 @@ pub fn init() {
         term_dirty: true,
         shell_state: ShellState::Desktop,
         clock_changed: false,
-        cursor_save_buf: [0u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
+        cursor_save_buf: [0u32;
+            lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
         cursor_save_x: 0,
         cursor_save_y: 0,
         cursor_save_valid: false,
@@ -413,10 +415,9 @@ impl EventHandler for WmEventHandler {
                 // progress (the WM generates dirty rects that must
                 // be composited).  Pure cursor movement is handled
                 // by the lightweight update above.
-                if !matches!(
-                    rt.desktop.wm.drag_state(),
-                    lattice::wm::DragState::None
-                ) || rt.desktop.has_pending_dirty_rects() {
+                if !matches!(rt.desktop.wm.drag_state(), lattice::wm::DragState::None)
+                    || rt.desktop.has_pending_dirty_rects()
+                {
                     rt.frame_due = true;
                 }
                 true
@@ -640,11 +641,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
                     let sx = new_x + col;
                     if sx >= 0 && sx < fbw_i {
                         let idx = (sy * fbw_i + sx) as usize;
-                        if idx < fb_len {
-                            fb[idx]
-                        } else {
-                            0
-                        }
+                        if idx < fb_len { fb[idx] } else { 0 }
                     } else {
                         0
                     }
@@ -1157,33 +1154,24 @@ where
                 let cy = rt.desktop.cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
                 let fbw_i = fb_width as i32;
                 let fbh_i = fb_height as i32;
-                let fb_len = (fb_width as usize)
-                    .saturating_mul(fb_height as usize);
+                let fb_len = (fb_width as usize).saturating_mul(fb_height as usize);
                 unsafe {
-                    let fb =
-                        core::slice::from_raw_parts(fb_ptr, fb_len);
+                    let fb = core::slice::from_raw_parts(fb_ptr, fb_len);
                     for row in 0..cur_sz {
                         let sy = cy + row;
                         for col in 0..cur_sz {
-                            let val =
-                                if sy >= 0 && sy < fbh_i {
-                                    let sx = cx + col;
-                                    if sx >= 0 && sx < fbw_i {
-                                        let idx =
-                                            (sy * fbw_i + sx) as usize;
-                                        if idx < fb_len {
-                                            fb[idx]
-                                        } else {
-                                            0
-                                        }
-                                    } else {
-                                        0
-                                    }
+                            let val = if sy >= 0 && sy < fbh_i {
+                                let sx = cx + col;
+                                if sx >= 0 && sx < fbw_i {
+                                    let idx = (sy * fbw_i + sx) as usize;
+                                    if idx < fb_len { fb[idx] } else { 0 }
                                 } else {
                                     0
-                                };
-                            rt.cursor_save_buf
-                                [(row * cur_sz + col) as usize] = val;
+                                }
+                            } else {
+                                0
+                            };
+                            rt.cursor_save_buf[(row * cur_sz + col) as usize] = val;
                         }
                     }
                 }
@@ -1678,7 +1666,11 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
                         let size = if e.is_dir {
                             String::from("--")
                         } else if e.size >= 1048576 {
-                            format!("{}.{} MB", e.size / 1048576, ((e.size % 1048576) * 10) / 1048576)
+                            format!(
+                                "{}.{} MB",
+                                e.size / 1048576,
+                                ((e.size % 1048576) * 10) / 1048576
+                            )
                         } else if e.size >= 1024 {
                             format!("{}.{} KB", e.size / 1024, (e.size % 1024) * 10 / 1024)
                         } else {

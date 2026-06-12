@@ -58,6 +58,15 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         }
     }
 
+    // ── Log system initialisation ──────────────────────────────
+    // Set log level to Info so Sound codec inventory is captured.
+    // Register a klog hook so every log::info! / log::warn! / log::error!
+    // is also written to the kernel log ring buffer → viewable via `dmesg`.
+    *petroleum::common::logging::LOG_HOOK.lock() = Some(|_level, msg| {
+        crate::klog::write_bytes(msg.as_bytes());
+    });
+    let _ = petroleum::common::logging::init_global_logger();
+    log::set_max_level(log::LevelFilter::Info);
     let common_steps = [
         petroleum::init_step!("Interrupts", || {
             crate::interrupts::init();
