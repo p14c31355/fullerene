@@ -85,8 +85,7 @@ impl WindowContext {
         }
     }
     pub fn window_at(&self, x: i32, y: i32) -> Option<&Window> {
-        let mut v: Vec<&Window> = self
-            .windows
+        self.windows
             .iter()
             .filter(|w| {
                 w.visible
@@ -95,9 +94,7 @@ impl WindowContext {
                     && y >= w.y
                     && y < w.y + w.height as i32
             })
-            .collect();
-        v.sort_by_key(|w| core::cmp::Reverse(w.z));
-        v.into_iter().next()
+            .max_by_key(|w| w.z)
     }
 }
 

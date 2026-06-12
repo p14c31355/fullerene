@@ -301,7 +301,9 @@ pub fn poll_key_hit() -> bool {
     use x86_64::instructions::port::Port;
     let mut status: Port<u8> = Port::new(0x64);
     let st: u8 = unsafe { status.read() };
-    if st & 0x01 != 0 {
+    // Bit 0 (0x01) is Output Buffer Full (OBF)
+    // Bit 5 (0x20) is Auxiliary Output Buffer Full (AUXOBF) - set for mouse data
+    if (st & 0x01 != 0) && (st & 0x20 == 0) {
         let mut data: Port<u8> = Port::new(0x60);
         let b = unsafe { data.read() };
         x86_64::instructions::interrupts::without_interrupts(|| {
