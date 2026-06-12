@@ -180,10 +180,8 @@ pub fn play_badapple() {
     let mut decode_buf = alloc::vec![0u8; rle.total_pixels()];
 
     'outer: while idx < n {
-        // Key check: poll (works without IRQs) + queue (ASCII keys via IRQ)
-        if nitrogen::ps2::keyboard::poll_key_hit() {
-            break;
-        }
+        // Process any pending PS/2 scancode, but only abort on real key input
+        nitrogen::ps2::keyboard::poll_key_hit();
         if nitrogen::ps2::keyboard::input_available() {
             nitrogen::ps2::keyboard::read_char();
             break;
@@ -192,9 +190,7 @@ pub fn play_badapple() {
             let target = (idx as u64 + 1).saturating_mul(pcm_per_frame);
             let ls = unsafe { x86_64::_rdtsc() };
             loop {
-                if nitrogen::ps2::keyboard::poll_key_hit() {
-                    break 'outer;
-                }
+                nitrogen::ps2::keyboard::poll_key_hit();
                 if nitrogen::ps2::keyboard::input_available() {
                     nitrogen::ps2::keyboard::read_char();
                     break 'outer;
@@ -230,18 +226,14 @@ pub fn play_badapple() {
             }
         }
         if !use_hda || !lpib_valid {
-            if nitrogen::ps2::keyboard::poll_key_hit() {
-                break;
-            }
+            nitrogen::ps2::keyboard::poll_key_hit();
             if nitrogen::ps2::keyboard::input_available() {
                 nitrogen::ps2::keyboard::read_char();
                 break;
             }
             let fd = unsafe { x86_64::_rdtsc() }.wrapping_add(fi_tsc);
             while unsafe { x86_64::_rdtsc() } < fd {
-                if nitrogen::ps2::keyboard::poll_key_hit() {
-                    break 'outer;
-                }
+                nitrogen::ps2::keyboard::poll_key_hit();
                 if nitrogen::ps2::keyboard::input_available() {
                     nitrogen::ps2::keyboard::read_char();
                     break 'outer;
@@ -279,9 +271,7 @@ pub fn play_badapple() {
         let dd =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < dd {
-            if nitrogen::ps2::keyboard::poll_key_hit() {
-                break;
-            }
+            nitrogen::ps2::keyboard::poll_key_hit();
             if nitrogen::ps2::keyboard::input_available() {
                 nitrogen::ps2::keyboard::read_char();
                 break;
@@ -294,9 +284,7 @@ pub fn play_badapple() {
         }
         crate::contexts::audio::with_audio_mut(|a| {
             for _ in 0..4 {
-                if nitrogen::ps2::keyboard::poll_key_hit() {
-                    break;
-                }
+                nitrogen::ps2::keyboard::poll_key_hit();
                 if nitrogen::ps2::keyboard::input_available() {
                     nitrogen::ps2::keyboard::read_char();
                     break;
