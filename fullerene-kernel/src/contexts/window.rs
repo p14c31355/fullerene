@@ -74,6 +74,10 @@ impl WindowContext {
         if self.focused == id {
             return;
         }
+        let exists = self.windows.iter().any(|w| w.id == id);
+        if !exists {
+            return;
+        }
         self.focused = id;
         let z = self.windows.iter().map(|w| w.z).max().unwrap_or(0);
         if let Some(w) = self.windows.iter_mut().find(|w| w.id == id) {

@@ -23,12 +23,14 @@ fn calibrate_tsc(audio: &AudioContext) -> u64 {
         _ => return 3_000_000,
     };
     let mut prev = lpib0;
+    let start_progress;
     loop {
         if let Some(cur) = audio.playback_progress() {
             if cur >= AUDIO_SZ {
                 return 3_000_000;
             }
             if cur != prev {
+                start_progress = cur;
                 break;
             }
             prev = cur;
@@ -41,7 +43,7 @@ fn calibrate_tsc(audio: &AudioContext) -> u64 {
     const CALIB_HALF: u64 = AUDIO_SZ / 2;
     let t0 = unsafe { x86_64::_rdtsc() };
     let mut total = 0u64;
-    prev = lpib0;
+    prev = start_progress;
     loop {
         if let Some(cur) = audio.playback_progress() {
             if cur >= AUDIO_SZ {

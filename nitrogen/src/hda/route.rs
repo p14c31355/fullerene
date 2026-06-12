@@ -255,8 +255,8 @@ impl RouteFinder {
             log::info!("HDA: SET_EAPD pin=0x{:x} result=0x{:08x}", pin, eapd_res);
         }
 
-        // Enable pin output (0x04 = OUT_EN bit 2, per Intel HDA spec §7.3.4.9)
-        let pin_ctl_val: u16 = 0x04;
+        // Enable pin output (0x40 = OUT_EN bit 6, per Intel HDA spec §7.3.4.9)
+        let pin_ctl_val: u16 = 0x40;
         let pin_ctl_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_PIN_CTL, pin_ctl_val) };
         log::info!(
             "HDA: SET_PIN_CTL pin=0x{:x} val=0x{:02x} result=0x{:08x}",
