@@ -194,8 +194,8 @@ impl RouteFinder {
                             pin, con_node, dac, r
                         );
 
-                        // Unmute mixer input for the DAC channel
-                        let unmute_payload = 0x3000u16 | ((mix_ci as u16) << 8);
+                        // Unmute mixer input for the DAC channel (Set Input + Set Left + Set Right)
+                        let unmute_payload = 0x7000u16 | ((mix_ci as u16) << 8);
                         let r2 = unsafe {
                             corb.send_verb(
                                 mmio, 0, con_node,
