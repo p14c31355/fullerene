@@ -121,7 +121,7 @@ impl AudioContext {
         }
         let dl = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(300_000_000);
         loop {
-            if c.poll(None) || unsafe { core::arch::x86_64::_rdtsc() } >= dl {
+            if c.poll(Some(0)) || unsafe { core::arch::x86_64::_rdtsc() } >= dl {
                 return;
             }
             core::hint::spin_loop();
