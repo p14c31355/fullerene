@@ -92,6 +92,7 @@ impl DmaEngine {
         &mut self,
         mmio: *mut u8,
         dma_region: &DmaRegion,
+        stream_tag: u8,
     ) {
         let bdl_sz = (core::mem::size_of::<BdlEntry>() as u32) * BDL_ENTRIES;
         let audio_phys = dma_region.phys + bdl_sz as u64;
@@ -127,10 +128,18 @@ impl DmaEngine {
                 core::hint::spin_loop();
             }
             mmio_write8(mmio, sd + SD_STS, 0xFF); // clear all status bits (WC)
+
+            // SRST handshake: set SRST and poll until it reads back as 1
             mmio_write32(mmio, sd + SD_CTL, 0x01); // SRST
-            for _ in 0..2000 {
+            for _ in 0..50000 {
+                if mmio_read32(mmio, sd + SD_CTL) & 0x01 != 0 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
+
+            // Clear SRST and poll until it reads back as 0
+            mmio_write32(mmio, sd + SD_CTL, 0);
             for _ in 0..50000 {
                 if mmio_read32(mmio, sd + SD_CTL) & 0x01 == 0 {
                     break;
@@ -153,8 +162,8 @@ impl DmaEngine {
 
         unsafe {
             // SAFETY: Start stream after fence
-            // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
-            mmio_write32(mmio, sd + SD_CTL, (1u32 << 16) | 0x06);
+            // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16) + STREAMTAG (bits 23:20)
+            mmio_write32(mmio, sd + SD_CTL, ((stream_tag as u32) << 20) | (1u32 << 16) | 0x06);
         }
 
         log::info!("HDA: stream started ({} B, fmt=0x0010)", audio_size);

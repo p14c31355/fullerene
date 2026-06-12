@@ -228,11 +228,12 @@ impl HdaController {
         log::info!("HDA: codec graph enumerated");
 
         // Find route
+        let stream_tag: u8 = 1;
         if let Some((dac, pin)) =
             unsafe { RouteFinder::find_speaker_route(mmio, &self.corb, &graph) }
         {
             log::info!("HDA: route DAC=0x{:x} → Pin=0x{:x}", dac, pin);
-            unsafe { RouteFinder::configure_route(mmio, &self.corb, &graph, dac, pin, 1) };
+            unsafe { RouteFinder::configure_route(mmio, &self.corb, &graph, dac, pin, stream_tag) };
         } else {
             log::warn!("HDA: no speaker route found");
         }
@@ -240,7 +241,7 @@ impl HdaController {
         // Init DMA engine
         let sd_offset = SD_BASE + (iss as usize) * SD_SIZE;
         self.dma = DmaEngine::new(sd_offset);
-        unsafe { self.dma.init(mmio, dma_region) };
+        unsafe { self.dma.init(mmio, dma_region, stream_tag) };
 
         self.ready.store(true, Ordering::Release);
         log::info!("HDA: controller ready");
