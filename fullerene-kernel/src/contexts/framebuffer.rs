@@ -96,9 +96,6 @@ static FRAMEBUFFER: Mutex<Option<FramebufferContext>> = Mutex::new(None);
 pub fn init_framebuffer() {
     *FRAMEBUFFER.lock() = Some(FramebufferContext::new());
 }
-pub fn init_framebuffer_with(ctx: FramebufferContext) {
-    *FRAMEBUFFER.lock() = Some(ctx);
-}
 pub fn get_framebuffer() -> &'static Mutex<Option<FramebufferContext>> {
     &FRAMEBUFFER
 }

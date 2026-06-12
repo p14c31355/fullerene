@@ -60,12 +60,6 @@ static MEM_CTX: Mutex<Option<MemoryContext>> = Mutex::new(None);
 pub fn init_memory() {
     *MEM_CTX.lock() = Some(MemoryContext::new());
 }
-pub fn set_memory_ready(mgr: UnifiedMemoryManager) {
-    if let Some(c) = MEM_CTX.lock().as_mut() {
-        c.manager = Some(mgr);
-        c.initialized = true;
-    }
-}
 pub fn get_memory() -> &'static Mutex<Option<MemoryContext>> {
     &MEM_CTX
 }

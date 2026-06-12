@@ -1,16 +1,16 @@
-//! Bad Apple — RLE video + HDA PCM audio player. Uses AudioContext directly.
+//! Bad Apple — RLE video + HDA PCM audio player. Uses AudioContext + FramebufferContext.
 use crate::contexts::audio::AudioContext;
 use alloc::vec::Vec;
 use core::arch::x86_64;
 
 static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
 static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
-const PCM_BPS: u32 = 96000; // 16-bit mono × 48000 Hz
+const PCM_BPS: u32 = 96000;
 const THRESHOLD: u8 = 128;
 const WIN_W: u32 = 640;
 const WIN_H: u32 = 480;
 const TITLE_BAR_H: i32 = 20;
-const HALF: usize = 16368; // (32768 - 32) / 2
+const HALF: usize = 16368;
 
 fn calibrate_tsc(audio: &AudioContext) -> u64 {
     const AUDIO_SZ: u64 = 32736;
@@ -98,8 +98,8 @@ pub fn play_badapple() {
     solvent::suspend_rendering();
 
     let (fb_ptr, fb_stride, fb_height) = {
-        let g = crate::graphics::PRIMARY_RENDERER.lock();
-        match g.as_ref() {
+        let fb = crate::contexts::framebuffer::get_framebuffer().lock();
+        match fb.as_ref().and_then(|f| f.renderer.as_ref()) {
             Some(r) => {
                 let i = r.get_info();
                 (
@@ -125,7 +125,6 @@ pub fn play_badapple() {
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BPS as u64;
     let fi_ms = dur_ms / (n as u64).max(1);
-
     let use_hda = crate::contexts::audio::with_audio(|a| a.hda_available()).unwrap_or(false);
     nitrogen::ps2::keyboard::flush_input();
 
@@ -170,8 +169,8 @@ pub fn play_badapple() {
     let audio_sz: u64 = 32736;
     let mut idx = 0usize;
     let mut last_af = unsafe { x86_64::_rdtsc() };
-
     let mut decode_buf = alloc::vec![0u8; rle.total_pixels()];
+
     'outer: while idx < n {
         if nitrogen::ps2::keyboard::input_available() {
             if nitrogen::ps2::keyboard::read_char().is_some() {
@@ -187,12 +186,6 @@ pub fn play_badapple() {
                         break 'outer;
                     }
                 }
-                crate::contexts::audio::with_audio(|a| {
-                    if let Some(cur) = a.playback_progress() {
-                        if cur >= audio_sz || (cur < last_lpib && last_lpib - cur > audio_sz / 2) { /* bogus */
-                        }
-                    }
-                });
                 if let Some(cur) =
                     crate::contexts::audio::with_audio(|a| a.playback_progress()).flatten()
                 {
@@ -210,7 +203,7 @@ pub fn play_badapple() {
                 if now.wrapping_sub(last_af) >= af_tsc {
                     last_af = now;
                     crate::contexts::audio::with_audio_mut(|a| {
-                        feed_pcm(a, &mut pcm_off, pcm_total);
+                        feed_pcm(a, &mut pcm_off, pcm_total)
                     });
                 }
                 if consumed >= target {
@@ -234,7 +227,7 @@ pub fn play_badapple() {
                 if use_hda && unsafe { x86_64::_rdtsc() }.wrapping_sub(last_af) >= af_tsc {
                     last_af = unsafe { x86_64::_rdtsc() };
                     crate::contexts::audio::with_audio_mut(|a| {
-                        feed_pcm(a, &mut pcm_off, pcm_total);
+                        feed_pcm(a, &mut pcm_off, pcm_total)
                     });
                 }
                 core::hint::spin_loop();
