@@ -5,10 +5,10 @@
 //! producing detailed log output suitable for debugging silent‑output
 //! issues on real hardware.
 
-use crate::hda::corb::CorbEngine;
-use crate::hda::corb::verbs;
-use crate::hda::corb::params;
 use crate::hda::codec::{CodecGraph, WidgetInfo, widget_type_name};
+use crate::hda::corb::CorbEngine;
+use crate::hda::corb::params;
+use crate::hda::corb::verbs;
 use crate::hda::widget_type;
 
 /// Dump a comprehensive inventory of every widget node reachable from
@@ -27,17 +27,14 @@ use crate::hda::widget_type;
 ///
 /// `mmio` must be a valid HDA MMIO base.  `corb` must be initialised.
 /// `graph` should be the result of `CodecGraph::enumerate()`.
-pub unsafe fn dump_codec_inventory(
-    mmio: *mut u8,
-    corb: &CorbEngine,
-    graph: &CodecGraph,
-) {
+pub unsafe fn dump_codec_inventory(mmio: *mut u8, corb: &CorbEngine, graph: &CodecGraph) {
     let codec: u8 = 0;
 
     log::info!("HDA: === CODEC INVENTORY (codec={}) ===", codec);
     log::info!(
         "HDA:  Vendor=0x{:08x} Rev=0x{:08x}",
-        graph.vendor_id, graph.revision_id
+        graph.vendor_id,
+        graph.revision_id
     );
     log::info!("HDA:  AFG node=0x{:02x}", graph.afg_node);
 
@@ -57,7 +54,10 @@ pub unsafe fn dump_codec_inventory(
 
         log::info!(
             "HDA:  ┌─ node=0x{:02x} wcaps=0x{:08x} type={}({})",
-            n, w.wcaps, widget_type_name(t), t
+            n,
+            w.wcaps,
+            widget_type_name(t),
+            t
         );
 
         // Connection list
@@ -87,7 +87,11 @@ pub unsafe fn dump_codec_inventory(
                     let offset = w.out_amp_cap & 0x7F;
                     log::info!(
                         "HDA:  │ OutAmpCap=0x{:08x} mute={} stepSize={} nSteps={} offset={}",
-                        w.out_amp_cap, mute_capable, step_size, num_steps, offset
+                        w.out_amp_cap,
+                        mute_capable,
+                        step_size,
+                        num_steps,
+                        offset
                     );
                 }
 
@@ -109,15 +113,16 @@ pub unsafe fn dump_codec_inventory(
                 }
 
                 // Current output amp state
-                let amp_out = unsafe {
-                    corb.send_verb(mmio, codec, n, verbs::GET_AMP_GAIN_MUTE, 0x8000)
-                };
+                let amp_out =
+                    unsafe { corb.send_verb(mmio, codec, n, verbs::GET_AMP_GAIN_MUTE, 0x8000) };
                 if amp_out != 0xFFFF_FFFF {
                     let muted = (amp_out >> 7) & 1;
                     let gain = amp_out & 0x7F;
                     log::info!(
                         "HDA:  │ CurOutAmp=0x{:04x} mute={} gain={}",
-                        amp_out, muted, gain
+                        amp_out,
+                        muted,
+                        gain
                     );
                 }
 
@@ -126,7 +131,9 @@ pub unsafe fn dump_codec_inventory(
                     for inp_idx in 0..w.connection_count.min(4) {
                         let amp_in = unsafe {
                             corb.send_verb(
-                                mmio, codec, n,
+                                mmio,
+                                codec,
+                                n,
                                 verbs::GET_AMP_GAIN_MUTE,
                                 (inp_idx as u16) << 8,
                             )
@@ -136,7 +143,10 @@ pub unsafe fn dump_codec_inventory(
                             let gain = amp_in & 0x7F;
                             log::info!(
                                 "HDA:  │ CurInAmp[{}]=0x{:04x} mute={} gain={}",
-                                inp_idx, amp_in, muted, gain
+                                inp_idx,
+                                amp_in,
+                                muted,
+                                gain
                             );
                         }
                     }
@@ -155,7 +165,8 @@ pub unsafe fn dump_codec_inventory(
                 if w.pin_cap != 0xFFFF_FFFF {
                     log::info!(
                         "HDA:  │ PinCap=0x{:08x} [{}]",
-                        w.pin_cap, pin_cap_str(w.pin_cap)
+                        w.pin_cap,
+                        pin_cap_str(w.pin_cap)
                     );
                 }
 
@@ -163,7 +174,8 @@ pub unsafe fn dump_codec_inventory(
                 if w.pin_default != 0xFFFF_FFFF {
                     log::info!(
                         "HDA:  │ PinDefault=0x{:08x} → {}",
-                        w.pin_default, pin_default_str(w.pin_default)
+                        w.pin_default,
+                        pin_default_str(w.pin_default)
                     );
                 }
 
@@ -177,7 +189,12 @@ pub unsafe fn dump_codec_inventory(
                     let eapd_raw = (pin_ctl >> 16) & 0xFF;
                     log::info!(
                         "HDA:  │ CurPinCtl=0x{:02x} OUT={} HP={} IN={} VRef=0x{:02x} EAPD=0x{:02x}",
-                        pin_ctl, out, hp, in_en, vref, eapd_raw
+                        pin_ctl,
+                        out,
+                        hp,
+                        in_en,
+                        vref,
+                        eapd_raw
                     );
                 }
 
@@ -208,18 +225,42 @@ pub unsafe fn dump_codec_inventory(
 
 fn pin_cap_str(pincap: u32) -> alloc::string::String {
     let mut s = alloc::string::String::new();
-    if pincap & (1 << 0) != 0 { s.push_str("ImpSense "); }
-    if pincap & (1 << 1) != 0 { s.push_str("TrigReq "); }
-    if pincap & (1 << 2) != 0 { s.push_str("PresDet "); }
-    if pincap & (1 << 4) != 0 { s.push_str("OUT "); }
-    if pincap & (1 << 5) != 0 { s.push_str("IN "); }
-    if pincap & (1 << 6) != 0 { s.push_str("Balanced "); }
-    if pincap & (1 << 7) != 0 { s.push_str("HP-Drv "); }
-    if pincap & (1 << 8) != 0 { s.push_str("Vref "); }
-    if pincap & (1 << 16) != 0 { s.push_str("EAPD "); }
-    if pincap & (1 << 24) != 0 { s.push_str("DP "); }
-    if pincap & (1 << 25) != 0 { s.push_str("HDMI "); }
-    if s.is_empty() { s.push_str("(none)"); }
+    if pincap & (1 << 0) != 0 {
+        s.push_str("ImpSense ");
+    }
+    if pincap & (1 << 1) != 0 {
+        s.push_str("TrigReq ");
+    }
+    if pincap & (1 << 2) != 0 {
+        s.push_str("PresDet ");
+    }
+    if pincap & (1 << 4) != 0 {
+        s.push_str("OUT ");
+    }
+    if pincap & (1 << 5) != 0 {
+        s.push_str("IN ");
+    }
+    if pincap & (1 << 6) != 0 {
+        s.push_str("Balanced ");
+    }
+    if pincap & (1 << 7) != 0 {
+        s.push_str("HP-Drv ");
+    }
+    if pincap & (1 << 8) != 0 {
+        s.push_str("Vref ");
+    }
+    if pincap & (1 << 16) != 0 {
+        s.push_str("EAPD ");
+    }
+    if pincap & (1 << 24) != 0 {
+        s.push_str("DP ");
+    }
+    if pincap & (1 << 25) != 0 {
+        s.push_str("HDMI ");
+    }
+    if s.is_empty() {
+        s.push_str("(none)");
+    }
     s
 }
 
@@ -271,6 +312,11 @@ fn pin_default_str(cfg: u32) -> alloc::string::String {
     alloc::format!(
         "{}(dev={}, color={:#x}, conn={}, loc={:#x}, misc={:#x}, seq={})",
         if is_connected { "" } else { "UNCONNECTED " },
-        device_name, color, conn_name, location, misc, sequence,
+        device_name,
+        color,
+        conn_name,
+        location,
+        misc,
+        sequence,
     )
 }

@@ -88,12 +88,7 @@ impl DmaEngine {
     /// `mmio` must be a valid MMIO base pointer.  `dma_region` must
     /// point to valid, zeroed, physically‑contiguous memory of at
     /// least `DMA_BUF_SIZE + BDL_ENTRIES * sizeof(BdlEntry)` bytes.
-    pub unsafe fn init(
-        &mut self,
-        mmio: *mut u8,
-        dma_region: &DmaRegion,
-        stream_tag: u8,
-    ) {
+    pub unsafe fn init(&mut self, mmio: *mut u8, dma_region: &DmaRegion, stream_tag: u8) {
         let bdl_sz = (core::mem::size_of::<BdlEntry>() as u32) * BDL_ENTRIES;
         let audio_phys = dma_region.phys + bdl_sz as u64;
         let audio_off = bdl_sz;
@@ -163,7 +158,11 @@ impl DmaEngine {
         unsafe {
             // SAFETY: Start stream after fence
             // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16) + STREAMTAG (bits 23:20)
-            mmio_write32(mmio, sd + SD_CTL, ((stream_tag as u32) << 20) | (1u32 << 16) | 0x06);
+            mmio_write32(
+                mmio,
+                sd + SD_CTL,
+                ((stream_tag as u32) << 20) | (1u32 << 16) | 0x06,
+            );
         }
 
         log::info!("HDA: stream started ({} B, fmt=0x0010)", audio_size);
@@ -317,8 +316,7 @@ impl DmaEngine {
     ///
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn poll_delay(&self, mmio: *mut u8, tsc_per_ms: u64, ms: u64) {
-        let deadline =
-            core::arch::x86_64::_rdtsc().wrapping_add(tsc_per_ms.saturating_mul(ms));
+        let deadline = core::arch::x86_64::_rdtsc().wrapping_add(tsc_per_ms.saturating_mul(ms));
         while core::arch::x86_64::_rdtsc() < deadline {
             self.poll(mmio, None);
             core::hint::spin_loop();

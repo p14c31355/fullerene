@@ -166,7 +166,16 @@ fn register_nozzle_hooks() {
             }
             // ── HDA diagnostic info (read directly, no lock contention) ──
             {
-                let diag = crate::sound::hda_diag();
+                let diag = crate::contexts::audio::with_audio(|a| a.diag).unwrap_or(
+                    nitrogen::hda::controller::HdaDiagInfo {
+                        gcap: 0,
+                        gcap64: false,
+                        corb_phys: 0,
+                        rirb_phys: 0,
+                        states_after_crst: 0,
+                        populated: false,
+                    },
+                );
                 if diag.populated {
                     ctx.terminal.write_str("\n=== HDA diagnostic ===\n");
                     let line = alloc::format!(

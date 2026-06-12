@@ -1,32 +1,8 @@
-//! InputContext — Unified input event system.
-//!
-//! Consolidates:
-//! - PS/2 keyboard raw events (`nitrogen::ps2::keyboard`)
-//! - PS/2 mouse state (`nitrogen::ps2::mouse`)
-//! - Event queue population
-//!
-//! # Design
-//!
-//! Instead of keyboard and mouse being polled separately and their
-//! events pushed into a shared queue, this context owns the queue
-//! and provides a single `poll()` method that reads all input
-//! hardware and returns a batch of input events.
-//!
-//! The event types are simple enums (not the full Resonance types)
-//! so the kernel-side input layer avoids depending on `resonance`.
-//! The `solvent` crate bridges these kernel events into Resonance
-//! events during `runtime_tick`.
-
+//! InputContext — unified keyboard+mouse event queue.
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-/// Maximum number of events to buffer before dropping oldest.
-const MAX_EVENTS: usize = 256;
-
-// ── Kernel-level input event types ────────────────────────
-
-/// Mouse button identifier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -34,28 +10,77 @@ pub enum MouseButton {
     Right,
     Other(u8),
 }
-
-/// Keyboard key code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyCode {
-    // Alphanumeric
-    A, B, C, D, E, F, G, H, I, J, K, L, M,
-    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-    Digit0, Digit1, Digit2, Digit3, Digit4,
-    Digit5, Digit6, Digit7, Digit8, Digit9,
-    // Modifiers
-    Shift, Ctrl, Alt, Meta, SuperLeft, SuperRight,
-    // Navigation
-    Enter, Tab, Space, Backspace, Escape,
-    Up, Down, Left, Right,
-    Home, End, PageUp, PageDown,
-    // Function keys
-    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-    /// Catch-all for unhandled keys.
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+    I,
+    J,
+    K,
+    L,
+    M,
+    N,
+    O,
+    P,
+    Q,
+    R,
+    S,
+    T,
+    U,
+    V,
+    W,
+    X,
+    Y,
+    Z,
+    Digit0,
+    Digit1,
+    Digit2,
+    Digit3,
+    Digit4,
+    Digit5,
+    Digit6,
+    Digit7,
+    Digit8,
+    Digit9,
+    Shift,
+    Ctrl,
+    Alt,
+    Meta,
+    SuperLeft,
+    SuperRight,
+    Enter,
+    Tab,
+    Space,
+    Backspace,
+    Escape,
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    F1,
+    F2,
+    F3,
+    F4,
+    F5,
+    F6,
+    F7,
+    F8,
+    F9,
+    F10,
+    F11,
+    F12,
     Unknown(u32),
 }
-
-/// A kernel-level input event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputEvent {
     MouseMove { x: i32, y: i32 },
@@ -65,30 +90,18 @@ pub enum InputEvent {
     KeyUp(KeyCode),
 }
 
-// ── InputContext ──────────────────────────────────────────
+const MAX_EVENTS: usize = 256;
 
-/// Unified input context that aggregates keyboard and mouse events.
 pub struct InputContext {
-    /// Ring buffer of input events.
     pub queue: VecDeque<InputEvent>,
-
-    /// Current mouse position.
     pub mouse_x: i16,
     pub mouse_y: i16,
-
-    /// Current mouse button state (bitmask: 1=left, 2=right, 4=middle).
     pub mouse_buttons: u8,
-
-    /// Previous mouse button state for edge detection.
     prev_buttons: u8,
-
-    /// Mouse sensitivity multiplier (raw → pixel motion).
     sensitivity: i16,
 }
 
 impl InputContext {
-    /// Create a new input context with default mouse position in
-    /// the centre of a 1024×768 screen.
     pub fn new() -> Self {
         Self {
             queue: VecDeque::new(),
@@ -99,107 +112,79 @@ impl InputContext {
             sensitivity: 6,
         }
     }
-
-    /// Set mouse sensitivity.
-    pub fn set_sensitivity(&mut self, sensitivity: i16) {
-        self.sensitivity = sensitivity;
+    pub fn set_sensitivity(&mut self, s: i16) {
+        self.sensitivity = s;
     }
-
-    /// Poll all input hardware and push events into the queue.
-    /// Call this once per tick / scheduler iteration.
     pub fn poll(&mut self) {
-        // ── Mouse ──────────────────────────────────────────
         let ps2 = nitrogen::ps2::mouse::consume_state();
-        let dx = ps2.get_x();
-        let dy = ps2.get_y();
-        let btn = nitrogen::ps2::mouse::mouse_buttons();
-
-        let old_x = self.mouse_x;
-        let old_y = self.mouse_y;
-        self.mouse_x = self
-            .mouse_x
-            .wrapping_add(dx.wrapping_mul(self.sensitivity));
+        let (dx, dy, btn) = (
+            ps2.get_x(),
+            ps2.get_y(),
+            nitrogen::ps2::mouse::mouse_buttons(),
+        );
+        let (ox, oy) = (self.mouse_x, self.mouse_y);
+        self.mouse_x = self.mouse_x.wrapping_add(dx.wrapping_mul(self.sensitivity));
         self.mouse_y = self
             .mouse_y
             .wrapping_add(dy.wrapping_mul(self.sensitivity).wrapping_neg());
         self.mouse_buttons = btn;
-
-        if old_x != self.mouse_x || old_y != self.mouse_y {
+        if ox != self.mouse_x || oy != self.mouse_y {
             self.push(InputEvent::MouseMove {
                 x: self.mouse_x as i32,
                 y: self.mouse_y as i32,
             });
         }
-
-        // Edge detection for mouse buttons
-        let changed = btn ^ self.prev_buttons;
-        if changed & 0x01 != 0 {
-            if btn & 0x01 != 0 {
-                self.push(InputEvent::MouseDown(MouseButton::Left));
+        let ch = btn ^ self.prev_buttons;
+        if ch & 1 != 0 {
+            self.push(if btn & 1 != 0 {
+                InputEvent::MouseDown(MouseButton::Left)
             } else {
-                self.push(InputEvent::MouseUp(MouseButton::Left));
-            }
+                InputEvent::MouseUp(MouseButton::Left)
+            });
         }
-        if changed & 0x02 != 0 {
-            if btn & 0x02 != 0 {
-                self.push(InputEvent::MouseDown(MouseButton::Right));
+        if ch & 2 != 0 {
+            self.push(if btn & 2 != 0 {
+                InputEvent::MouseDown(MouseButton::Right)
             } else {
-                self.push(InputEvent::MouseUp(MouseButton::Right));
-            }
+                InputEvent::MouseUp(MouseButton::Right)
+            });
         }
-        if changed & 0x04 != 0 {
-            if btn & 0x04 != 0 {
-                self.push(InputEvent::MouseDown(MouseButton::Middle));
+        if ch & 4 != 0 {
+            self.push(if btn & 4 != 0 {
+                InputEvent::MouseDown(MouseButton::Middle)
             } else {
-                self.push(InputEvent::MouseUp(MouseButton::Middle));
-            }
+                InputEvent::MouseUp(MouseButton::Middle)
+            });
         }
         self.prev_buttons = btn;
-
-        // ── Keyboard ───────────────────────────────────────
         while nitrogen::ps2::keyboard::raw_key_available() {
-            let (scancode, pressed) = match nitrogen::ps2::keyboard::pop_raw_key() {
+            let (sc, pr) = match nitrogen::ps2::keyboard::pop_raw_key() {
                 Some(k) => k,
                 None => break,
             };
-            let key = scancode_to_keycode(scancode);
-            if pressed {
-                self.push(InputEvent::KeyDown(key));
+            self.push(if pr {
+                InputEvent::KeyDown(scancode_to_keycode(sc))
             } else {
-                self.push(InputEvent::KeyUp(key));
-            }
+                InputEvent::KeyUp(scancode_to_keycode(sc))
+            });
         }
     }
-
-    /// Push an event into the queue (drops oldest if full).
-    fn push(&mut self, event: InputEvent) {
+    fn push(&mut self, ev: InputEvent) {
         while self.queue.len() >= MAX_EVENTS {
             self.queue.pop_front();
         }
-        self.queue.push_back(event);
+        self.queue.push_back(ev);
     }
-
-    /// Drain all pending events into a `Vec`.
     pub fn drain_events(&mut self) -> Vec<InputEvent> {
         self.queue.drain(..).collect()
     }
-
-    /// Returns `true` if there are pending events.
     pub fn has_events(&self) -> bool {
         !self.queue.is_empty()
     }
-
-    /// Number of pending events.
-    pub fn event_count(&self) -> usize {
-        self.queue.len()
-    }
 }
 
-/// Map a raw PS/2 scancode to a `KeyCode`.
-fn scancode_to_keycode(scancode: u8) -> KeyCode {
+fn scancode_to_keycode(sc: u8) -> KeyCode {
     use KeyCode::*;
-
-    // Extended key table (scancode prefix 0xE0)
     const EXT: [Option<KeyCode>; 128] = {
         let mut t = [None; 128];
         t[0x1D] = Some(Ctrl);
@@ -208,8 +193,6 @@ fn scancode_to_keycode(scancode: u8) -> KeyCode {
         t[0x5C] = Some(SuperRight);
         t
     };
-
-    // Base scancode table
     const BASE: [KeyCode; 128] = {
         let mut t = [Unknown(0); 128];
         let mut i = 0;
@@ -284,33 +267,30 @@ fn scancode_to_keycode(scancode: u8) -> KeyCode {
         t[0x58] = F12;
         t
     };
-
-    let base = scancode & 0x7F;
-    if scancode & 0x80 != 0 {
-        // Release event: check extended table first
-        EXT[base as usize].unwrap_or_else(|| BASE[base as usize])
+    let b = sc & 0x7F;
+    if sc & 0x80 != 0 {
+        EXT[b as usize].unwrap_or(BASE[b as usize])
     } else {
-        BASE[base as usize]
+        BASE[b as usize]
     }
 }
 
-/// Global input context.
-static INPUT_CONTEXT: Mutex<Option<InputContext>> = Mutex::new(None);
-
-/// Initialise the global input context.
-pub fn init_input_context() {
-    *INPUT_CONTEXT.lock() = Some(InputContext::new());
+static INPUT_CTX: Mutex<Option<InputContext>> = Mutex::new(None);
+pub fn init_input() {
+    *INPUT_CTX.lock() = Some(InputContext::new());
 }
-
-/// Get a reference to the global input context.
 pub fn get_input() -> &'static Mutex<Option<InputContext>> {
-    &INPUT_CONTEXT
+    &INPUT_CTX
 }
-
-/// Convenience: execute a closure with a mutable reference.
 pub fn with_input_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut InputContext) -> R,
 {
-    INPUT_CONTEXT.lock().as_mut().map(f)
+    INPUT_CTX.lock().as_mut().map(f)
+}
+pub fn with_input<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&InputContext) -> R,
+{
+    INPUT_CTX.lock().as_ref().map(f)
 }

@@ -152,27 +152,15 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             petroleum::serial::serial_log(format_args!("App runner initialised\n"));
             Ok(())
         }),
-        petroleum::init_step!("sound", || {
-            crate::sound::init();
-            petroleum::serial::serial_log(format_args!("Sound subsystem initialised\n"));
-            Ok(())
-        }),
         petroleum::init_step!("contexts", || {
-            // Initialise all 7 unified contexts (see crate::contexts).
-            crate::contexts::boot::init_boot_context(
-                core::ptr::null(),
-                None,
-                0,
-            );
-            crate::contexts::framebuffer::init_framebuffer_context(
-                crate::contexts::framebuffer::FramebufferContext::new(),
-            );
-            let _ = crate::contexts::pci::init_pci_context();
-            crate::contexts::input::init_input_context();
-            crate::contexts::window::init_window_context();
-            crate::contexts::audio::init_audio_context();
-            crate::contexts::memory::init_memory_context();
-            petroleum::serial::serial_log(format_args!("Contexts initialised (7 contexts)\n"));
+            crate::contexts::boot::init_boot();
+            crate::contexts::framebuffer::init_framebuffer();
+            let _ = crate::contexts::pci::init_pci();
+            crate::contexts::input::init_input();
+            crate::contexts::window::init_window();
+            crate::contexts::audio::init_audio();
+            crate::contexts::memory::init_memory();
+            petroleum::serial::serial_log(format_args!("7 contexts initialised\n"));
             Ok(())
         }),
     ];

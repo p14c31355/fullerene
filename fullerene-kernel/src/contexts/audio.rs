@@ -1,56 +1,22 @@
-//! AudioContext — Sound / Audio subsystem context.
-//!
-//! Consolidates:
-//! - HDA controller state (`crate::sound::HDA_CTRL`)
-//! - HDA diagnostic info (`crate::sound::HDA_DIAG`)
-//! - DMA region allocation
-//! - PC speaker control
-//!
-//! # Design
-//!
-//! Instead of a global `HDA_CTRL` wrapped in `Mutex<Option<...>>`
-//! with static init guards, this context owns the controller and
-//! provides methods that encapsulate the lazy-init pattern.
-//!
-//! ```rust,ignore
-//! audio.write_samples(pcm_data, offset);
-//! audio.poll();
-//! audio.feed_silence(256);
-//! ```
-
-use nitrogen::hda::controller::HdaDiagInfo;
-use nitrogen::hda::dma::{DmaRegion, DMA_BUF_SIZE};
+//! AudioContext — HDA controller + PC speaker. Replaces crate::sound globals.
 use nitrogen::hda::HdaController;
+use nitrogen::hda::controller::HdaDiagInfo;
+use nitrogen::hda::dma::{DMA_BUF_SIZE, DmaRegion};
 use spin::Mutex;
 
-// Safety: AudioContext is only accessed via Mutex (see AUDIO_CONTEXT global).
-// The raw MMIO pointer inside HdaController is never sent between threads.
 unsafe impl Send for AudioContext {}
 unsafe impl Sync for AudioContext {}
 
-/// Audio subsystem context.
 pub struct AudioContext {
-    /// HDA controller, if detected.
     pub hda: Option<HdaController>,
-
-    /// Cached HDA diagnostic info for shell inspection.
     pub diag: HdaDiagInfo,
-
-    /// Whether lazy HDA initialisation has been attempted.
-    hda_init_attempted: bool,
-
-    /// CORB DMA region (held to keep pages alive).
-    corb_region: Option<DmaRegion>,
-
-    /// RIRB DMA region.
-    rirb_region: Option<DmaRegion>,
-
-    /// Output stream DMA region.
-    dma_region: Option<DmaRegion>,
+    init_done: bool,
+    corb: Option<DmaRegion>,
+    rirb: Option<DmaRegion>,
+    dma: Option<DmaRegion>,
 }
 
 impl AudioContext {
-    /// Create an empty audio context.
     pub const fn new() -> Self {
         Self {
             hda: None,
@@ -62,52 +28,42 @@ impl AudioContext {
                 states_after_crst: 0,
                 populated: false,
             },
-            hda_init_attempted: false,
-            corb_region: None,
-            rirb_region: None,
-            dma_region: None,
+            init_done: false,
+            corb: None,
+            rirb: None,
+            dma: None,
         }
     }
 
-    /// Probe PCI for an HDA controller and store the MMIO address.
-    /// Does NOT start CORB/RIRB or DMA — that happens lazily.
     pub fn probe(&mut self) {
-        let phys_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
-        match HdaController::probe(phys_offset) {
-            Some((bus, dev, func, bar0)) => {
-                log::info!(
-                    "Sound: HDA at {:04x}:{:02x}.{}, BAR0=0x{:x}",
-                    bus,
-                    dev,
-                    func,
-                    bar0
-                );
-                let mmio = (bar0 + phys_offset) as *mut u8;
-                let ctrl = HdaController::new(mmio, bar0);
-                self.hda = Some(ctrl);
-            }
-            None => log::info!("Sound: No HDA (PC speaker only)"),
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        if let Some((bus, dev, func, bar0)) = HdaController::probe(off) {
+            let mmio = (bar0 + off) as *mut u8;
+            self.hda = Some(HdaController::new(mmio, bar0));
+            log::info!(
+                "Sound: HDA at {:04x}:{:02x}.{}, BAR0=0x{:x}",
+                bus,
+                dev,
+                func,
+                bar0
+            );
+        } else {
+            log::info!("Sound: No HDA (PC speaker only)");
         }
     }
 
-    /// Returns `true` when an HDA controller was found.
     pub fn hda_available(&self) -> bool {
         self.hda.is_some()
     }
-
-    /// Returns `true` when the HDA controller is fully initialised
-    /// and ready to accept audio data.
     pub fn hda_ready(&self) -> bool {
         self.hda.as_ref().is_some_and(|c| c.is_ready())
     }
 
-    /// Lazy initialisation: bring up CORB/RIRB, enumerate codec, start DMA.
-    pub fn hda_lazy_init(&mut self) {
-        if self.hda_init_attempted {
+    pub fn lazy_init(&mut self) {
+        if self.init_done {
             return;
         }
-        self.hda_init_attempted = true;
-
+        self.init_done = true;
         let ctrl = match self.hda.as_mut() {
             Some(c) => c,
             None => return,
@@ -115,166 +71,113 @@ impl AudioContext {
         if ctrl.is_ready() {
             return;
         }
-
-        // Allocate CORB/RIRB DMA pages
-        let Some(corb) = alloc_dma_region(1) else {
-            log::error!("Sound: CORB alloc fail");
+        let Some(corb) = alloc_dma(1) else { return };
+        let Some(rirb) = alloc_dma(1) else { return };
+        let Some(dma) = alloc_dma((DMA_BUF_SIZE as usize + 4095) / 4096) else {
             return;
         };
-        let Some(rirb) = alloc_dma_region(1) else {
-            log::error!("Sound: RIRB alloc fail");
-            return;
-        };
-        let dma_pages = (DMA_BUF_SIZE as usize + 4095) / 4096;
-        let Some(dma) = alloc_dma_region(dma_pages) else {
-            log::error!("Sound: DMA alloc fail");
-            return;
-        };
-
-        let init_ok = unsafe { ctrl.init(&corb, &rirb, &dma) };
-        if !init_ok {
-            log::error!(
-                "Sound: HDA controller init failed (is_ready={}, GCAP=0x{:x})",
-                ctrl.is_ready(),
-                unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) }
-            );
+        if !unsafe { ctrl.init(&corb, &rirb, &dma) } {
+            log::error!("Sound: HDA init failed");
             return;
         }
-
-        // Populate diagnostic cache
-        let gcap_raw =
-            unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) };
         self.diag = HdaDiagInfo {
-            gcap: gcap_raw,
-            gcap64: gcap_raw & 1 != 0,
+            gcap: unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) },
+            gcap64: self.diag.gcap & 1 != 0,
             corb_phys: corb.phys,
             rirb_phys: rirb.phys,
             states_after_crst: 0,
             populated: true,
         };
-
-        self.corb_region = Some(corb);
-        self.rirb_region = Some(rirb);
-        self.dma_region = Some(dma);
+        self.corb = Some(corb);
+        self.rirb = Some(rirb);
+        self.dma = Some(dma);
     }
 
-    /// Write PCM bytes at a specific offset into the DMA buffer.
     pub fn write_samples(&mut self, offset: u32, samples: &[u8]) -> usize {
-        self.hda_lazy_init();
+        self.lazy_init();
         match self.hda.as_ref() {
-            Some(ctrl) if ctrl.is_ready() => ctrl.write_at(offset, samples),
+            Some(c) if c.is_ready() => c.write_at(offset, samples),
             _ => 0,
         }
     }
-
-    /// Feed PCM samples into the DMA ring buffer.  Returns bytes written.
     pub fn feed_samples(&mut self, samples: &[u8]) -> usize {
-        self.hda_lazy_init();
+        self.lazy_init();
         match self.hda.as_ref() {
-            Some(ctrl) if ctrl.is_ready() => ctrl.feed_samples(samples),
+            Some(c) if c.is_ready() => c.feed_samples(samples),
             _ => 0,
         }
     }
-
-    /// Feed silence into the HDA half-buffer.
-    pub fn feed_silence(&mut self, half: usize) -> usize {
+    pub fn feed_silence(&self, half: usize) -> usize {
         match self.hda.as_ref() {
-            Some(ctrl) if ctrl.is_ready() => ctrl.feed_silence(half),
+            Some(c) if c.is_ready() => c.feed_silence(half),
             _ => 0,
         }
     }
-
-    /// Poll for half-buffer completion.  Times out after ~100 ms at 3 GHz.
     pub fn poll(&self) {
-        let Some(ctrl) = self.hda.as_ref() else {
-            return;
-        };
-        if !ctrl.is_ready() {
+        let Some(c) = self.hda.as_ref() else { return };
+        if !c.is_ready() {
             return;
         }
-        let deadline = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(300_000_000);
+        let dl = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(300_000_000);
         loop {
-            if ctrl.poll(None) {
-                return;
-            }
-            if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+            if c.poll(None) || unsafe { core::arch::x86_64::_rdtsc() } >= dl {
                 return;
             }
             core::hint::spin_loop();
         }
     }
-
-    /// Poll with optional TSC timeout.  Returns `true` when data was fed.
-    pub fn poll_block(&self, timeout_tsc: Option<u64>) -> bool {
-        match self.hda.as_ref() {
-            Some(ctrl) if ctrl.is_ready() => ctrl.poll(timeout_tsc),
-            _ => false,
-        }
+    pub fn poll_block(&self, timeout: Option<u64>) -> bool {
+        self.hda
+            .as_ref()
+            .filter(|c| c.is_ready())
+            .is_some_and(|c| c.poll(timeout))
     }
-
-    /// TSC‑based delay with periodic HDA poll (used for silence drain).
     pub fn poll_delay(&self, tsc_per_ms: u64, ms: u64) {
-        let deadline =
+        let dl =
             unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(tsc_per_ms.saturating_mul(ms));
-        while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
+        while unsafe { core::arch::x86_64::_rdtsc() } < dl {
             self.poll();
             core::hint::spin_loop();
         }
     }
-
-    /// Return total PCM bytes consumed (played back) since stream start.
     pub fn playback_progress(&self) -> Option<u64> {
         self.hda.as_ref().and_then(|c| c.playback_progress())
     }
-
-    /// Reset LPIB tracking so DMA is assumed to start at half 0.
     pub fn reset_prefill_tracking(&self) {
-        if let Some(ctrl) = self.hda.as_ref() {
-            if ctrl.is_ready() {
-                ctrl.reset_prefill_tracking();
+        if let Some(c) = self.hda.as_ref() {
+            if c.is_ready() {
+                c.reset_prefill_tracking();
             }
         }
     }
 
-    // ── PC Speaker ─────────────────────────────────────────────
-
-    /// Turn the PC speaker on at the given frequency (Hz). 0 = off.
-    pub fn pc_speaker_on(frequency_hz: u32) {
-        if frequency_hz == 0 {
+    pub fn pc_speaker_on(freq_hz: u32) {
+        if freq_hz == 0 {
             Self::pc_speaker_off();
             return;
         }
-        let divisor = (1_193_182u32 / frequency_hz).min(65535) as u16;
+        let d = (1_193_182u32 / freq_hz).min(65535) as u16;
         unsafe {
             x86_64::instructions::port::PortWriteOnly::<u8>::new(0x43).write(0xB6);
-            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write(divisor as u8);
-            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write((divisor >> 8) as u8);
-            let t = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
-            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(t | 0x03);
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write(d as u8);
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x42).write((d >> 8) as u8);
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+                .write(x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read() | 0x03);
         }
     }
-
-    /// Turn the PC speaker off.
     pub fn pc_speaker_off() {
         unsafe {
-            let t = x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read();
-            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(t & !0x03);
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61)
+                .write(x86_64::instructions::port::PortReadOnly::<u8>::new(0x61).read() & !0x03);
         }
     }
 }
 
-/// Allocate contiguous physical DMA pages and return a `DmaRegion`.
-fn alloc_dma_region(pages: usize) -> Option<DmaRegion> {
+fn alloc_dma(pages: usize) -> Option<DmaRegion> {
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let phys = match petroleum::page_table::constants::get_frame_allocator_mut()
+    let phys = petroleum::page_table::constants::get_frame_allocator_mut()
         .allocate_contiguous_frames(pages)
-    {
-        Ok(a) => a,
-        Err(_) => {
-            log::error!("Sound: DMA alloc fail");
-            return None;
-        }
-    };
+        .ok()?;
     let virt = (phys + off) as *mut u8;
     unsafe {
         core::ptr::write_bytes(virt, 0, pages * 4096);
@@ -286,33 +189,24 @@ fn alloc_dma_region(pages: usize) -> Option<DmaRegion> {
     })
 }
 
-/// Global audio context.
-static AUDIO_CONTEXT: Mutex<Option<AudioContext>> = Mutex::new(None);
-
-/// Initialise the global audio context.
-pub fn init_audio_context() {
-    let mut ctx = AudioContext::new();
-    ctx.probe();
-    *AUDIO_CONTEXT.lock() = Some(ctx);
+static AUDIO_CTX: Mutex<Option<AudioContext>> = Mutex::new(None);
+pub fn init_audio() {
+    let mut c = AudioContext::new();
+    c.probe();
+    *AUDIO_CTX.lock() = Some(c);
 }
-
-/// Get a reference to the global audio context.
 pub fn get_audio() -> &'static Mutex<Option<AudioContext>> {
-    &AUDIO_CONTEXT
+    &AUDIO_CTX
 }
-
-/// Convenience: execute a closure with a mutable reference.
 pub fn with_audio_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut AudioContext) -> R,
 {
-    AUDIO_CONTEXT.lock().as_mut().map(f)
+    AUDIO_CTX.lock().as_mut().map(f)
 }
-
-/// Convenience: execute a closure with a shared reference.
 pub fn with_audio<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&AudioContext) -> R,
 {
-    AUDIO_CONTEXT.lock().as_ref().map(f)
+    AUDIO_CTX.lock().as_ref().map(f)
 }

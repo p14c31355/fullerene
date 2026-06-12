@@ -42,7 +42,6 @@ pub mod process;
 pub mod scheduler;
 pub mod shell;
 pub mod slab;
-pub mod sound;
 pub mod syscall;
 pub mod task;
 pub mod tracing;
