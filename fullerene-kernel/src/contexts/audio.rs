@@ -137,7 +137,7 @@ impl AudioContext {
         let dl =
             unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(tsc_per_ms.saturating_mul(ms));
         while unsafe { core::arch::x86_64::_rdtsc() } < dl {
-            self.poll();
+            self.poll_block(Some(0));
             core::hint::spin_loop();
         }
     }
