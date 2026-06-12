@@ -149,8 +149,8 @@ pub fn play_badapple() {
 
     let tsc_per_ms = if use_hda {
         // Wait a little for DMA to start, then calibrate
-        let dl = unsafe { x86_64::_rdtsc() }.wrapping_add(300_000_000);
-        while unsafe { x86_64::_rdtsc() } < dl {
+        let start = unsafe { x86_64::_rdtsc() };
+        while unsafe { x86_64::_rdtsc() }.wrapping_sub(start) < 300_000_000 {
             core::hint::spin_loop();
         }
         crate::contexts::audio::with_audio(|a| calibrate_tsc(a)).unwrap_or(3_000_000)
