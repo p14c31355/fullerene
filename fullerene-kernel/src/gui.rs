@@ -118,11 +118,11 @@ pub fn render() {
     solvent::render(get_framebuffer_slice);
 
     // Signal present & flush GPU (kernel-owned resource management)
-    let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-    if let Some(ref mut renderer) = *renderer_lock {
-        renderer.present();
-    }
-    drop(renderer_lock);
+    crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
+        if let Some(ref mut renderer) = fb.renderer {
+            renderer.present();
+        }
+    });
     crate::graphics::flush_gpu();
 }
 
@@ -133,11 +133,11 @@ pub fn runtime_tick(now: u64) {
     solvent::runtime_tick(now, get_framebuffer_slice);
 
     // Signal present & flush GPU
-    let mut renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-    if let Some(ref mut renderer) = *renderer_lock {
-        renderer.present();
-    }
-    drop(renderer_lock);
+    crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
+        if let Some(ref mut renderer) = fb.renderer {
+            renderer.present();
+        }
+    });
     crate::graphics::flush_gpu();
 }
 
@@ -145,13 +145,12 @@ pub fn runtime_tick(now: u64) {
 
 /// Get a mutable slice of the framebuffer pixels and its dimensions.
 fn get_framebuffer_slice() -> Option<(&'static mut [u32], u32, u32)> {
-    let renderer_lock = crate::graphics::PRIMARY_RENDERER.lock();
-    let renderer = renderer_lock.as_ref()?;
-    let info = renderer.get_info();
-
+    let fb_lock = crate::contexts::framebuffer::get_framebuffer().lock();
+    let fb = fb_lock.as_ref()?;
+    let info = fb.renderer.as_ref()?.get_info();
     let fb_ptr = info.address as *mut u32;
     let fb_len = (info.width as usize) * (info.height as usize);
-
+    // Safety: the framebuffer is mapped for the entire kernel lifetime.
     let fb_pixels = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
     Some((fb_pixels, info.width, info.height))
 }

@@ -166,7 +166,7 @@ fn register_nozzle_hooks() {
             }
             // ── HDA diagnostic info (read directly, no lock contention) ──
             {
-                let diag = crate::sound::HDA_DIAG.lock();
+                let diag = crate::sound::hda_diag();
                 if diag.populated {
                     ctx.terminal.write_str("\n=== HDA diagnostic ===\n");
                     let line = alloc::format!(

@@ -24,6 +24,7 @@ pub mod app_runner;
 pub mod badapple;
 pub mod boot;
 pub mod context_switch;
+pub mod contexts;
 pub mod fs;
 pub mod gdt;
 pub mod graphics;
