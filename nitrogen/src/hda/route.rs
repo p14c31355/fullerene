@@ -115,16 +115,18 @@ impl RouteFinder {
         );
 
         // Unmute DAC output amp: SetOut + SetLeft + SetRight + gain
-        corb.send_verb(
-            mmio, 0, dac,
-            verbs::SET_AMP_GAIN_MUTE,
-            0xB000u16 | gain as u16,
-        );
+        unsafe {
+            corb.send_verb(
+                mmio, 0, dac,
+                verbs::SET_AMP_GAIN_MUTE,
+                0xB000u16 | gain as u16,
+            )
+        };
 
         // 16-bit signed mono at 48 kHz:
         // bit[7]=0→48kHz, bits[6:4]=1→16-bit, bits[3:0]=0→1ch
-        corb.send_verb(mmio, 0, dac, verbs::SET_FMT, 0x10u16);
-        corb.send_verb(mmio, 0, dac, verbs::SET_STREAM, stream_tag as u16);
+        unsafe { corb.send_verb(mmio, 0, dac, verbs::SET_FMT, 0x10u16) };
+        unsafe { corb.send_verb(mmio, 0, dac, verbs::SET_STREAM, stream_tag as u16) };
 
         // ── Configure Pin ─────────────────────────────────────────
         let pin_widget = graph.get_widget(pin);
@@ -138,11 +140,13 @@ impl RouteFinder {
         );
 
         // Unmute pin output amp
-        corb.send_verb(
-            mmio, 0, pin,
-            verbs::SET_AMP_GAIN_MUTE,
-            0xB000u16 | pgain as u16,
-        );
+        unsafe {
+            corb.send_verb(
+                mmio, 0, pin,
+                verbs::SET_AMP_GAIN_MUTE,
+                0xB000u16 | pgain as u16,
+            )
+        };
 
         // ── Route through mixer ───────────────────────────────────
         // Look at the pin's connection list; find a mixer that
@@ -153,10 +157,12 @@ impl RouteFinder {
                 // because the DAC widget IS in the graph and would never
                 // reach the None branch below.
                 if con_node == dac {
-                    let r = corb.send_verb(
-                        mmio, 0, pin,
-                        verbs::SET_CONNECTION_SELECT, con_idx as u16,
-                    );
+                    let r = unsafe {
+                        corb.send_verb(
+                            mmio, 0, pin,
+                            verbs::SET_CONNECTION_SELECT, con_idx as u16,
+                        )
+                    };
                     log::info!(
                         "HDA: SET_CONN pin=0x{:x} → DAC 0x{:x} (direct) result=0x{:08x}",
                         pin, con_node, r
@@ -177,10 +183,12 @@ impl RouteFinder {
                 for (mix_ci, &mix_src) in con_w.connections.iter().enumerate() {
                     if mix_src == dac {
                         // Select this mixer on the pin
-                        let r = corb.send_verb(
-                            mmio, 0, pin,
-                            verbs::SET_CONNECTION_SELECT, con_idx as u16,
-                        );
+                        let r = unsafe {
+                            corb.send_verb(
+                                mmio, 0, pin,
+                                verbs::SET_CONNECTION_SELECT, con_idx as u16,
+                            )
+                        };
                         log::info!(
                             "HDA: SET_CONN pin=0x{:x} → mixer 0x{:x} (DAC 0x{:x}) result=0x{:08x}",
                             pin, con_node, dac, r
@@ -188,11 +196,13 @@ impl RouteFinder {
 
                         // Unmute mixer input for the DAC channel
                         let unmute_payload = 0x3000u16 | ((mix_ci as u16) << 8);
-                        let r2 = corb.send_verb(
-                            mmio, 0, con_node,
-                            verbs::SET_AMP_GAIN_MUTE,
-                            unmute_payload,
-                        );
+                        let r2 = unsafe {
+                            corb.send_verb(
+                                mmio, 0, con_node,
+                                verbs::SET_AMP_GAIN_MUTE,
+                                unmute_payload,
+                            )
+                        };
                         log::info!(
                             "HDA: UNMUTE mixer 0x{:x} input {} result=0x{:08x}",
                             con_node, mix_ci, r2
@@ -212,12 +222,12 @@ impl RouteFinder {
         );
 
         if eapd_capable {
-            let eapd_res = corb.send_verb(mmio, 0, pin, verbs::SET_EAPD, 0x02);
+            let eapd_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_EAPD, 0x02) };
             log::info!("HDA: SET_EAPD pin=0x{:x} result=0x{:08x}", pin, eapd_res);
         }
 
         // Enable pin output (0x40 = Output Enable only)
-        let pin_ctl_res = corb.send_verb(mmio, 0, pin, verbs::SET_PIN_CTL, 0x40u16);
+        let pin_ctl_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_PIN_CTL, 0x40u16) };
         log::info!(
             "HDA: SET_PIN_CTL pin=0x{:x} val=0x40 result=0x{:08x}",
             pin, pin_ctl_res

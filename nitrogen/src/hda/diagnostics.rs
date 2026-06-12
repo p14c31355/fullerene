@@ -69,7 +69,7 @@ pub unsafe fn dump_codec_inventory(
         }
 
         // Current power state
-        let ps = corb.send_verb(mmio, codec, n, verbs::GET_POWER_STATE, 0);
+        let ps = unsafe { corb.send_verb(mmio, codec, n, verbs::GET_POWER_STATE, 0) };
         if ps != 0xFFFF_FFFF {
             log::info!("HDA:  │ PowerState=0x{:08x}", ps);
         }
@@ -109,8 +109,9 @@ pub unsafe fn dump_codec_inventory(
                 }
 
                 // Current output amp state
-                let amp_out =
-                    corb.send_verb(mmio, codec, n, verbs::GET_AMP_GAIN_MUTE, 0x8000);
+                let amp_out = unsafe {
+                    corb.send_verb(mmio, codec, n, verbs::GET_AMP_GAIN_MUTE, 0x8000)
+                };
                 if amp_out != 0xFFFF_FFFF {
                     let muted = (amp_out >> 7) & 1;
                     let gain = amp_out & 0x7F;
@@ -123,11 +124,13 @@ pub unsafe fn dump_codec_inventory(
                 // Current input amp for mixers
                 if t == widget_type::AUDIO_MIXER || t == widget_type::AUDIO_SELECTOR {
                     for inp_idx in 0..w.connection_count.min(4) {
-                        let amp_in = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_AMP_GAIN_MUTE,
-                            (inp_idx as u16) << 8,
-                        );
+                        let amp_in = unsafe {
+                            corb.send_verb(
+                                mmio, codec, n,
+                                verbs::GET_AMP_GAIN_MUTE,
+                                (inp_idx as u16) << 8,
+                            )
+                        };
                         if amp_in != 0xFFFF_FFFF {
                             let muted = (amp_in >> 7) & 1;
                             let gain = amp_in & 0x7F;
@@ -165,7 +168,7 @@ pub unsafe fn dump_codec_inventory(
                 }
 
                 // Current pin control
-                let pin_ctl = corb.send_verb(mmio, codec, n, verbs::GET_PIN_CTL, 0);
+                let pin_ctl = unsafe { corb.send_verb(mmio, codec, n, verbs::GET_PIN_CTL, 0) };
                 if pin_ctl != 0xFFFF_FFFF {
                     let out = pin_ctl & (1 << 6) != 0;
                     let hp = pin_ctl & (1 << 7) != 0;
@@ -180,14 +183,14 @@ pub unsafe fn dump_codec_inventory(
 
                 // EAPD current state
                 if w.pin_cap != 0xFFFF_FFFF && (w.pin_cap >> 16) & 1 != 0 {
-                    let eapd_state = corb.send_verb(mmio, codec, n, verbs::GET_EAPD, 0);
+                    let eapd_state = unsafe { corb.send_verb(mmio, codec, n, verbs::GET_EAPD, 0) };
                     if eapd_state != 0xFFFF_FFFF {
                         log::info!("HDA:  │ CurEAPD=0x{:02x}", eapd_state & 0xFF);
                     }
                 }
 
                 // Pin sense
-                let sense = corb.send_verb(mmio, codec, n, verbs::GET_PIN_SENSE, 0);
+                let sense = unsafe { corb.send_verb(mmio, codec, n, verbs::GET_PIN_SENSE, 0) };
                 if sense != 0xFFFF_FFFF {
                     let present = (sense >> 31) & 1;
                     log::info!("HDA:  │ PinSense=0x{:08x} present={}", sense, present);

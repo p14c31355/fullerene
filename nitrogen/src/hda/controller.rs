@@ -13,7 +13,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 // ── HDA MMIO register offsets ────────────────────────────────────
 const GCAP: usize = 0x0000;
-const GCTL: usize = 0x0008;
 const STATESTS: usize = 0x000E;
 const INTCTL: usize = 0x0020;
 const SD_BASE: usize = 0x0080;
@@ -23,8 +22,8 @@ const SD_SIZE: usize = 0x0020;
 pub struct HdaController {
     /// MMIO virtual address (BAR0 + phys‑offset).
     mmio: *mut u8,
-    /// Physical BAR0 address.
-    phys: u64,
+    /// Physical BAR0 address (unused, kept for future diagnostics).
+    _phys: u64,
     /// CORB/RIRB verb engine.
     corb: CorbEngine,
     /// DMA playback engine.
@@ -131,7 +130,7 @@ impl HdaController {
     pub fn new(mmio: *mut u8, phys: u64) -> Self {
         Self {
             mmio,
-            phys,
+            _phys: phys,
             corb: CorbEngine::new(core::ptr::null_mut(), core::ptr::null_mut(), 256),
             dma: DmaEngine::new(0),
             gcap: 0,
@@ -196,13 +195,18 @@ impl HdaController {
             return false;
         }
 
-        // Determine CORB size from GCAP
-        let corb_szcap = (gcap >> 4) & 0xF;
-        let corb_entries: usize = if corb_szcap >= 2 {
+        // Determine CORB size from CORBSIZE register (offset 0x4E)
+        // Read CORBSZCAP field (bits [7:4]) which indicates supported sizes
+        let corbsize_reg = unsafe { mmio_read8(mmio, 0x004E) };
+        let corb_szcap = (corbsize_reg >> 4) & 0xF;
+        let corb_entries: usize = if corb_szcap & 0x4 != 0 {
             256
-        } else if corb_szcap >= 1 {
+        } else if corb_szcap & 0x2 != 0 {
             16
+        } else if corb_szcap & 0x1 != 0 {
+            2
         } else {
+            log::warn!("HDA: CORBSZCAP invalid (0x{:x}), defaulting to 2", corb_szcap);
             2
         };
 
@@ -309,7 +313,8 @@ impl HdaController {
 
     /// Convenience: feed silence.
     pub fn feed_silence(&self, half: usize) -> usize {
-        self.dma.feed_silence(self.mmio, half)
+        // Safety: self.mmio is valid if the controller was initialised
+        unsafe { self.dma.feed_silence(self.mmio, half) }
     }
 
     /// Convenience: playback progress in bytes.
@@ -329,6 +334,11 @@ unsafe fn mmio_read32(mmio: *mut u8, offset: usize) -> u32 {
 #[inline]
 unsafe fn mmio_read16(mmio: *mut u8, offset: usize) -> u16 {
     core::ptr::read_volatile(mmio.add(offset) as *const u16)
+}
+
+#[inline]
+unsafe fn mmio_read8(mmio: *mut u8, offset: usize) -> u8 {
+    core::ptr::read_volatile(mmio.add(offset))
 }
 
 #[inline]

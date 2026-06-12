@@ -1,13 +1,11 @@
 Code of Conduct
 1. Do not harm others (let's respect each other)
-2. ...
-- Choose Git, which allows for version control
-- Still deciding whether to use a letter format or bullet points
+2. Choose Git, which allows for version control
 - Everyone is different; forgive and accept that
 - Share positive opinions.
 - Have a spirit of sharing or giving
 - Respect
-- Contribution and quality are still not fully established. Because I'm developing using an LLM bot
+- Contribution and quality are priorities we continue to develop and refine
 - Do not make aggressive or unnecessary/inappropriate comments about differences with others
 - Have a brainstorming spirit where you don't aim for quality from the start, but output and then refine it
 - Don't necessarily expect to be a great person

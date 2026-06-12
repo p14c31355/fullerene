@@ -131,9 +131,9 @@ impl CorbEngine {
             return false;
         }
 
-        // Stop DMA engines
-        mmio_write32(mmio, CORBCTL, 0);
-        mmio_write32(mmio, RIRBCTL, 0);
+        // Stop DMA engines (8-bit writes to avoid clobbering adjacent registers)
+        mmio_write8(mmio, CORBCTL, 0);
+        mmio_write8(mmio, RIRBCTL, 0);
 
         log::info!(
             "HDA: CORB phys=0x{:016x} RIRB phys=0x{:016x}",
@@ -229,13 +229,23 @@ impl CorbEngine {
         let cmd = ((codec as u32) << 28) | ((node as u32) << 20) | cmd_val;
 
         // Wait for space in CORB
+        let corb_mask = corb_n - 1;
+        let mut has_space = false;
         for _ in 0..1000 {
-            let wp = mmio_read16(mmio, CORBWP) as usize;
-            let rp = mmio_read16(mmio, CORBRP) as usize & 0xFF;
+            let wp = mmio_read16(mmio, CORBWP) as usize & corb_mask;
+            let rp = mmio_read16(mmio, CORBRP) as usize & corb_mask;
             if (wp + 1) % corb_n != rp {
+                has_space = true;
                 break;
             }
             core::hint::spin_loop();
+        }
+        if !has_space {
+            log::warn!(
+                "HDA: CORB full timeout, codec={} node={:#x} verb={:#03x}",
+                codec, node, verb
+            );
+            return 0xFFFF_FFFF;
         }
 
         // Ensure CORB/RIRB DMA engines are running
@@ -268,22 +278,23 @@ impl CorbEngine {
         }
 
         // Capture RIRBWP before writing CORBWP
-        let curr_rp = mmio_read16(mmio, RIRBWP) as usize & 0xFF;
-        let wp = mmio_read16(mmio, CORBWP) as usize;
-        let next_wp = (wp + 1) % corb_n;
+        let rirb_mask = corb_n - 1;  // RIRB uses same size as CORB
+        let curr_rp = mmio_read16(mmio, RIRBWP) as usize & rirb_mask;
+        let wp = mmio_read16(mmio, CORBWP) as usize & corb_mask;
+        let next_wp = (wp + 1) & corb_mask;
 
         // Write CORB entry with fence
         core::ptr::write_volatile(corb.add(next_wp), cmd);
         atomic::fence(atomic::Ordering::SeqCst);
         mmio_write16(mmio, CORBWP, next_wp as u16);
 
-        // Walk RIRB entries incrementally
-        let rirb_n: usize = 256;
+        // Walk RIRB entries incrementally (RIRB size matches CORB size)
+        let rirb_n: usize = corb_n;
         let mut rp = curr_rp;
         for _iter in 0..100_000 {
-            let rirb_wp = mmio_read16(mmio, RIRBWP) as usize & 0xFF;
+            let rirb_wp = mmio_read16(mmio, RIRBWP) as usize & rirb_mask;
             while rp != rirb_wp {
-                rp = (rp + 1) % rirb_n;
+                rp = (rp + 1) & rirb_mask;
                 let resp = core::ptr::read_volatile(rirb.add(rp));
                 let unsol = (resp >> 63) & 1;
                 if unsol == 0 {

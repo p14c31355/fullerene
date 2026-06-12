@@ -146,8 +146,15 @@ fn hda_init() {
     };
 
     // Initialise the controller (CORB/RIRB + codec + DMA engine)
-    unsafe {
-        ctrl.init(&corb_region, &rirb_region, &dma_region);
+    let init_ok = unsafe {
+        ctrl.init(&corb_region, &rirb_region, &dma_region)
+    };
+    if !init_ok {
+        log::error!("Sound: HDA controller init failed (is_ready={}, GCAP=0x{:x})",
+                    ctrl.is_ready(), unsafe {
+                        core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32)
+                    });
+        return;
     }
 
     // Populate diagnostic cache

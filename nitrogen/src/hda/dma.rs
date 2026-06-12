@@ -100,53 +100,62 @@ impl DmaEngine {
         let half = audio_size / 2;
 
         // Write BDL entries (two half‑buffer segments with IOC)
-        let bdl = dma_region.virt as *mut BdlEntry;
-        bdl.add(0).write_volatile(BdlEntry {
-            addr_lo: audio_phys as u32,
-            addr_hi: (audio_phys >> 32) as u32,
-            length: half,
-            flags: 0x01, // IOC
-        });
-        bdl.add(1).write_volatile(BdlEntry {
-            addr_lo: (audio_phys + half as u64) as u32,
-            addr_hi: ((audio_phys + half as u64) >> 32) as u32,
-            length: half,
-            flags: 0x01, // IOC
-        });
+        unsafe {
+            // SAFETY: dma_region.virt points to valid, zeroed DMA memory
+            let bdl = dma_region.virt as *mut BdlEntry;
+            bdl.add(0).write_volatile(BdlEntry {
+                addr_lo: audio_phys as u32,
+                addr_hi: (audio_phys >> 32) as u32,
+                length: half,
+                flags: 0x01, // IOC
+            });
+            bdl.add(1).write_volatile(BdlEntry {
+                addr_lo: (audio_phys + half as u64) as u32,
+                addr_hi: ((audio_phys + half as u64) >> 32) as u32,
+                length: half,
+                flags: 0x01, // IOC
+            });
+        }
 
         let sd = self.sd_offset;
 
-        // Stop and reset stream
-        mmio_write32(mmio, sd + SD_CTL, 0);
-        for _ in 0..2000 {
-            core::hint::spin_loop();
-        }
-        mmio_write8(mmio, sd + SD_STS, 0xFF); // clear all status bits (WC)
-        mmio_write32(mmio, sd + SD_CTL, 0x01); // SRST
-        for _ in 0..2000 {
-            core::hint::spin_loop();
-        }
-        for _ in 0..50000 {
-            if mmio_read32(mmio, sd + SD_CTL) & 0x01 == 0 {
-                break;
+        unsafe {
+            // SAFETY: mmio is valid HDA MMIO base, sd offset within valid range
+            // Stop and reset stream
+            mmio_write32(mmio, sd + SD_CTL, 0);
+            for _ in 0..2000 {
+                core::hint::spin_loop();
             }
-            core::hint::spin_loop();
-        }
+            mmio_write8(mmio, sd + SD_STS, 0xFF); // clear all status bits (WC)
+            mmio_write32(mmio, sd + SD_CTL, 0x01); // SRST
+            for _ in 0..2000 {
+                core::hint::spin_loop();
+            }
+            for _ in 0..50000 {
+                if mmio_read32(mmio, sd + SD_CTL) & 0x01 == 0 {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
 
-        // Clear status again, program format / BDL / stream params
-        mmio_write8(mmio, sd + SD_STS, 0xFF);
-        // 48 kHz, 16-bit, 1 channel: bit7 BASE=0, bits6:4 BITS=1, bits3:0 CHAN=0
-        mmio_write16(mmio, sd + SD_FMT, 0x0010);
-        mmio_write32(mmio, sd + SD_CBL, audio_size);
-        mmio_write16(mmio, sd + SD_LVI, (BDL_ENTRIES - 1) as u16);
-        mmio_write32(mmio, sd + SD_BDPL, dma_region.phys as u32);
-        mmio_write32(mmio, sd + SD_BDPU, (dma_region.phys >> 32) as u32);
+            // Clear status again, program format / BDL / stream params
+            mmio_write8(mmio, sd + SD_STS, 0xFF);
+            // 48 kHz, 16-bit, 1 channel: bit7 BASE=0, bits6:4 BITS=1, bits3:0 CHAN=0
+            mmio_write16(mmio, sd + SD_FMT, 0x0010);
+            mmio_write32(mmio, sd + SD_CBL, audio_size);
+            mmio_write16(mmio, sd + SD_LVI, (BDL_ENTRIES - 1) as u16);
+            mmio_write32(mmio, sd + SD_BDPL, dma_region.phys as u32);
+            mmio_write32(mmio, sd + SD_BDPU, (dma_region.phys >> 32) as u32);
+        }
 
         // Store fence: ensure BDL / DMA buffer writes are visible
         atomic::fence(atomic::Ordering::SeqCst);
 
-        // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
-        mmio_write32(mmio, sd + SD_CTL, (1u32 << 16) | 0x06);
+        unsafe {
+            // SAFETY: Start stream after fence
+            // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16)
+            mmio_write32(mmio, sd + SD_CTL, (1u32 << 16) | 0x06);
+        }
 
         log::info!("HDA: stream started ({} B, fmt=0x0010)", audio_size);
 
@@ -309,10 +318,14 @@ impl DmaEngine {
 
     /// Feed silence into the DMA half‑buffer.
     /// Uses a static zeroed buffer to avoid large stack allocations.
-    pub fn feed_silence(&self, mmio: *mut u8, half: usize) -> usize {
+    ///
+    /// # Safety
+    ///
+    /// `mmio` must be a valid MMIO base pointer.
+    pub unsafe fn feed_silence(&self, mmio: *mut u8, half: usize) -> usize {
         const MAX_SILENCE: usize = 16368;
         static SILENCE_BUF: [u8; MAX_SILENCE] = [0; MAX_SILENCE];
-        // Safety: feed_samples requires mmio to be valid
+        // SAFETY: Caller guarantees mmio is valid
         unsafe { self.feed_samples(mmio, &SILENCE_BUF[..half.min(MAX_SILENCE)]) }
     }
 }
@@ -321,30 +334,36 @@ impl DmaEngine {
 
 #[inline]
 unsafe fn mmio_read32(mmio: *mut u8, offset: usize) -> u32 {
-    core::ptr::read_volatile(mmio.add(offset) as *const u32)
+    // SAFETY: Caller guarantees mmio + offset is valid
+    unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u32) }
 }
 
 #[inline]
 unsafe fn mmio_read16(mmio: *mut u8, offset: usize) -> u16 {
-    core::ptr::read_volatile(mmio.add(offset) as *const u16)
+    // SAFETY: Caller guarantees mmio + offset is valid
+    unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u16) }
 }
 
 #[inline]
 unsafe fn mmio_read8(mmio: *mut u8, offset: usize) -> u8 {
-    core::ptr::read_volatile(mmio.add(offset))
+    // SAFETY: Caller guarantees mmio + offset is valid
+    unsafe { core::ptr::read_volatile(mmio.add(offset)) }
 }
 
 #[inline]
 unsafe fn mmio_write32(mmio: *mut u8, offset: usize, val: u32) {
-    core::ptr::write_volatile(mmio.add(offset) as *mut u32, val);
+    // SAFETY: Caller guarantees mmio + offset is valid
+    unsafe { core::ptr::write_volatile(mmio.add(offset) as *mut u32, val) };
 }
 
 #[inline]
 unsafe fn mmio_write16(mmio: *mut u8, offset: usize, val: u16) {
-    core::ptr::write_volatile(mmio.add(offset) as *mut u16, val);
+    // SAFETY: Caller guarantees mmio + offset is valid
+    unsafe { core::ptr::write_volatile(mmio.add(offset) as *mut u16, val) };
 }
 
 #[inline]
 unsafe fn mmio_write8(mmio: *mut u8, offset: usize, val: u8) {
-    core::ptr::write_volatile(mmio.add(offset), val);
+    // SAFETY: Caller guarantees mmio + offset is valid
+    unsafe { core::ptr::write_volatile(mmio.add(offset), val) };
 }
