@@ -111,7 +111,7 @@ impl RouteFinder {
         let nsteps = ((ac >> 8) & 0x7F) as u8;
         // Use a reasonable gain: offset + nsteps/2 (middle of the range)
         let gain = if nsteps > 0 {
-            offset.saturating_add(nsteps / 2)
+            offset.saturating_add(nsteps / 2).min(nsteps)
         } else { 0 };
         log::info!(
             "HDA: DAC 0x{:x} amp cap=0x{:08x} offset={} nsteps={} gain={}",
