@@ -144,7 +144,7 @@ impl RouteFinder {
         let p_offset = (pa & 0x7F) as u8;
         let p_nsteps = ((pa >> 8) & 0x7F) as u8;
         let pgain = if p_nsteps > 0 {
-            p_offset.saturating_add(p_nsteps / 2)
+            p_offset.saturating_add(p_nsteps / 2).min(p_nsteps)
         } else { 0 };
         log::info!(
             "HDA: Pin 0x{:x} amp cap=0x{:08x} offset={} nsteps={} pgain={}",
