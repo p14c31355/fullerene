@@ -82,11 +82,7 @@ pub struct CorbEngine {
 
 impl CorbEngine {
     /// Create a new CORB engine.  `corb_entries` must be 2, 16, or 256.
-    pub const fn new(
-        corb_virt: *mut u32,
-        rirb_virt: *mut u64,
-        corb_entries: usize,
-    ) -> Self {
+    pub const fn new(corb_virt: *mut u32, rirb_virt: *mut u64, corb_entries: usize) -> Self {
         Self {
             corb_virt,
             rirb_virt,
@@ -184,8 +180,13 @@ impl CorbEngine {
         let rirb_wp = mmio_read16(mmio, RIRBWP);
         log::info!(
             "HDA: CORB CTL=0x{:02x} SZ={} RP=0x{:04x} WP=0x{:04x}  RIRB CTL=0x{:02x} SZ={} WP=0x{:04x}",
-            corb_ctl, corb_sz_rb, corb_rp, corb_wp,
-            rirb_ctl, rirb_sz_rb, rirb_wp
+            corb_ctl,
+            corb_sz_rb,
+            corb_rp,
+            corb_wp,
+            rirb_ctl,
+            rirb_sz_rb,
+            rirb_wp
         );
         log::info!("HDA: CORB/RIRB enabled (size={} entries)", corb_entries);
 
@@ -243,7 +244,9 @@ impl CorbEngine {
         if !has_space {
             log::warn!(
                 "HDA: CORB full timeout, codec={} node={:#x} verb={:#03x}",
-                codec, node, verb
+                codec,
+                node,
+                verb
             );
             return 0xFFFF_FFFF;
         }
@@ -267,18 +270,26 @@ impl CorbEngine {
             let corb_sz = mmio_read8(mmio, CORBCTL + 2) & 0x03;
             mmio_write8(mmio, CORBCTL, 0x02);
             atomic::fence(atomic::Ordering::SeqCst);
-            log::info!("HDA: CORB restarted (CTL=0x{:02x} SZ={})", corb_ctl, corb_sz);
+            log::info!(
+                "HDA: CORB restarted (CTL=0x{:02x} SZ={})",
+                corb_ctl,
+                corb_sz
+            );
         }
         let rirb_ctl = mmio_read8(mmio, RIRBCTL);
         if rirb_ctl & 0x02 == 0 {
             let rirb_sz = mmio_read8(mmio, RIRBCTL + 2) & 0x03;
             mmio_write8(mmio, RIRBCTL, 0x02);
             atomic::fence(atomic::Ordering::SeqCst);
-            log::info!("HDA: RIRB restarted (CTL=0x{:02x} SZ={})", rirb_ctl, rirb_sz);
+            log::info!(
+                "HDA: RIRB restarted (CTL=0x{:02x} SZ={})",
+                rirb_ctl,
+                rirb_sz
+            );
         }
 
         // Capture RIRBWP before writing CORBWP
-        let rirb_mask = corb_n - 1;  // RIRB uses same size as CORB
+        let rirb_mask = corb_n - 1; // RIRB uses same size as CORB
         let curr_rp = mmio_read16(mmio, RIRBWP) as usize & rirb_mask;
         let wp = mmio_read16(mmio, CORBWP) as usize & corb_mask;
         let next_wp = (wp + 1) & corb_mask;
@@ -303,7 +314,10 @@ impl CorbEngine {
                     if verb == verbs::GET_PARAM && payload <= 0x12 {
                         log::info!(
                             "HDA: verb OK c={} n={:#x} v={:#03x} → raw=0x{:08x}",
-                            codec, node, verb, raw
+                            codec,
+                            node,
+                            verb,
+                            raw
                         );
                     }
                     return raw;
@@ -320,11 +334,18 @@ impl CorbEngine {
         let rirb_wp = mmio_read16(mmio, RIRBWP);
         log::warn!(
             "HDA: verb timeout c={} n={:#x} v={:#03x} p={:#x}",
-            codec, node, verb, payload
+            codec,
+            node,
+            verb,
+            payload
         );
         log::warn!(
             "HDA:  CORB CTL=0x{:08x} WP=0x{:04x} RP=0x{:04x}  RIRB CTL=0x{:08x} WP=0x{:04x}",
-            corb_ctl32, corb_wp, corb_rp, rirb_ctl32, rirb_wp
+            corb_ctl32,
+            corb_wp,
+            corb_rp,
+            rirb_ctl32,
+            rirb_wp
         );
         0xFFFF_FFFF
     }

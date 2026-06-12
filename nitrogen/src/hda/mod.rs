@@ -28,12 +28,12 @@
 //! - Allocating contiguous physical pages for CORB, RIRB, and DMA
 //!   buffers, and passing them in as `DmaRegion` values.
 
+pub mod codec;
 pub mod controller;
 pub mod corb;
-pub mod codec;
-pub mod route;
-pub mod dma;
 pub mod diagnostics;
+pub mod dma;
+pub mod route;
 
 pub use controller::HdaController;
 pub use dma::DmaRegion;

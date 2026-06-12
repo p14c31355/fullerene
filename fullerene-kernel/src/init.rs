@@ -152,9 +152,15 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             petroleum::serial::serial_log(format_args!("App runner initialised\n"));
             Ok(())
         }),
-        petroleum::init_step!("sound", || {
-            crate::sound::init();
-            petroleum::serial::serial_log(format_args!("Sound subsystem initialised\n"));
+        petroleum::init_step!("contexts", || {
+            crate::contexts::boot::init_boot();
+            crate::contexts::framebuffer::init_framebuffer();
+            let _ = crate::contexts::pci::init_pci();
+            crate::contexts::input::init_input();
+            crate::contexts::window::init_window();
+            crate::contexts::audio::init_audio();
+            crate::contexts::memory::init_memory();
+            petroleum::serial::serial_log(format_args!("7 contexts initialised\n"));
             Ok(())
         }),
     ];

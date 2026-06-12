@@ -18,8 +18,8 @@
 //! graph without duplicating verb queries.
 
 use crate::hda::corb::CorbEngine;
-use crate::hda::corb::verbs;
 use crate::hda::corb::params;
+use crate::hda::corb::verbs;
 use crate::hda::widget_type;
 
 /// Information about a single widget node in the codec.
@@ -70,19 +70,11 @@ impl CodecGraph {
     /// # Safety
     ///
     /// `mmio` must be a valid HDA MMIO base.  `corb` must be initialised.
-    pub unsafe fn enumerate(
-        mmio: *mut u8,
-        corb: &CorbEngine,
-        codec: u8,
-    ) -> Self {
-        let vendor_id =
-            corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::VENDOR_ID);
-        let revision_id =
-            corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::REVISION_ID);
-        let sub =
-            corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::SUBORDINATE_COUNT);
-        let ssid =
-            corb.send_verb(mmio, codec, 0, verbs::GET_SUBSYSTEM_ID, 0);
+    pub unsafe fn enumerate(mmio: *mut u8, corb: &CorbEngine, codec: u8) -> Self {
+        let vendor_id = corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::VENDOR_ID);
+        let revision_id = corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::REVISION_ID);
+        let sub = corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::SUBORDINATE_COUNT);
+        let ssid = corb.send_verb(mmio, codec, 0, verbs::GET_SUBSYSTEM_ID, 0);
 
         let start_root = ((sub >> 16) & 0xFF) as u8;
         let count_root = (sub & 0xFF) as u8;
@@ -92,17 +84,17 @@ impl CodecGraph {
         if sub != 0xFFFF_FFFF && count_root > 0 {
             let end_root = start_root + count_root - 1;
             for n in start_root..=end_root {
-                let wc = corb.send_verb(
-                    mmio, codec, n,
-                    verbs::GET_PARAM, params::AUDIO_WIDGET_CAP,
-                );
+                let wc = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::AUDIO_WIDGET_CAP);
                 if wc == 0xFFFF_FFFF {
                     continue;
                 }
                 let t = (wc >> 20) & 0xF;
                 log::info!(
                     "HDA: root node=0x{:02x} wcaps=0x{:08x} type={}({})",
-                    n, wc, widget_type_name(t), t
+                    n,
+                    wc,
+                    widget_type_name(t),
+                    t
                 );
                 if t == widget_type::AFG {
                     afg = Some(n);
@@ -126,8 +118,11 @@ impl CodecGraph {
 
         // ── Enumerate AFG subordinates ───────────────────────────
         let sub2 = corb.send_verb(
-            mmio, codec, afg_node,
-            verbs::GET_PARAM, params::SUBORDINATE_COUNT,
+            mmio,
+            codec,
+            afg_node,
+            verbs::GET_PARAM,
+            params::SUBORDINATE_COUNT,
         );
         let start_afg = ((sub2 >> 16) & 0xFF) as u8;
         let count_afg = (sub2 & 0xFF) as u8;
@@ -137,10 +132,7 @@ impl CodecGraph {
         if sub2 != 0xFFFF_FFFF && count_afg > 0 {
             let end_afg = start_afg + count_afg - 1;
             for n in start_afg..=end_afg {
-                let wc = corb.send_verb(
-                    mmio, codec, n,
-                    verbs::GET_PARAM, params::AUDIO_WIDGET_CAP,
-                );
+                let wc = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::AUDIO_WIDGET_CAP);
                 if wc == 0xFFFF_FFFF {
                     log::info!("HDA: node=0x{:02x} *** NO RESPONSE ***", n);
                     continue;
@@ -150,10 +142,17 @@ impl CodecGraph {
                 // Connection list
                 let con_len = {
                     let r = corb.send_verb(
-                        mmio, codec, n,
-                        verbs::GET_PARAM, params::CONNECTION_LIST_LEN,
+                        mmio,
+                        codec,
+                        n,
+                        verbs::GET_PARAM,
+                        params::CONNECTION_LIST_LEN,
                     );
-                    if r == 0xFFFF_FFFF { 0 } else { (r & 0x7F) as u8 }
+                    if r == 0xFFFF_FFFF {
+                        0
+                    } else {
+                        (r & 0x7F) as u8
+                    }
                 };
                 let mut connections = alloc::vec::Vec::new();
                 if con_len > 0 {
@@ -161,8 +160,11 @@ impl CodecGraph {
                     for ci in 0..count {
                         let chunk = (ci / 4) * 4;
                         let r = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_CONNECTION_LIST_ENTRY, chunk as u16,
+                            mmio,
+                            codec,
+                            n,
+                            verbs::GET_CONNECTION_LIST_ENTRY,
+                            chunk as u16,
                         );
                         if r == 0xFFFF_FFFF {
                             continue;
@@ -186,40 +188,37 @@ impl CodecGraph {
                     | widget_type::AUDIO_MIXER
                     | widget_type::AUDIO_SELECTOR => {
                         out_amp_cap = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_PARAM, params::OUTPUT_AMP_CAP,
+                            mmio,
+                            codec,
+                            n,
+                            verbs::GET_PARAM,
+                            params::OUTPUT_AMP_CAP,
                         );
                         if t == widget_type::AUDIO_MIXER
                             || t == widget_type::AUDIO_SELECTOR
                             || t == widget_type::AUDIO_INPUT
                         {
                             in_amp_cap = corb.send_verb(
-                                mmio, codec, n,
-                                verbs::GET_PARAM, params::INPUT_AMP_CAP,
+                                mmio,
+                                codec,
+                                n,
+                                verbs::GET_PARAM,
+                                params::INPUT_AMP_CAP,
                             );
                         }
-                        pcm = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_PARAM, params::PCM,
-                        );
-                        stream = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_PARAM, params::STREAM,
-                        );
+                        pcm = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::PCM);
+                        stream = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::STREAM);
                     }
                     widget_type::PIN_COMPLEX => {
-                        pin_cap = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_PARAM, params::PIN_CAP,
-                        );
-                        pin_default = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_CONFIG_DEFAULT, 0,
-                        );
+                        pin_cap = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::PIN_CAP);
+                        pin_default = corb.send_verb(mmio, codec, n, verbs::GET_CONFIG_DEFAULT, 0);
                         // Pins also have output amp
                         out_amp_cap = corb.send_verb(
-                            mmio, codec, n,
-                            verbs::GET_PARAM, params::OUTPUT_AMP_CAP,
+                            mmio,
+                            codec,
+                            n,
+                            verbs::GET_PARAM,
+                            params::OUTPUT_AMP_CAP,
                         );
                     }
                     _ => {}
@@ -227,7 +226,12 @@ impl CodecGraph {
 
                 log::info!(
                     "HDA: node=0x{:02x} wcaps=0x{:08x} type={}({}) con_len={} pin_cap=0x{:08x}",
-                    n, wc, widget_type_name(t), t, con_len, pin_cap
+                    n,
+                    wc,
+                    widget_type_name(t),
+                    t,
+                    con_len,
+                    pin_cap
                 );
 
                 widgets.push(WidgetInfo {

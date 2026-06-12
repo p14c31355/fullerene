@@ -297,6 +297,23 @@ pub fn flush_input() {
     RAW_KEY_QUEUE.lock().clear();
 }
 
+pub fn poll_key_hit() -> bool {
+    use x86_64::instructions::port::Port;
+    let mut status: Port<u8> = Port::new(0x64);
+    let st: u8 = unsafe { status.read() };
+    // Bit 0 (0x01) = OBF (Output Buffer Full), Bit 5 (0x20) = AUXOBF (mouse data)
+    // Only read if keyboard data (OBF set, AUXOBF clear)
+    if (st & 0x01 != 0) && (st & 0x20 == 0) {
+        let mut data: Port<u8> = Port::new(0x60);
+        let b = unsafe { data.read() };
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            handle_keyboard_scancode(b);
+        });
+        return true;
+    }
+    false
+}
+
 pub fn get_keyboard_status() -> KeyboardModifiers {
     *MODIFIERS.lock()
 }

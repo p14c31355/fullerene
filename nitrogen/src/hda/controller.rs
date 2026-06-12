@@ -4,9 +4,9 @@
 //! global `Mutex<...>` statics in `sound.rs`.  The caller creates one
 //! instance per HDA controller and passes the necessary DMA regions in.
 
+use crate::hda::codec::CodecGraph;
 use crate::hda::corb::CorbEngine;
 use crate::hda::dma::{DmaEngine, DmaRegion};
-use crate::hda::codec::CodecGraph;
 use crate::hda::route::RouteFinder;
 use crate::pci::{PciConfigSpace, PciDevice};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -99,13 +99,23 @@ impl HdaController {
 
                 log::info!(
                     "HDA: {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x} CMD=0x{:04x}",
-                    bus, d, 0, dev.vendor_id, dev.device_id, bar0, gcap, states, cmd_after,
+                    bus,
+                    d,
+                    0,
+                    dev.vendor_id,
+                    dev.device_id,
+                    bar0,
+                    gcap,
+                    states,
+                    cmd_after,
                 );
 
                 if states & 0x0001 != 0 {
                     log::info!(
                         "HDA: selecting {:04x}:{:02x}.{} (codec connected)",
-                        bus, d, 0
+                        bus,
+                        d,
+                        0
                     );
                     return Some((bus, d, 0, bar0));
                 }
@@ -117,7 +127,9 @@ impl HdaController {
         if let Some(ref b) = fallback {
             log::info!(
                 "HDA: falling back to {:04x}:{:02x}.{} (no codec detected)",
-                b.0, b.1, b.2
+                b.0,
+                b.1,
+                b.2
             );
         }
         fallback
@@ -183,10 +195,26 @@ impl HdaController {
         log::info!(
             "HDA: STATESTS = 0x{:04x} (SDIN0={} SDIN1={} SDIN2={} SDIN3={})",
             sts_pre_clear,
-            if sts_pre_clear & 0x0001 != 0 { 1u8 } else { 0u8 },
-            if sts_pre_clear & 0x0002 != 0 { 1u8 } else { 0u8 },
-            if sts_pre_clear & 0x0004 != 0 { 1u8 } else { 0u8 },
-            if sts_pre_clear & 0x0008 != 0 { 1u8 } else { 0u8 },
+            if sts_pre_clear & 0x0001 != 0 {
+                1u8
+            } else {
+                0u8
+            },
+            if sts_pre_clear & 0x0002 != 0 {
+                1u8
+            } else {
+                0u8
+            },
+            if sts_pre_clear & 0x0004 != 0 {
+                1u8
+            } else {
+                0u8
+            },
+            if sts_pre_clear & 0x0008 != 0 {
+                1u8
+            } else {
+                0u8
+            },
         );
         log::info!("HDA: ISS={} OSS={} 64bit={}", iss, oss, gcap64);
 
@@ -206,7 +234,10 @@ impl HdaController {
         } else if corb_szcap & 0x1 != 0 {
             2
         } else {
-            log::warn!("HDA: CORBSZCAP invalid (0x{:x}), defaulting to 2", corb_szcap);
+            log::warn!(
+                "HDA: CORBSZCAP invalid (0x{:x}), defaulting to 2",
+                corb_szcap
+            );
             2
         };
 

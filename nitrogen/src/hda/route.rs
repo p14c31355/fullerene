@@ -4,10 +4,10 @@
 //! analog DAC to a speaker/headphone pin complex, dealing with
 //! intermediate mixers and EAPD-capable pins.
 
-use crate::hda::corb::CorbEngine;
-use crate::hda::corb::verbs;
-use crate::hda::corb::params;
 use crate::hda::codec::{CodecGraph, WidgetInfo};
+use crate::hda::corb::CorbEngine;
+use crate::hda::corb::params;
+use crate::hda::corb::verbs;
 use crate::hda::widget_type;
 
 pub struct RouteFinder;
@@ -48,7 +48,8 @@ impl RouteFinder {
                 if w.pin_cap == 0xFFFF_FFFF || (w.pin_cap & (1 << 4)) == 0 {
                     log::info!(
                         "HDA: pin 0x{:x} cap=0x{:08x} — skipping (no OUT)",
-                        w.node_id, w.pin_cap
+                        w.node_id,
+                        w.pin_cap
                     );
                     continue;
                 }
@@ -108,16 +109,25 @@ impl RouteFinder {
         let ac = dac_widget.map(|w| w.out_amp_cap).unwrap_or(0);
         let offset = (ac & 0x7F) as u8;
         let nsteps = ((ac >> 8) & 0x7F) as u8;
-        let gain = if nsteps > 0 { offset } else { 0 };
+        // Use a reasonable gain: offset + nsteps/2 (middle of the range)
+        let gain = if nsteps > 0 {
+            offset.saturating_add(nsteps / 2).min(nsteps)
+        } else { 0 };
         log::info!(
             "HDA: DAC 0x{:x} amp cap=0x{:08x} offset={} nsteps={} gain={}",
-            dac, ac, offset, nsteps, gain
+            dac,
+            ac,
+            offset,
+            nsteps,
+            gain
         );
 
         // Unmute DAC output amp: SetOut + SetLeft + SetRight + gain
         unsafe {
             corb.send_verb(
-                mmio, 0, dac,
+                mmio,
+                0,
+                dac,
                 verbs::SET_AMP_GAIN_MUTE,
                 0xB000u16 | gain as u16,
             )
@@ -133,16 +143,24 @@ impl RouteFinder {
         let pa = pin_widget.map(|w| w.out_amp_cap).unwrap_or(0);
         let p_offset = (pa & 0x7F) as u8;
         let p_nsteps = ((pa >> 8) & 0x7F) as u8;
-        let pgain = if p_nsteps > 0 { p_offset } else { 0 };
+        let pgain = if p_nsteps > 0 {
+            p_offset.saturating_add(p_nsteps / 2).min(p_nsteps)
+        } else { 0 };
         log::info!(
             "HDA: Pin 0x{:x} amp cap=0x{:08x} offset={} nsteps={} pgain={}",
-            pin, pa, p_offset, p_nsteps, pgain
+            pin,
+            pa,
+            p_offset,
+            p_nsteps,
+            pgain
         );
 
         // Unmute pin output amp
         unsafe {
             corb.send_verb(
-                mmio, 0, pin,
+                mmio,
+                0,
+                pin,
                 verbs::SET_AMP_GAIN_MUTE,
                 0xB000u16 | pgain as u16,
             )
@@ -158,14 +176,13 @@ impl RouteFinder {
                 // reach the None branch below.
                 if con_node == dac {
                     let r = unsafe {
-                        corb.send_verb(
-                            mmio, 0, pin,
-                            verbs::SET_CONNECTION_SELECT, con_idx as u16,
-                        )
+                        corb.send_verb(mmio, 0, pin, verbs::SET_CONNECTION_SELECT, con_idx as u16)
                     };
                     log::info!(
                         "HDA: SET_CONN pin=0x{:x} → DAC 0x{:x} (direct) result=0x{:08x}",
-                        pin, con_node, r
+                        pin,
+                        con_node,
+                        r
                     );
                     break 'pin_con;
                 }
@@ -185,27 +202,37 @@ impl RouteFinder {
                         // Select this mixer on the pin
                         let r = unsafe {
                             corb.send_verb(
-                                mmio, 0, pin,
-                                verbs::SET_CONNECTION_SELECT, con_idx as u16,
+                                mmio,
+                                0,
+                                pin,
+                                verbs::SET_CONNECTION_SELECT,
+                                con_idx as u16,
                             )
                         };
                         log::info!(
                             "HDA: SET_CONN pin=0x{:x} → mixer 0x{:x} (DAC 0x{:x}) result=0x{:08x}",
-                            pin, con_node, dac, r
+                            pin,
+                            con_node,
+                            dac,
+                            r
                         );
 
                         // Unmute mixer input for the DAC channel (Set Input + Set Left + Set Right)
                         let unmute_payload = 0x7000u16 | ((mix_ci as u16) << 8);
                         let r2 = unsafe {
                             corb.send_verb(
-                                mmio, 0, con_node,
+                                mmio,
+                                0,
+                                con_node,
                                 verbs::SET_AMP_GAIN_MUTE,
                                 unmute_payload,
                             )
                         };
                         log::info!(
                             "HDA: UNMUTE mixer 0x{:x} input {} result=0x{:08x}",
-                            con_node, mix_ci, r2
+                            con_node,
+                            mix_ci,
+                            r2
                         );
                         break 'pin_con;
                     }
@@ -218,7 +245,9 @@ impl RouteFinder {
         let eapd_capable = pin_cap != 0xFFFF_FFFF && (pin_cap >> 16) & 1 != 0;
         log::info!(
             "HDA: pin 0x{:x} cap=0x{:08x} eapd_capable={}",
-            pin, pin_cap, eapd_capable
+            pin,
+            pin_cap,
+            eapd_capable
         );
 
         if eapd_capable {
@@ -226,11 +255,14 @@ impl RouteFinder {
             log::info!("HDA: SET_EAPD pin=0x{:x} result=0x{:08x}", pin, eapd_res);
         }
 
-        // Enable pin output (0x40 = Output Enable only)
-        let pin_ctl_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_PIN_CTL, 0x40u16) };
+        // Enable pin output (0x40 = OUT_EN bit 6, per Intel HDA spec §7.3.4.9)
+        let pin_ctl_val: u16 = 0x40;
+        let pin_ctl_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_PIN_CTL, pin_ctl_val) };
         log::info!(
-            "HDA: SET_PIN_CTL pin=0x{:x} val=0x40 result=0x{:08x}",
-            pin, pin_ctl_res
+            "HDA: SET_PIN_CTL pin=0x{:x} val=0x{:02x} result=0x{:08x}",
+            pin,
+            pin_ctl_val,
+            pin_ctl_res
         );
 
         log::info!("HDA: codec configured DAC=0x{:x} Pin=0x{:x}", dac, pin);
