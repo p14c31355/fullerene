@@ -80,9 +80,10 @@ impl AudioContext {
             log::error!("Sound: HDA init failed");
             return;
         }
+        let gcap = unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) };
         self.diag = HdaDiagInfo {
-            gcap: unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) },
-            gcap64: self.diag.gcap & 1 != 0,
+            gcap,
+            gcap64: gcap & 1 != 0,
             corb_phys: corb.phys,
             rirb_phys: rirb.phys,
             states_after_crst: 0,
