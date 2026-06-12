@@ -118,13 +118,13 @@ impl AudioContext {
         let Some(c) = self.hda.as_ref() else { return };
         if !c.is_ready() {
             return;
-        }
-        let dl = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(300_000_000);
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
         loop {
-            if c.poll(Some(0)) || unsafe { core::arch::x86_64::_rdtsc() } >= dl {
+            if c.poll(Some(0)) || unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 300_000_000 {
                 return;
             }
             core::hint::spin_loop();
+        }
         }
     }
     pub fn poll_block(&self, timeout: Option<u64>) -> bool {
