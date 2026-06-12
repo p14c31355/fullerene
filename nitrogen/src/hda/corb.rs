@@ -153,9 +153,9 @@ impl CorbEngine {
         mmio_write16(mmio, CORBRP, 0);
         mmio_write16(mmio, CORBWP, 0);
 
-        // Enable CORB DMA (CORBRUN = bit 1)
-        mmio_write8(mmio, CORBCTL, 0x02);
+        // Program CORB size first, then enable CORB DMA (CORBRUN = bit 1)
         mmio_write8(mmio, CORBCTL + 2, corb_sz_code);
+        mmio_write8(mmio, CORBCTL, 0x02);
 
         // Program RIRB base
         mmio_write32(mmio, RIRBLBASE, rirb_phys as u32);
