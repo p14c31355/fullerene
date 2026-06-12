@@ -170,9 +170,9 @@ impl CorbEngine {
             mmio_write16(mmio, RIRBWP, 0);
         }
 
-        // Enable RIRB DMA
-        mmio_write8(mmio, RIRBCTL, 0x02);
+        // Program RIRB size first, then enable RIRB DMA
         mmio_write8(mmio, RIRBCTL + 2, corb_sz_code);
+        mmio_write8(mmio, RIRBCTL, 0x02);
 
         // Log register state
         let corb_ctl = mmio_read8(mmio, CORBCTL);
