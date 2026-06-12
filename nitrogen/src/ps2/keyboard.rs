@@ -297,6 +297,33 @@ pub fn flush_input() {
     RAW_KEY_QUEUE.lock().clear();
 }
 
+/// Direct PS/2 port poll — reads a scancode from port 0x60 if one is
+/// pending, without relying on the interrupt‑driven queue.  Returns
+/// `true` when a key was hit (scancode consumed), `false` otherwise.
+///
+/// This is necessary in tight spin loops where IRQs may be delayed or
+/// disabled (e.g. Bad Apple playback).
+pub fn poll_key_hit() -> bool {
+    use x86_64::instructions::port::Port;
+    let mut status: Port<u8> = Port::new(0x64);
+    // Check output buffer full (bit 0) with short timeout
+    for _ in 0..2000 {
+        let st: u8 = unsafe { status.read() };
+        if st & 0x01 != 0 {
+            // Read and discard the byte (also feeds it into the IRQ handler
+            // path so the queue isn't stale afterward)
+            let mut data: Port<u8> = Port::new(0x60);
+            let b = unsafe { data.read() };
+            // Forward to the normal handler so modifiers / queues stay
+            // consistent
+            handle_keyboard_scancode(b);
+            return true;
+        }
+        core::hint::spin_loop();
+    }
+    false
+}
+
 pub fn get_keyboard_status() -> KeyboardModifiers {
     *MODIFIERS.lock()
 }

@@ -109,7 +109,10 @@ impl RouteFinder {
         let ac = dac_widget.map(|w| w.out_amp_cap).unwrap_or(0);
         let offset = (ac & 0x7F) as u8;
         let nsteps = ((ac >> 8) & 0x7F) as u8;
-        let gain = if nsteps > 0 { offset } else { 0 };
+        // Use a reasonable gain: offset + nsteps/2 (middle of the range)
+        let gain = if nsteps > 0 {
+            offset.saturating_add(nsteps / 2)
+        } else { 0 };
         log::info!(
             "HDA: DAC 0x{:x} amp cap=0x{:08x} offset={} nsteps={} gain={}",
             dac,
@@ -140,7 +143,9 @@ impl RouteFinder {
         let pa = pin_widget.map(|w| w.out_amp_cap).unwrap_or(0);
         let p_offset = (pa & 0x7F) as u8;
         let p_nsteps = ((pa >> 8) & 0x7F) as u8;
-        let pgain = if p_nsteps > 0 { p_offset } else { 0 };
+        let pgain = if p_nsteps > 0 {
+            p_offset.saturating_add(p_nsteps / 2)
+        } else { 0 };
         log::info!(
             "HDA: Pin 0x{:x} amp cap=0x{:08x} offset={} nsteps={} pgain={}",
             pin,
@@ -250,11 +255,13 @@ impl RouteFinder {
             log::info!("HDA: SET_EAPD pin=0x{:x} result=0x{:08x}", pin, eapd_res);
         }
 
-        // Enable pin output (0x40 = Output Enable only)
-        let pin_ctl_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_PIN_CTL, 0x40u16) };
+        // Enable pin output (0x04 = OUT_EN bit 2, per Intel HDA spec §7.3.4.9)
+        let pin_ctl_val: u16 = 0x04;
+        let pin_ctl_res = unsafe { corb.send_verb(mmio, 0, pin, verbs::SET_PIN_CTL, pin_ctl_val) };
         log::info!(
-            "HDA: SET_PIN_CTL pin=0x{:x} val=0x40 result=0x{:08x}",
+            "HDA: SET_PIN_CTL pin=0x{:x} val=0x{:02x} result=0x{:08x}",
             pin,
+            pin_ctl_val,
             pin_ctl_res
         );
 

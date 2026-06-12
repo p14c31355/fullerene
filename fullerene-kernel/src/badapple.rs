@@ -146,11 +146,17 @@ pub fn play_badapple() {
     }
 
     let tsc_per_ms = if use_hda {
+        // Wait a little for DMA to start, then calibrate
+        let dl = unsafe { x86_64::_rdtsc() }.wrapping_add(300_000_000);
+        while unsafe { x86_64::_rdtsc() } < dl {
+            core::hint::spin_loop();
+        }
         crate::contexts::audio::with_audio(|a| calibrate_tsc(a)).unwrap_or(3_000_000)
     } else {
         3_000_000
     };
-    let fi_tsc = fi_ms.saturating_mul(tsc_per_ms);
+    // Clamp frame interval: at least ~33 ms (30 fps) to avoid speedup
+    let fi_tsc = fi_ms.saturating_mul(tsc_per_ms).max(tsc_per_ms.saturating_mul(33));
     let af_tsc = tsc_per_ms;
 
     let pcm_per_frame = pcm_total as u64 / (n as u64).max(1);
@@ -172,19 +178,24 @@ pub fn play_badapple() {
     let mut decode_buf = alloc::vec![0u8; rle.total_pixels()];
 
     'outer: while idx < n {
+        // Key check: poll (works without IRQs) + queue (ASCII keys via IRQ)
+        if nitrogen::ps2::keyboard::poll_key_hit() {
+            break;
+        }
         if nitrogen::ps2::keyboard::input_available() {
-            if nitrogen::ps2::keyboard::read_char().is_some() {
-                break;
-            }
+            nitrogen::ps2::keyboard::read_char();
+            break;
         }
         if use_hda && lpib_valid {
             let target = (idx as u64 + 1).saturating_mul(pcm_per_frame);
             let ls = unsafe { x86_64::_rdtsc() };
             loop {
+                if nitrogen::ps2::keyboard::poll_key_hit() {
+                    break 'outer;
+                }
                 if nitrogen::ps2::keyboard::input_available() {
-                    if nitrogen::ps2::keyboard::read_char().is_some() {
-                        break 'outer;
-                    }
+                    nitrogen::ps2::keyboard::read_char();
+                    break 'outer;
                 }
                 if let Some(cur) =
                     crate::contexts::audio::with_audio(|a| a.playback_progress()).flatten()
@@ -217,13 +228,22 @@ pub fn play_badapple() {
             }
         }
         if !use_hda || !lpib_valid {
+            if nitrogen::ps2::keyboard::poll_key_hit() {
+                break;
+            }
             if nitrogen::ps2::keyboard::input_available() {
-                if nitrogen::ps2::keyboard::read_char().is_some() {
-                    break;
-                }
+                nitrogen::ps2::keyboard::read_char();
+                break;
             }
             let fd = unsafe { x86_64::_rdtsc() }.wrapping_add(fi_tsc);
             while unsafe { x86_64::_rdtsc() } < fd {
+                if nitrogen::ps2::keyboard::poll_key_hit() {
+                    break 'outer;
+                }
+                if nitrogen::ps2::keyboard::input_available() {
+                    nitrogen::ps2::keyboard::read_char();
+                    break 'outer;
+                }
                 if use_hda && unsafe { x86_64::_rdtsc() }.wrapping_sub(last_af) >= af_tsc {
                     last_af = unsafe { x86_64::_rdtsc() };
                     crate::contexts::audio::with_audio_mut(|a| {
@@ -257,6 +277,13 @@ pub fn play_badapple() {
         let dd =
             unsafe { x86_64::_rdtsc() }.wrapping_add(dur_ms.max(1000).saturating_mul(tsc_per_ms));
         while pcm_off < pcm_total && unsafe { x86_64::_rdtsc() } < dd {
+            if nitrogen::ps2::keyboard::poll_key_hit() {
+                break;
+            }
+            if nitrogen::ps2::keyboard::input_available() {
+                nitrogen::ps2::keyboard::read_char();
+                break;
+            }
             crate::contexts::audio::with_audio_mut(|a| {
                 feed_pcm(a, &mut pcm_off, pcm_total);
                 if a.poll_block(Some(af_tsc)) {}
@@ -265,6 +292,13 @@ pub fn play_badapple() {
         }
         crate::contexts::audio::with_audio_mut(|a| {
             for _ in 0..4 {
+                if nitrogen::ps2::keyboard::poll_key_hit() {
+                    break;
+                }
+                if nitrogen::ps2::keyboard::input_available() {
+                    nitrogen::ps2::keyboard::read_char();
+                    break;
+                }
                 a.feed_silence(HALF);
                 a.poll_delay(tsc_per_ms, 100);
             }
