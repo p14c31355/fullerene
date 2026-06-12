@@ -35,9 +35,10 @@ impl BootContext {
         memory_map: Option<&'static [MemoryMapDescriptor]>,
         rsdp_address: u64,
     ) -> Self {
-        let (a, w, h, bpp) = unsafe {
-            let a = &*kernel_args;
-            (a.fb_address, a.fb_width, a.fb_height, a.fb_bpp)
+        let (a, w, h, bpp) = if let Some(args) = unsafe { kernel_args.as_ref() } {
+            (args.fb_address, args.fb_width, args.fb_height, args.fb_bpp)
+        } else {
+            (0, 0, 0, 0)
         };
         Self {
             framebuffer_config: FullereneFramebufferConfig {
