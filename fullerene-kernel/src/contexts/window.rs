@@ -92,7 +92,7 @@ impl WindowContext {
                     && y < w.y + w.height as i32
             })
             .collect();
-        v.sort_by_key(|w| -w.z);
+        v.sort_by_key(|w| core::cmp::Reverse(w.z));
         v.into_iter().next()
     }
 }
