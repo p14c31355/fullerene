@@ -45,6 +45,9 @@ impl FramebufferContext {
         (y * stride + x) as usize
     }
     pub fn pixels_mut(&mut self) -> Option<&mut [u32]> {
+        if self.bpp != 32 {
+            return None;
+        }
         let info = self.info()?;
         Some(unsafe {
             core::slice::from_raw_parts_mut(

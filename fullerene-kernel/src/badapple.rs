@@ -276,10 +276,13 @@ pub fn play_badapple() {
                 nitrogen::ps2::keyboard::read_char();
                 break;
             }
-            crate::contexts::audio::with_audio_mut(|a| {
+            let polled = crate::contexts::audio::with_audio_mut(|a| {
                 feed_pcm(a, &mut pcm_off, pcm_total);
-                if a.poll_block(Some(af_tsc)) {}
-            });
+                a.poll_block(Some(af_tsc))
+            }).unwrap_or(false);
+            if polled {
+                continue;
+            }
             core::hint::spin_loop();
         }
         crate::contexts::audio::with_audio_mut(|a| {
