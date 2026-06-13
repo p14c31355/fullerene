@@ -149,7 +149,7 @@ fn create_iso_and_setup(
     let kernel_bin_dest = workspace_root
         .join("bellows")
         .join("src")
-        .join("kernel_final.bin");
+        .join("kernel.bin");
     std::fs::copy(&kernel_path, &kernel_bin_dest)?;
     log::info!(
         "Copied kernel to {} (size: {})",
