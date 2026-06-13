@@ -11,20 +11,49 @@ use spin::Mutex;
 use petroleum::initializer::{HardwareDevice, Initializable};
 use petroleum::{SystemError, SystemResult};
 
+/// Device classification for unified device management.
+///
+/// Future expansion: USB, Network, etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeviceKind {
+    Audio,
+    Storage,
+    Display,
+    Input,
+    Network,
+    Other,
+}
+
+impl DeviceKind {
+    /// Human-readable name for the device kind.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Audio => "Audio",
+            Self::Storage => "Storage",
+            Self::Display => "Display",
+            Self::Input => "Input",
+            Self::Network => "Network",
+            Self::Other => "Other",
+        }
+    }
+}
+
 /// Device information structure
 #[derive(Debug, Clone)]
 pub struct DeviceInfo {
     pub name: &'static str,
     pub device_type: &'static str,
+    pub kind: DeviceKind,
     pub enabled: bool,
     pub priority: i32,
 }
 
 impl DeviceInfo {
-    pub fn new(name: &'static str, device_type: &'static str, priority: i32) -> Self {
+    pub fn new(name: &'static str, device_type: &'static str, kind: DeviceKind, priority: i32) -> Self {
         Self {
             name,
             device_type,
+            kind,
             enabled: false,
             priority,
         }
@@ -57,6 +86,7 @@ impl DeviceManager {
         let device_info = DeviceInfo::new(
             (&*device).device_name(),
             (&*device).device_type(),
+            device_kind_from_type((&*device).device_type()),
             (&*device).priority(),
         );
 
@@ -180,11 +210,21 @@ impl DeviceManager {
             .map(|entry| entry.device_info.clone())
     }
 
-    /// List all registered devices
+        /// List all registered devices
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
         self.devices
             .lock()
             .values()
+            .map(|entry| entry.device_info.clone())
+            .collect()
+    }
+
+    /// List devices filtered by kind.
+    pub fn list_devices_by_kind(&self, kind: DeviceKind) -> Vec<DeviceInfo> {
+        self.devices
+            .lock()
+            .values()
+            .filter(|entry| entry.device_info.kind == kind)
             .map(|entry| entry.device_info.clone())
             .collect()
     }
@@ -233,12 +273,89 @@ pub fn register_device(device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> 
     }
 }
 
+/// Map a device_type string to its DeviceKind.
+fn device_kind_from_type(device_type: &str) -> DeviceKind {
+    let lower = device_type.to_lowercase();
+    if lower.contains("audio") || lower.contains("hda") || lower.contains("sound") || lower.contains("speaker") {
+        DeviceKind::Audio
+    } else if lower.contains("storage") || lower.contains("ahci") || lower.contains("nvme") || lower.contains("disk") || lower.contains("ata") {
+        DeviceKind::Storage
+    } else if lower.contains("display") || lower.contains("gpu") || lower.contains("graphics") || lower.contains("vga") || lower.contains("virtio-gpu") {
+        DeviceKind::Display
+    } else if lower.contains("input") || lower.contains("keyboard") || lower.contains("mouse") || lower.contains("hid") {
+        DeviceKind::Input
+    } else if lower.contains("network") || lower.contains("ethernet") || lower.contains("wifi") || lower.contains("nic") {
+        DeviceKind::Network
+    } else {
+        DeviceKind::Other
+    }
+}
+
 /// Convenience function to register VGA device
 pub fn register_vga_device() -> SystemResult<()> {
     use petroleum::graphics::text::VgaBuffer;
 
     let vga_device = alloc::boxed::Box::new(VgaBuffer::new());
     register_device(vga_device)
+}
+
+/// Metadata-only device registry (for kernel-initialized hardware
+/// that doesn't implement the full `HardwareDevice` trait).
+static DEVICE_INFO_LIST: Mutex<Vec<DeviceInfo>> = Mutex::new(Vec::new());
+
+/// Register a device with explicit DeviceKind and priority (metadata-only).
+pub fn register_device_info(info: DeviceInfo) {
+    DEVICE_INFO_LIST.lock().push(info.clone());
+    log::info!("Device info registered: {} ({})", info.name, info.kind.as_str());
+}
+
+/// Convenience: register all discovered hardware devices.
+pub fn register_discovered_devices() {
+    register_device_info(DeviceInfo::new(
+        "HDA Controller",
+        "Audio/HDA",
+        DeviceKind::Audio,
+        80,
+    ));
+    register_device_info(DeviceInfo::new(
+        "AHCI Controller",
+        "Storage/AHCI",
+        DeviceKind::Storage,
+        90,
+    ));
+    register_device_info(DeviceInfo::new(
+        "NVMe Controller",
+        "Storage/NVMe",
+        DeviceKind::Storage,
+        90,
+    ));
+    register_device_info(DeviceInfo::new(
+        "VirtIO GPU",
+        "Display/VirtIO-GPU",
+        DeviceKind::Display,
+        85,
+    ));
+    register_device_info(DeviceInfo::new(
+        "PS/2 Keyboard",
+        "Input/Keyboard",
+        DeviceKind::Input,
+        95,
+    ));
+    register_device_info(DeviceInfo::new(
+        "PS/2 Mouse",
+        "Input/Mouse",
+        DeviceKind::Input,
+        95,
+    ));
+}
+
+/// Merge metadata-only device infos into the listing.
+pub fn list_all_device_infos() -> Vec<DeviceInfo> {
+    let mut infos = DEVICE_INFO_LIST.lock().clone();
+    if let Some(mgr) = DEVICE_MANAGER.lock().as_ref() {
+        infos.extend(mgr.list_devices());
+    }
+    infos
 }
 
 #[cfg(test)]

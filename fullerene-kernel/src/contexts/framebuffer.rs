@@ -12,6 +12,14 @@ pub struct FramebufferContext {
     pub gpu: Option<Box<VirtioGpu>>,
     pub vga_console: Option<VgaBuffer>,
     pub bpp: u32,
+
+    // Raw framebuffer parameters — stored early during boot so the
+    // renderer can be built later even if the original KernelArgs
+    // pointer becomes invalid after the world-switch.
+    pub fb_phys: u64,
+    pub fb_width_px: u32,
+    pub fb_height_px: u32,
+    pub fb_stride_bytes: u32,
 }
 
 impl FramebufferContext {
@@ -21,7 +29,108 @@ impl FramebufferContext {
             gpu: None,
             vga_console: None,
             bpp: 32,
+            fb_phys: 0,
+            fb_width_px: 0,
+            fb_height_px: 0,
+            fb_stride_bytes: 0,
         }
+    }
+
+    /// Store raw framebuffer parameters.  Called from `efi_main_stage2`
+    /// while `args_ptr` is still valid.  The actual renderer is built
+    /// later by `init_graphics()` when the memory manager is ready.
+    pub fn store_raw_params(&mut self, phys: u64, width: u32, height: u32, stride: u32) {
+        self.fb_phys = phys;
+        self.fb_width_px = width;
+        self.fb_height_px = height;
+        self.fb_stride_bytes = stride;
+    }
+
+    /// Build the GOP renderer from stored raw parameters.
+    /// Must be called after the memory manager / physical-offset are
+    /// initialised.
+    pub fn build_renderer_from_stored(&mut self) -> bool {
+        if self.renderer.is_some() {
+            return true; // already built
+        }
+        if self.fb_phys < 0x100000
+            || self.fb_width_px == 0
+            || self.fb_width_px > 16384
+            || self.fb_height_px == 0
+            || self.fb_height_px > 16384
+            || self.fb_stride_bytes == 0
+        {
+            return false;
+        }
+
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let fb_virt = self.fb_phys + off;
+        let info = petroleum::graphics::color::FramebufferInfo {
+            address: fb_virt,
+            width: self.fb_width_px,
+            height: self.fb_height_px,
+            stride: self.fb_stride_bytes,
+            pixel_format: Some(
+                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            ),
+            colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+        };
+        let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
+        self.renderer =
+            Some(petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer));
+        self.bpp = 32;
+        true
+    }
+
+    /// Initialize the GOP framebuffer renderer **once** from kernel boot
+    /// arguments.  Must be called before `init_graphics()` so that the
+    /// `GRAPHICS_INITIALIZED` guard in that function sees the renderer as
+    /// already set up.
+    ///
+    /// # Safety
+    ///
+    /// `args` must point to a valid `KernelArgs` structure that was passed
+    /// by the bootloader.
+    pub unsafe fn init_from_kernel_args(&mut self, args: &petroleum::assembly::KernelArgs) {
+        // Use raw serial (no heap) because this may run before the global allocator
+        // is initialised.
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] init_from_kernel_args called\n");
+        if self.renderer.is_some() {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] renderer already exists\n");
+            return;
+        }
+        if args.fb_address < 0x100000
+            || args.fb_width == 0
+            || args.fb_width > 16384
+            || args.fb_height == 0
+            || args.fb_height > 16384
+            || args.fb_bpp != 32
+        {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation FAILED\n");
+            return;
+        }
+
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation passed\n");
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let fb_virt = args.fb_address + off;
+        // Byte stride for 32 bpp = width * 4 (GOP reports bytes‑per‑line,
+        // but bellows sets width == pixels_per_scan_line; width * 4 ≈ GOP stride)
+        let stride = args.fb_width * 4;
+        let info = petroleum::graphics::color::FramebufferInfo {
+            address: fb_virt,
+            width: args.fb_width,
+            height: args.fb_height,
+            stride,
+            pixel_format: Some(
+                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            ),
+            colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+        };
+        let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
+        self.renderer =
+            Some(petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer));
+        self.bpp = 32;
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] renderer set successfully\n");
     }
     pub fn info(&self) -> Option<FramebufferInfo> {
         self.renderer.as_ref().map(|r| *r.get_info())

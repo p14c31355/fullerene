@@ -160,7 +160,8 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::contexts::window::init_window();
             crate::contexts::audio::init_audio();
             crate::contexts::memory::init_memory();
-            petroleum::serial::serial_log(format_args!("7 contexts initialised\n"));
+            crate::contexts::event::init_event();
+            petroleum::serial::serial_log(format_args!("8 contexts initialised\n"));
             Ok(())
         }),
     ];

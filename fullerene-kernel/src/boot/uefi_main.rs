@@ -25,9 +25,31 @@ pub unsafe extern "C" fn efi_main_stage2(
         );
         debug_serial(b"S2: Entering efi_main_stage2\n");
 
+        // Store args_ptr where it survives register clobbers.
         petroleum::transition::KERNEL_ARGS = args_ptr;
 
-        // Signal '3': After setting KERNEL_ARGS
+        // ── Early framebuffer parameter capture ───────────────────
+        // Store raw integers NOW while args_ptr is valid.  Do NOT
+        // dereference args_ptr later — it may be corrupted by the
+        // world‑switch page‑table rebuild.
+        crate::contexts::framebuffer::init_framebuffer();
+        {
+            let args = &*args_ptr;
+            let mut lock = crate::contexts::framebuffer::get_framebuffer().lock();
+            if let Some(fb) = lock.as_mut() {
+                // GOP stride is pixels_per_scan_line * 4 (32 bpp).
+                // Bellows sets fb_width == horizontal_resolution (1280),
+                // so width * 4 ≈ 5120 which matches the GOP log.
+                fb.store_raw_params(
+                    args.fb_address,
+                    args.fb_width,
+                    args.fb_height,
+                    args.fb_width * 4, // byte stride for 32 bpp
+                );
+            }
+        }
+
+        // Signal '3': After early FB param capture
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x33",

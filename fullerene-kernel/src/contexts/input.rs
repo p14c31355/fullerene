@@ -1,4 +1,9 @@
 //! InputContext — unified keyboard+mouse event queue.
+//!
+//! PS/2 events are polled here.  A bridge function
+//! (`drain_into_event_context`) converts local events into
+//! `resonance` types and pushes them into the kernel's
+//! `EventContext`.
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -180,6 +185,76 @@ impl InputContext {
     }
     pub fn has_events(&self) -> bool {
         !self.queue.is_empty()
+    }
+}
+
+// ── Bridge to EventContext ─────────────────────────────────
+/// Convert local InputEvent → resonance::Event and push into the
+/// kernel-global EventContext.  Call after `poll()` each tick.
+pub fn drain_into_event_context() {
+    use resonance::{Event, InputEvent as ResInput, KeyCode as ResKey, MouseButton as ResBtn};
+
+    let events = with_input_mut(|ctx| ctx.drain_events());
+    let Some(events) = events else { return };
+
+    super::event::with_event_mut(|ec| {
+        for ev in events {
+            let res_ev = match ev {
+                InputEvent::MouseMove { x, y } => {
+                    ResInput::MouseMove { x, y }
+                }
+                InputEvent::MouseDown(b) => {
+                    ResInput::MouseDown(convert_btn(b))
+                }
+                InputEvent::MouseUp(b) => {
+                    ResInput::MouseUp(convert_btn(b))
+                }
+                InputEvent::KeyDown(k) => {
+                    ResInput::KeyDown(convert_key(k))
+                }
+                InputEvent::KeyUp(k) => {
+                    ResInput::KeyUp(convert_key(k))
+                }
+            };
+            ec.push(Event::Input(res_ev));
+        }
+    });
+}
+
+fn convert_btn(b: MouseButton) -> resonance::MouseButton {
+    match b {
+        MouseButton::Left => resonance::MouseButton::Left,
+        MouseButton::Middle => resonance::MouseButton::Middle,
+        MouseButton::Right => resonance::MouseButton::Right,
+        MouseButton::Other(v) => resonance::MouseButton::Other(v),
+    }
+}
+
+fn convert_key(k: KeyCode) -> resonance::KeyCode {
+    use KeyCode::*;
+    use resonance::KeyCode as R;
+    match k {
+        A => R::A, B => R::B, C => R::C, D => R::D, E => R::E,
+        F => R::F, G => R::G, H => R::H, I => R::I, J => R::J,
+        K => R::K, L => R::L, M => R::M, N => R::N, O => R::O,
+        P => R::P, Q => R::Q, R => R::R, S => R::S, T => R::T,
+        U => R::U, V => R::V, W => R::W, X => R::X, Y => R::Y,
+        Z => R::Z,
+        Digit0 => R::Digit0, Digit1 => R::Digit1, Digit2 => R::Digit2,
+        Digit3 => R::Digit3, Digit4 => R::Digit4, Digit5 => R::Digit5,
+        Digit6 => R::Digit6, Digit7 => R::Digit7, Digit8 => R::Digit8,
+        Digit9 => R::Digit9,
+        Shift => R::Shift, Ctrl => R::Ctrl, Alt => R::Alt, Meta => R::Meta,
+        SuperLeft => R::SuperLeft, SuperRight => R::SuperRight,
+        Enter => R::Enter, Tab => R::Tab, Space => R::Space,
+        Backspace => R::Backspace, Escape => R::Escape,
+        Up => R::Up, Down => R::Down, Left => R::Left, Right => R::Right,
+        Home => R::Home, End => R::End,
+        PageUp => R::PageUp, PageDown => R::PageDown,
+        F1 => R::F1, F2 => R::F2, F3 => R::F3, F4 => R::F4,
+        F5 => R::F5, F6 => R::F6, F7 => R::F7, F8 => R::F8,
+        F9 => R::F9, F10 => R::F10, F11 => R::F11, F12 => R::F12,
+        Unknown(v) => R::Unknown(v),
     }
 }
 
