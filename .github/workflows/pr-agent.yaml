@@ -12,9 +12,13 @@ permissions:
 jobs:
   pr-agent:
     runs-on: ubuntu-latest
+    if: |
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/review') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
 
     steps:
-      - uses: qodo-ai/pr-agent@main
+      - uses: qodo-ai/pr-agent@v0.26
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
