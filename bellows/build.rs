@@ -11,30 +11,28 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    let kernel_path = env::var("KERNEL_BIN_PATH").unwrap_or_else(|_| {
-        // Fallback for local development: use the file in src/
-        let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-        manifest_dir
-            .join("src")
-            .join("kernel.bin")
-            .to_string_lossy()
-            .to_string()
-    });
+    let kernel_path = match env::var("KERNEL_BIN_PATH") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => {
+            println!("cargo:warning=KERNEL_BIN_PATH not set — bellows is meant to be built via flasks");
+            return;
+        }
+    };
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest = out_dir.join("kernel.bin");
 
     println!("cargo:rerun-if-env-changed=KERNEL_BIN_PATH");
-    println!("cargo:rerun-if-changed={}", kernel_path);
+    println!("cargo:rerun-if-changed={}", kernel_path.display());
 
     fs::copy(&kernel_path, &dest).unwrap_or_else(|e| {
         panic!(
             "Failed to copy kernel binary from '{}' to '{}': {}",
-            kernel_path,
+            kernel_path.display(),
             dest.display(),
             e
         );
     });
 
-    println!("cargo:warning=Embedding kernel from {}", kernel_path);
+    println!("cargo:warning=Embedding kernel from {}", kernel_path.display());
 }
