@@ -30,10 +30,7 @@ pub fn bootstrap_memory(
         b"DEBUG: Starting memory_management_initialization\n",
     );
 
-    if !petroleum::page_table::HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
-        x86_64::instructions::interrupts::disable();
-        let _allocator = PETROLEUM_ALLOCATOR.lock();
-    }
+    // Early heap initialization check - no action needed, init happens later
 
     debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
 
@@ -65,9 +62,7 @@ pub fn bootstrap_memory(
     let boot_heap_ptr =
         unsafe { core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8 };
     unsafe {
-        PETROLEUM_ALLOCATOR
-            .lock()
-            .init(boot_heap_ptr, crate::heap::HEAP_SIZE)
+        petroleum::page_table::init_global_heap(boot_heap_ptr, crate::heap::HEAP_SIZE)
     };
 
     let memory_map_ref = MEMORY_MAP

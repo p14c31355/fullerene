@@ -15,6 +15,7 @@ pub struct FramebufferContext {
     pub fb_width_px: u32,
     pub fb_height_px: u32,
     pub fb_stride_bytes: u32,
+    pub fb_pixel_format: petroleum::common::EfiGraphicsPixelFormat,
 }
 
 impl FramebufferContext {
@@ -28,13 +29,16 @@ impl FramebufferContext {
             fb_width_px: 0,
             fb_height_px: 0,
             fb_stride_bytes: 0,
+            fb_pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
         }
     }
-    pub fn store_raw_params(&mut self, phys: u64, width: u32, height: u32, stride: u32) {
+    pub fn store_raw_params(&mut self, phys: u64, width: u32, height: u32, stride: u32, bpp: u32, pixel_format: petroleum::common::EfiGraphicsPixelFormat) {
         self.fb_phys = phys;
         self.fb_width_px = width;
         self.fb_height_px = height;
         self.fb_stride_bytes = stride;
+        self.bpp = bpp;
+        self.fb_pixel_format = pixel_format;
     }
     pub fn build_renderer_from_stored(&mut self) -> bool {
         if self.renderer.is_some() {
@@ -46,7 +50,11 @@ impl FramebufferContext {
             || self.fb_height_px == 0
             || self.fb_height_px > 16384
             || self.fb_stride_bytes == 0
+            || self.bpp != 32
         {
+            return false;
+        }
+        if self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor {
             return false;
         }
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
@@ -56,14 +64,11 @@ impl FramebufferContext {
             width: self.fb_width_px,
             height: self.fb_height_px,
             stride: self.fb_stride_bytes,
-            pixel_format: Some(
-                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            ),
+            pixel_format: Some(self.fb_pixel_format),
             colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
         };
         let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
         self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
-        self.bpp = 32;
         true
     }
     pub unsafe fn init_from_kernel_args(&mut self, args: &petroleum::assembly::KernelArgs) {

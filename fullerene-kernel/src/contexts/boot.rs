@@ -48,7 +48,7 @@ impl BootFramebufferInfo {
         self.config.address + petroleum::common::memory::get_physical_memory_offset() as u64
     }
     pub fn fb_byte_size(&self) -> u64 {
-        self.config.stride as u64 * self.config.height as u64 * (self.config.bpp as u64 / 8)
+        self.config.stride as u64 * self.config.height as u64
     }
 }
 

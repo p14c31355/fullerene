@@ -11,20 +11,23 @@ use std::fs;
 use std::path::PathBuf;
 
 fn main() {
-    let kernel_path = match env::var("KERNEL_BIN_PATH") {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => {
-            println!(
-                "cargo:warning=KERNEL_BIN_PATH not set — bellows is meant to be built via flasks"
-            );
-            return;
-        }
-    };
+    println!("cargo:rerun-if-env-changed=KERNEL_BIN_PATH");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let dest = out_dir.join("kernel.bin");
 
-    println!("cargo:rerun-if-env-changed=KERNEL_BIN_PATH");
+    let kernel_path = match env::var("KERNEL_BIN_PATH") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => {
+            println!(
+                "cargo:warning=KERNEL_BIN_PATH not set — creating empty kernel.bin for compilation check"
+            );
+            // Create an empty file for compilation checking
+            fs::write(&dest, &[]).unwrap();
+            return;
+        }
+    };
+
     println!("cargo:rerun-if-changed={}", kernel_path.display());
 
     fs::copy(&kernel_path, &dest).unwrap_or_else(|e| {

@@ -72,6 +72,11 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             crate::interrupts::init();
             Ok(())
         }),
+        petroleum::init_step!("Kernel Context", || {
+            crate::contexts::kernel::init_kernel();
+            petroleum::serial::serial_log(format_args!("Kernel context initialised\n"));
+            Ok(())
+        }),
         petroleum::init_step!("PCI BARs", || {
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
             let mut scanner = nitrogen::pci::PciScanner::new();
@@ -150,11 +155,6 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("app_runner", || {
             crate::app_runner::init();
             petroleum::serial::serial_log(format_args!("App runner initialised\n"));
-            Ok(())
-        }),
-        petroleum::init_step!("contexts", || {
-            crate::contexts::kernel::init_kernel();
-            petroleum::serial::serial_log(format_args!("contexts initialised via KernelContext\n"));
             Ok(())
         }),
     ];

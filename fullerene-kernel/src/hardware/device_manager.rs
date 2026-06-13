@@ -291,7 +291,7 @@ fn device_kind_from_type(device_type: &str) -> DeviceKind {
         || lower.contains("ahci")
         || lower.contains("nvme")
         || lower.contains("disk")
-        || lower.contains("ata")
+        || lower.split(|c: char| !c.is_alphanumeric()).any(|token| token == "ata")
     {
         DeviceKind::Storage
     } else if lower.contains("display")
@@ -382,11 +382,22 @@ pub fn register_discovered_devices() {
 
 /// Merge metadata-only device infos into the listing.
 pub fn list_all_device_infos() -> Vec<DeviceInfo> {
-    let mut infos = DEVICE_INFO_LIST.lock().clone();
-    if let Some(mgr) = DEVICE_MANAGER.lock().as_ref() {
-        infos.extend(mgr.list_devices());
+    use alloc::collections::BTreeMap;
+    let mut device_map: BTreeMap<&'static str, DeviceInfo> = BTreeMap::new();
+
+    // Insert metadata-only devices first
+    for info in DEVICE_INFO_LIST.lock().iter() {
+        device_map.insert(info.name, info.clone());
     }
-    infos
+
+    // Overwrite with managed devices (they have priority)
+    if let Some(mgr) = DEVICE_MANAGER.lock().as_ref() {
+        for info in mgr.list_devices() {
+            device_map.insert(info.name, info);
+        }
+    }
+
+    device_map.into_values().collect()
 }
 
 #[cfg(test)]

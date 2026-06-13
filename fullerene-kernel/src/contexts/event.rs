@@ -26,6 +26,9 @@ impl EventContext {
         self.queue.push(event);
     }
     pub fn push_system(&mut self, event: Event) {
+        if self.system_queue.len() >= MAX_EVENTS {
+            self.system_queue.pop_front();
+        }
         self.system_queue.push_back(event);
     }
     pub fn process(&mut self) {

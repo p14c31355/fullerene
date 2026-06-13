@@ -214,7 +214,7 @@ impl UefiInitContext {
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
                     continue;
                 }
-                crate::heap::MEMORY_MAP_BUFFER[i] = desc;
+                crate::heap::MEMORY_MAP_BUFFER[count] = desc;
                 count += 1;
             }
             debug_log_no_alloc!("Parsed {} memory descriptors", count);

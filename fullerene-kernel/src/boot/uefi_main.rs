@@ -47,6 +47,8 @@ pub unsafe extern "C" fn efi_main_stage2(
                     args.fb_width,
                     args.fb_height,
                     args.fb_width.saturating_mul(4),
+                    args.fb_bpp,
+                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
                 );
             });
         }
