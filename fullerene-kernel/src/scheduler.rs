@@ -298,12 +298,18 @@ pub fn scheduler_loop() -> ! {
     // Since the framebuffer is now accessed via PCI direct BAR0 probe
     // (see init_graphics), use verify_drawing_test which performs
     // volatile write + readback verification through the PCI MMIO window.
+    //
+    // IMPORTANT: The actual renderer lives in KernelContext.framebuffer,
+    // not the standalone global defined by define_context!.
+    // gui::render() uses with_kernel_mut(|k| k.framebuffer.renderer),
+    // so the test must reference the same instance.
     let test_result = {
-        let fb = crate::contexts::framebuffer::get_framebuffer().lock();
-        match fb.as_ref().and_then(|f| f.info()) {
+        let kernel_lock = crate::contexts::kernel::get_kernel();
+        let kg = kernel_lock.lock();
+        match kg.as_ref().and_then(|k| k.framebuffer.info()) {
             Some(info) => petroleum::graphics::verify_drawing_test(&info),
             None => petroleum::graphics::DrawingTestResult::Fail(
-                "FramebufferContext has no renderer (info() returned None)",
+                "KernelContext.framebuffer has no renderer (info() returned None)",
             ),
         }
     };
