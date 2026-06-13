@@ -6,6 +6,8 @@
 
 [development_history](docs/history)
 
+[Discord Community](https://discord.gg/FfAbRaUA26)
+
 ---
 
 Fullerene is a complete operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, syscall interfaces, GUI compositing, and event-driven shell interaction, all implemented in a safe, no_std environment.
@@ -189,15 +191,15 @@ Running on real hardware with InsydeH2O UEFI firmware required three fixes:
 
 ## TODO / Next Steps
 
-- Expand filesystem support (block device drivers, persistent storage, FAT filesystem implementation).
-- Enhance userspace with full process isolation and multiple user programs.
-- Implement advanced memory management (copy-on-write, shared memory, virtual filesystem).
-- Add network stack support and device drivers.
-- Improve graphics and GUI framework with richer widget set.
-- Performance optimizations and kernel hardening.
-- Add comprehensive test suite and fuzzing.
+- **Boot Experience**: Boot splash screen with logo, progress indicator, and fade transition to desktop.
+- **Graphics / Compositor**: vsync support, BDF font importer, font compiler via build.rs.
+- **Storage**: Block cache, FAT32 filesystem, initramfs support.
+- **Input**: USB HID driver, keyboard hotplug, mouse hotplug.
+- **Userspace**: ELF loader, process abstraction, syscall layer, userspace memory isolation, user-facing applications (settings, task monitor, file browser, log viewer).
+- **Developer Experience**: CI integration, build time measurement, debug feature flags, nightly regression testing, architecture documentation (Graphics.md, Memory.md, Boot.md, etc.).
+- **Stretch Goals**: Network stack, audio output, Wayland-style compositor, SMP support, Rust userspace SDK, package manager, self-hosted build.
 
-See issues on GitHub for tracked tasks.
+See issues on GitHub for tracked tasks. For a detailed checklist, refer to [docs/fullerene_todo.md](docs/fullerene_todo.md).
 
 ## Contributing
 
