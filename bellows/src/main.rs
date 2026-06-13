@@ -9,7 +9,7 @@ extern crate alloc;
 petroleum::define_panic_handler!();
 petroleum::define_alloc_error_handler!();
 
-static KERNEL_BINARY: &[u8] = include_bytes!("kernel_final.bin");
+static KERNEL_BINARY: &[u8] = include_bytes!("kernel.bin");
 
 mod loader;
 

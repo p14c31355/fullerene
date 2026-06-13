@@ -12,6 +12,4 @@ target/
 *.iso
 *.log
 *.img
-*.bin
 *.txt
-*.vdi
