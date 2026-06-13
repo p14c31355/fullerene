@@ -7,6 +7,7 @@
 [development_history](docs/history)
 
 [Discord Community](https://discord.gg/FfAbRaUA26)
+The community is still new, but we welcome you!
 
 ---
 

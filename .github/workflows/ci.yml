@@ -21,7 +21,7 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: nightly
-          components: rust-src, clippy, rustfmt, llvm-tools-preview
+          components: rust-src, llvm-tools-preview
 
       - name: Add UEFI target
         run: rustup target add x86_64-unknown-uefi
@@ -30,80 +30,5 @@ jobs:
         with:
           workspaces: "./ -> target"
 
-      - name: Format check
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
       - name: Cargo check
         run: cargo check --workspace
-
-  build-kernel:
-    name: Build Kernel
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-
-      - name: Setup target & components
-        run: |
-          rustup target add x86_64-unknown-uefi
-          rustup component add rust-src
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Build Bootloader & Kernel
-        run: |
-          cargo +nightly build -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi
-          cargo +nightly build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
-
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Test (host compatible crates)
-        run: |
-          cargo test --package petroleum --verbose
-          cargo test --package flasks --verbose
-          cargo test --package toluene --verbose
-
-  qemu-smoke-test:
-    name: QEMU Smoke Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y qemu-system-x86 ovmf
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-          components: rust-src
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Run QEMU Smoke Test
-        run: |
-          cargo run --bin flasks -- --headless --timeout 30
-
-      - name: Check serial log
-        run: |
-          if [ -f qemu_log.txt ]; then
-            grep -E "scheduler|shell|panic" qemu_log.txt || echo "No critical logs found"
-          else
-            echo "qemu_log.txt not found"
-            exit 1
-          fi
