@@ -29,24 +29,13 @@ pub unsafe extern "C" fn efi_main_stage2(
         petroleum::transition::KERNEL_ARGS = args_ptr;
 
         // ── Early framebuffer parameter capture ───────────────────
-        // Store raw integers NOW while args_ptr is valid.  Do NOT
-        // dereference args_ptr later — it may be corrupted by the
-        // world‑switch page‑table rebuild.
-        crate::contexts::framebuffer::init_framebuffer();
+        // Store raw integers NOW while args_ptr is valid via KernelContext.
+        crate::contexts::kernel::init_kernel();
         {
             let args = &*args_ptr;
-            let mut lock = crate::contexts::framebuffer::get_framebuffer().lock();
-            if let Some(fb) = lock.as_mut() {
-                // GOP stride is pixels_per_scan_line * 4 (32 bpp).
-                // Bellows sets fb_width == horizontal_resolution (1280),
-                // so width * 4 ≈ 5120 which matches the GOP log.
-                fb.store_raw_params(
-                    args.fb_address,
-                    args.fb_width,
-                    args.fb_height,
-                    args.fb_width * 4, // byte stride for 32 bpp
-                );
-            }
+            crate::contexts::kernel::with_kernel_mut(|k| {
+                k.framebuffer.store_raw_params(args.fb_address, args.fb_width, args.fb_height, args.fb_width * 4);
+            });
         }
 
         // Signal '3': After early FB param capture

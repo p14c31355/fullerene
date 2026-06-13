@@ -153,15 +153,8 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("contexts", || {
-            crate::contexts::boot::init_boot();
-            crate::contexts::framebuffer::init_framebuffer();
-            let _ = crate::contexts::pci::init_pci();
-            crate::contexts::input::init_input();
-            crate::contexts::window::init_window();
-            crate::contexts::audio::init_audio();
-            crate::contexts::memory::init_memory();
-            crate::contexts::event::init_event();
-            petroleum::serial::serial_log(format_args!("8 contexts initialised\n"));
+            crate::contexts::kernel::init_kernel();
+            petroleum::serial::serial_log(format_args!("contexts initialised via KernelContext\n"));
             Ok(())
         }),
     ];

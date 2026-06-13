@@ -9,7 +9,7 @@
 //! 2. `init_common` → `init_graphics()` is called later.  If `renderer` is
 //!    already present (step 1), it is used as‑is.  Otherwise the function
 //!    falls back to VGA text mode.
-use crate::contexts::framebuffer::{get_framebuffer, with_framebuffer_mut};
+use crate::contexts::kernel::{get_kernel, with_kernel_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -19,16 +19,19 @@ pub fn init_graphics() {
         return;
     }
 
-    // Ensure FramebufferContext slot exists.
-    if get_framebuffer().lock().is_none() {
-        crate::contexts::framebuffer::init_framebuffer();
+    // Ensure FramebufferContext slot exists (KernelContext owns it now).
+    let kernel_lock = get_kernel();
+    let mut kg = kernel_lock.lock();
+    if kg.is_none() {
+        drop(kg);
+        crate::contexts::kernel::init_kernel();
     }
 
     // Build the GOP renderer from parameters stored by
     // `efi_main_stage2` (store_raw_params).  The raw integers were
     // captured before the world‑switch so they survive pointer
     // corruption in `landing_zone_logic`.
-    let built = with_framebuffer_mut(|fb| fb.build_renderer_from_stored()).unwrap_or(false);
+    let built = with_kernel_mut(|k| k.framebuffer.build_renderer_from_stored()).unwrap_or(false);
     if built {
         petroleum::serial::serial_log(format_args!(
             "[init_gfx] GOP renderer built from stored params.\n"
@@ -59,18 +62,18 @@ pub fn init_graphics() {
     vga.enable();
     petroleum::graphics::Console::clear(&mut vga);
     let _ = core::fmt::write(&mut vga, format_args!("fullerene kernel — VGA text mode\n"));
-    with_framebuffer_mut(|fb| fb.vga_console = Some(vga));
+    with_kernel_mut(|k| k.framebuffer.vga_console = Some(vga));
 }
 
 pub fn flush_gpu() {
-    with_framebuffer_mut(|fb| fb.flush());
+    with_kernel_mut(|k| k.framebuffer.flush());
 }
 pub fn print_to_console(s: &str) {
-    with_framebuffer_mut(|fb| fb.write_str(s));
+    with_kernel_mut(|k| k.framebuffer.write_str(s));
     flush_gpu();
 }
 pub fn print_fmt(args: core::fmt::Arguments) {
-    with_framebuffer_mut(|fb| fb.write_fmt(args));
+    with_kernel_mut(|k| k.framebuffer.write_fmt(args));
     flush_gpu();
 }
 pub fn _print(args: core::fmt::Arguments) {
