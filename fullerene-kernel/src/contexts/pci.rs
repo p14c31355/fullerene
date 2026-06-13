@@ -1,7 +1,6 @@
 //! PciContext — replaces ad-hoc PciScanner usage.
 use alloc::vec::Vec;
 use nitrogen::pci::{PciDevice, PciScanner};
-use spin::Mutex;
 
 pub struct PciContext {
     pub devices: Vec<PciDevice>,
@@ -49,18 +48,4 @@ impl PciContext {
     }
 }
 
-static PCI_CTX: Mutex<Option<PciContext>> = Mutex::new(None);
-pub fn init_pci() {
-    let mut c = PciContext::new();
-    let _ = c.scan();
-    *PCI_CTX.lock() = Some(c);
-}
-pub fn get_pci() -> &'static Mutex<Option<PciContext>> {
-    &PCI_CTX
-}
-pub fn with_pci<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&PciContext) -> R,
-{
-    PCI_CTX.lock().as_ref().map(f)
-}
+crate::define_context!(PciContext, pci, PCI_CTX);

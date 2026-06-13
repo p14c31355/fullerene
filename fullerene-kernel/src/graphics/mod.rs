@@ -1,57 +1,141 @@
 //! Graphics subsystem — thin bridge to [`crate::contexts::FramebufferContext`].
-use crate::contexts::framebuffer::{get_framebuffer, with_framebuffer_mut};
+//!
+//! # Initialisation order
+//!
+//! 1. `efi_main_stage2` (boot phase) creates the `FramebufferContext` and calls
+//!    `init_from_kernel_args` while `args_ptr` is still valid.  This sets
+//!    `renderer` before any world‑switch or page‑table rebuild can corrupt
+//!    the pointer.
+//! 2. `init_common` → `init_graphics()` is called later.  If `renderer` is
+//!    already present (step 1), it is used as‑is.  Otherwise the function
+//!    falls back to VGA text mode.
+use crate::contexts::kernel::{get_kernel, with_kernel_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
+/// Framebuffer parameters stored in `.data` section to survive
+/// page-table rebuilds that corrupt kernel `.bss`.
+/// Layout: [fb_phys, width, height, stride, bpp]
+#[unsafe(link_section = ".data")]
+pub static mut STORED_FB: [u64; 5] = [0; 5];
+
+/// Store framebuffer parameters into the `.data`-backed static.
+/// Called from `efi_main_stage2` before the world switch.
+pub fn store_fb_params(phys: u64, w: u32, h: u32, stride: u32, bpp: u32) {
+    unsafe {
+        STORED_FB[0] = phys;
+        STORED_FB[1] = w as u64;
+        STORED_FB[2] = h as u64;
+        STORED_FB[3] = stride as u64;
+        STORED_FB[4] = bpp as u64;
+    }
+}
+
 pub fn init_graphics() {
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] entry\n");
     if GRAPHICS_INITIALIZED.swap(true, Ordering::SeqCst) {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] already initialized, returning\n");
         return;
     }
 
-    // Ensure FramebufferContext exists.
-    if get_framebuffer().lock().is_none() {
-        crate::contexts::framebuffer::init_framebuffer();
-    }
-
-    // Path 1: VirtIO-GPU
-    if let Some((gpu, renderer)) = crate::virtio_gpu::init() {
-        with_framebuffer_mut(|fb| {
-            fb.renderer = Some(renderer);
-            fb.gpu = Some(gpu);
-            fb.bpp = 32;
-        });
-        return;
-    }
-    // Path 2: GOP framebuffer
-    if let Some(fb_config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
-        .get()
-        .and_then(|m| m.lock().clone())
+    // Ensure FramebufferContext slot exists (KernelContext owns it now).
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] getting kernel lock\n");
     {
-        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let fb_virt = fb_config.address + off;
-        if fb_config.bpp == 8 {
-            petroleum::graphics::setup::setup_vga_mode_13h();
-            petroleum::graphics::setup::setup_vga_text_mode();
-        } else {
-            let info = petroleum::graphics::color::FramebufferInfo {
-                address: fb_virt,
-                width: fb_config.width,
-                height: fb_config.height,
-                stride: fb_config.stride,
-                pixel_format: Some(fb_config.pixel_format),
-                colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-            };
-            let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
-            with_framebuffer_mut(|fb| {
-                fb.renderer =
-                    Some(petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer));
-                fb.bpp = fb_config.bpp;
-            });
-            return;
+        let kernel_lock = get_kernel();
+        let kg = kernel_lock.lock();
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel lock acquired\n");
+        if kg.is_none() {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel is None, initializing\n");
+            drop(kg);
+            crate::contexts::kernel::init_kernel();
+        }
+        // Drop kg here to release the lock before with_kernel_mut
+    }
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel lock released\n");
+
+    // Build the GOP renderer from parameters stored by
+    // `efi_main_stage2` (store_raw_params).  The raw integers were
+    // captured before the world‑switch so they survive pointer
+    // corruption in `landing_zone_logic`.
+    //
+    // Both .bss and .data sections are corrupted by the shallow
+    // page-table clone in init_memory_manager.  Instead, read the
+    // framebuffer base address directly from the PCI VGA device's
+    // BAR 0 (the PCI scan in the previous step already populated it).
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] probing PCI for VGA BAR0\n");
+    {
+        // Read BAR0 directly from VGA device (bus 0, device 1, function 0 for QEMU)
+        // or search for any VGA-compatible device (class 0x03, subclass 0x00).
+        for bus in 0u8..=0u8 {
+            for dev in 0u8..=31u8 {
+                let vendor = nitrogen::pci::PciConfigSpace::read_config_word(bus, dev, 0, 0);
+                if vendor == 0xFFFF || vendor == 0x0000 {
+                    continue;
+                }
+                let class = nitrogen::pci::PciConfigSpace::read_config_byte(bus, dev, 0, 0x0B);
+                let subclass = nitrogen::pci::PciConfigSpace::read_config_byte(bus, dev, 0, 0x0A);
+                if class == 0x03 && subclass == 0x00 {
+                    // VGA-compatible device found, read BAR0
+                    let bar0_low = nitrogen::pci::PciConfigSpace::read_config_dword(bus, dev, 0, 0x10);
+                    let fb_phys = (bar0_low & 0xFFFFFFF0) as u64;
+                    let mut buf = [0u8; 64];
+                    let len = petroleum::serial::format_hex_to_buffer(fb_phys, &mut buf, 16);
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] PCI VGA BAR0=0x");
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+                    if fb_phys >= 0x100000 {
+                        // Prefer real GOP-provided values stored in .data section
+                        // (survive page-table rebuilds).  Fall back to 1280x800x32
+                        // only when STORED_FB is also zero.
+                        let (w, h, stride, bpp) = unsafe {
+                            let w = STORED_FB[1] as u32;
+                            let h = STORED_FB[2] as u32;
+                            let stride = STORED_FB[3] as u32;
+                            let bpp = STORED_FB[4] as u32;
+                            if w > 0 && w <= 16384 && h > 0 && h <= 16384 && bpp == 32 {
+                                (w, h, stride, bpp)
+                            } else {
+                                (1280, 800, 1280 * 4, 32)
+                            }
+                        };
+                        let mut buf = [0u8; 64];
+                        let len = petroleum::serial::format_hex_to_buffer(w as u64, &mut buf, 16);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] PCI BAR0 valid, storing ");
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"x");
+                        let len2 = petroleum::serial::format_hex_to_buffer(h as u64, &mut buf, 16);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len2]);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+                        with_kernel_mut(|k| {
+                            k.framebuffer.store_raw_params(
+                                fb_phys,
+                                w,
+                                h,
+                                stride,
+                                bpp,
+                                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                            );
+                        });
+                    }
+                }
+            }
         }
     }
-    // Path 3: VGA text mode fallback
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] calling build_renderer_from_stored\n");
+    let built = with_kernel_mut(|k| k.framebuffer.build_renderer_from_stored()).unwrap_or(false);
+    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] build_renderer_from_stored returned\n");
+    if built {
+        petroleum::serial::serial_log(format_args!(
+            "[init_gfx] GOP renderer built from stored params.\n"
+        ));
+        return;
+    }
+
+    // No GOP renderer → VGA text mode fallback.
+    petroleum::serial::serial_log(format_args!(
+        "[init_gfx] No GOP renderer available, falling back to VGA text mode.\n"
+    ));
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
     let vga_phys = petroleum::page_table::constants::VGA_MEMORY_START;
     let vga_virt = vga_phys + off;
@@ -71,18 +155,18 @@ pub fn init_graphics() {
     vga.enable();
     petroleum::graphics::Console::clear(&mut vga);
     let _ = core::fmt::write(&mut vga, format_args!("fullerene kernel — VGA text mode\n"));
-    with_framebuffer_mut(|fb| fb.vga_console = Some(vga));
+    with_kernel_mut(|k| k.framebuffer.vga_console = Some(vga));
 }
 
 pub fn flush_gpu() {
-    with_framebuffer_mut(|fb| fb.flush());
+    with_kernel_mut(|k| k.framebuffer.flush());
 }
 pub fn print_to_console(s: &str) {
-    with_framebuffer_mut(|fb| fb.write_str(s));
+    with_kernel_mut(|k| k.framebuffer.write_str(s));
     flush_gpu();
 }
 pub fn print_fmt(args: core::fmt::Arguments) {
-    with_framebuffer_mut(|fb| fb.write_fmt(args));
+    with_kernel_mut(|k| k.framebuffer.write_fmt(args));
     flush_gpu();
 }
 pub fn _print(args: core::fmt::Arguments) {

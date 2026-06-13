@@ -164,9 +164,9 @@ fn register_nozzle_hooks() {
                 }
                 ctx.terminal.write_str("=== End kernel log ===\n");
             }
-            // ── HDA diagnostic info (read directly, no lock contention) ──
+            // ── HDA diagnostic info (read via KernelContext) ──
             {
-                let diag = crate::contexts::audio::with_audio(|a| a.diag).unwrap_or(
+                let diag = crate::contexts::kernel::with_kernel(|k| k.audio.diag).unwrap_or(
                     nitrogen::hda::controller::HdaDiagInfo {
                         gcap: 0,
                         gcap64: false,

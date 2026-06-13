@@ -69,23 +69,37 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
     log::set_max_level(log::LevelFilter::Info);
     let common_steps = [
         petroleum::init_step!("Interrupts", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Interrupts step start\n");
             crate::interrupts::init();
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Interrupts step done\n");
+            Ok(())
+        }),
+        petroleum::init_step!("Kernel Context", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Kernel Context step start\n");
+            crate::contexts::kernel::init_kernel();
+            petroleum::serial::serial_log(format_args!("Kernel context initialised\n"));
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Kernel Context step done\n");
             Ok(())
         }),
         petroleum::init_step!("PCI BARs", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PCI BARs step start\n");
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
             let mut scanner = nitrogen::pci::PciScanner::new();
             if scanner.scan_all_buses().is_ok() {
                 let mut allocator = petroleum::hardware::pci::PciAllocator::new(0x40000000);
                 allocator.assign_bars(scanner.get_devices());
             }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PCI BARs step done\n");
             Ok(())
         }),
         petroleum::init_step!("Graphics", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Graphics step start\n");
             crate::graphics::init_graphics();
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Graphics step done\n");
             Ok(())
         }),
         petroleum::init_step!("PS2 Controller", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PS2 Controller step start\n");
             let devices = nitrogen::ps2::init_ps2_controller();
             petroleum::serial::serial_log(format_args!(
                 "PS/2 controller initialized (keyboard={}, mouse={})\n",
@@ -150,17 +164,6 @@ pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("app_runner", || {
             crate::app_runner::init();
             petroleum::serial::serial_log(format_args!("App runner initialised\n"));
-            Ok(())
-        }),
-        petroleum::init_step!("contexts", || {
-            crate::contexts::boot::init_boot();
-            crate::contexts::framebuffer::init_framebuffer();
-            let _ = crate::contexts::pci::init_pci();
-            crate::contexts::input::init_input();
-            crate::contexts::window::init_window();
-            crate::contexts::audio::init_audio();
-            crate::contexts::memory::init_memory();
-            petroleum::serial::serial_log(format_args!("7 contexts initialised\n"));
             Ok(())
         }),
     ];

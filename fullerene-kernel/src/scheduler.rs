@@ -294,13 +294,23 @@ pub fn scheduler_loop() -> ! {
     // Draw the desktop immediately
     draw_desktop_on_available_framebuffer();
 
-    // Verify the drawing test to diagnose rendering issues
+    // Verify the drawing test to diagnose rendering issues.
+    // Since the framebuffer is now accessed via PCI direct BAR0 probe
+    // (see init_graphics), use verify_drawing_test which performs
+    // volatile write + readback verification through the PCI MMIO window.
+    //
+    // IMPORTANT: The actual renderer lives in KernelContext.framebuffer,
+    // not the standalone global defined by define_context!.
+    // gui::render() uses with_kernel_mut(|k| k.framebuffer.renderer),
+    // so the test must reference the same instance.
     let test_result = {
-        let fb = crate::contexts::framebuffer::get_framebuffer().lock();
-        if fb.as_ref().and_then(|f| f.renderer.as_ref()).is_some() {
-            petroleum::graphics::DrawingTestResult::Pass
-        } else {
-            petroleum::graphics::DrawingTestResult::Fail("FramebufferContext.renderer is None")
+        let kernel_lock = crate::contexts::kernel::get_kernel();
+        let kg = kernel_lock.lock();
+        match kg.as_ref().and_then(|k| k.framebuffer.info()) {
+            Some(info) => petroleum::graphics::verify_drawing_test(&info),
+            None => petroleum::graphics::DrawingTestResult::Fail(
+                "KernelContext.framebuffer has no renderer (info() returned None)",
+            ),
         }
     };
 

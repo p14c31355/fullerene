@@ -21,14 +21,14 @@ impl PciAllocator {
         // For simplicity we delegate to the original logic from nitrogen's
         // removed PciAllocator — see git history for details.
         for device in devices {
-            log::info!(
-                "[PCI-Allocator] Checking device {:#x}:{:#x} at {}:{}:{}",
+            crate::serial::serial_log(format_args!(
+                "[PCI-Allocator] Checking device {:#x}:{:#x} at {}:{}:{}\n",
                 device.vendor_id,
                 device.device_id,
                 device.bus,
                 device.device,
                 device.function
-            );
+            ));
             // 1. Disable Memory Space access (Command bit 1)
             let cmd_offset = 4;
             let original_command = PciConfigSpace::read_config_word(
@@ -37,16 +37,29 @@ impl PciAllocator {
                 device.function,
                 cmd_offset,
             );
-            PciConfigSpace::write_config_dword_raw(
+            crate::serial::serial_log(format_args!(
+                "[PCI-Allocator]   original_command={:#x}\n",
+                original_command
+            ));
+            // Use write_config_word_raw to avoid corrupting the Status register (offset 6).
+            PciConfigSpace::write_config_word_raw(
                 device.bus,
                 device.device,
                 device.function,
                 cmd_offset,
-                (original_command & !0x2) as u32,
+                original_command & !0x2,
             );
 
             for bar_index in 0..6 {
+                crate::serial::serial_log(format_args!(
+                    "[PCI-Allocator]   probing BAR {}\n",
+                    bar_index
+                ));
                 if let Some(bar) = device.get_bar_info(bar_index) {
+                    crate::serial::serial_log(format_args!(
+                        "[PCI-Allocator]   BAR {}: addr={:#x} size={:#x} io={} 64bit={}\n",
+                        bar_index, bar.address, bar.size, bar.is_io, bar.is_64bit
+                    ));
                     if bar.address == 0 && bar.size > 0 {
                         let aligned_addr =
                             (self.mmio_base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
@@ -71,32 +84,39 @@ impl PciAllocator {
                             );
                         }
 
-                        log::info!(
-                            "[PCI-Allocator] Assigned BAR {} to {:#x} (size={:#x}, 64bit={})",
+                        crate::serial::serial_log(format_args!(
+                            "[PCI-Allocator]   Assigned BAR {} to {:#x}\n",
                             bar_index,
                             aligned_addr,
-                            bar.size,
-                            bar.is_64bit
-                        );
+                        ));
 
                         self.mmio_base = aligned_addr + bar.size as u64;
                     } else {
-                        log::info!(
-                            "[PCI-Allocator] BAR {} is already assigned at {:#x}",
+                        crate::serial::serial_log(format_args!(
+                            "[PCI-Allocator]   BAR {} already assigned at {:#x}\n",
                             bar_index,
                             bar.address
-                        );
+                        ));
                     }
+                } else {
+                    crate::serial::serial_log(format_args!(
+                        "[PCI-Allocator]   BAR {} not present\n",
+                        bar_index
+                    ));
                 }
             }
 
             // 3. Re-enable Memory Space access
-            PciConfigSpace::write_config_dword_raw(
+            crate::serial::serial_log(format_args!(
+                "[PCI-Allocator]   re-enabling memory space, cmd={:#x}\n",
+                original_command
+            ));
+            PciConfigSpace::write_config_word_raw(
                 device.bus,
                 device.device,
                 device.function,
                 cmd_offset,
-                original_command as u32,
+                original_command,
             );
         }
     }

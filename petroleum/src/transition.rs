@@ -224,7 +224,11 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
 
         // Map KernelArgs at higher half
         let args_phys = actual_kernel_args as u64;
-        let args_phys_raw = args_phys.wrapping_sub(local_phys_offset.as_u64());
+        let args_phys_raw = if args_phys >= local_phys_offset.as_u64() {
+            args_phys.wrapping_sub(local_phys_offset.as_u64())
+        } else {
+            args_phys // already a physical address — no offset subtraction needed
+        };
         let args_v_sign = crate::common::utils::sign_extend_virt_addr(args_phys);
         let _ = temp_mapper.map_to(
             x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address(VirtAddr::new(args_v_sign)),

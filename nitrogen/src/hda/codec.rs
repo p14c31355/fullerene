@@ -71,10 +71,13 @@ impl CodecGraph {
     ///
     /// `mmio` must be a valid HDA MMIO base.  `corb` must be initialised.
     pub unsafe fn enumerate(mmio: *mut u8, corb: &CorbEngine, codec: u8) -> Self {
-        let vendor_id = corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::VENDOR_ID);
-        let revision_id = corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::REVISION_ID);
-        let sub = corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::SUBORDINATE_COUNT);
-        let ssid = corb.send_verb(mmio, codec, 0, verbs::GET_SUBSYSTEM_ID, 0);
+        let vendor_id =
+            unsafe { corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::VENDOR_ID) };
+        let revision_id =
+            unsafe { corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::REVISION_ID) };
+        let sub =
+            unsafe { corb.send_verb(mmio, codec, 0, verbs::GET_PARAM, params::SUBORDINATE_COUNT) };
+        let ssid = unsafe { corb.send_verb(mmio, codec, 0, verbs::GET_SUBSYSTEM_ID, 0) };
 
         let start_root = ((sub >> 16) & 0xFF) as u8;
         let count_root = (sub & 0xFF) as u8;
@@ -84,7 +87,9 @@ impl CodecGraph {
         if sub != 0xFFFF_FFFF && count_root > 0 {
             let end_root = start_root + count_root - 1;
             for n in start_root..=end_root {
-                let wc = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::AUDIO_WIDGET_CAP);
+                let wc = unsafe {
+                    corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::AUDIO_WIDGET_CAP)
+                };
                 if wc == 0xFFFF_FFFF {
                     continue;
                 }
@@ -117,13 +122,15 @@ impl CodecGraph {
         };
 
         // ── Enumerate AFG subordinates ───────────────────────────
-        let sub2 = corb.send_verb(
-            mmio,
-            codec,
-            afg_node,
-            verbs::GET_PARAM,
-            params::SUBORDINATE_COUNT,
-        );
+        let sub2 = unsafe {
+            corb.send_verb(
+                mmio,
+                codec,
+                afg_node,
+                verbs::GET_PARAM,
+                params::SUBORDINATE_COUNT,
+            )
+        };
         let start_afg = ((sub2 >> 16) & 0xFF) as u8;
         let count_afg = (sub2 & 0xFF) as u8;
 
@@ -132,7 +139,9 @@ impl CodecGraph {
         if sub2 != 0xFFFF_FFFF && count_afg > 0 {
             let end_afg = start_afg + count_afg - 1;
             for n in start_afg..=end_afg {
-                let wc = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::AUDIO_WIDGET_CAP);
+                let wc = unsafe {
+                    corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::AUDIO_WIDGET_CAP)
+                };
                 if wc == 0xFFFF_FFFF {
                     log::info!("HDA: node=0x{:02x} *** NO RESPONSE ***", n);
                     continue;
@@ -141,13 +150,15 @@ impl CodecGraph {
 
                 // Connection list
                 let con_len = {
-                    let r = corb.send_verb(
-                        mmio,
-                        codec,
-                        n,
-                        verbs::GET_PARAM,
-                        params::CONNECTION_LIST_LEN,
-                    );
+                    let r = unsafe {
+                        corb.send_verb(
+                            mmio,
+                            codec,
+                            n,
+                            verbs::GET_PARAM,
+                            params::CONNECTION_LIST_LEN,
+                        )
+                    };
                     if r == 0xFFFF_FFFF {
                         0
                     } else {
@@ -159,13 +170,15 @@ impl CodecGraph {
                     let count = con_len.min(16);
                     for ci in 0..count {
                         let chunk = (ci / 4) * 4;
-                        let r = corb.send_verb(
-                            mmio,
-                            codec,
-                            n,
-                            verbs::GET_CONNECTION_LIST_ENTRY,
-                            chunk as u16,
-                        );
+                        let r = unsafe {
+                            corb.send_verb(
+                                mmio,
+                                codec,
+                                n,
+                                verbs::GET_CONNECTION_LIST_ENTRY,
+                                chunk as u16,
+                            )
+                        };
                         if r == 0xFFFF_FFFF {
                             continue;
                         }
@@ -187,39 +200,40 @@ impl CodecGraph {
                     | widget_type::AUDIO_INPUT
                     | widget_type::AUDIO_MIXER
                     | widget_type::AUDIO_SELECTOR => {
-                        out_amp_cap = corb.send_verb(
-                            mmio,
-                            codec,
-                            n,
-                            verbs::GET_PARAM,
-                            params::OUTPUT_AMP_CAP,
-                        );
+                        out_amp_cap = unsafe {
+                            corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::OUTPUT_AMP_CAP)
+                        };
                         if t == widget_type::AUDIO_MIXER
                             || t == widget_type::AUDIO_SELECTOR
                             || t == widget_type::AUDIO_INPUT
                         {
-                            in_amp_cap = corb.send_verb(
-                                mmio,
-                                codec,
-                                n,
-                                verbs::GET_PARAM,
-                                params::INPUT_AMP_CAP,
-                            );
+                            in_amp_cap = unsafe {
+                                corb.send_verb(
+                                    mmio,
+                                    codec,
+                                    n,
+                                    verbs::GET_PARAM,
+                                    params::INPUT_AMP_CAP,
+                                )
+                            };
                         }
-                        pcm = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::PCM);
-                        stream = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::STREAM);
+                        pcm = unsafe {
+                            corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::PCM)
+                        };
+                        stream = unsafe {
+                            corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::STREAM)
+                        };
                     }
                     widget_type::PIN_COMPLEX => {
-                        pin_cap = corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::PIN_CAP);
-                        pin_default = corb.send_verb(mmio, codec, n, verbs::GET_CONFIG_DEFAULT, 0);
+                        pin_cap = unsafe {
+                            corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::PIN_CAP)
+                        };
+                        pin_default =
+                            unsafe { corb.send_verb(mmio, codec, n, verbs::GET_CONFIG_DEFAULT, 0) };
                         // Pins also have output amp
-                        out_amp_cap = corb.send_verb(
-                            mmio,
-                            codec,
-                            n,
-                            verbs::GET_PARAM,
-                            params::OUTPUT_AMP_CAP,
-                        );
+                        out_amp_cap = unsafe {
+                            corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::OUTPUT_AMP_CAP)
+                        };
                     }
                     _ => {}
                 }

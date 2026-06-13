@@ -5,13 +5,17 @@ use nitrogen::virtio::gpu::VirtioGpu;
 use petroleum::graphics::color::FramebufferInfo;
 use petroleum::graphics::framebuffer::UefiFramebufferWriter;
 use petroleum::graphics::text::VgaBuffer;
-use spin::Mutex;
 
 pub struct FramebufferContext {
     pub renderer: Option<UefiFramebufferWriter>,
     pub gpu: Option<Box<VirtioGpu>>,
     pub vga_console: Option<VgaBuffer>,
     pub bpp: u32,
+    pub fb_phys: u64,
+    pub fb_width_px: u32,
+    pub fb_height_px: u32,
+    pub fb_stride_bytes: u32,
+    pub fb_pixel_format: petroleum::common::EfiGraphicsPixelFormat,
 }
 
 impl FramebufferContext {
@@ -21,7 +25,96 @@ impl FramebufferContext {
             gpu: None,
             vga_console: None,
             bpp: 32,
+            fb_phys: 0,
+            fb_width_px: 0,
+            fb_height_px: 0,
+            fb_stride_bytes: 0,
+            fb_pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
         }
+    }
+    pub fn store_raw_params(&mut self, phys: u64, width: u32, height: u32, stride: u32, bpp: u32, pixel_format: petroleum::common::EfiGraphicsPixelFormat) {
+        self.fb_phys = phys;
+        self.fb_width_px = width;
+        self.fb_height_px = height;
+        self.fb_stride_bytes = stride;
+        self.bpp = bpp;
+        self.fb_pixel_format = pixel_format;
+    }
+    pub fn build_renderer_from_stored(&mut self) -> bool {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] build_renderer_from_stored entry\n");
+        if self.renderer.is_some() {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] renderer already Some, returning true\n");
+            return true;
+        }
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] checking fb_phys\n");
+        if self.fb_phys < 0x100000
+            || self.fb_width_px == 0
+            || self.fb_width_px > 16384
+            || self.fb_height_px == 0
+            || self.fb_height_px > 16384
+            || self.fb_stride_bytes == 0
+            || self.bpp != 32
+        {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] validation failed\n");
+            return false;
+        }
+        if self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] wrong pixel format\n");
+            return false;
+        }
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] getting physical_memory_offset\n");
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] got offset, calculating fb_virt\n");
+        let fb_virt = self.fb_phys + off;
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] creating FramebufferInfo\n");
+        let info = FramebufferInfo {
+            address: fb_virt,
+            width: self.fb_width_px,
+            height: self.fb_height_px,
+            stride: self.fb_stride_bytes,
+            pixel_format: Some(self.fb_pixel_format),
+            colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+        };
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] creating FramebufferWriter\n");
+        let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] setting renderer\n");
+        self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] build_renderer_from_stored done\n");
+        true
+    }
+    pub unsafe fn init_from_kernel_args(&mut self, args: &petroleum::assembly::KernelArgs) {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] init_from_kernel_args called\n");
+        if self.renderer.is_some() {
+            return;
+        }
+        if args.fb_address < 0x100000
+            || args.fb_width == 0
+            || args.fb_width > 16384
+            || args.fb_height == 0
+            || args.fb_height > 16384
+            || args.fb_bpp != 32
+        {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation FAILED\n");
+            return;
+        }
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation passed\n");
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let fb_virt = args.fb_address + off;
+        let stride = args.fb_width * 4;
+        let info = FramebufferInfo {
+            address: fb_virt,
+            width: args.fb_width,
+            height: args.fb_height,
+            stride,
+            pixel_format: Some(
+                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            ),
+            colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
+        };
+        let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
+        self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
+        self.bpp = 32;
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] renderer set successfully\n");
     }
     pub fn info(&self) -> Option<FramebufferInfo> {
         self.renderer.as_ref().map(|r| *r.get_info())
@@ -40,7 +133,6 @@ impl FramebufferContext {
             .map(|i| i.address as *mut u32)
             .unwrap_or(core::ptr::null_mut())
     }
-    #[inline]
     pub fn pixel_offset(x: u32, y: u32, stride: u32) -> usize {
         (y * stride + x) as usize
     }
@@ -95,25 +187,4 @@ impl FramebufferContext {
     }
 }
 
-static FRAMEBUFFER: Mutex<Option<FramebufferContext>> = Mutex::new(None);
-pub fn init_framebuffer() {
-    let mut g = FRAMEBUFFER.lock();
-    if g.is_none() {
-        *g = Some(FramebufferContext::new());
-    }
-}
-pub fn get_framebuffer() -> &'static Mutex<Option<FramebufferContext>> {
-    &FRAMEBUFFER
-}
-pub fn with_framebuffer_mut<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&mut FramebufferContext) -> R,
-{
-    FRAMEBUFFER.lock().as_mut().map(f)
-}
-pub fn with_framebuffer<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&FramebufferContext) -> R,
-{
-    FRAMEBUFFER.lock().as_ref().map(f)
-}
+crate::define_context!(FramebufferContext, framebuffer, FRAMEBUFFER);

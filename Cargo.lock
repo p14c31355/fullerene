@@ -383,6 +383,7 @@ dependencies = [
  "paste",
  "pc-keyboard",
  "petroleum",
+ "resonance",
  "rle_player",
  "solvent",
  "spin 0.10.0",

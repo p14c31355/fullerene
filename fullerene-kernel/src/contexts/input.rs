@@ -1,7 +1,6 @@
 //! InputContext — unified keyboard+mouse event queue.
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
@@ -183,23 +182,116 @@ impl InputContext {
     }
 }
 
+pub fn drain_into_event_context() {
+    use resonance::{Event, InputEvent as ResInput, KeyCode as ResKey, MouseButton as ResBtn};
+    // Check if event context exists before draining input
+    let has_event_ctx = super::event::with_event_mut(|_| ()).is_some();
+    if !has_event_ctx {
+        return;
+    }
+    let events = with_input_mut(|ctx| ctx.drain_events());
+    let Some(events) = events else { return };
+    super::event::with_event_mut(|ec| {
+        for ev in events {
+            let res_ev = match ev {
+                InputEvent::MouseMove { x, y } => ResInput::MouseMove { x, y },
+                InputEvent::MouseDown(b) => ResInput::MouseDown(convert_btn(b)),
+                InputEvent::MouseUp(b) => ResInput::MouseUp(convert_btn(b)),
+                InputEvent::KeyDown(k) => ResInput::KeyDown(convert_key(k)),
+                InputEvent::KeyUp(k) => ResInput::KeyUp(convert_key(k)),
+            };
+            ec.push(Event::Input(res_ev));
+        }
+    });
+}
+
+fn convert_btn(b: MouseButton) -> resonance::MouseButton {
+    match b {
+        MouseButton::Left => resonance::MouseButton::Left,
+        MouseButton::Middle => resonance::MouseButton::Middle,
+        MouseButton::Right => resonance::MouseButton::Right,
+        MouseButton::Other(v) => resonance::MouseButton::Other(v),
+    }
+}
+fn convert_key(k: KeyCode) -> resonance::KeyCode {
+    use KeyCode::*;
+    use resonance::KeyCode as R;
+    match k {
+        A => R::A,
+        B => R::B,
+        C => R::C,
+        D => R::D,
+        E => R::E,
+        F => R::F,
+        G => R::G,
+        H => R::H,
+        I => R::I,
+        J => R::J,
+        K => R::K,
+        L => R::L,
+        M => R::M,
+        N => R::N,
+        O => R::O,
+        P => R::P,
+        Q => R::Q,
+        R => R::R,
+        S => R::S,
+        T => R::T,
+        U => R::U,
+        V => R::V,
+        W => R::W,
+        X => R::X,
+        Y => R::Y,
+        Z => R::Z,
+        Digit0 => R::Digit0,
+        Digit1 => R::Digit1,
+        Digit2 => R::Digit2,
+        Digit3 => R::Digit3,
+        Digit4 => R::Digit4,
+        Digit5 => R::Digit5,
+        Digit6 => R::Digit6,
+        Digit7 => R::Digit7,
+        Digit8 => R::Digit8,
+        Digit9 => R::Digit9,
+        Shift => R::Shift,
+        Ctrl => R::Ctrl,
+        Alt => R::Alt,
+        Meta => R::Meta,
+        SuperLeft => R::SuperLeft,
+        SuperRight => R::SuperRight,
+        Enter => R::Enter,
+        Tab => R::Tab,
+        Space => R::Space,
+        Backspace => R::Backspace,
+        Escape => R::Escape,
+        Up => R::Up,
+        Down => R::Down,
+        Left => R::Left,
+        Right => R::Right,
+        Home => R::Home,
+        End => R::End,
+        PageUp => R::PageUp,
+        PageDown => R::PageDown,
+        F1 => R::F1,
+        F2 => R::F2,
+        F3 => R::F3,
+        F4 => R::F4,
+        F5 => R::F5,
+        F6 => R::F6,
+        F7 => R::F7,
+        F8 => R::F8,
+        F9 => R::F9,
+        F10 => R::F10,
+        F11 => R::F11,
+        F12 => R::F12,
+        Unknown(v) => R::Unknown(v),
+    }
+}
+
 fn scancode_to_keycode(sc: u8) -> KeyCode {
     use KeyCode::*;
-    const EXT: [Option<KeyCode>; 128] = {
-        let mut t = [None; 128];
-        t[0x1D] = Some(Ctrl);
-        t[0x38] = Some(Alt);
-        t[0x5B] = Some(SuperLeft);
-        t[0x5C] = Some(SuperRight);
-        t
-    };
     const BASE: [KeyCode; 128] = {
         let mut t = [Unknown(0); 128];
-        let mut i = 0;
-        while i < 128 {
-            t[i] = Unknown(i as u32);
-            i += 1;
-        }
         t[0x01] = Escape;
         t[0x02] = Digit1;
         t[0x03] = Digit2;
@@ -268,29 +360,7 @@ fn scancode_to_keycode(sc: u8) -> KeyCode {
         t
     };
     let b = sc & 0x7F;
-    if sc & 0x80 != 0 {
-        EXT[b as usize].unwrap_or(BASE[b as usize])
-    } else {
-        BASE[b as usize]
-    }
+    BASE[b as usize]
 }
 
-static INPUT_CTX: Mutex<Option<InputContext>> = Mutex::new(None);
-pub fn init_input() {
-    *INPUT_CTX.lock() = Some(InputContext::new());
-}
-pub fn get_input() -> &'static Mutex<Option<InputContext>> {
-    &INPUT_CTX
-}
-pub fn with_input_mut<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&mut InputContext) -> R,
-{
-    INPUT_CTX.lock().as_mut().map(f)
-}
-pub fn with_input<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&InputContext) -> R,
-{
-    INPUT_CTX.lock().as_ref().map(f)
-}
+crate::define_context!(InputContext, input, INPUT_CTX);

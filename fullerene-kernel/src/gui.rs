@@ -118,8 +118,8 @@ pub fn render() {
     solvent::render(get_framebuffer_slice);
 
     // Signal present & flush GPU (kernel-owned resource management)
-    crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
-        if let Some(ref mut renderer) = fb.renderer {
+    crate::contexts::kernel::with_kernel_mut(|k| {
+        if let Some(ref mut renderer) = k.framebuffer.renderer {
             renderer.present();
         }
     });
@@ -133,8 +133,8 @@ pub fn runtime_tick(now: u64) {
     solvent::runtime_tick(now, get_framebuffer_slice);
 
     // Signal present & flush GPU
-    crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
-        if let Some(ref mut renderer) = fb.renderer {
+    crate::contexts::kernel::with_kernel_mut(|k| {
+        if let Some(ref mut renderer) = k.framebuffer.renderer {
             renderer.present();
         }
     });
@@ -145,9 +145,10 @@ pub fn runtime_tick(now: u64) {
 
 /// Get a mutable slice of the framebuffer pixels and its dimensions.
 fn get_framebuffer_slice() -> Option<(&'static mut [u32], u32, u32)> {
-    let fb_lock = crate::contexts::framebuffer::get_framebuffer().lock();
-    let fb = fb_lock.as_ref()?;
-    let info = fb.renderer.as_ref()?.get_info();
+    let kernel_lock = crate::contexts::kernel::get_kernel();
+    let kg = kernel_lock.lock();
+    let kernel = kg.as_ref()?;
+    let info = kernel.framebuffer.renderer.as_ref()?.get_info();
     let fb_ptr = info.address as *mut u32;
     let fb_len = (info.width as usize) * (info.height as usize);
     // Safety: the framebuffer is mapped for the entire kernel lifetime.

@@ -1,4 +1,4 @@
-//! AudioContext — HDA controller + PC speaker. Replaces crate::sound globals.
+//! AudioContext — HDA controller + PC speaker.
 use nitrogen::hda::HdaController;
 use nitrogen::hda::controller::HdaDiagInfo;
 use nitrogen::hda::dma::{DMA_BUF_SIZE, DmaRegion};
@@ -34,7 +34,6 @@ impl AudioContext {
             dma: None,
         }
     }
-
     pub fn probe(&mut self) {
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
         if let Some((bus, dev, func, bar0)) = HdaController::probe(off) {
@@ -51,14 +50,12 @@ impl AudioContext {
             log::info!("Sound: No HDA (PC speaker only)");
         }
     }
-
     pub fn hda_available(&self) -> bool {
         self.hda.is_some()
     }
     pub fn hda_ready(&self) -> bool {
         self.hda.as_ref().is_some_and(|c| c.is_ready())
     }
-
     pub fn lazy_init(&mut self) {
         if self.init_done {
             return;
@@ -93,7 +90,6 @@ impl AudioContext {
         self.rirb = Some(rirb);
         self.dma = Some(dma);
     }
-
     pub fn write_samples(&mut self, offset: u32, samples: &[u8]) -> usize {
         self.lazy_init();
         match self.hda.as_ref() {
@@ -121,7 +117,9 @@ impl AudioContext {
         }
         let start = unsafe { core::arch::x86_64::_rdtsc() };
         loop {
-            if c.poll(Some(0)) || unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 300_000_000 {
+            if c.poll(Some(0))
+                || unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 300_000_000
+            {
                 return;
             }
             core::hint::spin_loop();
@@ -151,7 +149,6 @@ impl AudioContext {
             }
         }
     }
-
     pub fn pc_speaker_on(freq_hz: u32) {
         if freq_hz == 0 {
             Self::pc_speaker_off();
@@ -190,13 +187,13 @@ fn alloc_dma(pages: usize) -> Option<DmaRegion> {
     })
 }
 
-static AUDIO_CTX: Mutex<Option<AudioContext>> = Mutex::new(None);
+static AUDIO_CTX: spin::Mutex<Option<AudioContext>> = spin::Mutex::new(None);
 pub fn init_audio() {
     let mut c = AudioContext::new();
     c.probe();
     *AUDIO_CTX.lock() = Some(c);
 }
-pub fn get_audio() -> &'static Mutex<Option<AudioContext>> {
+pub fn get_audio() -> &'static spin::Mutex<Option<AudioContext>> {
     &AUDIO_CTX
 }
 pub fn with_audio_mut<F, R>(f: F) -> Option<R>

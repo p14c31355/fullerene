@@ -25,9 +25,43 @@ pub unsafe extern "C" fn efi_main_stage2(
         );
         debug_serial(b"S2: Entering efi_main_stage2\n");
 
+        // Store args_ptr where it survives register clobbers.
         petroleum::transition::KERNEL_ARGS = args_ptr;
 
-        // Signal '3': After setting KERNEL_ARGS
+        // ── Early framebuffer parameter capture ───────────────────
+        // Store raw integers NOW while args_ptr is valid.  Do NOT
+        // dereference args_ptr later — it may be corrupted by the
+        // world‑switch page‑table rebuild.
+        // NOTE: KernelContext::init_kernel() does PCI scan (heap alloc)
+        // so we init framebuffer only at this early stage.
+        crate::contexts::framebuffer::init_framebuffer();
+        {
+            let args = &*args_ptr;
+            // Also store in .data section to survive BSS corruption
+            crate::graphics::store_fb_params(
+                args.fb_address,
+                args.fb_width,
+                args.fb_height,
+                args.fb_width.saturating_mul(4),
+                args.fb_bpp,
+            );
+            crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
+                // GOP stride is pixels_per_scan_line * 4 (32 bpp).
+                // Bellows sets fb_width == horizontal_resolution (1280),
+                // so width * 4 ≈ 5120 which matches the GOP log.
+                // Use saturating_mul to avoid overflow panic on huge values.
+                fb.store_raw_params(
+                    args.fb_address,
+                    args.fb_width,
+                    args.fb_height,
+                    args.fb_width.saturating_mul(4),
+                    args.fb_bpp,
+                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                );
+            });
+        }
+
+        // Signal '3': After early FB param capture
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x33",

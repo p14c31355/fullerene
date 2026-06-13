@@ -187,6 +187,67 @@ impl HdaController {
         let iss = (gcap >> 8) & 0xF;
         let oss = (gcap >> 12) & 0xF;
 
+        // ── Controller reset via GCTL (offset 0x08) ──────────────
+        // The HDA specification requires a CRST cycle before the
+        // codec becomes accessible on the link.  Without this, CORB
+        // verbs time out (RIRBWP never advances).
+        //   1) Write 0 → wait for CRST bit to read back as 0
+        //   2) Write 1 → wait for CRST bit to read back as 1
+        //   3) Wait for codec to signal presence on the link (STATESTS)
+        const GCTL: usize = 0x0008;
+        let mut crst_ok = false;
+        unsafe { mmio_write32(mmio, GCTL, 0) };
+        for _ in 0..50_000 {
+            if unsafe { mmio_read32(mmio, GCTL) } & 1 == 0 {
+                crst_ok = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if !crst_ok {
+            log::warn!("HDA: GCTL CRST=0 timeout");
+            return false;
+        }
+        unsafe { mmio_write32(mmio, GCTL, 1) };
+        crst_ok = false;
+        for _ in 0..50_000 {
+            if unsafe { mmio_read32(mmio, GCTL) } & 1 != 0 {
+                crst_ok = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if !crst_ok {
+            log::warn!("HDA: GCTL CRST=1 timeout");
+            return false;
+        }
+        log::info!("HDA: GCTL CRST cycle complete");
+
+        // After CRST, wait for the codec to signal presence on the
+        // link.  Real codecs can take up to 1 ms.  On KVM each MMIO
+        // read causes a VM exit, giving QEMU a chance to advance the
+        // device model state.
+        crst_ok = false;
+        for _ in 0..200_000 {
+            let sts = unsafe { mmio_read16(mmio, STATESTS) };
+            if sts & 0x0001 != 0 {
+                crst_ok = true;
+                break;
+            }
+            // Force VM exit so QEMU/KVM can bring the codec online
+            HdaController::tick_vm_exit();
+            core::hint::spin_loop();
+        }
+        if !crst_ok {
+            log::warn!(
+                "HDA: codec not detected after CRST (STATESTS=0x{:04x})",
+                unsafe { mmio_read16(mmio, STATESTS) }
+            );
+            // Do not abort — some codecs appear only after CORB init
+        } else {
+            log::info!("HDA: codec presence detected after CRST");
+        }
+
         // Capture STATESTS before clearing
         let sts_pre_clear = unsafe { mmio_read16(mmio, STATESTS) };
         unsafe { mmio_write16(mmio, STATESTS, 0x000F) };
@@ -226,7 +287,7 @@ impl HdaController {
         // Determine CORB size from CORBSIZE register (offset 0x4E)
         // Read CORBSZCAP field (bits [7:4]) which indicates supported sizes
         let corbsize_reg = unsafe { mmio_read8(mmio, 0x004E) };
-        let corb_szcap = (corbsize_reg >> 4) & 0xF;
+        let corb_szcap = corbsize_reg & 0x0F;
         let corb_entries: usize = if corb_szcap & 0x4 != 0 {
             256
         } else if corb_szcap & 0x2 != 0 {

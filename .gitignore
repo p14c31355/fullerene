@@ -13,3 +13,6 @@ target/
 *.log
 *.img
 *.txt
+
+# Build artefacts — these are embedded via build.rs + OUT_DIR
+bellows/src/kernel.bin

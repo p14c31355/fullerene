@@ -1,6 +1,5 @@
 //! WindowContext — window list, focus, z-order.
 use alloc::vec::Vec;
-use spin::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct WindowId(pub u64);
@@ -74,8 +73,7 @@ impl WindowContext {
         if self.focused == id {
             return;
         }
-        let exists = self.windows.iter().any(|w| w.id == id);
-        if !exists {
+        if !self.windows.iter().any(|w| w.id == id) {
             return;
         }
         self.focused = id;
@@ -98,22 +96,4 @@ impl WindowContext {
     }
 }
 
-static WINDOW_CTX: Mutex<Option<WindowContext>> = Mutex::new(None);
-pub fn init_window() {
-    *WINDOW_CTX.lock() = Some(WindowContext::new());
-}
-pub fn get_window() -> &'static Mutex<Option<WindowContext>> {
-    &WINDOW_CTX
-}
-pub fn with_window_mut<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&mut WindowContext) -> R,
-{
-    WINDOW_CTX.lock().as_mut().map(f)
-}
-pub fn with_window<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&WindowContext) -> R,
-{
-    WINDOW_CTX.lock().as_ref().map(f)
-}
+crate::define_context!(WindowContext, window, WINDOW_CTX);

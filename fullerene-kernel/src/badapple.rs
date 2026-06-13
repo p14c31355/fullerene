@@ -3,8 +3,8 @@ use crate::contexts::audio::AudioContext;
 use alloc::vec::Vec;
 use core::arch::x86_64;
 
-static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
-static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
+static BADAPPLE_RLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/badapple.rle"));
+static BADAPPLE_PCM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/badapple.pcm"));
 const PCM_BPS: u32 = 96000;
 const THRESHOLD: u8 = 128;
 const WIN_W: u32 = 640;
@@ -100,8 +100,8 @@ pub fn play_badapple() {
     solvent::suspend_rendering();
 
     let (fb_ptr, fb_stride, fb_height) = {
-        let fb = crate::contexts::framebuffer::get_framebuffer().lock();
-        match fb.as_ref().and_then(|f| f.renderer.as_ref()) {
+        let k = crate::contexts::kernel::get_kernel().lock();
+        match k.as_ref().and_then(|k| k.framebuffer.renderer.as_ref()) {
             Some(r) => {
                 let i = r.get_info();
                 (
@@ -127,23 +127,25 @@ pub fn play_badapple() {
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BPS as u64;
     let fi_ms = dur_ms / (n as u64).max(1);
-    let use_hda = crate::contexts::audio::with_audio(|a| a.hda_available()).unwrap_or(false);
+    let use_hda =
+        crate::contexts::kernel::with_kernel(|k| k.audio.hda_available()).unwrap_or(false);
     nitrogen::ps2::keyboard::flush_input();
 
     let mut pcm_off: usize = 0;
     if use_hda {
-        crate::contexts::audio::with_audio_mut(|a| {
+        crate::contexts::kernel::with_kernel_mut(|k| {
             let e0 = HALF.min(pcm_total);
             if e0 > 0 {
-                a.write_samples(0, &BADAPPLE_PCM[..e0]);
+                k.audio.write_samples(0, &BADAPPLE_PCM[..e0]);
                 pcm_off = e0;
             }
             let e1 = (pcm_off + HALF).min(pcm_total);
             if e1 > pcm_off {
-                a.write_samples(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
+                k.audio
+                    .write_samples(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
                 pcm_off = e1;
             }
-            a.reset_prefill_tracking();
+            k.audio.reset_prefill_tracking();
         });
     }
 
@@ -153,12 +155,14 @@ pub fn play_badapple() {
         while unsafe { x86_64::_rdtsc() }.wrapping_sub(start) < 300_000_000 {
             core::hint::spin_loop();
         }
-        crate::contexts::audio::with_audio(|a| calibrate_tsc(a)).unwrap_or(3_000_000)
+        crate::contexts::kernel::with_kernel(|k| calibrate_tsc(&k.audio)).unwrap_or(3_000_000)
     } else {
         3_000_000
     };
     // Clamp frame interval: at least ~33 ms (30 fps) to avoid speedup
-    let fi_tsc = fi_ms.saturating_mul(tsc_per_ms).max(tsc_per_ms.saturating_mul(33));
+    let fi_tsc = fi_ms
+        .saturating_mul(tsc_per_ms)
+        .max(tsc_per_ms.saturating_mul(33));
     let af_tsc = tsc_per_ms;
 
     let pcm_per_frame = pcm_total as u64 / (n as u64).max(1);
@@ -167,7 +171,9 @@ pub fn play_badapple() {
     let mut wraps: u64 = 0;
     let mut lpib_valid = false;
     if use_hda {
-        if let Some(cur) = crate::contexts::audio::with_audio(|a| a.playback_progress()).flatten() {
+        if let Some(cur) =
+            crate::contexts::kernel::with_kernel(|k| k.audio.playback_progress()).flatten()
+        {
             if cur < 32736 {
                 last_lpib = cur;
                 lpib_valid = true;
@@ -196,7 +202,7 @@ pub fn play_badapple() {
                     break 'outer;
                 }
                 if let Some(cur) =
-                    crate::contexts::audio::with_audio(|a| a.playback_progress()).flatten()
+                    crate::contexts::kernel::with_kernel(|k| k.audio.playback_progress()).flatten()
                 {
                     if cur >= audio_sz {
                         lpib_valid = false;
@@ -211,8 +217,8 @@ pub fn play_badapple() {
                 let now = unsafe { x86_64::_rdtsc() };
                 if now.wrapping_sub(last_af) >= af_tsc {
                     last_af = now;
-                    crate::contexts::audio::with_audio_mut(|a| {
-                        feed_pcm(a, &mut pcm_off, pcm_total)
+                    crate::contexts::kernel::with_kernel_mut(|k| {
+                        feed_pcm(&mut k.audio, &mut pcm_off, pcm_total)
                     });
                 }
                 if consumed >= target {
@@ -240,8 +246,8 @@ pub fn play_badapple() {
                 }
                 if use_hda && unsafe { x86_64::_rdtsc() }.wrapping_sub(last_af) >= af_tsc {
                     last_af = unsafe { x86_64::_rdtsc() };
-                    crate::contexts::audio::with_audio_mut(|a| {
-                        feed_pcm(a, &mut pcm_off, pcm_total)
+                    crate::contexts::kernel::with_kernel_mut(|k| {
+                        feed_pcm(&mut k.audio, &mut pcm_off, pcm_total)
                     });
                 }
                 core::hint::spin_loop();
@@ -276,24 +282,25 @@ pub fn play_badapple() {
                 nitrogen::ps2::keyboard::read_char();
                 break;
             }
-            let polled = crate::contexts::audio::with_audio_mut(|a| {
-                feed_pcm(a, &mut pcm_off, pcm_total);
-                a.poll_block(Some(af_tsc))
-            }).unwrap_or(false);
+            let polled = crate::contexts::kernel::with_kernel_mut(|k| {
+                feed_pcm(&mut k.audio, &mut pcm_off, pcm_total);
+                k.audio.poll_block(Some(af_tsc))
+            })
+            .unwrap_or(false);
             if polled {
                 continue;
             }
             core::hint::spin_loop();
         }
-        crate::contexts::audio::with_audio_mut(|a| {
+        crate::contexts::kernel::with_kernel_mut(|k| {
             for _ in 0..4 {
                 nitrogen::ps2::keyboard::poll_key_hit();
                 if nitrogen::ps2::keyboard::input_available() {
                     nitrogen::ps2::keyboard::read_char();
                     break;
                 }
-                a.feed_silence(HALF);
-                a.poll_delay(tsc_per_ms, 100);
+                k.audio.feed_silence(HALF);
+                k.audio.poll_delay(tsc_per_ms, 100);
             }
         });
     }

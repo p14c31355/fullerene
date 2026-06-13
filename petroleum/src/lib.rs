@@ -195,7 +195,7 @@ macro_rules! define_panic_handler {
                 ));
             }
             $crate::serial::_print(format_args!("  {}\n", info));
-            $crate::serial::_print(format_args!("====================================\n"));
+            $crate::serial::_print(format_args!("==================================\n"));
             loop {
                 x86_64::instructions::hlt();
             }
