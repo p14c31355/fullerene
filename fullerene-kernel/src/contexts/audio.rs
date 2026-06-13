@@ -1,13 +1,122 @@
-//! AudioContext — HDA controller + PC speaker. Replaces crate::sound globals.
+//! AudioContext — HDA controller, codec, stream, mixer, PC speaker.
+//!
+//! Aggregates:
+//! - `ControllerContext` — HDA bus mastering, CORB/RIRB, DMA engine
+//! - `CodecContext`      — ALC286 / generic codec state
+//! - `StreamContext`     — input/output stream descriptors
+//! - `MixerContext`       — volume, muting, routing
+
 use nitrogen::hda::HdaController;
 use nitrogen::hda::controller::HdaDiagInfo;
 use nitrogen::hda::dma::{DMA_BUF_SIZE, DmaRegion};
 use spin::Mutex;
 
+// ── Sub-contexts ──────────────────────────────────────────────
+
+/// HDA controller-level state (bus mastering, CORB/RIRB, DMA engine).
+pub struct ControllerContext {
+    pub hda: Option<HdaController>,
+    pub diag: HdaDiagInfo,
+}
+
+impl ControllerContext {
+    pub const fn new() -> Self {
+        Self {
+            hda: None,
+            diag: HdaDiagInfo {
+                gcap: 0,
+                gcap64: false,
+                corb_phys: 0,
+                rirb_phys: 0,
+                states_after_crst: 0,
+                populated: false,
+            },
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.hda.as_ref().is_some_and(|c| c.is_ready())
+    }
+}
+
+/// Audio codec context (ALC286 / generic).
+#[derive(Debug, Clone, Copy)]
+pub struct CodecContext {
+    /// Codec vendor/device IDs populated after probe.
+    pub vendor_id: u32,
+    pub device_id: u32,
+    /// Number of nodes discovered.
+    pub node_count: u32,
+    /// Whether codec probing has completed.
+    pub probed: bool,
+}
+
+impl CodecContext {
+    pub const fn new() -> Self {
+        Self {
+            vendor_id: 0,
+            device_id: 0,
+            node_count: 0,
+            probed: false,
+        }
+    }
+}
+
+/// HDA stream context (input/output descriptors).
+#[derive(Debug, Clone, Copy)]
+pub struct StreamContext {
+    /// Number of configured output streams.
+    pub output_streams: u8,
+    /// Number of configured input streams.
+    pub input_streams: u8,
+    /// Whether any stream is active.
+    pub active: bool,
+}
+
+impl StreamContext {
+    pub const fn new() -> Self {
+        Self {
+            output_streams: 0,
+            input_streams: 0,
+            active: false,
+        }
+    }
+}
+
+/// Mixer context (volume, muting, routing).
+#[derive(Debug, Clone, Copy)]
+pub struct MixerContext {
+    /// Master volume (0-100).
+    pub master_volume: u8,
+    /// PCM volume (0-100).
+    pub pcm_volume: u8,
+    /// Whether output is muted.
+    pub muted: bool,
+}
+
+impl MixerContext {
+    pub const fn new() -> Self {
+        Self {
+            master_volume: 100,
+            pcm_volume: 100,
+            muted: false,
+        }
+    }
+}
+
+// ── Aggregate AudioContext ────────────────────────────────────
+
 unsafe impl Send for AudioContext {}
 unsafe impl Sync for AudioContext {}
 
 pub struct AudioContext {
+    // Sub-contexts (new)
+    pub controller: ControllerContext,
+    pub codec: CodecContext,
+    pub stream: StreamContext,
+    pub mixer: MixerContext,
+
+    // ── retained for backward compat ──────────────────────────
     pub hda: Option<HdaController>,
     pub diag: HdaDiagInfo,
     init_done: bool,
@@ -19,6 +128,10 @@ pub struct AudioContext {
 impl AudioContext {
     pub const fn new() -> Self {
         Self {
+            controller: ControllerContext::new(),
+            codec: CodecContext::new(),
+            stream: StreamContext::new(),
+            mixer: MixerContext::new(),
             hda: None,
             diag: HdaDiagInfo {
                 gcap: 0,
@@ -40,6 +153,9 @@ impl AudioContext {
         if let Some((bus, dev, func, bar0)) = HdaController::probe(off) {
             let mmio = (bar0 + off) as *mut u8;
             self.hda = Some(HdaController::new(mmio, bar0));
+            self.stream.output_streams = 1;
+            self.stream.input_streams = 0;
+            self.codec.probed = true;
             log::info!(
                 "Sound: HDA at {:04x}:{:02x}.{}, BAR0=0x{:x}",
                 bus,
@@ -56,7 +172,7 @@ impl AudioContext {
         self.hda.is_some()
     }
     pub fn hda_ready(&self) -> bool {
-        self.hda.as_ref().is_some_and(|c| c.is_ready())
+        self.controller.is_ready()
     }
 
     pub fn lazy_init(&mut self) {
@@ -81,7 +197,7 @@ impl AudioContext {
             return;
         }
         let gcap = unsafe { core::ptr::read_volatile(ctrl.mmio().add(0x0000) as *const u32) };
-        self.diag = HdaDiagInfo {
+        let diag = HdaDiagInfo {
             gcap,
             gcap64: gcap & 1 != 0,
             corb_phys: corb.phys,
@@ -89,6 +205,8 @@ impl AudioContext {
             states_after_crst: 0,
             populated: true,
         };
+        self.diag = diag;
+        self.controller.diag = diag;
         self.corb = Some(corb);
         self.rirb = Some(rirb);
         self.dma = Some(dma);
