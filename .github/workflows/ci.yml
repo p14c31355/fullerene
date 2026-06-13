@@ -32,3 +32,9 @@ jobs:
 
       - name: Cargo check (host packages)
         run: cargo check --workspace --exclude bellows --exclude fullerene-kernel
+
+      - name: Build/check UEFI packages
+        run: |
+          cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
+          KERNEL_BIN_PATH="$GITHUB_WORKSPACE/target/x86_64-unknown-uefi/debug/fullerene-kernel.efi" \
+            cargo check -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi
