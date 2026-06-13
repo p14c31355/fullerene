@@ -41,9 +41,12 @@ impl FramebufferContext {
         self.fb_pixel_format = pixel_format;
     }
     pub fn build_renderer_from_stored(&mut self) -> bool {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] build_renderer_from_stored entry\n");
         if self.renderer.is_some() {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] renderer already Some, returning true\n");
             return true;
         }
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] checking fb_phys\n");
         if self.fb_phys < 0x100000
             || self.fb_width_px == 0
             || self.fb_width_px > 16384
@@ -52,13 +55,18 @@ impl FramebufferContext {
             || self.fb_stride_bytes == 0
             || self.bpp != 32
         {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] validation failed\n");
             return false;
         }
         if self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] wrong pixel format\n");
             return false;
         }
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] getting physical_memory_offset\n");
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] got offset, calculating fb_virt\n");
         let fb_virt = self.fb_phys + off;
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] creating FramebufferInfo\n");
         let info = FramebufferInfo {
             address: fb_virt,
             width: self.fb_width_px,
@@ -67,8 +75,11 @@ impl FramebufferContext {
             pixel_format: Some(self.fb_pixel_format),
             colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
         };
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] creating FramebufferWriter\n");
         let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] setting renderer\n");
         self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] build_renderer_from_stored done\n");
         true
     }
     pub unsafe fn init_from_kernel_args(&mut self, args: &petroleum::assembly::KernelArgs) {

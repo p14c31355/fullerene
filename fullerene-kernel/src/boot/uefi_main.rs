@@ -37,6 +37,14 @@ pub unsafe extern "C" fn efi_main_stage2(
         crate::contexts::framebuffer::init_framebuffer();
         {
             let args = &*args_ptr;
+            // Also store in .data section to survive BSS corruption
+            crate::graphics::store_fb_params(
+                args.fb_address,
+                args.fb_width,
+                args.fb_height,
+                args.fb_width.saturating_mul(4),
+                args.fb_bpp,
+            );
             crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
                 // GOP stride is pixels_per_scan_line * 4 (32 bpp).
                 // Bellows sets fb_width == horizontal_resolution (1280),
