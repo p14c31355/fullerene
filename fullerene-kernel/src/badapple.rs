@@ -3,8 +3,8 @@ use crate::contexts::audio::AudioContext;
 use alloc::vec::Vec;
 use core::arch::x86_64;
 
-static BADAPPLE_RLE: &[u8] = include_bytes!("badapple.rle");
-static BADAPPLE_PCM: &[u8] = include_bytes!("badapple.pcm");
+static BADAPPLE_RLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/badapple.rle"));
+static BADAPPLE_PCM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/badapple.pcm"));
 const PCM_BPS: u32 = 96000;
 const THRESHOLD: u8 = 128;
 const WIN_W: u32 = 640;

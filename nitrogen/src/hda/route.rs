@@ -122,6 +122,13 @@ impl RouteFinder {
             gain
         );
 
+        // Power up the DAC (D3 → D0).  Widgets that stay in D3 may
+        // silently drop audio data on real hardware and QEMU.
+        unsafe {
+            let ps = corb.send_verb(mmio, 0, dac, verbs::SET_POWER_STATE, 0x00);
+            log::info!("HDA: DAC 0x{:x} SET_POWER_STATE(D0) → 0x{:08x}", dac, ps);
+        };
+
         // Unmute DAC output amp: SetOut + SetLeft + SetRight + gain
         unsafe {
             corb.send_verb(
@@ -154,6 +161,12 @@ impl RouteFinder {
             p_nsteps,
             pgain
         );
+
+        // Power up the pin complex
+        unsafe {
+            let ps = corb.send_verb(mmio, 0, pin, verbs::SET_POWER_STATE, 0x00);
+            log::info!("HDA: Pin 0x{:x} SET_POWER_STATE(D0) → 0x{:08x}", pin, ps);
+        };
 
         // Unmute pin output amp
         unsafe {
@@ -216,6 +229,33 @@ impl RouteFinder {
                             dac,
                             r
                         );
+
+                        // Power up the mixer
+                        let ps = unsafe {
+                            corb.send_verb(mmio, 0, con_node, verbs::SET_POWER_STATE, 0x00)
+                        };
+                        log::info!(
+                            "HDA: Mixer 0x{:x} SET_POWER_STATE(D0) → 0x{:08x}",
+                            con_node,
+                            ps
+                        );
+
+                        // Unmute mixer output amp
+                        let ma = con_w.out_amp_cap;
+                        let m_offset = (ma & 0x7F) as u8;
+                        let m_nsteps = ((ma >> 8) & 0x7F) as u8;
+                        let mgain = if m_nsteps > 0 {
+                            m_offset.saturating_add(m_nsteps / 2).min(m_nsteps)
+                        } else { 0 };
+                        unsafe {
+                            corb.send_verb(
+                                mmio,
+                                0,
+                                con_node,
+                                verbs::SET_AMP_GAIN_MUTE,
+                                0xB000u16 | mgain as u16,
+                            );
+                        };
 
                         // Unmute mixer input for the DAC channel (Set Input + Set Left + Set Right)
                         let unmute_payload = 0x7000u16 | ((mix_ci as u16) << 8);

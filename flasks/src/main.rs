@@ -145,30 +145,38 @@ fn create_iso_and_setup(
         .join("x86_64-unknown-uefi")
         .join("debug");
     let kernel_path = target_dir.join("fullerene-kernel.efi");
-    // Copy kernel to bellows/src for embedding
-    let kernel_bin_dest = workspace_root
-        .join("bellows")
-        .join("src")
-        .join("kernel.bin");
-    std::fs::copy(&kernel_path, &kernel_bin_dest)?;
     log::info!(
-        "Copied kernel to {} (size: {})",
-        kernel_bin_dest.display(),
+        "Kernel EFI at {} (size: {})",
+        kernel_path.display(),
         kernel_path.metadata()?.len()
     );
 
     // --- 2. Build bellows (no_std) ---
-    // Force rebuild of bellows to ensure the latest kernel_final.bin is embedded
-    let clean_status = Command::new("cargo")
-        .current_dir(workspace_root)
-        .args(["clean", "-p", "bellows"])
-        .status()?;
-    if !clean_status.success() {
-        log::warn!("Warning: cargo clean -p bellows failed, proceeding anyway");
-    }
-
+    // Pass kernel path via environment variable so build.rs can copy
+    // it into OUT_DIR.  No source‑tree pollution.
     let bellows_path = target_dir.join("bellows.efi");
-    build_uefi_package(workspace_root, "bellows", Some("debug_loader"))?;
+
+    let status = Command::new("cargo")
+        .current_dir(workspace_root)
+        .env("KERNEL_BIN_PATH", &kernel_path)
+        .args([
+            "+nightly",
+            "build",
+            "-q",
+            "-Zbuild-std=core,alloc",
+            "--package",
+            "bellows",
+            "--target",
+            "x86_64-unknown-uefi",
+            "--profile",
+            "dev",
+            "--features",
+            "debug_loader",
+        ])
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other("bellows build failed"));
+    }
 
     // --- 3. Create ISO using isobemak ---
     let iso_path = workspace_root.join("fullerene.iso");
