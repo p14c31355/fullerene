@@ -14,7 +14,9 @@ fn main() {
     let kernel_path = match env::var("KERNEL_BIN_PATH") {
         Ok(p) => PathBuf::from(p),
         Err(_) => {
-            println!("cargo:warning=KERNEL_BIN_PATH not set — bellows is meant to be built via flasks");
+            println!(
+                "cargo:warning=KERNEL_BIN_PATH not set — bellows is meant to be built via flasks"
+            );
             return;
         }
     };
@@ -34,5 +36,8 @@ fn main() {
         );
     });
 
-    println!("cargo:warning=Embedding kernel from {}", kernel_path.display());
+    println!(
+        "cargo:warning=Embedding kernel from {}",
+        kernel_path.display()
+    );
 }

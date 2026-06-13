@@ -1,7 +1,7 @@
 #![allow(static_mut_refs)]
 use core::ffi::c_void;
 use petroleum::common::{EfiSystemTable, write_vga_string};
-use petroleum::page_table::{MemoryMapDescriptor, ALLOCATOR as PETROLEUM_ALLOCATOR};
+use petroleum::page_table::{ALLOCATOR as PETROLEUM_ALLOCATOR, MemoryMapDescriptor};
 use petroleum::{debug_log_no_alloc, write_serial_bytes};
 use x86_64::{PhysAddr, VirtAddr, structures::paging::PageTableFlags};
 
@@ -132,8 +132,7 @@ impl UefiInitContext {
 
         let mut fa = crate::heap::FRAME_ALLOCATOR.lock();
         let allocator = fa.as_mut().expect("Frame allocator not initialized");
-        let mut mapper =
-            unsafe { create_tmp_mapper(physical_memory_offset, allocator, 0x100000) };
+        let mut mapper = unsafe { create_tmp_mapper(physical_memory_offset, allocator, 0x100000) };
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
         unsafe {
             petroleum::page_table::raw::map_range_with_huge_pages(
@@ -165,8 +164,7 @@ impl UefiInitContext {
         let phys_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
         let lapic_virt = 0xfee00000u64 + phys_offset;
         unsafe { petroleum::common::utils::reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS) };
-        *petroleum::LOCAL_APIC_ADDRESS.lock() =
-            petroleum::LocalApicAddress(lapic_virt as *mut u32);
+        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt as *mut u32);
 
         if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
@@ -174,7 +172,10 @@ impl UefiInitContext {
         {
             petroleum::debug_log!(
                 "FB config: phys={:#x} {}x{}x{}\n",
-                config.address, config.width, config.height, config.bpp
+                config.address,
+                config.width,
+                config.height,
+                config.bpp
             );
         }
         0

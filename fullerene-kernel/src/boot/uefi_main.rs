@@ -34,7 +34,12 @@ pub unsafe extern "C" fn efi_main_stage2(
         {
             let args = &*args_ptr;
             crate::contexts::kernel::with_kernel_mut(|k| {
-                k.framebuffer.store_raw_params(args.fb_address, args.fb_width, args.fb_height, args.fb_width * 4);
+                k.framebuffer.store_raw_params(
+                    args.fb_address,
+                    args.fb_width,
+                    args.fb_height,
+                    args.fb_width * 4,
+                );
             });
         }
 

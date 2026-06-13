@@ -127,7 +127,8 @@ pub fn play_badapple() {
     let pcm_total = BADAPPLE_PCM.len();
     let dur_ms = (pcm_total as u64 * 1000) / PCM_BPS as u64;
     let fi_ms = dur_ms / (n as u64).max(1);
-    let use_hda = crate::contexts::kernel::with_kernel(|k| k.audio.hda_available()).unwrap_or(false);
+    let use_hda =
+        crate::contexts::kernel::with_kernel(|k| k.audio.hda_available()).unwrap_or(false);
     nitrogen::ps2::keyboard::flush_input();
 
     let mut pcm_off: usize = 0;
@@ -140,7 +141,8 @@ pub fn play_badapple() {
             }
             let e1 = (pcm_off + HALF).min(pcm_total);
             if e1 > pcm_off {
-                k.audio.write_samples(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
+                k.audio
+                    .write_samples(HALF as u32, &BADAPPLE_PCM[pcm_off..e1]);
                 pcm_off = e1;
             }
             k.audio.reset_prefill_tracking();
@@ -158,7 +160,9 @@ pub fn play_badapple() {
         3_000_000
     };
     // Clamp frame interval: at least ~33 ms (30 fps) to avoid speedup
-    let fi_tsc = fi_ms.saturating_mul(tsc_per_ms).max(tsc_per_ms.saturating_mul(33));
+    let fi_tsc = fi_ms
+        .saturating_mul(tsc_per_ms)
+        .max(tsc_per_ms.saturating_mul(33));
     let af_tsc = tsc_per_ms;
 
     let pcm_per_frame = pcm_total as u64 / (n as u64).max(1);
@@ -167,7 +171,9 @@ pub fn play_badapple() {
     let mut wraps: u64 = 0;
     let mut lpib_valid = false;
     if use_hda {
-        if let Some(cur) = crate::contexts::kernel::with_kernel(|k| k.audio.playback_progress()).flatten() {
+        if let Some(cur) =
+            crate::contexts::kernel::with_kernel(|k| k.audio.playback_progress()).flatten()
+        {
             if cur < 32736 {
                 last_lpib = cur;
                 lpib_valid = true;
@@ -279,7 +285,8 @@ pub fn play_badapple() {
             let polled = crate::contexts::kernel::with_kernel_mut(|k| {
                 feed_pcm(&mut k.audio, &mut pcm_off, pcm_total);
                 k.audio.poll_block(Some(af_tsc))
-            }).unwrap_or(false);
+            })
+            .unwrap_or(false);
             if polled {
                 continue;
             }

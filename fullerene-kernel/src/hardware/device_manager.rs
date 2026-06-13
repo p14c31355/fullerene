@@ -49,7 +49,12 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    pub fn new(name: &'static str, device_type: &'static str, kind: DeviceKind, priority: i32) -> Self {
+    pub fn new(
+        name: &'static str,
+        device_type: &'static str,
+        kind: DeviceKind,
+        priority: i32,
+    ) -> Self {
         Self {
             name,
             device_type,
@@ -210,7 +215,7 @@ impl DeviceManager {
             .map(|entry| entry.device_info.clone())
     }
 
-        /// List all registered devices
+    /// List all registered devices
     pub fn list_devices(&self) -> Vec<DeviceInfo> {
         self.devices
             .lock()
@@ -276,15 +281,37 @@ pub fn register_device(device: alloc::boxed::Box<dyn HardwareDevice + Send>) -> 
 /// Map a device_type string to its DeviceKind.
 fn device_kind_from_type(device_type: &str) -> DeviceKind {
     let lower = device_type.to_lowercase();
-    if lower.contains("audio") || lower.contains("hda") || lower.contains("sound") || lower.contains("speaker") {
+    if lower.contains("audio")
+        || lower.contains("hda")
+        || lower.contains("sound")
+        || lower.contains("speaker")
+    {
         DeviceKind::Audio
-    } else if lower.contains("storage") || lower.contains("ahci") || lower.contains("nvme") || lower.contains("disk") || lower.contains("ata") {
+    } else if lower.contains("storage")
+        || lower.contains("ahci")
+        || lower.contains("nvme")
+        || lower.contains("disk")
+        || lower.contains("ata")
+    {
         DeviceKind::Storage
-    } else if lower.contains("display") || lower.contains("gpu") || lower.contains("graphics") || lower.contains("vga") || lower.contains("virtio-gpu") {
+    } else if lower.contains("display")
+        || lower.contains("gpu")
+        || lower.contains("graphics")
+        || lower.contains("vga")
+        || lower.contains("virtio-gpu")
+    {
         DeviceKind::Display
-    } else if lower.contains("input") || lower.contains("keyboard") || lower.contains("mouse") || lower.contains("hid") {
+    } else if lower.contains("input")
+        || lower.contains("keyboard")
+        || lower.contains("mouse")
+        || lower.contains("hid")
+    {
         DeviceKind::Input
-    } else if lower.contains("network") || lower.contains("ethernet") || lower.contains("wifi") || lower.contains("nic") {
+    } else if lower.contains("network")
+        || lower.contains("ethernet")
+        || lower.contains("wifi")
+        || lower.contains("nic")
+    {
         DeviceKind::Network
     } else {
         DeviceKind::Other
@@ -306,7 +333,11 @@ static DEVICE_INFO_LIST: Mutex<Vec<DeviceInfo>> = Mutex::new(Vec::new());
 /// Register a device with explicit DeviceKind and priority (metadata-only).
 pub fn register_device_info(info: DeviceInfo) {
     DEVICE_INFO_LIST.lock().push(info.clone());
-    log::info!("Device info registered: {} ({})", info.name, info.kind.as_str());
+    log::info!(
+        "Device info registered: {} ({})",
+        info.name,
+        info.kind.as_str()
+    );
 }
 
 /// Convenience: register all discovered hardware devices.

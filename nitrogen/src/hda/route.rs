@@ -112,7 +112,9 @@ impl RouteFinder {
         // Use a reasonable gain: offset + nsteps/2 (middle of the range)
         let gain = if nsteps > 0 {
             offset.saturating_add(nsteps / 2).min(nsteps)
-        } else { 0 };
+        } else {
+            0
+        };
         log::info!(
             "HDA: DAC 0x{:x} amp cap=0x{:08x} offset={} nsteps={} gain={}",
             dac,
@@ -152,7 +154,9 @@ impl RouteFinder {
         let p_nsteps = ((pa >> 8) & 0x7F) as u8;
         let pgain = if p_nsteps > 0 {
             p_offset.saturating_add(p_nsteps / 2).min(p_nsteps)
-        } else { 0 };
+        } else {
+            0
+        };
         log::info!(
             "HDA: Pin 0x{:x} amp cap=0x{:08x} offset={} nsteps={} pgain={}",
             pin,
@@ -246,7 +250,9 @@ impl RouteFinder {
                         let m_nsteps = ((ma >> 8) & 0x7F) as u8;
                         let mgain = if m_nsteps > 0 {
                             m_offset.saturating_add(m_nsteps / 2).min(m_nsteps)
-                        } else { 0 };
+                        } else {
+                            0
+                        };
                         unsafe {
                             corb.send_verb(
                                 mmio,

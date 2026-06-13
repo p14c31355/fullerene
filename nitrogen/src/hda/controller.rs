@@ -239,8 +239,10 @@ impl HdaController {
             core::hint::spin_loop();
         }
         if !crst_ok {
-            log::warn!("HDA: codec not detected after CRST (STATESTS=0x{:04x})",
-                unsafe { mmio_read16(mmio, STATESTS) });
+            log::warn!(
+                "HDA: codec not detected after CRST (STATESTS=0x{:04x})",
+                unsafe { mmio_read16(mmio, STATESTS) }
+            );
             // Do not abort — some codecs appear only after CORB init
         } else {
             log::info!("HDA: codec presence detected after CRST");

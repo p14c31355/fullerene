@@ -10,21 +10,25 @@ pub fn bootstrap_memory(
     ctx: &mut super::uefi_init::UefiInitContext,
     kernel_phys_start: x86_64::PhysAddr,
 ) -> (x86_64::VirtAddr, x86_64::PhysAddr, x86_64::VirtAddr) {
-    use crate::heap;
+    use super::uefi_init::{create_tmp_mapper, debug_serial};
     use crate::MEMORY_MAP;
+    use crate::heap;
     use petroleum::page_table::{ALLOCATOR as PETROLEUM_ALLOCATOR, MemoryMapDescriptor};
     use petroleum::{debug_log_no_alloc, write_serial_bytes};
     use x86_64::{
         PhysAddr, VirtAddr,
         structures::paging::{Mapper, PageTableFlags},
     };
-    use super::uefi_init::{create_tmp_mapper, debug_serial};
 
     petroleum::set_physical_memory_offset(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE);
     ctx.physical_memory_offset =
         x86_64::VirtAddr::new(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 
-    write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Starting memory_management_initialization\n");
+    write_serial_bytes(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: Starting memory_management_initialization\n",
+    );
 
     if !petroleum::page_table::HEAP_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst) {
         x86_64::instructions::interrupts::disable();
@@ -33,7 +37,11 @@ pub fn bootstrap_memory(
 
     debug_log_no_alloc!("DEBUG: Starting memory_management_initialization");
 
-    write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [CircularDep] Using BootFrameAllocator\n");
+    write_serial_bytes(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: [CircularDep] Using BootFrameAllocator\n",
+    );
     let mut boot_allocator = super::uefi_init::BootFrameAllocator::new(0x2000000 / 4096);
     let _temp_mapper = unsafe {
         petroleum::page_table::init::<
@@ -81,8 +89,7 @@ pub fn bootstrap_memory(
     }
 
     write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Allocating TSS stacks...\n");
-    let tss_stack_pages =
-        (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
+    let tss_stack_pages = (crate::gdt::GDT_TSS_STACK_COUNT * crate::gdt::GDT_TSS_STACK_SIZE) / 4096;
 
     let tss_phys_addr = {
         let mut frame_allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
@@ -102,15 +109,21 @@ pub fn bootstrap_memory(
     let (gdt, code_sel, data_sel, tss_sel, user_data_sel, user_code_sel) =
         unsafe { crate::gdt::build_gdt(tss) };
     unsafe {
-        crate::gdt::store_gdt(gdt, code_sel, data_sel, tss_sel, user_data_sel, user_code_sel);
+        crate::gdt::store_gdt(
+            gdt,
+            code_sel,
+            data_sel,
+            tss_sel,
+            user_data_sel,
+            user_code_sel,
+        );
     };
 
     {
         let mut fa_guard = crate::heap::FRAME_ALLOCATOR.lock();
         let allocator = fa_guard.as_mut().expect("no frame allocator");
-        let mut mapper = unsafe {
-            create_tmp_mapper(ctx.physical_memory_offset, allocator, 0x100000)
-        };
+        let mut mapper =
+            unsafe { create_tmp_mapper(ctx.physical_memory_offset, allocator, 0x100000) };
         let kernel_phys_aligned = kernel_phys_start.as_u64() & !0xFFF;
         let kernel_virt_aligned =
             petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64 & !0xFFF;
@@ -132,19 +145,14 @@ pub fn bootstrap_memory(
     let kernel_cr3 = x86_64::registers::control::Cr3::read();
     crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
 
-    let memory_map_ref2 = MEMORY_MAP
-        .lock()
-        .as_ref()
-        .expect("Memory map gone")
-        .clone();
+    let memory_map_ref2 = MEMORY_MAP.lock().as_ref().expect("Memory map gone").clone();
     let heap_phys_start = petroleum::uefi_helpers::find_heap_start(memory_map_ref2);
-    let _heap_phys_addr = if heap_phys_start.as_u64() < 0x1000
-        || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000
-    {
-        PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
-    } else {
-        heap_phys_start
-    };
+    let _heap_phys_addr =
+        if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000 {
+            PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
+        } else {
+            heap_phys_start
+        };
 
     let heap_pages = (crate::heap::HEAP_SIZE + 4095) / 4096;
     let heap_phys_addr_val = {
@@ -158,5 +166,9 @@ pub fn bootstrap_memory(
     ctx.virtual_heap_start = ctx.physical_memory_offset + heap_phys_addr.as_u64();
     write_serial_bytes(0x3F8, 0x3FD, b"Heap allocated and mapped\n");
 
-    (ctx.physical_memory_offset, heap_phys_addr, ctx.virtual_heap_start)
+    (
+        ctx.physical_memory_offset,
+        heap_phys_addr,
+        ctx.virtual_heap_start,
+    )
 }
