@@ -85,15 +85,35 @@ pub fn init_graphics() {
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
                     if fb_phys >= 0x100000 {
-                        // Use default 1280x800x32 for now (matching GOP info from bellows log)
-                        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] PCI BAR0 valid, storing\n");
+                        // Prefer real GOP-provided values stored in .data section
+                        // (survive page-table rebuilds).  Fall back to 1280x800x32
+                        // only when STORED_FB is also zero.
+                        let (w, h, stride, bpp) = unsafe {
+                            let w = STORED_FB[1] as u32;
+                            let h = STORED_FB[2] as u32;
+                            let stride = STORED_FB[3] as u32;
+                            let bpp = STORED_FB[4] as u32;
+                            if w > 0 && w <= 16384 && h > 0 && h <= 16384 && bpp == 32 {
+                                (w, h, stride, bpp)
+                            } else {
+                                (1280, 800, 1280 * 4, 32)
+                            }
+                        };
+                        let mut buf = [0u8; 64];
+                        let len = petroleum::serial::format_hex_to_buffer(w as u64, &mut buf, 16);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] PCI BAR0 valid, storing ");
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"x");
+                        let len2 = petroleum::serial::format_hex_to_buffer(h as u64, &mut buf, 16);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len2]);
+                        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
                         with_kernel_mut(|k| {
                             k.framebuffer.store_raw_params(
                                 fb_phys,
-                                1280,
-                                800,
-                                1280 * 4,
-                                32,
+                                w,
+                                h,
+                                stride,
+                                bpp,
                                 petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
                             );
                         });
