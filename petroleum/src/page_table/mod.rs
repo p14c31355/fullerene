@@ -9,6 +9,7 @@ pub mod pe;
 pub mod process;
 pub mod raw;
 pub mod types;
+pub mod virtual_memory;
 
 #[cfg(test)]
 mod tests;

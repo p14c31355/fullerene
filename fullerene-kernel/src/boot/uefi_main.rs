@@ -37,26 +37,38 @@ pub unsafe extern "C" fn efi_main_stage2(
         crate::contexts::framebuffer::init_framebuffer();
         {
             let args = &*args_ptr;
+            // Use fb_stride if the bootloader provided it (new field).
+            // On real hardware pixels_per_scan_line > horizontal_resolution is
+            // common (e.g. 2560→2688 on Intel GOP), so the bootloader's stride
+            // from GOP is authoritative.  Fall back to width*4 for old bootloaders
+            // that don't set fb_stride.
+            let stride = if args.fb_stride > 0 {
+                args.fb_stride
+            } else {
+                args.fb_width.saturating_mul(4)
+            };
+            let pixel_format = match args.fb_pixel_format {
+                0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            };
             // Also store in .data section to survive BSS corruption
             crate::graphics::store_fb_params(
                 args.fb_address,
                 args.fb_width,
                 args.fb_height,
-                args.fb_width.saturating_mul(4),
+                stride,
                 args.fb_bpp,
+                args.fb_pixel_format,
             );
             crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
-                // GOP stride is pixels_per_scan_line * 4 (32 bpp).
-                // Bellows sets fb_width == horizontal_resolution (1280),
-                // so width * 4 ≈ 5120 which matches the GOP log.
-                // Use saturating_mul to avoid overflow panic on huge values.
                 fb.store_raw_params(
                     args.fb_address,
                     args.fb_width,
                     args.fb_height,
-                    args.fb_width.saturating_mul(4),
+                    stride,
                     args.fb_bpp,
-                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                    pixel_format,
                 );
             });
         }

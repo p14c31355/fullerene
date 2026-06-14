@@ -24,6 +24,8 @@ pub struct KernelArgs {
     pub fb_width: u32,
     pub fb_height: u32,
     pub fb_bpp: u32,
+    pub fb_stride: u32,
+    pub fb_pixel_format: u32,
 }
 
 #[repr(C)]

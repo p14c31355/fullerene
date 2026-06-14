@@ -58,8 +58,10 @@ impl FramebufferContext {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] validation failed\n");
             return false;
         }
-        if self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] wrong pixel format\n");
+        if self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+            && self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+        {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] unsupported pixel format\n");
             return false;
         }
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] getting physical_memory_offset\n");
@@ -100,15 +102,21 @@ impl FramebufferContext {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation passed\n");
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
         let fb_virt = args.fb_address + off;
-        let stride = args.fb_width * 4;
+        let stride = if args.fb_stride > 0 {
+            args.fb_stride
+        } else {
+            args.fb_width.saturating_mul(4)
+        };
+        let pixel_format = match args.fb_pixel_format {
+            0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+        };
         let info = FramebufferInfo {
             address: fb_virt,
             width: args.fb_width,
             height: args.fb_height,
             stride,
-            pixel_format: Some(
-                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            ),
+            pixel_format: Some(pixel_format),
             colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
         };
         let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
