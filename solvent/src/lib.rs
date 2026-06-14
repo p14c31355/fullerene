@@ -216,10 +216,12 @@ static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
 static EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
 static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
-static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
+/// Cached framebuffer dimensions: (width, height, stride_pixels).
+/// stride_pixels = stride_bytes / 4 (pixels per scan line).
+static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
 
-/// Cached framebuffer pointer (as `usize`) and dimensions for lightweight
-/// cursor updates in overlay mode.
+/// Cached framebuffer pointer (as `usize`), dimensions, and stride
+/// (u32 pixels/scan‑line) for lightweight cursor updates in overlay mode.
 ///
 /// # Safety invariant
 ///
@@ -230,7 +232,7 @@ static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
 /// valid for the entire lifetime of the system after the first frame has
 /// been rendered.  `cursor_lightweight_update` checks for `(0,0,0)` before
 /// dereferencing.
-static LAST_FB: Mutex<(usize, u32, u32)> = Mutex::new((0, 0, 0));
+static LAST_FB: Mutex<(usize, u32, u32, u32)> = Mutex::new((0, 0, 0, 0));
 
 pub struct RuntimeState {
     pub desktop: Desktop,
@@ -348,7 +350,7 @@ impl EventHandler for WmEventHandler {
                     let cx = mouse.x as i32;
                     let cy = mouse.y as i32;
                     drop(mouse);
-                    let (fw, _fh) = *FB_DIMS.lock();
+                    let (fw, _fh, _stride) = *FB_DIMS.lock();
 
                     // Timezone entry layout (must match render_timezone_selector)
                     let timezones: &[i8] = &[-12, -8, -5, 0, 1, 3, 5, 8, 9, 10, 12];
@@ -379,7 +381,7 @@ impl EventHandler for WmEventHandler {
                     let cx = mouse.x as i32;
                     let cy = mouse.y as i32;
                     drop(mouse);
-                    let (fw, _fh) = *FB_DIMS.lock();
+                    let (fw, _fh, _stride) = *FB_DIMS.lock();
 
                     // AppGrid layout (must match render_app_grid)
                     let icon_size = 64i32;
@@ -474,7 +476,7 @@ impl EventHandler for WmEventHandler {
                 }
 
                 rt.desktop.set_cursor(cx, cy);
-                let (fw, fh) = *FB_DIMS.lock();
+                let (fw, fh, _stride) = *FB_DIMS.lock();
                 rt.desktop.mouse_down(fw, fh);
                 rt.frame_due = true;
 
@@ -583,7 +585,7 @@ impl EventHandler for ShellEventHandler {
                     && rt.shell_state == ShellState::Desktop =>
             {
                 // Super+T: toggle tiling mode
-                let (fw, fh) = *FB_DIMS.lock();
+                let (fw, fh, _stride) = *FB_DIMS.lock();
                 let (ww, wh) = rt.desktop.work_area(fw, fh);
                 rt.desktop.wm.toggle_tiling();
                 rt.desktop.wm.retile(ww, wh);
@@ -635,8 +637,8 @@ key_ascii!(
 /// Used in both Desktop and shell overlay modes to avoid full
 /// compositor passes on every mouse-move tick.
 fn cursor_lightweight_update(rt: &mut RuntimeState) {
-    let (fb_addr, fbw, fbh) = *LAST_FB.lock();
-    if fb_addr == 0 || fbw == 0 || fbh == 0 {
+    let (fb_addr, _fbw, fbh, fb_stride) = *LAST_FB.lock();
+    if fb_addr == 0 || fbh == 0 {
         // Fallback: request a full render pass.
         rt.frame_due = true;
         return;
@@ -652,9 +654,9 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
     let new_x = cur.x - lattice::cursor::Cursor::HOTSPOT_X;
     let new_y = cur.y - lattice::cursor::Cursor::HOTSPOT_Y;
 
-    let fbw_i = fbw as i32;
+    let stride_i = fb_stride as i32;
     let fbh_i = fbh as i32;
-    let fb_len = (fbw as usize).saturating_mul(fbh as usize);
+    let fb_len = (fb_stride as usize).saturating_mul(fbh as usize);
 
     unsafe {
         let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
@@ -670,10 +672,10 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
                 }
                 for col in 0..cur_sz {
                     let dx = sx + col;
-                    if dx < 0 || dx >= fbw_i {
+                    if dx < 0 || dx >= stride_i {
                         continue;
                     }
-                    let idx = (dy * fbw_i + dx) as usize;
+                    let idx = (dy * stride_i + dx) as usize;
                     if idx < fb_len {
                         fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
                     }
@@ -689,8 +691,8 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
             for col in 0..cur_sz {
                 let val = if sy >= 0 && sy < fbh_i {
                     let sx = new_x + col;
-                    if sx >= 0 && sx < fbw_i {
-                        let idx = (sy * fbw_i + sx) as usize;
+                    if sx >= 0 && sx < stride_i {
+                        let idx = (sy * stride_i + sx) as usize;
                         if idx < fb_len { fb[idx] } else { 0 }
                     } else {
                         0
@@ -704,7 +706,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
         rt.cursor_save_valid = true;
 
         // Draw the cursor at the new position.
-        Compositor::draw_cursor_direct(fb, fbw, fbh, cur);
+        Compositor::draw_cursor_direct(fb, fb_stride, fbh, cur);
     }
 }
 
@@ -1043,7 +1045,7 @@ impl RenderTarget for FramebufferTarget<'_> {
 
 pub fn render<F>(framebuffer_fn: F)
 where
-    F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
+    F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
     // Skip compositor when rendering is suspended (e.g. BadApple playback).
     if *RENDERING_SUSPENDED.lock() {
@@ -1076,16 +1078,21 @@ where
     render_terminal(rt, rt.term_window);
     let tb_changed = rt.desktop.update_taskbar();
 
-    let (fb_pixels, fb_width, fb_height) = match framebuffer_fn() {
+    let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
         None => return,
     };
 
     // Cache FB dimensions for maximize toggle
-    *FB_DIMS.lock() = (fb_width, fb_height);
+    *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
 
-    // Cache framebuffer pointer and dimensions for lightweight cursor updates in overlay mode.
-    *LAST_FB.lock() = (fb_pixels.as_mut_ptr() as usize, fb_width, fb_height);
+    // Cache framebuffer pointer, dimensions, and stride for lightweight cursor updates.
+    *LAST_FB.lock() = (
+        fb_pixels.as_mut_ptr() as usize,
+        fb_width,
+        fb_height,
+        fb_stride_pixels,
+    );
 
     // Push clock‑change or taskbar‑change dirty rects BEFORE prepare_frame
     // so they are consumed together with all other dirty rects (cursor
@@ -1108,11 +1115,15 @@ where
 
     rt.desktop.prepare_frame(fb_width, fb_height);
 
-    let fb_len = (fb_width as usize) * (fb_height as usize);
-    if fb_len > MAX_FB_PIXELS {
+    // Actual framebuffer size accounts for row-stride (stride >= width).
+    let fb_stride = fb_stride_pixels as usize;
+    let fb_len = fb_stride.saturating_mul(fb_height as usize);
+    // Back-buffer uses logical width (no row padding).
+    let back_len = (fb_width as usize) * (fb_height as usize);
+    if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
         return;
     }
-    rt.back_len = fb_len;
+    rt.back_len = back_len;
 
     let has_dirty = rt.desktop.has_pending_dirty_rects();
 
@@ -1131,7 +1142,7 @@ where
         {
             let mut back = BACK_BUFFER.lock();
             let mut back_target = FramebufferTarget {
-                pixels: &mut back[..fb_len],
+                pixels: &mut back[..back_len],
                 width: fb_width,
                 height: fb_height,
             };
@@ -1139,23 +1150,37 @@ where
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
 
             if was_transition || (bw > 0 && bh > 0) {
-                let fb_w = fb_width as usize;
+                let back_w = fb_width as usize;
                 if was_transition {
-                    // Full-screen blit on transition: non‑temporal store
-                    let copy_len = fb_len.min(back.len());
-                    unsafe {
-                        copy_to_fb_volatile(fb_pixels.as_mut_ptr(), back.as_ptr(), copy_len);
+                    // Full-screen blit: copy row-by-row to respect
+                    // framebuffer stride (which may be > width on real HW).
+                    for row in 0..fb_height as usize {
+                        let src_off = row * back_w;
+                        let dst_off = row * fb_stride;
+                        let copy_len = back_w.min(back_len.saturating_sub(src_off));
+                        if copy_len > 0 {
+                            unsafe {
+                                copy_to_fb_volatile(
+                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                    back.as_ptr().add(src_off),
+                                    copy_len,
+                                );
+                            }
+                        }
                     }
                 } else {
                     let b_w = bw as usize;
                     for row in 0..bh {
-                        let off = ((by + row) as usize) * fb_w + (bx as usize);
-                        let len = b_w.min(fb_len.saturating_sub(off));
+                        let src_off = ((by + row) as usize) * back_w + (bx as usize);
+                        let dst_off = ((by + row) as usize) * fb_stride + (bx as usize);
+                        let len = b_w
+                            .min(back_len.saturating_sub(src_off))
+                            .min(fb_len.saturating_sub(dst_off));
                         if len > 0 {
                             unsafe {
                                 copy_to_fb_volatile(
-                                    fb_pixels.as_mut_ptr().add(off),
-                                    back.as_ptr().add(off),
+                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                    back.as_ptr().add(src_off),
                                     len,
                                 );
                             }
@@ -1196,15 +1221,15 @@ where
         // desktop) without the cursor, so the next lightweight update can
         // restore the old area correctly.
         if rt.desktop.cursor.visible {
-            let (fb_addr, _, _) = *LAST_FB.lock();
+            let (fb_addr, _, _, fb_stride) = *LAST_FB.lock();
             if fb_addr != 0 {
                 let fb_ptr = fb_addr as *mut u32;
                 let cur_sz = lattice::cursor::Cursor::SIZE as i32;
                 let cx = rt.desktop.cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
                 let cy = rt.desktop.cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
-                let fbw_i = fb_width as i32;
+                let stride_i = fb_stride as i32;
                 let fbh_i = fb_height as i32;
-                let fb_len = (fb_width as usize).saturating_mul(fb_height as usize);
+                let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
                 unsafe {
                     let fb = core::slice::from_raw_parts(fb_ptr, fb_len);
                     for row in 0..cur_sz {
@@ -1212,8 +1237,8 @@ where
                         for col in 0..cur_sz {
                             let val = if sy >= 0 && sy < fbh_i {
                                 let sx = cx + col;
-                                if sx >= 0 && sx < fbw_i {
-                                    let idx = (sy * fbw_i + sx) as usize;
+                                if sx >= 0 && sx < stride_i {
+                                    let idx = (sy * stride_i + sx) as usize;
                                     if idx < fb_len { fb[idx] } else { 0 }
                                 } else {
                                     0
@@ -1477,7 +1502,7 @@ fn runtime_tick_no_fb() {
 
 pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
-    F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
+    F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
     // Skip tick when rendering is suspended (e.g. BadApple playback).
     // Still update global tick to keep keyboard repeat timed.
@@ -1568,7 +1593,7 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
         }
         DesktopAction::About => open_info_window(rt, InfoWindow::About),
         DesktopAction::ToggleTiling => {
-            let (fw, fh) = *FB_DIMS.lock();
+            let (fw, fh, _stride) = *FB_DIMS.lock();
             let (ww, wh) = rt.desktop.work_area(fw, fh);
             rt.desktop.wm.toggle_tiling();
             rt.desktop.wm.retile(ww, wh);
@@ -1913,7 +1938,8 @@ pub fn close_window(id: WindowId) -> bool {
 
 /// Get the current framebuffer dimensions.
 pub fn framebuffer_dims() -> (u32, u32) {
-    *FB_DIMS.lock()
+    let (w, h, _) = *FB_DIMS.lock();
+    (w, h)
 }
 
 // ── Shell bootstrap (moved from kernel to respect dependency direction)

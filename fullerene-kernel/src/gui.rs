@@ -150,17 +150,23 @@ pub fn runtime_tick(now: u64) {
 
 // ── Framebuffer access (kernel-internal) ─────────────────────
 
-/// Get a mutable slice of the framebuffer pixels and its dimensions.
-fn get_framebuffer_slice() -> Option<(&'static mut [u32], u32, u32)> {
+/// Get a mutable slice of the framebuffer pixels, its dimensions,
+/// and the framebuffer stride in u32 pixels per scan line.
+///
+/// On real hardware (InsydeH2O / Intel GOP) the stride may be larger
+/// than `width`, so callers must use the stride for row-index arithmetic.
+fn get_framebuffer_slice() -> Option<(&'static mut [u32], u32, u32, u32)> {
     let kernel_lock = crate::contexts::kernel::get_kernel();
     let kg = kernel_lock.lock();
     let kernel = kg.as_ref()?;
     let info = kernel.framebuffer.renderer.as_ref()?.get_info();
     let fb_ptr = info.address as *mut u32;
-    let fb_len = (info.width as usize) * (info.height as usize);
+    // stride is stored in bytes (pixels_per_scan_line * 4); convert to u32 pixels.
+    let stride_pixels = info.stride / 4;
+    let fb_len = (stride_pixels as usize) * (info.height as usize);
     // Safety: the framebuffer is mapped for the entire kernel lifetime.
     let fb_pixels = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
-    Some((fb_pixels, info.width, info.height))
+    Some((fb_pixels, info.width, info.height, stride_pixels))
 }
 
 // ── Wall clock (CMOS RTC) ────────────────────────────────────
