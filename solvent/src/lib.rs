@@ -31,26 +31,55 @@ use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, Event, EventHandler, EventQueue, InputEvent, KeyCode, MouseButton};
 use spin::Mutex;
 
-// Callback: shell command execution
-pub static SHELL_CMD: Mutex<Option<fn(&str) -> alloc::string::String>> = Mutex::new(None);
-pub fn set_shell_command_handler(f: fn(&str) -> alloc::string::String) {
-    *SHELL_CMD.lock() = Some(f);
+// ── Aggregated kernel callbacks ──────────────────────────────
+
+/// All kernel→solvent callbacks bundled into a single struct.
+pub struct SolventCallbacks {
+    pub shell_cmd: Option<fn(&str) -> String>,
+    pub launch_shell: Option<fn()>,
+    pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
+    pub wall_clock: Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>,
+    pub vfs_readdir: Option<fn(&str) -> Result<Vec<VfsEntry>, &'static str>>,
+    pub process_list: Option<fn() -> Vec<ProcessEntry>>,
+    pub device_list: Option<fn() -> Vec<DeviceEntry>>,
 }
-pub fn exec_shell_command(input: &str) -> alloc::string::String {
-    if let Some(f) = *SHELL_CMD.lock() {
-        f(input)
-    } else {
-        alloc::string::String::from("(no shell)\n")
+
+impl SolventCallbacks {
+    pub const fn none() -> Self {
+        Self {
+            shell_cmd: None,
+            launch_shell: None,
+            heap_extend: None,
+            wall_clock: None,
+            vfs_readdir: None,
+            process_list: None,
+            device_list: None,
+        }
+    }
+
+    /// Atomically install all callbacks at once.
+    pub fn install(self) {
+        *SOLVENT_CALLBACKS.lock() = self;
     }
 }
 
-// Callback: launch the shell process (called from AppGrid / context menu).
-pub static LAUNCH_SHELL_FN: Mutex<Option<fn()>> = Mutex::new(None);
-pub fn set_launch_shell_fn(f: fn()) {
-    *LAUNCH_SHELL_FN.lock() = Some(f);
+/// Global bag of kernel→solvent callbacks.
+pub static SOLVENT_CALLBACKS: Mutex<SolventCallbacks> = Mutex::new(SolventCallbacks::none());
+
+pub fn exec_shell_command(input: &str) -> String {
+    let cb = SOLVENT_CALLBACKS.lock();
+    if let Some(f) = cb.shell_cmd {
+        drop(cb);
+        f(input)
+    } else {
+        String::from("(no shell)\n")
+    }
 }
+
 pub fn launch_shell() {
-    if let Some(f) = *LAUNCH_SHELL_FN.lock() {
+    let cb = SOLVENT_CALLBACKS.lock();
+    if let Some(f) = cb.launch_shell {
+        drop(cb);
         f();
     }
 }
@@ -112,26 +141,11 @@ pub fn get_tsc_per_ms() -> u64 {
 /// Last render TSC timestamp (for real‑time frame pacing).
 static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// Callback to extend the kernel heap.
-pub static HEAP_EXTEND_FN: Mutex<Option<fn(additional: usize) -> Result<(), ()>>> =
-    Mutex::new(None);
-/// Total bytes that have been successfully allocated via `HEAP_EXTEND_FN`.
+/// Total bytes that have been successfully allocated via heap-extend callback.
 pub static HEAP_EXTEND_RESERVE: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-/// Register the kernel heap extension callback.
-pub fn set_heap_extend_fn(f: fn(usize) -> Result<(), ()>) {
-    *HEAP_EXTEND_FN.lock() = Some(f);
-}
 
-/// Callback to get wall‑clock time from UEFI (or RTC fallback).
-pub static WALL_CLOCK_FN: Mutex<Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>> =
-    Mutex::new(None);
-/// Register the wall‑clock callback.
-pub fn set_wall_clock_fn(f: fn() -> Option<(u16, u8, u8, u8, u8, u8)>) {
-    *WALL_CLOCK_FN.lock() = Some(f);
-}
-
-// ── VFS / Process / Device callbacks ──────────
+// ── VFS / Process / Device types ──────────
 
 /// A single VFS directory entry returned by the kernel.
 #[derive(Debug, Clone)]
@@ -164,25 +178,6 @@ pub struct DeviceEntry {
     pub name: String,
     pub dev_type: String,
     pub enabled: bool,
-}
-
-/// Callback to list the contents of a VFS directory.
-pub static VFS_READDIR_FN: Mutex<Option<fn(path: &str) -> Result<Vec<VfsEntry>, &'static str>>> =
-    Mutex::new(None);
-pub fn set_vfs_readdir_fn(f: fn(path: &str) -> Result<Vec<VfsEntry>, &'static str>) {
-    *VFS_READDIR_FN.lock() = Some(f);
-}
-
-/// Callback to get the list of all processes.
-pub static PROCESS_LIST_FN: Mutex<Option<fn() -> Vec<ProcessEntry>>> = Mutex::new(None);
-pub fn set_process_list_fn(f: fn() -> Vec<ProcessEntry>) {
-    *PROCESS_LIST_FN.lock() = Some(f);
-}
-
-/// Callback to get the list of all devices.
-pub static DEVICE_LIST_FN: Mutex<Option<fn() -> Vec<DeviceEntry>>> = Mutex::new(None);
-pub fn set_device_list_fn(f: fn() -> Vec<DeviceEntry>) {
-    *DEVICE_LIST_FN.lock() = Some(f);
 }
 
 /// Latest wall‑clock string (updated each frame).
@@ -945,7 +940,7 @@ pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
 pub fn update_clock() {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
 
-    let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
+    let time_str = if let Some(get_time) = SOLVENT_CALLBACKS.lock().wall_clock {
         if let Some((year, month, day, hour, minute, _second)) = get_time() {
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;
@@ -1296,7 +1291,7 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
             let additional = needed
                 .saturating_sub(HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed))
                 .next_multiple_of(4096);
-            if let Some(extend_fn) = *HEAP_EXTEND_FN.lock() {
+            if let Some(extend_fn) = SOLVENT_CALLBACKS.lock().heap_extend {
                 if extend_fn(additional).is_err() {
                     // Extension failed — keep old size, don't risk OOM.
                     return;
@@ -1667,7 +1662,7 @@ impl InfoWindow {
 fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
     let text = match kind {
         InfoWindow::TaskManager => {
-            let Some(get_procs) = *PROCESS_LIST_FN.lock() else {
+            let Some(get_procs) = SOLVENT_CALLBACKS.lock().process_list else {
                 return show_text_window(
                     rt,
                     "Task Manager",
@@ -1701,7 +1696,7 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::DeviceManager => {
-            let Some(get_devs) = *DEVICE_LIST_FN.lock() else {
+            let Some(get_devs) = SOLVENT_CALLBACKS.lock().device_list else {
                 return show_text_window(
                     rt,
                     "Device Manager",
@@ -1732,7 +1727,7 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::FileManager => {
-            let Some(readdir) = *VFS_READDIR_FN.lock() else {
+            let Some(readdir) = SOLVENT_CALLBACKS.lock().vfs_readdir else {
                 return show_text_window(
                     rt,
                     "File Manager",

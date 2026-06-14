@@ -19,216 +19,193 @@ pub fn init() {
 
 /// Register kernel implementations for nozzle's filesystem and system hooks.
 fn register_nozzle_hooks() {
-    // FS hooks — wire into kernel VFS
-    nozzle::fs_hooks::set_fs_list_fn(|ctx| {
-        // Determine path: first non-flag argument, default to "." (wd)
-        let path = if ctx.args.len() > 1 && !ctx.args[1].starts_with('-') {
-            ctx.args[1]
-        } else {
-            "."
-        };
-        let long_format = ctx.args.iter().any(|a| *a == "-l");
-        match crate::vfs::readdir(path) {
-            Ok(entries) => {
-                for ent in entries {
-                    if long_format {
-                        let kind = if ent.is_dir { "d" } else { "-" };
-                        let line = format!("{}  {:>8}  {}\n", kind, ent.size, ent.name);
-                        ctx.terminal.write_str(&line);
-                    } else if ent.is_dir {
-                        let line = format!("  {}/\n", ent.name);
-                        ctx.terminal.write_str(&line);
-                    } else {
-                        let line = format!("  {}\n", ent.name);
-                        ctx.terminal.write_str(&line);
-                    }
-                }
-            }
-            Err(e) => {
-                let msg = format!("ls: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
-            }
-        }
-    });
-
-    nozzle::fs_hooks::set_fs_read_fn(|ctx, path| {
-        // Read the single file at `path`
-        match crate::vfs::open(path, 0) {
-            Ok(fd) => {
-                let mut buf = [0u8; 512];
-                loop {
-                    match crate::vfs::read(fd.fd, &mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            ctx.terminal
-                                .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
-                        }
-                        Err(e) => {
-                            let msg = format!("cat: {}\n", e);
-                            ctx.terminal.write_str(&msg);
-                            break;
+    // ── Install all FS hooks at once (single lock) ──────────────
+    nozzle::fs_hooks::FsHooks {
+        list: Some(|ctx| {
+            let path = if ctx.args.len() > 1 && !ctx.args[1].starts_with('-') {
+                ctx.args[1]
+            } else {
+                "."
+            };
+            let long_format = ctx.args.iter().any(|a| *a == "-l");
+            match crate::vfs::readdir(path) {
+                Ok(entries) => {
+                    for ent in entries {
+                        if long_format {
+                            let kind = if ent.is_dir { "d" } else { "-" };
+                            let line = format!("{}  {:>8}  {}\n", kind, ent.size, ent.name);
+                            ctx.terminal.write_str(&line);
+                        } else if ent.is_dir {
+                            let line = format!("  {}/\n", ent.name);
+                            ctx.terminal.write_str(&line);
+                        } else {
+                            let line = format!("  {}\n", ent.name);
+                            ctx.terminal.write_str(&line);
                         }
                     }
                 }
-                let _ = crate::vfs::close(fd.fd);
+                Err(e) => {
+                    let msg = format!("ls: {}: {}\n", path, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+        read: Some(|ctx, path| {
+            match crate::vfs::open(path, 0) {
+                Ok(fd) => {
+                    let mut buf = [0u8; 512];
+                    loop {
+                        match crate::vfs::read(fd.fd, &mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                ctx.terminal.write_str(
+                                    core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"),
+                                );
+                            }
+                            Err(e) => {
+                                let msg = format!("cat: {}\n", e);
+                                ctx.terminal.write_str(&msg);
+                                break;
+                            }
+                        }
+                    }
+                    let _ = crate::vfs::close(fd.fd);
+                    ctx.terminal.write_str("\n");
+                }
+                Err(e) => {
+                    let msg = format!("cat: {}: {}\n", path, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+        pwd: Some(|ctx| match crate::vfs::working_directory() {
+            Ok(wd) => {
+                ctx.terminal.write_str(&wd);
                 ctx.terminal.write_str("\n");
             }
             Err(e) => {
-                let msg = format!("cat: {}: {}\n", path, e);
+                let msg = format!("pwd: {}\n", e);
                 ctx.terminal.write_str(&msg);
             }
-        }
-    });
-
-    nozzle::fs_hooks::set_fs_pwd_fn(|ctx| match crate::vfs::working_directory() {
-        Ok(wd) => {
-            ctx.terminal.write_str(&wd);
-            ctx.terminal.write_str("\n");
-        }
-        Err(e) => {
-            let msg = format!("pwd: {}\n", e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    // CD hook
-    nozzle::fs_hooks::set_fs_cd_fn(|ctx, path| match crate::vfs::change_directory(path) {
-        Ok(()) => {}
-        Err(e) => {
-            let msg = format!("cd: {}: {}\n", path, e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    // Tree hook
-    nozzle::fs_hooks::set_fs_tree_fn(|ctx, path| {
-        let resolved = if path == "." {
-            match crate::vfs::working_directory() {
-                Ok(wd) => wd,
-                Err(_) => String::from("/"),
-            }
-        } else {
-            String::from(path)
-        };
-        match crate::fs::walk_dir(&resolved) {
-            Ok(entries) => {
-                for entry in &entries {
-                    ctx.terminal.write_str(entry);
-                    ctx.terminal.write_str("\n");
-                }
-            }
+        }),
+        cd: Some(|ctx, path| match crate::vfs::change_directory(path) {
+            Ok(()) => {}
             Err(e) => {
-                let msg = format!("tree: {}: {}\n", resolved, e);
+                let msg = format!("cd: {}: {}\n", path, e);
                 ctx.terminal.write_str(&msg);
             }
-        }
-    });
-
-    // Find hook
-    nozzle::fs_hooks::set_fs_find_fn(|ctx, path, pattern| {
-        let resolved = if path == "." {
-            match crate::vfs::working_directory() {
-                Ok(wd) => wd,
-                Err(_) => String::from("/"),
-            }
-        } else {
-            String::from(path)
-        };
-        match crate::fs::walk_dir(&resolved) {
-            Ok(entries) => {
-                let mut found = false;
-                for entry in &entries {
-                    if entry.contains(pattern) {
+        }),
+        tree: Some(|ctx, path| {
+            let resolved = if path == "." {
+                match crate::vfs::working_directory() {
+                    Ok(wd) => wd,
+                    Err(_) => String::from("/"),
+                }
+            } else {
+                String::from(path)
+            };
+            match crate::fs::walk_dir(&resolved) {
+                Ok(entries) => {
+                    for entry in &entries {
                         ctx.terminal.write_str(entry);
                         ctx.terminal.write_str("\n");
-                        found = true;
                     }
                 }
-                if !found {
-                    ctx.terminal.write_str("(no matches)\n");
+                Err(e) => {
+                    let msg = format!("tree: {}: {}\n", resolved, e);
+                    ctx.terminal.write_str(&msg);
                 }
             }
-            Err(e) => {
-                let msg = format!("find: {}: {}\n", resolved, e);
-                ctx.terminal.write_str(&msg);
+        }),
+        find: Some(|ctx, path, pattern| {
+            let resolved = if path == "." {
+                match crate::vfs::working_directory() {
+                    Ok(wd) => wd,
+                    Err(_) => String::from("/"),
+                }
+            } else {
+                String::from(path)
+            };
+            match crate::fs::walk_dir(&resolved) {
+                Ok(entries) => {
+                    let mut found = false;
+                    for entry in &entries {
+                        if entry.contains(pattern) {
+                            ctx.terminal.write_str(entry);
+                            ctx.terminal.write_str("\n");
+                            found = true;
+                        }
+                    }
+                    if !found {
+                        ctx.terminal.write_str("(no matches)\n");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("find: {}: {}\n", resolved, e);
+                    ctx.terminal.write_str(&msg);
+                }
             }
-        }
-    });
-
-    // Copy hook
-    nozzle::fs_hooks::set_fs_cp_fn(|ctx, src, dst| match crate::fs::copy_file(src, dst) {
-        Ok(()) => {
-            let msg = format!("Copied {} -> {}\n", src, dst);
-            ctx.terminal.write_str(&msg);
-        }
-        Err(e) => {
-            let msg = format!("cp: {} -> {}: {}\n", src, dst, e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    // Move hook
-    nozzle::fs_hooks::set_fs_mv_fn(|ctx, src, dst| match crate::fs::move_file(src, dst) {
-        Ok(()) => {
-            let msg = format!("Moved {} -> {}\n", src, dst);
-            ctx.terminal.write_str(&msg);
-        }
-        Err(e) => {
-            let msg = format!("mv: {} -> {}: {}\n", src, dst, e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    // Write hook
-    nozzle::fs_hooks::set_fs_write_fn(|ctx, path, content| {
-        match crate::fs::write_entire_file(path, content.as_bytes()) {
+        }),
+        cp: Some(|ctx, src, dst| match crate::fs::copy_file(src, dst) {
             Ok(()) => {
-                let msg = format!("Wrote {} bytes to {}\n", content.len(), path);
+                let msg = format!("Copied {} -> {}\n", src, dst);
                 ctx.terminal.write_str(&msg);
             }
             Err(e) => {
-                let msg = format!("write: {}: {}\n", path, e);
+                let msg = format!("cp: {} -> {}: {}\n", src, dst, e);
                 ctx.terminal.write_str(&msg);
             }
-        }
-    });
-
-    // RM hook
-    nozzle::fs_hooks::set_fs_rm_fn(|ctx, path| match crate::fs::remove(path) {
-        Ok(()) => {
-            let msg = format!("Removed {}\n", path);
-            ctx.terminal.write_str(&msg);
-        }
-        Err(e) => {
-            let msg = format!("rm: {}: {}\n", path, e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    // MKDIR hook
-    nozzle::fs_hooks::set_fs_mkdir_fn(|ctx, path| match crate::vfs::mkdir(path) {
-        Ok(()) => {
-            let msg = format!("Created directory {}\n", path);
-            ctx.terminal.write_str(&msg);
-        }
-        Err(e) => {
-            let msg = format!("mkdir: {}: {}\n", path, e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    // TOUCH hook
-    nozzle::fs_hooks::set_fs_touch_fn(|ctx, path| {
-        // Open first to check if file exists; avoids truncating existing files.
-        match crate::vfs::open(path, 0) {
-            Ok(fd) => {
-                let _ = crate::vfs::close(fd.fd);
-                let msg = format!("Touched {}\n", path);
+        }),
+        mv: Some(|ctx, src, dst| match crate::fs::move_file(src, dst) {
+            Ok(()) => {
+                let msg = format!("Moved {} -> {}\n", src, dst);
                 ctx.terminal.write_str(&msg);
             }
-            Err(_) => {
-                // File doesn't exist, create an empty one.
-                match crate::vfs::create(path) {
+            Err(e) => {
+                let msg = format!("mv: {} -> {}: {}\n", src, dst, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        write: Some(|ctx, path, content| {
+            match crate::fs::write_entire_file(path, content.as_bytes()) {
+                Ok(()) => {
+                    let msg = format!("Wrote {} bytes to {}\n", content.len(), path);
+                    ctx.terminal.write_str(&msg);
+                }
+                Err(e) => {
+                    let msg = format!("write: {}: {}\n", path, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+        rm: Some(|ctx, path| match crate::fs::remove(path) {
+            Ok(()) => {
+                let msg = format!("Removed {}\n", path);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("rm: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        mkdir: Some(|ctx, path| match crate::vfs::mkdir(path) {
+            Ok(()) => {
+                let msg = format!("Created directory {}\n", path);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("mkdir: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        touch: Some(|ctx, path| {
+            match crate::vfs::open(path, 0) {
+                Ok(fd) => {
+                    let _ = crate::vfs::close(fd.fd);
+                    let msg = format!("Touched {}\n", path);
+                    ctx.terminal.write_str(&msg);
+                }
+                Err(_) => match crate::vfs::create(path) {
                     Ok(fd) => {
                         let _ = crate::vfs::close(fd.fd);
                         let msg = format!("Touched {}\n", path);
@@ -238,40 +215,36 @@ fn register_nozzle_hooks() {
                         let msg = format!("touch: {}: {}\n", path, e);
                         ctx.terminal.write_str(&msg);
                     }
+                },
+            }
+        }),
+        df: Some(|ctx| {
+            match crate::fs::walk_dir("/") {
+                Ok(entries) => {
+                    let file_count = entries.iter().filter(|e| !e.ends_with('/')).count();
+                    let dir_count = entries.iter().filter(|e| e.ends_with('/')).count();
+                    ctx.terminal
+                        .write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
+                    let msg = format!(
+                        "ramfs           {:>4}K  {:>4}K  {:>4}K  {:>3}%  /\n",
+                        0, 0, 0, 0
+                    );
+                    ctx.terminal.write_str(&msg);
+                    let msg2 = format!("{} files, {} directories\n", file_count, dir_count);
+                    ctx.terminal.write_str(&msg2);
+                }
+                Err(e) => {
+                    let msg = format!("df: {}\n", e);
+                    ctx.terminal.write_str(&msg);
                 }
             }
-        }
-    });
+        }),
+    }
+    .install();
 
-    // DF (disk usage) hook
-    nozzle::fs_hooks::set_fs_df_fn(|ctx| {
-        // Walk "/" to count files and directories, sum sizes.
-        match crate::fs::walk_dir("/") {
-            Ok(entries) => {
-                let file_count = entries.iter().filter(|e| !e.ends_with('/')).count();
-                let dir_count = entries.iter().filter(|e| e.ends_with('/')).count();
-                // Approximate total size by summing known sizes from readdir
-                // We'll count via readdir below
-                // For now just display entry count
-                ctx.terminal
-                    .write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
-                let msg = format!(
-                    "ramfs           {:>4}K  {:>4}K  {:>4}K  {:>3}%  /\n",
-                    0, 0, 0, 0
-                );
-                ctx.terminal.write_str(&msg);
-                let msg2 = format!("{} files, {} directories\n", file_count, dir_count);
-                ctx.terminal.write_str(&msg2);
-            }
-            Err(e) => {
-                let msg = format!("df: {}\n", e);
-                ctx.terminal.write_str(&msg);
-            }
-        }
-    });
-
-    // Sys info hooks — provide real kernel data (unified handler)
-    nozzle::sys_hooks::set_sys_info_fn(|ctx, cmd| match cmd {
+    // ── Install sys info / control hooks ───────────────────────
+    nozzle::sys_hooks::SysHooks {
+        info: Some(|ctx, cmd| match cmd {
         "mem" => {
             let (heap_start, heap_end) = petroleum::common::memory::get_heap_range();
             let total = if heap_end > heap_start {
@@ -454,7 +427,7 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str("Bad Apple finished.\n");
         }
         "date" => {
-            if let Some(get_time) = *solvent::WALL_CLOCK_FN.lock() {
+            if let Some(get_time) = solvent::SOLVENT_CALLBACKS.lock().wall_clock {
                 if let Some((year, month, day, hour, minute, second)) = get_time() {
                     let msg = format!(
                         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}\n",
@@ -688,10 +661,8 @@ fn register_nozzle_hooks() {
             let msg = format!("Unknown sys info command: {}\n", cmd);
             ctx.terminal.write_str(&msg);
         }
-    });
-
-    // Sys control hooks — theme/wallpaper/reboot/shutdown (via solvent bridges)
-    nozzle::sys_hooks::set_sys_ctl_fn(|cmd| match cmd {
+        }),
+        ctl: Some(|cmd| match cmd {
         "theme dark" => {
             solvent::set_theme(solvent::ThemeVariant::Dark);
             solvent::force_desktop_redraw();
@@ -783,7 +754,9 @@ fn register_nozzle_hooks() {
             }
         }
         _ => {}
-    });
+    }),
+}
+.install();
 }
 
 /// Main shell entry point — called from the scheduler as a kernel process.

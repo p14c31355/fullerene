@@ -1,10 +1,10 @@
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
-use crate::process::{NEXT_PID, Process, ProcessState};
+use crate::process::{Process, ProcessState};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::alloc::Layout;
-use core::sync::atomic::Ordering;
+
 use petroleum::common::memory::{user_slice, user_slice_mut};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
@@ -135,7 +135,7 @@ fn syscall_fork() -> SyscallResult {
         .map_err(|_| SyscallError::OutOfMemory)?;
     let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
 
-    let child_pid = NEXT_PID.fetch_add(1, Ordering::Relaxed);
+    let child_pid = process::PROCESS_MANAGER.allocate_pid().0 as usize;
 
     // Create child process
     let mut child_process = Process {

@@ -28,72 +28,68 @@ pub use solvent::{
 
 /// Initialise the GUI subsystem via Solvent runtime.
 pub fn init() {
-    // Register the kernel heap extension callback so that solvent can
-    // request dynamic heap expansion when resizing terminal surfaces.
-    solvent::set_heap_extend_fn(|additional| unsafe {
-        crate::heap::extend_kernel_heap(additional)
-    });
-
-    // Register the wall-clock callback (CMOS RTC).
-    solvent::set_wall_clock_fn(read_cmos_time);
-
-    // Register VFS readdir callback — bridges the kernel VFS to solvent.
-    solvent::set_vfs_readdir_fn(|path| {
-        let entries = crate::vfs::readdir(path).map_err(|e| {
-            // log::warn!("VFS readdir: {} → {}", path, e);
-            e
-        })?;
-        let mut result = alloc::vec::Vec::new();
-        for vn in entries {
-            result.push(solvent::VfsEntry {
-                name: vn.name,
-                size: vn.size,
-                is_dir: vn.is_dir,
+    // Install all kernel→solvent callbacks at once.
+    solvent::SolventCallbacks {
+        heap_extend: Some(|additional| unsafe { crate::heap::extend_kernel_heap(additional) }),
+        wall_clock: Some(read_cmos_time),
+        vfs_readdir: Some(|path| {
+            let entries = crate::vfs::readdir(path).map_err(|e| {
+                // log::warn!("VFS readdir: {} → {}", path, e);
+                e
+            })?;
+            let mut result = alloc::vec::Vec::new();
+            for vn in entries {
+                result.push(solvent::VfsEntry {
+                    name: vn.name,
+                    size: vn.size,
+                    is_dir: vn.is_dir,
+                });
+            }
+            Ok(result)
+        }),
+        process_list: Some(|| {
+            let mut result = alloc::vec::Vec::new();
+            crate::process::PROCESS_MANAGER.with_list(|list| {
+                for (pid, proc) in list.iter() {
+                    let state = match proc.state {
+                        crate::process::ProcessState::Ready => solvent::ProcessStateKind::Ready,
+                        crate::process::ProcessState::Running => solvent::ProcessStateKind::Running,
+                        crate::process::ProcessState::Blocked => solvent::ProcessStateKind::Blocked,
+                        crate::process::ProcessState::Terminated => {
+                            solvent::ProcessStateKind::Terminated
+                        }
+                    };
+                    result.push(solvent::ProcessEntry {
+                        pid: pid.0,
+                        name: alloc::string::String::from(proc.name),
+                        state,
+                    });
+                }
             });
-        }
-        Ok(result)
-    });
-
-    // Register process list callback — bridges process manager to solvent.
-    solvent::set_process_list_fn(|| {
-        let mut result = alloc::vec::Vec::new();
-        crate::process::PROCESS_MANAGER.with_list(|list| {
-            for (pid, proc) in list.iter() {
-                let state = match proc.state {
-                    crate::process::ProcessState::Ready => solvent::ProcessStateKind::Ready,
-                    crate::process::ProcessState::Running => solvent::ProcessStateKind::Running,
-                    crate::process::ProcessState::Blocked => solvent::ProcessStateKind::Blocked,
-                    crate::process::ProcessState::Terminated => {
-                        solvent::ProcessStateKind::Terminated
-                    }
-                };
-                result.push(solvent::ProcessEntry {
-                    pid: pid.0,
-                    name: alloc::string::String::from(proc.name),
-                    state,
-                });
+            result
+        }),
+        device_list: Some(|| {
+            let mut result = alloc::vec::Vec::new();
+            if let Some(mgr) = crate::hardware::device_manager::get_device_manager()
+                .lock()
+                .as_ref()
+            {
+                for di in mgr.list_devices() {
+                    result.push(solvent::DeviceEntry {
+                        name: alloc::string::String::from(di.name),
+                        dev_type: alloc::string::String::from(di.device_type),
+                        enabled: di.enabled,
+                    });
+                }
             }
-        });
-        result
-    });
-
-    // Register device list callback — bridges device manager to solvent.
-    solvent::set_device_list_fn(|| {
-        let mut result = alloc::vec::Vec::new();
-        if let Some(mgr) = crate::hardware::device_manager::get_device_manager()
-            .lock()
-            .as_ref()
-        {
-            for di in mgr.list_devices() {
-                result.push(solvent::DeviceEntry {
-                    name: alloc::string::String::from(di.name),
-                    dev_type: alloc::string::String::from(di.device_type),
-                    enabled: di.enabled,
-                });
-            }
-        }
-        result
-    });
+            result
+        }),
+        shell_cmd: None,
+        launch_shell: Some(|| {
+            crate::scheduler::request_shell_launch();
+        }),
+    }
+    .install();
 
     // Calibrate TSC ticks per millisecond using the PIT (8254).
     // PIT channel 2 is free‑running and connected to the speaker
@@ -105,13 +101,6 @@ pub fn init() {
         tsc_per_ms as f64 / 1_000_000.0,
     ));
     solvent::set_tsc_per_ms(tsc_per_ms);
-
-    // Register the launch‑shell callback so the AppGrid / context menu
-    // can request a shell launch.  The actual launch happens in
-    // scheduler_loop() on the next idle iteration.
-    solvent::set_launch_shell_fn(|| {
-        crate::scheduler::request_shell_launch();
-    });
 
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));

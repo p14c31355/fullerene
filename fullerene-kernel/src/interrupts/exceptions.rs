@@ -118,7 +118,7 @@ pub extern "C" fn exception_recovery_trampoline() -> ! {
 
 fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
     raw_log!("EXCEPTION: {} - terminating process\n", reason);
-    let current_pid = crate::process::CURRENT_PROCESS.load(core::sync::atomic::Ordering::Relaxed);
+    let current_pid = crate::process::PROCESS_MANAGER.current_pid();
     if current_pid == 0 {
         safe_halt();
     }
@@ -229,7 +229,7 @@ pub extern "x86-interrupt" fn double_fault_handler(
         frame.code_segment.0
     );
     if is_user_mode(&frame) {
-        let pid = crate::process::CURRENT_PROCESS.load(core::sync::atomic::Ordering::Relaxed);
+        let pid = crate::process::PROCESS_MANAGER.current_pid();
         if pid != 0 {
             crate::process::PROCESS_MANAGER.with_process(
                 crate::process::ProcessId(pid as u64),
