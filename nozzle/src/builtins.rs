@@ -419,8 +419,7 @@ pub fn cmd_wc(ctx: &mut CommandContext) -> bool {
         let lines = stdin.lines().count();
         let words = stdin.split_whitespace().count();
         let bytes = stdin.len();
-        let out = alloc::format!("{} {} {} {}\n", lines, words, bytes,
-            if ctx.args.len() > 1 { ctx.args[1] } else { "(stdin)" });
+        let out = alloc::format!("{} {} {} (stdin)\n", lines, words, bytes);
         ctx.terminal.write_str(&out);
         return true;
     }

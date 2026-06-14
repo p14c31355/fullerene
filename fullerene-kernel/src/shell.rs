@@ -229,16 +229,26 @@ fn register_nozzle_hooks() {
 
     // TOUCH hook
     nozzle::fs_hooks::set_fs_touch_fn(|ctx, path| {
-        // Create an empty file if it doesn't exist; if it does, no-op.
-        match crate::vfs::create(path) {
+        // Open first to check if file exists; avoids truncating existing files.
+        match crate::vfs::open(path, 0) {
             Ok(fd) => {
                 let _ = crate::vfs::close(fd.fd);
                 let msg = format!("Touched {}\n", path);
                 ctx.terminal.write_str(&msg);
             }
-            Err(e) => {
-                let msg = format!("touch: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+            Err(_) => {
+                // File doesn't exist, create an empty one.
+                match crate::vfs::create(path) {
+                    Ok(fd) => {
+                        let _ = crate::vfs::close(fd.fd);
+                        let msg = format!("Touched {}\n", path);
+                        ctx.terminal.write_str(&msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("touch: {}: {}\n", path, e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                }
             }
         }
     });
@@ -487,13 +497,24 @@ fn register_nozzle_hooks() {
             }
         }
         "sleep" => {
-            // Busy-wait for N seconds using TSC
             if ctx.args.len() > 1 {
                 if let Ok(secs) = ctx.args[1].parse::<u64>() {
                     let tsc_per_ms = solvent::get_tsc_per_ms();
                     let total_ticks = tsc_per_ms.saturating_mul(secs * 1000);
                     let start = unsafe { core::arch::x86_64::_rdtsc() };
-                    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < total_ticks {
+                    // Yield via HLT-hinted syscall periodically to avoid
+                    // starving other tasks during the wait.
+                    let mut last_yield = start;
+                    let yield_interval = tsc_per_ms.saturating_mul(10); // every ~10 ms
+                    loop {
+                        let now = unsafe { core::arch::x86_64::_rdtsc() };
+                        if now.wrapping_sub(start) >= total_ticks {
+                            break;
+                        }
+                        if now.wrapping_sub(last_yield) >= yield_interval {
+                            crate::syscall::kernel_syscall(22, 0, 0, 0);
+                            last_yield = now;
+                        }
                         core::hint::spin_loop();
                     }
                 } else {
