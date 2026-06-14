@@ -29,7 +29,6 @@
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
-use x86_64::VirtAddr;
 
 /// Built-in application binary (embedded in kernel).
 struct KnownApp {

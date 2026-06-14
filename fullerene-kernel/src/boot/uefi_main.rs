@@ -48,9 +48,15 @@ pub unsafe extern "C" fn efi_main_stage2(
                 args.fb_width.saturating_mul(4)
             };
             let pixel_format = match args.fb_pixel_format {
-                0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-                _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                0 => {
+                    petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+                }
+                1 => {
+                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+                }
+                _ => {
+                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+                }
             };
             // Also store in .data section to survive BSS corruption
             crate::graphics::store_fb_params(

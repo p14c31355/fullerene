@@ -5,8 +5,7 @@
 //! trait to the kernel's raw syscall I/O.
 
 use crate::syscall::kernel_syscall;
-use alloc::string::ToString;
-use alloc::{format, string::String};
+use alloc::format;
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {

@@ -88,7 +88,6 @@ pub fn load_program(
                     }
 
                     // Validate that the virtual address range is in user space
-                    use crate::memory_management::map_user_page;
 
                     let start_addr = x86_64::VirtAddr::new(vaddr);
                     let end_addr = x86_64::VirtAddr::new(vaddr + mem_size as u64 - 1);

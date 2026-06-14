@@ -61,9 +61,7 @@ pub fn bootstrap_memory(
 
     let boot_heap_ptr =
         unsafe { core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8 };
-    unsafe {
-        petroleum::page_table::init_global_heap(boot_heap_ptr, crate::heap::HEAP_SIZE)
-    };
+    unsafe { petroleum::page_table::init_global_heap(boot_heap_ptr, crate::heap::HEAP_SIZE) };
 
     let memory_map_ref = MEMORY_MAP
         .lock()

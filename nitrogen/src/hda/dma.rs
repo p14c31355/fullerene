@@ -224,47 +224,49 @@ impl DmaEngine {
     ///
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn feed_samples(&self, mmio: *mut u8, samples: &[u8]) -> usize {
-        if !self.ready.load(Ordering::Acquire) {
-            return 0;
+        unsafe {
+            if !self.ready.load(Ordering::Acquire) {
+                return 0;
+            }
+
+            let sd = self.sd_offset;
+            let half = self.half_size;
+
+            // Read LPIB and determine safe half
+            let lpib_raw = mmio_read32(mmio, sd + SD_LPIB);
+            let lpib = lpib_raw.wrapping_rem(self.audio_size);
+            let write_off: u32 = if lpib < half { half } else { 0 };
+
+            // Check BCIS (hardware IOC)
+            let sts = mmio_read8(mmio, sd + SD_STS);
+            if sts & 0x04 != 0 {
+                mmio_write8(mmio, sd + SD_STS, 0x04);
+            }
+
+            // Time‑based fallback: detect LPIB advance ≥ half bytes
+            let last_raw = self.last_lpib.load(Ordering::Relaxed) as u32;
+            let delta = lpib_raw.wrapping_sub(last_raw);
+            let crossed = delta >= half || (sts & 0x04) != 0;
+            if !crossed {
+                return 0;
+            }
+
+            self.last_lpib.store(lpib_raw as u64, Ordering::Relaxed);
+
+            let write_max = half as usize;
+            let n = samples.len().min(write_max);
+            if n == 0 {
+                return 0;
+            }
+
+            let dst = self.dma_virt.add((self.audio_off + write_off) as usize);
+            core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, n);
+            // Zero the remainder so stale data doesn't repeat
+            if n < write_max {
+                core::ptr::write_bytes(dst.add(n), 0, write_max - n);
+            }
+            n
         }
-
-        let sd = self.sd_offset;
-        let half = self.half_size;
-
-        // Read LPIB and determine safe half
-        let lpib_raw = mmio_read32(mmio, sd + SD_LPIB);
-        let lpib = lpib_raw.wrapping_rem(self.audio_size);
-        let write_off: u32 = if lpib < half { half } else { 0 };
-
-        // Check BCIS (hardware IOC)
-        let sts = mmio_read8(mmio, sd + SD_STS);
-        if sts & 0x04 != 0 {
-            mmio_write8(mmio, sd + SD_STS, 0x04);
-        }
-
-        // Time‑based fallback: detect LPIB advance ≥ half bytes
-        let last_raw = self.last_lpib.load(Ordering::Relaxed) as u32;
-        let delta = lpib_raw.wrapping_sub(last_raw);
-        let crossed = delta >= half || (sts & 0x04) != 0;
-        if !crossed {
-            return 0;
-        }
-
-        self.last_lpib.store(lpib_raw as u64, Ordering::Relaxed);
-
-        let write_max = half as usize;
-        let n = samples.len().min(write_max);
-        if n == 0 {
-            return 0;
-        }
-
-        let dst = self.dma_virt.add((self.audio_off + write_off) as usize);
-        core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, n);
-        // Zero the remainder so stale data doesn't repeat
-        if n < write_max {
-            core::ptr::write_bytes(dst.add(n), 0, write_max - n);
-        }
-        n
     }
 
     /// Read the current LPIB (Link Position In Buffer) register.
@@ -273,12 +275,14 @@ impl DmaEngine {
     ///
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn playback_progress_bytes(&self, mmio: *mut u8) -> Option<u64> {
-        if !self.ready.load(Ordering::Acquire) {
-            return None;
+        unsafe {
+            if !self.ready.load(Ordering::Acquire) {
+                return None;
+            }
+            let sd = self.sd_offset;
+            let raw = mmio_read32(mmio, sd + SD_LPIB);
+            Some(raw as u64)
         }
-        let sd = self.sd_offset;
-        let raw = mmio_read32(mmio, sd + SD_LPIB);
-        Some(raw as u64)
     }
 
     /// Poll for BCIS (half‑buffer completion) with optional TSC timeout.
@@ -290,23 +294,25 @@ impl DmaEngine {
     ///
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn poll(&self, mmio: *mut u8, timeout_tsc: Option<u64>) -> bool {
-        if !self.ready.load(Ordering::Acquire) {
-            return false;
-        }
-        let sd = self.sd_offset;
-        let deadline = match timeout_tsc {
-            Some(d) => core::arch::x86_64::_rdtsc().wrapping_add(d),
-            None => u64::MAX,
-        };
-        loop {
-            let sts = mmio_read8(mmio, sd + SD_STS);
-            if sts & 0x04 != 0 {
-                return true;
-            }
-            if timeout_tsc.is_some() && core::arch::x86_64::_rdtsc() >= deadline {
+        unsafe {
+            if !self.ready.load(Ordering::Acquire) {
                 return false;
             }
-            core::hint::spin_loop();
+            let sd = self.sd_offset;
+            let deadline = match timeout_tsc {
+                Some(d) => core::arch::x86_64::_rdtsc().wrapping_add(d),
+                None => u64::MAX,
+            };
+            loop {
+                let sts = mmio_read8(mmio, sd + SD_STS);
+                if sts & 0x04 != 0 {
+                    return true;
+                }
+                if timeout_tsc.is_some() && core::arch::x86_64::_rdtsc() >= deadline {
+                    return false;
+                }
+                core::hint::spin_loop();
+            }
         }
     }
 
@@ -316,10 +322,12 @@ impl DmaEngine {
     ///
     /// `mmio` must be a valid MMIO base pointer.
     pub unsafe fn poll_delay(&self, mmio: *mut u8, tsc_per_ms: u64, ms: u64) {
-        let deadline = core::arch::x86_64::_rdtsc().wrapping_add(tsc_per_ms.saturating_mul(ms));
-        while core::arch::x86_64::_rdtsc() < deadline {
-            self.poll(mmio, None);
-            core::hint::spin_loop();
+        unsafe {
+            let deadline = core::arch::x86_64::_rdtsc().wrapping_add(tsc_per_ms.saturating_mul(ms));
+            while core::arch::x86_64::_rdtsc() < deadline {
+                self.poll(mmio, None);
+                core::hint::spin_loop();
+            }
         }
     }
 

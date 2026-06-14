@@ -29,10 +29,19 @@ impl FramebufferContext {
             fb_width_px: 0,
             fb_height_px: 0,
             fb_stride_bytes: 0,
-            fb_pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            fb_pixel_format:
+                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
         }
     }
-    pub fn store_raw_params(&mut self, phys: u64, width: u32, height: u32, stride: u32, bpp: u32, pixel_format: petroleum::common::EfiGraphicsPixelFormat) {
+    pub fn store_raw_params(
+        &mut self,
+        phys: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+        bpp: u32,
+        pixel_format: petroleum::common::EfiGraphicsPixelFormat,
+    ) {
         self.fb_phys = phys;
         self.fb_width_px = width;
         self.fb_height_px = height;
@@ -43,7 +52,11 @@ impl FramebufferContext {
     pub fn build_renderer_from_stored(&mut self) -> bool {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] build_renderer_from_stored entry\n");
         if self.renderer.is_some() {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] renderer already Some, returning true\n");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"[fb] renderer already Some, returning true\n",
+            );
             return true;
         }
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] checking fb_phys\n");
@@ -58,8 +71,10 @@ impl FramebufferContext {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] validation failed\n");
             return false;
         }
-        if self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
-            && self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+        if self.fb_pixel_format
+            != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+            && self.fb_pixel_format
+                != petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
         {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] unsupported pixel format\n");
             return false;

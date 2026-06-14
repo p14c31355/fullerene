@@ -14,8 +14,8 @@ use alloc::vec::Vec;
 use x86_64::{
     PhysAddr, VirtAddr,
     structures::paging::{
-        Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size2MiB, Size4KiB, FrameAllocator,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
+        Size2MiB, Size4KiB,
     },
 };
 
@@ -220,11 +220,7 @@ impl VirtualMemoryContext {
     }
 
     /// Map a heap region (owned, writable, no-execute).
-    pub fn map_heap(
-        &mut self,
-        phys: u64,
-        size_bytes: u64,
-    ) -> Result<u64, &'static str> {
+    pub fn map_heap(&mut self, phys: u64, size_bytes: u64) -> Result<u64, &'static str> {
         let va = phys + self.physical_offset;
         self.map_range_4k(
             phys,
@@ -265,9 +261,7 @@ impl VirtualMemoryContext {
     /// This copies the PML4 structure but preserves all existing mappings
     /// (including `.data` and `.bss` sections) unlike the previous
     /// `clone_page_table` which zeroed temporary VA ranges.
-    pub fn clone_for_process(
-        &mut self,
-    ) -> Result<VirtualMemoryContext, &'static str> {
+    pub fn clone_for_process(&mut self) -> Result<VirtualMemoryContext, &'static str> {
         let new_frame = self
             .frame_allocator
             .allocate_frame()

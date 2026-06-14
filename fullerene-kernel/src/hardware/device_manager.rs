@@ -291,7 +291,9 @@ fn device_kind_from_type(device_type: &str) -> DeviceKind {
         || lower.contains("ahci")
         || lower.contains("nvme")
         || lower.contains("disk")
-        || lower.split(|c: char| !c.is_alphanumeric()).any(|token| token == "ata")
+        || lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|token| token == "ata")
     {
         DeviceKind::Storage
     } else if lower.contains("display")

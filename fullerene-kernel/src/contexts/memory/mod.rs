@@ -39,7 +39,11 @@ impl MemoryContext {
         physical_offset: u64,
         allocator: BitmapFrameAllocator,
     ) {
-        self.vm = Some(VirtualMemoryContext::new(pml4_phys, physical_offset, allocator));
+        self.vm = Some(VirtualMemoryContext::new(
+            pml4_phys,
+            physical_offset,
+            allocator,
+        ));
     }
 
     // ── High-level VM operations (preferred) ─────────────────

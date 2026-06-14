@@ -53,7 +53,11 @@ pub fn init_graphics() {
         let kg = kernel_lock.lock();
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel lock acquired\n");
         if kg.is_none() {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel is None, initializing\n");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"[init_gfx] kernel is None, initializing\n",
+            );
             drop(kg);
             crate::contexts::kernel::init_kernel();
         }
@@ -74,7 +78,8 @@ pub fn init_graphics() {
         let h = STORED_FB[2] as u32;
         let stride = STORED_FB[3] as u32;
         let bpp = STORED_FB[4] as u32;
-        if phys >= 0x100000 && w > 0 && w <= 16384 && h > 0 && h <= 16384 && stride > 0 && bpp == 32 {
+        if phys >= 0x100000 && w > 0 && w <= 16384 && h > 0 && h <= 16384 && stride > 0 && bpp == 32
+        {
             fb_params = Some((phys, w, h, stride));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] STORED_FB valid\n");
         }
@@ -85,14 +90,19 @@ pub fn init_graphics() {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] STORED_FB empty, scanning PCI\n");
         fb_params = with_kernel(|k| {
             for dev in k.pci.devices.iter() {
-                let vendor = nitrogen::pci::PciConfigSpace::read_config_word(dev.bus, dev.device, 0, 0);
+                let vendor =
+                    nitrogen::pci::PciConfigSpace::read_config_word(dev.bus, dev.device, 0, 0);
                 if vendor == 0xFFFF || vendor == 0x0000 {
                     continue;
                 }
-                let class = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
-                let subclass = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
+                let class =
+                    nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
+                let subclass =
+                    nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
                 if class == 0x03 && subclass == 0x00 {
-                    let bar0 = nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x10);
+                    let bar0 = nitrogen::pci::PciConfigSpace::read_config_dword(
+                        dev.bus, dev.device, 0, 0x10,
+                    );
                     let fb_phys = (bar0 & 0xFFFFFFF0) as u64;
                     if fb_phys >= 0x100000 {
                         // Use stored width/height from .data if available,
@@ -116,17 +126,28 @@ pub fn init_graphics() {
                 }
             }
             None
-        }).flatten();
+        })
+        .flatten();
     }
     if let Some((fb_phys, w, h, stride)) = fb_params {
-        let pixel_format = petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor;
+        let pixel_format =
+            petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor;
         with_kernel_mut(|k| {
-            k.framebuffer.store_raw_params(fb_phys, w, h, stride, 32, pixel_format);
+            k.framebuffer
+                .store_raw_params(fb_phys, w, h, stride, 32, pixel_format);
         });
     }
-    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] calling build_renderer_from_stored\n");
+    petroleum::write_serial_bytes(
+        0x3F8,
+        0x3FD,
+        b"[init_gfx] calling build_renderer_from_stored\n",
+    );
     let built = with_kernel_mut(|k| k.framebuffer.build_renderer_from_stored()).unwrap_or(false);
-    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] build_renderer_from_stored returned\n");
+    petroleum::write_serial_bytes(
+        0x3F8,
+        0x3FD,
+        b"[init_gfx] build_renderer_from_stored returned\n",
+    );
     if built {
         // Register the framebuffer mapping in VirtualMemoryContext so
         // "where is framebuffer mapped?" is always answerable.
@@ -134,10 +155,15 @@ pub fn init_graphics() {
             let fb_phys = with_kernel_mut(|k| k.framebuffer.fb_phys).unwrap_or(0);
             let fb_size = with_kernel_mut(|k| {
                 k.framebuffer.fb_stride_bytes as u64 * k.framebuffer.fb_height_px as u64
-            }).unwrap_or(0);
+            })
+            .unwrap_or(0);
             if fb_phys >= 0x100000 && fb_size > 0 {
                 let _ = mem.map_framebuffer_vm(fb_phys, fb_size);
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] FB recorded in MemoryContext\n");
+                petroleum::write_serial_bytes(
+                    0x3F8,
+                    0x3FD,
+                    b"[init_gfx] FB recorded in MemoryContext\n",
+                );
             }
         }
         petroleum::serial::serial_log(format_args!(

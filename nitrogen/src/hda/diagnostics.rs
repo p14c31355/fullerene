@@ -5,9 +5,8 @@
 //! producing detailed log output suitable for debugging silent‑output
 //! issues on real hardware.
 
-use crate::hda::codec::{CodecGraph, WidgetInfo, widget_type_name};
+use crate::hda::codec::{CodecGraph, widget_type_name};
 use crate::hda::corb::CorbEngine;
-use crate::hda::corb::params;
 use crate::hda::corb::verbs;
 use crate::hda::widget_type;
 

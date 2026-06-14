@@ -504,7 +504,7 @@ impl VirtioNetDevice {
         self.notify(1);
 
         // Wait for used ring update
-        let initial_used = self.tx_last_used;
+        let _initial_used = self.tx_last_used;
         for _ in 0..10_000_000 {
             let used_idx = unsafe {
                 u16::from_le(core::ptr::read_volatile(core::ptr::addr_of!(

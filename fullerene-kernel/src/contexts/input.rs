@@ -183,7 +183,7 @@ impl InputContext {
 }
 
 pub fn drain_into_event_context() {
-    use resonance::{Event, InputEvent as ResInput, KeyCode as ResKey, MouseButton as ResBtn};
+    use resonance::{Event, InputEvent as ResInput};
     // Check if event context exists before draining input
     let has_event_ctx = super::event::with_event_mut(|_| ()).is_some();
     if !has_event_ctx {

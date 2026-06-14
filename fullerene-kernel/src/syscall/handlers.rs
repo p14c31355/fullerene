@@ -3,7 +3,6 @@ use crate::process;
 use crate::process::{NEXT_PID, Process, ProcessState};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::Ordering;
 use petroleum::common::memory::{user_slice, user_slice_mut};

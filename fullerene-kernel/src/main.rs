@@ -2,7 +2,6 @@
 #![no_main]
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
-
 extern crate alloc;
 
 // Define panic and alloc error handlers using petroleum's macros
@@ -19,7 +18,7 @@ pub const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 pub use heap::MEMORY_MAP;
 
 // Module declarations
-pub mod ahci;
+// pub mod ahci;  // disabled: unused on current hardware targets
 pub mod app_runner;
 pub mod badapple;
 pub mod boot;

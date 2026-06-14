@@ -17,7 +17,7 @@ use x86_64::VirtAddr;
 /// # Arguments
 ///
 /// * `physical_memory_offset` - The offset for higher-half kernel mapping
-pub fn init_common(physical_memory_offset: x86_64::VirtAddr) {
+pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     petroleum::serial::serial_log(format_args!("Init common start\n"));
 
     #[cfg(not(target_os = "uefi"))]
