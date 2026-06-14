@@ -159,13 +159,12 @@ impl UefiInitContext {
     #[cfg(target_os = "uefi")]
     pub fn setup_allocator(&mut self, _virtual_heap_start: VirtAddr) {}
 
-    /// Validate framebuffer config and initialize APIC pointer.
+    /// Validate framebuffer config and pre-initialize the APIC controller.
     #[cfg(target_os = "uefi")]
     pub fn map_mmio() -> usize {
         let phys_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
         let lapic_virt = 0xfee00000u64 + phys_offset;
-        unsafe { petroleum::common::utils::reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS) };
-        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt as *mut u32);
+        crate::interrupts::apic::preinit_apic_controller(lapic_virt);
 
         if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()

@@ -4,7 +4,6 @@ extern crate alloc;
 
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
-pub mod apic;
 pub mod assembly;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
@@ -24,7 +23,6 @@ pub mod transition;
 pub mod uefi_helpers;
 pub mod vga_debug;
 pub mod virtio;
-pub use apic::{configure_io_apic_for_legacy_irqs, init_io_apic};
 pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
@@ -32,7 +30,7 @@ pub use common::{check_memory_initialized, set_memory_initialized};
 pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;
-pub use nitrogen::ioapic::{IoApic, IoApicRedirectionEntry};
+pub use nitrogen::ioapic::IoApicRedirectionEntry;
 pub use nitrogen::port::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
@@ -69,13 +67,6 @@ use crate::common::EfiSystemTable;
 use crate::common::uefi::FullereneFramebufferConfig;
 use spin::{Mutex, Once};
 
-#[derive(Clone, Copy)]
-pub struct LocalApicAddress(pub *mut u32);
-unsafe impl Send for LocalApicAddress {}
-unsafe impl Sync for LocalApicAddress {}
-
-pub static LOCAL_APIC_ADDRESS: Mutex<LocalApicAddress> =
-    Mutex::new(LocalApicAddress(core::ptr::null_mut()));
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
 
