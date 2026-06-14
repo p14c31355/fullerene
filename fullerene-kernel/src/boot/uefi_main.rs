@@ -211,7 +211,14 @@ fn kernel_main_higher_half(
     crate::interrupts::apic::init_apic();
     log::info!("APIC initialized");
 
-    // 3. Enable interrupts and enter scheduler loop
+    // 3. Flush kernel log to VFS before entering scheduler
+    log::info!("Flushing boot log...");
+    debug_serial(b"Flushing boot log to VFS\n");
+    if let Err(()) = crate::klog::flush_to_vfs() {
+        debug_serial(b"WARNING: flush_to_vfs failed (VFS not ready?)\n");
+    }
+
+    // 4. Enable interrupts and enter scheduler loop
     log::info!("Enabling interrupts and starting scheduler...");
     debug_serial(b"Entering scheduler_loop\n");
     x86_64::instructions::interrupts::enable();

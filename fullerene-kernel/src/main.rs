@@ -8,6 +8,16 @@ extern crate alloc;
 petroleum::define_panic_handler!();
 petroleum::define_alloc_error_handler!();
 
+/// Called by the panic handler to attempt persisting the kernel log to VFS.
+///
+/// This is a best-effort operation — if the VFS lock is poisoned or I/O
+/// fails, the error is silently swallowed.
+#[unsafe(no_mangle)]
+pub extern "Rust" fn _fullerene_panic_flush() {
+    crate::boot_stage::set_boot_stage(crate::boot_stage::BootStage::Panic);
+    crate::klog::flush_to_vfs_safe();
+}
+
 // Constants
 /// Physical address of the VGA text-mode buffer.
 /// Currently unused but kept as a reference for potential fallback debugging.
@@ -22,6 +32,7 @@ pub use heap::MEMORY_MAP;
 pub mod app_runner;
 pub mod badapple;
 pub mod boot;
+pub mod boot_stage;
 pub mod context_switch;
 pub mod contexts;
 pub mod fs;

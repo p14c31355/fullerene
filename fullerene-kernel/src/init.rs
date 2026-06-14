@@ -9,6 +9,7 @@
 //! - Filesystem
 //! - Loader
 
+use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
 use x86_64::VirtAddr;
 
@@ -19,6 +20,8 @@ use x86_64::VirtAddr;
 /// * `physical_memory_offset` - The offset for higher-half kernel mapping
 pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     petroleum::serial::serial_log(format_args!("Init common start\n"));
+
+    crate::boot_stage!(BootStage::KernelEntry);
 
     #[cfg(not(target_os = "uefi"))]
     {
@@ -45,6 +48,8 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         InitSequence::new(&bios_init_steps).run();
     }
 
+    crate::boot_stage!(BootStage::HeapReady);
+
     #[cfg(target_os = "uefi")]
     {
         unsafe {
@@ -64,6 +69,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Interrupts step start\n");
             crate::interrupts::init();
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Interrupts step done\n");
+            crate::boot_stage!(BootStage::InterruptsReady);
             Ok(())
         }),
         petroleum::init_step!("Kernel Context", || {
@@ -71,6 +77,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::contexts::kernel::init_kernel();
             petroleum::serial::serial_log(format_args!("Kernel context initialised\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Kernel Context step done\n");
+            crate::boot_stage!(BootStage::KernelContextReady);
             Ok(())
         }),
         petroleum::init_step!("PCI BARs", || {
@@ -82,12 +89,14 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 allocator.assign_bars(scanner.get_devices());
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PCI BARs step done\n");
+            crate::boot_stage!(BootStage::PciBarsReady);
             Ok(())
         }),
         petroleum::init_step!("Graphics", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Graphics step start\n");
             crate::graphics::init_graphics();
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Graphics step done\n");
+            crate::boot_stage!(BootStage::GraphicsReady);
             Ok(())
         }),
         petroleum::init_step!("PS2 Controller", || {
@@ -122,18 +131,22 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 unsafe { core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as usize };
             let heap_end = heap_start + crate::heap::HEAP_SIZE;
             crate::process::init(heap_start, heap_end);
+            crate::boot_stage!(BootStage::ProcessReady);
             Ok(())
         }),
         petroleum::init_step!("syscall", || {
             crate::syscall::init();
+            crate::boot_stage!(BootStage::SyscallReady);
             Ok(())
         }),
         petroleum::init_step!("fs", || {
             crate::fs::init();
+            crate::boot_stage!(BootStage::FilesystemReady);
             Ok(())
         }),
         petroleum::init_step!("loader", || {
             crate::loader::init();
+            crate::boot_stage!(BootStage::LoaderReady);
             Ok(())
         }),
         petroleum::init_step!("device_manager", || {
@@ -145,16 +158,19 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("gui", || {
             crate::gui::init();
             petroleum::serial::serial_log(format_args!("GUI subsystem initialised\n"));
+            crate::boot_stage!(BootStage::GuiReady);
             Ok(())
         }),
         petroleum::init_step!("task_manager", || {
             crate::task::init_task_manager();
             petroleum::serial::serial_log(format_args!("Task manager initialised\n"));
+            crate::boot_stage!(BootStage::TaskManagerReady);
             Ok(())
         }),
         petroleum::init_step!("app_runner", || {
             crate::app_runner::init();
             petroleum::serial::serial_log(format_args!("App runner initialised\n"));
+            crate::boot_stage!(BootStage::AppRunnerReady);
             Ok(())
         }),
     ];
@@ -163,4 +179,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     // Shell is no longer auto-started.  It is launched on demand via
     // the AppGrid overlay or the desktop context menu (NewShell action).
     // See `crate::scheduler::request_shell_launch()`.
+
+    crate::boot_stage!(BootStage::ShellRunning);
 }

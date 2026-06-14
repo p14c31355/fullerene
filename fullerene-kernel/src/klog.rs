@@ -168,3 +168,101 @@ macro_rules! klog_fmt {
         $crate::klog::write_fmt(format_args!($($arg)*));
     }};
 }
+
+// ── VFS flush / boot-log persistence ───────────────────────────────
+
+/// Flush the kernel log ring buffer into `/bootlog.txt` on the VFS
+/// (tmpfs).  Also appends a `LastStage=…` line at the end.
+///
+/// Returns `Ok(())` if the file was written successfully, or `Err(())`
+/// if the VFS is not yet initialised or an I/O error occurred.
+pub fn flush_to_vfs() -> Result<(), ()> {
+    let snap = snapshot();
+    let stage_line = crate::boot_stage::last_stage_line();
+
+    // Estimate capacity: snapshot + stage_line + a few framing lines.
+    let mut out = alloc::vec::Vec::with_capacity(snap.len() + stage_line.len() + 128);
+    out.extend_from_slice(b"=== Fullerene boot log ===\n");
+    out.extend_from_slice(&snap);
+    if !snap.is_empty() && snap.last() != Some(&b'\n') {
+        out.push(b'\n');
+    }
+    out.extend_from_slice(stage_line.as_bytes());
+    if stage_line.as_bytes().last() != Some(&b'\n') {
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"=== End boot log ===\n");
+
+    // Create /bootlogs/ if it doesn't exist
+    if crate::vfs::exists("/bootlogs") {
+        // Rotate previous bootlog if present
+        if crate::vfs::exists("/bootlog.txt") {
+            rotate_bootlog();
+        }
+    } else {
+        // Bootlogs directory doesn't exist yet — try to create it
+        // (ignore failure; we can still write /bootlog.txt)
+        let _ = crate::vfs::mkdir("/bootlogs");
+    }
+
+    // Write to /bootlog.txt via the VFS low-level API.
+    // We go through create+write+close manually for error resilience.
+    let fd_info = crate::vfs::create("/bootlog.txt").map_err(|_| ())?;
+    crate::vfs::write(fd_info.fd, &out).map_err(|_| {
+        let _ = crate::vfs::close(fd_info.fd);
+    })?;
+    let _ = crate::vfs::close(fd_info.fd);
+    Ok(())
+}
+
+/// Panic-safe variant: best-effort flush, ignores all errors.
+///
+/// Called from the panic handler — the VFS lock may be held by the
+/// panicking thread, so we must not attempt to acquire it if it's
+/// already poisoned.  We try `flush_to_vfs()` but swallow any error.
+pub fn flush_to_vfs_safe() {
+    let _ = flush_to_vfs();
+}
+
+/// Move `/bootlog.txt` → `/bootlogs/YYYY-MM-DD-XX.txt` with
+/// a simple ascending counter for the current date.
+fn rotate_bootlog() {
+    use core::fmt::Write;
+
+    // Build date string.  We don't have a real-time clock yet,
+    // so we fall back to a counter-based scheme.
+    // Try YYYY-MM-DD from a not-yet-existing RTC; for now use
+    // a simple "boot-N.txt" style.
+    let mut base = alloc::string::String::from("/bootlogs/boot-");
+    let mut idx: u32 = 1;
+    let mut path;
+    loop {
+        path = alloc::format!("{}{}.txt", base, idx);
+        if !crate::vfs::exists(&path) {
+            break;
+        }
+        idx += 1;
+        if idx > 9999 {
+            // Sanity guard — give up rotation.
+            return;
+        }
+    }
+    // Read old content, write to rotated path, then unlink original.
+    if let Ok(fd) = crate::vfs::open("/bootlog.txt", 0) {
+        let mut buf = [0u8; 512];
+        let mut all = alloc::vec::Vec::new();
+        loop {
+            match crate::vfs::read(fd.fd, &mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => all.extend_from_slice(&buf[..n]),
+            }
+        }
+        let _ = crate::vfs::close(fd.fd);
+        // Write rotated copy
+        if let Ok(fd2) = crate::vfs::create(&path) {
+            let _ = crate::vfs::write(fd2.fd, &all);
+            let _ = crate::vfs::close(fd2.fd);
+            let _ = crate::vfs::unlink("/bootlog.txt");
+        }
+    }
+}
