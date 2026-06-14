@@ -509,4 +509,35 @@ Implementation details should be organized around the Context, not the other way
 The Context is the source of truth.
 Functions, drivers, and hardware interactions are merely operations performed on that Context.
 
+---
+
+# 15. Context-Driven Design
+
+Fullerene adopts a Context-Driven Design philosophy.
+
+Any complex subsystem, hardware state, protocol state, or execution environment should be represented as a dedicated Context structure.
+
+Avoid exposing raw hardware details, scattered state variables, or low-level implementation details across the codebase.
+
+Prefer:
+
+* AssemblyContext
+* GraphicsContext
+* AudioContext
+* VirtualMemoryContext
+* ProcessContext
+
+instead of:
+
+* Global state
+* Scattered register values
+* Raw page table manipulation
+* Direct hardware access from unrelated modules
+
+The goal is to reduce cognitive load, improve maintainability, and provide a stable abstraction layer between hardware-specific implementation and higher-level system logic.
+
+Rule of thumb:
+
+> If multiple functions share the same conceptual state, create a Context structure and move the state into it.
+
 
