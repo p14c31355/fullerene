@@ -435,8 +435,6 @@ impl TerminalBuffer {
             return self.cells.clone();
         }
         let start = sb_len.saturating_sub(self.scroll_offset);
-        let sb_rows = sb_len.saturating_sub(start);
-        let buf_rows = total_rows.saturating_sub(sb_rows);
         let row_len = self.cols as usize;
 
         let mut result = Vec::with_capacity(total_rows * row_len);
@@ -446,7 +444,7 @@ impl TerminalBuffer {
             result.extend_from_slice(row);
         }
         // Fill remaining rows from the current buffer.
-        let remaining = total_rows.saturating_sub(result.len() / row_len);
+        let remaining = total_rows.saturating_sub(sb_len.saturating_sub(start));
         let buf_cells = remaining * row_len;
         let buf_slice = if buf_cells <= self.cells.len() {
             &self.cells[..buf_cells]

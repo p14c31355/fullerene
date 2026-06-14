@@ -52,15 +52,6 @@ fn register_nozzle_hooks() {
     });
 
     nozzle::fs_hooks::set_fs_read_fn(|ctx, path| {
-        // Read each file in the argument list (args[1..])
-        let files: &[&str] = if path.contains(' ') {
-            // Multiple files passed as space-separated string
-            // Split and handle each
-            &[] // handled below
-        } else {
-            &[]
-        };
-
         // Read the single file at `path`
         match crate::vfs::open(path, 0) {
             Ok(fd) => {

@@ -238,33 +238,25 @@ pub fn setup_kernel_location(
     kernel_virt_addr: u64,
 ) -> PhysAddr {
     // Read descriptor_size from the beginning of the memory map
-    unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location entered\n");
-    }
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: setup_kernel_location entered\n");
 
-    unsafe {
-        crate::write_serial_bytes(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: Skipping descriptor_item_size read (now passed via KernelArgs)\n",
-        );
-    }
+    crate::write_serial_bytes(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: Skipping descriptor_item_size read (now passed via KernelArgs)\n",
+    );
 
     crate::debug_log_no_alloc!("Succeeded in reading memory map start");
 
     // Bellows already handles the framebuffer config table before jumping to the kernel.
     // We skip the redundant check here to avoid potential Page Faults.
-    unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping framebuffer config check\n");
-    }
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Skipping framebuffer config check\n");
 
-    unsafe {
-        crate::write_serial_bytes(
-            0x3F8,
-            0x3FD,
-            b"DEBUG: About to calculate kernel_phys_start\n",
-        );
-    }
+    crate::write_serial_bytes(
+        0x3F8,
+        0x3FD,
+        b"DEBUG: About to calculate kernel_phys_start\n",
+    );
 
     // Find the kernel physical start (efi_main is virtual address,
     // but UEFI uses identity mapping initially, so check physical range containing kernel_virt_addr)
@@ -276,14 +268,12 @@ pub fn setup_kernel_location(
         PhysAddr::new(0x100000)
     };
 
-    unsafe {
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: kernel_phys_start calculated\n");
-        let mut buf = [0u8; 16];
-        let len = crate::serial::format_hex_to_buffer(kernel_phys_start.as_u64(), &mut buf, 16);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Kernel physical start set to: 0x");
-        crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-    }
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: kernel_phys_start calculated\n");
+    let mut buf = [0u8; 16];
+    let len = crate::serial::format_hex_to_buffer(kernel_phys_start.as_u64(), &mut buf, 16);
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: Kernel physical start set to: 0x");
+    crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
+    crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
     kernel_phys_start
 }

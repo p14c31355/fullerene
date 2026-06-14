@@ -11,7 +11,6 @@
 
 use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
-use x86_64::VirtAddr;
 
 /// Common initialization function for both UEFI and BIOS boot paths
 ///
@@ -127,8 +126,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("process", || {
-            let heap_start =
-                unsafe { core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as usize };
+            let heap_start = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as usize;
             let heap_end = heap_start + crate::heap::HEAP_SIZE;
             crate::process::init(heap_start, heap_end);
             crate::boot_stage!(BootStage::ProcessReady);

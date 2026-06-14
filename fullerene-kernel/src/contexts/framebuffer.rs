@@ -217,7 +217,6 @@ impl FramebufferContext {
             if let Some(ref r) = self.renderer {
                 let i = r.get_info();
                 let (w, h) = (i.width, i.height);
-                drop(i);
                 gpu.flush(w, h);
             }
         } else {

@@ -80,10 +80,9 @@ impl PeParser {
         {
             return None;
         }
-        let num_sections =
-            unsafe { crate::read_unaligned!(self.pe_base, self.pe_offset + 6, u16) } as usize;
+        let num_sections = crate::read_unaligned!(self.pe_base, self.pe_offset + 6, u16) as usize;
         let optional_header_size =
-            unsafe { crate::read_unaligned!(self.pe_base, self.pe_offset + 20, u16) } as usize;
+            crate::read_unaligned!(self.pe_base, self.pe_offset + 20, u16) as usize;
         let section_table_offset = self.pe_offset + 24 + optional_header_size;
 
         let mut sections = [PeSection {
@@ -96,7 +95,7 @@ impl PeParser {
         }; PeParser::MAX_PE_SECTIONS];
         for i in 0..num_sections.min(PeParser::MAX_PE_SECTIONS) {
             let offset = section_table_offset + i * 40;
-            let header = unsafe { crate::read_unaligned!(self.pe_base, offset, PeSectionHeader) };
+            let header = crate::read_unaligned!(self.pe_base, offset, PeSectionHeader);
             sections[i] = PeSection {
                 name: header.name,
                 virtual_size: header.virtual_size,
@@ -111,32 +110,30 @@ impl PeParser {
 }
 
 pub unsafe fn find_pe_base(start_ptr: *const u8) -> Option<*const u8> {
-    unsafe {
-        log_page_table_op!("PE base", "starting search", start_ptr as usize);
+    log_page_table_op!("PE base", "starting search", start_ptr as usize);
 
-        for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
-            let candidate_addr = match (start_ptr as usize).checked_sub(i) {
-                Some(addr) => addr as *const u8,
-                None => break,
-            };
+    for i in 0..PeParser::MAX_PE_SEARCH_DISTANCE {
+        let candidate_addr = match (start_ptr as usize).checked_sub(i) {
+            Some(addr) => addr as *const u8,
+            None => break,
+        };
 
-            if candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' {
-                log_page_table_op!("PE base", "found MZ candidate", candidate_addr as usize);
-                let pe_offset = crate::read_unaligned!(candidate_addr, 0x3c, u32) as usize;
+        if unsafe { candidate_addr.read() == b'M' && candidate_addr.add(1).read() == b'Z' } {
+            log_page_table_op!("PE base", "found MZ candidate", candidate_addr as usize);
+            let pe_offset = crate::read_unaligned!(candidate_addr, 0x3c, u32) as usize;
 
-                if pe_offset > 0 && pe_offset < 16 * 1024 * 1024 {
-                    let pe_sig = crate::read_unaligned!(candidate_addr, pe_offset, u32);
-                    if pe_sig == 0x00004550 {
-                        log_page_table_op!("PE base", "found valid PE", candidate_addr as usize);
-                        return Some(candidate_addr);
-                    }
+            if pe_offset > 0 && pe_offset < 16 * 1024 * 1024 {
+                let pe_sig = crate::read_unaligned!(candidate_addr, pe_offset, u32);
+                if pe_sig == 0x00004550 {
+                    log_page_table_op!("PE base", "found valid PE", candidate_addr as usize);
+                    return Some(candidate_addr);
                 }
             }
         }
-
-        log_page_table_op!("PE base", "search complete - no PE found");
-        None
     }
+
+    log_page_table_op!("PE base", "search complete - no PE found");
+    None
 }
 
 pub fn derive_pe_flags(characteristics: u32) -> PageTableFlags {

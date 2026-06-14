@@ -688,7 +688,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), &'sta
         "tmpfs" => {
             let memfs = Box::new(MemFileSystem::new());
             vfs.mount(mount_point, memfs)?;
-            log::info!("VFS: mounted tmpfs at {}", mount_point);
+            log::info!("VFS: mounted tmpfs from {} at {}", device, mount_point);
             Ok(())
         }
         _ => Err("unsupported filesystem type"),

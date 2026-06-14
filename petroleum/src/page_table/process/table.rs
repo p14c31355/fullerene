@@ -304,11 +304,9 @@ impl PageTableHelper for ProcessPageTable {
         };
 
         let mapper = self.mapper.as_mut().unwrap();
-        let temp_page = unsafe {
-            Page::<Size4KiB>::containing_address(VirtAddr::new(
-                crate::page_table::raw::TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64,
-            ))
-        };
+        let temp_page = Page::<Size4KiB>::containing_address(VirtAddr::new(
+            crate::page_table::raw::TEMP_VA_FOR_CLONE.as_u64() + 0x3000u64,
+        ));
         unsafe {
             mapper
                 .map_to(

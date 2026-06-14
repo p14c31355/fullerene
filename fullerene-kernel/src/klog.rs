@@ -227,17 +227,14 @@ pub fn flush_to_vfs_safe() {
 /// Move `/bootlog.txt` → `/bootlogs/YYYY-MM-DD-XX.txt` with
 /// a simple ascending counter for the current date.
 fn rotate_bootlog() {
-    use core::fmt::Write;
-
     // Build date string.  We don't have a real-time clock yet,
     // so we fall back to a counter-based scheme.
     // Try YYYY-MM-DD from a not-yet-existing RTC; for now use
     // a simple "boot-N.txt" style.
-    let mut base = alloc::string::String::from("/bootlogs/boot-");
     let mut idx: u32 = 1;
     let mut path;
     loop {
-        path = alloc::format!("{}{}.txt", base, idx);
+        path = alloc::format!("/bootlogs/boot-{}.txt", idx);
         if !crate::vfs::exists(&path) {
             break;
         }

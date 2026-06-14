@@ -146,7 +146,7 @@ impl VirtualMemoryContext {
         name: &'static str,
     ) -> Result<u64, &'static str> {
         let va = phys_start + self.physical_offset;
-        let l4 = self.l4_table_mut();
+        let l4 = unsafe { self.l4_table_mut() };
         // Build mapper from the raw L4 pointer (avoids borrowing self twice).
         let phys_offset = VirtAddr::new(self.physical_offset);
         let mut mapper = unsafe { OffsetPageTable::new(l4, phys_offset) };

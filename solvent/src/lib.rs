@@ -21,9 +21,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
-use core::arch::x86_64;
 use core::fmt::Write;
-use core::sync::atomic::AtomicPtr;
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
@@ -604,26 +602,6 @@ impl EventHandler for ShellEventHandler {
     }
 }
 
-macro_rules! key_ascii {
-    ($($variant:ident => $ch:expr),+ $(,)?) => {
-        fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
-            use KeyCode::*;
-            Some(match key { $($variant => $ch,)+ _ => return None })
-        }
-    };
-}
-key_ascii!(
-    Enter => b'\n', Space => b' ', Backspace => 0x08, Tab => b'\t',
-    A => b'a', B => b'b', C => b'c', D => b'd', E => b'e', F => b'f',
-    G => b'g', H => b'h', I => b'i', J => b'j', K => b'k', L => b'l',
-    M => b'm', N => b'n', O => b'o', P => b'p', Q => b'q', R => b'r',
-    S => b's', T => b't', U => b'u', V => b'v', W => b'w', X => b'x',
-    Y => b'y', Z => b'z',
-    Digit0 => b'0', Digit1 => b'1', Digit2 => b'2', Digit3 => b'3',
-    Digit4 => b'4', Digit5 => b'5', Digit6 => b'6', Digit7 => b'7',
-    Digit8 => b'8', Digit9 => b'9',
-);
-
 // ── Lightweight cursor update ───────────────────────────────
 
 /// Update only the cursor on the cached framebuffer without
@@ -968,7 +946,7 @@ pub fn update_clock() {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
 
     let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
-        if let Some((year, month, day, mut hour, minute, _second)) = get_time() {
+        if let Some((year, month, day, hour, minute, _second)) = get_time() {
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;
             let mut local_month = month as i16;
@@ -1673,7 +1651,6 @@ enum InfoWindow {
     DeviceManager,
     FileManager,
     About,
-    WallpaperSettings,
 }
 
 impl InfoWindow {
@@ -1683,7 +1660,6 @@ impl InfoWindow {
             Self::DeviceManager => ("Device Manager", 140, 100, 46, 2, 0x0d1a0d, 0xCCFFCC),
             Self::FileManager => ("File Manager", 160, 120, 50, 3, 0x1a1a0d, 0xFFFFCC),
             Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
-            Self::WallpaperSettings => ("Wallpaper Settings", 200, 110, 26, 1, 0x1a1a2e, 0xCCCCCC),
         }
     }
 }
@@ -1814,9 +1790,6 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
         }
         InfoWindow::About => String::from(
             "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
-        ),
-        InfoWindow::WallpaperSettings => String::from(
-            "  Wallpaper Settings\n ===================\n\n [ ] Beach\n [ ] Mountain\n [ ] City\n ───────────────────\n [ ] Solid Color\n [ ] Grid Pattern\n [ ] Gradient\n\n Use 'wallpaper <name>'\n in terminal to switch.\n\n Ex: wallpaper beach\n",
         ),
     };
     let (title, x, y, cols, extra_rows, bg, fg) = kind.params();

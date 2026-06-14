@@ -23,18 +23,6 @@ const O_CREAT: i32 = 0x40;
 const O_TRUNC: i32 = 0x200;
 const O_APPEND: i32 = 0x400;
 
-// Helper function to reduce duplication in syscall buffer validation
-fn validate_syscall_buffer(
-    fd: core::ffi::c_int,
-    buffer: usize,
-    count: usize,
-    allow_kernel: bool,
-) -> Result<(), SyscallError> {
-    petroleum::validate_syscall_fd(fd)?;
-    petroleum::validate_user_buffer(buffer, count, allow_kernel)?;
-    Ok(())
-}
-
 const KERNEL_STACK_SIZE: usize = 4096;
 
 /// Handle system call from user space
@@ -175,7 +163,9 @@ fn syscall_fork() -> SyscallResult {
     let child_box = Box::new(child_process);
 
     // Re-acquire lock briefly to add to process list
-    crate::process::PROCESS_MANAGER.add(child_box);
+    crate::process::PROCESS_MANAGER
+        .add(child_box)
+        .map_err(|_| SyscallError::OutOfMemory)?;
 
     // Note: Memory copying not implemented yet, only page table cloning
     // Full implementation would copy parent memory pages to child
@@ -240,9 +230,7 @@ fn syscall_write(fd: core::ffi::c_int, buffer: *const u8, count: usize) -> Sysca
 
     // For stdout (fd 1) and stderr (fd 2), write to serial console
     if fd == 1 || fd == 2 {
-        unsafe {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, data);
-        }
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, data);
         Ok(count as u64)
     } else {
         Err(SyscallError::BadFileDescriptor)

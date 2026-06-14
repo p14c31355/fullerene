@@ -276,23 +276,19 @@ pub fn _print(args: fmt::Arguments) {
 pub fn serial_init() -> SerialManager {
     let mut manager = SerialManager::new();
 
-    unsafe {
-        crate::write_serial_bytes(
-            COM1_DATA_PORT,
-            COM1_STATUS_PORT,
-            b"DEBUG: Inside serial_init\n",
-        );
-    }
+    crate::write_serial_bytes(
+        COM1_DATA_PORT,
+        COM1_STATUS_PORT,
+        b"DEBUG: Inside serial_init\n",
+    );
 
     manager.init_serial();
 
-    unsafe {
-        crate::write_serial_bytes(
-            COM1_DATA_PORT,
-            COM1_STATUS_PORT,
-            b"DEBUG: serial_init completed successfully\n",
-        );
-    }
+    crate::write_serial_bytes(
+        COM1_DATA_PORT,
+        COM1_STATUS_PORT,
+        b"DEBUG: serial_init completed successfully\n",
+    );
 
     manager
 }

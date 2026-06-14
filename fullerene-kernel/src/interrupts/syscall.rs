@@ -117,11 +117,9 @@ pub fn setup_syscall() {
     // Set KERNEL_GS_BASE to point to the static variable holding the syscall kernel stack top.
     use x86_64::registers::model_specific::KernelGsBase;
     mem_debug!("Syscall: writing KernelGsBase\n");
-    unsafe {
-        KernelGsBase::write(VirtAddr::new(
-            &raw const SYSCALL_STACK_PTR as *const _ as u64,
-        ));
-    }
+    KernelGsBase::write(VirtAddr::new(
+        &raw const SYSCALL_STACK_PTR as *const _ as u64,
+    ));
     mem_debug!("Syscall: KernelGsBase written\n");
 
     let stack_top_addr = unsafe { SYSCALL_STACK_PTR };

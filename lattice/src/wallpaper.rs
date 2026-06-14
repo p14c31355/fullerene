@@ -348,7 +348,6 @@ pub fn render_wallpaper(
             let presets = wallpaper_presets();
             if let Some(preset) = presets.get(idx) {
                 let pw = preset.width as usize;
-                let ph = preset.height as usize;
                 let pixels = preset.pixels;
                 for row_offset in 0..ch {
                     let y = cy + row_offset;
