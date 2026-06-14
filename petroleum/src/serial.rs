@@ -252,12 +252,32 @@ pub fn _print_with_manager(manager: &mut SerialManager, args: fmt::Arguments) {
 
 /// Print directly to COM1 serial port without a SerialManager.
 /// Uses direct port I/O for early boot / macro convenience.
+///
+/// If the xHCI Debug Capability (DbC) has been initialized (via
+/// `nitrogen::xhci_dbc`), the same output is also sent through the
+/// USB debug channel.
 pub fn _print(args: fmt::Arguments) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
         use core::fmt::Write;
+
+        // Format into a small buffer first to send to both COM1 and DbC.
+        // We use a fixed-size stack buffer to avoid heap allocation.
+        let mut buf: alloc::string::String = alloc::string::String::with_capacity(256);
+        let _ = write!(buf, "{}", args);
+
+        // Send to COM1 serial port (character-by-character)
         let mut port = SerialPort::new(Com1Ports);
-        port.write_fmt(args).ok();
+        port.write_string(&buf);
+
+        // Also send via xHCI Debug Capability if the nitrogen crate
+        // is linked and DbC is active.
+        unsafe extern "Rust" {
+            fn _dbc_try_write_str(ptr: *const u8, len: usize);
+        }
+        unsafe {
+            _dbc_try_write_str(buf.as_ptr(), buf.len());
+        }
     }
 }
 

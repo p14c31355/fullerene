@@ -211,6 +211,9 @@ fn kernel_main_higher_half(
     crate::interrupts::apic::init_apic();
     log::info!("APIC initialized");
 
+    // 2. Initialize xHCI Debug Capability (USB debug output)
+    init_xhci_dbc();
+
     // 3. Flush kernel log to VFS before entering scheduler
     log::info!("Flushing boot log...");
     debug_serial(b"Flushing boot log to VFS\n");
@@ -223,4 +226,70 @@ fn kernel_main_higher_half(
     debug_serial(b"Entering scheduler_loop\n");
     x86_64::instructions::interrupts::enable();
     crate::scheduler::scheduler_loop();
+}
+
+/// Scan PCI for an xHCI controller and enable the Debug Capability
+/// so serial output is mirrored over USB.
+fn init_xhci_dbc() {
+    let offset = petroleum::common::memory::get_physical_memory_offset() as u64;
+    nitrogen::xhci_dbc::set_physical_offset(offset);
+
+    let kernel_lock = crate::contexts::kernel::get_kernel();
+    let kg = kernel_lock.lock();
+    let k = match kg.as_ref() {
+        Some(k) => k,
+        None => {
+            debug_serial(b"XHCI: kernel context not available, skipping\n");
+            return;
+        }
+    };
+
+    let xhc_dev = match k.pci.find_xhci() {
+        Some(d) => d.clone(),
+        None => {
+            debug_serial(b"XHCI: no xHCI controller found in PCI scan\n");
+            return;
+        }
+    };
+
+    // Enable memory access on the xHC before reading BAR
+    xhc_dev.enable_memory_access();
+
+    let bar0 = match xhc_dev.read_bar(0) {
+        Some(a) => a,
+        None => {
+            debug_serial(b"XHCI: BAR0 not available\n");
+            return;
+        }
+    };
+
+    // Map BAR0 MMIO (64 KiB is enough for xHC registers + extended caps)
+    let bar0_virt = match crate::memory_management::convenience::map_mmio(bar0 as usize, 0x10000)
+    {
+        Ok(v) => v,
+        Err(_) => {
+            debug_serial(b"XHCI: failed to map BAR0\n");
+            return;
+        }
+    };
+
+    // Read HCCPARAMS1 (offset 0x10 from BAR0) to find extended capabilities
+    let hccparams1 = unsafe { core::ptr::read_volatile((bar0_virt + 0x10) as *const u32) };
+    let dbc_offset = nitrogen::xhci_dbc::find_dbc_capability(bar0_virt, hccparams1);
+
+    if dbc_offset == 0 {
+        debug_serial(b"XHCI: DbC capability not found\n");
+        return;
+    }
+
+    unsafe {
+        nitrogen::xhci_dbc::init(bar0_virt, dbc_offset);
+    }
+
+    if nitrogen::xhci_dbc::is_ready() {
+        debug_serial(b"XHCI: DbC initialized -- USB debug active\n");
+        log::info!("xHCI Debug Capability initialized");
+    } else {
+        debug_serial(b"XHCI: DbC init returned false (cable not connected?)\n");
+    }
 }
