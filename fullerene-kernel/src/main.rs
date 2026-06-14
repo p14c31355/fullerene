@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
 extern crate alloc;
 
 // ---- Custom panic handler (replaces petroleum::define_panic_handler!) ----

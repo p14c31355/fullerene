@@ -3,6 +3,7 @@
 #![no_std]
 #![no_main]
 #![feature(never_type)]
+#![feature(alloc_error_handler)]
 extern crate alloc;
 
 petroleum::define_panic_handler!();
