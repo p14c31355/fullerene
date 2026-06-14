@@ -58,15 +58,11 @@ pub unsafe extern "C" fn efi_main_stage2(
                     petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
                 }
             };
-            // Also store in .data section to survive BSS corruption
-            crate::graphics::store_fb_params(
-                args.fb_address,
-                args.fb_width,
-                args.fb_height,
-                stride,
-                args.fb_bpp,
-                args.fb_pixel_format,
-            );
+            // Store KernelArgs virtual address (already higher-half) in .data.
+            // init_and_jump identity-maps kernel_args_page, and shallow
+            // clone_page_table preserves it.  init_graphics can dereference
+            // this pointer directly even after page-table rebuilds.
+            crate::graphics::store_args_va(args_ptr as u64);
             crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
                 fb.store_raw_params(
                     args.fb_address,
@@ -119,7 +115,56 @@ pub unsafe extern "C" fn efi_main_stage2(
     debug_serial(b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n");
     // Initialize LOCAL_APIC_ADDRESS and validate FB config (no 4KB mappings).
     crate::boot::uefi_init::UefiInitContext::map_mmio();
-    debug_serial(b"DEBUG: [uefi_main] MMIO init complete (no 4KB mappings)\n");
+    debug_serial(b"DEBUG: [uefi_main] APIC addr set, mapping GOP FB pages\n");
+
+    // On real hardware (InsydeH2O), the GOP framebuffer is often at a high
+    // physical address (> 0x80000000) that falls outside the boot-time identity
+    // huge-page mapping.  We must explicitly create page-table entries for the
+    // framebuffer BEFORE anything tries to write to it.
+    //
+    // QEMU/OVMF places FB at low addresses (< 4 GiB) that happen to be covered
+    // by transition.rs's huge-page map, so this was never noticeable in QEMU.
+    {
+        let args = unsafe { &*args_ptr };
+        if args.fb_address >= 0x100000 && args.fb_width > 0 && args.fb_height > 0 && args.fb_bpp == 32 {
+            let stride = if args.fb_stride > 0 { args.fb_stride } else { args.fb_width * 4 };
+            let fb_byte_size = stride as u64 * args.fb_height as u64;
+            let fb_pages = ((fb_byte_size + 4095) / 4096) as usize;
+            let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+            let fb_virt = args.fb_address + off;
+
+            debug_serial(b"DEBUG: [uefi_main] mapping GOP FB phys=0x");
+            let mut buf = [0u8; 32];
+            let len = petroleum::serial::format_hex_to_buffer(args.fb_address, &mut buf, 16);
+            debug_serial(&buf[..len]);
+            debug_serial(b" pages=");
+            let len2 = petroleum::serial::format_hex_to_buffer(fb_pages as u64, &mut buf, 16);
+            debug_serial(&buf[..len2]);
+            debug_serial(b"\n");
+
+            // Use Uncached (UC) for MMIO framebuffer — real hardware MTRRs
+            // typically mark the PCI BAR range as UC, and using WB or WC
+            // may conflict → #GP triple fault (README Fix #2, #3).
+            let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
+                | x86_64::structures::paging::PageTableFlags::NO_CACHE;
+
+            let mut mm = crate::memory_management::get_memory_manager().lock();
+            if let Some(ref mut mgr) = *mm {
+                for i in 0..fb_pages {
+                    let v = (fb_virt + (i * 4096) as u64) as usize;
+                    let p = (args.fb_address + (i * 4096) as u64) as usize;
+                    if mgr.safe_map_page(v, p, flags).is_err() {
+                        debug_serial(b"ERROR: [uefi_main] FB page map failed\n");
+                        break;
+                    }
+                }
+            }
+            drop(mm);
+        }
+    }
+    debug_serial(b"DEBUG: [uefi_main] MMIO init complete\n");
 
     // CRITICAL: On InsydeH2O firmware, VirtIO-GPU init_display() can trigger
     // MSI/MSI-X interrupts as soon as SET_SCANOUT completes. If the APIC LVTs
