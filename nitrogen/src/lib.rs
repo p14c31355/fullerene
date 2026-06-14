@@ -23,6 +23,7 @@ extern crate alloc;
 pub mod apic;
 pub mod apic_controller;
 pub mod audio;
+pub mod framebuffer;
 pub mod hda;
 pub mod ioapic;
 pub mod iwlwifi;
