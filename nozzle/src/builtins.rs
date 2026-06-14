@@ -339,7 +339,7 @@ pub fn cmd_history(ctx: &mut CommandContext) -> bool {
     if entries.is_empty() {
         ctx.terminal.write_str("(no history)\n");
     } else {
-        for (num, entry) in entries.iter().enumerate() {
+        for (num, entry) in entries.iter().rev().enumerate() {
             let line = alloc::format!("{}  {}\n", num + 1, entry);
             ctx.terminal.write_str(&line);
         }
