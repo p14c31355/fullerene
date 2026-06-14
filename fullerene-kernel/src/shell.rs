@@ -597,7 +597,7 @@ fn register_nozzle_hooks() {
                             }
                         }
                         let _ = crate::vfs::close(fd.fd);
-                        let text = core::str::from_utf8(&data).unwrap_or("");
+                        let text = alloc::string::String::from_utf8_lossy(&data);
                         let mut lines: alloc::vec::Vec<&str> = text.lines().collect();
                         lines.sort();
                         if reverse {
