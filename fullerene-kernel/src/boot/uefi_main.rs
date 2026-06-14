@@ -117,54 +117,17 @@ pub unsafe extern "C" fn efi_main_stage2(
     crate::boot::uefi_init::UefiInitContext::map_mmio();
     debug_serial(b"DEBUG: [uefi_main] APIC addr set, mapping GOP FB pages\n");
 
-    // On real hardware (InsydeH2O), the GOP framebuffer is often at a high
-    // physical address (> 0x80000000) that falls outside the boot-time identity
-    // huge-page mapping.  We must explicitly create page-table entries for the
-    // framebuffer BEFORE anything tries to write to it.
+    // On InsydeH2O firmware, explicitly creating 4 KB UC/WC page-table
+    // entries for the GOP framebuffer here **breaks** the boot-loader's
+    // identity huge-page mapping (WB via MTRR/PAT).  See README § "Real
+    // Hardware Compatibility" item 3.
     //
-    // QEMU/OVMF places FB at low addresses (< 4 GiB) that happen to be covered
-    // by transition.rs's huge-page map, so this was never noticeable in QEMU.
-    {
-        let args = unsafe { &*args_ptr };
-        if args.fb_address >= 0x100000 && args.fb_width > 0 && args.fb_height > 0 && args.fb_bpp == 32 {
-            let stride = if args.fb_stride > 0 { args.fb_stride } else { args.fb_width * 4 };
-            let fb_byte_size = stride as u64 * args.fb_height as u64;
-            let fb_pages = ((fb_byte_size + 4095) / 4096) as usize;
-            let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-            let fb_virt = args.fb_address + off;
-
-            debug_serial(b"DEBUG: [uefi_main] mapping GOP FB phys=0x");
-            let mut buf = [0u8; 32];
-            let len = petroleum::serial::format_hex_to_buffer(args.fb_address, &mut buf, 16);
-            debug_serial(&buf[..len]);
-            debug_serial(b" pages=");
-            let len2 = petroleum::serial::format_hex_to_buffer(fb_pages as u64, &mut buf, 16);
-            debug_serial(&buf[..len2]);
-            debug_serial(b"\n");
-
-            // Use Uncached (UC) for MMIO framebuffer — real hardware MTRRs
-            // typically mark the PCI BAR range as UC, and using WB or WC
-            // may conflict → #GP triple fault (README Fix #2, #3).
-            let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-                | x86_64::structures::paging::PageTableFlags::WRITABLE
-                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
-                | x86_64::structures::paging::PageTableFlags::NO_CACHE;
-
-            let mut mm = crate::memory_management::get_memory_manager().lock();
-            if let Some(ref mut mgr) = *mm {
-                for i in 0..fb_pages {
-                    let v = (fb_virt + (i * 4096) as u64) as usize;
-                    let p = (args.fb_address + (i * 4096) as u64) as usize;
-                    if mgr.safe_map_page(v, p, flags).is_err() {
-                        debug_serial(b"ERROR: [uefi_main] FB page map failed\n");
-                        break;
-                    }
-                }
-            }
-            drop(mm);
-        }
-    }
-    debug_serial(b"DEBUG: [uefi_main] MMIO init complete\n");
+    // The boot‑time huge‑page mapping already covers the entire lower
+    // 4 GiB address space.  Even if the GOP FB is above 4 GiB, the
+    // kernel's init_graphics() creates a proper WC mapping via
+    // build_renderer_from_stored() later.  We rely on that instead of
+    // pre‑splitting the huge page here.
+    debug_serial(b"DEBUG: [uefi_main] skipping 4KB GOP FB remap (preserving huge page)\n");
 
     // CRITICAL: On InsydeH2O firmware, VirtIO-GPU init_display() can trigger
     // MSI/MSI-X interrupts as soon as SET_SCANOUT completes. If the APIC LVTs

@@ -37,8 +37,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 }
                 Ok(())
             }),
-            // NOTE: interrupts::init() is called in the common steps below (idempotent via AtomicBool guard).
-            // BIOS serial init
             petroleum::init_step!("Serial", || {
                 petroleum::serial::serial_init();
                 Ok(())
@@ -49,9 +47,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(target_os = "uefi")]
     {
-        // UEFI: ALLOCATOR was already initialized in memory_management_initialization()
-        // using TOTAL_HEAP_BUFFER. Just re-establish set_heap_range which may have
-        // stale values after the world switch.
         unsafe {
             let heap_ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
             petroleum::common::memory::set_heap_range(heap_ptr as usize, crate::heap::HEAP_TOTAL);
@@ -59,9 +54,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     }
 
     // ── Log system initialisation ──────────────────────────────
-    // Set log level to Info so Sound codec inventory is captured.
-    // Register a klog hook so every log::info! / log::warn! / log::error!
-    // is also written to the kernel log ring buffer → viewable via `dmesg`.
     *petroleum::common::logging::LOG_HOOK.lock() = Some(|_level, msg| {
         crate::klog::write_bytes(msg.as_bytes());
     });
@@ -116,7 +108,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 }
                 Err(e) => {
                     petroleum::serial::serial_log(format_args!("PS/2 mouse init failed: {}\n", e));
-                    // Non-fatal: continue without mouse
                     Ok(())
                 }
             }

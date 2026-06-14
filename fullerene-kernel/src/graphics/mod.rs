@@ -119,25 +119,14 @@ pub fn init_graphics() {
         b"[init_gfx] build_renderer_from_stored returned\n",
     );
     if built {
-        // Register the framebuffer mapping in VirtualMemoryContext so
-        // "where is framebuffer mapped?" is always answerable.
-        if let Some(mem) = crate::contexts::memory::get_memory().lock().as_mut() {
-            let fb_phys = with_kernel_mut(|k| k.framebuffer.fb_phys).unwrap_or(0);
-            let fb_size = with_kernel_mut(|k| {
-                k.framebuffer.fb_stride_bytes as u64 * k.framebuffer.fb_height_px as u64
-            })
-            .unwrap_or(0);
-            if fb_phys >= 0x100000 && fb_size > 0 {
-                let _ = mem.map_framebuffer_vm(fb_phys, fb_size);
-                petroleum::write_serial_bytes(
-                    0x3F8,
-                    0x3FD,
-                    b"[init_gfx] FB recorded in MemoryContext\n",
-                );
-            }
-        }
+        // The framebuffer is already identity-mapped by the bootloader
+        // via a 2MB/1GB huge page.  Do NOT call `map_framebuffer_vm()`
+        // here because it tries to split the huge page into 4KB WC pages,
+        // which breaks the entire mapping on InsydeH2O firmware.
+        //
+        // See README.md § "Real Hardware Compatibility" item 3.
         petroleum::serial::serial_log(format_args!(
-            "[init_gfx] GOP renderer built from efi_main_stage2 params.\n"
+            "[init_gfx] GOP renderer built (boot-phase huge-page mapping preserved)\n"
         ));
         return;
     }
