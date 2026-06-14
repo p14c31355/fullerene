@@ -491,9 +491,9 @@ fn register_nozzle_hooks() {
             if ctx.args.len() > 1 {
                 if let Ok(secs) = ctx.args[1].parse::<u64>() {
                     let tsc_per_ms = solvent::get_tsc_per_ms();
-                    let target = unsafe { core::arch::x86_64::_rdtsc() }
-                        .wrapping_add(tsc_per_ms.saturating_mul(secs * 1000));
-                    while unsafe { core::arch::x86_64::_rdtsc() } < target {
+                    let total_ticks = tsc_per_ms.saturating_mul(secs * 1000);
+                    let start = unsafe { core::arch::x86_64::_rdtsc() };
+                    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < total_ticks {
                         core::hint::spin_loop();
                     }
                 } else {
