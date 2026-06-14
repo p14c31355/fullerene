@@ -6,6 +6,7 @@
 
 use crate::syscall::kernel_syscall;
 use alloc::format;
+use alloc::string::String;
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
@@ -19,51 +20,187 @@ pub fn init() {
 /// Register kernel implementations for nozzle's filesystem and system hooks.
 fn register_nozzle_hooks() {
     // FS hooks — wire into kernel VFS
-    nozzle::fs_hooks::set_fs_list_fn(|ctx| match crate::vfs::readdir("/") {
-        Ok(entries) => {
-            for ent in entries {
-                let line = if ent.is_dir {
-                    format!("  {}/\n", ent.name)
-                } else {
-                    format!("  {}  ({} bytes)\n", ent.name, ent.size)
-                };
-                ctx.terminal.write_str(&line);
-            }
-        }
-        Err(e) => {
-            let msg = format!("ls: {}\n", e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    nozzle::fs_hooks::set_fs_read_fn(|ctx, path| match crate::vfs::open(path, 0) {
-        Ok(fd) => {
-            let mut buf = [0u8; 512];
-            loop {
-                match crate::vfs::read(fd.fd, &mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        ctx.terminal
-                            .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
-                    }
-                    Err(e) => {
-                        let msg = format!("cat: {}\n", e);
-                        ctx.terminal.write_str(&msg);
-                        break;
+    nozzle::fs_hooks::set_fs_list_fn(|ctx| {
+        // Determine path: first non-flag argument, default to "." (wd)
+        let path = if ctx.args.len() > 1 && !ctx.args[1].starts_with('-') {
+            ctx.args[1]
+        } else {
+            "."
+        };
+        let long_format = ctx.args.iter().any(|a| *a == "-l");
+        match crate::vfs::readdir(path) {
+            Ok(entries) => {
+                for ent in entries {
+                    if long_format {
+                        let kind = if ent.is_dir { "d" } else { "-" };
+                        let line = format!("{}  {:>8}  {}\n", kind, ent.size, ent.name);
+                        ctx.terminal.write_str(&line);
+                    } else if ent.is_dir {
+                        let line = format!("  {}/\n", ent.name);
+                        ctx.terminal.write_str(&line);
+                    } else {
+                        let line = format!("  {}\n", ent.name);
+                        ctx.terminal.write_str(&line);
                     }
                 }
             }
-            let _ = crate::vfs::close(fd.fd);
+            Err(e) => {
+                let msg = format!("ls: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+    });
+
+    nozzle::fs_hooks::set_fs_read_fn(|ctx, path| {
+        // Read each file in the argument list (args[1..])
+        let files: &[&str] = if path.contains(' ') {
+            // Multiple files passed as space-separated string
+            // Split and handle each
+            &[] // handled below
+        } else {
+            &[]
+        };
+
+        // Read the single file at `path`
+        match crate::vfs::open(path, 0) {
+            Ok(fd) => {
+                let mut buf = [0u8; 512];
+                loop {
+                    match crate::vfs::read(fd.fd, &mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            ctx.terminal.write_str(
+                                core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"),
+                            );
+                        }
+                        Err(e) => {
+                            let msg = format!("cat: {}\n", e);
+                            ctx.terminal.write_str(&msg);
+                            break;
+                        }
+                    }
+                }
+                let _ = crate::vfs::close(fd.fd);
+                ctx.terminal.write_str("\n");
+            }
+            Err(e) => {
+                let msg = format!("cat: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+    });
+
+    nozzle::fs_hooks::set_fs_pwd_fn(|ctx| match crate::vfs::working_directory() {
+        Ok(wd) => {
+            ctx.terminal.write_str(&wd);
             ctx.terminal.write_str("\n");
         }
         Err(e) => {
-            let msg = format!("cat: {}: {}\n", path, e);
+            let msg = format!("pwd: {}\n", e);
             ctx.terminal.write_str(&msg);
         }
     });
 
-    nozzle::fs_hooks::set_fs_pwd_fn(|ctx| {
-        ctx.terminal.write_str("/\n");
+    // CD hook
+    nozzle::fs_hooks::set_fs_cd_fn(|ctx, path| match crate::vfs::change_directory(path) {
+        Ok(()) => {}
+        Err(e) => {
+            let msg = format!("cd: {}: {}\n", path, e);
+            ctx.terminal.write_str(&msg);
+        }
+    });
+
+    // Tree hook
+    nozzle::fs_hooks::set_fs_tree_fn(|ctx, path| {
+        let resolved = if path == "." {
+            match crate::vfs::working_directory() {
+                Ok(wd) => wd,
+                Err(_) => String::from("/"),
+            }
+        } else {
+            String::from(path)
+        };
+        match crate::fs::walk_dir(&resolved) {
+            Ok(entries) => {
+                for entry in &entries {
+                    ctx.terminal.write_str(entry);
+                    ctx.terminal.write_str("\n");
+                }
+            }
+            Err(e) => {
+                let msg = format!("tree: {}: {}\n", resolved, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+    });
+
+    // Find hook
+    nozzle::fs_hooks::set_fs_find_fn(|ctx, path, pattern| {
+        let resolved = if path == "." {
+            match crate::vfs::working_directory() {
+                Ok(wd) => wd,
+                Err(_) => String::from("/"),
+            }
+        } else {
+            String::from(path)
+        };
+        match crate::fs::walk_dir(&resolved) {
+            Ok(entries) => {
+                let mut found = false;
+                for entry in &entries {
+                    if entry.contains(pattern) {
+                        ctx.terminal.write_str(entry);
+                        ctx.terminal.write_str("\n");
+                        found = true;
+                    }
+                }
+                if !found {
+                    ctx.terminal.write_str("(no matches)\n");
+                }
+            }
+            Err(e) => {
+                let msg = format!("find: {}: {}\n", resolved, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+    });
+
+    // Copy hook
+    nozzle::fs_hooks::set_fs_cp_fn(|ctx, src, dst| match crate::fs::copy_file(src, dst) {
+        Ok(()) => {
+            let msg = format!("Copied {} -> {}\n", src, dst);
+            ctx.terminal.write_str(&msg);
+        }
+        Err(e) => {
+            let msg = format!("cp: {} -> {}: {}\n", src, dst, e);
+            ctx.terminal.write_str(&msg);
+        }
+    });
+
+    // Move hook
+    nozzle::fs_hooks::set_fs_mv_fn(|ctx, src, dst| match crate::fs::move_file(src, dst) {
+        Ok(()) => {
+            let msg = format!("Moved {} -> {}\n", src, dst);
+            ctx.terminal.write_str(&msg);
+        }
+        Err(e) => {
+            let msg = format!("mv: {} -> {}: {}\n", src, dst, e);
+            ctx.terminal.write_str(&msg);
+        }
+    });
+
+    // Write hook
+    nozzle::fs_hooks::set_fs_write_fn(|ctx, path, content| {
+        match crate::fs::write_entire_file(path, content.as_bytes()) {
+            Ok(()) => {
+                let msg = format!("Wrote {} bytes to {}\n", content.len(), path);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("write: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }
     });
 
     // Sys info hooks — provide real kernel data (unified handler)
@@ -249,6 +386,30 @@ fn register_nozzle_hooks() {
             crate::badapple::play_badapple();
             ctx.terminal.write_str("Bad Apple finished.\n");
         }
+        "app_list" => match crate::fs::list_packages() {
+            Ok(pkgs) => {
+                if pkgs.is_empty() {
+                    ctx.terminal
+                        .write_str("No packages installed.\n");
+                } else {
+                    ctx.terminal
+                        .write_str("NAME         VERSION  DESCRIPTION\n");
+                    ctx.terminal
+                        .write_str("-----------  -------  -----------\n");
+                    for p in &pkgs {
+                        let line = format!(
+                            "{:<12} {:<8} {}\n",
+                            p.name, p.version, p.description
+                        );
+                        ctx.terminal.write_str(&line);
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("app list: {}\n", e);
+                ctx.terminal.write_str(&msg);
+            }
+        },
         _ => {
             let msg = format!("Unknown sys info command: {}\n", cmd);
             ctx.terminal.write_str(&msg);
@@ -316,6 +477,35 @@ fn register_nozzle_hooks() {
             }
             loop {
                 x86_64::instructions::hlt();
+            }
+        }
+        _ if cmd.starts_with("app_install ") => {
+            let rest = &cmd[13..]; // skip "app_install "
+            if let Some((name, desc)) = rest.split_once(' ') {
+                let dummy_bin: [u8; 4] = [0x90, 0x90, 0x90, 0x90]; // NOP placeholder
+                match crate::fs::install_package(name, "0.1.0", desc, &dummy_bin) {
+                    Ok(()) => {
+                        let msg = format!("Installed package '{}'\n", name);
+                        solvent::write_terminal(&msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("app install: {}\n", e);
+                        solvent::write_terminal(&msg);
+                    }
+                }
+            }
+        }
+        _ if cmd.starts_with("app_remove ") => {
+            let name = &cmd[12..]; // skip "app_remove "
+            match crate::fs::remove_package(name) {
+                Ok(()) => {
+                    let msg = format!("Removed package '{}'\n", name);
+                    solvent::write_terminal(&msg);
+                }
+                Err(e) => {
+                    let msg = format!("app remove: {}\n", e);
+                    solvent::write_terminal(&msg);
+                }
             }
         }
         _ => {}

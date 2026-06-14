@@ -62,6 +62,11 @@ pub struct TerminalBuffer {
     cursor_col: u32,
     cursor_row: u32,
     style: TextStyle,
+    /// Scrollback buffer: rows that have scrolled off the top of the screen.
+    /// Each entry is a full row of `Cell`s.
+    scrollback: Vec<Vec<Cell>>,
+    /// How many rows the user has scrolled back (0 = normal view).
+    scroll_offset: usize,
 }
 
 impl TerminalBuffer {
@@ -76,6 +81,8 @@ impl TerminalBuffer {
             cursor_col: 0,
             cursor_row: 0,
             style: TextStyle::default(),
+            scrollback: Vec::new(),
+            scroll_offset: 0,
         }
     }
 
@@ -370,6 +377,13 @@ impl TerminalBuffer {
             self.cells.fill(blank);
             return;
         }
+        // Save the top row into scrollback before shifting.
+        let saved_row: Vec<Cell> = self.cells[..row_len].to_vec();
+        self.scrollback.push(saved_row);
+        // Limit scrollback to 10000 lines to avoid unbounded memory growth.
+        if self.scrollback.len() > 10000 {
+            self.scrollback.remove(0);
+        }
         self.cells.copy_within(row_len.., 0);
         let bottom_start = self.cells.len() - row_len;
         let blank = Cell {
@@ -380,5 +394,70 @@ impl TerminalBuffer {
         for cell in &mut self.cells[bottom_start..] {
             *cell = blank;
         }
+    }
+
+    // ── Scrollback navigation ─────────────────────────────────
+
+    /// Get the number of lines currently in the scrollback buffer.
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// Get the current scroll offset (0 = normal view).
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Scroll back by `n` lines.  Clamped to scrollback length.
+    pub fn scroll_back(&mut self, n: usize) {
+        self.scroll_offset = (self.scroll_offset + n).min(self.scrollback.len());
+    }
+
+    /// Scroll forward by `n` lines.
+    pub fn scroll_forward(&mut self, n: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(n);
+    }
+
+    /// Reset scroll offset to normal view (bottom of buffer).
+    pub fn reset_scroll(&mut self) {
+        self.scroll_offset = 0;
+    }
+
+    /// Get the effective visible cells, taking scroll offset into account.
+    ///
+    /// When `scroll_offset > 0`, returns a view that mixes scrollback
+    /// rows with current buffer rows.  When `scroll_offset == 0`,
+    /// returns a slice of the current cells (same as `self.cells()`).
+    pub fn visible_cells(&self) -> alloc::vec::Vec<Cell> {
+        let total_rows = self.rows as usize;
+        let sb_len = self.scrollback.len();
+        if self.scroll_offset == 0 || sb_len == 0 {
+            return self.cells.clone();
+        }
+        let start = sb_len.saturating_sub(self.scroll_offset);
+        let sb_rows = sb_len.saturating_sub(start);
+        let buf_rows = total_rows.saturating_sub(sb_rows);
+        let row_len = self.cols as usize;
+
+        let mut result = Vec::with_capacity(total_rows * row_len);
+        // Add scrollback rows from the offset.
+        for i in start..sb_len {
+            let row = &self.scrollback[i];
+            result.extend_from_slice(row);
+        }
+        // Fill remaining rows from the current buffer.
+        let remaining = total_rows.saturating_sub(result.len() / row_len);
+        let buf_cells = remaining * row_len;
+        let buf_slice = if buf_cells <= self.cells.len() {
+            &self.cells[..buf_cells]
+        } else {
+            &self.cells[..]
+        };
+        result.extend_from_slice(buf_slice);
+        // Pad if necessary.
+        while result.len() < total_rows * row_len {
+            result.push(Cell::default());
+        }
+        result
     }
 }

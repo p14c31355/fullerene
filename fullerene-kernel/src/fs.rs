@@ -197,6 +197,47 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
     vfs::mount(device, mount_point, fs_type).map_err(|e| map_vfs_error(e))
 }
 
+/// Get the current working directory.
+pub fn working_directory() -> Result<String, FsError> {
+    vfs::working_directory().map_err(|e| map_vfs_error(e))
+}
+
+/// Change the current working directory.
+pub fn change_directory(path: &str) -> Result<(), FsError> {
+    vfs::change_directory(path).map_err(|e| map_vfs_error(e))
+}
+
+/// Copy a file from `src` to `dst`.
+pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
+    let data = read_entire_file(src)?;
+    write_entire_file(dst, &data)
+}
+
+/// Move a file from `src` to `dst`.
+pub fn move_file(src: &str, dst: &str) -> Result<(), FsError> {
+    copy_file(src, dst)?;
+    remove(src)
+}
+
+/// Recursively collect all entries under a directory (for `tree`/`find`).
+pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
+    let mut result = Vec::new();
+    let entries = list_dir(path)?;
+    for entry in &entries {
+        let full = if path.ends_with('/') {
+            alloc::format!("{}{}", path, entry.name)
+        } else {
+            alloc::format!("{}/{}", path, entry.name)
+        };
+        result.push(full.clone());
+        if entry.is_dir {
+            let children = walk_dir(&full)?;
+            result.extend(children);
+        }
+    }
+    Ok(result)
+}
+
 // ── Convenience wrappers for shell commands ───────────────────
 
 /// Read entire file contents as bytes.
@@ -230,22 +271,114 @@ pub fn write_entire_file(path: &str, data: &[u8]) -> Result<(), FsError> {
     create_file(path, data)
 }
 
-/// Get file size.
+/// Get file size by opening the file and reading its length.
 pub fn file_size(path: &str) -> Result<u64, FsError> {
-    let entries = list_dir("/")?;
-    // Look through all entries to find the one matching path (basic impl)
+    let data = read_entire_file(path)?;
+    Ok(data.len() as u64)
+}
+
+// ── Package management ─────────────────────────────────────
+
+/// A package entry parsed from /packages/<name>/manifest.txt.
+#[derive(Debug, Clone)]
+pub struct PackageEntry {
+    pub name: String,
+    pub version: String,
+    pub description: String,
+    pub binary: String,
+}
+
+/// List all installed packages under /packages/.
+pub fn list_packages() -> Result<Vec<PackageEntry>, FsError> {
+    let mut packages = Vec::new();
+    // Ensure /packages directory exists
+    if !exists("/packages") {
+        create_dir("/packages")?;
+        return Ok(packages);
+    }
+    let entries = list_dir("/packages")?;
     for entry in &entries {
-        let full = if entry.is_dir {
-            alloc::format!("/{}/", entry.name)
-        } else {
-            alloc::format!("/{}", entry.name)
-        };
-        if full.trim_end_matches('/') == path.trim_end_matches('/') {
-            return Ok(entry.size);
+        if entry.is_dir {
+            let manifest_path = alloc::format!("/packages/{}/manifest.txt", entry.name);
+            if exists(&manifest_path) {
+                if let Ok(data) = read_entire_file(&manifest_path) {
+                    if let Ok(text) = core::str::from_utf8(&data) {
+                        if let Some(pkg) = parse_manifest(&entry.name, text) {
+                            packages.push(pkg);
+                        }
+                    }
+                }
+            }
         }
     }
-    // Try open and read to determine size from parent directory
-    Err(FsError::FileNotFound)
+    Ok(packages)
+}
+
+/// Install a package: create directory, write manifest and binary.
+pub fn install_package(name: &str, version: &str, description: &str, binary: &[u8]) -> Result<(), FsError> {
+    let pkg_dir = alloc::format!("/packages/{}", name);
+    if exists(&pkg_dir) {
+        return Err(FsError::FileExists);
+    }
+    create_dir(&pkg_dir)?;
+
+    let manifest = alloc::format!(
+        "name = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\nbinary = \"app.bin\"\n",
+        name, version, description
+    );
+    let manifest_path = alloc::format!("/packages/{}/manifest.txt", name);
+    write_entire_file(&manifest_path, manifest.as_bytes())?;
+
+    let bin_path = alloc::format!("/packages/{}/app.bin", name);
+    write_entire_file(&bin_path, binary)?;
+
+    Ok(())
+}
+
+/// Remove a package (directory and all contents).
+pub fn remove_package(name: &str) -> Result<(), FsError> {
+    let pkg_dir = alloc::format!("/packages/{}", name);
+    if !exists(&pkg_dir) {
+        return Err(FsError::FileNotFound);
+    }
+    // Remove binary first, then manifest, then directory
+    let bin_path = alloc::format!("/packages/{}/app.bin", name);
+    if exists(&bin_path) {
+        remove(&bin_path)?;
+    }
+    let manifest_path = alloc::format!("/packages/{}/manifest.txt", name);
+    if exists(&manifest_path) {
+        remove(&manifest_path)?;
+    }
+    remove(&pkg_dir)
+}
+
+/// Parse a manifest.txt into a PackageEntry.
+fn parse_manifest(name: &str, text: &str) -> Option<PackageEntry> {
+    let mut version = String::from("0.1.0");
+    let mut description = String::new();
+    let mut binary = String::from("app.bin");
+
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim().trim_matches('"');
+            match key {
+                "version" => version = String::from(value),
+                "description" => description = String::from(value),
+                "binary" => binary = String::from(value),
+                _ => {}
+            }
+        }
+    }
+
+    Some(PackageEntry {
+        name: String::from(name),
+        version,
+        description,
+        binary,
+    })
 }
 
 // ── Error mapping ─────────────────────────────────────────────

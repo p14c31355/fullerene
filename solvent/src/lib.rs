@@ -471,15 +471,37 @@ impl EventHandler for WmEventHandler {
 struct TerminalInputHandler;
 
 impl EventHandler for TerminalInputHandler {
-    fn handle(&mut self, _event: &Event) -> bool {
-        // ── No-op event handler ──────────────────────────
-        // LatticeTerminal::read_byte() already consumes keys
-        // directly from nitrogen::ps2::keyboard::read_char().
-        // Writing to term_buf here would cause double input
-        // (once from this handler, once from the shell echo).
-        // This handler is retained for potential future use
-        // (e.g. clipboard paste, compose sequences) but does
-        // NOT forward ASCII to the terminal buffer.
+    fn handle(&mut self, event: &Event) -> bool {
+        // PageUp / PageDown → terminal scrollback navigation.
+        // These keys are NOT consumed by the shell and don't
+        // interfere with LatticeTerminal::read_byte().
+        match event {
+            Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
+                if let Some(ref mut rt) = *RUNTIME.lock() {
+                    rt.term_buf.scroll_back(1);
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                }
+                return true;
+            }
+            Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
+                if let Some(ref mut rt) = *RUNTIME.lock() {
+                    rt.term_buf.scroll_forward(1);
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                }
+                return true;
+            }
+            Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
+                if let Some(ref mut rt) = *RUNTIME.lock() {
+                    rt.term_buf.reset_scroll();
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                }
+                return true;
+            }
+            _ => {}
+        }
         false
     }
 }
@@ -1320,7 +1342,10 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
             },
         );
     }
-    for (i, c) in term_buf.cells().iter().enumerate() {
+    // Use visible_cells() to incorporate scrollback content.
+    let visible = term_buf.visible_cells();
+    rt.term_cells.resize(visible.len(), LatticeCell { ch: b' ', fg: 0, bg: 0 });
+    for (i, c) in visible.iter().enumerate() {
         if i < rt.term_cells.len() {
             rt.term_cells[i] = LatticeCell {
                 ch: c.ch,

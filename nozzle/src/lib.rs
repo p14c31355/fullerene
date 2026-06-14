@@ -156,5 +156,12 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             "Play Bad Apple!! animation",
             builtins::cmd_badapple
         ),
+        ("cd", "Change working directory", builtins::cmd_cd),
+        ("tree", "Display directory tree", builtins::cmd_tree),
+        ("find", "Search for files", builtins::cmd_find),
+        ("cp", "Copy a file", builtins::cmd_cp),
+        ("mv", "Move a file", builtins::cmd_mv),
+        ("write", "Write content to a file", builtins::cmd_write),
+        ("app", "Package manager (install/remove/list)", builtins::cmd_app),
     )
 }

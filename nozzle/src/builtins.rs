@@ -213,3 +213,99 @@ pub fn cmd_badapple(ctx: &mut CommandContext) -> bool {
     crate::sys_hooks::call_sys_info_hook(ctx, "badapple");
     true
 }
+
+/// `cd` — change the current working directory
+pub fn cmd_cd(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: cd <directory>\n");
+        return true;
+    }
+    crate::fs_hooks::change_directory(ctx, ctx.args[1]);
+    true
+}
+
+/// `tree` — display a directory tree
+pub fn cmd_tree(ctx: &mut CommandContext) -> bool {
+    let path = if ctx.args.len() > 1 { ctx.args[1] } else { "." };
+    crate::fs_hooks::tree_directory(ctx, path);
+    true
+}
+
+/// `find` — search for files matching a pattern
+pub fn cmd_find(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal
+            .write_str("Usage: find <directory> <pattern>\n");
+        return true;
+    }
+    crate::fs_hooks::find_files(ctx, ctx.args[1], ctx.args[2]);
+    true
+}
+
+/// `cp` — copy a file
+pub fn cmd_cp(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal.write_str("Usage: cp <source> <destination>\n");
+        return true;
+    }
+    crate::fs_hooks::copy_file(ctx, ctx.args[1], ctx.args[2]);
+    true
+}
+
+/// `mv` — move a file
+pub fn cmd_mv(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal.write_str("Usage: mv <source> <destination>\n");
+        return true;
+    }
+    crate::fs_hooks::move_file(ctx, ctx.args[1], ctx.args[2]);
+    true
+}
+
+/// `write` — write content to a file
+pub fn cmd_write(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal
+            .write_str("Usage: write <path> <content>\n");
+        return true;
+    }
+    crate::fs_hooks::write_file(ctx, ctx.args[1], ctx.args[2]);
+    true
+}
+
+/// `app` — package manager (install / remove / list)
+pub fn cmd_app(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal
+            .write_str("Usage: app <install|remove|list> [name] [description]\n");
+        return true;
+    }
+    let sub = ctx.args[1];
+    match sub {
+        "list" => crate::sys_hooks::call_sys_info_hook(ctx, "app_list"),
+        "install" if ctx.args.len() >= 4 => {
+            let name = ctx.args[2];
+            let desc = ctx.args[3];
+            // Use sys_control hook: "app_install <name> <desc>"
+            let cmd = alloc::format!("app_install {} {}", name, desc);
+            crate::sys_hooks::call_sys_control_hook(&cmd);
+        }
+        "install" => {
+            ctx.terminal
+                .write_str("Usage: app install <name> <description>\n");
+        }
+        "remove" if ctx.args.len() >= 3 => {
+            let name = ctx.args[2];
+            let cmd = alloc::format!("app_remove {}", name);
+            crate::sys_hooks::call_sys_control_hook(&cmd);
+        }
+        "remove" => {
+            ctx.terminal.write_str("Usage: app remove <name>\n");
+        }
+        _ => {
+            let msg = alloc::format!("app: unknown subcommand '{}'\n", sub);
+            ctx.terminal.write_str(&msg);
+        }
+    }
+    true
+}
