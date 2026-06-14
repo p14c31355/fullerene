@@ -498,3 +498,15 @@ The project should remain:
 
 Architectural clarity is the highest long-term priority.
 
+---
+
+# 14. Context First Principle
+
+When introducing a new subsystem, first design its Context structure.
+
+Implementation details should be organized around the Context, not the other way around.
+
+The Context is the source of truth.
+Functions, drivers, and hardware interactions are merely operations performed on that Context.
+
+
