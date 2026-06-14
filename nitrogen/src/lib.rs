@@ -32,4 +32,3 @@ pub mod pic;
 pub mod port;
 pub mod ps2;
 pub mod virtio;
-pub mod xhci_dbc;

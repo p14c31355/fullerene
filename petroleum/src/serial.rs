@@ -270,14 +270,6 @@ pub fn _print(args: fmt::Arguments) {
         let mut port = SerialPort::new(Com1Ports);
         port.write_string(&buf);
 
-        // Also send via xHCI Debug Capability if the nitrogen crate
-        // is linked and DbC is active.
-        unsafe extern "Rust" {
-            fn _dbc_try_write_str(ptr: *const u8, len: usize);
-        }
-        unsafe {
-            _dbc_try_write_str(buf.as_ptr(), buf.len());
-        }
     }
 }
 
