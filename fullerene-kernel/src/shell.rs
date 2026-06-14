@@ -503,67 +503,84 @@ fn register_nozzle_hooks() {
         }
         "grep" => {
             // File-based grep: read file and search for pattern in args[1]
-            if ctx.args.len() < 4 {
+            if ctx.args.len() < 3 {
                 ctx.terminal.write_str("grep: pattern and file required\n");
             } else {
-                let pattern = ctx.args[2];
-                let path = ctx.args[3];
-                match crate::vfs::open(path, 0) {
-                    Ok(fd) => {
-                        let mut buf = [0u8; 1024];
-                        let mut remainder = alloc::vec::Vec::new();
-                        loop {
-                            match crate::vfs::read(fd.fd, &mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => {
-                                    remainder.extend_from_slice(&buf[..n]);
-                                    let s = core::str::from_utf8(&remainder).unwrap_or("");
-                                    // Process complete lines
-                                    let mut last_newline = 0;
-                                    for (i, _) in s.match_indices('\n') {
-                                        let line = &s[last_newline..i];
-                                        if line.contains(pattern) {
-                                            ctx.terminal.write_str(line);
-                                            ctx.terminal.write_str("\n");
+                let pattern = ctx.args[1];
+                for &path in &ctx.args[2..] {
+                    match crate::vfs::open(path, 0) {
+                        Ok(fd) => {
+                            let mut buf = [0u8; 1024];
+                            let mut remainder = alloc::vec::Vec::new();
+                            loop {
+                                match crate::vfs::read(fd.fd, &mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        remainder.extend_from_slice(&buf[..n]);
+                                        // Process complete lines by scanning for b'\n'
+                                        // directly in the byte buffer to avoid UTF-8
+                                        // split issues across read boundaries.
+                                        let mut last_newline = 0;
+                                        for (i, &byte) in remainder.iter().enumerate() {
+                                            if byte == b'\n' {
+                                                if let Ok(line) =
+                                                    core::str::from_utf8(&remainder[last_newline..i])
+                                                {
+                                                    if line.contains(pattern) {
+                                                        if ctx.args.len() > 3 {
+                                                            let prefix =
+                                                                alloc::format!("{}:", path);
+                                                            ctx.terminal.write_str(&prefix);
+                                                        }
+                                                        ctx.terminal.write_str(line);
+                                                        ctx.terminal.write_str("\n");
+                                                    }
+                                                }
+                                                last_newline = i + 1;
+                                            }
                                         }
-                                        last_newline = i + 1;
+                                        // Drain processed bytes; keep unprocessed tail.
+                                        remainder.drain(..last_newline);
                                     }
-                                    // Keep trailing partial line
-                                    if last_newline < s.len() {
-                                        let remaining = s[last_newline..].as_bytes().to_vec();
-                                        remainder = remaining;
-                                    } else {
-                                        remainder.clear();
+                                    Err(e) => {
+                                        let msg = format!("grep: {}\n", e);
+                                        ctx.terminal.write_str(&msg);
+                                        break;
                                     }
                                 }
-                                Err(e) => {
-                                    let msg = format!("grep: {}\n", e);
-                                    ctx.terminal.write_str(&msg);
-                                    break;
+                            }
+                            // Process final partial line
+                            if !remainder.is_empty() {
+                                if let Ok(s) = core::str::from_utf8(&remainder) {
+                                    if s.contains(pattern) {
+                                        if ctx.args.len() > 3 {
+                                            let prefix = alloc::format!("{}:", path);
+                                            ctx.terminal.write_str(&prefix);
+                                        }
+                                        ctx.terminal.write_str(s);
+                                        ctx.terminal.write_str("\n");
+                                    }
                                 }
                             }
+                            let _ = crate::vfs::close(fd.fd);
                         }
-                        // Process final partial line
-                        if !remainder.is_empty() {
-                            let s = core::str::from_utf8(&remainder).unwrap_or("");
-                            if s.contains(pattern) {
-                                ctx.terminal.write_str(s);
-                                ctx.terminal.write_str("\n");
-                            }
+                        Err(e) => {
+                            let msg = format!("grep: {}: {}\n", path, e);
+                            ctx.terminal.write_str(&msg);
                         }
-                        let _ = crate::vfs::close(fd.fd);
-                    }
-                    Err(e) => {
-                        let msg = format!("grep: {}: {}\n", path, e);
-                        ctx.terminal.write_str(&msg);
                     }
                 }
             }
         }
         "sort" => {
-            if ctx.args.len() > 1 && (ctx.args[1] != "-r" || ctx.args.len() >= 3) {
-                let path = ctx.args[1];
-                let reverse = ctx.args.iter().any(|a| *a == "-r");
+            let reverse = ctx.args.iter().any(|a| *a == "-r");
+            let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" {
+                2
+            } else {
+                1
+            };
+            if path_idx < ctx.args.len() {
+                let path = ctx.args[path_idx];
                 match crate::vfs::open(path, 0) {
                     Ok(fd) => {
                         let mut buf = [0u8; 1024];
@@ -619,8 +636,8 @@ fn register_nozzle_hooks() {
                             }
                         }
                         let _ = crate::vfs::close(fd.fd);
-                        let text = core::str::from_utf8(&data).unwrap_or("");
-                        let lines = text.lines().count();
+                        let text = alloc::string::String::from_utf8_lossy(&data);
+                        let lines = data.iter().filter(|&&b| b == b'\n').count();
                         let words = text.split_whitespace().count();
                         let bytes = data.len();
                         let msg = format!("{} {} {} {}\n", lines, words, bytes, path);

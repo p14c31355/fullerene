@@ -367,15 +367,13 @@ pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
     let pattern = ctx.args[1];
     // If stdin was provided (from a pipe), search through it.
     if let Some(stdin) = ctx.terminal.take_stdin() {
-        if !stdin.is_empty() {
-            for line in stdin.lines() {
-                if line.contains(pattern) {
-                    ctx.terminal.write_str(line);
-                    ctx.terminal.write_str("\n");
-                }
+        for line in stdin.lines() {
+            if line.contains(pattern) {
+                ctx.terminal.write_str(line);
+                ctx.terminal.write_str("\n");
             }
-            return true;
         }
+        return true;
     }
     // Otherwise, search files provided as arguments.
     if ctx.args.len() < 3 {
@@ -393,18 +391,16 @@ pub fn cmd_sort(ctx: &mut CommandContext) -> bool {
     let reverse = ctx.args.iter().any(|a| *a == "-r");
     // Try reading from stdin first (pipe input).
     if let Some(stdin) = ctx.terminal.take_stdin() {
-        if !stdin.is_empty() {
-            let mut lines: alloc::vec::Vec<&str> = stdin.lines().collect();
-            lines.sort();
-            if reverse {
-                lines.reverse();
-            }
-            for line in lines {
-                ctx.terminal.write_str(line);
-                ctx.terminal.write_str("\n");
-            }
-            return true;
+        let mut lines: alloc::vec::Vec<&str> = stdin.lines().collect();
+        lines.sort();
+        if reverse {
+            lines.reverse();
         }
+        for line in lines {
+            ctx.terminal.write_str(line);
+            ctx.terminal.write_str("\n");
+        }
+        return true;
     }
     // If no stdin, try reading from a file.
     if ctx.args.len() > 1 {
@@ -420,15 +416,13 @@ pub fn cmd_sort(ctx: &mut CommandContext) -> bool {
 pub fn cmd_wc(ctx: &mut CommandContext) -> bool {
     // Read from stdin (pipe input) or files.
     if let Some(stdin) = ctx.terminal.take_stdin() {
-        if !stdin.is_empty() {
-            let lines = stdin.lines().count();
-            let words = stdin.split_whitespace().count();
-            let bytes = stdin.len();
-            let out = alloc::format!("{} {} {} {}\n", lines, words, bytes,
-                if ctx.args.len() > 1 { ctx.args[1] } else { "(stdin)" });
-            ctx.terminal.write_str(&out);
-            return true;
-        }
+        let lines = stdin.lines().count();
+        let words = stdin.split_whitespace().count();
+        let bytes = stdin.len();
+        let out = alloc::format!("{} {} {} {}\n", lines, words, bytes,
+            if ctx.args.len() > 1 { ctx.args[1] } else { "(stdin)" });
+        ctx.terminal.write_str(&out);
+        return true;
     }
     // From files
     if ctx.args.len() > 1 {
