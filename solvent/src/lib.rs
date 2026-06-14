@@ -1416,6 +1416,14 @@ impl nozzle::Terminal for LatticeTerminal {
     fn take_stdin(&mut self) -> Option<alloc::string::String> {
         PIPE_STDIN.lock().take()
     }
+
+    fn arm_pipe_stdout(&mut self) {
+        *PIPE_STDOUT.lock() = Some(alloc::string::String::new());
+    }
+
+    fn clear_pipe_stdin(&mut self) {
+        *PIPE_STDIN.lock() = None;
+    }
 }
 
 /// Pipe I/O buffers for the LatticeTerminal (used by the pipe dispatcher).

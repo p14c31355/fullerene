@@ -561,7 +561,7 @@ fn register_nozzle_hooks() {
             }
         }
         "sort" => {
-            if ctx.args.len() > 1 && ctx.args[1] != "-r" {
+            if ctx.args.len() > 1 && (ctx.args[1] != "-r" || ctx.args.len() >= 3) {
                 let path = ctx.args[1];
                 let reverse = ctx.args.iter().any(|a| *a == "-r");
                 match crate::vfs::open(path, 0) {

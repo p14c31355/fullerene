@@ -39,4 +39,16 @@ pub trait Terminal {
     fn take_stdin(&mut self) -> Option<alloc::string::String> {
         None
     }
+
+    /// Arm the pipe stdout buffer to capture output for the current stage.
+    ///
+    /// Called before each command in a pipeline executes to ensure
+    /// that `write_str` output is captured into the pipe buffer.
+    fn arm_pipe_stdout(&mut self) {}
+
+    /// Clear any residual pipe stdin data after a stage completes.
+    ///
+    /// Called after each command in a pipeline to ensure stale input
+    /// doesn't leak into the next stage.
+    fn clear_pipe_stdin(&mut self) {}
 }

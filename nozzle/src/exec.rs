@@ -136,6 +136,9 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
                     terminal.set_stdin(alloc::string::String::from(input.as_str()));
                 }
 
+                // Arm the stdout buffer to capture output for this stage.
+                terminal.arm_pipe_stdout();
+
                 let mut ctx = CommandContext {
                     terminal,
                     args: &args,
@@ -144,6 +147,9 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
 
                 // Collect stdout for the next pipe stage.
                 pipe_buffer = terminal.take_stdout();
+
+                // Clear any residual stdin to prevent leakage to the next stage.
+                terminal.clear_pipe_stdin();
 
                 if !continue_shell {
                     return false;

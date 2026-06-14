@@ -382,11 +382,9 @@ pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("grep: no input (pipe data or specify files)\n");
         return true;
     }
-    for file in &ctx.args[2..] {
-        ctx.terminal.write_str(&alloc::format!("{}:\n", file));
-        // Use a simple sys_info dispatch for file-based grep
-        crate::sys_hooks::call_sys_info_hook(ctx, "grep");
-    }
+    // Use a simple sys_info dispatch for file-based grep
+    // The kernel will process all files in ctx.args[2..]
+    crate::sys_hooks::call_sys_info_hook(ctx, "grep");
     true
 }
 
