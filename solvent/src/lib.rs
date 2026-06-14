@@ -59,6 +59,17 @@ pub fn exec_shell_command(input: &str) -> alloc::string::String {
     }
 }
 
+// Callback: launch the shell process (called from AppGrid / context menu).
+pub static LAUNCH_SHELL_FN: Mutex<Option<fn()>> = Mutex::new(None);
+pub fn set_launch_shell_fn(f: fn()) {
+    *LAUNCH_SHELL_FN.lock() = Some(f);
+}
+pub fn launch_shell() {
+    if let Some(f) = *LAUNCH_SHELL_FN.lock() {
+        f();
+    }
+}
+
 // ── Utility Functions ────────────────────────────────────────
 
 /// Truncate a string to at most `n` characters (not bytes), safely handling UTF-8 boundaries.
@@ -364,7 +375,6 @@ impl EventHandler for WmEventHandler {
                     return true;
                 }
                 Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::AppGrid => {
-                    // Check if Settings icon was clicked
                     let mouse = MOUSE_STATE.lock();
                     let cx = mouse.x as i32;
                     let cy = mouse.y as i32;
@@ -378,21 +388,39 @@ impl EventHandler for WmEventHandler {
                     let columns = ((fw as i32) / (icon_size + pad)).max(1);
                     let start_y = 60i32;
 
-                    // "Settings" is index 2 in the apps array
-                    let idx = 2i32;
-                    let col = idx % columns;
-                    let row = idx / columns;
-                    let ax = pad + col * (icon_size + pad);
-                    let ay = start_y + row * (icon_size + label_h + pad);
-
-                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h
-                    {
-                        rt.shell_state = ShellState::TimeZoneSelector;
-                        rt.frame_due = true;
-                        return true;
+                    // Determine which icon was clicked (0=Shell, 1=Terminal,
+                    // 2=Clock, 3=Settings, 4=File Mgr, 5=About)
+                    for idx in 0i32..6 {
+                        let col = idx % columns;
+                        let row = idx / columns;
+                        let ax = pad + col * (icon_size + pad);
+                        let ay = start_y + row * (icon_size + label_h + pad);
+                        if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
+                            match idx {
+                                0 => {
+                                    // Shell — launch the system shell
+                                    launch_shell();
+                                    rt.shell_state = ShellState::Desktop;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                3 => {
+                                    // Settings → timezone selector
+                                    rt.shell_state = ShellState::TimeZoneSelector;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                _ => {
+                                    // Other apps — return to Desktop
+                                    rt.shell_state = ShellState::Desktop;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                            }
+                        }
                     }
 
-                    // Click on other app icons or outside → back to Desktop
+                    // Click outside all icons → back to Desktop
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
@@ -1523,11 +1551,12 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
             rt.frame_due = true;
         }
         DesktopAction::NewShell => {
-            let id = rt
-                .desktop
-                .wm
-                .create_titled_window(80, 70, TERM_WIN_W, TERM_WIN_H, 0x0a0a2e, "Shell");
-            rt.desktop.wm.raise_to_top(id);
+            // Launch the actual interactive shell (the same one that
+            // was previously auto‑started by the kernel).  It claims
+            // control of the framebuffer via LatticeTerminal / the
+            // runtime tick loop and returns when the user types `exit`.
+            launch_shell();
+            rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
         DesktopAction::TaskManager => open_info_window(rt, InfoWindow::TaskManager),

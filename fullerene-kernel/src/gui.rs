@@ -106,6 +106,13 @@ pub fn init() {
     ));
     solvent::set_tsc_per_ms(tsc_per_ms);
 
+    // Register the launch‑shell callback so the AppGrid / context menu
+    // can request a shell launch.  The actual launch happens in
+    // scheduler_loop() on the next idle iteration.
+    solvent::set_launch_shell_fn(|| {
+        crate::scheduler::request_shell_launch();
+    });
+
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 }

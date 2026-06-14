@@ -171,6 +171,10 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32) {
 
     let apps: &[AppEntry] = &[
         AppEntry {
+            label: "Shell",
+            color: 0x1a3a1a,
+        },
+        AppEntry {
             label: "Terminal",
             color: 0x333344,
         },

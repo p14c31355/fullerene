@@ -198,7 +198,24 @@ impl FramebufferContext {
                 gpu.flush(w, h);
             }
         } else {
-            unsafe { core::arch::x86_64::_mm_mfence() };
+            // WC (Write Combining) memory requires both an SFENCE to
+            // make stores globally visible, and a dummy read from the
+            // same WC range to drain the WC buffers.
+            // _mm_mfence alone is not sufficient on real hardware.
+            unsafe {
+                core::arch::x86_64::_mm_sfence();
+            }
+            // Dummy read from the framebuffer to force WC buffer drain.
+            if let Some(ref r) = self.renderer {
+                let info = r.get_info();
+                let fb_ptr = info.address as *mut u32;
+                // Read the last pixel written (approximation: first pixel
+                // of the framebuffer).  This forces any pending WC stores
+                // to be committed to the device.
+                unsafe {
+                    core::ptr::read_volatile(fb_ptr);
+                }
+            }
         }
         nitrogen::hda::HdaController::tick_vm_exit();
     }
