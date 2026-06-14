@@ -163,5 +163,17 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("mv", "Move a file", builtins::cmd_mv),
         ("write", "Write content to a file", builtins::cmd_write),
         ("app", "Package manager (install/remove/list)", builtins::cmd_app),
+        ("rm", "Remove files or directories", builtins::cmd_rm),
+        ("mkdir", "Create directories", builtins::cmd_mkdir),
+        ("touch", "Create empty files", builtins::cmd_touch),
+        ("df", "Show disk usage", builtins::cmd_df),
+        ("date", "Show current date and time", builtins::cmd_date),
+        ("uptime", "Show system uptime", builtins::cmd_uptime),
+        ("whoami", "Print current user name", builtins::cmd_whoami),
+        ("history", "Show command history", builtins::cmd_history),
+        ("sleep", "Pause for N seconds", builtins::cmd_sleep),
+        ("grep", "Search for a pattern", builtins::cmd_grep),
+        ("sort", "Sort lines of text", builtins::cmd_sort),
+        ("wc", "Count lines, words, and bytes", builtins::cmd_wc),
     )
 }

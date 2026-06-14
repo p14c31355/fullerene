@@ -4,6 +4,33 @@
 
 use crate::parser::Pipeline;
 use crate::terminal::Terminal;
+use alloc::collections::VecDeque;
+use spin::Mutex;
+
+/// Shared command history used across LineEditor instances.
+static SHARED_HISTORY: Mutex<VecDeque<alloc::string::String>> =
+    Mutex::new(VecDeque::new());
+
+/// Return a snapshot of the shared command history (newest first).
+pub fn get_history_snapshot() -> alloc::vec::Vec<alloc::string::String> {
+    let guard = SHARED_HISTORY.lock();
+    guard.iter().cloned().collect()
+}
+
+/// Push a line into the shared history (called by LineEditor).
+pub fn push_history(line: &str) {
+    if line.is_empty() {
+        return;
+    }
+    let mut guard = SHARED_HISTORY.lock();
+    if guard.front().map_or(false, |h| h == line) {
+        return;
+    }
+    if guard.len() >= 128 {
+        guard.pop_back();
+    }
+    guard.push_front(alloc::string::String::from(line));
+}
 
 /// Context provided to every command execution
 pub struct CommandContext<'a> {
@@ -109,6 +136,9 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
                     terminal.set_stdin(alloc::string::String::from(input.as_str()));
                 }
 
+                // Arm the stdout buffer to capture output for this stage.
+                terminal.arm_pipe_stdout();
+
                 let mut ctx = CommandContext {
                     terminal,
                     args: &args,
@@ -117,6 +147,9 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
 
                 // Collect stdout for the next pipe stage.
                 pipe_buffer = terminal.take_stdout();
+
+                // Clear any residual stdin to prevent leakage to the next stage.
+                terminal.clear_pipe_stdin();
 
                 if !continue_shell {
                     return false;

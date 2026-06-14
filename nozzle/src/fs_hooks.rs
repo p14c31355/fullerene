@@ -35,6 +35,18 @@ pub static FS_MV_FN: Mutex<Option<fn(&mut CommandContext, &str, &str)>> = Mutex:
 /// Callback for writing to a file.
 pub static FS_WRITE_FN: Mutex<Option<fn(&mut CommandContext, &str, &str)>> = Mutex::new(None);
 
+/// Callback for removing a file or directory.
+pub static FS_RM_FN: Mutex<Option<fn(&mut CommandContext, &str)>> = Mutex::new(None);
+
+/// Callback for creating a directory.
+pub static FS_MKDIR_FN: Mutex<Option<fn(&mut CommandContext, &str)>> = Mutex::new(None);
+
+/// Callback for creating an empty file (touch).
+pub static FS_TOUCH_FN: Mutex<Option<fn(&mut CommandContext, &str)>> = Mutex::new(None);
+
+/// Callback for disk usage (df).
+pub static FS_DF_FN: Mutex<Option<fn(&mut CommandContext)>> = Mutex::new(None);
+
 // ── Setters ────────────────────────────────────────────────────
 
 pub fn set_fs_list_fn(f: fn(&mut CommandContext)) {
@@ -71,6 +83,22 @@ pub fn set_fs_mv_fn(f: fn(&mut CommandContext, &str, &str)) {
 
 pub fn set_fs_write_fn(f: fn(&mut CommandContext, &str, &str)) {
     *FS_WRITE_FN.lock() = Some(f);
+}
+
+pub fn set_fs_rm_fn(f: fn(&mut CommandContext, &str)) {
+    *FS_RM_FN.lock() = Some(f);
+}
+
+pub fn set_fs_mkdir_fn(f: fn(&mut CommandContext, &str)) {
+    *FS_MKDIR_FN.lock() = Some(f);
+}
+
+pub fn set_fs_touch_fn(f: fn(&mut CommandContext, &str)) {
+    *FS_TOUCH_FN.lock() = Some(f);
+}
+
+pub fn set_fs_df_fn(f: fn(&mut CommandContext)) {
+    *FS_DF_FN.lock() = Some(f);
 }
 
 // ── Dispatchers ────────────────────────────────────────────────
@@ -146,5 +174,37 @@ pub fn write_file(ctx: &mut CommandContext, path: &str, content: &str) {
         f(ctx, path, content);
     } else {
         ctx.terminal.write_str("write: no filesystem\n");
+    }
+}
+
+pub fn remove_file(ctx: &mut CommandContext, path: &str) {
+    if let Some(f) = *FS_RM_FN.lock() {
+        f(ctx, path);
+    } else {
+        ctx.terminal.write_str("rm: no filesystem\n");
+    }
+}
+
+pub fn make_directory(ctx: &mut CommandContext, path: &str) {
+    if let Some(f) = *FS_MKDIR_FN.lock() {
+        f(ctx, path);
+    } else {
+        ctx.terminal.write_str("mkdir: no filesystem\n");
+    }
+}
+
+pub fn touch_file(ctx: &mut CommandContext, path: &str) {
+    if let Some(f) = *FS_TOUCH_FN.lock() {
+        f(ctx, path);
+    } else {
+        ctx.terminal.write_str("touch: no filesystem\n");
+    }
+}
+
+pub fn disk_usage(ctx: &mut CommandContext) {
+    if let Some(f) = *FS_DF_FN.lock() {
+        f(ctx);
+    } else {
+        ctx.terminal.write_str("df: no filesystem\n");
     }
 }
