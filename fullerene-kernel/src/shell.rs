@@ -203,6 +203,72 @@ fn register_nozzle_hooks() {
         }
     });
 
+    // RM hook
+    nozzle::fs_hooks::set_fs_rm_fn(|ctx, path| match crate::fs::remove(path) {
+        Ok(()) => {
+            let msg = format!("Removed {}\n", path);
+            ctx.terminal.write_str(&msg);
+        }
+        Err(e) => {
+            let msg = format!("rm: {}: {}\n", path, e);
+            ctx.terminal.write_str(&msg);
+        }
+    });
+
+    // MKDIR hook
+    nozzle::fs_hooks::set_fs_mkdir_fn(|ctx, path| match crate::vfs::mkdir(path) {
+        Ok(()) => {
+            let msg = format!("Created directory {}\n", path);
+            ctx.terminal.write_str(&msg);
+        }
+        Err(e) => {
+            let msg = format!("mkdir: {}: {}\n", path, e);
+            ctx.terminal.write_str(&msg);
+        }
+    });
+
+    // TOUCH hook
+    nozzle::fs_hooks::set_fs_touch_fn(|ctx, path| {
+        // Create an empty file if it doesn't exist; if it does, no-op.
+        match crate::vfs::create(path) {
+            Ok(fd) => {
+                let _ = crate::vfs::close(fd.fd);
+                let msg = format!("Touched {}\n", path);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("touch: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+    });
+
+    // DF (disk usage) hook
+    nozzle::fs_hooks::set_fs_df_fn(|ctx| {
+        // Walk "/" to count files and directories, sum sizes.
+        match crate::fs::walk_dir("/") {
+            Ok(entries) => {
+                let file_count = entries.iter().filter(|e| !e.ends_with('/')).count();
+                let dir_count = entries.iter().filter(|e| e.ends_with('/')).count();
+                // Approximate total size by summing known sizes from readdir
+                let total_size: u64 = 0; // We'll count via readdir below
+                // For now just display entry count
+                ctx.terminal.write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
+                let msg = format!(
+                    "ramfs           {:>4}K  {:>4}K  {:>4}K  {:>3}%  /\n",
+                    0, 0, 0, 0
+                );
+                ctx.terminal.write_str(&msg);
+                let msg2 = format!("{} files, {} directories\n", file_count, dir_count);
+                ctx.terminal.write_str(&msg2);
+            }
+            Err(e) => {
+                let msg = format!("df: {}\n", e);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+    });
+
     // Sys info hooks — provide real kernel data (unified handler)
     nozzle::sys_hooks::set_sys_info_fn(|ctx, cmd| match cmd {
         "mem" => {
@@ -385,6 +451,189 @@ fn register_nozzle_hooks() {
                 .write_str("Playing Bad Apple!! (press any key to stop)...\n");
             crate::badapple::play_badapple();
             ctx.terminal.write_str("Bad Apple finished.\n");
+        }
+        "date" => {
+            if let Some(get_time) = *solvent::WALL_CLOCK_FN.lock() {
+                if let Some((year, month, day, hour, minute, second)) = get_time() {
+                    let msg = format!(
+                        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}\n",
+                        year, month, day, hour, minute, second
+                    );
+                    ctx.terminal.write_str(&msg);
+                } else {
+                    ctx.terminal.write_str("date: RTC not available\n");
+                }
+            } else {
+                ctx.terminal.write_str("date: no wall clock callback\n");
+            }
+        }
+        "uptime" => {
+            let ticks = core::sync::atomic::AtomicU64::load(
+                &solvent::GLOBAL_TICK,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            // Assume ~1000 ticks per second (adjustable)
+            let seconds = ticks / 1000;
+            let days = seconds / 86400;
+            let hours = (seconds % 86400) / 3600;
+            let mins = (seconds % 3600) / 60;
+            let secs = seconds % 60;
+            if days > 0 {
+                let msg = format!("up {} days {:02}:{:02}:{:02}\n", days, hours, mins, secs);
+                ctx.terminal.write_str(&msg);
+            } else {
+                let msg = format!("up {:02}:{:02}:{:02}\n", hours, mins, secs);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+        "sleep" => {
+            // Busy-wait for N seconds using TSC
+            if ctx.args.len() > 1 {
+                if let Ok(secs) = ctx.args[1].parse::<u64>() {
+                    let tsc_per_ms = solvent::get_tsc_per_ms();
+                    let target = unsafe { core::arch::x86_64::_rdtsc() }
+                        .wrapping_add(tsc_per_ms.saturating_mul(secs * 1000));
+                    while unsafe { core::arch::x86_64::_rdtsc() } < target {
+                        core::hint::spin_loop();
+                    }
+                } else {
+                    ctx.terminal.write_str("sleep: invalid number of seconds\n");
+                }
+            }
+        }
+        "grep" => {
+            // File-based grep: read file and search for pattern in args[1]
+            if ctx.args.len() < 4 {
+                ctx.terminal.write_str("grep: pattern and file required\n");
+            } else {
+                let pattern = ctx.args[2];
+                let path = ctx.args[3];
+                match crate::vfs::open(path, 0) {
+                    Ok(fd) => {
+                        let mut buf = [0u8; 1024];
+                        let mut remainder = alloc::vec::Vec::new();
+                        loop {
+                            match crate::vfs::read(fd.fd, &mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    remainder.extend_from_slice(&buf[..n]);
+                                    let s = core::str::from_utf8(&remainder).unwrap_or("");
+                                    // Process complete lines
+                                    let mut last_newline = 0;
+                                    for (i, _) in s.match_indices('\n') {
+                                        let line = &s[last_newline..i];
+                                        if line.contains(pattern) {
+                                            ctx.terminal.write_str(line);
+                                            ctx.terminal.write_str("\n");
+                                        }
+                                        last_newline = i + 1;
+                                    }
+                                    // Keep trailing partial line
+                                    if last_newline < s.len() {
+                                        let remaining = s[last_newline..].as_bytes().to_vec();
+                                        remainder = remaining;
+                                    } else {
+                                        remainder.clear();
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = format!("grep: {}\n", e);
+                                    ctx.terminal.write_str(&msg);
+                                    break;
+                                }
+                            }
+                        }
+                        // Process final partial line
+                        if !remainder.is_empty() {
+                            let s = core::str::from_utf8(&remainder).unwrap_or("");
+                            if s.contains(pattern) {
+                                ctx.terminal.write_str(s);
+                                ctx.terminal.write_str("\n");
+                            }
+                        }
+                        let _ = crate::vfs::close(fd.fd);
+                    }
+                    Err(e) => {
+                        let msg = format!("grep: {}: {}\n", path, e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                }
+            }
+        }
+        "sort" => {
+            if ctx.args.len() > 1 && ctx.args[1] != "-r" {
+                let path = ctx.args[1];
+                let reverse = ctx.args.iter().any(|a| *a == "-r");
+                match crate::vfs::open(path, 0) {
+                    Ok(fd) => {
+                        let mut buf = [0u8; 1024];
+                        let mut data = alloc::vec::Vec::new();
+                        loop {
+                            match crate::vfs::read(fd.fd, &mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => data.extend_from_slice(&buf[..n]),
+                                Err(e) => {
+                                    let msg = format!("sort: {}\n", e);
+                                    ctx.terminal.write_str(&msg);
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = crate::vfs::close(fd.fd);
+                        let text = core::str::from_utf8(&data).unwrap_or("");
+                        let mut lines: alloc::vec::Vec<&str> = text.lines().collect();
+                        lines.sort();
+                        if reverse {
+                            lines.reverse();
+                        }
+                        for line in lines {
+                            ctx.terminal.write_str(line);
+                            ctx.terminal.write_str("\n");
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("sort: {}: {}\n", path, e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                }
+            } else {
+                ctx.terminal.write_str("Usage: sort [-r] <file>\n");
+            }
+        }
+        "wc" => {
+            if ctx.args.len() > 1 {
+                let path = ctx.args[1];
+                match crate::vfs::open(path, 0) {
+                    Ok(fd) => {
+                        let mut buf = [0u8; 1024];
+                        let mut data = alloc::vec::Vec::new();
+                        loop {
+                            match crate::vfs::read(fd.fd, &mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => data.extend_from_slice(&buf[..n]),
+                                Err(e) => {
+                                    let msg = format!("wc: {}\n", e);
+                                    ctx.terminal.write_str(&msg);
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = crate::vfs::close(fd.fd);
+                        let text = core::str::from_utf8(&data).unwrap_or("");
+                        let lines = text.lines().count();
+                        let words = text.split_whitespace().count();
+                        let bytes = data.len();
+                        let msg = format!("{} {} {} {}\n", lines, words, bytes, path);
+                        ctx.terminal.write_str(&msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("wc: {}: {}\n", path, e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                }
+            } else {
+                ctx.terminal.write_str("Usage: wc <file>\n");
+            }
         }
         "app_list" => match crate::fs::list_packages() {
             Ok(pkgs) => {

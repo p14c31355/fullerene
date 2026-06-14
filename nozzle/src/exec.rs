@@ -4,6 +4,33 @@
 
 use crate::parser::Pipeline;
 use crate::terminal::Terminal;
+use alloc::collections::VecDeque;
+use spin::Mutex;
+
+/// Shared command history used across LineEditor instances.
+static SHARED_HISTORY: Mutex<VecDeque<alloc::string::String>> =
+    Mutex::new(VecDeque::new());
+
+/// Return a snapshot of the shared command history (newest first).
+pub fn get_history_snapshot() -> alloc::vec::Vec<alloc::string::String> {
+    let guard = SHARED_HISTORY.lock();
+    guard.iter().cloned().collect()
+}
+
+/// Push a line into the shared history (called by LineEditor).
+pub fn push_history(line: &str) {
+    if line.is_empty() {
+        return;
+    }
+    let mut guard = SHARED_HISTORY.lock();
+    if guard.front().map_or(false, |h| h == line) {
+        return;
+    }
+    if guard.len() >= 128 {
+        guard.pop_back();
+    }
+    guard.push_front(alloc::string::String::from(line));
+}
 
 /// Context provided to every command execution
 pub struct CommandContext<'a> {

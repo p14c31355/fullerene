@@ -108,6 +108,11 @@ pub fn set_tsc_per_ms(val: u64) {
     TSC_PER_MS.store(val, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Get the current TSC‑per‑millisecond value.
+pub fn get_tsc_per_ms() -> u64 {
+    TSC_PER_MS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Last render TSC timestamp (for real‑time frame pacing).
 static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -1374,10 +1379,16 @@ pub struct LatticeTerminal;
 
 impl nozzle::Terminal for LatticeTerminal {
     fn write_str(&mut self, s: &str) {
-        let mut rt = RUNTIME.lock();
-        if let Some(ref mut r) = *rt {
-            r.term_buf.put_str(s);
-            r.term_dirty = true;
+        // Accumulate stdout for pipe capture.
+        if let Some(ref mut out) = *PIPE_STDOUT.lock() {
+            out.push_str(s);
+        } else {
+            // No pipe capture active — push to terminal buffer as usual.
+            let mut rt = RUNTIME.lock();
+            if let Some(ref mut r) = *rt {
+                r.term_buf.put_str(s);
+                r.term_dirty = true;
+            }
         }
     }
 
@@ -1393,7 +1404,23 @@ impl nozzle::Terminal for LatticeTerminal {
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
     }
+
+    fn set_stdin(&mut self, data: alloc::string::String) {
+        *PIPE_STDIN.lock() = Some(data);
+    }
+
+    fn take_stdout(&mut self) -> Option<alloc::string::String> {
+        PIPE_STDOUT.lock().take()
+    }
+
+    fn take_stdin(&mut self) -> Option<alloc::string::String> {
+        PIPE_STDIN.lock().take()
+    }
 }
+
+/// Pipe I/O buffers for the LatticeTerminal (used by the pipe dispatcher).
+static PIPE_STDIN: Mutex<Option<alloc::string::String>> = Mutex::new(None);
+static PIPE_STDOUT: Mutex<Option<alloc::string::String>> = Mutex::new(None);
 
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
