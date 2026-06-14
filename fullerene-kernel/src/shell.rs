@@ -251,7 +251,7 @@ fn register_nozzle_hooks() {
                 let file_count = entries.iter().filter(|e| !e.ends_with('/')).count();
                 let dir_count = entries.iter().filter(|e| e.ends_with('/')).count();
                 // Approximate total size by summing known sizes from readdir
-                let total_size: u64 = 0; // We'll count via readdir below
+                // We'll count via readdir below
                 // For now just display entry count
                 ctx.terminal.write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
                 let msg = format!(
