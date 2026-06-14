@@ -15,12 +15,11 @@ use x86_64::{
     PhysAddr, VirtAddr,
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size2MiB, Size4KiB,
+        Size2MiB,
     },
 };
 
 use crate::page_table::allocator::bitmap::BitmapFrameAllocator;
-use crate::page_table::memory_map::validator::MemoryDescriptorValidator;
 
 // ── Mapping metadata ──────────────────────────────────────────
 

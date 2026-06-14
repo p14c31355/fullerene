@@ -9,6 +9,12 @@ extern crate alloc;
 petroleum::define_panic_handler!();
 petroleum::define_alloc_error_handler!();
 
+/// No-op panic flush for the bootloader stage.
+/// The kernel provides its own real implementation;
+/// bellows only needs to satisfy the linker symbol.
+#[unsafe(no_mangle)]
+unsafe extern "Rust" fn _fullerene_panic_flush() {}
+
 static KERNEL_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.bin"));
 
 mod loader;

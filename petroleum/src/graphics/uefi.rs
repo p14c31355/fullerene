@@ -99,44 +99,6 @@ impl FramebufferInstaller {
         }
     }
 
-    unsafe fn draw_block_char(
-        &self,
-        fb: *mut u32,
-        stride_pixels: usize,
-        ox: isize,
-        oy: isize,
-        ch: u8,
-        color: u32,
-        w: isize,
-        h: isize,
-    ) {
-        let glyph: [u8; 7] = match ch {
-            b'C' => [
-                0b01110, 0b10001, 0b10000, 0b10000, 0b10001, 0b01110, 0b00000,
-            ],
-            b'6' => [
-                0b01110, 0b10001, 0b10000, 0b11110, 0b10001, 0b01110, 0b00000,
-            ],
-            b'0' => [
-                0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0b00000,
-            ],
-            _ => [0u8; 7],
-        };
-        for row in 0..7usize {
-            for col in 0..5usize {
-                if (glyph[row] >> (4 - col)) & 1 != 0 {
-                    let px = ox + col as isize;
-                    let py = oy + row as isize;
-                    if px >= 0 && px < w && py >= 0 && py < h {
-                        unsafe {
-                            fb.add((py as usize) * stride_pixels + (px as usize))
-                                .write_volatile(color);
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 pub fn detect_standard_modes(
@@ -509,40 +471,6 @@ pub fn init_graphics_protocols(
         "NOTE: GOP protocol typically requires UEFI-compatible video hardware (e.g., QEMU with -vga qxl or virtio-gpu).\n"
     );
     None
-}
-
-struct GopModeSetter<'a> {
-    gop: *mut EfiGraphicsOutputProtocol,
-    _phantom: core::marker::PhantomData<&'a ()>,
-}
-
-impl<'a> GopModeSetter<'a> {
-    fn new(gop: *mut EfiGraphicsOutputProtocol) -> Self {
-        Self {
-            gop,
-            _phantom: core::marker::PhantomData,
-        }
-    }
-    fn try_modes(&self, target_modes: &[u32], max_mode: u32) -> Result<(), ()> {
-        for &mode in target_modes {
-            if mode >= max_mode {
-                continue;
-            }
-            log_uefi!("GOP: Attempting to set mode {}...\n", mode);
-            let set_status = unsafe { ((*self.gop).set_mode)(self.gop, mode) };
-            if EfiStatus::from(set_status) == EfiStatus::Success {
-                log_uefi!("GOP: Successfully set mode {}.\n", mode);
-                return Ok(());
-            } else {
-                log_uefi!(
-                    "GOP: Failed to set mode {}, status: {:#x}.\n",
-                    mode,
-                    set_status
-                );
-            }
-        }
-        Err(())
-    }
 }
 
 struct ConfigTableLogger<'a> {

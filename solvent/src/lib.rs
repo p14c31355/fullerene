@@ -33,19 +33,6 @@ use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, Event, EventHandler, EventQueue, InputEvent, KeyCode, MouseButton};
 use spin::Mutex;
 
-/// Macro to define a callback pair: static + setter + caller helper.
-macro_rules! define_callback {
-    ($vis:vis $static_name:ident, $setter_name:ident, $arg_ty:ty, $ret_ty:ty) => {
-        $vis static $static_name: Mutex<Option<$arg_ty>> = Mutex::new(None);
-        $vis fn $setter_name(f: $arg_ty) { *$static_name.lock() = Some(f); }
-        $vis fn $static_name () -> Option<$arg_ty> { *$static_name.lock() }
-    };
-    ($vis:vis $static_name:ident, $setter_name:ident, $arg_ty:ty, $ret_ty:ty, $getter_name:ident) => {
-        define_callback!($vis $static_name, $setter_name, $arg_ty, $ret_ty);
-        $vis fn $getter_name() -> Option<$ret_ty> { $static_name().map(|f| f()) }
-    };
-}
-
 // Callback: shell command execution
 pub static SHELL_CMD: Mutex<Option<fn(&str) -> alloc::string::String>> = Mutex::new(None);
 pub fn set_shell_command_handler(f: fn(&str) -> alloc::string::String) {

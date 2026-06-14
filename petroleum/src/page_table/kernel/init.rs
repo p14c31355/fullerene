@@ -369,7 +369,7 @@ pub unsafe extern "C" fn init_and_jump(
             "IAJ: Mapping stack... stack_top={:#x}, stack_phys_page={:#x}\n",
             stack_top, stack_phys_page
         ));
-        let stack_pages = 8u64; // 32KB
+        let stack_pages = 256u64; // 1MB — kernel init (memory manager, MMIO, APIC, graphics) exceeds 32 KB
         let stack_phys_base = stack_phys_page - stack_pages * 4096 + 4096;
 
         // identity

@@ -216,12 +216,6 @@ static DRAW_CALLS: AtomicU64 = AtomicU64::new(0);
 /// Estimated time spent in render (ticks).
 static RENDER_TICKS: AtomicU64 = AtomicU64::new(0);
 
-/// Previously rendered debug overlay text cache.  When `PREV_DEBUG_LEN` is 0
-/// the overlay is drawn unconditionally (first frame).  On subsequent frames
-/// the text is compared and only redrawn when it changes.
-static mut PREV_DEBUG_TEXT: [u8; 32] = [0u8; 32];
-static mut PREV_DEBUG_LEN: usize = 0;
-
 // ── Inline formatting helpers (no heap) ────────────────────
 
 /// Write a byte slice into `buf` at `pos`. Returns the number of bytes written.

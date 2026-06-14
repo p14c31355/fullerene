@@ -354,12 +354,6 @@ unsafe fn mmio_read32(mmio: *mut u8, offset: usize) -> u32 {
 }
 
 #[inline]
-unsafe fn mmio_read16(mmio: *mut u8, offset: usize) -> u16 {
-    // SAFETY: Caller guarantees mmio + offset is valid
-    unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u16) }
-}
-
-#[inline]
 unsafe fn mmio_read8(mmio: *mut u8, offset: usize) -> u8 {
     // SAFETY: Caller guarantees mmio + offset is valid
     unsafe { core::ptr::read_volatile(mmio.add(offset)) }

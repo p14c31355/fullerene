@@ -25,11 +25,6 @@ const QUEUE_SIZE: u16 = 64;
 
 /// Max spin-loop iterations for waiting on a VirtIO used-ring update.
 ///
-/// Roughly 30 million iterations ≈ 1–2 s on a modern ~2 GHz CPU
-/// running under KVM. This is a best-effort timeout; real deployments
-/// should consider a time-based mechanism.
-const WAIT_USED_TIMEOUT_LOOPS: u32 = 30_000_000;
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VringDesc {
@@ -280,9 +275,6 @@ impl VirtioGpu {
     }
     fn r16(&self, bo: usize) -> u16 {
         self.read_common_cfg(bo as u32, 2).unwrap_or(0) as u16
-    }
-    fn w16(&self, bo: usize, v: u16) {
-        self.write_common_cfg(bo as u32, v as u32, 2);
     }
     fn r8(&self, bo: usize) -> u8 {
         self.read_common_cfg(bo as u32, 1).unwrap_or(0) as u8

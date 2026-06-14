@@ -134,23 +134,6 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
     loop {} // Panics must diverge
 }
 
-/// Alloc error handler required when using `alloc` in no_std.
-fn alloc_error(_layout: core::alloc::Layout) -> ! {
-    // Avoid recursive panics by directly looping
-    loop {
-        // Optionally, try to print a message using the heap-less writer if possible
-        if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
-            let st_ref = unsafe { &*st_ptr.0 };
-            crate::serial::UEFI_WRITER.lock().init(st_ref.con_out);
-            crate::serial::UEFI_WRITER
-                .lock()
-                .write_string_heapless("Allocation error!\n")
-                .ok();
-        }
-        crate::halt!(); // For QEMU debugging
-    }
-}
-
 /// Test harness for no_std environment
 #[cfg(test)]
 pub trait Testable {
@@ -175,30 +158,6 @@ pub fn test_runner(tests: &[&dyn Testable]) {
     for test in tests {
         test.run();
     }
-}
-
-/// Kernel-side fallback framebuffer detection when config table is not available
-/// Uses shared logic from petroleum crate
-pub fn kernel_fallback_framebuffer_detection() -> Option<crate::common::FullereneFramebufferConfig>
-{
-    // Call petroleum's consolidated QEMU framebuffer detection
-    crate::detect_qemu_framebuffer(&crate::QEMU_CONFIGS)
-}
-
-/// Helper function to initialize graphics with framebuffer configuration
-/// Returns true if graphics were successfully initialized and drawn
-pub fn initialize_graphics_with_config() -> bool {
-    // Check if framebuffer config is available in global storage
-    if crate::FULLERENE_FRAMEBUFFER_CONFIG
-        .get()
-        .map_or(false, |mutex| mutex.lock().is_some())
-    {
-        serial_log!("Graphics configuration found in global storage");
-        return true;
-    }
-
-    serial_log!("No graphics configuration available");
-    false
 }
 
 /// Serial logging macro for UEFI helpers

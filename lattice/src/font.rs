@@ -48,9 +48,6 @@ const PSF2_MAGIC: u32 = 0x864AB572;
 /// PSF2 header size in bytes.
 const PSF2_HEADER_SIZE: u32 = 32;
 
-/// PSF2 flag: Unicode mapping table present.
-const PSF2_HAS_UNICODE_TABLE: u32 = 1;
-
 /// Parsed PSF2 header.
 #[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]

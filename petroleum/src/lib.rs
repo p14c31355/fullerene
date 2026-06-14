@@ -61,7 +61,6 @@ pub use page_table::heap::extend_global_heap;
 pub use page_table::heap::heap_stats;
 pub use page_table::heap::heap_top;
 pub use page_table::heap::init_global_heap;
-pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
 
 use crate::common::EfiSystemTable;
 use crate::common::uefi::FullereneFramebufferConfig;

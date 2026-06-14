@@ -49,16 +49,6 @@ const fn clamp_u8(v: u8, max: u8) -> u8 {
     if v > max { max } else { v }
 }
 
-/// Manual clamp for u32: `if v > max { max } else { v }`.
-const fn clamp_u32_val(v: u32, max: u32) -> u32 {
-    if v > max { max } else { v }
-}
-
-/// Manual min for u8.
-const fn min_u8(a: u8, b: u8) -> u8 {
-    if a < b { a } else { b }
-}
-
 // Preset dimensions (tileable, power-of-two-friendly for alignment).
 const BEACH_W: u32 = 160;
 const BEACH_H: u32 = 120;

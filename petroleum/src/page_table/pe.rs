@@ -46,7 +46,6 @@ pub struct PeParser {
 
 impl PeParser {
     const MAX_PE_SEARCH_DISTANCE: usize = 10 * 1024 * 1024;
-    const MAX_PE_OFFSET: usize = 16 * 1024 * 1024;
     const MAX_PE_HEADER_OFFSET: usize = 1024 * 1024;
     const MAX_PE_SECTIONS: usize = 16;
 

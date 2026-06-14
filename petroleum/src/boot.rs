@@ -6,7 +6,6 @@
 
 use crate::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE;
 use crate::page_table::constants::get_frame_allocator_mut;
-use x86_64::VirtAddr;
 use x86_64::structures::paging::PageTableFlags;
 
 fn trace_fmt(args: core::fmt::Arguments) {
