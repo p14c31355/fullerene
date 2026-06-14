@@ -69,9 +69,8 @@ fn register_nozzle_hooks() {
                     match crate::vfs::read(fd.fd, &mut buf) {
                         Ok(0) => break,
                         Ok(n) => {
-                            ctx.terminal.write_str(
-                                core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"),
-                            );
+                            ctx.terminal
+                                .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
                         }
                         Err(e) => {
                             let msg = format!("cat: {}\n", e);
@@ -263,7 +262,8 @@ fn register_nozzle_hooks() {
                 // Approximate total size by summing known sizes from readdir
                 // We'll count via readdir below
                 // For now just display entry count
-                ctx.terminal.write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
+                ctx.terminal
+                    .write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
                 let msg = format!(
                     "ramfs           {:>4}K  {:>4}K  {:>4}K  {:>3}%  /\n",
                     0, 0, 0, 0
@@ -544,9 +544,9 @@ fn register_nozzle_hooks() {
                                         let mut last_newline = 0;
                                         for (i, &byte) in remainder.iter().enumerate() {
                                             if byte == b'\n' {
-                                                if let Ok(line) =
-                                                    core::str::from_utf8(&remainder[last_newline..i])
-                                                {
+                                                if let Ok(line) = core::str::from_utf8(
+                                                    &remainder[last_newline..i],
+                                                ) {
                                                     if line.contains(pattern) {
                                                         if ctx.args.len() > 3 {
                                                             let prefix =
@@ -676,18 +676,14 @@ fn register_nozzle_hooks() {
         "app_list" => match crate::fs::list_packages() {
             Ok(pkgs) => {
                 if pkgs.is_empty() {
-                    ctx.terminal
-                        .write_str("No packages installed.\n");
+                    ctx.terminal.write_str("No packages installed.\n");
                 } else {
                     ctx.terminal
                         .write_str("NAME         VERSION  DESCRIPTION\n");
                     ctx.terminal
                         .write_str("-----------  -------  -----------\n");
                     for p in &pkgs {
-                        let line = format!(
-                            "{:<12} {:<8} {}\n",
-                            p.name, p.version, p.description
-                        );
+                        let line = format!("{:<12} {:<8} {}\n", p.name, p.version, p.description);
                         ctx.terminal.write_str(&line);
                     }
                 }

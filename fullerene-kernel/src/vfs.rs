@@ -466,8 +466,7 @@ impl Vfs {
         if mp != "/" {
             // Check existence of the mount point directory.
             let (target_fs, remaining) = self.find_fs(&mp).ok_or("mount point not found")?;
-            let target_fs_ptr: *const Box<dyn FileSystem> =
-                target_fs as *const Box<dyn FileSystem>;
+            let target_fs_ptr: *const Box<dyn FileSystem> = target_fs as *const Box<dyn FileSystem>;
             let target_fs_ref: &Box<dyn FileSystem> = unsafe { &*target_fs_ptr };
             if !target_fs_ref.exists(&remaining) {
                 return Err("mount point not found");
@@ -713,11 +712,7 @@ pub fn read(fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
 
 /// Write `data` to an open file descriptor.
 pub fn write(fd: u32, data: &[u8]) -> Result<usize, &'static str> {
-    vfs()
-        .lock()
-        .as_mut()
-        .ok_or("vfs not init")?
-        .write(fd, data)
+    vfs().lock().as_mut().ok_or("vfs not init")?.write(fd, data)
 }
 
 /// Close a file descriptor.
@@ -727,20 +722,12 @@ pub fn close(fd: u32) -> Result<(), &'static str> {
 
 /// List directory contents at `path`.
 pub fn readdir(path: &str) -> Result<Vec<VNode>, &'static str> {
-    vfs()
-        .lock()
-        .as_mut()
-        .ok_or("vfs not init")?
-        .readdir(path)
+    vfs().lock().as_mut().ok_or("vfs not init")?.readdir(path)
 }
 
 /// Seek to `pos` in an open file descriptor.
 pub fn seek(fd: u32, pos: usize) -> Result<(), &'static str> {
-    vfs()
-        .lock()
-        .as_mut()
-        .ok_or("vfs not init")?
-        .seek(fd, pos)
+    vfs().lock().as_mut().ok_or("vfs not init")?.seek(fd, pos)
 }
 
 /// Create a regular file at `path` (or open existing), returning a fd.
@@ -762,20 +749,12 @@ pub fn create(path: &str) -> Result<FileDescriptor, &'static str> {
 
 /// Create a directory at `path`.
 pub fn mkdir(path: &str) -> Result<(), &'static str> {
-    vfs()
-        .lock()
-        .as_mut()
-        .ok_or("vfs not init")?
-        .mkdir(path)
+    vfs().lock().as_mut().ok_or("vfs not init")?.mkdir(path)
 }
 
 /// Remove a file or empty directory at `path`.
 pub fn unlink(path: &str) -> Result<(), &'static str> {
-    vfs()
-        .lock()
-        .as_mut()
-        .ok_or("vfs not init")?
-        .unlink(path)
+    vfs().lock().as_mut().ok_or("vfs not init")?.unlink(path)
 }
 
 /// Check whether `path` exists.

@@ -152,10 +152,7 @@ impl ApicController {
     /// `divider` — value written to the divide‑configuration register (0‑7
     ///             where 3 = divide‑by‑16).
     pub fn configure_timer(&self, vector: u32, mode: u32, initial_count: u32, divider: u32) {
-        self.lapic_write(
-            ApicOffsets::LVT_TIMER,
-            vector | mode,
-        );
+        self.lapic_write(ApicOffsets::LVT_TIMER, vector | mode);
         self.lapic_write(ApicOffsets::TMRDIV, divider);
         self.lapic_write(ApicOffsets::TMRINITCNT, initial_count);
     }
@@ -234,11 +231,13 @@ impl ApicController {
         let id = self.local_apic_id;
 
         // Keyboard (IRQ 1)
-        let kb_rte = IoApicRedirectionEntry::new(keyboard_vector, 0, false, false, false, false, id);
+        let kb_rte =
+            IoApicRedirectionEntry::new(keyboard_vector, 0, false, false, false, false, id);
         self.write_rte(1, kb_rte);
 
         // Mouse (IRQ 12)
-        let mouse_rte = IoApicRedirectionEntry::new(mouse_vector, 0, false, false, false, false, id);
+        let mouse_rte =
+            IoApicRedirectionEntry::new(mouse_vector, 0, false, false, false, false, id);
         self.write_rte(12, mouse_rte);
     }
 
@@ -266,11 +265,11 @@ impl ApicController {
 
             // ICW2: vector offsets
             Port::<u8>::new(PIC_MASTER_DATA).write(0x20); // master: vectors 32‑39
-            Port::<u8>::new(PIC_SLAVE_DATA).write(0x28);  // slave:  vectors 40‑47
+            Port::<u8>::new(PIC_SLAVE_DATA).write(0x28); // slave:  vectors 40‑47
 
             // ICW3: slave wiring
             Port::<u8>::new(PIC_MASTER_DATA).write(4u8); // slave on IR2
-            Port::<u8>::new(PIC_SLAVE_DATA).write(2u8);  // identity 2
+            Port::<u8>::new(PIC_SLAVE_DATA).write(2u8); // identity 2
 
             // ICW4: 8086 mode
             Port::<u8>::new(PIC_MASTER_DATA).write(ICW4_8086);

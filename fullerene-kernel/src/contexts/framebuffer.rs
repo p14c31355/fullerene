@@ -90,7 +90,10 @@ impl FramebufferContext {
             | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
             | x86_64::structures::paging::PageTableFlags::NO_CACHE;
 
-        if let Some(mem) = crate::memory_management::get_memory_manager().lock().as_mut() {
+        if let Some(mem) = crate::memory_management::get_memory_manager()
+            .lock()
+            .as_mut()
+        {
             for i in 0..fb_pages {
                 let v = (fb_va + (i * 0x1000) as u64) as usize;
                 let p = (self.fb_phys + (i * 0x1000) as u64) as usize;

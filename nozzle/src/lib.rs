@@ -162,7 +162,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("cp", "Copy a file", builtins::cmd_cp),
         ("mv", "Move a file", builtins::cmd_mv),
         ("write", "Write content to a file", builtins::cmd_write),
-        ("app", "Package manager (install/remove/list)", builtins::cmd_app),
+        (
+            "app",
+            "Package manager (install/remove/list)",
+            builtins::cmd_app
+        ),
         ("rm", "Remove files or directories", builtins::cmd_rm),
         ("mkdir", "Create directories", builtins::cmd_mkdir),
         ("touch", "Create empty files", builtins::cmd_touch),

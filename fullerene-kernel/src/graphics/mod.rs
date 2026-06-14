@@ -24,10 +24,10 @@ pub static mut STORED_ARGS_VA: u64 = 0;
 /// read GOP parameters directly from the bootloader's allocation.
 /// Called from `efi_main_stage2` before the world switch.
 pub fn store_args_va(va: u64) {
-    unsafe { STORED_ARGS_VA = va; }
-    petroleum::serial::_print(format_args!(
-        "[store_args] va=0x{va:x}\n",
-    ));
+    unsafe {
+        STORED_ARGS_VA = va;
+    }
+    petroleum::serial::_print(format_args!("[store_args] va=0x{va:x}\n",));
 }
 
 pub fn init_graphics() {
@@ -70,34 +70,53 @@ pub fn init_graphics() {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
         if args.fb_address >= 0x100000
-            && args.fb_width > 0 && args.fb_width <= 16384
-            && args.fb_height > 0 && args.fb_height <= 16384
+            && args.fb_width > 0
+            && args.fb_width <= 16384
+            && args.fb_height > 0
+            && args.fb_height <= 16384
             && args.fb_bpp == 32
         {
-            let stride = if args.fb_stride > 0 { args.fb_stride } else { args.fb_width * 4 };
+            let stride = if args.fb_stride > 0 {
+                args.fb_stride
+            } else {
+                args.fb_width * 4
+            };
             fb_params = Some((args.fb_address, args.fb_width, args.fb_height, stride));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] KernelArgs valid\n");
         }
     }
     if fb_params.is_none() {
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] KernelArgs invalid, scanning PCI\n");
+        petroleum::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"[init_gfx] KernelArgs invalid, scanning PCI\n",
+        );
         fb_params = with_kernel(|k| {
             for dev in k.pci.devices.iter() {
-                let vendor = nitrogen::pci::PciConfigSpace::read_config_word(dev.bus, dev.device, 0, 0);
-                if vendor == 0xFFFF || vendor == 0x0000 { continue; }
-                let class = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
-                let subclass = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
+                let vendor =
+                    nitrogen::pci::PciConfigSpace::read_config_word(dev.bus, dev.device, 0, 0);
+                if vendor == 0xFFFF || vendor == 0x0000 {
+                    continue;
+                }
+                let class =
+                    nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
+                let subclass =
+                    nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
                 if class == 0x03 && subclass == 0x00 {
-                    let bar0 = nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x10);
+                    let bar0 = nitrogen::pci::PciConfigSpace::read_config_dword(
+                        dev.bus, dev.device, 0, 0x10,
+                    );
                     let fb_phys = (bar0 & 0xFFFFFFF0) as u64;
                     if fb_phys >= 0x100000 {
-                        let w = 1280u32; let h = 800u32;
+                        let w = 1280u32;
+                        let h = 800u32;
                         return Some((fb_phys, w, h, w * 4));
                     }
                 }
             }
             None
-        }).flatten();
+        })
+        .flatten();
     }
     if let Some((fb_phys, w, h, stride)) = fb_params {
         let pixel_format =

@@ -315,7 +315,12 @@ pub fn list_packages() -> Result<Vec<PackageEntry>, FsError> {
 }
 
 /// Install a package: create directory, write manifest and binary.
-pub fn install_package(name: &str, version: &str, description: &str, binary: &[u8]) -> Result<(), FsError> {
+pub fn install_package(
+    name: &str,
+    version: &str,
+    description: &str,
+    binary: &[u8],
+) -> Result<(), FsError> {
     let pkg_dir = alloc::format!("/packages/{}", name);
     if exists(&pkg_dir) {
         return Err(FsError::FileExists);
@@ -324,7 +329,9 @@ pub fn install_package(name: &str, version: &str, description: &str, binary: &[u
 
     let manifest = alloc::format!(
         "name = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\nbinary = \"app.bin\"\n",
-        name, version, description
+        name,
+        version,
+        description
     );
     let manifest_path = alloc::format!("/packages/{}/manifest.txt", name);
     write_entire_file(&manifest_path, manifest.as_bytes())?;

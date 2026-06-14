@@ -265,8 +265,7 @@ pub fn cmd_mv(ctx: &mut CommandContext) -> bool {
 /// `write` — write content to a file
 pub fn cmd_write(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() < 3 {
-        ctx.terminal
-            .write_str("Usage: write <path> <content>\n");
+        ctx.terminal.write_str("Usage: write <path> <content>\n");
         return true;
     }
     crate::fs_hooks::write_file(ctx, ctx.args[1], ctx.args[2]);
@@ -377,7 +376,8 @@ pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
     }
     // Otherwise, search files provided as arguments.
     if ctx.args.len() < 3 {
-        ctx.terminal.write_str("grep: no input (pipe data or specify files)\n");
+        ctx.terminal
+            .write_str("grep: no input (pipe data or specify files)\n");
         return true;
     }
     // Use a simple sys_info dispatch for file-based grep

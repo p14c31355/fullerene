@@ -269,7 +269,6 @@ pub fn _print(args: fmt::Arguments) {
         // Send to COM1 serial port (character-by-character)
         let mut port = SerialPort::new(Com1Ports);
         port.write_string(&buf);
-
     }
 }
 

@@ -389,7 +389,11 @@ impl EventHandler for WmEventHandler {
                         let row = idx / columns;
                         let ax = pad + col * (icon_size + pad);
                         let ay = start_y + row * (icon_size + label_h + pad);
-                        if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
+                        if cx >= ax
+                            && cx < ax + icon_size
+                            && cy >= ay
+                            && cy < ay + icon_size + label_h
+                        {
                             match idx {
                                 0 => {
                                     // Shell — launch the system shell
@@ -1389,7 +1393,14 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
     }
     // Use visible_cells() to incorporate scrollback content.
     let visible = term_buf.visible_cells();
-    rt.term_cells.resize(visible.len(), LatticeCell { ch: b' ', fg: 0, bg: 0 });
+    rt.term_cells.resize(
+        visible.len(),
+        LatticeCell {
+            ch: b' ',
+            fg: 0,
+            bg: 0,
+        },
+    );
     for (i, c) in visible.iter().enumerate() {
         if i < rt.term_cells.len() {
             rt.term_cells[i] = LatticeCell {

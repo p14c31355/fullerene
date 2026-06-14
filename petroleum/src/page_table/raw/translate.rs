@@ -2,7 +2,7 @@
 //!
 //! Uses the unified walker for safe traversal.
 
-use crate::page_table::raw::walker::{WalkError, walk};
+use crate::page_table::raw::walker::{walk, WalkError};
 use crate::page_table::types::*;
 
 /// Translate a virtual address to a physical address.

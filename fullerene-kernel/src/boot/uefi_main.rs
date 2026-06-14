@@ -224,4 +224,3 @@ fn kernel_main_higher_half(
     x86_64::instructions::interrupts::enable();
     crate::scheduler::scheduler_loop();
 }
-

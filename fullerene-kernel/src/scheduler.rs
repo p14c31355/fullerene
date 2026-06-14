@@ -68,7 +68,9 @@ pub fn scheduler_loop() -> ! {
     gui::set_render_fn(gui::render);
 
     // Report that the desktop is ready — a clear survival checkpoint.
-    petroleum::serial::_print(format_args!("Desktop idle loop — GOP/memory/interrupts/scheduler OK\n"));
+    petroleum::serial::_print(format_args!(
+        "Desktop idle loop — GOP/memory/interrupts/scheduler OK\n"
+    ));
 
     // Idle loop: drive runtime ticks without a shell.
     // Shell and other apps are launched via AppGrid or context menu.

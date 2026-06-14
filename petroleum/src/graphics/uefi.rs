@@ -98,7 +98,6 @@ impl FramebufferInstaller {
             );
         }
     }
-
 }
 
 pub fn detect_standard_modes(

@@ -8,8 +8,7 @@ use alloc::collections::VecDeque;
 use spin::Mutex;
 
 /// Shared command history used across LineEditor instances.
-static SHARED_HISTORY: Mutex<VecDeque<alloc::string::String>> =
-    Mutex::new(VecDeque::new());
+static SHARED_HISTORY: Mutex<VecDeque<alloc::string::String>> = Mutex::new(VecDeque::new());
 
 /// Return a snapshot of the shared command history (newest first).
 pub fn get_history_snapshot() -> alloc::vec::Vec<alloc::string::String> {

@@ -1,7 +1,6 @@
 pub mod backend;
 pub use backend::FramebufferBackend;
 
-
 pub mod virtio_gpu;
 pub use virtio_gpu::VirtioGpuFramebuffer;
 

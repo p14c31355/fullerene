@@ -4,12 +4,12 @@ use crate::page_table::types::PageTableHelper;
 use crate::{extract_frame_if_present, safe_cr3_write, with_temp_mapping};
 use alloc::collections::BTreeMap;
 use x86_64::{
-    PhysAddr, VirtAddr,
     registers::control::Cr3,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
-        Size4KiB, Translate, mapper::TranslateResult,
+        mapper::TranslateResult, FrameAllocator, Mapper, OffsetPageTable, Page, PageTable,
+        PageTableFlags, PhysFrame, Size4KiB, Translate,
     },
+    PhysAddr, VirtAddr,
 };
 
 pub struct ProcessPageTable {
@@ -616,4 +616,3 @@ fn destroy_page_table_recursive<'a>(
         });
     result
 }
-

@@ -1,15 +1,276 @@
 //! Page table initialization and kernel jump logic.
 
+use crate::page_table::allocator::bitmap::BitmapFrameAllocator;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::{
-    PhysAddr, VirtAddr,
     registers::control::Cr3,
     structures::paging::{FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, Size4KiB},
+    PhysAddr, VirtAddr,
 };
 
 static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static mut STORED_OFFSET: Option<VirtAddr> = None;
 static mut STORED_L4_PTR: Option<*mut PageTable> = None;
+
+const PAGE_SIZE_4K: u64 = 4096;
+const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
+const ENTRIES_PER_TABLE: u64 = 512;
+const IDENTITY_MAP_2MB_PAGES: u64 = 32768; // 64GB / 2MB
+
+#[derive(Clone, Copy)]
+struct PageTableIndices {
+    l4: usize,
+    l3: usize,
+    l2: usize,
+    l1: usize,
+}
+
+impl PageTableIndices {
+    fn new(virt: VirtAddr) -> Self {
+        Self {
+            l4: ((virt.as_u64() >> 39) & 0x1FF) as usize,
+            l3: ((virt.as_u64() >> 30) & 0x1FF) as usize,
+            l2: ((virt.as_u64() >> 21) & 0x1FF) as usize,
+            l1: ((virt.as_u64() >> 12) & 0x1FF) as usize,
+        }
+    }
+}
+
+/// Stateful low-level page-table editor for kernel bootstrap memory work.
+///
+/// This intentionally gathers the raw pointer arithmetic, frame allocation,
+/// table zeroing, huge-page splitting, and range mapping in one place.  Callers
+/// should prefer this over open-coding page-table walks.
+pub struct KernelMemoryOperations<'a> {
+    l4: *mut PageTable,
+    frame_allocator: *mut BitmapFrameAllocator,
+    page_table_access_offset: VirtAddr,
+    default_flags: PageTableFlags,
+    _marker: core::marker::PhantomData<&'a mut (PageTable, BitmapFrameAllocator)>,
+}
+
+impl<'a> KernelMemoryOperations<'a> {
+    /// Create a page-table editor.
+    ///
+    /// # Safety
+    /// `l4` must point to a valid mutable L4 table, and physical page-table
+    /// addresses must be accessible through `page_table_access_offset`.
+    pub unsafe fn new(
+        l4: &'a mut PageTable,
+        frame_allocator: &'a mut BitmapFrameAllocator,
+        page_table_access_offset: VirtAddr,
+        default_flags: PageTableFlags,
+    ) -> Self {
+        Self {
+            l4: l4 as *mut PageTable,
+            frame_allocator: frame_allocator as *mut BitmapFrameAllocator,
+            page_table_access_offset,
+            default_flags,
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    fn table_ptr(&self, phys: PhysAddr) -> *mut PageTable {
+        (phys.as_u64() + self.page_table_access_offset.as_u64()) as *mut PageTable
+    }
+
+    unsafe fn zero_table_at_offset(phys: PhysAddr, page_table_access_offset: VirtAddr) {
+        unsafe {
+            let ptr = (phys.as_u64() + page_table_access_offset.as_u64()) as *mut u8;
+            core::ptr::write_bytes(ptr, 0, PAGE_SIZE_4K as usize);
+        }
+    }
+
+    unsafe fn allocate_zeroed_table_from(
+        frame_allocator: *mut BitmapFrameAllocator,
+        page_table_access_offset: VirtAddr,
+        error: &'static str,
+    ) -> Result<PhysAddr, &'static str> {
+        let frame = unsafe { &mut *frame_allocator }
+            .allocate_frame()
+            .ok_or(error)?;
+        let addr = frame.start_address();
+        unsafe { Self::zero_table_at_offset(addr, page_table_access_offset) };
+        Ok(addr)
+    }
+
+    /// Zero the root L4 table before building a fresh kernel address space.
+    pub unsafe fn zero_root(&mut self) {
+        unsafe {
+            core::ptr::write_bytes(self.l4 as *mut u8, 0, PAGE_SIZE_4K as usize);
+        }
+    }
+
+    /// Map one 4 KiB page, splitting existing 1 GiB/2 MiB huge pages as needed.
+    pub unsafe fn map_page_4k(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: PageTableFlags,
+    ) -> Result<(), &'static str> {
+        unsafe {
+            let indices = PageTableIndices::new(virt);
+            let offset = self.page_table_access_offset.as_u64();
+            let frame_allocator = self.frame_allocator;
+            let page_table_access_offset = self.page_table_access_offset;
+
+            let l4 = &mut *self.l4;
+            let l3 = if l4[indices.l4].is_unused() {
+                let addr = Self::allocate_zeroed_table_from(
+                    frame_allocator,
+                    page_table_access_offset,
+                    "4k: alloc L3 failed",
+                )?;
+                l4[indices.l4].set_addr(addr, flags | PageTableFlags::PRESENT);
+                &mut *((l4[indices.l4].addr().as_u64() + offset) as *mut PageTable)
+            } else {
+                &mut *((l4[indices.l4].addr().as_u64() + offset) as *mut PageTable)
+            };
+
+            if l3[indices.l3].flags().contains(PageTableFlags::HUGE_PAGE) {
+                let huge_phys_base = l3[indices.l3].addr().as_u64();
+                let orig_flags = l3[indices.l3].flags();
+                let l2_phys = Self::allocate_zeroed_table_from(
+                    frame_allocator,
+                    page_table_access_offset,
+                    "4k: alloc L2 for 1GB split failed",
+                )?;
+                let l2_ref = &mut *self.table_ptr(l2_phys);
+                for j in 0..ENTRIES_PER_TABLE {
+                    l2_ref[j as usize].set_addr(
+                        PhysAddr::new(huge_phys_base + j * PAGE_SIZE_2M),
+                        orig_flags | PageTableFlags::PRESENT | PageTableFlags::HUGE_PAGE,
+                    );
+                }
+                let mut new_flags = orig_flags;
+                new_flags.remove(PageTableFlags::HUGE_PAGE);
+                l3[indices.l3].set_addr(l2_phys, new_flags | PageTableFlags::PRESENT);
+            }
+
+            let l2 = if l3[indices.l3].is_unused() {
+                let addr = Self::allocate_zeroed_table_from(
+                    frame_allocator,
+                    page_table_access_offset,
+                    "4k: alloc L2 failed",
+                )?;
+                l3[indices.l3].set_addr(addr, flags | PageTableFlags::PRESENT);
+                &mut *((l3[indices.l3].addr().as_u64() + offset) as *mut PageTable)
+            } else {
+                &mut *((l3[indices.l3].addr().as_u64() + offset) as *mut PageTable)
+            };
+
+            if l2[indices.l2].is_unused() {
+                let l1_phys = Self::allocate_zeroed_table_from(
+                    frame_allocator,
+                    page_table_access_offset,
+                    "4k: alloc L1 failed",
+                )?;
+                l2[indices.l2].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
+            } else if l2[indices.l2].flags().contains(PageTableFlags::HUGE_PAGE) {
+                let huge_page_phys_base = l2[indices.l2].addr().as_u64();
+                let l1_phys = Self::allocate_zeroed_table_from(
+                    frame_allocator,
+                    page_table_access_offset,
+                    "4k: split L1 failed",
+                )?;
+                let l1_ref = &mut *self.table_ptr(l1_phys);
+                for j in 0..ENTRIES_PER_TABLE {
+                    l1_ref[j as usize]
+                        .set_addr(PhysAddr::new(huge_page_phys_base + j * PAGE_SIZE_4K), flags);
+                }
+                l2[indices.l2].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
+            }
+
+            let l1 = &mut *((l2[indices.l2].addr().as_u64() + offset) as *mut PageTable);
+            l1[indices.l1].set_addr(phys, flags);
+            Ok(())
+        }
+    }
+
+    /// Map a range using 4 KiB pages.
+    pub unsafe fn map_range_4k(
+        &mut self,
+        virt_start: VirtAddr,
+        phys_start: PhysAddr,
+        page_count: u64,
+        flags: PageTableFlags,
+    ) -> Result<(), &'static str> {
+        for i in 0..page_count {
+            let virt = VirtAddr::new(virt_start.as_u64() + i * PAGE_SIZE_4K);
+            let phys = PhysAddr::new(phys_start.as_u64() + i * PAGE_SIZE_4K);
+            unsafe { self.map_page_4k(virt, phys, flags)? };
+        }
+        Ok(())
+    }
+
+    /// Map a range using 2 MiB huge pages.
+    pub unsafe fn map_range_2mb_huge(
+        &mut self,
+        virt_start: VirtAddr,
+        phys_start: PhysAddr,
+        page_count: u64,
+        flags: PageTableFlags,
+    ) -> Result<(), &'static str> {
+        unsafe {
+            let flags_2mb = flags | PageTableFlags::HUGE_PAGE;
+            for i in 0..page_count {
+                let virt = VirtAddr::new(virt_start.as_u64() + i * PAGE_SIZE_2M);
+                let phys = PhysAddr::new(phys_start.as_u64() + i * PAGE_SIZE_2M);
+                let indices = PageTableIndices::new(virt);
+                let offset = self.page_table_access_offset.as_u64();
+                let frame_allocator = self.frame_allocator;
+                let page_table_access_offset = self.page_table_access_offset;
+
+                let l4 = &mut *self.l4;
+                if l4[indices.l4].is_unused() {
+                    let addr = Self::allocate_zeroed_table_from(
+                        frame_allocator,
+                        page_table_access_offset,
+                        "huge: alloc L3 failed",
+                    )?;
+                    l4[indices.l4].set_addr(addr, flags | PageTableFlags::PRESENT);
+                }
+
+                let l3 = &mut *((l4[indices.l4].addr().as_u64() + offset) as *mut PageTable);
+
+                if l3[indices.l3].is_unused() {
+                    let addr = Self::allocate_zeroed_table_from(
+                        frame_allocator,
+                        page_table_access_offset,
+                        "huge: alloc L2 failed",
+                    )?;
+                    l3[indices.l3].set_addr(addr, flags | PageTableFlags::PRESENT);
+                }
+
+                let l2 = &mut *((l3[indices.l3].addr().as_u64() + offset) as *mut PageTable);
+                l2[indices.l2].set_addr(phys, flags_2mb | PageTableFlags::PRESENT);
+            }
+            Ok(())
+        }
+    }
+
+    /// Map the initial identity and higher-half 64 GiB windows used by bootstrap.
+    pub unsafe fn map_bootstrap_windows(
+        &mut self,
+        physical_memory_offset: VirtAddr,
+    ) -> Result<(), &'static str> {
+        unsafe {
+            self.map_range_2mb_huge(
+                VirtAddr::new(0),
+                PhysAddr::new(0),
+                IDENTITY_MAP_2MB_PAGES,
+                self.default_flags,
+            )?;
+            self.map_range_2mb_huge(
+                physical_memory_offset,
+                PhysAddr::new(0),
+                IDENTITY_MAP_2MB_PAGES,
+                self.default_flags,
+            )?;
+            Ok(())
+        }
+    }
+}
 
 /// Map a single 4KB page by inserting a L1 entry.
 /// Uses allocate_frame() for all new tables since L1/L2/L3 tables may be >1MB.
@@ -24,174 +285,8 @@ pub unsafe fn map_page_4k_l1(
     phys_offset: VirtAddr,
 ) -> Result<(), &'static str> {
     unsafe {
-        let l4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
-        let l3_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
-        let l2_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
-        let l1_idx = ((virt.as_u64() >> 12) & 0x1FF) as usize;
-
-        let l3 = if l4[l4_idx].is_unused() {
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or("4k: alloc L3 failed")?;
-            let addr = frame.start_address();
-            let ptr = (addr.as_u64() + phys_offset.as_u64()) as *mut u8;
-            core::ptr::write_bytes(ptr, 0, 4096);
-            l4[l4_idx].set_addr(addr, flags | PageTableFlags::PRESENT);
-            &mut *((l4[l4_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
-        } else {
-            &mut *((l4[l4_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
-        };
-
-        // ── L3 1GB huge page split ──────────────────────────────────────
-        // When the L3 entry is a 1GB huge page, its .addr() is the physical
-        // base of a 1GB region — NOT a pointer to an L2 table.  Treating it
-        // as an L2 table dereferences arbitrary MMIO / physical memory,
-        // causing:
-        //   QEMU: qemu_mutex_lock_iothread_impl assertion (re-entrant MMIO)
-        //   InsydeH2O: #GP on invalid page-table walk
-        //
-        // Split: allocate an L2 table, fill it with 512 × 2MB huge pages,
-        // then let the existing L2→4KB split logic handle the rest.
-        if l3[l3_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
-            let huge_phys_base = l3[l3_idx].addr().as_u64();
-            let orig_flags = l3[l3_idx].flags();
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or("4k: alloc L2 for 1GB split failed")?;
-            let l2_phys = frame.start_address();
-            let l2_ptr = (l2_phys.as_u64() + phys_offset.as_u64()) as *mut PageTable;
-            core::ptr::write_bytes(l2_ptr as *mut u8, 0, 4096);
-            let l2_ref = &mut *l2_ptr;
-            for j in 0..512u64 {
-                l2_ref[j as usize].set_addr(
-                    PhysAddr::new(huge_phys_base + j * 0x20_0000),
-                    orig_flags | PageTableFlags::PRESENT | PageTableFlags::HUGE_PAGE,
-                );
-            }
-            // Update L3 entry: point to real L2 table, clear HUGE_PAGE but keep other bits
-            let mut new_flags = orig_flags;
-            new_flags.remove(PageTableFlags::HUGE_PAGE);
-            l3[l3_idx].set_addr(l2_phys, new_flags | PageTableFlags::PRESENT);
-        }
-
-        let l2 = if l3[l3_idx].is_unused() {
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or("4k: alloc L2 failed")?;
-            let addr = frame.start_address();
-            let ptr = (addr.as_u64() + phys_offset.as_u64()) as *mut u8;
-            core::ptr::write_bytes(ptr, 0, 4096);
-            l3[l3_idx].set_addr(addr, flags | PageTableFlags::PRESENT);
-            &mut *((l3[l3_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
-        } else {
-            &mut *((l3[l3_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable)
-        };
-
-        // If the L2 entry is unused, allocate a new L1 table.
-        // If it's a HUGE_PAGE, split it into 512 4KB entries.
-        if l2[l2_idx].is_unused() {
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or("4k: alloc L1 failed")?;
-            let l1_phys = frame.start_address();
-            let l1_ptr = (l1_phys.as_u64() + phys_offset.as_u64()) as *mut u8;
-            core::ptr::write_bytes(l1_ptr, 0, 4096);
-            l2[l2_idx].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
-        } else if l2[l2_idx].flags().contains(PageTableFlags::HUGE_PAGE) {
-            let huge_page_phys_base = l2[l2_idx].addr().as_u64();
-            let frame = frame_allocator
-                .allocate_frame()
-                .ok_or("4k: split L1 failed")?;
-            let l1_phys = frame.start_address();
-            let l1_ptr = (l1_phys.as_u64() + phys_offset.as_u64()) as *mut PageTable;
-            core::ptr::write_bytes(l1_ptr as *mut u8, 0, 4096);
-            let l1_ref = &mut *l1_ptr;
-            for j in 0..512u64 {
-                l1_ref[j as usize].set_addr(PhysAddr::new(huge_page_phys_base + j * 4096), flags);
-            }
-            l2[l2_idx].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
-        }
-
-        let l1_virt = (l2[l2_idx].addr().as_u64() + phys_offset.as_u64()) as *mut PageTable;
-        let l1 = unsafe { &mut *l1_virt };
-        l1[l1_idx].set_addr(phys, flags);
-        Ok(())
-    }
-}
-
-/// Map a range of 4KB pages, using map_page_4k_l1 for each.
-unsafe fn map_range_4k(
-    l4: &mut PageTable,
-    virt_start: VirtAddr,
-    phys_start: PhysAddr,
-    page_count: u64,
-    flags: PageTableFlags,
-    frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
-    phys_offset: VirtAddr,
-) -> Result<(), &'static str> {
-    unsafe {
-        for i in 0..page_count {
-            let virt = VirtAddr::new(virt_start.as_u64() + i * 4096);
-            let phys = PhysAddr::new(phys_start.as_u64() + i * 4096);
-            map_page_4k_l1(l4, virt, phys, flags, frame_allocator, phys_offset)?;
-        }
-        Ok(())
-    }
-}
-
-/// Map a range of 2MB huge pages by inserting a L2 huge-page entry.
-/// Both virt_start and phys_start must be 2MB-aligned.
-/// Uses frame_allocator (not allocate_frame_low) because huge page tables
-/// can be allocated from anywhere in the first 16GB identity-mapped space.
-unsafe fn map_range_2mb_huge(
-    l4: &mut PageTable,
-    virt_start: VirtAddr,
-    phys_start: PhysAddr,
-    page_count: u64,
-    flags: PageTableFlags,
-    frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
-) -> Result<(), &'static str> {
-    unsafe {
-        let flags_2mb = flags | PageTableFlags::HUGE_PAGE;
-        for i in 0..page_count {
-            let virt = VirtAddr::new(virt_start.as_u64() + i * 2 * 1024 * 1024);
-            let phys = PhysAddr::new(phys_start.as_u64() + i * 2 * 1024 * 1024);
-            let l4_idx = ((virt.as_u64() >> 39) & 0x1FF) as usize;
-            let l3_idx = ((virt.as_u64() >> 30) & 0x1FF) as usize;
-            let l2_idx = ((virt.as_u64() >> 21) & 0x1FF) as usize;
-
-            if l4[l4_idx].is_unused() {
-                // Allocate and zero a new L3 table
-                if let Some(frame) = frame_allocator.allocate_frame() {
-                    let addr = frame.start_address();
-                    core::ptr::write_bytes(addr.as_u64() as *mut u8, 0, 4096);
-                    l4[l4_idx].set_addr(addr, flags | PageTableFlags::PRESENT);
-                } else {
-                    return Err("huge: alloc L3 failed");
-                }
-            }
-
-            let l3_addr = l4[l4_idx].addr();
-            let l3 = &mut *(l3_addr.as_u64() as *mut PageTable);
-
-            if l3[l3_idx].is_unused() {
-                // Allocate and zero a new L2 table, then set the huge page entry
-                if let Some(frame) = frame_allocator.allocate_frame() {
-                    let addr = frame.start_address();
-                    core::ptr::write_bytes(addr.as_u64() as *mut u8, 0, 4096);
-                    l3[l3_idx].set_addr(addr, flags | PageTableFlags::PRESENT);
-                    let l2 = &mut *(addr.as_u64() as *mut PageTable);
-                    l2[l2_idx].set_addr(phys, flags_2mb | PageTableFlags::PRESENT);
-                } else {
-                    return Err("huge: alloc L2 failed");
-                }
-            } else {
-                let addr = l3[l3_idx].addr();
-                let l2 = &mut *(addr.as_u64() as *mut PageTable);
-                l2[l2_idx].set_addr(phys, flags_2mb | PageTableFlags::PRESENT);
-            }
-        }
-        Ok(())
+        KernelMemoryOperations::new(l4, frame_allocator, phys_offset, flags)
+            .map_page_4k(virt, phys, flags)
     }
 }
 
@@ -237,23 +332,19 @@ pub unsafe extern "C" fn init_and_jump(
         crate::serial::_print(format_args!("IAJ: this_func_phys={:#x}\n", this_func_addr));
 
         // Based on the success pattern, reset the segment registers to clean the execution environment.
-        unsafe {
-            core::arch::asm!(
-                "xor ax, ax",
-                "mov ds, ax",
-                "mov es, ax",
-                "mov fs, ax",
-                "mov gs, ax",
-                "mov ss, ax",
-                "and rsp, -16",
-                options(preserves_flags)
-            );
-        }
+        core::arch::asm!(
+            "xor ax, ax",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            "mov ss, ax",
+            "and rsp, -16",
+            options(preserves_flags)
+        );
 
         let current_rsp: usize;
-        unsafe {
-            core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
-        }
+        core::arch::asm!("mov {}, rsp", out(reg) current_rsp);
         crate::serial::_print(format_args!(
             "IAJ: args_ptr={:#x}, l4_phys={:#x}, stack_top={:#x}, current_rsp={:#x}\n",
             args_ptr as usize, l4_phys_addr, stack_top, current_rsp
@@ -278,10 +369,10 @@ pub unsafe extern "C" fn init_and_jump(
             "IAJ: Zeroing L4 table at {:#x}...\n",
             l4_ptr as usize
         ));
-        unsafe {
-            core::ptr::write_bytes(l4_ptr as *mut u8, 0, 4096);
-        }
         let l4 = &mut *l4_ptr;
+        let mut memory_ops =
+            KernelMemoryOperations::new(l4, frame_allocator, VirtAddr::new(0), flags);
+        memory_ops.zero_root();
 
         crate::serial::_print(format_args!("IAJ: Using pre-allocated L4\n"));
 
@@ -290,16 +381,14 @@ pub unsafe extern "C" fn init_and_jump(
         // 64GB = 32768 × 2MB pages. This ensures VirtIO DMA buffers (which can be allocated
         // anywhere by the frame allocator) are accessible.
         crate::serial::_print(format_args!("IAJ: Mapping identity huge pages (64GB)...\n"));
-        const IDENTITY_MAP_2MB_PAGES: u64 = 32768; // 64GB / 2MB
-        map_range_2mb_huge(
-            l4,
-            VirtAddr::new(0),
-            PhysAddr::new(0),
-            IDENTITY_MAP_2MB_PAGES,
-            flags,
-            frame_allocator,
-        )
-        .expect("full 64GB huge page identity map failed");
+        memory_ops
+            .map_range_2mb_huge(
+                VirtAddr::new(0),
+                PhysAddr::new(0),
+                IDENTITY_MAP_2MB_PAGES,
+                flags,
+            )
+            .expect("full 64GB huge page identity map failed");
         crate::serial::_print(format_args!("IAJ: Huge page identity mapped\n"));
 
         // STEP 1b: Map the entire 0-64GB physical range to the higher half using 2MB huge pages.
@@ -311,15 +400,14 @@ pub unsafe extern "C" fn init_and_jump(
         crate::serial::_print(format_args!(
             "IAJ: Mapping full 64GB to higher half (huge pages)...\n"
         ));
-        map_range_2mb_huge(
-            l4,
-            physical_memory_offset,
-            PhysAddr::new(0),
-            IDENTITY_MAP_2MB_PAGES,
-            flags,
-            frame_allocator,
-        )
-        .expect("full 64GB huge page higher-half map failed");
+        memory_ops
+            .map_range_2mb_huge(
+                physical_memory_offset,
+                PhysAddr::new(0),
+                IDENTITY_MAP_2MB_PAGES,
+                flags,
+            )
+            .expect("full 64GB huge page higher-half map failed");
         crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
 
         // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
@@ -339,28 +427,24 @@ pub unsafe extern "C" fn init_and_jump(
 
         // higher-half kernel mapping (splits higher-half huge pages)
         let kernel_virt = VirtAddr::new(physical_memory_offset.as_u64() + kernel_phys_start);
-        map_range_4k(
-            l4,
-            kernel_virt,
-            PhysAddr::new(kernel_phys_start),
-            kernel_pages,
-            flags,
-            frame_allocator,
-            VirtAddr::new(0),
-        )
-        .expect("kernel higher map");
+        memory_ops
+            .map_range_4k(
+                kernel_virt,
+                PhysAddr::new(kernel_phys_start),
+                kernel_pages,
+                flags,
+            )
+            .expect("kernel higher map");
 
         // identity kernel mapping (splits identity huge pages)
-        map_range_4k(
-            l4,
-            VirtAddr::new(kernel_phys_start),
-            PhysAddr::new(kernel_phys_start),
-            kernel_pages,
-            flags,
-            frame_allocator,
-            VirtAddr::new(0),
-        )
-        .expect("kernel identity");
+        memory_ops
+            .map_range_4k(
+                VirtAddr::new(kernel_phys_start),
+                PhysAddr::new(kernel_phys_start),
+                kernel_pages,
+                flags,
+            )
+            .expect("kernel identity");
         crate::serial::_print(format_args!("IAJ: Kernel mapped\n"));
 
         // === Stack mapping (identity + higher-half) ===
@@ -373,65 +457,50 @@ pub unsafe extern "C" fn init_and_jump(
         let stack_phys_base = stack_phys_page - stack_pages * 4096 + 4096;
 
         // identity
-        map_range_4k(
-            l4,
-            VirtAddr::new(stack_phys_base),
-            PhysAddr::new(stack_phys_base),
-            stack_pages,
-            flags,
-            frame_allocator,
-            VirtAddr::new(0),
-        )
-        .expect("stack identity");
+        memory_ops
+            .map_range_4k(
+                VirtAddr::new(stack_phys_base),
+                PhysAddr::new(stack_phys_base),
+                stack_pages,
+                flags,
+            )
+            .expect("stack identity");
         // higher-half
-        map_range_4k(
-            l4,
-            VirtAddr::new(physical_memory_offset.as_u64() + stack_phys_base),
-            PhysAddr::new(stack_phys_base),
-            stack_pages,
-            flags,
-            frame_allocator,
-            VirtAddr::new(0),
-        )
-        .expect("stack higher");
+        memory_ops
+            .map_range_4k(
+                VirtAddr::new(physical_memory_offset.as_u64() + stack_phys_base),
+                PhysAddr::new(stack_phys_base),
+                stack_pages,
+                flags,
+            )
+            .expect("stack higher");
         crate::serial::_print(format_args!("IAJ: Stack mapped\n"));
 
         // Args (identity only - higher-half covered by huge page splits)
         let args_pages = 1u64;
-        map_range_4k(
-            l4,
-            VirtAddr::new(arg1),
-            PhysAddr::new(arg1),
-            args_pages,
-            flags,
-            frame_allocator,
-            VirtAddr::new(0),
-        )
-        .expect("args map");
+        memory_ops
+            .map_range_4k(VirtAddr::new(arg1), PhysAddr::new(arg1), args_pages, flags)
+            .expect("args map");
 
         // Memory map (identity + higher-half)
         let map_pages = (map_size + 4095) / 4096;
-        map_range_4k(
-            l4,
-            VirtAddr::new(map_phys_addr),
-            PhysAddr::new(map_phys_addr),
-            map_pages,
-            flags,
-            frame_allocator,
-            VirtAddr::new(0),
-        )
-        .expect("map identity");
+        memory_ops
+            .map_range_4k(
+                VirtAddr::new(map_phys_addr),
+                PhysAddr::new(map_phys_addr),
+                map_pages,
+                flags,
+            )
+            .expect("map identity");
         let map_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + map_phys_addr);
-        map_range_4k(
-            l4,
-            map_virt_higher,
-            PhysAddr::new(map_phys_addr),
-            map_pages,
-            flags,
-            frame_allocator,
-            VirtAddr::new(0),
-        )
-        .expect("map higher");
+        memory_ops
+            .map_range_4k(
+                map_virt_higher,
+                PhysAddr::new(map_phys_addr),
+                map_pages,
+                flags,
+            )
+            .expect("map higher");
 
         // Store state BEFORE switching CR3, since after the switch we can't safely reference
         // Rust statics (they may be in unmapped higher-half addresses)
@@ -442,12 +511,10 @@ pub unsafe extern "C" fn init_and_jump(
         // VGA debug: about to switch CR3
         crate::vga_debug::vga_puts(22, 0, b"IAJ:sw cr3");
         crate::serial::_print(format_args!("IAJ: mappings done, switching CR3...\n"));
-        unsafe {
-            x86_64::registers::control::Cr3::write(
-                x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(l4_phys)),
-                x86_64::registers::control::Cr3Flags::empty(),
-            )
-        };
+        x86_64::registers::control::Cr3::write(
+            x86_64::structures::paging::PhysFrame::containing_address(PhysAddr::new(l4_phys)),
+            x86_64::registers::control::Cr3Flags::empty(),
+        );
         x86_64::instructions::tlb::flush_all();
 
         // CRITICAL: After CR3 switch, we can only access identity-mapped addresses.
