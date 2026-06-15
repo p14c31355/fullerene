@@ -64,9 +64,7 @@ pub struct TerminalBuffer {
     style: TextStyle,
     /// Scrollback buffer: rows that have scrolled off the top of the screen.
     /// Each entry is a full row of `Cell`s.
-    scrollback: Vec<Vec<Cell>>,
-    /// How many rows the user has scrolled back (0 = normal view).
-    scroll_offset: usize,
+    scrollback: VecDeque<Vec<Cell>>,
 }
 
 impl TerminalBuffer {
