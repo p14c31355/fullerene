@@ -444,8 +444,8 @@ pub fn cmd_app(ctx: &mut CommandContext) -> bool {
     match sub {
         "list" => crate::sys_hooks::call_sys_info_hook(ctx, "app_list"),
         "install" if ctx.args.len() >= 4 => {
-            let name = ctx.args[2];
-            let desc = ctx.args[3];
+            let name = &ctx.args[2];
+            let desc = ctx.args[3..].join(" ");
             // Use sys_control hook: "app_install <name> <desc>"
             let cmd = alloc::format!("app_install {} {}", name, desc);
             crate::sys_hooks::call_sys_control_hook(&cmd);
