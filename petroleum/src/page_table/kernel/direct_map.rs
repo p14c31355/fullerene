@@ -1,10 +1,10 @@
 use crate::page_table::constants::HIGHER_HALF_OFFSET;
 use crate::page_table::memory_map::descriptor::MemoryMapDescriptor;
 use x86_64::{
+    VirtAddr,
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags, PhysFrame, Size4KiB,
     },
-    VirtAddr,
 };
 
 /// Initializes a direct physical mapping of all usable physical memory to the higher half.

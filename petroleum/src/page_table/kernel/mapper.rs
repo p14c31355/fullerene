@@ -10,10 +10,10 @@
 //!     .apply()?;
 //! ```
 
-use crate::page_table::allocator::traits::FrameAllocator;
-use crate::page_table::raw::walker::{walk_or_create, FrameAlloc, WalkError};
-use crate::page_table::types::*;
 use crate::page_table::PageTableEntry;
+use crate::page_table::allocator::traits::FrameAllocator;
+use crate::page_table::raw::walker::{FrameAlloc, WalkError, walk_or_create};
+use crate::page_table::types::*;
 
 /// Mapping errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

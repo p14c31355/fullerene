@@ -37,7 +37,11 @@ pub fn init_graphics() {
         let kernel_lock = get_kernel();
         let kg = kernel_lock.lock();
         if kg.is_none() {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel is None, initializing\n");
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                b"[init_gfx] kernel is None, initializing\n",
+            );
             drop(kg);
             crate::contexts::kernel::init_kernel();
         }
@@ -59,18 +63,23 @@ pub fn init_graphics() {
             p.width, p.height, p.stride
         ));
         with_kernel_mut(|k| {
-            k.framebuffer.store_raw_params(p.phys, p.width, p.height,
-                                           p.stride, 32, p.pixel_format);
+            k.framebuffer
+                .store_raw_params(p.phys, p.width, p.height, p.stride, 32, p.pixel_format);
         });
     } else {
         petroleum::write_serial_bytes(
-            0x3F8, 0x3FD,
+            0x3F8,
+            0x3FD,
             b"[init_gfx] no probe result, trying KernelContext fallback\n",
         );
     }
 
     // ── Build renderer ──────────────────────────────────────────
-    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] calling build_renderer_from_stored\n");
+    petroleum::write_serial_bytes(
+        0x3F8,
+        0x3FD,
+        b"[init_gfx] calling build_renderer_from_stored\n",
+    );
     let built = with_kernel_mut(|k| k.framebuffer.build_renderer_from_stored()).unwrap_or(false);
     if built {
         petroleum::serial::serial_log(format_args!(
@@ -88,7 +97,8 @@ pub fn init_graphics() {
     let vga_virt = vga_phys + off;
     if let Some(mem) = crate::contexts::memory::get_memory().lock().as_mut() {
         let _ = mem.map_page(
-            vga_virt as usize, vga_phys as usize,
+            vga_virt as usize,
+            vga_phys as usize,
             x86_64::structures::paging::PageTableFlags::NO_CACHE
                 | x86_64::structures::paging::PageTableFlags::PRESENT
                 | x86_64::structures::paging::PageTableFlags::WRITABLE
@@ -98,7 +108,8 @@ pub fn init_graphics() {
         let mut mm = crate::memory_management::get_memory_manager().lock();
         let mm = mm.as_mut().unwrap();
         let _ = mm.safe_map_page(
-            vga_virt as usize, vga_phys as usize,
+            vga_virt as usize,
+            vga_phys as usize,
             x86_64::structures::paging::PageTableFlags::NO_CACHE
                 | x86_64::structures::paging::PageTableFlags::PRESENT
                 | x86_64::structures::paging::PageTableFlags::WRITABLE

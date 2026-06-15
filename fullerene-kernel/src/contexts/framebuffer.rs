@@ -54,8 +54,10 @@ impl FramebufferContext {
             return true;
         }
         if self.fb_phys < 0x100000
-            || self.fb_width_px == 0 || self.fb_width_px > 16384
-            || self.fb_height_px == 0 || self.fb_height_px > 16384
+            || self.fb_width_px == 0
+            || self.fb_width_px > 16384
+            || self.fb_height_px == 0
+            || self.fb_height_px > 16384
             || self.fb_stride_bytes == 0
             || self.bpp != 32
         {
@@ -116,7 +118,9 @@ impl FramebufferContext {
             .unwrap_or(core::ptr::null_mut())
     }
     pub fn pixels_mut(&mut self) -> Option<&mut [u32]> {
-        if self.bpp != 32 { return None; }
+        if self.bpp != 32 {
+            return None;
+        }
         let info = self.info()?;
         Some(unsafe {
             core::slice::from_raw_parts_mut(

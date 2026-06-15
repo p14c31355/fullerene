@@ -65,13 +65,22 @@ impl FramebufferManager {
         fb_byte_size: usize,
     ) -> Self {
         // Validate framebuffer layout invariants
-        assert!(bpp == 32 || bpp == 24 || bpp == 16 || bpp == 8, "Invalid bpp value: {}", bpp);
+        assert!(
+            bpp == 32 || bpp == 24 || bpp == 16 || bpp == 8,
+            "Invalid bpp value: {}",
+            bpp
+        );
         let bytes_per_pixel = (bpp + 7) / 8;
         let required_size = (stride as usize) * (height as usize) * (bytes_per_pixel as usize);
         assert!(
             required_size <= fb_byte_size,
             "Framebuffer size {} is insufficient for {}x{} at stride {} and bpp {} (requires {})",
-            fb_byte_size, width, height, stride, bpp, required_size
+            fb_byte_size,
+            width,
+            height,
+            stride,
+            bpp,
+            required_size
         );
         Self {
             fb_base: fb_virt_base,
@@ -104,13 +113,22 @@ impl FramebufferManager {
         gpu: Box<VirtioGpu>,
     ) -> Self {
         // Validate framebuffer layout invariants
-        assert!(bpp == 32 || bpp == 24 || bpp == 16 || bpp == 8, "Invalid bpp value: {}", bpp);
+        assert!(
+            bpp == 32 || bpp == 24 || bpp == 16 || bpp == 8,
+            "Invalid bpp value: {}",
+            bpp
+        );
         let bytes_per_pixel = (bpp + 7) / 8;
         let required_size = (stride as usize) * (height as usize) * (bytes_per_pixel as usize);
         assert!(
             required_size <= fb_byte_size,
             "Framebuffer size {} is insufficient for {}x{} at stride {} and bpp {} (requires {})",
-            fb_byte_size, width, height, stride, bpp, required_size
+            fb_byte_size,
+            width,
+            height,
+            stride,
+            bpp,
+            required_size
         );
         Self {
             fb_base: fb_virt_base,

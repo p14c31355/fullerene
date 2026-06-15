@@ -12,11 +12,11 @@
 //!   corrupting `.data` / `.bss` backed memory.
 use alloc::vec::Vec;
 use x86_64::{
+    PhysAddr, VirtAddr,
     structures::paging::{
         FrameAllocator, Mapper, OffsetPageTable, Page, PageTable, PageTableFlags, PhysFrame,
         Size2MiB,
     },
-    PhysAddr, VirtAddr,
 };
 
 use crate::page_table::allocator::bitmap::BitmapFrameAllocator;

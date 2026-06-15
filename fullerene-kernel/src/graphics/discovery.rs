@@ -37,14 +37,21 @@ pub static mut STORED_ARGS_VA: u64 = 0;
 
 /// Store the virtual address of KernelArgs.  Called from `efi_main_stage2`.
 pub fn store_args_va(va: u64) {
-    unsafe { STORED_ARGS_VA = va; }
+    unsafe {
+        STORED_ARGS_VA = va;
+    }
     petroleum::serial::_print(format_args!("[store_args] va=0x{va:x}\n"));
 }
 
 /// Store GOP parameters from the bootloader's KernelArgs.
 /// Called from `efi_main_stage2` while `args_ptr` is valid.
 pub fn store_boot_fb_params(
-    phys: u64, width: u32, height: u32, stride: u32, bpp: u32, pixel_format: u32,
+    phys: u64,
+    width: u32,
+    height: u32,
+    stride: u32,
+    bpp: u32,
+    pixel_format: u32,
 ) {
     unsafe {
         STORED_FB_PHYS = phys;
@@ -66,11 +73,16 @@ impl FramebufferDiscovery {
     /// Probe `.data` globals saved by `efi_main_stage2`.
     pub fn probe_data_globals() -> Option<FramebufferProbeResult> {
         let (phys, w, h, stride, bpp, fmt_raw) = unsafe {
-            (STORED_FB_PHYS, STORED_FB_WIDTH, STORED_FB_HEIGHT,
-             STORED_FB_STRIDE, STORED_FB_BPP, STORED_FB_PIXEL_FORMAT)
+            (
+                STORED_FB_PHYS,
+                STORED_FB_WIDTH,
+                STORED_FB_HEIGHT,
+                STORED_FB_STRIDE,
+                STORED_FB_BPP,
+                STORED_FB_PIXEL_FORMAT,
+            )
         };
-        if phys < 0x100000 || w == 0 || w > 16384 || h == 0 || h > 16384
-            || stride == 0 || bpp != 32
+        if phys < 0x100000 || w == 0 || w > 16384 || h == 0 || h > 16384 || stride == 0 || bpp != 32
         {
             return None;
         }
@@ -80,7 +92,13 @@ impl FramebufferDiscovery {
             _ => return None,
         };
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] .data globals valid\n");
-        Some(FramebufferProbeResult { phys, width: w, height: h, stride, pixel_format })
+        Some(FramebufferProbeResult {
+            phys,
+            width: w,
+            height: h,
+            stride,
+            pixel_format,
+        })
     }
 
     /// Probe `KernelArgs` via `STORED_ARGS_VA`.
@@ -96,8 +114,10 @@ impl FramebufferDiscovery {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
         if args.fb_address < 0x100000
-            || args.fb_width == 0 || args.fb_width > 16384
-            || args.fb_height == 0 || args.fb_height > 16384
+            || args.fb_width == 0
+            || args.fb_width > 16384
+            || args.fb_height == 0
+            || args.fb_height > 16384
             || args.fb_bpp != 32
         {
             return None;
@@ -130,10 +150,13 @@ impl FramebufferDiscovery {
             if vendor == 0xFFFF || vendor == 0x0000 {
                 continue;
             }
-            let class = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
-            let subclass = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
+            let class =
+                nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
+            let subclass =
+                nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
             if class == 0x03 && subclass == 0x00 {
-                let bar0 = nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x10);
+                let bar0 =
+                    nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x10);
                 let fb_phys = (bar0 & 0xFFFFFFF0) as u64;
                 if fb_phys >= 0x100000 {
                     // PCI BAR0 gives us the physical address but not the
