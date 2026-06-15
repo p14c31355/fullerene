@@ -238,7 +238,7 @@ pub fn cmd_find(ctx: &mut CommandContext) -> bool {
             .write_str("Usage: find <directory> <pattern>\n");
         return true;
     }
-    crate::fs_hooks::find_files(ctx, ctx.args[1], ctx.args[2]);
+    crate::fs_hooks::find_files(ctx, &ctx.args[1], &ctx.args[2]);
     true
 }
 
