@@ -88,7 +88,7 @@ pub fn scheduler_loop() -> ! {
         }
 
         tick_counter = tick_counter.wrapping_add(1);
-        core::hint::spin_loop();
+        x86_64::instructions::hlt();
     }
 }
 
