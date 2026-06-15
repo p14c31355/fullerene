@@ -440,12 +440,7 @@ impl Vfs {
         let resolved = self.resolve_path(path);
         // Verify the path exists and is a directory.
         let (fs, remaining) = self.find_fs(&resolved).ok_or("not found")?;
-        // readdir takes &self but we have &mut; reborrow immutably via pointer.
-        {
-            let fs_ptr: *const Box<dyn FileSystem> = fs as *const Box<dyn FileSystem>;
-            let fs_ref: &Box<dyn FileSystem> = unsafe { &*fs_ptr };
-            let _entries = fs_ref.readdir(&remaining).map_err(|_| "not a directory")?;
-        }
+        let _entries = fs.readdir(&remaining).map_err(|_| "not a directory")?;
         self.wd = resolved;
         Ok(())
     }
