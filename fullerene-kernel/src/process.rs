@@ -179,7 +179,7 @@ pub struct ProcessManager {
     /// Next available process ID.
     next_pid: AtomicUsize,
     /// Round‑robin index into `processes`.
-    current_index: Mutex<usize>,
+    current_index: AtomicUsize,
     /// PID of the currently running process (0 = none).
     current_pid: AtomicUsize,
 }
