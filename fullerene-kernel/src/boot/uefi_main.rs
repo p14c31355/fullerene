@@ -32,41 +32,26 @@ pub unsafe extern "C" fn efi_main_stage2(
         // Store raw integers NOW while args_ptr is valid.  Do NOT
         // dereference args_ptr later — it may be corrupted by the
         // world‑switch page‑table rebuild.
-        // NOTE: KernelContext::init_kernel() does PCI scan (heap alloc)
-        // so we init framebuffer only at this early stage.
-        // Store GOP parameters into the FRAMEBUFFER static NOW while
-        // args_ptr is valid.  init_graphics() later copies them into
-        // KernelContext.framebuffer and builds the renderer.
-        crate::contexts::framebuffer::init_framebuffer();
+        // NOTE: store GOP parameters into .data-section globals NOW
+        // while args_ptr is valid.  init_graphics() later reads them
+        // and builds the renderer.  Simple .data integers survive the
+        // world-switch + shallow clone_page_table reliably.
         crate::graphics::store_args_va(args_ptr as u64);
         {
             let args = &*args_ptr;
-            let stride = if args.fb_stride > 0 {
+            let stride_bytes = if args.fb_stride > 0 {
                 args.fb_stride.saturating_mul(4)
             } else {
                 args.fb_width.saturating_mul(4)
             };
-            let pixel_format = match args.fb_pixel_format {
-                0 => {
-                    petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-                }
-                1 => {
-                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
-                }
-                _ => {
-                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
-                }
-            };
-            crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
-                fb.store_raw_params(
-                    args.fb_address,
-                    args.fb_width,
-                    args.fb_height,
-                    stride,
-                    args.fb_bpp,
-                    pixel_format,
-                );
-            });
+            crate::graphics::store_boot_fb_params(
+                args.fb_address,
+                args.fb_width,
+                args.fb_height,
+                stride_bytes,
+                args.fb_bpp,
+                args.fb_pixel_format,
+            );
         }
 
         // Signal '3': After early FB param capture
