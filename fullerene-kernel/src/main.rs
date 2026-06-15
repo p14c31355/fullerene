@@ -12,6 +12,7 @@ extern crate alloc;
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     use core::fmt::Write;
+    crate::boot_stage::set_boot_stage(crate::boot_stage::BootStage::Panic);
     petroleum::serial::_print(format_args!("\n========== KERNEL PANIC ==========\n"));
     if let Some(loc) = info.location() {
         petroleum::serial::_print(format_args!(

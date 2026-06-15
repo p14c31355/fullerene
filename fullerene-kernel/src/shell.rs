@@ -221,8 +221,24 @@ fn register_nozzle_hooks() {
         df: Some(|ctx| {
             match crate::fs::walk_dir("/") {
                 Ok(entries) => {
-                    let file_count = entries.iter().filter(|e| !e.ends_with('/')).count();
-                    let dir_count = entries.iter().filter(|e| e.ends_with('/')).count();
+                    let mut file_count = 0;
+                    let mut dir_count = 0;
+                    // Check each entry's type by querying its parent directory
+                    for path in &entries {
+                        if let Some(pos) = path.rfind('/') {
+                            let parent = if pos == 0 { "/" } else { &path[..pos] };
+                            let name = &path[pos + 1..];
+                            if let Ok(parent_entries) = crate::fs::list_dir(parent) {
+                                if let Some(entry) = parent_entries.iter().find(|e| e.name == name) {
+                                    if entry.is_dir {
+                                        dir_count += 1;
+                                    } else {
+                                        file_count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     ctx.terminal
                         .write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
                     let msg = format!(
@@ -725,7 +741,7 @@ fn register_nozzle_hooks() {
             }
         }
         _ if cmd.starts_with("app_install ") => {
-            let rest = &cmd[13..]; // skip "app_install "
+            let rest = &cmd[12..]; // skip "app_install " (12 characters)
             if let Some((name, desc)) = rest.split_once(' ') {
                 let dummy_bin: [u8; 4] = [0x90, 0x90, 0x90, 0x90]; // NOP placeholder
                 match crate::fs::install_package(name, "0.1.0", desc, &dummy_bin) {
@@ -741,7 +757,7 @@ fn register_nozzle_hooks() {
             }
         }
         _ if cmd.starts_with("app_remove ") => {
-            let name = &cmd[12..]; // skip "app_remove "
+            let name = &cmd[11..]; // skip "app_remove " (11 characters)
             match crate::fs::remove_package(name) {
                 Ok(()) => {
                     let msg = format!("Removed package '{}'\n", name);

@@ -56,8 +56,10 @@ pub fn preinit_apic_controller(lapic_virt: u64) {
 
 /// Send End-Of-Interrupt to the Local APIC.
 pub fn send_eoi() {
-    if let Some(ref ctrl) = *APIC_CONTROLLER.lock() {
-        ctrl.send_eoi();
+    if let Some(guard) = APIC_CONTROLLER.try_lock() {
+        if let Some(ref ctrl) = *guard {
+            ctrl.send_eoi();
+        }
     }
 }
 
@@ -97,20 +99,25 @@ pub fn init_apic_hw_only() {
         }
     }
 
-    let guard = APIC_CONTROLLER.lock();
-    let ctrl = guard.as_ref().unwrap();
+    if let Some(guard) = APIC_CONTROLLER.try_lock() {
+        let ctrl = guard.as_ref().unwrap();
 
-    ApicController::disable_legacy_pic();
-    petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Legacy PIC disabled\n"));
+        ApicController::disable_legacy_pic();
+        petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Legacy PIC disabled\n"));
 
-    ctrl.enable();
-    ctrl.mask_all_lvts();
-    ctrl.lapic_write(ApicOffsets::TMRDIV, 0x3);
-    ctrl.lapic_write(ApicOffsets::TMRINITCNT, 0); // Stop the timer entirely
+        ctrl.enable();
+        ctrl.mask_all_lvts();
+        ctrl.lapic_write(ApicOffsets::TMRDIV, 0x3);
+        ctrl.lapic_write(ApicOffsets::TMRINITCNT, 0); // Stop the timer entirely
 
-    petroleum::serial::serial_log(format_args!(
-        "[init_apic_hw_only] All LVTs masked, APIC enabled (timer stopped)\n"
-    ));
+        petroleum::serial::serial_log(format_args!(
+            "[init_apic_hw_only] All LVTs masked, APIC enabled (timer stopped)\n"
+        ));
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[init_apic_hw_only] Failed to acquire APIC lock\n"
+        ));
+    }
 }
 
 /// Initialize APIC (called AFTER the IDT and interrupt handlers are set up).
@@ -141,36 +148,40 @@ pub fn init_apic() {
         }
     }
 
-    let guard = APIC_CONTROLLER.lock();
-    let ctrl = guard.as_ref().unwrap();
+    if let Some(guard) = APIC_CONTROLLER.try_lock() {
+        let ctrl = guard.as_ref().unwrap();
 
-    ApicController::disable_legacy_pic();
-    petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
+        ApicController::disable_legacy_pic();
+        petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
 
-    ctrl.enable();
-    ctrl.mask_all_lvts();
+        ctrl.enable();
+        ctrl.mask_all_lvts();
 
-    petroleum::serial::serial_log(format_args!("APIC LVT entries masked.\n"));
+        petroleum::serial::serial_log(format_args!("APIC LVT entries masked.\n"));
 
-    // Configure timer: one-shot, MASKED initially, divide-by-16, 1M initial count.
-    ctrl.configure_timer(
-        TIMER_INTERRUPT_INDEX,
-        ApicFlags::TIMER_ONESHOT | ApicFlags::TIMER_MASKED,
-        1_000_000,
-        0x3,
-    );
+        // Configure timer: one-shot, MASKED initially, divide-by-16, 1M initial count.
+        ctrl.configure_timer(
+            TIMER_INTERRUPT_INDEX,
+            ApicFlags::TIMER_ONESHOT | ApicFlags::TIMER_MASKED,
+            1_000_000,
+            0x3,
+        );
 
-    petroleum::serial::serial_log(format_args!(
-        "APIC timer configured (one-shot, div=16, initial_count=1000000).\n"
-    ));
+        petroleum::serial::serial_log(format_args!(
+            "APIC timer configured (one-shot, div=16, initial_count=1000000).\n"
+        ));
 
-    // Configure I/O APIC for legacy IRQs.
-    ctrl.configure_legacy_irqs(KEYBOARD_INTERRUPT_INDEX as u8, MOUSE_INTERRUPT_INDEX as u8);
+        // Configure I/O APIC for legacy IRQs.
+        ctrl.configure_legacy_irqs(KEYBOARD_INTERRUPT_INDEX as u8, MOUSE_INTERRUPT_INDEX as u8);
 
-    petroleum::serial::serial_log(format_args!(
-        "I/O APIC legacy IRQs configured (keyboard={}, mouse={}).\n",
-        KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX
-    ));
+        petroleum::serial::serial_log(format_args!(
+            "I/O APIC legacy IRQs configured (keyboard={}, mouse={}).\n",
+            KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX
+        ));
+    } else {
+        petroleum::serial::serial_log(format_args!("Failed to acquire APIC lock in init_apic.\n"));
+        return;
+    }
 
     use super::syscall::setup_syscall;
     setup_syscall();

@@ -371,7 +371,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
             .add(proc_box)
             .expect("Failed to add idle process");
     }
-    PROCESS_MANAGER.set_current_pid(1);
+    PROCESS_MANAGER.set_current_pid(pid.0 as usize);
 
     mem_debug!("Process: init done\n");
 }

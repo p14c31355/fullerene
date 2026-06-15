@@ -119,8 +119,17 @@ pub fn init_graphics() {
         .flatten();
     }
     if let Some((fb_phys, w, h, stride)) = fb_params {
-        let pixel_format =
-            petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor;
+        // Extract the actual pixel format from KernelArgs instead of hardcoding BGR
+        let pixel_format = if args_va >= 0xFFFF_8000_0000_0000 {
+            let args = unsafe { &*(args_va as *const petroleum::assembly::KernelArgs) };
+            match args.fb_pixel_format {
+                0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            }
+        } else {
+            petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+        };
         with_kernel_mut(|k| {
             k.framebuffer
                 .store_raw_params(fb_phys, w, h, stride, 32, pixel_format);

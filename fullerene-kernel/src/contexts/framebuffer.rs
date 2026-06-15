@@ -147,7 +147,11 @@ impl FramebufferContext {
         };
         let pixel_format = match args.fb_pixel_format {
             0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            _ => {
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] ERROR: Unsupported pixel format value\n");
+                return;
+            }
         };
         let info = FramebufferInfo {
             address: fb_virt,

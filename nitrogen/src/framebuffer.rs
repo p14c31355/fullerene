@@ -52,6 +52,10 @@ impl FramebufferManager {
     ///
     /// `fb_virt_base` must point to a valid, mapped framebuffer region of
     /// at least `fb_byte_size` bytes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if framebuffer layout invariants are violated.
     pub unsafe fn new(
         fb_virt_base: *mut u32,
         width: u32,
@@ -60,6 +64,15 @@ impl FramebufferManager {
         bpp: u32,
         fb_byte_size: usize,
     ) -> Self {
+        // Validate framebuffer layout invariants
+        assert!(bpp == 32 || bpp == 24 || bpp == 16 || bpp == 8, "Invalid bpp value: {}", bpp);
+        let bytes_per_pixel = (bpp + 7) / 8;
+        let required_size = (stride as usize) * (height as usize) * (bytes_per_pixel as usize);
+        assert!(
+            required_size <= fb_byte_size,
+            "Framebuffer size {} is insufficient for {}x{} at stride {} and bpp {} (requires {})",
+            fb_byte_size, width, height, stride, bpp, required_size
+        );
         Self {
             fb_base: fb_virt_base,
             width,
@@ -77,6 +90,10 @@ impl FramebufferManager {
     ///
     /// `fb_virt_base` must point to a valid, mapped framebuffer region.
     /// `gpu` must be a fully initialised VirtIO-GPU with display negotiated.
+    ///
+    /// # Panics
+    ///
+    /// Panics if framebuffer layout invariants are violated.
     pub unsafe fn with_gpu(
         fb_virt_base: *mut u32,
         width: u32,
@@ -86,6 +103,15 @@ impl FramebufferManager {
         fb_byte_size: usize,
         gpu: Box<VirtioGpu>,
     ) -> Self {
+        // Validate framebuffer layout invariants
+        assert!(bpp == 32 || bpp == 24 || bpp == 16 || bpp == 8, "Invalid bpp value: {}", bpp);
+        let bytes_per_pixel = (bpp + 7) / 8;
+        let required_size = (stride as usize) * (height as usize) * (bytes_per_pixel as usize);
+        assert!(
+            required_size <= fb_byte_size,
+            "Framebuffer size {} is insufficient for {}x{} at stride {} and bpp {} (requires {})",
+            fb_byte_size, width, height, stride, bpp, required_size
+        );
         Self {
             fb_base: fb_virt_base,
             width,
@@ -144,9 +170,11 @@ impl FramebufferManager {
     ///
     /// # Panics
     ///
-    /// Panics if `src` is too small for the rectangle.
+    /// Silently fails if `src` is too small for the rectangle.
     pub fn copy_rect(&self, x: u32, y: u32, w: u32, h: u32, src: &[u32]) {
-        assert!(src.len() >= (w as usize) * (h as usize));
+        if src.len() < (w as usize) * (h as usize) {
+            return;
+        }
         let clip_w = w.min(self.width.saturating_sub(x));
         let clip_h = h.min(self.height.saturating_sub(y));
         for row in 0..clip_h {

@@ -97,7 +97,7 @@ static LAST_STAGE: AtomicU8 = AtomicU8::new(0);
 
 /// Update the global boot stage and emit a `klog` line.
 pub fn set_boot_stage(stage: BootStage) {
-    let prev = LAST_STAGE.swap(stage as u8, Ordering::Release);
+    let prev = LAST_STAGE.fetch_max(stage as u8, Ordering::Release);
     // Only log if we actually advanced (monotonic).
     if stage as u8 > prev {
         crate::klog::write_fmt(format_args!("[BOOT] {}\n", stage.label()));

@@ -261,14 +261,9 @@ pub fn _print(args: fmt::Arguments) {
     {
         use core::fmt::Write;
 
-        // Format into a small buffer first to send to both COM1 and DbC.
-        // We use a fixed-size stack buffer to avoid heap allocation.
-        let mut buf: alloc::string::String = alloc::string::String::with_capacity(256);
-        let _ = write!(buf, "{}", args);
-
-        // Send to COM1 serial port (character-by-character)
+        // Send to COM1 serial port directly without heap allocation
         let mut port = SerialPort::new(Com1Ports);
-        port.write_string(&buf);
+        let _ = port.write_fmt(args);
     }
 }
 

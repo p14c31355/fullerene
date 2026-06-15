@@ -236,9 +236,11 @@ impl ApicController {
         self.write_rte(1, kb_rte);
 
         // Mouse (IRQ 12)
-        let mouse_rte =
-            IoApicRedirectionEntry::new(mouse_vector, 0, false, false, false, false, id);
-        self.write_rte(12, mouse_rte);
+        if self.max_redirection_entry >= 12 {
+            let mouse_rte =
+                IoApicRedirectionEntry::new(mouse_vector, 0, false, false, false, false, id);
+            self.write_rte(12, mouse_rte);
+        }
     }
 
     /// Return the cached I/O APIC version register.

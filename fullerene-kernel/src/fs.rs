@@ -271,10 +271,26 @@ pub fn write_entire_file(path: &str, data: &[u8]) -> Result<(), FsError> {
     create_file(path, data)
 }
 
-/// Get file size by opening the file and reading its length.
+/// Get file size by querying filesystem metadata.
 pub fn file_size(path: &str) -> Result<u64, FsError> {
-    let data = read_entire_file(path)?;
-    Ok(data.len() as u64)
+    // Split path into parent directory and filename
+    let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
+        if pos == 0 {
+            ("/", &path[1..])
+        } else {
+            (&path[..pos], &path[pos + 1..])
+        }
+    } else {
+        ("/", path)
+    };
+
+    // List parent directory to find the file entry
+    let entries = list_dir(parent_path)?;
+    entries
+        .iter()
+        .find(|e| e.name == filename)
+        .map(|e| e.size)
+        .ok_or(FsError::FileNotFound)
 }
 
 // ── Package management ─────────────────────────────────────
@@ -348,15 +364,18 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
     if !exists(&pkg_dir) {
         return Err(FsError::FileNotFound);
     }
-    // Remove binary first, then manifest, then directory
-    let bin_path = alloc::format!("/packages/{}/app.bin", name);
-    if exists(&bin_path) {
-        remove(&bin_path)?;
+    // Use walk_dir to recursively delete all contents
+    let entries = walk_dir(&pkg_dir)?;
+    // Sort in reverse order to delete files before their parent directories
+    let mut sorted_entries = entries;
+    sorted_entries.sort_by(|a, b| b.len().cmp(&a.len()));
+
+    // Remove all files and subdirectories
+    for entry in sorted_entries {
+        let _ = remove(&entry);
     }
-    let manifest_path = alloc::format!("/packages/{}/manifest.txt", name);
-    if exists(&manifest_path) {
-        remove(&manifest_path)?;
-    }
+
+    // Finally remove the package directory itself
     remove(&pkg_dir)
 }
 
