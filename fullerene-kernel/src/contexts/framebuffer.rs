@@ -141,7 +141,7 @@ impl FramebufferContext {
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
         let fb_virt = args.fb_address + off;
         let stride = if args.fb_stride > 0 {
-            args.fb_stride
+            args.fb_stride.saturating_mul(4)
         } else {
             args.fb_width.saturating_mul(4)
         };
