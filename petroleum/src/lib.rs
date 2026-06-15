@@ -187,17 +187,6 @@ macro_rules! define_panic_handler {
             $crate::serial::_print(format_args!("  {}\n", info));
             $crate::serial::_print(format_args!("==================================\n"));
 
-            // Best-effort VFS flush: record the Panic boot stage and
-            // attempt to persist the kernel log ring to /bootlog.txt.
-            // If the VFS lock is already poisoned (e.g. panic during
-            // a VFS operation), the flush is skipped silently.
-            unsafe extern "Rust" {
-                fn _fullerene_panic_flush();
-            }
-            unsafe {
-                _fullerene_panic_flush();
-            }
-
             loop {
                 x86_64::instructions::hlt();
             }
