@@ -2,6 +2,7 @@
 use alloc::boxed::Box;
 use core::fmt::Write;
 use nitrogen::virtio::gpu::VirtioGpu;
+use petroleum::common::EfiGraphicsPixelFormat;
 use petroleum::graphics::color::FramebufferInfo;
 use petroleum::graphics::framebuffer::UefiFramebufferWriter;
 use petroleum::graphics::text::VgaBuffer;
@@ -15,7 +16,7 @@ pub struct FramebufferContext {
     pub fb_width_px: u32,
     pub fb_height_px: u32,
     pub fb_stride_bytes: u32,
-    pub fb_pixel_format: petroleum::common::EfiGraphicsPixelFormat,
+    pub fb_pixel_format: EfiGraphicsPixelFormat,
 }
 
 impl FramebufferContext {
@@ -29,8 +30,7 @@ impl FramebufferContext {
             fb_width_px: 0,
             fb_height_px: 0,
             fb_stride_bytes: 0,
-            fb_pixel_format:
-                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            fb_pixel_format: EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
         }
     }
     pub fn store_raw_params(
@@ -40,7 +40,7 @@ impl FramebufferContext {
         height: u32,
         stride: u32,
         bpp: u32,
-        pixel_format: petroleum::common::EfiGraphicsPixelFormat,
+        pixel_format: EfiGraphicsPixelFormat,
     ) {
         self.fb_phys = phys;
         self.fb_width_px = width;
@@ -54,19 +54,15 @@ impl FramebufferContext {
             return true;
         }
         if self.fb_phys < 0x100000
-            || self.fb_width_px == 0
-            || self.fb_width_px > 16384
-            || self.fb_height_px == 0
-            || self.fb_height_px > 16384
+            || self.fb_width_px == 0 || self.fb_width_px > 16384
+            || self.fb_height_px == 0 || self.fb_height_px > 16384
             || self.fb_stride_bytes == 0
             || self.bpp != 32
         {
             return false;
         }
-        if self.fb_pixel_format
-            != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
-            && self.fb_pixel_format
-                != petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+        if self.fb_pixel_format != EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+            && self.fb_pixel_format != EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
         {
             return false;
         }
@@ -102,50 +98,6 @@ impl FramebufferContext {
         self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
         true
     }
-    pub unsafe fn init_from_kernel_args(&mut self, args: &petroleum::assembly::KernelArgs) {
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] init_from_kernel_args called\n");
-        if self.renderer.is_some() {
-            return;
-        }
-        if args.fb_address < 0x100000
-            || args.fb_width == 0
-            || args.fb_width > 16384
-            || args.fb_height == 0
-            || args.fb_height > 16384
-            || args.fb_bpp != 32
-        {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation FAILED\n");
-            return;
-        }
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation passed\n");
-        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let fb_virt = args.fb_address + off;
-        let stride = if args.fb_stride > 0 {
-            args.fb_stride.saturating_mul(4)
-        } else {
-            args.fb_width.saturating_mul(4)
-        };
-        let pixel_format = match args.fb_pixel_format {
-            0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            _ => {
-                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] ERROR: Unsupported pixel format value\n");
-                return;
-            }
-        };
-        let info = FramebufferInfo {
-            address: fb_virt,
-            width: args.fb_width,
-            height: args.fb_height,
-            stride,
-            pixel_format: Some(pixel_format),
-            colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
-        };
-        let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
-        self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
-        self.bpp = 32;
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] renderer set successfully\n");
-    }
     pub fn info(&self) -> Option<FramebufferInfo> {
         self.renderer.as_ref().map(|r| *r.get_info())
     }
@@ -163,13 +115,8 @@ impl FramebufferContext {
             .map(|i| i.address as *mut u32)
             .unwrap_or(core::ptr::null_mut())
     }
-    pub fn pixel_offset(x: u32, y: u32, stride: u32) -> usize {
-        (y * stride + x) as usize
-    }
     pub fn pixels_mut(&mut self) -> Option<&mut [u32]> {
-        if self.bpp != 32 {
-            return None;
-        }
+        if self.bpp != 32 { return None; }
         let info = self.info()?;
         Some(unsafe {
             core::slice::from_raw_parts_mut(
@@ -205,21 +152,12 @@ impl FramebufferContext {
             }
         } else if let Some(ref r) = self.renderer {
             // The framebuffer is accessed via the bootloader's identity
-            // mapping (WB huge-page).  If the firmware MTRR does NOT
-            // set UC for the framebuffer range, writes are cached and
-            // need explicit writeback before the GPU can scan them out.
-            //
-            // CLFLUSH on each cache line (64 B) forces writeback +
-            // invalidate.  Follow with MFENCE to order the flushes
-            // before any subsequent writes (e.g. the next frame).
-            //
-            // When MTRR *does* set UC, CLFLUSH is a no‑op on those
-            // lines (SDM Vol.3 §11.3), so this path is safe for both
-            // QEMU and real hardware (InsydeH2O, etc.).
+            // mapping (WB huge-page).  CLFLUSH each cache line (64 B)
+            // to force writeback, then MFENCE to order subsequent writes.
+            // Safe even when MTRR sets UC (CLFLUSH is no‑op on UC lines).
             let info = r.get_info();
             let fb_ptr = info.address as *mut u8;
             let fb_byte_len = info.stride as usize * info.height as usize;
-
             unsafe {
                 let mut addr = fb_ptr;
                 let end = fb_ptr.add(fb_byte_len);

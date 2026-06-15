@@ -36,7 +36,7 @@ pub unsafe extern "C" fn efi_main_stage2(
         // while args_ptr is valid.  init_graphics() later reads them
         // and builds the renderer.  Simple .data integers survive the
         // world-switch + shallow clone_page_table reliably.
-        crate::graphics::store_args_va(args_ptr as u64);
+        crate::graphics::discovery::store_args_va(args_ptr as u64);
         {
             let args = &*args_ptr;
             let stride_bytes = if args.fb_stride > 0 {
@@ -44,7 +44,7 @@ pub unsafe extern "C" fn efi_main_stage2(
             } else {
                 args.fb_width.saturating_mul(4)
             };
-            crate::graphics::store_boot_fb_params(
+            crate::graphics::discovery::store_boot_fb_params(
                 args.fb_address,
                 args.fb_width,
                 args.fb_height,
