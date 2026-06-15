@@ -77,7 +77,7 @@ pub fn init_graphics() {
             && args.fb_bpp == 32
         {
             let stride = if args.fb_stride > 0 {
-                args.fb_stride
+                args.fb_stride * 4
             } else {
                 args.fb_width * 4
             };
