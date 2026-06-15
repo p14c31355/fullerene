@@ -606,7 +606,7 @@ impl EventHandler for ShellEventHandler {
 /// Used in both Desktop and shell overlay modes to avoid full
 /// compositor passes on every mouse-move tick.
 fn cursor_lightweight_update(rt: &mut RuntimeState) {
-    let (fb_addr, _fbw, fbh, fb_stride) = *LAST_FB.lock();
+    let (fb_addr, fbw, fbh, fb_stride) = *LAST_FB.lock();
     if fb_addr == 0 || fbh == 0 {
         // Fallback: request a full render pass.
         rt.frame_due = true;
