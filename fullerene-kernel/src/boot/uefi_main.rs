@@ -43,7 +43,7 @@ pub unsafe extern "C" fn efi_main_stage2(
             // from GOP is authoritative.  Fall back to width*4 for old bootloaders
             // that don't set fb_stride.
             let stride = if args.fb_stride > 0 {
-                args.fb_stride
+                args.fb_stride.saturating_mul(4)
             } else {
                 args.fb_width.saturating_mul(4)
             };
