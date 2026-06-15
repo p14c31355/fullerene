@@ -642,7 +642,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
                 }
                 for col in 0..cur_sz {
                     let dx = sx + col;
-                    if dx < 0 || dx >= stride_i {
+                    if dx < 0 || dx >= fbw_i {
                         continue;
                     }
                     let idx = (dy * stride_i + dx) as usize;
@@ -661,7 +661,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
             for col in 0..cur_sz {
                 let val = if sy >= 0 && sy < fbh_i {
                     let sx = new_x + col;
-                    if sx >= 0 && sx < stride_i {
+                    if sx >= 0 && sx < fbw_i {
                         let idx = (sy * stride_i + sx) as usize;
                         if idx < fb_len { fb[idx] } else { 0 }
                     } else {
@@ -1197,6 +1197,7 @@ where
                 let cur_sz = lattice::cursor::Cursor::SIZE as i32;
                 let cx = rt.desktop.cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
                 let cy = rt.desktop.cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
+                let fbw_i = fb_width as i32;
                 let stride_i = fb_stride as i32;
                 let fbh_i = fb_height as i32;
                 let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
@@ -1207,7 +1208,7 @@ where
                         for col in 0..cur_sz {
                             let val = if sy >= 0 && sy < fbh_i {
                                 let sx = cx + col;
-                                if sx >= 0 && sx < stride_i {
+                                if sx >= 0 && sx < fbw_i {
                                     let idx = (sy * stride_i + sx) as usize;
                                     if idx < fb_len { fb[idx] } else { 0 }
                                 } else {

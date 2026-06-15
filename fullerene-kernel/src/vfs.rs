@@ -461,9 +461,7 @@ impl Vfs {
         if mp != "/" {
             // Check existence of the mount point directory.
             let (target_fs, remaining) = self.find_fs(&mp).ok_or("mount point not found")?;
-            let target_fs_ptr: *const Box<dyn FileSystem> = target_fs as *const Box<dyn FileSystem>;
-            let target_fs_ref: &Box<dyn FileSystem> = unsafe { &*target_fs_ptr };
-            if !target_fs_ref.exists(&remaining) {
+            if !target_fs.exists(&remaining) {
                 return Err("mount point not found");
             }
         }
@@ -606,22 +604,13 @@ impl Vfs {
     pub fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
         let resolved = self.resolve_path(path);
         let (fs, remaining) = self.find_fs(&resolved).ok_or("not found")?;
-        // readdir takes &self.  We have &mut Box<dyn FileSystem>
-        // through find_fs, but readdir is &self.  We can safely
-        // reborrow immutably through the box pointer.
-        let fs_ptr: *const Box<dyn FileSystem> = fs as *const Box<dyn FileSystem>;
-        let fs_ref: &Box<dyn FileSystem> = unsafe { &*fs_ptr };
-        fs_ref.readdir(&remaining)
+        fs.readdir(&remaining)
     }
 
     pub fn exists(&mut self, path: &str) -> bool {
         let resolved = self.resolve_path(path);
         match self.find_fs(&resolved) {
-            Some((fs, remaining)) => {
-                let fs_ptr: *const Box<dyn FileSystem> = fs as *const Box<dyn FileSystem>;
-                let fs_ref: &Box<dyn FileSystem> = unsafe { &*fs_ptr };
-                fs_ref.exists(&remaining)
-            }
+            Some((fs, remaining)) => fs.exists(&remaining),
             None => false,
         }
     }
