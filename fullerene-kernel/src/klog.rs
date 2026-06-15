@@ -221,7 +221,9 @@ pub fn flush_to_vfs() -> Result<(), ()> {
 /// panicking thread, so we must not attempt to acquire it if it's
 /// already poisoned.  We try `flush_to_vfs()` but swallow any error.
 pub fn flush_to_vfs_safe() {
-    let _ = flush_to_vfs();
+    if crate::vfs::vfs().try_lock().is_some() {
+        let _ = flush_to_vfs();
+    }
 }
 
 /// Move `/bootlog.txt` → `/bootlogs/YYYY-MM-DD-XX.txt` with
