@@ -78,8 +78,8 @@ impl FramebufferContext {
         const FB_VA_BASE: u64 = 0xFFFF_FFF0_0000_0000;
         let fb_byte_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
         let fb_pages = ((fb_byte_size + 0xFFF) / 0x1000) as usize;
-        // Sanity: 2 KiB max (~8 GiB framebuffer) — enough for 4K×2K.
-        if fb_pages > 2048 {
+        // Sanity: 2M pages max (~8 GiB framebuffer) — enough for 4K×2K.
+        if fb_pages > 2097152 {
             return false;
         }
 
