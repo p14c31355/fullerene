@@ -71,39 +71,24 @@ impl FramebufferContext {
             return false;
         }
 
-        // Pick a fixed high VA (0xFFFF_FFF0_0000_0000) that is guaranteed
-        // unmapped in both QEMU and real hardware.  We create 4 KiB WC/UC
-        // mappings there WITHOUT touching the boot‑time huge‑page identity
-        // mapping (see README §3 for why huge‑page WB + MTRR UC = #GP).
-        const FB_VA_BASE: u64 = 0xFFFF_FFF0_0000_0000;
-        let fb_byte_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
-        let fb_pages = ((fb_byte_size + 0xFFF) / 0x1000) as usize;
-        // Sanity: 2M pages max (~8 GiB framebuffer) — enough for 4K×2K.
-        if fb_pages > 2097152 {
-            return false;
-        }
+        // Use the bootloader's identity mapping (phys + offset) instead of
+        // creating new 4 KiB WC pages.  Creating a second mapping for the
+        // same physical memory with a conflicting cache type (WC vs WB) is
+        // architecturally undefined on Intel and causes stale-cache /
+        // read-modify-write corruption on real hardware like InsydeH2O.
+        //
+        // The boot‑time huge‑page WB mapping is preserved from
+        // efi_main_stage2 and works correctly with the firmware MTRR UC
+        // setting.  Grey‑fill tests on InsydeH2O confirm that writes
+        // through the identity‑mapped VA are visible on screen.
 
-        let fb_va = FB_VA_BASE;
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let fb_va = self.fb_phys + off;
 
-        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
-            | x86_64::structures::paging::PageTableFlags::WRITABLE
-            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
-            | x86_64::structures::paging::PageTableFlags::NO_CACHE;
-
-        if let Some(mem) = crate::memory_management::get_memory_manager()
-            .lock()
-            .as_mut()
-        {
-            for i in 0..fb_pages {
-                let v = (fb_va + (i * 0x1000) as u64) as usize;
-                let p = (self.fb_phys + (i * 0x1000) as u64) as usize;
-                if mem.safe_map_page(v, p, flags).is_err() {
-                    return false;
-                }
-            }
-        } else {
-            return false;
-        }
+        petroleum::serial::serial_log(format_args!(
+            "[fb] identity mapping: phys=0x{:x} → va=0x{:x}\n",
+            self.fb_phys, fb_va
+        ));
 
         let info = FramebufferInfo {
             address: fb_va,
@@ -115,11 +100,6 @@ impl FramebufferContext {
         };
         let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
         self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
-
-        petroleum::serial::serial_log(format_args!(
-            "[fb] WC mapping: phys=0x{:x} → va=0x{:x}, {} pages\n",
-            self.fb_phys, fb_va, fb_pages
-        ));
         true
     }
     pub unsafe fn init_from_kernel_args(&mut self, args: &petroleum::assembly::KernelArgs) {

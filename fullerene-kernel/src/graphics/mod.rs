@@ -147,14 +147,18 @@ pub fn init_graphics() {
         b"[init_gfx] build_renderer_from_stored returned\n",
     );
     if built {
-        // The framebuffer is already identity-mapped by the bootloader
-        // via a 2MB/1GB huge page.  Do NOT call `map_framebuffer_vm()`
-        // here because it tries to split the huge page into 4KB WC pages,
-        // which breaks the entire mapping on InsydeH2O firmware.
+        // The framebuffer is accessed via the bootloader's identity
+        // mapping (phys + physical_memory_offset).  No additional
+        // page‑table manipulation is needed — the boot‑time huge‑page
+        // WB mapping is preserved and works correctly with the
+        // firmware MTRR UC setting.
         //
-        // See README.md § "Real Hardware Compatibility" item 3.
+        // Creating a second WC mapping for the same physical pages
+        // causes architecturally undefined behaviour on Intel CPUs
+        // (conflicting cache types → stale‑cache corruption).
+        // See framebuffer.rs `build_renderer_from_stored()`.
         petroleum::serial::serial_log(format_args!(
-            "[init_gfx] GOP renderer built (boot-phase huge-page mapping preserved)\n"
+            "[init_gfx] GOP renderer built (identity mapping)\n"
         ));
         return;
     }
