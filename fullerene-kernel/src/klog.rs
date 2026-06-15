@@ -259,9 +259,12 @@ fn rotate_bootlog() {
         let _ = crate::vfs::close(fd.fd);
         // Write rotated copy
         if let Ok(fd2) = crate::vfs::create(&path) {
-            let _ = crate::vfs::write(fd2.fd, &all);
-            let _ = crate::vfs::close(fd2.fd);
-            let _ = crate::vfs::unlink("/bootlog.txt");
+            if crate::vfs::write(fd2.fd, &all).is_ok() {
+                let _ = crate::vfs::close(fd2.fd);
+                let _ = crate::vfs::unlink("/bootlog.txt");
+            } else {
+                let _ = crate::vfs::close(fd2.fd);
+            }
         }
     }
 }

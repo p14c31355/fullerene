@@ -60,7 +60,13 @@ pub fn init_graphics() {
     // STORED_ARGS_VA (.data) holds the higher-half VA of KernelArgs, set by
     // efi_main_stage2 before the world-switch.  The bootloader's init_and_jump
     // identity-maps kernel_args_page, and shallow clone_page_table preserves it.
-    let mut fb_params: Option<(u64, u32, u32, u32)> = None;
+    let mut fb_params: Option<(
+        u64,
+        u32,
+        u32,
+        u32,
+        petroleum::common::EfiGraphicsPixelFormat,
+    )> = None;
     let args_va = unsafe { STORED_ARGS_VA };
     if args_va >= 0xFFFF_8000_0000_0000 {
         let args = unsafe { &*(args_va as *const petroleum::assembly::KernelArgs) };
@@ -81,7 +87,12 @@ pub fn init_graphics() {
             } else {
                 args.fb_width * 4
             };
-            fb_params = Some((args.fb_address, args.fb_width, args.fb_height, stride));
+            let pixel_format = match args.fb_pixel_format {
+                0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+                1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            };
+            fb_params = Some((args.fb_address, args.fb_width, args.fb_height, stride, pixel_format));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] KernelArgs valid\n");
         }
     }
@@ -110,7 +121,7 @@ pub fn init_graphics() {
                     if fb_phys >= 0x100000 {
                         let w = 1280u32;
                         let h = 800u32;
-                        return Some((fb_phys, w, h, w * 4));
+                        return Some((fb_phys, w, h, w * 4, petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor));
                     }
                 }
             }
@@ -118,18 +129,7 @@ pub fn init_graphics() {
         })
         .flatten();
     }
-    if let Some((fb_phys, w, h, stride)) = fb_params {
-        // Extract the actual pixel format from KernelArgs instead of hardcoding BGR
-        let pixel_format = if args_va >= 0xFFFF_8000_0000_0000 {
-            let args = unsafe { &*(args_va as *const petroleum::assembly::KernelArgs) };
-            match args.fb_pixel_format {
-                0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-                _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            }
-        } else {
-            petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
-        };
+    if let Some((fb_phys, w, h, stride, pixel_format)) = fb_params {
         with_kernel_mut(|k| {
             k.framebuffer
                 .store_raw_params(fb_phys, w, h, stride, 32, pixel_format);

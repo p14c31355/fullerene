@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 const ANSI_COLORS: [u32; 8] = [
@@ -65,6 +66,8 @@ pub struct TerminalBuffer {
     /// Scrollback buffer: rows that have scrolled off the top of the screen.
     /// Each entry is a full row of `Cell`s.
     scrollback: VecDeque<Vec<Cell>>,
+    /// Current scroll offset into the scrollback buffer (0 = normal view).
+    scroll_offset: usize,
 }
 
 impl TerminalBuffer {
@@ -79,7 +82,7 @@ impl TerminalBuffer {
             cursor_col: 0,
             cursor_row: 0,
             style: TextStyle::default(),
-            scrollback: Vec::new(),
+            scrollback: VecDeque::new(),
             scroll_offset: 0,
         }
     }
@@ -377,7 +380,7 @@ impl TerminalBuffer {
         }
         // Save the top row into scrollback before shifting.
         let saved_row: Vec<Cell> = self.cells[..row_len].to_vec();
-        self.scrollback.push(saved_row);
+        self.scrollback.push_back(saved_row);
         // Limit scrollback to 10000 lines to avoid unbounded memory growth.
         if self.scrollback.len() > 10000 {
             self.scrollback.remove(0);

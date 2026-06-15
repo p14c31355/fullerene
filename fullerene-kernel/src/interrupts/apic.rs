@@ -77,31 +77,27 @@ pub fn init_apic_hw_only() {
 
     // If the controller hasn't been pre-initialised via map_mmio(), try to
     // create one now using the MSR-discovered physical address.
-    {
-        let mut guard = APIC_CONTROLLER.lock();
-        if guard.is_none() {
-            let phys = get_apic_base_phys().unwrap_or(0xFEE00000);
-            let lapic_virt = phys_to_virt(phys);
-            let ioapic_virt = phys_to_virt(IO_APIC_BASE);
+    let mut guard = APIC_CONTROLLER.lock();
+    if guard.is_none() {
+        let phys = get_apic_base_phys().unwrap_or(0xFEE00000);
+        let lapic_virt = phys_to_virt(phys);
+        let ioapic_virt = phys_to_virt(IO_APIC_BASE);
 
-            if lapic_virt >= 0xFFFF_8000_0000_0000 && (lapic_virt & 0xFFF) == 0 {
-                // SAFETY: Addresses validated above; MMIO regions are identity-mapped
-                // in the higher half by the bootloader.
-                let ctrl = unsafe { ApicController::new(lapic_virt, ioapic_virt) };
-                *guard = Some(ctrl);
-            } else {
-                petroleum::serial::serial_log(format_args!(
-                    "[init_apic_hw_only] Invalid APIC base {:#x}, skipping\n",
-                    lapic_virt
-                ));
-                return;
-            }
+        if lapic_virt >= 0xFFFF_8000_0000_0000 && (lapic_virt & 0xFFF) == 0 {
+            // SAFETY: Addresses validated above; MMIO regions are identity-mapped
+            // in the higher half by the bootloader.
+            let ctrl = unsafe { ApicController::new(lapic_virt, ioapic_virt) };
+            *guard = Some(ctrl);
+        } else {
+            petroleum::serial::serial_log(format_args!(
+                "[init_apic_hw_only] Invalid APIC base {:#x}, skipping\n",
+                lapic_virt
+            ));
+            return;
         }
     }
 
-    if let Some(guard) = APIC_CONTROLLER.try_lock() {
-        let ctrl = guard.as_ref().unwrap();
-
+    if let Some(ref ctrl) = *guard {
         ApicController::disable_legacy_pic();
         petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Legacy PIC disabled\n"));
 
@@ -112,10 +108,6 @@ pub fn init_apic_hw_only() {
 
         petroleum::serial::serial_log(format_args!(
             "[init_apic_hw_only] All LVTs masked, APIC enabled (timer stopped)\n"
-        ));
-    } else {
-        petroleum::serial::serial_log(format_args!(
-            "[init_apic_hw_only] Failed to acquire APIC lock\n"
         ));
     }
 }
@@ -128,29 +120,25 @@ pub fn init_apic() {
     petroleum::serial::serial_log(format_args!("Initializing APIC...\n"));
 
     // Ensure the controller exists (may have been created by preinit or hw_only).
-    {
-        let mut guard = APIC_CONTROLLER.lock();
-        if guard.is_none() {
-            let phys = get_apic_base_phys().unwrap_or(0xFEE00000);
-            let lapic_virt = phys_to_virt(phys);
-            let ioapic_virt = phys_to_virt(IO_APIC_BASE);
+    let mut guard = APIC_CONTROLLER.lock();
+    if guard.is_none() {
+        let phys = get_apic_base_phys().unwrap_or(0xFEE00000);
+        let lapic_virt = phys_to_virt(phys);
+        let ioapic_virt = phys_to_virt(IO_APIC_BASE);
 
-            if lapic_virt >= 0xFFFF_8000_0000_0000 && (lapic_virt & 0xFFF) == 0 {
-                let ctrl = unsafe { ApicController::new(lapic_virt, ioapic_virt) };
-                *guard = Some(ctrl);
-            } else {
-                petroleum::serial::serial_log(format_args!(
-                    "ERROR: [init_apic] Invalid APIC base address {:#x} — MMIO mapping may be missing\n",
-                    lapic_virt
-                ));
-                return;
-            }
+        if lapic_virt >= 0xFFFF_8000_0000_0000 && (lapic_virt & 0xFFF) == 0 {
+            let ctrl = unsafe { ApicController::new(lapic_virt, ioapic_virt) };
+            *guard = Some(ctrl);
+        } else {
+            petroleum::serial::serial_log(format_args!(
+                "ERROR: [init_apic] Invalid APIC base address {:#x} — MMIO mapping may be missing\n",
+                lapic_virt
+            ));
+            return;
         }
     }
 
-    if let Some(guard) = APIC_CONTROLLER.try_lock() {
-        let ctrl = guard.as_ref().unwrap();
-
+    if let Some(ref ctrl) = *guard {
         ApicController::disable_legacy_pic();
         petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
 
@@ -178,9 +166,6 @@ pub fn init_apic() {
             "I/O APIC legacy IRQs configured (keyboard={}, mouse={}).\n",
             KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX
         ));
-    } else {
-        petroleum::serial::serial_log(format_args!("Failed to acquire APIC lock in init_apic.\n"));
-        return;
     }
 
     use super::syscall::setup_syscall;

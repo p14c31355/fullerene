@@ -518,12 +518,7 @@ impl Vfs {
                 let fs: *mut Box<dyn FileSystem> = &mut entry.fs;
                 return Some((unsafe { &mut *fs }, remaining));
             }
-            let mp_prefix = if mp.ends_with('/') {
-                mp.as_str()
-            } else {
-                // mp without trailing slash
-                mp.as_str()
-            };
+            let mp_prefix = mp.as_str();
             let mp_with_slash = alloc::format!("{}/", mp_prefix);
             if path == mp_prefix || path.starts_with(&mp_with_slash) {
                 let remaining = if path == mp_prefix {
