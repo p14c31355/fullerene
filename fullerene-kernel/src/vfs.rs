@@ -658,7 +658,7 @@ fn normalize_path(path: &str) -> String {
 
 static VFS: Mutex<Option<Vfs>> = Mutex::new(None);
 
-fn vfs() -> &'static Mutex<Option<Vfs>> {
+pub(crate) fn vfs() -> &'static Mutex<Option<Vfs>> {
     &VFS
 }
 
