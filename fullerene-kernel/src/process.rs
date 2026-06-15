@@ -189,7 +189,7 @@ impl ProcessManager {
         Self {
             processes: Mutex::new(Vec::new()),
             next_pid: AtomicUsize::new(1),
-            current_index: Mutex::new(0),
+            current_index: AtomicUsize::new(0),
             current_pid: AtomicUsize::new(0),
         }
     }
