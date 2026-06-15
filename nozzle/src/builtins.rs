@@ -226,7 +226,7 @@ pub fn cmd_cd(ctx: &mut CommandContext) -> bool {
 
 /// `tree` — display a directory tree
 pub fn cmd_tree(ctx: &mut CommandContext) -> bool {
-    let path = if ctx.args.len() > 1 { ctx.args[1] } else { "." };
+    let path = if ctx.args.len() > 1 { &ctx.args[1] } else { "." };
     crate::fs_hooks::tree_directory(ctx, path);
     true
 }
