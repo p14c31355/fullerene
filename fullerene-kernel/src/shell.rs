@@ -464,7 +464,7 @@ fn register_nozzle_hooks() {
             if ctx.args.len() > 1 {
                 if let Ok(secs) = ctx.args[1].parse::<u64>() {
                     let tsc_per_ms = solvent::get_tsc_per_ms();
-                    let total_ticks = tsc_per_ms.saturating_mul(secs * 1000);
+                    let total_ticks = tsc_per_ms.saturating_mul(secs.saturating_mul(1000));
                     let start = unsafe { core::arch::x86_64::_rdtsc() };
                     // Yield via HLT-hinted syscall periodically to avoid
                     // starving other tasks during the wait.
