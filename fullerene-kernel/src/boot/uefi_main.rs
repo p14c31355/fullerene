@@ -34,14 +34,13 @@ pub unsafe extern "C" fn efi_main_stage2(
         // world‑switch page‑table rebuild.
         // NOTE: KernelContext::init_kernel() does PCI scan (heap alloc)
         // so we init framebuffer only at this early stage.
+        // Store GOP parameters into the FRAMEBUFFER static NOW while
+        // args_ptr is valid.  init_graphics() later copies them into
+        // KernelContext.framebuffer and builds the renderer.
         crate::contexts::framebuffer::init_framebuffer();
+        crate::graphics::store_args_va(args_ptr as u64);
         {
             let args = &*args_ptr;
-            // Use fb_stride if the bootloader provided it (new field).
-            // On real hardware pixels_per_scan_line > horizontal_resolution is
-            // common (e.g. 2560→2688 on Intel GOP), so the bootloader's stride
-            // from GOP is authoritative.  Fall back to width*4 for old bootloaders
-            // that don't set fb_stride.
             let stride = if args.fb_stride > 0 {
                 args.fb_stride.saturating_mul(4)
             } else {
@@ -58,11 +57,6 @@ pub unsafe extern "C" fn efi_main_stage2(
                     petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
                 }
             };
-            // Store KernelArgs virtual address (already higher-half) in .data.
-            // init_and_jump identity-maps kernel_args_page, and shallow
-            // clone_page_table preserves it.  init_graphics can dereference
-            // this pointer directly even after page-table rebuilds.
-            crate::graphics::store_args_va(args_ptr as u64);
             crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
                 fb.store_raw_params(
                     args.fb_address,

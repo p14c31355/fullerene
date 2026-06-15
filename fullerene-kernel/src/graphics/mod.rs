@@ -2,14 +2,13 @@
 //!
 //! # Initialisation order
 //!
-//! 1. `efi_main_stage2` (boot phase) creates the `FramebufferContext` and calls
-//!    `init_from_kernel_args` while `args_ptr` is still valid.  This sets
-//!    `renderer` before any world‑switch or page‑table rebuild can corrupt
-//!    the pointer.
-//! 2. `init_common` → `init_graphics()` is called later.  If `renderer` is
-//!    already present (step 1), it is used as‑is.  Otherwise the function
-//!    falls back to VGA text mode.
-use crate::contexts::kernel::{get_kernel, with_kernel, with_kernel_mut};
+//! 1. `efi_main_stage2` (boot phase) reads GOP parameters from the
+//!    still-valid `args_ptr` and calls `store_raw_params` on the
+//!    `FRAMEBUFFER` static.
+//! 2. `init_common` → `init_graphics()` copies the stored params from
+//!    the `FRAMEBUFFER` static into `KernelContext.framebuffer` and
+//!    calls `build_renderer_from_stored()`.
+use crate::contexts::kernel::{get_kernel, with_kernel_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -20,8 +19,7 @@ static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 #[unsafe(link_section = ".data")]
 pub static mut STORED_ARGS_VA: u64 = 0;
 
-/// Store the virtual address of KernelArgs so init_graphics can
-/// read GOP parameters directly from the bootloader's allocation.
+/// Store the virtual address of KernelArgs.
 /// Called from `efi_main_stage2` before the world switch.
 pub fn store_args_va(va: u64) {
     unsafe {
@@ -37,7 +35,7 @@ pub fn init_graphics() {
         return;
     }
 
-    // Ensure FramebufferContext slot exists (KernelContext owns it now).
+    // Ensure KernelContext exists.
     petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] getting kernel lock\n");
     {
         let kernel_lock = get_kernel();
@@ -52,108 +50,58 @@ pub fn init_graphics() {
             drop(kg);
             crate::contexts::kernel::init_kernel();
         }
-        // Drop kg here to release the lock before with_kernel_mut
     }
     petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel lock released\n");
 
-    // ── Detect framebuffer: try KernelArgs via STORED_ARGS_VA, then PCI BAR0 ──
-    // STORED_ARGS_VA (.data) holds the higher-half VA of KernelArgs, set by
-    // efi_main_stage2 before the world-switch.  The bootloader's init_and_jump
-    // identity-maps kernel_args_page, and shallow clone_page_table preserves it.
-    let mut fb_params: Option<(
-        u64,
-        u32,
-        u32,
-        u32,
-        petroleum::common::EfiGraphicsPixelFormat,
-    )> = None;
-    let args_va = unsafe { STORED_ARGS_VA };
-    if args_va >= 0xFFFF_8000_0000_0000 {
-        let args = unsafe { &*(args_va as *const petroleum::assembly::KernelArgs) };
-        let mut buf = [0u8; 64];
-        let len = petroleum::serial::format_hex_to_buffer(args.fb_address, &mut buf, 16);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] KernelArgs fb=0x");
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-        if args.fb_address >= 0x100000
-            && args.fb_width > 0
-            && args.fb_width <= 16384
-            && args.fb_height > 0
-            && args.fb_height <= 16384
-            && args.fb_bpp == 32
+    // ── Copy framebuffer params from boot-phase FRAMEBUFFER static ──
+    // efi_main_stage2 saved correct GOP values into the standalone
+    // FRAMEBUFFER static (via define_context!) while args_ptr was valid.
+    // KernelContext.framebuffer is a *different* instance created later
+    // by init_kernel(), so it starts with all-zero defaults.
+    //
+    // Copy the stored values now so that build_renderer_from_stored()
+    // uses the real panel dimensions.
+    let copied = crate::contexts::framebuffer::with_framebuffer(|src| {
+        if src.fb_phys >= 0x100000
+            && src.fb_width_px > 0
+            && src.fb_width_px <= 16384
+            && src.fb_height_px > 0
+            && src.fb_height_px <= 16384
+            && src.fb_stride_bytes > 0
+            && src.bpp == 32
         {
-            let stride = if args.fb_stride > 0 {
-                args.fb_stride * 4
-            } else {
-                args.fb_width * 4
-            };
-            let pixel_format = match args.fb_pixel_format {
-                0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-                1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-                _ => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            };
-            fb_params = Some((args.fb_address, args.fb_width, args.fb_height, stride, pixel_format));
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] KernelArgs valid\n");
+            Some((
+                src.fb_phys,
+                src.fb_width_px,
+                src.fb_height_px,
+                src.fb_stride_bytes,
+                src.fb_pixel_format,
+            ))
+        } else {
+            None
         }
-    }
-    if fb_params.is_none() {
+    })
+    .flatten();
+
+    if let Some((phys, w, h, stride, pixel_format)) = copied {
         petroleum::write_serial_bytes(
             0x3F8,
             0x3FD,
-            b"[init_gfx] KernelArgs invalid, scanning PCI\n",
+            b"[init_gfx] copying boot-phase FB params to KernelContext\n",
         );
-        fb_params = with_kernel(|k| {
-            for dev in k.pci.devices.iter() {
-                let vendor =
-                    nitrogen::pci::PciConfigSpace::read_config_word(dev.bus, dev.device, 0, 0);
-                if vendor == 0xFFFF || vendor == 0x0000 {
-                    continue;
-                }
-                let class =
-                    nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
-                let subclass =
-                    nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
-                if class == 0x03 && subclass == 0x00 {
-                    let bar0 = nitrogen::pci::PciConfigSpace::read_config_dword(
-                        dev.bus, dev.device, 0, 0x10,
-                    );
-                    let fb_phys = (bar0 & 0xFFFFFFF0) as u64;
-                    if fb_phys >= 0x100000 {
-                        let w = 1280u32;
-                        let h = 800u32;
-                        return Some((fb_phys, w, h, w * 4, petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor));
-                    }
-                }
-            }
-            None
-        })
-        .flatten();
-    }
-    // ── Store framebuffer parameters ─────────────────────────
-    // efi_main_stage2 already calls store_raw_params with the real GOP
-    // values before the world-switch.  If KernelArgs is still readable
-    // (fb_params is Some), re-store to be safe (harmless no-op).
-    //
-    // CRITICAL: when KernelArgs is corrupted (STORED_ARGS_VA stale),
-    // the PCI fallback hardcodes 1280×800 which is WRONG for 2K+ panels.
-    // In that case we must NOT overwrite the already-stored correct
-    // parameters.  build_renderer_from_stored() uses the stored values,
-    // so skipping the overwrite preserves the correct dimensions.
-    let args_valid = unsafe { STORED_ARGS_VA >= 0xFFFF_8000_0000_0000 };
-    if args_valid {
-        if let Some((fb_phys, w, h, stride, pixel_format)) = fb_params {
-            with_kernel_mut(|k| {
-                k.framebuffer
-                    .store_raw_params(fb_phys, w, h, stride, 32, pixel_format);
-            });
-        }
+        with_kernel_mut(|k| {
+            k.framebuffer
+                .store_raw_params(phys, w, h, stride, 32, pixel_format);
+        });
     } else {
         petroleum::write_serial_bytes(
             0x3F8,
             0x3FD,
-            b"[init_gfx] KernelArgs VA stale, keeping stored params from efi_main_stage2\n",
+            b"[init_gfx] FRAMEBUFFER static has no valid params\n",
         );
     }
+
+    // ── Build renderer from stored params ──────────────────────
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,
@@ -165,17 +113,8 @@ pub fn init_graphics() {
         0x3FD,
         b"[init_gfx] build_renderer_from_stored returned\n",
     );
+
     if built {
-        // The framebuffer is accessed via the bootloader's identity
-        // mapping (phys + physical_memory_offset).  No additional
-        // page‑table manipulation is needed — the boot‑time huge‑page
-        // WB mapping is preserved and works correctly with the
-        // firmware MTRR UC setting.
-        //
-        // Creating a second WC mapping for the same physical pages
-        // causes architecturally undefined behaviour on Intel CPUs
-        // (conflicting cache types → stale‑cache corruption).
-        // See framebuffer.rs `build_renderer_from_stored()`.
         petroleum::serial::serial_log(format_args!(
             "[init_gfx] GOP renderer built (identity mapping)\n"
         ));
@@ -189,7 +128,6 @@ pub fn init_graphics() {
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
     let vga_phys = petroleum::page_table::constants::VGA_MEMORY_START;
     let vga_virt = vga_phys + off;
-    // Use MemoryContext's high-level API (preferred) with fallback to legacy.
     if let Some(mem) = crate::contexts::memory::get_memory().lock().as_mut() {
         let _ = mem.map_page(
             vga_virt as usize,
