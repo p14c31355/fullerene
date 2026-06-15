@@ -435,17 +435,22 @@ impl TerminalBuffer {
         if self.scroll_offset == 0 || sb_len == 0 {
             return self.cells.clone();
         }
-        let start = sb_len.saturating_sub(self.scroll_offset);
         let row_len = self.cols as usize;
+        let start = sb_len.saturating_sub(self.scroll_offset);
+        // Limit scrollback rows to at most total_rows so the returned
+        // vector never exceeds total_rows * row_len elements.
+        let num_sb_rows = self.scroll_offset.min(total_rows);
 
         let mut result = Vec::with_capacity(total_rows * row_len);
         // Add scrollback rows from the offset.
-        for i in start..sb_len {
-            let row = &self.scrollback[i];
-            result.extend_from_slice(row);
+        for i in start..(start + num_sb_rows) {
+            if i < sb_len {
+                let row = &self.scrollback[i];
+                result.extend_from_slice(row);
+            }
         }
         // Fill remaining rows from the current buffer.
-        let remaining = total_rows.saturating_sub(sb_len.saturating_sub(start));
+        let remaining = total_rows.saturating_sub(num_sb_rows);
         let buf_cells = remaining * row_len;
         let buf_slice = if buf_cells <= self.cells.len() {
             &self.cells[..buf_cells]

@@ -273,15 +273,21 @@ pub fn write_entire_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 
 /// Get file size by querying filesystem metadata.
 pub fn file_size(path: &str) -> Result<u64, FsError> {
+    // Trim trailing slashes so "/path/" behaves the same as "/path".
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        // "/" → root directory has size 0.
+        return Ok(0);
+    }
     // Split path into parent directory and filename
-    let (parent_path, filename) = if let Some(pos) = path.rfind('/') {
+    let (parent_path, filename) = if let Some(pos) = trimmed.rfind('/') {
         if pos == 0 {
-            ("/", &path[1..])
+            ("/", &trimmed[1..])
         } else {
-            (&path[..pos], &path[pos + 1..])
+            (&trimmed[..pos], &trimmed[pos + 1..])
         }
     } else {
-        ("/", path)
+        ("/", trimmed)
     };
 
     // List parent directory to find the file entry
