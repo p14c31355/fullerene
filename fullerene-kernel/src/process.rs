@@ -215,12 +215,12 @@ impl ProcessManager {
 
     /// Get the round‑robin schedule index.
     pub fn schedule_index(&self) -> usize {
-        *self.current_index.lock()
+        self.current_index.load(Ordering::SeqCst)
     }
 
     /// Set the round‑robin schedule index.
     pub fn set_schedule_index(&self, idx: usize) {
-        *self.current_index.lock() = idx;
+        self.current_index.store(idx, Ordering::SeqCst);
     }
 
     // ── Process list operations ─────────────────────────────────
