@@ -371,8 +371,9 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
     sorted_entries.sort_by(|a, b| b.len().cmp(&a.len()));
 
     // Remove all files and subdirectories
+    // Remove all files and subdirectories
     for entry in sorted_entries {
-        let _ = remove(&entry);
+        remove(&entry)?;
     }
 
     // Finally remove the package directory itself
