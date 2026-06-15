@@ -203,24 +203,31 @@ impl FramebufferContext {
                 let (w, h) = (i.width, i.height);
                 gpu.flush(w, h);
             }
-        } else {
-            // WC (Write Combining) memory requires both an SFENCE to
-            // make stores globally visible, and a dummy read from the
-            // same WC range to drain the WC buffers.
-            // _mm_mfence alone is not sufficient on real hardware.
+        } else if let Some(ref r) = self.renderer {
+            // The framebuffer is accessed via the bootloader's identity
+            // mapping (WB huge-page).  If the firmware MTRR does NOT
+            // set UC for the framebuffer range, writes are cached and
+            // need explicit writeback before the GPU can scan them out.
+            //
+            // CLFLUSH on each cache line (64 B) forces writeback +
+            // invalidate.  Follow with MFENCE to order the flushes
+            // before any subsequent writes (e.g. the next frame).
+            //
+            // When MTRR *does* set UC, CLFLUSH is a no‑op on those
+            // lines (SDM Vol.3 §11.3), so this path is safe for both
+            // QEMU and real hardware (InsydeH2O, etc.).
+            let info = r.get_info();
+            let fb_ptr = info.address as *mut u8;
+            let fb_byte_len = info.stride as usize * info.height as usize;
+
             unsafe {
-                core::arch::x86_64::_mm_sfence();
-            }
-            // Dummy read from the framebuffer to force WC buffer drain.
-            if let Some(ref r) = self.renderer {
-                let info = r.get_info();
-                let fb_ptr = info.address as *mut u32;
-                // Read the last pixel written (approximation: first pixel
-                // of the framebuffer).  This forces any pending WC stores
-                // to be committed to the device.
-                unsafe {
-                    core::ptr::read_volatile(fb_ptr);
+                let mut addr = fb_ptr;
+                let end = fb_ptr.add(fb_byte_len);
+                while addr < end {
+                    core::arch::x86_64::_mm_clflush(addr);
+                    addr = addr.add(64);
                 }
+                core::arch::x86_64::_mm_mfence();
             }
         }
         nitrogen::hda::HdaController::tick_vm_exit();

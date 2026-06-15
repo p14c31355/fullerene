@@ -129,11 +129,30 @@ pub fn init_graphics() {
         })
         .flatten();
     }
-    if let Some((fb_phys, w, h, stride, pixel_format)) = fb_params {
-        with_kernel_mut(|k| {
-            k.framebuffer
-                .store_raw_params(fb_phys, w, h, stride, 32, pixel_format);
-        });
+    // ── Store framebuffer parameters ─────────────────────────
+    // efi_main_stage2 already calls store_raw_params with the real GOP
+    // values before the world-switch.  If KernelArgs is still readable
+    // (fb_params is Some), re-store to be safe (harmless no-op).
+    //
+    // CRITICAL: when KernelArgs is corrupted (STORED_ARGS_VA stale),
+    // the PCI fallback hardcodes 1280×800 which is WRONG for 2K+ panels.
+    // In that case we must NOT overwrite the already-stored correct
+    // parameters.  build_renderer_from_stored() uses the stored values,
+    // so skipping the overwrite preserves the correct dimensions.
+    let args_valid = unsafe { STORED_ARGS_VA >= 0xFFFF_8000_0000_0000 };
+    if args_valid {
+        if let Some((fb_phys, w, h, stride, pixel_format)) = fb_params {
+            with_kernel_mut(|k| {
+                k.framebuffer
+                    .store_raw_params(fb_phys, w, h, stride, 32, pixel_format);
+            });
+        }
+    } else {
+        petroleum::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"[init_gfx] KernelArgs VA stale, keeping stored params from efi_main_stage2\n",
+        );
     }
     petroleum::write_serial_bytes(
         0x3F8,
