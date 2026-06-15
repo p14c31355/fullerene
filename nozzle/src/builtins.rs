@@ -268,7 +268,7 @@ pub fn cmd_write(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Usage: write <path> <content>\n");
         return true;
     }
-    crate::fs_hooks::write_file(ctx, ctx.args[1], ctx.args[2]);
+    crate::fs_hooks::write_file(ctx, &ctx.args[1], &ctx.args[2]);
     true
 }
 
