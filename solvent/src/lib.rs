@@ -623,6 +623,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
     let new_x = cur.x - lattice::cursor::Cursor::HOTSPOT_X;
     let new_y = cur.y - lattice::cursor::Cursor::HOTSPOT_Y;
 
+    let fbw_i = fbw as i32;
     let stride_i = fb_stride as i32;
     let fbh_i = fbh as i32;
     let fb_len = (fb_stride as usize).saturating_mul(fbh as usize);
