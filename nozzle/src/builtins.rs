@@ -220,7 +220,7 @@ pub fn cmd_cd(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Usage: cd <directory>\n");
         return true;
     }
-    crate::fs_hooks::change_directory(ctx, ctx.args[1]);
+    crate::fs_hooks::change_directory(ctx, &ctx.args[1]);
     true
 }
 
