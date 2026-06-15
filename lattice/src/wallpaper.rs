@@ -49,16 +49,6 @@ const fn clamp_u8(v: u8, max: u8) -> u8 {
     if v > max { max } else { v }
 }
 
-/// Manual clamp for u32: `if v > max { max } else { v }`.
-const fn clamp_u32_val(v: u32, max: u32) -> u32 {
-    if v > max { max } else { v }
-}
-
-/// Manual min for u8.
-const fn min_u8(a: u8, b: u8) -> u8 {
-    if a < b { a } else { b }
-}
-
 // Preset dimensions (tileable, power-of-two-friendly for alignment).
 const BEACH_W: u32 = 160;
 const BEACH_H: u32 = 120;
@@ -358,7 +348,6 @@ pub fn render_wallpaper(
             let presets = wallpaper_presets();
             if let Some(preset) = presets.get(idx) {
                 let pw = preset.width as usize;
-                let ph = preset.height as usize;
                 let pixels = preset.pixels;
                 for row_offset in 0..ch {
                     let y = cy + row_offset;

@@ -21,9 +21,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
-use core::arch::x86_64;
 use core::fmt::Write;
-use core::sync::atomic::AtomicPtr;
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
@@ -33,29 +31,56 @@ use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, Event, EventHandler, EventQueue, InputEvent, KeyCode, MouseButton};
 use spin::Mutex;
 
-/// Macro to define a callback pair: static + setter + caller helper.
-macro_rules! define_callback {
-    ($vis:vis $static_name:ident, $setter_name:ident, $arg_ty:ty, $ret_ty:ty) => {
-        $vis static $static_name: Mutex<Option<$arg_ty>> = Mutex::new(None);
-        $vis fn $setter_name(f: $arg_ty) { *$static_name.lock() = Some(f); }
-        $vis fn $static_name () -> Option<$arg_ty> { *$static_name.lock() }
-    };
-    ($vis:vis $static_name:ident, $setter_name:ident, $arg_ty:ty, $ret_ty:ty, $getter_name:ident) => {
-        define_callback!($vis $static_name, $setter_name, $arg_ty, $ret_ty);
-        $vis fn $getter_name() -> Option<$ret_ty> { $static_name().map(|f| f()) }
-    };
+// ── Aggregated kernel callbacks ──────────────────────────────
+
+/// All kernel→solvent callbacks bundled into a single struct.
+pub struct SolventCallbacks {
+    pub shell_cmd: Option<fn(&str) -> String>,
+    pub launch_shell: Option<fn()>,
+    pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
+    pub wall_clock: Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>,
+    pub vfs_readdir: Option<fn(&str) -> Result<Vec<VfsEntry>, &'static str>>,
+    pub process_list: Option<fn() -> Vec<ProcessEntry>>,
+    pub device_list: Option<fn() -> Vec<DeviceEntry>>,
 }
 
-// Callback: shell command execution
-pub static SHELL_CMD: Mutex<Option<fn(&str) -> alloc::string::String>> = Mutex::new(None);
-pub fn set_shell_command_handler(f: fn(&str) -> alloc::string::String) {
-    *SHELL_CMD.lock() = Some(f);
+impl SolventCallbacks {
+    pub const fn none() -> Self {
+        Self {
+            shell_cmd: None,
+            launch_shell: None,
+            heap_extend: None,
+            wall_clock: None,
+            vfs_readdir: None,
+            process_list: None,
+            device_list: None,
+        }
+    }
+
+    /// Atomically install all callbacks at once.
+    pub fn install(self) {
+        *SOLVENT_CALLBACKS.lock() = self;
+    }
 }
-pub fn exec_shell_command(input: &str) -> alloc::string::String {
-    if let Some(f) = *SHELL_CMD.lock() {
+
+/// Global bag of kernel→solvent callbacks.
+pub static SOLVENT_CALLBACKS: Mutex<SolventCallbacks> = Mutex::new(SolventCallbacks::none());
+
+pub fn exec_shell_command(input: &str) -> String {
+    let cb = SOLVENT_CALLBACKS.lock();
+    if let Some(f) = cb.shell_cmd {
+        drop(cb);
         f(input)
     } else {
-        alloc::string::String::from("(no shell)\n")
+        String::from("(no shell)\n")
+    }
+}
+
+pub fn launch_shell() {
+    let cb = SOLVENT_CALLBACKS.lock();
+    if let Some(f) = cb.launch_shell {
+        drop(cb);
+        f();
     }
 }
 
@@ -108,29 +133,19 @@ pub fn set_tsc_per_ms(val: u64) {
     TSC_PER_MS.store(val, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Get the current TSC‑per‑millisecond value.
+pub fn get_tsc_per_ms() -> u64 {
+    TSC_PER_MS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Last render TSC timestamp (for real‑time frame pacing).
 static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-/// Callback to extend the kernel heap.
-pub static HEAP_EXTEND_FN: Mutex<Option<fn(additional: usize) -> Result<(), ()>>> =
-    Mutex::new(None);
-/// Total bytes that have been successfully allocated via `HEAP_EXTEND_FN`.
+/// Total bytes that have been successfully allocated via heap-extend callback.
 pub static HEAP_EXTEND_RESERVE: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
-/// Register the kernel heap extension callback.
-pub fn set_heap_extend_fn(f: fn(usize) -> Result<(), ()>) {
-    *HEAP_EXTEND_FN.lock() = Some(f);
-}
 
-/// Callback to get wall‑clock time from UEFI (or RTC fallback).
-pub static WALL_CLOCK_FN: Mutex<Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>> =
-    Mutex::new(None);
-/// Register the wall‑clock callback.
-pub fn set_wall_clock_fn(f: fn() -> Option<(u16, u8, u8, u8, u8, u8)>) {
-    *WALL_CLOCK_FN.lock() = Some(f);
-}
-
-// ── VFS / Process / Device callbacks ──────────
+// ── VFS / Process / Device types ──────────
 
 /// A single VFS directory entry returned by the kernel.
 #[derive(Debug, Clone)]
@@ -165,25 +180,6 @@ pub struct DeviceEntry {
     pub enabled: bool,
 }
 
-/// Callback to list the contents of a VFS directory.
-pub static VFS_READDIR_FN: Mutex<Option<fn(path: &str) -> Result<Vec<VfsEntry>, &'static str>>> =
-    Mutex::new(None);
-pub fn set_vfs_readdir_fn(f: fn(path: &str) -> Result<Vec<VfsEntry>, &'static str>) {
-    *VFS_READDIR_FN.lock() = Some(f);
-}
-
-/// Callback to get the list of all processes.
-pub static PROCESS_LIST_FN: Mutex<Option<fn() -> Vec<ProcessEntry>>> = Mutex::new(None);
-pub fn set_process_list_fn(f: fn() -> Vec<ProcessEntry>) {
-    *PROCESS_LIST_FN.lock() = Some(f);
-}
-
-/// Callback to get the list of all devices.
-pub static DEVICE_LIST_FN: Mutex<Option<fn() -> Vec<DeviceEntry>>> = Mutex::new(None);
-pub fn set_device_list_fn(f: fn() -> Vec<DeviceEntry>) {
-    *DEVICE_LIST_FN.lock() = Some(f);
-}
-
 /// Latest wall‑clock string (updated each frame).
 static CLOCK_STRING: Mutex<String> = Mutex::new(String::new());
 
@@ -205,10 +201,12 @@ static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
 static EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
 static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
-static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
+/// Cached framebuffer dimensions: (width, height, stride_pixels).
+/// stride_pixels = stride_bytes / 4 (pixels per scan line).
+static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
 
-/// Cached framebuffer pointer (as `usize`) and dimensions for lightweight
-/// cursor updates in overlay mode.
+/// Cached framebuffer pointer (as `usize`), dimensions, and stride
+/// (u32 pixels/scan‑line) for lightweight cursor updates in overlay mode.
 ///
 /// # Safety invariant
 ///
@@ -219,7 +217,7 @@ static FB_DIMS: Mutex<(u32, u32)> = Mutex::new((1024, 768));
 /// valid for the entire lifetime of the system after the first frame has
 /// been rendered.  `cursor_lightweight_update` checks for `(0,0,0)` before
 /// dereferencing.
-static LAST_FB: Mutex<(usize, u32, u32)> = Mutex::new((0, 0, 0));
+static LAST_FB: Mutex<(usize, u32, u32, u32)> = Mutex::new((0, 0, 0, 0));
 
 pub struct RuntimeState {
     pub desktop: Desktop,
@@ -337,7 +335,7 @@ impl EventHandler for WmEventHandler {
                     let cx = mouse.x as i32;
                     let cy = mouse.y as i32;
                     drop(mouse);
-                    let (fw, _fh) = *FB_DIMS.lock();
+                    let (fw, _fh, _stride) = *FB_DIMS.lock();
 
                     // Timezone entry layout (must match render_timezone_selector)
                     let timezones: &[i8] = &[-12, -8, -5, 0, 1, 3, 5, 8, 9, 10, 12];
@@ -364,12 +362,11 @@ impl EventHandler for WmEventHandler {
                     return true;
                 }
                 Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::AppGrid => {
-                    // Check if Settings icon was clicked
                     let mouse = MOUSE_STATE.lock();
                     let cx = mouse.x as i32;
                     let cy = mouse.y as i32;
                     drop(mouse);
-                    let (fw, _fh) = *FB_DIMS.lock();
+                    let (fw, _fh, _stride) = *FB_DIMS.lock();
 
                     // AppGrid layout (must match render_app_grid)
                     let icon_size = 64i32;
@@ -378,21 +375,43 @@ impl EventHandler for WmEventHandler {
                     let columns = ((fw as i32) / (icon_size + pad)).max(1);
                     let start_y = 60i32;
 
-                    // "Settings" is index 2 in the apps array
-                    let idx = 2i32;
-                    let col = idx % columns;
-                    let row = idx / columns;
-                    let ax = pad + col * (icon_size + pad);
-                    let ay = start_y + row * (icon_size + label_h + pad);
-
-                    if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h
-                    {
-                        rt.shell_state = ShellState::TimeZoneSelector;
-                        rt.frame_due = true;
-                        return true;
+                    // Determine which icon was clicked (0=Shell, 1=Terminal,
+                    // 2=Clock, 3=Settings, 4=File Mgr, 5=About)
+                    for idx in 0i32..6 {
+                        let col = idx % columns;
+                        let row = idx / columns;
+                        let ax = pad + col * (icon_size + pad);
+                        let ay = start_y + row * (icon_size + label_h + pad);
+                        if cx >= ax
+                            && cx < ax + icon_size
+                            && cy >= ay
+                            && cy < ay + icon_size + label_h
+                        {
+                            match idx {
+                                0 => {
+                                    // Shell — launch the system shell
+                                    launch_shell();
+                                    rt.shell_state = ShellState::Desktop;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                3 => {
+                                    // Settings → timezone selector
+                                    rt.shell_state = ShellState::TimeZoneSelector;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                _ => {
+                                    // Other apps — return to Desktop
+                                    rt.shell_state = ShellState::Desktop;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                            }
+                        }
                     }
 
-                    // Click on other app icons or outside → back to Desktop
+                    // Click outside all icons → back to Desktop
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
@@ -446,7 +465,7 @@ impl EventHandler for WmEventHandler {
                 }
 
                 rt.desktop.set_cursor(cx, cy);
-                let (fw, fh) = *FB_DIMS.lock();
+                let (fw, fh, _stride) = *FB_DIMS.lock();
                 rt.desktop.mouse_down(fw, fh);
                 rt.frame_due = true;
 
@@ -471,15 +490,37 @@ impl EventHandler for WmEventHandler {
 struct TerminalInputHandler;
 
 impl EventHandler for TerminalInputHandler {
-    fn handle(&mut self, _event: &Event) -> bool {
-        // ── No-op event handler ──────────────────────────
-        // LatticeTerminal::read_byte() already consumes keys
-        // directly from nitrogen::ps2::keyboard::read_char().
-        // Writing to term_buf here would cause double input
-        // (once from this handler, once from the shell echo).
-        // This handler is retained for potential future use
-        // (e.g. clipboard paste, compose sequences) but does
-        // NOT forward ASCII to the terminal buffer.
+    fn handle(&mut self, event: &Event) -> bool {
+        // PageUp / PageDown → terminal scrollback navigation.
+        // These keys are NOT consumed by the shell and don't
+        // interfere with LatticeTerminal::read_byte().
+        match event {
+            Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
+                if let Some(ref mut rt) = *RUNTIME.lock() {
+                    rt.term_buf.scroll_back(1);
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                }
+                return true;
+            }
+            Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
+                if let Some(ref mut rt) = *RUNTIME.lock() {
+                    rt.term_buf.scroll_forward(1);
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                }
+                return true;
+            }
+            Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
+                if let Some(ref mut rt) = *RUNTIME.lock() {
+                    rt.term_buf.reset_scroll();
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                }
+                return true;
+            }
+            _ => {}
+        }
         false
     }
 }
@@ -533,7 +574,7 @@ impl EventHandler for ShellEventHandler {
                     && rt.shell_state == ShellState::Desktop =>
             {
                 // Super+T: toggle tiling mode
-                let (fw, fh) = *FB_DIMS.lock();
+                let (fw, fh, _stride) = *FB_DIMS.lock();
                 let (ww, wh) = rt.desktop.work_area(fw, fh);
                 rt.desktop.wm.toggle_tiling();
                 rt.desktop.wm.retile(ww, wh);
@@ -556,26 +597,6 @@ impl EventHandler for ShellEventHandler {
     }
 }
 
-macro_rules! key_ascii {
-    ($($variant:ident => $ch:expr),+ $(,)?) => {
-        fn keycode_to_ascii(key: KeyCode) -> Option<u8> {
-            use KeyCode::*;
-            Some(match key { $($variant => $ch,)+ _ => return None })
-        }
-    };
-}
-key_ascii!(
-    Enter => b'\n', Space => b' ', Backspace => 0x08, Tab => b'\t',
-    A => b'a', B => b'b', C => b'c', D => b'd', E => b'e', F => b'f',
-    G => b'g', H => b'h', I => b'i', J => b'j', K => b'k', L => b'l',
-    M => b'm', N => b'n', O => b'o', P => b'p', Q => b'q', R => b'r',
-    S => b's', T => b't', U => b'u', V => b'v', W => b'w', X => b'x',
-    Y => b'y', Z => b'z',
-    Digit0 => b'0', Digit1 => b'1', Digit2 => b'2', Digit3 => b'3',
-    Digit4 => b'4', Digit5 => b'5', Digit6 => b'6', Digit7 => b'7',
-    Digit8 => b'8', Digit9 => b'9',
-);
-
 // ── Lightweight cursor update ───────────────────────────────
 
 /// Update only the cursor on the cached framebuffer without
@@ -585,8 +606,8 @@ key_ascii!(
 /// Used in both Desktop and shell overlay modes to avoid full
 /// compositor passes on every mouse-move tick.
 fn cursor_lightweight_update(rt: &mut RuntimeState) {
-    let (fb_addr, fbw, fbh) = *LAST_FB.lock();
-    if fb_addr == 0 || fbw == 0 || fbh == 0 {
+    let (fb_addr, fbw, fbh, fb_stride) = *LAST_FB.lock();
+    if fb_addr == 0 || fbh == 0 {
         // Fallback: request a full render pass.
         rt.frame_due = true;
         return;
@@ -603,8 +624,9 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
     let new_y = cur.y - lattice::cursor::Cursor::HOTSPOT_Y;
 
     let fbw_i = fbw as i32;
+    let stride_i = fb_stride as i32;
     let fbh_i = fbh as i32;
-    let fb_len = (fbw as usize).saturating_mul(fbh as usize);
+    let fb_len = (fb_stride as usize).saturating_mul(fbh as usize);
 
     unsafe {
         let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
@@ -623,7 +645,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
                     if dx < 0 || dx >= fbw_i {
                         continue;
                     }
-                    let idx = (dy * fbw_i + dx) as usize;
+                    let idx = (dy * stride_i + dx) as usize;
                     if idx < fb_len {
                         fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
                     }
@@ -640,7 +662,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
                 let val = if sy >= 0 && sy < fbh_i {
                     let sx = new_x + col;
                     if sx >= 0 && sx < fbw_i {
-                        let idx = (sy * fbw_i + sx) as usize;
+                        let idx = (sy * stride_i + sx) as usize;
                         if idx < fb_len { fb[idx] } else { 0 }
                     } else {
                         0
@@ -654,7 +676,7 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
         rt.cursor_save_valid = true;
 
         // Draw the cursor at the new position.
-        Compositor::draw_cursor_direct(fb, fbw, fbh, cur);
+        Compositor::draw_cursor_direct(fb, fb_stride, fbh, cur);
     }
 }
 
@@ -919,8 +941,8 @@ pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
 pub fn update_clock() {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
 
-    let time_str = if let Some(get_time) = *WALL_CLOCK_FN.lock() {
-        if let Some((year, month, day, mut hour, minute, _second)) = get_time() {
+    let time_str = if let Some(get_time) = SOLVENT_CALLBACKS.lock().wall_clock {
+        if let Some((year, month, day, hour, minute, _second)) = get_time() {
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;
             let mut local_month = month as i16;
@@ -993,7 +1015,7 @@ impl RenderTarget for FramebufferTarget<'_> {
 
 pub fn render<F>(framebuffer_fn: F)
 where
-    F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
+    F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
     // Skip compositor when rendering is suspended (e.g. BadApple playback).
     if *RENDERING_SUSPENDED.lock() {
@@ -1026,16 +1048,21 @@ where
     render_terminal(rt, rt.term_window);
     let tb_changed = rt.desktop.update_taskbar();
 
-    let (fb_pixels, fb_width, fb_height) = match framebuffer_fn() {
+    let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
         None => return,
     };
 
     // Cache FB dimensions for maximize toggle
-    *FB_DIMS.lock() = (fb_width, fb_height);
+    *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
 
-    // Cache framebuffer pointer and dimensions for lightweight cursor updates in overlay mode.
-    *LAST_FB.lock() = (fb_pixels.as_mut_ptr() as usize, fb_width, fb_height);
+    // Cache framebuffer pointer, dimensions, and stride for lightweight cursor updates.
+    *LAST_FB.lock() = (
+        fb_pixels.as_mut_ptr() as usize,
+        fb_width,
+        fb_height,
+        fb_stride_pixels,
+    );
 
     // Push clock‑change or taskbar‑change dirty rects BEFORE prepare_frame
     // so they are consumed together with all other dirty rects (cursor
@@ -1058,11 +1085,15 @@ where
 
     rt.desktop.prepare_frame(fb_width, fb_height);
 
-    let fb_len = (fb_width as usize) * (fb_height as usize);
-    if fb_len > MAX_FB_PIXELS {
+    // Actual framebuffer size accounts for row-stride (stride >= width).
+    let fb_stride = fb_stride_pixels as usize;
+    let fb_len = fb_stride.saturating_mul(fb_height as usize);
+    // Back-buffer uses logical width (no row padding).
+    let back_len = (fb_width as usize) * (fb_height as usize);
+    if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
         return;
     }
-    rt.back_len = fb_len;
+    rt.back_len = back_len;
 
     let has_dirty = rt.desktop.has_pending_dirty_rects();
 
@@ -1081,7 +1112,7 @@ where
         {
             let mut back = BACK_BUFFER.lock();
             let mut back_target = FramebufferTarget {
-                pixels: &mut back[..fb_len],
+                pixels: &mut back[..back_len],
                 width: fb_width,
                 height: fb_height,
             };
@@ -1089,23 +1120,37 @@ where
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
 
             if was_transition || (bw > 0 && bh > 0) {
-                let fb_w = fb_width as usize;
+                let back_w = fb_width as usize;
                 if was_transition {
-                    // Full-screen blit on transition: non‑temporal store
-                    let copy_len = fb_len.min(back.len());
-                    unsafe {
-                        copy_to_fb_volatile(fb_pixels.as_mut_ptr(), back.as_ptr(), copy_len);
+                    // Full-screen blit: copy row-by-row to respect
+                    // framebuffer stride (which may be > width on real HW).
+                    for row in 0..fb_height as usize {
+                        let src_off = row * back_w;
+                        let dst_off = row * fb_stride;
+                        let copy_len = back_w.min(back_len.saturating_sub(src_off));
+                        if copy_len > 0 {
+                            unsafe {
+                                copy_to_fb_volatile(
+                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                    back.as_ptr().add(src_off),
+                                    copy_len,
+                                );
+                            }
+                        }
                     }
                 } else {
                     let b_w = bw as usize;
                     for row in 0..bh {
-                        let off = ((by + row) as usize) * fb_w + (bx as usize);
-                        let len = b_w.min(fb_len.saturating_sub(off));
+                        let src_off = ((by + row) as usize) * back_w + (bx as usize);
+                        let dst_off = ((by + row) as usize) * fb_stride + (bx as usize);
+                        let len = b_w
+                            .min(back_len.saturating_sub(src_off))
+                            .min(fb_len.saturating_sub(dst_off));
                         if len > 0 {
                             unsafe {
                                 copy_to_fb_volatile(
-                                    fb_pixels.as_mut_ptr().add(off),
-                                    back.as_ptr().add(off),
+                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                    back.as_ptr().add(src_off),
                                     len,
                                 );
                             }
@@ -1146,15 +1191,16 @@ where
         // desktop) without the cursor, so the next lightweight update can
         // restore the old area correctly.
         if rt.desktop.cursor.visible {
-            let (fb_addr, _, _) = *LAST_FB.lock();
+            let (fb_addr, _, _, fb_stride) = *LAST_FB.lock();
             if fb_addr != 0 {
                 let fb_ptr = fb_addr as *mut u32;
                 let cur_sz = lattice::cursor::Cursor::SIZE as i32;
                 let cx = rt.desktop.cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
                 let cy = rt.desktop.cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
                 let fbw_i = fb_width as i32;
+                let stride_i = fb_stride as i32;
                 let fbh_i = fb_height as i32;
-                let fb_len = (fb_width as usize).saturating_mul(fb_height as usize);
+                let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
                 unsafe {
                     let fb = core::slice::from_raw_parts(fb_ptr, fb_len);
                     for row in 0..cur_sz {
@@ -1163,7 +1209,7 @@ where
                             let val = if sy >= 0 && sy < fbh_i {
                                 let sx = cx + col;
                                 if sx >= 0 && sx < fbw_i {
-                                    let idx = (sy * fbw_i + sx) as usize;
+                                    let idx = (sy * stride_i + sx) as usize;
                                     if idx < fb_len { fb[idx] } else { 0 }
                                 } else {
                                     0
@@ -1247,7 +1293,7 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
             let additional = needed
                 .saturating_sub(HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed))
                 .next_multiple_of(4096);
-            if let Some(extend_fn) = *HEAP_EXTEND_FN.lock() {
+            if let Some(extend_fn) = SOLVENT_CALLBACKS.lock().heap_extend {
                 if extend_fn(additional).is_err() {
                     // Extension failed — keep old size, don't risk OOM.
                     return;
@@ -1320,7 +1366,17 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
             },
         );
     }
-    for (i, c) in term_buf.cells().iter().enumerate() {
+    // Use visible_cells() to incorporate scrollback content.
+    let visible = term_buf.visible_cells();
+    rt.term_cells.resize(
+        visible.len(),
+        LatticeCell {
+            ch: b' ',
+            fg: 0,
+            bg: 0,
+        },
+    );
+    for (i, c) in visible.iter().enumerate() {
         if i < rt.term_cells.len() {
             rt.term_cells[i] = LatticeCell {
                 ch: c.ch,
@@ -1349,10 +1405,16 @@ pub struct LatticeTerminal;
 
 impl nozzle::Terminal for LatticeTerminal {
     fn write_str(&mut self, s: &str) {
-        let mut rt = RUNTIME.lock();
-        if let Some(ref mut r) = *rt {
-            r.term_buf.put_str(s);
-            r.term_dirty = true;
+        // Accumulate stdout for pipe capture.
+        if let Some(ref mut out) = *PIPE_STDOUT.lock() {
+            out.push_str(s);
+        } else {
+            // No pipe capture active — push to terminal buffer as usual.
+            let mut rt = RUNTIME.lock();
+            if let Some(ref mut r) = *rt {
+                r.term_buf.put_str(s);
+                r.term_dirty = true;
+            }
         }
     }
 
@@ -1368,7 +1430,31 @@ impl nozzle::Terminal for LatticeTerminal {
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
     }
+
+    fn set_stdin(&mut self, data: alloc::string::String) {
+        *PIPE_STDIN.lock() = Some(data);
+    }
+
+    fn take_stdout(&mut self) -> Option<alloc::string::String> {
+        PIPE_STDOUT.lock().take()
+    }
+
+    fn take_stdin(&mut self) -> Option<alloc::string::String> {
+        PIPE_STDIN.lock().take()
+    }
+
+    fn arm_pipe_stdout(&mut self) {
+        *PIPE_STDOUT.lock() = Some(alloc::string::String::new());
+    }
+
+    fn clear_pipe_stdin(&mut self) {
+        *PIPE_STDIN.lock() = None;
+    }
 }
+
+/// Pipe I/O buffers for the LatticeTerminal (used by the pipe dispatcher).
+static PIPE_STDIN: Mutex<Option<alloc::string::String>> = Mutex::new(None);
+static PIPE_STDOUT: Mutex<Option<alloc::string::String>> = Mutex::new(None);
 
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
@@ -1424,7 +1510,7 @@ fn runtime_tick_no_fb() {
 
 pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
-    F: FnOnce() -> Option<(&'static mut [u32], u32, u32)>,
+    F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
     // Skip tick when rendering is suspended (e.g. BadApple playback).
     // Still update global tick to keep keyboard repeat timed.
@@ -1498,11 +1584,12 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
             rt.frame_due = true;
         }
         DesktopAction::NewShell => {
-            let id = rt
-                .desktop
-                .wm
-                .create_titled_window(80, 70, TERM_WIN_W, TERM_WIN_H, 0x0a0a2e, "Shell");
-            rt.desktop.wm.raise_to_top(id);
+            // Launch the actual interactive shell (the same one that
+            // was previously auto‑started by the kernel).  It claims
+            // control of the framebuffer via LatticeTerminal / the
+            // runtime tick loop and returns when the user types `exit`.
+            launch_shell();
+            rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
         DesktopAction::TaskManager => open_info_window(rt, InfoWindow::TaskManager),
@@ -1514,7 +1601,7 @@ fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::Deskto
         }
         DesktopAction::About => open_info_window(rt, InfoWindow::About),
         DesktopAction::ToggleTiling => {
-            let (fw, fh) = *FB_DIMS.lock();
+            let (fw, fh, _stride) = *FB_DIMS.lock();
             let (ww, wh) = rt.desktop.work_area(fw, fh);
             rt.desktop.wm.toggle_tiling();
             rt.desktop.wm.retile(ww, wh);
@@ -1561,7 +1648,6 @@ enum InfoWindow {
     DeviceManager,
     FileManager,
     About,
-    WallpaperSettings,
 }
 
 impl InfoWindow {
@@ -1571,7 +1657,6 @@ impl InfoWindow {
             Self::DeviceManager => ("Device Manager", 140, 100, 46, 2, 0x0d1a0d, 0xCCFFCC),
             Self::FileManager => ("File Manager", 160, 120, 50, 3, 0x1a1a0d, 0xFFFFCC),
             Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
-            Self::WallpaperSettings => ("Wallpaper Settings", 200, 110, 26, 1, 0x1a1a2e, 0xCCCCCC),
         }
     }
 }
@@ -1579,7 +1664,7 @@ impl InfoWindow {
 fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
     let text = match kind {
         InfoWindow::TaskManager => {
-            let Some(get_procs) = *PROCESS_LIST_FN.lock() else {
+            let Some(get_procs) = SOLVENT_CALLBACKS.lock().process_list else {
                 return show_text_window(
                     rt,
                     "Task Manager",
@@ -1613,7 +1698,7 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::DeviceManager => {
-            let Some(get_devs) = *DEVICE_LIST_FN.lock() else {
+            let Some(get_devs) = SOLVENT_CALLBACKS.lock().device_list else {
                 return show_text_window(
                     rt,
                     "Device Manager",
@@ -1644,7 +1729,7 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::FileManager => {
-            let Some(readdir) = *VFS_READDIR_FN.lock() else {
+            let Some(readdir) = SOLVENT_CALLBACKS.lock().vfs_readdir else {
                 return show_text_window(
                     rt,
                     "File Manager",
@@ -1702,9 +1787,6 @@ fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
         }
         InfoWindow::About => String::from(
             "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
-        ),
-        InfoWindow::WallpaperSettings => String::from(
-            "  Wallpaper Settings\n ===================\n\n [ ] Beach\n [ ] Mountain\n [ ] City\n ───────────────────\n [ ] Solid Color\n [ ] Grid Pattern\n [ ] Gradient\n\n Use 'wallpaper <name>'\n in terminal to switch.\n\n Ex: wallpaper beach\n",
         ),
     };
     let (title, x, y, cols, extra_rows, bg, fg) = kind.params();
@@ -1859,7 +1941,8 @@ pub fn close_window(id: WindowId) -> bool {
 
 /// Get the current framebuffer dimensions.
 pub fn framebuffer_dims() -> (u32, u32) {
-    *FB_DIMS.lock()
+    let (w, h, _) = *FB_DIMS.lock();
+    (w, h)
 }
 
 // ── Shell bootstrap (moved from kernel to respect dependency direction)

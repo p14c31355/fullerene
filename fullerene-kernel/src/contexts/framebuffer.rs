@@ -29,10 +29,19 @@ impl FramebufferContext {
             fb_width_px: 0,
             fb_height_px: 0,
             fb_stride_bytes: 0,
-            fb_pixel_format: petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            fb_pixel_format:
+                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
         }
     }
-    pub fn store_raw_params(&mut self, phys: u64, width: u32, height: u32, stride: u32, bpp: u32, pixel_format: petroleum::common::EfiGraphicsPixelFormat) {
+    pub fn store_raw_params(
+        &mut self,
+        phys: u64,
+        width: u32,
+        height: u32,
+        stride: u32,
+        bpp: u32,
+        pixel_format: petroleum::common::EfiGraphicsPixelFormat,
+    ) {
         self.fb_phys = phys;
         self.fb_width_px = width;
         self.fb_height_px = height;
@@ -41,12 +50,9 @@ impl FramebufferContext {
         self.fb_pixel_format = pixel_format;
     }
     pub fn build_renderer_from_stored(&mut self) -> bool {
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] build_renderer_from_stored entry\n");
         if self.renderer.is_some() {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] renderer already Some, returning true\n");
             return true;
         }
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] checking fb_phys\n");
         if self.fb_phys < 0x100000
             || self.fb_width_px == 0
             || self.fb_width_px > 16384
@@ -55,31 +61,65 @@ impl FramebufferContext {
             || self.fb_stride_bytes == 0
             || self.bpp != 32
         {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] validation failed\n");
             return false;
         }
-        if self.fb_pixel_format != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] wrong pixel format\n");
+        if self.fb_pixel_format
+            != petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+            && self.fb_pixel_format
+                != petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+        {
             return false;
         }
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] getting physical_memory_offset\n");
-        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] got offset, calculating fb_virt\n");
-        let fb_virt = self.fb_phys + off;
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] creating FramebufferInfo\n");
+
+        // Pick a fixed high VA (0xFFFF_FFF0_0000_0000) that is guaranteed
+        // unmapped in both QEMU and real hardware.  We create 4 KiB WC/UC
+        // mappings there WITHOUT touching the boot‑time huge‑page identity
+        // mapping (see README §3 for why huge‑page WB + MTRR UC = #GP).
+        const FB_VA_BASE: u64 = 0xFFFF_FFF0_0000_0000;
+        let fb_byte_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+        let fb_pages = ((fb_byte_size + 0xFFF) / 0x1000) as usize;
+        // Sanity: 2M pages max (~8 GiB framebuffer) — enough for 4K×2K.
+        if fb_pages > 2097152 {
+            return false;
+        }
+
+        let fb_va = FB_VA_BASE;
+
+        let flags = x86_64::structures::paging::PageTableFlags::PRESENT
+            | x86_64::structures::paging::PageTableFlags::WRITABLE
+            | x86_64::structures::paging::PageTableFlags::NO_EXECUTE
+            | x86_64::structures::paging::PageTableFlags::NO_CACHE;
+
+        if let Some(mem) = crate::memory_management::get_memory_manager()
+            .lock()
+            .as_mut()
+        {
+            for i in 0..fb_pages {
+                let v = (fb_va + (i * 0x1000) as u64) as usize;
+                let p = (self.fb_phys + (i * 0x1000) as u64) as usize;
+                if mem.safe_map_page(v, p, flags).is_err() {
+                    return false;
+                }
+            }
+        } else {
+            return false;
+        }
+
         let info = FramebufferInfo {
-            address: fb_virt,
+            address: fb_va,
             width: self.fb_width_px,
             height: self.fb_height_px,
             stride: self.fb_stride_bytes,
             pixel_format: Some(self.fb_pixel_format),
             colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
         };
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] creating FramebufferWriter\n");
         let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] setting renderer\n");
         self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb] build_renderer_from_stored done\n");
+
+        petroleum::serial::serial_log(format_args!(
+            "[fb] WC mapping: phys=0x{:x} → va=0x{:x}, {} pages\n",
+            self.fb_phys, fb_va, fb_pages
+        ));
         true
     }
     pub unsafe fn init_from_kernel_args(&mut self, args: &petroleum::assembly::KernelArgs) {
@@ -100,15 +140,25 @@ impl FramebufferContext {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] validation passed\n");
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
         let fb_virt = args.fb_address + off;
-        let stride = args.fb_width * 4;
+        let stride = if args.fb_stride > 0 {
+            args.fb_stride.saturating_mul(4)
+        } else {
+            args.fb_width.saturating_mul(4)
+        };
+        let pixel_format = match args.fb_pixel_format {
+            0 => petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            1 => petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            _ => {
+                petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[fb_ctx] ERROR: Unsupported pixel format value\n");
+                return;
+            }
+        };
         let info = FramebufferInfo {
             address: fb_virt,
             width: args.fb_width,
             height: args.fb_height,
             stride,
-            pixel_format: Some(
-                petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            ),
+            pixel_format: Some(pixel_format),
             colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
         };
         let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
@@ -171,11 +221,27 @@ impl FramebufferContext {
             if let Some(ref r) = self.renderer {
                 let i = r.get_info();
                 let (w, h) = (i.width, i.height);
-                drop(i);
                 gpu.flush(w, h);
             }
         } else {
-            unsafe { core::arch::x86_64::_mm_mfence() };
+            // WC (Write Combining) memory requires both an SFENCE to
+            // make stores globally visible, and a dummy read from the
+            // same WC range to drain the WC buffers.
+            // _mm_mfence alone is not sufficient on real hardware.
+            unsafe {
+                core::arch::x86_64::_mm_sfence();
+            }
+            // Dummy read from the framebuffer to force WC buffer drain.
+            if let Some(ref r) = self.renderer {
+                let info = r.get_info();
+                let fb_ptr = info.address as *mut u32;
+                // Read the last pixel written (approximation: first pixel
+                // of the framebuffer).  This forces any pending WC stores
+                // to be committed to the device.
+                unsafe {
+                    core::ptr::read_volatile(fb_ptr);
+                }
+            }
         }
         nitrogen::hda::HdaController::tick_vm_exit();
     }

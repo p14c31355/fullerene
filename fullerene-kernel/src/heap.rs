@@ -16,9 +16,7 @@ const HEAP_EXTEND_MAX: usize = 32 * 1024 * 1024; // 32 MiB
 /// Total heap size: initial 4 MiB + extendable 32 MiB.
 pub const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX; // 36 MiB
 
-use petroleum::initializer::FrameAllocator;
 use petroleum::page_table::MemoryDescriptorValidator;
-use petroleum::page_table::PageTableHelper;
 use petroleum::page_table::memory_map::MemoryMapDescriptor;
 use spin::Mutex;
 

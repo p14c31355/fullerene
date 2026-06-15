@@ -2,7 +2,6 @@
 use nitrogen::hda::HdaController;
 use nitrogen::hda::controller::HdaDiagInfo;
 use nitrogen::hda::dma::{DMA_BUF_SIZE, DmaRegion};
-use spin::Mutex;
 
 unsafe impl Send for AudioContext {}
 unsafe impl Sync for AudioContext {}

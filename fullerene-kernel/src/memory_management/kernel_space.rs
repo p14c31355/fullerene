@@ -107,10 +107,10 @@ pub fn find_free_virtual_address(size: u64) -> Option<usize> {
     let aligned_size = pages_needed * PAGE_SIZE;
 
     // Get the current page table root
-    let cr3 = unsafe {
-        let (frame, _) = x86_64::registers::control::Cr3::read();
-        frame.start_address().as_u64()
-    };
+    let cr3 = x86_64::registers::control::Cr3::read()
+        .0
+        .start_address()
+        .as_u64();
 
     // Convert physical address to virtual for accessing page table
     let root_virt = HIGHER_HALF_OFFSET.as_u64() + cr3;

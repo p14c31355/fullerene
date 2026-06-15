@@ -1,8 +1,9 @@
-#![allow(static_mut_refs)]
+#![allow(static_mut_refs, unused_imports)]
+
 use core::ffi::c_void;
 use petroleum::common::{EfiSystemTable, write_vga_string};
-use petroleum::page_table::{ALLOCATOR as PETROLEUM_ALLOCATOR, MemoryMapDescriptor};
-use petroleum::{debug_log_no_alloc, write_serial_bytes};
+use petroleum::page_table::MemoryMapDescriptor;
+use petroleum::write_serial_bytes;
 use x86_64::{PhysAddr, VirtAddr, structures::paging::PageTableFlags};
 
 /// Helper to write debug messages to serial port.
@@ -158,13 +159,12 @@ impl UefiInitContext {
     #[cfg(target_os = "uefi")]
     pub fn setup_allocator(&mut self, _virtual_heap_start: VirtAddr) {}
 
-    /// Validate framebuffer config and initialize APIC pointer.
+    /// Validate framebuffer config and pre-initialize the APIC controller.
     #[cfg(target_os = "uefi")]
     pub fn map_mmio() -> usize {
         let phys_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
         let lapic_virt = 0xfee00000u64 + phys_offset;
-        unsafe { petroleum::common::utils::reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS) };
-        *petroleum::LOCAL_APIC_ADDRESS.lock() = petroleum::LocalApicAddress(lapic_virt as *mut u32);
+        crate::interrupts::apic::preinit_apic_controller(lapic_virt);
 
         if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
             .get()
@@ -183,7 +183,7 @@ impl UefiInitContext {
 
     /// Parse the UEFI memory map into the kernel's static buffer.
     pub(super) fn init_memory_map(&self) {
-        debug_log_no_alloc!("Parsing UEFI memory map...");
+        debug_serial(b"Parsing UEFI memory map...\n");
 
         // Unlock potentially poisoned mutex
         unsafe {
@@ -217,7 +217,8 @@ impl UefiInitContext {
                 crate::heap::MEMORY_MAP_BUFFER[count] = desc;
                 count += 1;
             }
-            debug_log_no_alloc!("Parsed {} memory descriptors", count);
+            // debug_serial format output omitted to avoid alloc in early boot
+            debug_serial(b"Memory map parsed\n");
             if let Some(mut lock) = crate::heap::MEMORY_MAP.try_lock() {
                 *lock = Some(&crate::heap::MEMORY_MAP_BUFFER[0..count]);
             }

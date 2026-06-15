@@ -331,6 +331,8 @@ pub fn exit_boot_services_and_jump(
     let fb_width;
     let fb_height;
     let fb_bpp;
+    let fb_stride;
+    let fb_pixel_format;
     if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
         .get()
         .and_then(|mutex| *mutex.lock())
@@ -339,11 +341,15 @@ pub fn exit_boot_services_and_jump(
         fb_width = config.width;
         fb_height = config.height;
         fb_bpp = config.bpp;
+        fb_stride = config.stride;
+        fb_pixel_format = config.pixel_format as u32;
     } else {
         fb_addr = 0;
         fb_width = 0;
         fb_height = 0;
         fb_bpp = 0;
+        fb_stride = 0;
+        fb_pixel_format = 0;
     }
 
     unsafe {
@@ -362,6 +368,8 @@ pub fn exit_boot_services_and_jump(
                 fb_width,
                 fb_height,
                 fb_bpp,
+                fb_stride,
+                fb_pixel_format,
             },
         );
 

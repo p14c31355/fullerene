@@ -5,8 +5,8 @@
 //! trait to the kernel's raw syscall I/O.
 
 use crate::syscall::kernel_syscall;
-use alloc::string::ToString;
-use alloc::{format, string::String};
+use alloc::format;
+use alloc::string::String;
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
@@ -19,56 +19,248 @@ pub fn init() {
 
 /// Register kernel implementations for nozzle's filesystem and system hooks.
 fn register_nozzle_hooks() {
-    // FS hooks — wire into kernel VFS
-    nozzle::fs_hooks::set_fs_list_fn(|ctx| match crate::vfs::readdir("/") {
-        Ok(entries) => {
-            for ent in entries {
-                let line = if ent.is_dir {
-                    format!("  {}/\n", ent.name)
-                } else {
-                    format!("  {}  ({} bytes)\n", ent.name, ent.size)
-                };
-                ctx.terminal.write_str(&line);
-            }
-        }
-        Err(e) => {
-            let msg = format!("ls: {}\n", e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
-
-    nozzle::fs_hooks::set_fs_read_fn(|ctx, path| match crate::vfs::open(path, 0) {
-        Ok(fd) => {
-            let mut buf = [0u8; 512];
-            loop {
-                match crate::vfs::read(fd.fd, &mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        ctx.terminal
-                            .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
-                    }
-                    Err(e) => {
-                        let msg = format!("cat: {}\n", e);
-                        ctx.terminal.write_str(&msg);
-                        break;
+    // ── Install all FS hooks at once (single lock) ──────────────
+    nozzle::fs_hooks::FsHooks {
+        list: Some(|ctx| {
+            let path = if ctx.args.len() > 1 && !ctx.args[1].starts_with('-') {
+                ctx.args[1]
+            } else {
+                "."
+            };
+            let long_format = ctx.args.iter().any(|a| *a == "-l");
+            match crate::vfs::readdir(path) {
+                Ok(entries) => {
+                    for ent in entries {
+                        if long_format {
+                            let kind = if ent.is_dir { "d" } else { "-" };
+                            let line = format!("{}  {:>8}  {}\n", kind, ent.size, ent.name);
+                            ctx.terminal.write_str(&line);
+                        } else if ent.is_dir {
+                            let line = format!("  {}/\n", ent.name);
+                            ctx.terminal.write_str(&line);
+                        } else {
+                            let line = format!("  {}\n", ent.name);
+                            ctx.terminal.write_str(&line);
+                        }
                     }
                 }
+                Err(e) => {
+                    let msg = format!("ls: {}: {}\n", path, e);
+                    ctx.terminal.write_str(&msg);
+                }
             }
-            let _ = crate::vfs::close(fd.fd);
-            ctx.terminal.write_str("\n");
-        }
-        Err(e) => {
-            let msg = format!("cat: {}: {}\n", path, e);
-            ctx.terminal.write_str(&msg);
-        }
-    });
+        }),
+        read: Some(|ctx, path| {
+            match crate::vfs::open(path, 0) {
+                Ok(fd) => {
+                    let mut buf = [0u8; 512];
+                    loop {
+                        match crate::vfs::read(fd.fd, &mut buf) {
+                            Ok(0) => break,
+                            Ok(n) => {
+                                ctx.terminal.write_str(
+                                    core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"),
+                                );
+                            }
+                            Err(e) => {
+                                let msg = format!("cat: {}\n", e);
+                                ctx.terminal.write_str(&msg);
+                                break;
+                            }
+                        }
+                    }
+                    let _ = crate::vfs::close(fd.fd);
+                    ctx.terminal.write_str("\n");
+                }
+                Err(e) => {
+                    let msg = format!("cat: {}: {}\n", path, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+        pwd: Some(|ctx| match crate::vfs::working_directory() {
+            Ok(wd) => {
+                ctx.terminal.write_str(&wd);
+                ctx.terminal.write_str("\n");
+            }
+            Err(e) => {
+                let msg = format!("pwd: {}\n", e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        cd: Some(|ctx, path| match crate::vfs::change_directory(path) {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = format!("cd: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        tree: Some(|ctx, path| {
+            let resolved = if path == "." {
+                match crate::vfs::working_directory() {
+                    Ok(wd) => wd,
+                    Err(_) => String::from("/"),
+                }
+            } else {
+                String::from(path)
+            };
+            match crate::fs::walk_dir(&resolved) {
+                Ok(entries) => {
+                    for entry in &entries {
+                        ctx.terminal.write_str(entry);
+                        ctx.terminal.write_str("\n");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("tree: {}: {}\n", resolved, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+        find: Some(|ctx, path, pattern| {
+            let resolved = if path == "." {
+                match crate::vfs::working_directory() {
+                    Ok(wd) => wd,
+                    Err(_) => String::from("/"),
+                }
+            } else {
+                String::from(path)
+            };
+            match crate::fs::walk_dir(&resolved) {
+                Ok(entries) => {
+                    let mut found = false;
+                    for entry in &entries {
+                        if entry.contains(pattern) {
+                            ctx.terminal.write_str(entry);
+                            ctx.terminal.write_str("\n");
+                            found = true;
+                        }
+                    }
+                    if !found {
+                        ctx.terminal.write_str("(no matches)\n");
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("find: {}: {}\n", resolved, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+        cp: Some(|ctx, src, dst| match crate::fs::copy_file(src, dst) {
+            Ok(()) => {
+                let msg = format!("Copied {} -> {}\n", src, dst);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("cp: {} -> {}: {}\n", src, dst, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        mv: Some(|ctx, src, dst| match crate::fs::move_file(src, dst) {
+            Ok(()) => {
+                let msg = format!("Moved {} -> {}\n", src, dst);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("mv: {} -> {}: {}\n", src, dst, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        write: Some(|ctx, path, content| {
+            match crate::fs::write_entire_file(path, content.as_bytes()) {
+                Ok(()) => {
+                    let msg = format!("Wrote {} bytes to {}\n", content.len(), path);
+                    ctx.terminal.write_str(&msg);
+                }
+                Err(e) => {
+                    let msg = format!("write: {}: {}\n", path, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+        rm: Some(|ctx, path| match crate::fs::remove(path) {
+            Ok(()) => {
+                let msg = format!("Removed {}\n", path);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("rm: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        mkdir: Some(|ctx, path| match crate::vfs::mkdir(path) {
+            Ok(()) => {
+                let msg = format!("Created directory {}\n", path);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(e) => {
+                let msg = format!("mkdir: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        touch: Some(|ctx, path| {
+            match crate::vfs::open(path, 0) {
+                Ok(fd) => {
+                    let _ = crate::vfs::close(fd.fd);
+                    let msg = format!("Touched {}\n", path);
+                    ctx.terminal.write_str(&msg);
+                }
+                Err(_) => match crate::vfs::create(path) {
+                    Ok(fd) => {
+                        let _ = crate::vfs::close(fd.fd);
+                        let msg = format!("Touched {}\n", path);
+                        ctx.terminal.write_str(&msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("touch: {}: {}\n", path, e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                },
+            }
+        }),
+        df: Some(|ctx| {
+            match crate::fs::walk_dir("/") {
+                Ok(entries) => {
+                    let mut file_count = 0;
+                    let mut dir_count = 0;
+                    // Check each entry's type by querying its parent directory
+                    for path in &entries {
+                        if let Some(pos) = path.rfind('/') {
+                            let parent = if pos == 0 { "/" } else { &path[..pos] };
+                            let name = &path[pos + 1..];
+                            if let Ok(parent_entries) = crate::fs::list_dir(parent) {
+                                if let Some(entry) = parent_entries.iter().find(|e| e.name == name) {
+                                    if entry.is_dir {
+                                        dir_count += 1;
+                                    } else {
+                                        file_count += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ctx.terminal
+                        .write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
+                    let msg = format!(
+                        "ramfs           {:>4}K  {:>4}K  {:>4}K  {:>3}%  /\n",
+                        0, 0, 0, 0
+                    );
+                    ctx.terminal.write_str(&msg);
+                    let msg2 = format!("{} files, {} directories\n", file_count, dir_count);
+                    ctx.terminal.write_str(&msg2);
+                }
+                Err(e) => {
+                    let msg = format!("df: {}\n", e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }),
+    }
+    .install();
 
-    nozzle::fs_hooks::set_fs_pwd_fn(|ctx| {
-        ctx.terminal.write_str("/\n");
-    });
-
-    // Sys info hooks — provide real kernel data (unified handler)
-    nozzle::sys_hooks::set_sys_info_fn(|ctx, cmd| match cmd {
+    // ── Install sys info / control hooks ───────────────────────
+    nozzle::sys_hooks::SysHooks {
+        info: Some(|ctx, cmd| match cmd {
         "mem" => {
             let (heap_start, heap_end) = petroleum::common::memory::get_heap_range();
             let total = if heap_end > heap_start {
@@ -250,14 +442,243 @@ fn register_nozzle_hooks() {
             crate::badapple::play_badapple();
             ctx.terminal.write_str("Bad Apple finished.\n");
         }
+        "date" => {
+            if let Some(get_time) = solvent::SOLVENT_CALLBACKS.lock().wall_clock {
+                if let Some((year, month, day, hour, minute, second)) = get_time() {
+                    let msg = format!(
+                        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}\n",
+                        year, month, day, hour, minute, second
+                    );
+                    ctx.terminal.write_str(&msg);
+                } else {
+                    ctx.terminal.write_str("date: RTC not available\n");
+                }
+            } else {
+                ctx.terminal.write_str("date: no wall clock callback\n");
+            }
+        }
+        "uptime" => {
+            let ticks = core::sync::atomic::AtomicU64::load(
+                &solvent::GLOBAL_TICK,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            // Assume ~1000 ticks per second (adjustable)
+            let seconds = ticks / 1000;
+            let days = seconds / 86400;
+            let hours = (seconds % 86400) / 3600;
+            let mins = (seconds % 3600) / 60;
+            let secs = seconds % 60;
+            if days > 0 {
+                let msg = format!("up {} days {:02}:{:02}:{:02}\n", days, hours, mins, secs);
+                ctx.terminal.write_str(&msg);
+            } else {
+                let msg = format!("up {:02}:{:02}:{:02}\n", hours, mins, secs);
+                ctx.terminal.write_str(&msg);
+            }
+        }
+        "sleep" => {
+            if ctx.args.len() > 1 {
+                if let Ok(secs) = ctx.args[1].parse::<u64>() {
+                    let tsc_per_ms = solvent::get_tsc_per_ms();
+                    let total_ticks = tsc_per_ms.saturating_mul(secs.saturating_mul(1000));
+                    let start = unsafe { core::arch::x86_64::_rdtsc() };
+                    // Yield via HLT-hinted syscall periodically to avoid
+                    // starving other tasks during the wait.
+                    let mut last_yield = start;
+                    let yield_interval = tsc_per_ms.saturating_mul(10); // every ~10 ms
+                    loop {
+                        let now = unsafe { core::arch::x86_64::_rdtsc() };
+                        if now.wrapping_sub(start) >= total_ticks {
+                            break;
+                        }
+                        if now.wrapping_sub(last_yield) >= yield_interval {
+                            crate::syscall::kernel_syscall(22, 0, 0, 0);
+                            last_yield = now;
+                        }
+                        core::hint::spin_loop();
+                    }
+                } else {
+                    ctx.terminal.write_str("sleep: invalid number of seconds\n");
+                }
+            }
+        }
+        "grep" => {
+            // File-based grep: read file and search for pattern in args[1]
+            if ctx.args.len() < 3 {
+                ctx.terminal.write_str("grep: pattern and file required\n");
+            } else {
+                let pattern = ctx.args[1];
+                for &path in &ctx.args[2..] {
+                    match crate::vfs::open(path, 0) {
+                        Ok(fd) => {
+                            let mut buf = [0u8; 1024];
+                            let mut remainder = alloc::vec::Vec::new();
+                            loop {
+                                match crate::vfs::read(fd.fd, &mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        remainder.extend_from_slice(&buf[..n]);
+                                        // Process complete lines by scanning for b'\n'
+                                        // directly in the byte buffer to avoid UTF-8
+                                        // split issues across read boundaries.
+                                        let mut last_newline = 0;
+                                        for (i, &byte) in remainder.iter().enumerate() {
+                                            if byte == b'\n' {
+                                                if let Ok(line) = core::str::from_utf8(
+                                                    &remainder[last_newline..i],
+                                                ) {
+                                                    if line.contains(pattern) {
+                                                        if ctx.args.len() > 3 {
+                                                            let prefix =
+                                                                alloc::format!("{}:", path);
+                                                            ctx.terminal.write_str(&prefix);
+                                                        }
+                                                        ctx.terminal.write_str(line);
+                                                        ctx.terminal.write_str("\n");
+                                                    }
+                                                }
+                                                last_newline = i + 1;
+                                            }
+                                        }
+                                        // Drain processed bytes; keep unprocessed tail.
+                                        remainder.drain(..last_newline);
+                                    }
+                                    Err(e) => {
+                                        let msg = format!("grep: {}\n", e);
+                                        ctx.terminal.write_str(&msg);
+                                        break;
+                                    }
+                                }
+                            }
+                            // Process final partial line
+                            if !remainder.is_empty() {
+                                if let Ok(s) = core::str::from_utf8(&remainder) {
+                                    if s.contains(pattern) {
+                                        if ctx.args.len() > 3 {
+                                            let prefix = alloc::format!("{}:", path);
+                                            ctx.terminal.write_str(&prefix);
+                                        }
+                                        ctx.terminal.write_str(s);
+                                        ctx.terminal.write_str("\n");
+                                    }
+                                }
+                            }
+                            let _ = crate::vfs::close(fd.fd);
+                        }
+                        Err(e) => {
+                            let msg = format!("grep: {}: {}\n", path, e);
+                            ctx.terminal.write_str(&msg);
+                        }
+                    }
+                }
+            }
+        }
+        "sort" => {
+            let reverse = ctx.args.iter().any(|a| *a == "-r");
+            let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" {
+                2
+            } else {
+                1
+            };
+            if path_idx < ctx.args.len() {
+                let path = ctx.args[path_idx];
+                match crate::vfs::open(path, 0) {
+                    Ok(fd) => {
+                        let mut buf = [0u8; 1024];
+                        let mut data = alloc::vec::Vec::new();
+                        loop {
+                            match crate::vfs::read(fd.fd, &mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => data.extend_from_slice(&buf[..n]),
+                                Err(e) => {
+                                    let msg = format!("sort: {}\n", e);
+                                    ctx.terminal.write_str(&msg);
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = crate::vfs::close(fd.fd);
+                        let text = alloc::string::String::from_utf8_lossy(&data);
+                        let mut lines: alloc::vec::Vec<&str> = text.lines().collect();
+                        lines.sort();
+                        if reverse {
+                            lines.reverse();
+                        }
+                        for line in lines {
+                            ctx.terminal.write_str(line);
+                            ctx.terminal.write_str("\n");
+                        }
+                    }
+                    Err(e) => {
+                        let msg = format!("sort: {}: {}\n", path, e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                }
+            } else {
+                ctx.terminal.write_str("Usage: sort [-r] <file>\n");
+            }
+        }
+        "wc" => {
+            if ctx.args.len() > 1 {
+                let path = ctx.args[1];
+                match crate::vfs::open(path, 0) {
+                    Ok(fd) => {
+                        let mut buf = [0u8; 1024];
+                        let mut data = alloc::vec::Vec::new();
+                        loop {
+                            match crate::vfs::read(fd.fd, &mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => data.extend_from_slice(&buf[..n]),
+                                Err(e) => {
+                                    let msg = format!("wc: {}\n", e);
+                                    ctx.terminal.write_str(&msg);
+                                    break;
+                                }
+                            }
+                        }
+                        let _ = crate::vfs::close(fd.fd);
+                        let text = alloc::string::String::from_utf8_lossy(&data);
+                        let lines = data.iter().filter(|&&b| b == b'\n').count();
+                        let words = text.split_whitespace().count();
+                        let bytes = data.len();
+                        let msg = format!("{} {} {} {}\n", lines, words, bytes, path);
+                        ctx.terminal.write_str(&msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("wc: {}: {}\n", path, e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                }
+            } else {
+                ctx.terminal.write_str("Usage: wc <file>\n");
+            }
+        }
+        "app_list" => match crate::fs::list_packages() {
+            Ok(pkgs) => {
+                if pkgs.is_empty() {
+                    ctx.terminal.write_str("No packages installed.\n");
+                } else {
+                    ctx.terminal
+                        .write_str("NAME         VERSION  DESCRIPTION\n");
+                    ctx.terminal
+                        .write_str("-----------  -------  -----------\n");
+                    for p in &pkgs {
+                        let line = format!("{:<12} {:<8} {}\n", p.name, p.version, p.description);
+                        ctx.terminal.write_str(&line);
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("app list: {}\n", e);
+                ctx.terminal.write_str(&msg);
+            }
+        },
         _ => {
             let msg = format!("Unknown sys info command: {}\n", cmd);
             ctx.terminal.write_str(&msg);
         }
-    });
-
-    // Sys control hooks — theme/wallpaper/reboot/shutdown (via solvent bridges)
-    nozzle::sys_hooks::set_sys_ctl_fn(|cmd| match cmd {
+        }),
+        ctl: Some(|cmd| match cmd {
         "theme dark" => {
             solvent::set_theme(solvent::ThemeVariant::Dark);
             solvent::force_desktop_redraw();
@@ -319,8 +740,39 @@ fn register_nozzle_hooks() {
                 x86_64::instructions::hlt();
             }
         }
+        _ if cmd.starts_with("app_install ") => {
+            let rest = &cmd[12..]; // skip "app_install " (12 characters)
+            if let Some((name, desc)) = rest.split_once(' ') {
+                let dummy_bin: [u8; 4] = [0x90, 0x90, 0x90, 0x90]; // NOP placeholder
+                match crate::fs::install_package(name, "0.1.0", desc, &dummy_bin) {
+                    Ok(()) => {
+                        let msg = format!("Installed package '{}'\n", name);
+                        solvent::write_terminal(&msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("app install: {}\n", e);
+                        solvent::write_terminal(&msg);
+                    }
+                }
+            }
+        }
+        _ if cmd.starts_with("app_remove ") => {
+            let name = &cmd[11..]; // skip "app_remove " (11 characters)
+            match crate::fs::remove_package(name) {
+                Ok(()) => {
+                    let msg = format!("Removed package '{}'\n", name);
+                    solvent::write_terminal(&msg);
+                }
+                Err(e) => {
+                    let msg = format!("app remove: {}\n", e);
+                    solvent::write_terminal(&msg);
+                }
+            }
+        }
         _ => {}
-    });
+    }),
+}
+.install();
 }
 
 /// Main shell entry point — called from the scheduler as a kernel process.

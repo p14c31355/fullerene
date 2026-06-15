@@ -5,19 +5,13 @@
 
 use alloc::boxed::Box;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use heapless::Vec;
 use petroleum::common::logging::SystemError;
 use petroleum::mem_debug;
-use petroleum::page_table::PageTableHelper;
+use petroleum::page_table::PageTableHelper as _;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
-
-/// Global lock for PROCESS_MANAGER (workaround for QEMU .bss not being zeroed)
-static PM_LOCK: AtomicBool = AtomicBool::new(false);
-
-/// Next available process ID
-pub(crate) static NEXT_PID: AtomicUsize = AtomicUsize::new(1);
 
 /// Maximum number of processes managed by the system
 const MAX_PROCESSES: usize = 64;
@@ -71,18 +65,12 @@ impl Default for ProcessContext {
             rip: 0,
             segments: [
                 // Use fallback segment selectors if GDT not ready
-                unsafe {
-                    crate::gdt::code_selector()
-                        .as_ref()
-                        .map(|s| s.0 as u64)
-                        .unwrap_or(1)
-                }, // cs
-                unsafe {
-                    crate::gdt::kernel_data_selector_fallback()
-                        .as_ref()
-                        .map(|s| s.0 as u64)
-                        .unwrap_or(2)
-                }, // ss
+                crate::gdt::code_selector()
+                    .as_ref()
+                    .map_or(1, |s| s.0 as u64), // cs
+                crate::gdt::kernel_data_selector_fallback()
+                    .as_ref()
+                    .map_or(2, |s| s.0 as u64), // ss
                 0,
                 0,
                 0,
@@ -127,7 +115,7 @@ pub struct Process {
 impl Process {
     /// Create a new process
     pub fn new(name: &'static str, entry_point: VirtAddr, is_user: bool) -> Self {
-        let id = ProcessId(NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64);
+        let id = PROCESS_MANAGER.allocate_pid();
 
         Self {
             id,
@@ -155,18 +143,12 @@ impl Process {
         if self.is_user {
             // For user processes, the context RSP should be the user stack
             self.context.regs[7] = self.user_stack.as_u64(); // rsp
-            self.context.segments[0] = unsafe {
-                crate::gdt::user_code_selector_fallback()
-                    .as_ref()
-                    .map(|s| s.0 as u64)
-                    .unwrap_or(1)
-            }; // cs
-            self.context.segments[1] = unsafe {
-                crate::gdt::user_data_selector_fallback()
-                    .as_ref()
-                    .map(|s| s.0 as u64)
-                    .unwrap_or(2)
-            }; // ss
+            self.context.segments[0] = crate::gdt::user_code_selector_fallback()
+                .as_ref()
+                .map_or(1, |s| s.0 as u64); // cs
+            self.context.segments[1] = crate::gdt::user_data_selector_fallback()
+                .as_ref()
+                .map_or(2, |s| s.0 as u64); // ss
         } else {
             // For kernel processes, the context RSP is the kernel stack
             self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
@@ -189,16 +171,59 @@ impl Process {
 }
 
 /// Manages the global list of processes with encapsulated locking
+///
+/// Also owns the scheduler state (`next_pid`, `current_index`, `current_pid`)
+/// that was previously scattered as separate statics.
 pub struct ProcessManager {
     processes: Mutex<Vec<(ProcessId, Box<Process>), MAX_PROCESSES>>,
+    /// Next available process ID.
+    next_pid: AtomicUsize,
+    /// Round‑robin index into `processes`.
+    current_index: AtomicUsize,
+    /// PID of the currently running process (0 = none).
+    current_pid: AtomicUsize,
 }
 
 impl ProcessManager {
     pub const fn new() -> Self {
         Self {
             processes: Mutex::new(Vec::new()),
+            next_pid: AtomicUsize::new(1),
+            current_index: AtomicUsize::new(0),
+            current_pid: AtomicUsize::new(0),
         }
     }
+
+    // ── PID allocation ─────────────────────────────────────────
+
+    /// Allocate a new unique process ID.
+    pub fn allocate_pid(&self) -> ProcessId {
+        ProcessId(self.next_pid.fetch_add(1, Ordering::Relaxed) as u64)
+    }
+
+    // ── Scheduler state ────────────────────────────────────────
+
+    /// The PID of the currently running process (0 = none / idle).
+    pub fn current_pid(&self) -> usize {
+        self.current_pid.load(Ordering::SeqCst)
+    }
+
+    /// Set the currently running PID.
+    pub fn set_current_pid(&self, pid: usize) {
+        self.current_pid.store(pid, Ordering::SeqCst);
+    }
+
+    /// Get the round‑robin schedule index.
+    pub fn schedule_index(&self) -> usize {
+        self.current_index.load(Ordering::SeqCst)
+    }
+
+    /// Set the round‑robin schedule index.
+    pub fn set_schedule_index(&self, idx: usize) {
+        self.current_index.store(idx, Ordering::SeqCst);
+    }
+
+    // ── Process list operations ─────────────────────────────────
 
     /// Adds a new process to the list
     pub fn add(&self, process: Box<Process>) -> Result<(), SystemError> {
@@ -261,12 +286,6 @@ impl ProcessManager {
 /// Global process manager
 pub static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
-/// Next process to schedule (for round-robin)
-static CURRENT_PROCESS_INDEX: Mutex<usize> = Mutex::new(0);
-
-/// Current running process (0 means None)
-pub static CURRENT_PROCESS: AtomicUsize = AtomicUsize::new(0);
-
 // Use KERNEL_STACK_SIZE from crate::heap
 
 /// Static idle context storage (avoid heap allocation during early init)
@@ -293,7 +312,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
     // Process::new calls Box::new(ProcessContext) which would fail, so we
     // construct everything manually using static storage.
     let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
-    let pid = ProcessId(NEXT_PID.fetch_add(1, Ordering::Relaxed) as u64);
+    let pid = PROCESS_MANAGER.allocate_pid();
 
     unsafe {
         // Initialize static context
@@ -352,7 +371,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
             .add(proc_box)
             .expect("Failed to add idle process");
     }
-    CURRENT_PROCESS.store(1, Ordering::SeqCst);
+    PROCESS_MANAGER.set_current_pid(pid.0 as usize);
 
     mem_debug!("Process: init done\n");
 }
@@ -451,7 +470,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     unblock_waiting_parents(pid);
 
     // If current process is terminating, schedule next
-    let current_pid = CURRENT_PROCESS.load(Ordering::SeqCst);
+    let current_pid = PROCESS_MANAGER.current_pid();
     if current_pid == pid.0 as usize {
         schedule_next();
     }
@@ -483,7 +502,7 @@ pub fn schedule_next() {
             return;
         }
 
-        let current_index = *CURRENT_PROCESS_INDEX.lock();
+        let current_index = PROCESS_MANAGER.schedule_index();
         petroleum::scheduler_log!("Current index: {}", current_index);
 
         let mut next_index = current_index;
@@ -519,9 +538,9 @@ pub fn schedule_next() {
             }
         }
 
-        *CURRENT_PROCESS_INDEX.lock() = next_index;
+        PROCESS_MANAGER.set_schedule_index(next_index);
         let next_pid = process_list[next_index].1.id.0 as usize;
-        CURRENT_PROCESS.store(next_pid, Ordering::SeqCst);
+        PROCESS_MANAGER.set_current_pid(next_pid);
         petroleum::scheduler_log!(
             "Set current process index to {}, PID {}",
             next_index,
@@ -548,7 +567,7 @@ pub fn schedule_next() {
 
 /// Get current process ID
 pub fn current_pid() -> Option<ProcessId> {
-    let pid = CURRENT_PROCESS.load(Ordering::SeqCst);
+    let pid = PROCESS_MANAGER.current_pid();
     if pid == 0 {
         None
     } else {

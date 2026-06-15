@@ -124,7 +124,7 @@ fn send_raw_frame(target: &str, message: &str) -> Result<(), String> {
 
 /// Simple mode: send only the log string directly over UDP.
 fn send_simple(target: &str, message: &str) -> Result<(), String> {
-    let mut sender = RawUdpSender::new(target).map_err(|e| format!("connection failed: {e}"))?;
+    let sender = RawUdpSender::new(target).map_err(|e| format!("connection failed: {e}"))?;
 
     // Send raw UDP datagrams directly without Ethernet/IP/UDP framing
     let messages = [

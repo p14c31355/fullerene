@@ -4,6 +4,15 @@ use crate::terminal::Terminal;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::string::ToString;
+use alloc::vec::Vec;
+
+/// Retrieve a snapshot of the shared command history.
+///
+/// This returns the most recent entries (newest first) so that
+/// commands like `history` can display them.
+pub fn get_history() -> Vec<String> {
+    crate::exec::get_history_snapshot()
+}
 
 const HISTORY_MAX: usize = 128;
 
@@ -280,6 +289,8 @@ impl LineEditor {
             self.history.pop_back();
         }
         self.history.push_front(line.into());
+        // Also push to the shared history for the `history` command.
+        crate::exec::push_history(line);
     }
 
     // ── escape sequences ────────────────────────────────────────────

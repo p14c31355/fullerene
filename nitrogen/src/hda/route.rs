@@ -4,9 +4,8 @@
 //! analog DAC to a speaker/headphone pin complex, dealing with
 //! intermediate mixers and EAPD-capable pins.
 
-use crate::hda::codec::{CodecGraph, WidgetInfo};
+use crate::hda::codec::CodecGraph;
 use crate::hda::corb::CorbEngine;
-use crate::hda::corb::params;
 use crate::hda::corb::verbs;
 use crate::hda::widget_type;
 
@@ -26,8 +25,8 @@ impl RouteFinder {
     ///
     /// `mmio` must be a valid HDA MMIO base.  `corb` must be initialised.
     pub unsafe fn find_speaker_route(
-        mmio: *mut u8,
-        corb: &CorbEngine,
+        _mmio: *mut u8,
+        _corb: &CorbEngine,
         graph: &CodecGraph,
     ) -> Option<(u8, u8)> {
         let mut dacs: alloc::vec::Vec<u8> = alloc::vec::Vec::new();

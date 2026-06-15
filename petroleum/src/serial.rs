@@ -252,12 +252,18 @@ pub fn _print_with_manager(manager: &mut SerialManager, args: fmt::Arguments) {
 
 /// Print directly to COM1 serial port without a SerialManager.
 /// Uses direct port I/O for early boot / macro convenience.
+///
+/// If the xHCI Debug Capability (DbC) has been initialized (via
+/// `nitrogen::xhci_dbc`), the same output is also sent through the
+/// USB debug channel.
 pub fn _print(args: fmt::Arguments) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
         use core::fmt::Write;
+
+        // Send to COM1 serial port directly without heap allocation
         let mut port = SerialPort::new(Com1Ports);
-        port.write_fmt(args).ok();
+        let _ = port.write_fmt(args);
     }
 }
 
@@ -265,23 +271,19 @@ pub fn _print(args: fmt::Arguments) {
 pub fn serial_init() -> SerialManager {
     let mut manager = SerialManager::new();
 
-    unsafe {
-        crate::write_serial_bytes(
-            COM1_DATA_PORT,
-            COM1_STATUS_PORT,
-            b"DEBUG: Inside serial_init\n",
-        );
-    }
+    crate::write_serial_bytes(
+        COM1_DATA_PORT,
+        COM1_STATUS_PORT,
+        b"DEBUG: Inside serial_init\n",
+    );
 
     manager.init_serial();
 
-    unsafe {
-        crate::write_serial_bytes(
-            COM1_DATA_PORT,
-            COM1_STATUS_PORT,
-            b"DEBUG: serial_init completed successfully\n",
-        );
-    }
+    crate::write_serial_bytes(
+        COM1_DATA_PORT,
+        COM1_STATUS_PORT,
+        b"DEBUG: serial_init completed successfully\n",
+    );
 
     manager
 }

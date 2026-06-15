@@ -1,11 +1,11 @@
 //! APIC (Advanced Programmable Interrupt Controller) handling
 //!
 //! This module provides APIC initialization and management functions.
+//! All unsafe volatile/port I/O is encapsulated in `nitrogen::apic_controller::ApicController`.
 
 use nitrogen::apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};
-use nitrogen::pic::disable_legacy_pic;
+use nitrogen::apic_controller::ApicController;
 use petroleum::common::utils::reset_mutex_lock;
-use petroleum::init_io_apic;
 use spin::Mutex;
 use x86_64::registers::model_specific::Msr;
 
@@ -14,40 +14,14 @@ pub const TIMER_INTERRUPT_INDEX: u32 = 32;
 pub const KEYBOARD_INTERRUPT_INDEX: u32 = 33;
 pub const MOUSE_INTERRUPT_INDEX: u32 = 44;
 
-/// APIC raw access structure
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct ApicRaw {
-    base_addr: u64,
-}
+/// Global APIC controller instance.
+///
+/// Set during early boot (UEFI MMIO mapping phase) and then used by
+/// `init_apic_hw_only`, `init_apic`, and `send_eoi`.
+pub static APIC_CONTROLLER: Mutex<Option<ApicController>> = Mutex::new(None);
 
-impl ApicRaw {
-    /// Read from APIC register
-    ///
-    /// # Safety
-    /// This is safe because the base_addr is validated during initialization
-    /// and the offset is a known APIC register offset.
-    fn read(&self, offset: u32) -> u32 {
-        let addr = (self.base_addr + offset as u64) as *const u32;
-        unsafe { core::ptr::read_volatile(addr) }
-    }
-
-    /// Write to APIC register
-    ///
-    /// # Safety
-    /// This is safe because the base_addr is validated during initialization
-    /// and the offset is a known APIC register offset.
-    fn write(&self, offset: u32, value: u32) {
-        let addr = (self.base_addr + offset as u64) as *mut u32;
-        unsafe { core::ptr::write_volatile(addr, value) }
-    }
-}
-
-/// Global APIC instance
-pub static APIC: Mutex<Option<ApicRaw>> = Mutex::new(None);
-
-/// Get APIC base address
-fn get_apic_base() -> Option<u64> {
+/// Get the physical APIC base address from the IA32_APIC_BASE MSR.
+fn get_apic_base_phys() -> Option<u64> {
     let value = unsafe { Msr::new(ApicOffsets::BASE_MSR).read() };
     if value & (1 << 11) != 0 {
         Some(value & ApicOffsets::BASE_ADDR_MASK)
@@ -56,19 +30,36 @@ fn get_apic_base() -> Option<u64> {
     }
 }
 
-/// Enable APIC
-fn enable_apic(apic: &mut ApicRaw) {
-    let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
-    apic.write(
-        ApicOffsets::SPURIOUS_VECTOR,
-        spurious | ApicFlags::SW_ENABLE | 0xFF,
-    );
+/// Compute the higher-half virtual address from a physical address.
+fn phys_to_virt(phys: u64) -> u64 {
+    phys + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
 }
 
-/// Send End-Of-Interrupt to APIC
+/// Pre-initialise the APIC controller with the LAPIC virtual base address.
+///
+/// Called from `UefiInitContext::map_mmio()` during early boot, before the
+/// IDT or interrupt handlers are set up.  This stores the controller in the
+/// global static so that `init_apic_hw_only()` can mask LVTs before any
+/// PCI device (e.g. VirtIO-GPU) can send MSI/MSI-X interrupts.
+pub fn preinit_apic_controller(lapic_virt: u64) {
+    unsafe {
+        reset_mutex_lock(&APIC_CONTROLLER);
+    }
+
+    let ioapic_virt = phys_to_virt(IO_APIC_BASE);
+
+    // SAFETY: The caller guarantees that lapic_virt and ioapic_virt point
+    // to valid, mapped MMIO regions in the higher half.
+    let controller = unsafe { ApicController::new(lapic_virt, ioapic_virt) };
+    *APIC_CONTROLLER.lock() = Some(controller);
+}
+
+/// Send End-Of-Interrupt to the Local APIC.
 pub fn send_eoi() {
-    if let Some(apic) = APIC.lock().as_ref() {
-        apic.write(ApicOffsets::EOI, 0);
+    if let Some(guard) = APIC_CONTROLLER.try_lock() {
+        if let Some(ref ctrl) = *guard {
+            ctrl.send_eoi();
+        }
     }
 }
 
@@ -77,187 +68,106 @@ pub fn send_eoi() {
 /// Masks all Local APIC LVT entries, disables the legacy PIC, and enables
 /// the Local APIC in software so that MSI/MSI-X interrupts from PCI devices
 /// (e.g. VirtIO-GPU after SET_SCANOUT) are safely suppressed.  This function
-/// does NOT configure the timer or IO APIC; those are set up later by
+/// does NOT configure the timer or I/O APIC; those are set up later by
 /// [`init_apic`].
 pub fn init_apic_hw_only() {
     petroleum::serial::serial_log(format_args!(
         "[init_apic_hw_only] Masking APIC LVTs early\n"
     ));
 
-    unsafe {
-        reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
-    }
+    // If the controller hasn't been pre-initialised via map_mmio(), try to
+    // create one now using the MSR-discovered physical address.
+    let mut guard = APIC_CONTROLLER.lock();
+    if guard.is_none() {
+        let phys = get_apic_base_phys().unwrap_or(0xFEE00000);
+        let lapic_virt = phys_to_virt(phys);
+        let ioapic_virt = phys_to_virt(IO_APIC_BASE);
 
-    let base_addr = {
-        let lapic_addr_lock = petroleum::LOCAL_APIC_ADDRESS.lock();
-        let ptr = lapic_addr_lock.0;
-        if !ptr.is_null() {
-            ptr as u64
+        if lapic_virt >= 0xFFFF_8000_0000_0000 && (lapic_virt & 0xFFF) == 0 {
+            // SAFETY: Addresses validated above; MMIO regions are identity-mapped
+            // in the higher half by the bootloader.
+            let ctrl = unsafe { ApicController::new(lapic_virt, ioapic_virt) };
+            *guard = Some(ctrl);
         } else {
-            // Fallback: query MSR and compute virtual address
-            let phys = get_apic_base().unwrap_or(0xFEE00000);
-            phys + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64
+            petroleum::serial::serial_log(format_args!(
+                "[init_apic_hw_only] Invalid APIC base {:#x}, skipping\n",
+                lapic_virt
+            ));
+            return;
         }
-    };
-
-    if base_addr < 0xFFFF_8000_0000_0000 || (base_addr & 0xFFF) != 0 {
-        petroleum::serial::serial_log(format_args!(
-            "[init_apic_hw_only] Invalid APIC base {:#x}, skipping\n",
-            base_addr
-        ));
-        return;
     }
 
-    disable_legacy_pic();
-    petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Legacy PIC disabled\n"));
+    if let Some(ref ctrl) = *guard {
+        ApicController::disable_legacy_pic();
+        petroleum::serial::serial_log(format_args!("[init_apic_hw_only] Legacy PIC disabled\n"));
 
-    let apic = ApicRaw { base_addr };
+        ctrl.enable();
+        ctrl.mask_all_lvts();
+        ctrl.lapic_write(ApicOffsets::TMRDIV, 0x3);
+        ctrl.lapic_write(ApicOffsets::TMRINITCNT, 0); // Stop the timer entirely
 
-    // Enable software APIC (spurious vector)
-    let spurious = apic.read(ApicOffsets::SPURIOUS_VECTOR);
-    apic.write(
-        ApicOffsets::SPURIOUS_VECTOR,
-        spurious | ApicFlags::SW_ENABLE | 0xFF,
-    );
-
-    // Mask ALL LVT entries — any unmasked entry could trigger a spurious
-    // interrupt while the IDT handlers are not yet registered.
-    let lvt_mask: u32 = 1 << 16;
-    apic.write(ApicOffsets::LVT_LINT0, lvt_mask);
-    apic.write(ApicOffsets::LVT_LINT1, lvt_mask);
-    apic.write(ApicOffsets::LVT_ERROR, lvt_mask);
-    apic.write(ApicOffsets::LVT_PERF_COUNT, lvt_mask);
-    apic.write(ApicOffsets::LVT_THERMAL, lvt_mask);
-    apic.write(ApicOffsets::LVT_TIMER, lvt_mask); // masked + one-shot
-    apic.write(ApicOffsets::TMRDIV, 0x3);
-    apic.write(ApicOffsets::TMRINITCNT, 0); // Stop the timer entirely
-
-    petroleum::serial::serial_log(format_args!(
-        "[init_apic_hw_only] All LVTs masked, APIC enabled (timer stopped)\n"
-    ));
+        petroleum::serial::serial_log(format_args!(
+            "[init_apic_hw_only] All LVTs masked, APIC enabled (timer stopped)\n"
+        ));
+    }
 }
 
-/// Initialize APIC
+/// Initialize APIC (called AFTER the IDT and interrupt handlers are set up).
 ///
-/// # Safety
-///
-/// This function must be called AFTER the IDT is set up (via interrupts::init())
-/// and AFTER interrupt handlers are registered.  On real hardware (InsydeH2O),
-/// calling this before IDT setup can cause a triple fault if a spurious
-/// interrupt arrives.
+/// Configures the timer, unmasks LVTs as appropriate, and sets up I/O APIC
+/// routing for legacy IRQs.
 pub fn init_apic() {
     petroleum::serial::serial_log(format_args!("Initializing APIC...\n"));
 
-    // Force reset APIC lock state to 0 to handle cases where .bss is not cleared
-    unsafe {
-        reset_mutex_lock(&APIC);
-        reset_mutex_lock(&petroleum::LOCAL_APIC_ADDRESS);
-        petroleum::serial::serial_log(format_args!(
-            "DEBUG: [init_apic] APIC and LOCAL_APIC_ADDRESS locks reset to 0\n"
-        ));
-    }
+    // Ensure the controller exists (may have been created by preinit or hw_only).
+    let mut guard = APIC_CONTROLLER.lock();
+    if guard.is_none() {
+        let phys = get_apic_base_phys().unwrap_or(0xFEE00000);
+        let lapic_virt = phys_to_virt(phys);
+        let ioapic_virt = phys_to_virt(IO_APIC_BASE);
 
-    disable_legacy_pic();
-    petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
-
-    let base_addr = {
-        let lapic_addr_lock = petroleum::LOCAL_APIC_ADDRESS.lock();
-        let ptr = lapic_addr_lock.0;
-        if !ptr.is_null() {
-            let addr = ptr as u64;
-            petroleum::serial::serial_log(format_args!(
-                "DEBUG: [init_apic] Using pre-mapped LAPIC at {:#x}\n",
-                addr
-            ));
-            addr
+        if lapic_virt >= 0xFFFF_8000_0000_0000 && (lapic_virt & 0xFFF) == 0 {
+            let ctrl = unsafe { ApicController::new(lapic_virt, ioapic_virt) };
+            *guard = Some(ctrl);
         } else {
-            // Fallback: query MSR and compute virtual address
-            let phys = get_apic_base().unwrap_or(0xFEE00000);
-            let virt = phys + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
             petroleum::serial::serial_log(format_args!(
-                "DEBUG: [init_apic] Using MSR-discovered LAPIC: phys={:#x} virt={:#x}\n",
-                phys, virt
+                "ERROR: [init_apic] Invalid APIC base address {:#x} — MMIO mapping may be missing\n",
+                lapic_virt
             ));
-            virt
+            return;
         }
-    };
-
-    // Validate the APIC base address before accessing it.
-    // A null or misaligned address means MMIO mapping failed earlier.
-    if base_addr < 0xFFFF_8000_0000_0000 || (base_addr & 0xFFF) != 0 {
-        petroleum::serial::serial_log(format_args!(
-            "ERROR: [init_apic] Invalid APIC base address {:#x} — MMIO mapping may be missing\n",
-            base_addr
-        ));
-        // Don't initialize APIC with a bad address; fall through to
-        // scheduler loop without timer interrupts (system will still
-        // work via cooperative scheduling).
-        return;
     }
 
-    let mut apic = ApicRaw { base_addr };
-    enable_apic(&mut apic);
+    if let Some(ref ctrl) = *guard {
+        ApicController::disable_legacy_pic();
+        petroleum::serial::serial_log(format_args!("Legacy PIC disabled.\n"));
 
-    // CRITICAL: Mask all LVT entries BEFORE programming the timer.
-    // On some hardware (InsydeH2O), unmasked LVT entries can trigger
-    // spurious interrupts during initialization.
-    //
-    // LVT LINT0, LINT1, Error, Performance Counters
-    let lvt_mask: u32 = 1 << 16; // Mask bit
-    apic.write(ApicOffsets::LVT_LINT0, lvt_mask);
-    apic.write(ApicOffsets::LVT_LINT1, lvt_mask);
-    apic.write(ApicOffsets::LVT_ERROR, lvt_mask);
-    apic.write(ApicOffsets::LVT_PERF_COUNT, lvt_mask);
-    // Thermal sensor LVT (if supported)
-    apic.write(ApicOffsets::LVT_THERMAL, lvt_mask);
+        ctrl.enable();
+        ctrl.mask_all_lvts();
 
-    petroleum::serial::serial_log(format_args!("APIC LVT entries masked.\n"));
+        petroleum::serial::serial_log(format_args!("APIC LVT entries masked.\n"));
 
-    // Configure timer LVT: one-shot mode, MASKED initially to prevent early firing.
-    // The timer will be unmasked later when the scheduler/IDT is ready.
-    apic.write(
-        ApicOffsets::LVT_TIMER,
-        TIMER_INTERRUPT_INDEX | ApicFlags::TIMER_ONESHOT | ApicFlags::TIMER_MASKED,
-    );
-    apic.write(ApicOffsets::TMRDIV, 0x3); // Divide by 16
+        // Configure timer: one-shot, MASKED initially, divide-by-16, 1M initial count.
+        ctrl.configure_timer(
+            TIMER_INTERRUPT_INDEX,
+            ApicFlags::TIMER_ONESHOT | ApicFlags::TIMER_MASKED,
+            1_000_000,
+            0x3,
+        );
 
-    // Program initial count to a reasonable value.
-    // The APIC timer frequency is bus-speed dependent.  On InsydeH2O,
-    // the bus clock is typically ~100 MHz.  With divide-by-16, one
-    // tick = 16 / bus_clock ≈ 160 ns.  1,000,000 ticks ≈ 160 ms.
-    // This gives a reasonable periodic rate (~6 Hz) when switched to
-    // periodic mode later.
-    apic.write(ApicOffsets::TMRINITCNT, 1000000);
-
-    petroleum::serial::serial_log(format_args!(
-        "APIC timer configured (one-shot, div=16, initial_count=1000000).\n"
-    ));
-
-    *APIC.lock() = Some(apic);
-
-    // Initialize I/O APIC for legacy interrupt routing.
-    //
-    // SAFETY: On InsydeH2O, the I/O APIC base address is typically
-    // 0xFEC00000.  We validate the virtual address is in the higher
-    // half before proceeding.
-    let io_apic_virt_base =
-        IO_APIC_BASE + petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64;
-
-    if io_apic_virt_base >= 0xFFFF_8000_0000_0000 && io_apic_virt_base < 0xFFFF_FFFF_FFFF_F000 {
         petroleum::serial::serial_log(format_args!(
-            "Initializing I/O APIC at virt={:#x}\n",
-            io_apic_virt_base
+            "APIC timer configured (one-shot, div=16, initial_count=1000000).\n"
         ));
-        init_io_apic(base_addr, io_apic_virt_base);
-    } else {
+
+        // Configure I/O APIC for legacy IRQs.
+        ctrl.configure_legacy_irqs(KEYBOARD_INTERRUPT_INDEX as u8, MOUSE_INTERRUPT_INDEX as u8);
+
         petroleum::serial::serial_log(format_args!(
-            "WARNING: I/O APIC virtual address {:#x} out of range — skipping I/O APIC init\n",
-            io_apic_virt_base
+            "I/O APIC legacy IRQs configured (keyboard={}, mouse={}).\n",
+            KEYBOARD_INTERRUPT_INDEX, MOUSE_INTERRUPT_INDEX
         ));
     }
 
     use super::syscall::setup_syscall;
     setup_syscall();
-    // Interrupts are enabled in kernel_main_higher_half after all setup is complete,
-    // not here, to avoid premature timer interrupts during process creation.
 }

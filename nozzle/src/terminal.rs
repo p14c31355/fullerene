@@ -30,4 +30,25 @@ pub trait Terminal {
     fn take_stdout(&mut self) -> Option<alloc::string::String> {
         None
     }
+
+    /// Take stdin data previously set by [`set_stdin`] for consumption
+    /// by a command (e.g. `grep`, `sort`, `wc` when receiving pipe input).
+    ///
+    /// Returns `Some(String)` if stdin data is available, `None` otherwise.
+    /// Consuming the data clears the internal buffer.
+    fn take_stdin(&mut self) -> Option<alloc::string::String> {
+        None
+    }
+
+    /// Arm the pipe stdout buffer to capture output for the current stage.
+    ///
+    /// Called before each command in a pipeline executes to ensure
+    /// that `write_str` output is captured into the pipe buffer.
+    fn arm_pipe_stdout(&mut self) {}
+
+    /// Clear any residual pipe stdin data after a stage completes.
+    ///
+    /// Called after each command in a pipeline to ensure stale input
+    /// doesn't leak into the next stage.
+    fn clear_pipe_stdin(&mut self) {}
 }

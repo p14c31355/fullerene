@@ -24,6 +24,8 @@ pub struct KernelArgs {
     pub fb_width: u32,
     pub fb_height: u32,
     pub fb_bpp: u32,
+    pub fb_stride: u32,
+    pub fb_pixel_format: u32,
 }
 
 #[repr(C)]
@@ -111,7 +113,14 @@ pub unsafe extern "C" fn jump_to_kernel(
     unsafe {
         prepare_for_kernel_jump();
         core::arch::asm!(
-            "jmp {entry}", entry = in(reg) entry, in("rdi") args, in("rsi") phys_offset, options(noreturn)
+            "mov rax, {e}",
+            "mov rdi, {a}",
+            "mov rsi, {p}",
+            "jmp rax",
+            e = in(reg) entry,
+            a = in(reg) args,
+            p = in(reg) phys_offset,
+            options(noreturn),
         );
     }
 }

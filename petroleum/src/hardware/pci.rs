@@ -23,11 +23,7 @@ impl PciAllocator {
         for device in devices {
             crate::serial::serial_log(format_args!(
                 "[PCI-Allocator] Checking device {:#x}:{:#x} at {}:{}:{}\n",
-                device.vendor_id,
-                device.device_id,
-                device.bus,
-                device.device,
-                device.function
+                device.vendor_id, device.device_id, device.bus, device.device, device.function
             ));
             // 1. Disable Memory Space access (Command bit 1)
             let cmd_offset = 4;
@@ -86,16 +82,14 @@ impl PciAllocator {
 
                         crate::serial::serial_log(format_args!(
                             "[PCI-Allocator]   Assigned BAR {} to {:#x}\n",
-                            bar_index,
-                            aligned_addr,
+                            bar_index, aligned_addr,
                         ));
 
                         self.mmio_base = aligned_addr + bar.size as u64;
                     } else {
                         crate::serial::serial_log(format_args!(
                             "[PCI-Allocator]   BAR {} already assigned at {:#x}\n",
-                            bar_index,
-                            bar.address
+                            bar_index, bar.address
                         ));
                     }
                 } else {

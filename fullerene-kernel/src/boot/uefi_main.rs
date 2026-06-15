@@ -37,26 +37,40 @@ pub unsafe extern "C" fn efi_main_stage2(
         crate::contexts::framebuffer::init_framebuffer();
         {
             let args = &*args_ptr;
-            // Also store in .data section to survive BSS corruption
-            crate::graphics::store_fb_params(
-                args.fb_address,
-                args.fb_width,
-                args.fb_height,
-                args.fb_width.saturating_mul(4),
-                args.fb_bpp,
-            );
+            // Use fb_stride if the bootloader provided it (new field).
+            // On real hardware pixels_per_scan_line > horizontal_resolution is
+            // common (e.g. 2560→2688 on Intel GOP), so the bootloader's stride
+            // from GOP is authoritative.  Fall back to width*4 for old bootloaders
+            // that don't set fb_stride.
+            let stride = if args.fb_stride > 0 {
+                args.fb_stride.saturating_mul(4)
+            } else {
+                args.fb_width.saturating_mul(4)
+            };
+            let pixel_format = match args.fb_pixel_format {
+                0 => {
+                    petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
+                }
+                1 => {
+                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+                }
+                _ => {
+                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
+                }
+            };
+            // Store KernelArgs virtual address (already higher-half) in .data.
+            // init_and_jump identity-maps kernel_args_page, and shallow
+            // clone_page_table preserves it.  init_graphics can dereference
+            // this pointer directly even after page-table rebuilds.
+            crate::graphics::store_args_va(args_ptr as u64);
             crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
-                // GOP stride is pixels_per_scan_line * 4 (32 bpp).
-                // Bellows sets fb_width == horizontal_resolution (1280),
-                // so width * 4 ≈ 5120 which matches the GOP log.
-                // Use saturating_mul to avoid overflow panic on huge values.
                 fb.store_raw_params(
                     args.fb_address,
                     args.fb_width,
                     args.fb_height,
-                    args.fb_width.saturating_mul(4),
+                    stride,
                     args.fb_bpp,
-                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+                    pixel_format,
                 );
             });
         }
@@ -101,7 +115,19 @@ pub unsafe extern "C" fn efi_main_stage2(
     debug_serial(b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n");
     // Initialize LOCAL_APIC_ADDRESS and validate FB config (no 4KB mappings).
     crate::boot::uefi_init::UefiInitContext::map_mmio();
-    debug_serial(b"DEBUG: [uefi_main] MMIO init complete (no 4KB mappings)\n");
+    debug_serial(b"DEBUG: [uefi_main] APIC addr set, mapping GOP FB pages\n");
+
+    // On InsydeH2O firmware, explicitly creating 4 KB UC/WC page-table
+    // entries for the GOP framebuffer here **breaks** the boot-loader's
+    // identity huge-page mapping (WB via MTRR/PAT).  See README § "Real
+    // Hardware Compatibility" item 3.
+    //
+    // The boot‑time huge‑page mapping already covers the entire lower
+    // 4 GiB address space.  Even if the GOP FB is above 4 GiB, the
+    // kernel's init_graphics() creates a proper WC mapping via
+    // build_renderer_from_stored() later.  We rely on that instead of
+    // pre‑splitting the huge page here.
+    debug_serial(b"DEBUG: [uefi_main] skipping 4KB GOP FB remap (preserving huge page)\n");
 
     // CRITICAL: On InsydeH2O firmware, VirtIO-GPU init_display() can trigger
     // MSI/MSI-X interrupts as soon as SET_SCANOUT completes. If the APIC LVTs
@@ -184,6 +210,13 @@ fn kernel_main_higher_half(
     // 1. Initialize APIC (IDT, exceptions, syscalls already set up in init_common)
     crate::interrupts::apic::init_apic();
     log::info!("APIC initialized");
+
+    // 2. Flush kernel log to VFS before entering scheduler
+    log::info!("Flushing boot log...");
+    debug_serial(b"Flushing boot log to VFS\n");
+    if let Err(()) = crate::klog::flush_to_vfs() {
+        debug_serial(b"WARNING: flush_to_vfs failed (VFS not ready?)\n");
+    }
 
     // 3. Enable interrupts and enter scheduler loop
     log::info!("Enabling interrupts and starting scheduler...");

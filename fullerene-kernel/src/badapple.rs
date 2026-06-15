@@ -1,6 +1,5 @@
 //! Bad Apple — RLE video + HDA PCM audio player. Uses AudioContext + FramebufferContext.
 use crate::contexts::audio::AudioContext;
-use alloc::vec::Vec;
 use core::arch::x86_64;
 
 static BADAPPLE_RLE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/badapple.rle"));

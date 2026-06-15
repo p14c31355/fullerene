@@ -1,13 +1,8 @@
-//! Advanced Programmable Interrupt Controller (APIC) — I/O APIC driver
+//! I/O APIC Redirection Table Entry — pure data structure
 //!
-//! Provides functions for configuring I/O APIC. Zero dependencies on any
-//! kernel or boot crate — pure hardware MMIO access via volatile pointers.
-
-use core::ptr::{read_volatile, write_volatile};
-
-/// I/O APIC register offsets
-const IOAPIC_VER: u8 = 0x01;
-const IOAPIC_REDTBL_START: u8 = 0x10;
+//! The `IoApicRedirectionEntry` struct represents a single entry in the
+//! I/O APIC redirection table.  Actual I/O APIC register access is now
+//! handled by [`crate::apic_controller::ApicController`].
 
 /// I/O APIC Redirection Table Entry (RTE) structure
 #[repr(C)]
@@ -89,83 +84,5 @@ impl IoApicRedirectionEntry {
     /// Set destination
     pub fn set_destination(&mut self, dest: u8) {
         self.upper = (self.upper & !(0xFF << 24)) | ((dest as u32) << 24);
-    }
-}
-
-/// I/O APIC structure
-#[derive(Clone, Copy)]
-pub struct IoApic {
-    base_addr: u64,
-}
-
-impl IoApic {
-    /// Create new I/O APIC instance
-    pub fn new(base_addr: u64) -> Self {
-        Self { base_addr }
-    }
-
-    /// Read from I/O APIC register (volatile)
-    unsafe fn read(&self, reg: u8) -> u32 {
-        unsafe {
-            let reg_addr = self.base_addr as *mut u32;
-            let value_addr = (self.base_addr + 0x10) as *mut u32;
-
-            write_volatile(reg_addr, reg as u32);
-            read_volatile(value_addr)
-        }
-    }
-
-    /// Write to I/O APIC register (volatile)
-    unsafe fn write(&self, reg: u8, value: u32) {
-        unsafe {
-            let reg_addr = self.base_addr as *mut u32;
-            let value_addr = (self.base_addr + 0x10) as *mut u32;
-
-            write_volatile(reg_addr, reg as u32);
-            write_volatile(value_addr, value);
-        }
-    }
-
-    /// Read redirection table entry
-    pub fn read_rte(&self, index: u8) -> IoApicRedirectionEntry {
-        unsafe {
-            IoApicRedirectionEntry {
-                lower: self.read(IOAPIC_REDTBL_START + index * 2),
-                upper: self.read(IOAPIC_REDTBL_START + index * 2 + 1),
-            }
-        }
-    }
-
-    /// Write redirection table entry
-    pub fn write_rte(&self, index: u8, entry: IoApicRedirectionEntry) {
-        unsafe {
-            self.write(IOAPIC_REDTBL_START + index * 2, entry.lower);
-            self.write(IOAPIC_REDTBL_START + index * 2 + 1, entry.upper);
-        }
-    }
-
-    /// Get version register
-    pub fn get_version(&self) -> u32 {
-        unsafe { self.read(IOAPIC_VER) }
-    }
-
-    /// Get maximum redirection entry (number of entries - 1)
-    pub fn get_max_redirection_entry(&self) -> u8 {
-        (unsafe { self.read(IOAPIC_VER) } >> 16) as u8
-    }
-}
-
-/// Find I/O APIC base address (simplified for common systems)
-/// In a full implementation, this would parse ACPI MADT
-pub fn find_io_apic_base() -> u64 {
-    // Default I/O APIC base for x86 systems
-    0xFEC00000
-}
-
-/// Get local APIC ID from the LAPIC
-pub unsafe fn get_local_apic_id(lapic_base: u64) -> u8 {
-    unsafe {
-        let lapic_id_reg = (lapic_base + 0x20) as *const u32;
-        (read_volatile(lapic_id_reg) >> 24) as u8
     }
 }

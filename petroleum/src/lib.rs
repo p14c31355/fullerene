@@ -4,7 +4,6 @@ extern crate alloc;
 
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
-pub mod apic;
 pub mod assembly;
 pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
@@ -24,7 +23,6 @@ pub mod transition;
 pub mod uefi_helpers;
 pub mod vga_debug;
 pub mod virtio;
-pub use apic::{configure_io_apic_for_legacy_irqs, init_io_apic};
 pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
@@ -32,7 +30,7 @@ pub use common::{check_memory_initialized, set_memory_initialized};
 pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;
-pub use nitrogen::ioapic::{IoApic, IoApicRedirectionEntry};
+pub use nitrogen::ioapic::IoApicRedirectionEntry;
 pub use nitrogen::port::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
@@ -63,19 +61,11 @@ pub use page_table::heap::extend_global_heap;
 pub use page_table::heap::heap_stats;
 pub use page_table::heap::heap_top;
 pub use page_table::heap::init_global_heap;
-pub use uefi_helpers::{initialize_graphics_with_config, kernel_fallback_framebuffer_detection};
 
 use crate::common::EfiSystemTable;
 use crate::common::uefi::FullereneFramebufferConfig;
 use spin::{Mutex, Once};
 
-#[derive(Clone, Copy)]
-pub struct LocalApicAddress(pub *mut u32);
-unsafe impl Send for LocalApicAddress {}
-unsafe impl Sync for LocalApicAddress {}
-
-pub static LOCAL_APIC_ADDRESS: Mutex<LocalApicAddress> =
-    Mutex::new(LocalApicAddress(core::ptr::null_mut()));
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
 
@@ -196,6 +186,7 @@ macro_rules! define_panic_handler {
             }
             $crate::serial::_print(format_args!("  {}\n", info));
             $crate::serial::_print(format_args!("==================================\n"));
+
             loop {
                 x86_64::instructions::hlt();
             }

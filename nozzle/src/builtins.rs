@@ -213,3 +213,259 @@ pub fn cmd_badapple(ctx: &mut CommandContext) -> bool {
     crate::sys_hooks::call_sys_info_hook(ctx, "badapple");
     true
 }
+
+/// `cd` — change the current working directory
+pub fn cmd_cd(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: cd <directory>\n");
+        return true;
+    }
+    crate::fs_hooks::change_directory(ctx, &ctx.args[1]);
+    true
+}
+
+/// `tree` — display a directory tree
+pub fn cmd_tree(ctx: &mut CommandContext) -> bool {
+    let path = if ctx.args.len() > 1 { &ctx.args[1] } else { "." };
+    crate::fs_hooks::tree_directory(ctx, path);
+    true
+}
+
+/// `find` — search for files matching a pattern
+pub fn cmd_find(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal
+            .write_str("Usage: find <directory> <pattern>\n");
+        return true;
+    }
+    crate::fs_hooks::find_files(ctx, &ctx.args[1], &ctx.args[2]);
+    true
+}
+
+/// `cp` — copy a file
+pub fn cmd_cp(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal.write_str("Usage: cp <source> <destination>\n");
+        return true;
+    }
+    crate::fs_hooks::copy_file(ctx, &ctx.args[1], &ctx.args[2]);
+    true
+}
+
+/// `mv` — move a file
+pub fn cmd_mv(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal.write_str("Usage: mv <source> <destination>\n");
+        return true;
+    }
+    crate::fs_hooks::move_file(ctx, &ctx.args[1], &ctx.args[2]);
+    true
+}
+
+/// `write` — write content to a file
+pub fn cmd_write(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 3 {
+        ctx.terminal.write_str("Usage: write <path> <content>\n");
+        return true;
+    }
+    crate::fs_hooks::write_file(ctx, &ctx.args[1], &ctx.args[2]);
+    true
+}
+
+/// `rm` — remove a file or directory
+pub fn cmd_rm(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: rm <path>\n");
+        return true;
+    }
+    for arg in &ctx.args[1..] {
+        crate::fs_hooks::remove_file(ctx, arg);
+    }
+    true
+}
+
+/// `mkdir` — create a directory
+pub fn cmd_mkdir(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: mkdir <path>\n");
+        return true;
+    }
+    for arg in &ctx.args[1..] {
+        crate::fs_hooks::make_directory(ctx, arg);
+    }
+    true
+}
+
+/// `touch` — create an empty file or update timestamp
+pub fn cmd_touch(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: touch <path>\n");
+        return true;
+    }
+    for arg in &ctx.args[1..] {
+        crate::fs_hooks::touch_file(ctx, arg);
+    }
+    true
+}
+
+/// `df` — show disk usage
+pub fn cmd_df(ctx: &mut CommandContext) -> bool {
+    crate::fs_hooks::disk_usage(ctx);
+    true
+}
+
+/// `date` — show current date and time
+pub fn cmd_date(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "date");
+    true
+}
+
+/// `uptime` — show system uptime
+pub fn cmd_uptime(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "uptime");
+    true
+}
+
+/// `whoami` — print current user name
+pub fn cmd_whoami(ctx: &mut CommandContext) -> bool {
+    ctx.terminal.write_str("fullerene\n");
+    true
+}
+
+/// `history` — show command history
+pub fn cmd_history(ctx: &mut CommandContext) -> bool {
+    let entries = crate::line_editor::get_history();
+    if entries.is_empty() {
+        ctx.terminal.write_str("(no history)\n");
+    } else {
+        for (num, entry) in entries.iter().rev().enumerate() {
+            let line = alloc::format!("{}  {}\n", num + 1, entry);
+            ctx.terminal.write_str(&line);
+        }
+    }
+    true
+}
+
+/// `sleep` — pause for a number of seconds
+pub fn cmd_sleep(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: sleep <seconds>\n");
+        return true;
+    }
+    crate::sys_hooks::call_sys_info_hook(ctx, "sleep");
+    true
+}
+
+/// `grep` — search for a pattern in input (stdin or files)
+pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal.write_str("Usage: grep <pattern> [file...]\n");
+        ctx.terminal.write_str("       command | grep <pattern>\n");
+        return true;
+    }
+    let pattern = ctx.args[1];
+    // If stdin was provided (from a pipe), search through it.
+    if let Some(stdin) = ctx.terminal.take_stdin() {
+        for line in stdin.lines() {
+            if line.contains(pattern) {
+                ctx.terminal.write_str(line);
+                ctx.terminal.write_str("\n");
+            }
+        }
+        return true;
+    }
+    // Otherwise, search files provided as arguments.
+    if ctx.args.len() < 3 {
+        ctx.terminal
+            .write_str("grep: no input (pipe data or specify files)\n");
+        return true;
+    }
+    // Use a simple sys_info dispatch for file-based grep
+    // The kernel will process all files in ctx.args[2..]
+    crate::sys_hooks::call_sys_info_hook(ctx, "grep");
+    true
+}
+
+/// `sort` — sort lines of text
+pub fn cmd_sort(ctx: &mut CommandContext) -> bool {
+    let reverse = ctx.args.iter().any(|a| *a == "-r");
+    // Try reading from stdin first (pipe input).
+    if let Some(stdin) = ctx.terminal.take_stdin() {
+        let mut lines: alloc::vec::Vec<&str> = stdin.lines().collect();
+        lines.sort();
+        if reverse {
+            lines.reverse();
+        }
+        for line in lines {
+            ctx.terminal.write_str(line);
+            ctx.terminal.write_str("\n");
+        }
+        return true;
+    }
+    // If no stdin, try reading from a file.
+    if ctx.args.len() > 1 {
+        crate::sys_hooks::call_sys_info_hook(ctx, "sort");
+    } else {
+        ctx.terminal.write_str("Usage: sort [-r] [file]\n");
+        ctx.terminal.write_str("       command | sort [-r]\n");
+    }
+    true
+}
+
+/// `wc` — count lines, words, and bytes
+pub fn cmd_wc(ctx: &mut CommandContext) -> bool {
+    // Read from stdin (pipe input) or files.
+    if let Some(stdin) = ctx.terminal.take_stdin() {
+        let lines = stdin.lines().count();
+        let words = stdin.split_whitespace().count();
+        let bytes = stdin.len();
+        let out = alloc::format!("{} {} {} (stdin)\n", lines, words, bytes);
+        ctx.terminal.write_str(&out);
+        return true;
+    }
+    // From files
+    if ctx.args.len() > 1 {
+        crate::sys_hooks::call_sys_info_hook(ctx, "wc");
+    } else {
+        ctx.terminal.write_str("Usage: wc [file]\n");
+        ctx.terminal.write_str("       command | wc\n");
+    }
+    true
+}
+
+/// `app` — package manager (install / remove / list)
+pub fn cmd_app(ctx: &mut CommandContext) -> bool {
+    if ctx.args.len() < 2 {
+        ctx.terminal
+            .write_str("Usage: app <install|remove|list> [name] [description]\n");
+        return true;
+    }
+    let sub = ctx.args[1];
+    match sub {
+        "list" => crate::sys_hooks::call_sys_info_hook(ctx, "app_list"),
+        "install" if ctx.args.len() >= 4 => {
+            let name = &ctx.args[2];
+            let desc = ctx.args[3..].join(" ");
+            // Use sys_control hook: "app_install <name> <desc>"
+            let cmd = alloc::format!("app_install {} {}", name, desc);
+            crate::sys_hooks::call_sys_control_hook(&cmd);
+        }
+        "install" => {
+            ctx.terminal
+                .write_str("Usage: app install <name> <description>\n");
+        }
+        "remove" if ctx.args.len() >= 3 => {
+            let name = ctx.args[2];
+            let cmd = alloc::format!("app_remove {}", name);
+            crate::sys_hooks::call_sys_control_hook(&cmd);
+        }
+        "remove" => {
+            ctx.terminal.write_str("Usage: app remove <name>\n");
+        }
+        _ => {
+            let msg = alloc::format!("app: unknown subcommand '{}'\n", sub);
+            ctx.terminal.write_str(&msg);
+        }
+    }
+    true
+}
