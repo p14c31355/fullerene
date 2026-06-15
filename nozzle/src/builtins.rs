@@ -258,7 +258,7 @@ pub fn cmd_mv(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Usage: mv <source> <destination>\n");
         return true;
     }
-    crate::fs_hooks::move_file(ctx, ctx.args[1], ctx.args[2]);
+    crate::fs_hooks::move_file(ctx, &ctx.args[1], &ctx.args[2]);
     true
 }
 
