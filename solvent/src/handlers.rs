@@ -5,7 +5,7 @@
 
 use crate::cursor_lightweight_update;
 use crate::{
-    FB_DIMS, MOUSE_STATE, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS,
+    FB_DIMS, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS,
 };
 use lattice::shell_overlay::ShellState;
 use lattice::wm::DragState;
@@ -142,10 +142,8 @@ fn handle_overlay_event(rt: &mut crate::RuntimeState, event: &Event) -> bool {
 }
 
 fn handle_timezone_click(rt: &mut crate::RuntimeState) -> bool {
-    let mouse = MOUSE_STATE.lock();
-    let cx = mouse.x as i32;
-    let cy = mouse.y as i32;
-    drop(mouse);
+    let cx = rt.desktop.cursor.x as i32;
+    let cy = rt.desktop.cursor.y as i32;
     let (fw, _fh, _stride) = *FB_DIMS.lock();
 
     let timezones: &[i8] = &[-12, -8, -5, 0, 1, 3, 5, 8, 9, 10, 12];
@@ -170,10 +168,8 @@ fn handle_timezone_click(rt: &mut crate::RuntimeState) -> bool {
 }
 
 fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
-    let mouse = MOUSE_STATE.lock();
-    let cx = mouse.x as i32;
-    let cy = mouse.y as i32;
-    drop(mouse);
+    let cx = rt.desktop.cursor.x as i32;
+    let cy = rt.desktop.cursor.y as i32;
     let (fw, _fh, _stride) = *FB_DIMS.lock();
 
     let icon_size = 64i32;

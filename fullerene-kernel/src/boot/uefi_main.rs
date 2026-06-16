@@ -54,7 +54,7 @@ pub unsafe extern "C" fn efi_main_stage2(
                 && args.fb_bpp == 32;
             if fb_valid {
                 let stride_bytes = if args.fb_stride > 0 {
-                    args.fb_stride.saturating_mul(4)
+                    args.fb_stride
                 } else {
                     args.fb_width.saturating_mul(4)
                 };

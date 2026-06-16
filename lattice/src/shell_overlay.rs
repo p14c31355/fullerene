@@ -75,7 +75,7 @@ pub fn render_task_overview(
     windows: &[Window],
 ) {
     let stride = fb_stride as usize;
-    if fb.len() < stride * fbh as usize {
+    if stride < fbw as usize || fb.len() < stride.checked_mul(fbh as usize).unwrap_or(usize::MAX) {
         return;
     }
     dim_backdrop(fb, fbw, fbh, stride);
@@ -156,7 +156,7 @@ pub fn render_task_overview(
 /// Render the App Grid overlay.
 pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     let stride = fb_stride as usize;
-    if fb.len() < stride * fbh as usize {
+    if stride < fbw as usize || fb.len() < stride.checked_mul(fbh as usize).unwrap_or(usize::MAX) {
         return;
     }
     dim_backdrop(fb, fbw, fbh, stride);
@@ -259,7 +259,7 @@ pub fn render_timezone_selector(
     current_offset: i8,
 ) {
     let stride = fb_stride as usize;
-    if fb.len() < stride * fbh as usize {
+    if stride < fbw as usize || fb.len() < stride.checked_mul(fbh as usize).unwrap_or(usize::MAX) {
         return;
     }
     dim_backdrop(fb, fbw, fbh, stride);

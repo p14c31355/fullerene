@@ -146,7 +146,7 @@ impl FramebufferDiscovery {
             return None;
         }
         let stride = if args.fb_stride > 0 {
-            args.fb_stride.saturating_mul(4)
+            args.fb_stride
         } else {
             args.fb_width.saturating_mul(4)
         };
@@ -180,7 +180,14 @@ impl FramebufferDiscovery {
             if class == 0x03 && subclass == 0x00 {
                 let bar0 =
                     nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x10);
-                let fb_phys = (bar0 & 0xFFFFFFF0) as u64;
+                let fb_phys = if (bar0 & 0x6) == 0x4 {
+                    // 64-bit BAR: read BAR1 for upper 32 bits
+                    let bar1 =
+                        nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x14);
+                    ((bar1 as u64) << 32) | ((bar0 & 0xFFFFFFF0) as u64)
+                } else {
+                    (bar0 & 0xFFFFFFF0) as u64
+                };
                 if fb_phys >= 0x100000 {
                     // PCI BAR0 gives us the physical address but not the
                     // actual panel resolution.  Fall back to a safe default.
