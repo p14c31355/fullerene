@@ -121,10 +121,14 @@ impl PopupMenu {
     }
 
     /// Render menu text onto a framebuffer (called by compositor overlay pass).
-    pub fn render_text(&self, fb: &mut [u32], fbw: u32, fbh: u32) {
+    ///
+    /// `fbw` is logical screen width, `fb_stride` is the actual
+    /// pixels‑per‑scan‑line (may be > `fbw` on real hardware).
+    pub fn render_text(&self, fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
         if !self.visible {
             return;
         }
+        let stride = fb_stride as usize;
         for (i, item) in self.items.iter().enumerate() {
             let item_y = self.y + MENU_BORDER + i as u32 * ITEM_HEIGHT;
             let tx = self.x + MENU_BORDER + 4;
@@ -144,7 +148,7 @@ impl PopupMenu {
                             continue;
                         }
                         if crate::font::get_glyph_pixel(ch, row, col) {
-                            let idx = (py as usize) * (fbw as usize) + px as usize;
+                            let idx = (py as usize) * stride + px as usize;
                             if idx < fb.len() {
                                 fb[idx] = MENU_TEXT;
                             }

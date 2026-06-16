@@ -363,7 +363,7 @@ impl Compositor {
 
         // Draw menu text on top of overlay rectangles
         if let Some(menu) = scene.active_menu {
-            menu.render_text(framebuffer, fb_width, fb_height);
+            menu.render_text(framebuffer, fb_width, fb_height, fb_width);
             inc_draw_calls();
         }
 

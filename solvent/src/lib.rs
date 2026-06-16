@@ -1163,10 +1163,10 @@ where
         // ── Shell overlay rendering (post‑compositor, onto fb_pixels) ──────
         match rt.shell_state {
             ShellState::TaskOverview => {
-                render_task_overview(fb_pixels, fb_width, fb_height, rt.desktop.wm.windows());
+                render_task_overview(fb_pixels, fb_width, fb_height, fb_stride_pixels, rt.desktop.wm.windows());
             }
             ShellState::AppGrid => {
-                render_app_grid(fb_pixels, fb_width, fb_height);
+                render_app_grid(fb_pixels, fb_width, fb_height, fb_stride_pixels);
             }
             ShellState::TimeZoneSelector => {
                 let current_offset =
@@ -1175,6 +1175,7 @@ where
                     fb_pixels,
                     fb_width,
                     fb_height,
+                    fb_stride_pixels,
                     current_offset,
                 );
             }
@@ -1183,7 +1184,7 @@ where
 
         // ── Top Panel (only on Desktop; overlays cover it) ───
         if rt.shell_state == ShellState::Desktop {
-            rt.desktop.top_panel.render(fb_pixels, fb_width, fb_height);
+            rt.desktop.top_panel.render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
         }
 
         // ── Re‑seed the cursor save buffer BEFORE drawing the cursor ──
@@ -1235,7 +1236,7 @@ where
         // last layer so it is always visible.
         if rt.desktop.cursor.visible {
             use lattice::compositor::Compositor;
-            Compositor::draw_cursor_direct(fb_pixels, fb_width, fb_height, &rt.desktop.cursor);
+            Compositor::draw_cursor_direct(fb_pixels, fb_stride_pixels, fb_height, &rt.desktop.cursor);
         }
     }
 }
