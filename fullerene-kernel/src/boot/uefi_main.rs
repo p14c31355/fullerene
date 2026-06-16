@@ -32,47 +32,46 @@ pub unsafe extern "C" fn efi_main_stage2(
         // Store raw integers NOW while args_ptr is valid.  Do NOT
         // dereference args_ptr later — it may be corrupted by the
         // world‑switch page‑table rebuild.
-        // NOTE: KernelContext::init_kernel() does PCI scan (heap alloc)
-        // so we init framebuffer only at this early stage.
-        crate::contexts::framebuffer::init_framebuffer();
+        //
+        // VALIDATION: Before dereferencing args_ptr, verify the
+        // framebuffer fields are sane.  If args_ptr lies outside the
+        // identity huge-page range (0–64GB), the shallow clone_page_table
+        // will translate it to wrong physical memory and we'll read
+        // garbage.  Check that fb_width/height/stride/bpp/address are
+        // within plausible bounds.  If they aren't, skip the .data store
+        // and rely on the PCI BAR0 fallback later.
+        crate::graphics::discovery::store_args_va(args_ptr as u64);
         {
             let args = &*args_ptr;
-            // Use fb_stride if the bootloader provided it (new field).
-            // On real hardware pixels_per_scan_line > horizontal_resolution is
-            // common (e.g. 2560→2688 on Intel GOP), so the bootloader's stride
-            // from GOP is authoritative.  Fall back to width*4 for old bootloaders
-            // that don't set fb_stride.
-            let stride = if args.fb_stride > 0 {
-                args.fb_stride.saturating_mul(4)
-            } else {
-                args.fb_width.saturating_mul(4)
-            };
-            let pixel_format = match args.fb_pixel_format {
-                0 => {
-                    petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
-                }
-                1 => {
-                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
-                }
-                _ => {
-                    petroleum::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor
-                }
-            };
-            // Store KernelArgs virtual address (already higher-half) in .data.
-            // init_and_jump identity-maps kernel_args_page, and shallow
-            // clone_page_table preserves it.  init_graphics can dereference
-            // this pointer directly even after page-table rebuilds.
-            crate::graphics::store_args_va(args_ptr as u64);
-            crate::contexts::framebuffer::with_framebuffer_mut(|fb| {
-                fb.store_raw_params(
+            // Sanity-check: are the framebuffer fields plausible?
+            // On real InsydeH2O firmware, garbage reads produce values like
+            // 1900544×4172873728 — these are clearly out of range.
+            let fb_valid = args.fb_address >= 0x100000
+                && args.fb_width > 0
+                && args.fb_width <= 16384
+                && args.fb_height > 0
+                && args.fb_height <= 16384
+                && args.fb_bpp == 32;
+            if fb_valid {
+                let stride_bytes = if args.fb_stride > 0 {
+                    args.fb_stride
+                } else {
+                    args.fb_width.saturating_mul(4)
+                };
+                crate::graphics::discovery::store_boot_fb_params(
                     args.fb_address,
                     args.fb_width,
                     args.fb_height,
-                    stride,
+                    stride_bytes,
                     args.fb_bpp,
-                    pixel_format,
+                    args.fb_pixel_format,
                 );
-            });
+            } else {
+                // Framebuffer fields are garbage — args_ptr was not
+                // identity-mapped correctly.  Do NOT store the corrupted
+                // values; the kernel will fall back to PCI BAR0 probe.
+                debug_serial(b"S2: WARNING: KernelArgs FB fields invalid, skipping .data store (identity map mismatch?)\n");
+            }
         }
 
         // Signal '3': After early FB param capture

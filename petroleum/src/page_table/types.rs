@@ -37,7 +37,7 @@ pub trait PageTableHelper {
         virtual_addr: usize,
     ) -> crate::common::logging::SystemResult<x86_64::structures::paging::PhysFrame>;
     fn translate_address(&self, virtual_addr: usize)
-        -> crate::common::logging::SystemResult<usize>;
+    -> crate::common::logging::SystemResult<usize>;
     fn set_page_flags(
         &mut self,
         virtual_addr: usize,

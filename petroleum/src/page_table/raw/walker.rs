@@ -4,8 +4,8 @@
 //! all 4 levels of page table traversal, eliminating duplicated walk logic
 //! across map/unmap/translate operations.
 
-use crate::page_table::types::*;
 use crate::page_table::PageTableEntry;
+use crate::page_table::types::*;
 
 /// Errors that can occur during page table walking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

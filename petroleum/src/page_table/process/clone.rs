@@ -2,10 +2,10 @@ use crate::extract_frame_if_present;
 use crate::page_table::types::PageTableHelper;
 use alloc::collections::BTreeMap;
 use x86_64::{
+    PhysAddr,
     structures::paging::{
         FrameAllocator, OffsetPageTable, PageTable, PageTableFlags, PhysFrame, Size4KiB,
     },
-    PhysAddr,
 };
 
 pub fn clone_page_table(

@@ -17,10 +17,10 @@ mod tests;
 pub use allocator::bitmap::BitmapFrameAllocator;
 pub use allocator::traits::FrameAllocatorExt;
 pub use constants::{BootInfoFrameAllocator, HIGHER_HALF_OFFSET as KERNEL_OFFSET};
-pub use heap::{init_global_heap, ALLOCATOR, HEAP_INITIALIZED};
+pub use heap::{ALLOCATOR, HEAP_INITIALIZED, init_global_heap};
 pub use kernel::init::init;
 pub use kernel::init::{
-    active_level_4_table, init_and_jump, InitAndJumpArgs, KernelMemoryOperations,
+    InitAndJumpArgs, KernelMemoryOperations, active_level_4_table, init_and_jump,
 };
 pub use kernel::mapper::Mapper as KernelMapper;
 pub use memory_map::MemoryMapDescriptor;

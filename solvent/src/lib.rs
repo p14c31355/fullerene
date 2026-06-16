@@ -1,7 +1,8 @@
 //! Solvent — Runtime / Orchestration Layer
 //!
-//! Solvent is the orchestration/runtime layer that sits between the kernel
-//! and the higher-level subsystems (Lattice, Nozzle, Resonance, ChronoLine).
+//! Solvent sits between the kernel and higher-level subsystems (Lattice,
+//! Nozzle, Resonance, ChronoLine).  It owns runtime state, event dispatch,
+//! frame pacing, and subsystem wiring.
 //!
 //! # Event Flow
 //!
@@ -16,24 +17,26 @@
 
 extern crate alloc;
 
+// ── Modules (god-module decomposition per AGENTS.md §10) ────
+mod handlers;
+mod menu_actions;
+
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
-use core::fmt::Write;
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
-use resonance::{Dispatcher, Event, EventHandler, EventQueue, InputEvent, KeyCode, MouseButton};
+use resonance::{Dispatcher, Event, EventQueue, InputEvent, KeyCode, MouseButton};
 use spin::Mutex;
 
 // ── Aggregated kernel callbacks ──────────────────────────────
 
-/// All kernel→solvent callbacks bundled into a single struct.
 pub struct SolventCallbacks {
     pub shell_cmd: Option<fn(&str) -> String>,
     pub launch_shell: Option<fn()>,
@@ -56,14 +59,11 @@ impl SolventCallbacks {
             device_list: None,
         }
     }
-
-    /// Atomically install all callbacks at once.
     pub fn install(self) {
         *SOLVENT_CALLBACKS.lock() = self;
     }
 }
 
-/// Global bag of kernel→solvent callbacks.
 pub static SOLVENT_CALLBACKS: Mutex<SolventCallbacks> = Mutex::new(SolventCallbacks::none());
 
 pub fn exec_shell_command(input: &str) -> String {
@@ -84,86 +84,55 @@ pub fn launch_shell() {
     }
 }
 
-// ── Utility Functions ────────────────────────────────────────
+// ── Utility ──────────────────────────────────────────────────
 
-/// Truncate a string to at most `n` characters (not bytes), safely handling UTF-8 boundaries.
-fn truncate_to_chars(s: &str, n: usize) -> String {
+pub(crate) fn truncate_to_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
 // ── Constants ────────────────────────────────────────────────
-
-/// Default terminal columns.
 const DEFAULT_COLS: u32 = 80;
-/// Default terminal rows.
 const DEFAULT_ROWS: u32 = 25;
-/// Glyph width in pixels (from lattice::font::GLYPH_WIDTH).
 const GLYPH_W: u32 = 8;
-/// Glyph height in pixels (from lattice::font::GLYPH_HEIGHT).
 const GLYPH_H: u32 = 16;
 const TERM_WIN_W: u32 = DEFAULT_COLS * GLYPH_W;
 const TERM_WIN_H: u32 = DEFAULT_ROWS * GLYPH_H;
 const BG_COLOR: u32 = 0x1a1a2e;
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
-const MOUSE_SENSITIVITY: i16 = 6;
-/// Interval (ticks) between forced compositor passes on Desktop.
-///
-/// The tick‑based timer is a coarse fallback; actual frame pacing is
-/// enforced via TSC in `chrono_tick` so that real‑time FPS stays
-/// consistent across QEMU (emulated) and real hardware (native).
+pub(crate) const MOUSE_SENSITIVITY: i16 = 6;
 const FRAME_INTERVAL_TICKS: u64 = 8;
-/// Target frame interval: 16.7 ms (~60 FPS).
 const FRAME_INTERVAL_MS: u64 = 17;
-/// Conservative TSC‑per‑ms floor (2.5 GHz).  Set by the kernel during
-/// early boot via `set_tsc_per_ms()`.  This guarantees ≤60 FPS on any
-/// x86‑64 CPU from the last decade.
-static TSC_PER_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(3_000_000);
 const FRAME_TIMER_ID: TimerId = TimerId(2);
-
-/// Maximum framebuffer size covering 4K (3840×2160). BSS static buffer;
-/// displays exceeding this will skip rendering to avoid overflowing.
+pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(3_000_000);
 const MAX_FB_PIXELS: usize = 3840 * 2160;
 
-/// Set the TSC‑per‑millisecond value from the kernel.
-/// Called during early boot so the compositor can pace frames in real
-/// time regardless of whether the yield‑loop runs at 500 Hz (QEMU TCG)
-/// or 50 kHz (bare metal).
 pub fn set_tsc_per_ms(val: u64) {
     TSC_PER_MS.store(val, core::sync::atomic::Ordering::Relaxed);
 }
-
-/// Get the current TSC‑per‑millisecond value.
 pub fn get_tsc_per_ms() -> u64 {
     TSC_PER_MS.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// Last render TSC timestamp (for real‑time frame pacing).
 static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Total bytes that have been successfully allocated via heap-extend callback.
 pub static HEAP_EXTEND_RESERVE: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
-// ── VFS / Process / Device types ──────────
+// ── VFS / Process / Device types ─────────────────────────────
 
-/// A single VFS directory entry returned by the kernel.
 #[derive(Debug, Clone)]
 pub struct VfsEntry {
     pub name: String,
     pub size: u64,
     pub is_dir: bool,
 }
-
-/// A single process entry returned by the kernel.
 #[derive(Debug, Clone)]
 pub struct ProcessEntry {
     pub pid: u64,
     pub name: String,
     pub state: ProcessStateKind,
 }
-
-/// Kernel-side process state (mirrors fullerene_kernel::process::ProcessState).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessStateKind {
     Ready,
@@ -171,8 +140,6 @@ pub enum ProcessStateKind {
     Blocked,
     Terminated,
 }
-
-/// A single device entry returned by the kernel.
 #[derive(Debug, Clone)]
 pub struct DeviceEntry {
     pub name: String,
@@ -180,48 +147,26 @@ pub struct DeviceEntry {
     pub enabled: bool,
 }
 
-/// Latest wall‑clock string (updated each frame).
 static CLOCK_STRING: Mutex<String> = Mutex::new(String::new());
-
-/// Get a copy of the current clock string.
 pub fn clock_string() -> String {
     CLOCK_STRING.lock().clone()
 }
-
-/// Tick counter for double‑tap detection (shared with the runtime).
 pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // ── Static back‑buffer (BSS) ─────────────────────────────────
-
 static BACK_BUFFER: Mutex<[u32; MAX_FB_PIXELS]> = Mutex::new([0u32; MAX_FB_PIXELS]);
 
 // ── Runtime state ────────────────────────────────────────────
-
-static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
+pub(crate) static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
 static EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
 static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
-static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
-/// Cached framebuffer dimensions: (width, height, stride_pixels).
-/// stride_pixels = stride_bytes / 4 (pixels per scan line).
-static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
-
-/// Cached framebuffer pointer (as `usize`), dimensions, and stride
-/// (u32 pixels/scan‑line) for lightweight cursor updates in overlay mode.
-///
-/// # Safety invariant
-///
-/// The stored pointer is only valid while the kernel's primary framebuffer
-/// remains mapped.  It is refreshed on every `render()` call via
-/// `get_framebuffer_slice()`, which always returns the same `&'static mut`
-/// slice from the kernel's `PRIMARY_RENDERER`.  The pointer is therefore
-/// valid for the entire lifetime of the system after the first frame has
-/// been rendered.  `cursor_lightweight_update` checks for `(0,0,0)` before
-/// dereferencing.
-static LAST_FB: Mutex<(usize, u32, u32, u32)> = Mutex::new((0, 0, 0, 0));
+pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
+pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
+pub(crate) static LAST_FB: Mutex<(usize, u32, u32, u32)> = Mutex::new((0, 0, 0, 0));
 
 pub struct RuntimeState {
     pub desktop: Desktop,
-    pub term_window: WindowId,
+    pub term_window: Option<WindowId>,
     pub term_buf: TerminalBuffer,
     pub chrono: ChronoLine,
     pub cursor_visible: bool,
@@ -229,16 +174,9 @@ pub struct RuntimeState {
     pub back_len: usize,
     pub term_cells: Vec<LatticeCell>,
     pub term_dirty: bool,
-
-    // ── Shell overlay state ─────────────────────────────
-    /// Current shell UI state.
     pub shell_state: ShellState,
-
-    /// Whether the clock text changed since the last compositor pass.
+    pub shell_launch_pending: bool,
     pub clock_changed: bool,
-
-    /// Lightweight cursor save buffer (16×16 pixels) for overlay mode
-    /// cursor movement without full re‑renders.
     pub cursor_save_buf:
         [u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
     pub cursor_save_x: i32,
@@ -247,10 +185,8 @@ pub struct RuntimeState {
 }
 
 pub fn init() {
-    let mut desktop = Desktop::new(BG_COLOR);
-    let term_window = desktop
-        .wm
-        .create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
+    let desktop = Desktop::new(BG_COLOR);
+    // Terminal window is created lazily when the user clicks the Shell icon.
     let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();
@@ -263,9 +199,9 @@ pub fn init() {
         },
     );
 
-    dispatcher.register(Box::new(WmEventHandler));
-    dispatcher.register(Box::new(TerminalInputHandler));
-    dispatcher.register(Box::new(ShellEventHandler));
+    dispatcher.register(Box::new(handlers::WmEventHandler));
+    dispatcher.register(Box::new(handlers::TerminalInputHandler));
+    dispatcher.register(Box::new(handlers::ShellEventHandler));
 
     *EVENT_QUEUE.lock() = Some(EventQueue::new());
     *DISPATCHER.lock() = Some(dispatcher);
@@ -280,7 +216,7 @@ pub fn init() {
 
     *RUNTIME.lock() = Some(RuntimeState {
         desktop,
-        term_window,
+        term_window: None,
         term_buf,
         chrono,
         cursor_visible: true,
@@ -289,6 +225,7 @@ pub fn init() {
         term_cells: Vec::new(),
         term_dirty: true,
         shell_state: ShellState::Desktop,
+        shell_launch_pending: false,
         clock_changed: false,
         cursor_save_buf: [0u32;
             lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
@@ -302,318 +239,15 @@ pub fn is_initialized() -> bool {
     RUNTIME.lock().is_some()
 }
 
-// ── Event handlers ───────────────────────────────────────────
+// ── Lightweight cursor update ────────────────────────────────
 
-struct WmEventHandler;
-
-impl EventHandler for WmEventHandler {
-    fn handle(&mut self, event: &Event) -> bool {
-        let mut rt = RUNTIME.lock();
-        let rt = match rt.as_mut() {
-            Some(r) => r,
-            None => return false,
-        };
-
-        // In shell overlay modes, route mouse events to overlay handling.
-        if rt.shell_state != ShellState::Desktop {
-            match event {
-                // In overlay mode, move the cursor and trigger a render
-                // so the cursor is redrawn at its new position.
-                // `mouse_move` also tracks cursor_moved for dirty-rect
-                // optimisation; wm.on_mouse_move is a no‑op because drag
-                // state is always None in overlay mode.
-                Event::Input(InputEvent::MouseMove { x, y }) => {
-                    rt.desktop.mouse_move(*x, *y);
-                    cursor_lightweight_update(rt);
-                    return true;
-                }
-                Event::Input(InputEvent::MouseDown(_))
-                    if rt.shell_state == ShellState::TimeZoneSelector =>
-                {
-                    // In timezone selector: determine which entry was clicked
-                    let mouse = MOUSE_STATE.lock();
-                    let cx = mouse.x as i32;
-                    let cy = mouse.y as i32;
-                    drop(mouse);
-                    let (fw, _fh, _stride) = *FB_DIMS.lock();
-
-                    // Timezone entry layout (must match render_timezone_selector)
-                    let timezones: &[i8] = &[-12, -8, -5, 0, 1, 3, 5, 8, 9, 10, 12];
-                    let entry_h = 24i32;
-                    let pad = 6i32;
-                    let start_y = 40i32;
-                    let max_label_chars = 16i32;
-                    let entry_w = max_label_chars * 8 + 16;
-                    let ex = ((fw as i32) - entry_w) / 2;
-
-                    for (i, offset) in timezones.iter().enumerate() {
-                        let ey = start_y + (i as i32) * (entry_h + pad);
-                        if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
-                            TIMEZONE_OFFSET_HOURS
-                                .store(*offset, core::sync::atomic::Ordering::Relaxed);
-                            rt.shell_state = ShellState::Desktop;
-                            rt.frame_due = true;
-                            return true;
-                        }
-                    }
-                    // Click outside entries → back to AppGrid
-                    rt.shell_state = ShellState::AppGrid;
-                    rt.frame_due = true;
-                    return true;
-                }
-                Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::AppGrid => {
-                    let mouse = MOUSE_STATE.lock();
-                    let cx = mouse.x as i32;
-                    let cy = mouse.y as i32;
-                    drop(mouse);
-                    let (fw, _fh, _stride) = *FB_DIMS.lock();
-
-                    // AppGrid layout (must match render_app_grid)
-                    let icon_size = 64i32;
-                    let pad = 24i32;
-                    let label_h = 18i32;
-                    let columns = ((fw as i32) / (icon_size + pad)).max(1);
-                    let start_y = 60i32;
-
-                    // Determine which icon was clicked (0=Shell, 1=Terminal,
-                    // 2=Clock, 3=Settings, 4=File Mgr, 5=About)
-                    for idx in 0i32..6 {
-                        let col = idx % columns;
-                        let row = idx / columns;
-                        let ax = pad + col * (icon_size + pad);
-                        let ay = start_y + row * (icon_size + label_h + pad);
-                        if cx >= ax
-                            && cx < ax + icon_size
-                            && cy >= ay
-                            && cy < ay + icon_size + label_h
-                        {
-                            match idx {
-                                0 => {
-                                    // Shell — launch the system shell
-                                    launch_shell();
-                                    rt.shell_state = ShellState::Desktop;
-                                    rt.frame_due = true;
-                                    return true;
-                                }
-                                3 => {
-                                    // Settings → timezone selector
-                                    rt.shell_state = ShellState::TimeZoneSelector;
-                                    rt.frame_due = true;
-                                    return true;
-                                }
-                                _ => {
-                                    // Other apps — return to Desktop
-                                    rt.shell_state = ShellState::Desktop;
-                                    rt.frame_due = true;
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-
-                    // Click outside all icons → back to Desktop
-                    rt.shell_state = ShellState::Desktop;
-                    rt.frame_due = true;
-                    return true;
-                }
-                Event::Input(InputEvent::MouseDown(_)) => {
-                    // Generic click in any other overlay → back to Desktop
-                    rt.shell_state = ShellState::Desktop;
-                    rt.frame_due = true;
-                    return true;
-                }
-                _ => return false,
-            }
-        }
-
-        match event {
-            Event::Input(InputEvent::MouseMove { x, y }) => {
-                rt.desktop.mouse_move(*x, *y);
-                cursor_lightweight_update(rt);
-                // Only schedule a full render when a drag is in
-                // progress (the WM generates dirty rects that must
-                // be composited).  Pure cursor movement is handled
-                // by the lightweight update above.
-                if !matches!(rt.desktop.wm.drag_state(), lattice::wm::DragState::None)
-                    || rt.desktop.has_pending_dirty_rects()
-                {
-                    rt.frame_due = true;
-                }
-                true
-            }
-            Event::Input(InputEvent::MouseDown(btn)) => {
-                let cx = rt.desktop.cursor.x;
-                let cy = rt.desktop.cursor.y;
-
-                // ── Desktop right-click → context menu ───
-                if *btn == MouseButton::Right {
-                    // Only show context menu if no window is under the cursor
-                    // (i.e. click is on empty desktop)
-                    let hit_window = rt.desktop.wm.window_at(cx, cy);
-                    if hit_window.is_none() {
-                        rt.desktop.show_context_menu(cx, cy);
-                        rt.frame_due = true;
-                        return true;
-                    }
-                }
-
-                // ── Top-panel Activities button click ───
-                if rt.desktop.top_panel.hit_activities_button(cx, cy) {
-                    rt.shell_state = ShellState::TaskOverview;
-                    rt.frame_due = true;
-                    return true;
-                }
-
-                rt.desktop.set_cursor(cx, cy);
-                let (fw, fh, _stride) = *FB_DIMS.lock();
-                rt.desktop.mouse_down(fw, fh);
-                rt.frame_due = true;
-
-                // ── Dispatch menu action if one was clicked ─────
-                if let Some(action) = rt.desktop.menu_action_pending.take() {
-                    dispatch_menu_action(rt, &action);
-                }
-
-                rt.term_dirty = true;
-                true
-            }
-            Event::Input(InputEvent::MouseUp(_btn)) => {
-                rt.desktop.mouse_up();
-                rt.frame_due = true;
-                true
-            }
-            _ => false,
-        }
-    }
-}
-
-struct TerminalInputHandler;
-
-impl EventHandler for TerminalInputHandler {
-    fn handle(&mut self, event: &Event) -> bool {
-        // PageUp / PageDown → terminal scrollback navigation.
-        // These keys are NOT consumed by the shell and don't
-        // interfere with LatticeTerminal::read_byte().
-        match event {
-            Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
-                    rt.term_buf.scroll_back(1);
-                    rt.term_dirty = true;
-                    rt.frame_due = true;
-                }
-                return true;
-            }
-            Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
-                    rt.term_buf.scroll_forward(1);
-                    rt.term_dirty = true;
-                    rt.frame_due = true;
-                }
-                return true;
-            }
-            Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
-                    rt.term_buf.reset_scroll();
-                    rt.term_dirty = true;
-                    rt.frame_due = true;
-                }
-                return true;
-            }
-            _ => {}
-        }
-        false
-    }
-}
-
-/// Track whether a Super key is currently held (for shortcuts).
-static SUPER_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-
-/// Shell event handler — manages Super key double‑tap, Super+T tiling toggle, and Esc transitions.
-struct ShellEventHandler;
-
-impl EventHandler for ShellEventHandler {
-    fn handle(&mut self, event: &Event) -> bool {
-        let mut rt = RUNTIME.lock();
-        let rt = match rt.as_mut() {
-            Some(r) => r,
-            None => return false,
-        };
-
-        match event {
-            Event::Input(InputEvent::KeyDown(KeyCode::SuperLeft))
-            | Event::Input(InputEvent::KeyDown(KeyCode::SuperRight)) => {
-                SUPER_HELD.store(true, core::sync::atomic::Ordering::Relaxed);
-                // Double‑tap Super to cycle through overlays
-                match rt.shell_state {
-                    ShellState::Desktop => {
-                        rt.shell_state = ShellState::TaskOverview;
-                        rt.frame_due = true;
-                    }
-                    ShellState::TaskOverview => {
-                        rt.shell_state = ShellState::AppGrid;
-                        rt.frame_due = true;
-                    }
-                    ShellState::AppGrid => {
-                        rt.shell_state = ShellState::Desktop;
-                        rt.frame_due = true;
-                    }
-                    ShellState::TimeZoneSelector => {
-                        rt.shell_state = ShellState::Desktop;
-                        rt.frame_due = true;
-                    }
-                }
-                return true;
-            }
-            Event::Input(InputEvent::KeyUp(KeyCode::SuperLeft))
-            | Event::Input(InputEvent::KeyUp(KeyCode::SuperRight)) => {
-                SUPER_HELD.store(false, core::sync::atomic::Ordering::Relaxed);
-                return false;
-            }
-            Event::Input(InputEvent::KeyDown(KeyCode::T))
-                if SUPER_HELD.load(core::sync::atomic::Ordering::Relaxed)
-                    && rt.shell_state == ShellState::Desktop =>
-            {
-                // Super+T: toggle tiling mode
-                let (fw, fh, _stride) = *FB_DIMS.lock();
-                let (ww, wh) = rt.desktop.work_area(fw, fh);
-                rt.desktop.wm.toggle_tiling();
-                rt.desktop.wm.retile(ww, wh);
-                rt.desktop.force_full_redraw();
-                rt.frame_due = true;
-                return true;
-            }
-            Event::Input(InputEvent::KeyDown(KeyCode::Escape)) => {
-                if rt.shell_state != ShellState::Desktop {
-                    rt.shell_state = ShellState::Desktop;
-                    rt.frame_due = true;
-                    return true;
-                }
-                // Also clear Super held on Escape (stuck modifier guard)
-                SUPER_HELD.store(false, core::sync::atomic::Ordering::Relaxed);
-            }
-            _ => {}
-        }
-        false
-    }
-}
-
-// ── Lightweight cursor update ───────────────────────────────
-
-/// Update only the cursor on the cached framebuffer without
-/// re‑rendering the entire scene.  Uses a small save buffer
-/// to restore the old cursor position and draw the new one.
-///
-/// Used in both Desktop and shell overlay modes to avoid full
-/// compositor passes on every mouse-move tick.
-fn cursor_lightweight_update(rt: &mut RuntimeState) {
+pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
     let (fb_addr, fbw, fbh, fb_stride) = *LAST_FB.lock();
     if fb_addr == 0 || fbh == 0 {
-        // Fallback: request a full render pass.
         rt.frame_due = true;
         return;
     }
     let fb_ptr = fb_addr as *mut u32;
-
     let cur = &rt.desktop.cursor;
     if !cur.visible {
         return;
@@ -622,7 +256,6 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
     let cur_sz = lattice::cursor::Cursor::SIZE as i32;
     let new_x = cur.x - lattice::cursor::Cursor::HOTSPOT_X;
     let new_y = cur.y - lattice::cursor::Cursor::HOTSPOT_Y;
-
     let fbw_i = fbw as i32;
     let stride_i = fb_stride as i32;
     let fbh_i = fbh as i32;
@@ -630,8 +263,6 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
 
     unsafe {
         let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
-
-        // Restore the old cursor area.
         if rt.cursor_save_valid {
             let sx = rt.cursor_save_x;
             let sy = rt.cursor_save_y;
@@ -652,8 +283,6 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
                 }
             }
         }
-
-        // Save the pixels under the new cursor position.
         rt.cursor_save_x = new_x;
         rt.cursor_save_y = new_y;
         for row in 0..cur_sz {
@@ -674,8 +303,6 @@ fn cursor_lightweight_update(rt: &mut RuntimeState) {
             }
         }
         rt.cursor_save_valid = true;
-
-        // Draw the cursor at the new position.
         Compositor::draw_cursor_direct(fb, fb_stride, fbh, cur);
     }
 }
@@ -712,7 +339,6 @@ pub fn poll_mouse_state() {
         let dx = ps2_state.get_x();
         let dy = ps2_state.get_y();
         let btn = nitrogen::ps2::mouse::mouse_buttons();
-
         let mut mouse = MOUSE_STATE.lock();
         let old_x = mouse.x;
         let old_y = mouse.y;
@@ -721,23 +347,16 @@ pub fn poll_mouse_state() {
             .y
             .wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
         mouse.buttons = btn;
-
         let cx = mouse.x as i32;
         let cy = mouse.y as i32;
         let buttons = mouse.buttons;
         let moved = old_x != mouse.x || old_y != mouse.y;
         drop(mouse);
-
-        // Only push MouseMove if the position actually changed.
-        // Otherwise stale events accumulate in the queue and cause
-        // render storms when the shell overlay event handler sets
-        // frame_due on every single one.
         if moved {
             if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
                 queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
             }
         }
-
         let mut prev_btn = PREV_MOUSE_BUTTONS.lock();
         let prev = *prev_btn;
         if buttons != prev {
@@ -752,34 +371,27 @@ pub fn poll_mouse_state() {
     }
 }
 
-// ── Keyboard polling (raw PS/2 → Resonance events) ──────────
+// ── Keyboard polling ─────────────────────────────────────────
 
-/// Poll raw PS/2 key events and push them into the Resonance event queue.
-/// Call from runtime_tick before process_events.
 pub fn poll_keyboard() {
     while nitrogen::ps2::keyboard::raw_key_available() {
         let (scancode, pressed) = match nitrogen::ps2::keyboard::pop_raw_key() {
             Some(k) => k,
             None => break,
         };
-
-        // Map scancode to resonance KeyCode
         let key = scancode_to_resonance_keycode(scancode);
         let event = if pressed {
             Event::Input(InputEvent::KeyDown(key))
         } else {
             Event::Input(InputEvent::KeyUp(key))
         };
-
         if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
             queue.push(event);
         }
     }
 }
 
-/// Map a raw PS/2 scancode to Resonance KeyCode using const lookup tables.
 fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
-    // Extended key table: indexed by base scancode, returns Some(KeyCode) or None.
     const EXT: [Option<KeyCode>; 128] = {
         let mut t = [None; 128];
         t[0x1D] = Some(KeyCode::Ctrl);
@@ -788,7 +400,6 @@ fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
         t[0x5C] = Some(KeyCode::SuperRight);
         t
     };
-    // Base scancode table: maps all standard scancodes.
     const BASE: [KeyCode; 128] = {
         use KeyCode::*;
         let mut t = [Unknown(0); 128];
@@ -888,9 +499,6 @@ pub fn chrono_tick(now: u64) {
                 rt.term_dirty = true;
             }
             FRAME_TIMER_ID => {
-                // Only auto-frame when on Desktop — shell overlays render
-                // exclusively when shell_state changes (handlers set frame_due
-                // explicitly on transition).
                 if rt.shell_state == ShellState::Desktop {
                     rt.frame_due = true;
                 }
@@ -920,34 +528,32 @@ pub fn process_events() {
 
 // ── Clock update ─────────────────────────────────────────────
 
-/// Days in a given month, accounting for leap years.
+pub(crate) static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
+    core::sync::atomic::AtomicI8::new(9);
+
 fn days_in_month(month: i16, year: i16) -> i16 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
         2 => {
-            let leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-            if leap { 29 } else { 28 }
+            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
+                29
+            } else {
+                28
+            }
         }
         _ => 31,
     }
 }
 
-/// Update the taskbar clock from the wall‑clock callback.
-/// Format: "YYYY MMDD HHMM" (e.g. "2026 0606 2200").
-pub static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
-    core::sync::atomic::AtomicI8::new(9);
-
 pub fn update_clock() {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-
     let time_str = if let Some(get_time) = SOLVENT_CALLBACKS.lock().wall_clock {
         if let Some((year, month, day, hour, minute, _second)) = get_time() {
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;
             let mut local_month = month as i16;
             let mut local_year = year as i16;
-
             while local_hour < 0 {
                 local_hour += 24;
                 local_day -= 1;
@@ -956,7 +562,6 @@ pub fn update_clock() {
                 local_hour -= 24;
                 local_day += 1;
             }
-
             if local_day > days_in_month(local_month, local_year) {
                 local_day = 1;
                 local_month += 1;
@@ -972,7 +577,6 @@ pub fn update_clock() {
                 }
                 local_day = days_in_month(local_month, local_year) + local_day;
             }
-
             format!(
                 "{} {:02}{:02} {:02}{:02}",
                 local_year as u16, local_month as u8, local_day as u8, local_hour as u8, minute
@@ -983,7 +587,6 @@ pub fn update_clock() {
     } else {
         String::from("---- ---- ----")
     };
-
     let mut rt = RUNTIME.lock();
     if let Some(ref mut r) = *rt {
         let old = &r.desktop.clock_text;
@@ -1003,7 +606,6 @@ struct FramebufferTarget<'a> {
     width: u32,
     height: u32,
 }
-
 impl RenderTarget for FramebufferTarget<'_> {
     fn buffer(&mut self) -> &mut [u32] {
         self.pixels
@@ -1017,21 +619,15 @@ pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    // Skip compositor when rendering is suspended (e.g. BadApple playback).
     if *RENDERING_SUSPENDED.lock() {
         return;
     }
-
     let mut rt_lock = RUNTIME.lock();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
         None => return,
     };
 
-    // Force full redraw on any shell state transition so that the
-    // previous overlay is painted over by the compositor.
-    // Without this, returning from TaskOverview/AppGrid to Desktop
-    // would leave old overlay pixels on the framebuffer.
     static PREV_SHELL_STATE: Mutex<ShellState> = Mutex::new(ShellState::Desktop);
     static PREV_TRANSITION: Mutex<bool> = Mutex::new(false);
     {
@@ -1039,24 +635,17 @@ where
         if rt.shell_state != prev {
             rt.desktop.force_full_redraw();
             *PREV_SHELL_STATE.lock() = rt.shell_state;
-            // Signal that a full-screen blit is needed
-            // to erase old overlay pixels from fb_pixels.
             *PREV_TRANSITION.lock() = true;
         }
     }
 
     render_terminal(rt, rt.term_window);
     let tb_changed = rt.desktop.update_taskbar();
-
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
         None => return,
     };
-
-    // Cache FB dimensions for maximize toggle
     *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
-
-    // Cache framebuffer pointer, dimensions, and stride for lightweight cursor updates.
     *LAST_FB.lock() = (
         fb_pixels.as_mut_ptr() as usize,
         fb_width,
@@ -1064,10 +653,6 @@ where
         fb_stride_pixels,
     );
 
-    // Push clock‑change or taskbar‑change dirty rects BEFORE prepare_frame
-    // so they are consumed together with all other dirty rects (cursor
-    // movement, window D&D, menu show/dismiss).  A second prepare_frame call
-    // would overwrite dirty_cache and discard the event‑handler rects.
     let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
     if rt.clock_changed || tb_changed {
         rt.desktop.push_dirty_rect(lattice::scene::DirtyRect::new(
@@ -1084,11 +669,8 @@ where
     rt.clock_changed = false;
 
     rt.desktop.prepare_frame(fb_width, fb_height);
-
-    // Actual framebuffer size accounts for row-stride (stride >= width).
     let fb_stride = fb_stride_pixels as usize;
     let fb_len = fb_stride.saturating_mul(fb_height as usize);
-    // Back-buffer uses logical width (no row padding).
     let back_len = (fb_width as usize) * (fb_height as usize);
     if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
         return;
@@ -1096,12 +678,7 @@ where
     rt.back_len = back_len;
 
     let has_dirty = rt.desktop.has_pending_dirty_rects();
-
     if has_dirty {
-        // On shell-state transitions, copy the ENTIRE back-buffer
-        // to fb_pixels.  Shell overlays are drawn directly onto
-        // fb_pixels (bypassing the back-buffer), so a partial
-        // dirty-rect blit would leave old overlay pixels on screen.
         let was_transition = {
             let prev = *PREV_TRANSITION.lock();
             if prev {
@@ -1118,12 +695,9 @@ where
             };
             let scene = rt.desktop.scene();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
-
             if was_transition || (bw > 0 && bh > 0) {
                 let back_w = fb_width as usize;
                 if was_transition {
-                    // Full-screen blit: copy row-by-row to respect
-                    // framebuffer stride (which may be > width on real HW).
                     for row in 0..fb_height as usize {
                         let src_off = row * back_w;
                         let dst_off = row * fb_stride;
@@ -1160,36 +734,36 @@ where
             }
         }
 
-        // ── Shell overlay rendering (post‑compositor, onto fb_pixels) ──────
         match rt.shell_state {
-            ShellState::TaskOverview => {
-                render_task_overview(fb_pixels, fb_width, fb_height, rt.desktop.wm.windows());
-            }
+            ShellState::TaskOverview => render_task_overview(
+                fb_pixels,
+                fb_width,
+                fb_height,
+                fb_stride_pixels,
+                rt.desktop.wm.windows(),
+            ),
             ShellState::AppGrid => {
-                render_app_grid(fb_pixels, fb_width, fb_height);
+                render_app_grid(fb_pixels, fb_width, fb_height, fb_stride_pixels)
             }
             ShellState::TimeZoneSelector => {
-                let current_offset =
-                    TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
+                let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
                 lattice::shell_overlay::render_timezone_selector(
                     fb_pixels,
                     fb_width,
                     fb_height,
-                    current_offset,
+                    fb_stride_pixels,
+                    offset,
                 );
             }
             ShellState::Desktop => {}
         }
 
-        // ── Top Panel (only on Desktop; overlays cover it) ───
         if rt.shell_state == ShellState::Desktop {
-            rt.desktop.top_panel.render(fb_pixels, fb_width, fb_height);
+            rt.desktop
+                .top_panel
+                .render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
         }
 
-        // ── Re‑seed the cursor save buffer BEFORE drawing the cursor ──
-        // The save buffer must capture the clean framebuffer (overlay +
-        // desktop) without the cursor, so the next lightweight update can
-        // restore the old area correctly.
         if rt.desktop.cursor.visible {
             let (fb_addr, _, _, fb_stride) = *LAST_FB.lock();
             if fb_addr != 0 {
@@ -1227,40 +801,31 @@ where
             }
         }
 
-        // ── Cursor on top of shell overlays ────────────────
-        // Shell overlays are drawn directly onto fb_pixels AFTER the
-        // compositor back‑buffer blit.  Any overlay that covers the
-        // full screen (TaskOverview, AppGrid) would hide the cursor
-        // if we didn't redraw it here.  Draw the cursor as the
-        // last layer so it is always visible.
         if rt.desktop.cursor.visible {
-            use lattice::compositor::Compositor;
-            Compositor::draw_cursor_direct(fb_pixels, fb_width, fb_height, &rt.desktop.cursor);
+            Compositor::draw_cursor_direct(
+                fb_pixels,
+                fb_stride_pixels,
+                fb_height,
+                &rt.desktop.cursor,
+            );
         }
     }
 }
 
-/// Copy `len` u32 pixels from back‑buffer `src` to framebuffer `dst`.
-///
-/// Uses `core::ptr::copy_nonoverlapping` for maximum throughput.
-/// The caller must issue an `sfence` (or equivalent GPU flush) after
-/// the copy to make the writes globally visible for WC/UC framebuffers.
-///
-/// # Safety
-/// `dst` and `src` must be valid for `len` u32 reads/writes.
-/// Both pointers must be suitably aligned for u32 access (4 bytes).
-/// Regions must NOT overlap.
 unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
     unsafe {
         core::ptr::copy_nonoverlapping(src, dst, len);
     }
 }
 
-fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
+fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
     if !rt.term_dirty {
         return;
     }
-
+    let term_window = match term_window {
+        Some(id) => id,
+        None => return,
+    };
     let window = match rt
         .desktop
         .wm
@@ -1271,31 +836,21 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
         Some(w) => w,
         None => return,
     };
-
-    // ── Dynamic terminal resize ──────────────────────────────
-    // Compute the terminal grid size that fits the current window.
     let new_cols = (window.width / GLYPH_W).max(1);
     let new_rows = (window.height / GLYPH_H).max(1);
-
     let cur_cols = rt.term_buf.cols();
     let cur_rows = rt.term_buf.rows();
 
     if new_cols != cur_cols || new_rows != cur_rows {
-        // Estimate required memory for the new surface + buffer.
-        // Surface: new_cols*GLYPH_W × new_rows*GLYPH_H pixels × 4 bytes.
         let new_surface_pixels = (new_cols * new_rows * GLYPH_W * GLYPH_H) as usize;
-        // TerminalBuffer cells: Cell is 12 bytes each.
         let new_buf_cells = (new_cols * new_rows) as usize * 12;
         let needed = (new_surface_pixels * 4).saturating_add(new_buf_cells);
-
-        // Try to extend the kernel heap if needed.
         if needed > HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed) {
             let additional = needed
                 .saturating_sub(HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed))
                 .next_multiple_of(4096);
             if let Some(extend_fn) = SOLVENT_CALLBACKS.lock().heap_extend {
                 if extend_fn(additional).is_err() {
-                    // Extension failed — keep old size, don't risk OOM.
                     return;
                 } else {
                     HEAP_EXTEND_RESERVE
@@ -1305,19 +860,13 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
                 return;
             }
         }
-
-        // Allocate new TerminalBuffer and Surface.
         let new_buf = TerminalBuffer::new(new_cols, new_rows);
         let old_buf = core::mem::replace(&mut rt.term_buf, new_buf);
-        // Try to transfer any visible content from old buffer to new.
-        // We do this by copying cells that fit in both grids.
         {
             let src_cells = old_buf.cells();
             let src_cols = cur_cols as usize;
-            let copy_rows = (cur_rows as usize).min(new_rows as usize);
-            let copy_cols = (cur_cols as usize).min(new_cols as usize);
-            for row in 0..copy_rows {
-                for col in 0..copy_cols {
+            for row in 0..(cur_rows as usize).min(new_rows as usize) {
+                for col in 0..(cur_cols as usize).min(new_cols as usize) {
                     let src_idx = row * src_cols + col;
                     if src_idx < src_cells.len() {
                         let c = src_cells[src_idx];
@@ -1332,15 +881,12 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
                 }
             }
         }
-        let _ = old_buf; // drop old buffer
-
+        let _ = old_buf;
         window.surface = lattice::surface::Surface::new(
             new_cols * GLYPH_W,
             new_rows * GLYPH_H,
             window.surface.get_pixel(0, 0).unwrap_or(0x000000),
         );
-
-        // Rebuild term_cells to match new size.
         rt.term_cells.clear();
         rt.term_cells.resize(
             (new_cols * new_rows) as usize,
@@ -1352,10 +898,8 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
         );
     }
 
-    // Always sync term_cells from current term_buf
     let term_buf = &rt.term_buf;
     let total = (term_buf.cols() * term_buf.rows()) as usize;
-
     if rt.term_cells.len() != total {
         rt.term_cells.resize(
             total,
@@ -1366,7 +910,6 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
             },
         );
     }
-    // Use visible_cells() to incorporate scrollback content.
     let visible = term_buf.visible_cells();
     rt.term_cells.resize(
         visible.len(),
@@ -1394,7 +937,6 @@ fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
         cursor_row: Some(rt.term_buf.cursor_row()),
         cursor_visible: rt.cursor_visible,
     });
-
     rt.desktop.invalidate_window(term_window);
     rt.term_dirty = false;
 }
@@ -1405,11 +947,9 @@ pub struct LatticeTerminal;
 
 impl nozzle::Terminal for LatticeTerminal {
     fn write_str(&mut self, s: &str) {
-        // Accumulate stdout for pipe capture.
         if let Some(ref mut out) = *PIPE_STDOUT.lock() {
             out.push_str(s);
         } else {
-            // No pipe capture active — push to terminal buffer as usual.
             let mut rt = RUNTIME.lock();
             if let Some(ref mut r) = *rt {
                 r.term_buf.put_str(s);
@@ -1417,7 +957,6 @@ impl nozzle::Terminal for LatticeTerminal {
             }
         }
     }
-
     fn read_byte(&mut self) -> Option<u8> {
         loop {
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
@@ -1426,35 +965,28 @@ impl nozzle::Terminal for LatticeTerminal {
             runtime_tick_no_fb();
         }
     }
-
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
     }
-
-    fn set_stdin(&mut self, data: alloc::string::String) {
+    fn set_stdin(&mut self, data: String) {
         *PIPE_STDIN.lock() = Some(data);
     }
-
-    fn take_stdout(&mut self) -> Option<alloc::string::String> {
+    fn take_stdout(&mut self) -> Option<String> {
         PIPE_STDOUT.lock().take()
     }
-
-    fn take_stdin(&mut self) -> Option<alloc::string::String> {
+    fn take_stdin(&mut self) -> Option<String> {
         PIPE_STDIN.lock().take()
     }
-
     fn arm_pipe_stdout(&mut self) {
-        *PIPE_STDOUT.lock() = Some(alloc::string::String::new());
+        *PIPE_STDOUT.lock() = Some(String::new());
     }
-
     fn clear_pipe_stdin(&mut self) {
         *PIPE_STDIN.lock() = None;
     }
 }
 
-/// Pipe I/O buffers for the LatticeTerminal (used by the pipe dispatcher).
-static PIPE_STDIN: Mutex<Option<alloc::string::String>> = Mutex::new(None);
-static PIPE_STDOUT: Mutex<Option<alloc::string::String>> = Mutex::new(None);
+static PIPE_STDIN: Mutex<Option<String>> = Mutex::new(None);
+static PIPE_STDOUT: Mutex<Option<String>> = Mutex::new(None);
 
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
@@ -1466,8 +998,6 @@ pub fn set_render_fn(f: fn()) {
 fn runtime_tick_no_fb() {
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
-
-    // Suppress rendering while suspended.
     if *RENDERING_SUSPENDED.lock() {
         return;
     }
@@ -1476,12 +1006,16 @@ fn runtime_tick_no_fb() {
     update_clock();
     chrono_tick(now);
     process_events();
-
-    // ── TSC‑based frame pacing ──────────────────────────────
-    // `frame_due` may be set by the tick‑based FRAME_TIMER or by
-    // event handlers.  On bare metal the yield loop can run at
-    // 50 kHz, so we additionally gate on real elapsed time (TSC)
-    // to cap at ≈60 fps and avoid burning CPU / GPU bandwidth.
+    // Check for deferred shell launch (set by handlers while RUNTIME lock was held).
+    // Must be done outside the RUNTIME lock to avoid deadlock.
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let pending = r.shell_launch_pending;
+        r.shell_launch_pending = false;
+        pending
+    }) {
+        ensure_terminal_window();
+        launch_shell();
+    }
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         if due {
@@ -1490,7 +1024,6 @@ fn runtime_tick_no_fb() {
             let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
             let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
             if now_tsc.wrapping_sub(last) < frame_tsc {
-                // Too soon — re‑que the frame and skip rendering.
                 r.frame_due = true;
                 return false;
             }
@@ -1506,14 +1039,10 @@ fn runtime_tick_no_fb() {
     }
 }
 
-// ── Runtime tick (main loop step) ────────────────────────────
-
 pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    // Skip tick when rendering is suspended (e.g. BadApple playback).
-    // Still update global tick to keep keyboard repeat timed.
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     if *RENDERING_SUSPENDED.lock() {
         return;
@@ -1523,7 +1052,16 @@ where
     update_clock();
     chrono_tick(now);
     process_events();
-
+    // Check for deferred shell launch (set by handlers while RUNTIME lock was held).
+    // Must be done outside the RUNTIME lock to avoid deadlock.
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let pending = r.shell_launch_pending;
+        r.shell_launch_pending = false;
+        pending
+    }) {
+        ensure_terminal_window();
+        launch_shell();
+    }
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         r.frame_due = false;
@@ -1541,27 +1079,15 @@ pub fn write_terminal(s: &str) {
     }
 }
 
-/// Global flag to temporarily suspend the compositor render pass.
-/// When set, `runtime_tick` and `render` will skip framebuffer
-/// writes so that another subsystem (e.g. BadApple) can drive the
-/// framebuffer exclusively.
-static RENDERING_SUSPENDED: spin::Mutex<bool> = spin::Mutex::new(false);
+// ── Rendering suspend / resume ───────────────────────────────
 
-/// Suspend solvent compositor rendering.
-/// Call before taking exclusive control of the framebuffer.
+static RENDERING_SUSPENDED: spin::Mutex<bool> = spin::Mutex::new(false);
 pub fn suspend_rendering() {
     *RENDERING_SUSPENDED.lock() = true;
 }
-
-/// Resume solvent compositor rendering.
-/// Call after releasing exclusive framebuffer control.
 pub fn resume_rendering() {
     *RENDERING_SUSPENDED.lock() = false;
 }
-
-/// Trigger a full desktop redraw on the next render pass.
-/// Used by external subsystems (e.g. BadApple) to restore the
-/// desktop after direct framebuffer manipulation.
 pub fn force_desktop_redraw() {
     if let Some(ref mut r) = *RUNTIME.lock() {
         r.desktop.force_full_redraw();
@@ -1569,323 +1095,15 @@ pub fn force_desktop_redraw() {
     }
 }
 
-// ── Menu action dispatch ───────────────────────────────────────
-
-/// Dispatch a context-menu or system-menu action to the appropriate handler.
-fn dispatch_menu_action(rt: &mut RuntimeState, action: &lattice::desktop::DesktopAction) {
-    use lattice::desktop::DesktopAction;
-    match action {
-        DesktopAction::NewTerminal => {
-            let id = rt
-                .desktop
-                .wm
-                .create_titled_window(60, 50, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
-            rt.desktop.wm.raise_to_top(id);
-            rt.frame_due = true;
-        }
-        DesktopAction::NewShell => {
-            // Launch the actual interactive shell (the same one that
-            // was previously auto‑started by the kernel).  It claims
-            // control of the framebuffer via LatticeTerminal / the
-            // runtime tick loop and returns when the user types `exit`.
-            launch_shell();
-            rt.desktop.force_full_redraw();
-            rt.frame_due = true;
-        }
-        DesktopAction::TaskManager => open_info_window(rt, InfoWindow::TaskManager),
-        DesktopAction::DeviceManager => open_info_window(rt, InfoWindow::DeviceManager),
-        DesktopAction::FileManager => open_info_window(rt, InfoWindow::FileManager),
-        DesktopAction::Refresh => {
-            rt.desktop.force_full_redraw();
-            rt.frame_due = true;
-        }
-        DesktopAction::About => open_info_window(rt, InfoWindow::About),
-        DesktopAction::ToggleTiling => {
-            let (fw, fh, _stride) = *FB_DIMS.lock();
-            let (ww, wh) = rt.desktop.work_area(fw, fh);
-            rt.desktop.wm.toggle_tiling();
-            rt.desktop.wm.retile(ww, wh);
-            rt.desktop.force_full_redraw();
-            rt.frame_due = true;
-        }
-        DesktopAction::SysInfo => {}  // TODO
-        DesktopAction::Shutdown => {} // TODO
-        DesktopAction::Reboot => {}   // TODO
-        DesktopAction::Separator => {}
-        DesktopAction::ChangeWallpaperSettings => {
-            // Cycle through wallpaper presets dynamically, so the code
-            // doesn't break when presets are added or removed.
-            let presets = wallpaper_presets();
-            let next = match get_wallpaper() {
-                WallpaperMode::SolidColor => WallpaperMode::GridPattern,
-                WallpaperMode::GridPattern => WallpaperMode::Gradient,
-                WallpaperMode::Gradient => {
-                    if presets.is_empty() {
-                        WallpaperMode::SolidColor
-                    } else {
-                        WallpaperMode::Preset(0)
-                    }
-                }
-                WallpaperMode::Preset(idx) => {
-                    if idx + 1 < presets.len() {
-                        WallpaperMode::Preset(idx + 1)
-                    } else {
-                        WallpaperMode::SolidColor
-                    }
-                }
-            };
-            set_wallpaper(next);
-            rt.desktop.force_full_redraw();
-            rt.frame_due = true;
-        }
-    }
-}
-
-/// Kind of system information window.
-#[derive(Clone, Copy)]
-enum InfoWindow {
-    TaskManager,
-    DeviceManager,
-    FileManager,
-    About,
-}
-
-impl InfoWindow {
-    fn params(self) -> (&'static str, i32, i32, u32, u32, u32, u32) {
-        match self {
-            Self::TaskManager => ("Task Manager", 120, 80, 44, 2, 0x0d0d1a, 0xCCCCCC),
-            Self::DeviceManager => ("Device Manager", 140, 100, 46, 2, 0x0d1a0d, 0xCCFFCC),
-            Self::FileManager => ("File Manager", 160, 120, 50, 3, 0x1a1a0d, 0xFFFFCC),
-            Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
-        }
-    }
-}
-
-fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
-    let text = match kind {
-        InfoWindow::TaskManager => {
-            let Some(get_procs) = SOLVENT_CALLBACKS.lock().process_list else {
-                return show_text_window(
-                    rt,
-                    "Task Manager",
-                    120,
-                    80,
-                    44,
-                    2,
-                    0x0d0d1a,
-                    0xCCCCCC,
-                    "PID   NAME              STATE\n----  ----------------  --------\n (no process list callback)\n",
-                );
-            };
-            let procs = get_procs();
-            let mut s =
-                String::from("PID   NAME              STATE\n----  ----------------  --------\n");
-            for p in &procs {
-                let state = match p.state {
-                    ProcessStateKind::Ready => "ready",
-                    ProcessStateKind::Running => "running",
-                    ProcessStateKind::Blocked => "blocked",
-                    ProcessStateKind::Terminated => "term",
-                };
-                let _ = core::write!(
-                    &mut s,
-                    " {:<4}  {:<16}  {:<8}\n",
-                    p.pid,
-                    truncate_to_chars(&p.name, 16),
-                    state
-                );
-            }
-            s
-        }
-        InfoWindow::DeviceManager => {
-            let Some(get_devs) = SOLVENT_CALLBACKS.lock().device_list else {
-                return show_text_window(
-                    rt,
-                    "Device Manager",
-                    140,
-                    100,
-                    46,
-                    2,
-                    0x0d1a0d,
-                    0xCCFFCC,
-                    "DEVICE              TYPE        ENABLED\n------------------  ----------  -------\n (no device list callback)\n",
-                );
-            };
-            let devs = get_devs();
-            let mut s = String::from(
-                "DEVICE              TYPE        ENABLED\n------------------  ----------  -------\n",
-            );
-            for d in &devs {
-                let n = &d.name[..d.name.len().min(18)];
-                let t = &d.dev_type[..d.dev_type.len().min(10)];
-                let _ = core::write!(
-                    &mut s,
-                    " {:<18}  {:<10}  {:<7}\n",
-                    n,
-                    t,
-                    if d.enabled { "yes" } else { "no" }
-                );
-            }
-            s
-        }
-        InfoWindow::FileManager => {
-            let Some(readdir) = SOLVENT_CALLBACKS.lock().vfs_readdir else {
-                return show_text_window(
-                    rt,
-                    "File Manager",
-                    160,
-                    120,
-                    50,
-                    3,
-                    0x1a1a0d,
-                    0xFFFFCC,
-                    "  Name              Size        Type\n------------------  ----------  ----\n (no VFS readdir callback)\n",
-                );
-            };
-            match readdir("/") {
-                Ok(entries) => {
-                    let mut s = String::from(
-                        "  Name              Size        Type\n------------------  ----------  ----\n",
-                    );
-                    for e in &entries {
-                        let size = if e.is_dir {
-                            String::from("--")
-                        } else if e.size >= 1048576 {
-                            format!(
-                                "{}.{} MB",
-                                e.size / 1048576,
-                                ((e.size % 1048576) * 10) / 1048576
-                            )
-                        } else if e.size >= 1024 {
-                            format!("{}.{} KB", e.size / 1024, (e.size % 1024) * 10 / 1024)
-                        } else {
-                            format!("{} B", e.size)
-                        };
-                        let n = {
-                            let l = (0..=18)
-                                .rev()
-                                .find(|&l| e.name.is_char_boundary(l))
-                                .unwrap_or(0);
-                            &e.name[..l]
-                        };
-                        let _ = core::write!(
-                            &mut s,
-                            "  {:<18}  {:<10}  {}\n",
-                            n,
-                            size,
-                            if e.is_dir { "dir" } else { "file" }
-                        );
-                    }
-                    if entries.is_empty() {
-                        s.push_str("  (empty directory)\n");
-                    }
-                    s.push_str(&format!("\n  Path: {}\n  {} entries", "/", entries.len()));
-                    s
-                }
-                Err(e) => format!("  Error reading directory:\n  {} ({})\n", "/", e),
-            }
-        }
-        InfoWindow::About => String::from(
-            "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
-        ),
-    };
-    let (title, x, y, cols, extra_rows, bg, fg) = kind.params();
-    show_text_window(rt, title, x, y, cols, extra_rows, bg, fg, &text);
-}
-
-/// Common helper: create a titled window, fill its surface with `text`,
-/// raise it to top, and schedule a redraw.
-fn show_text_window(
-    rt: &mut RuntimeState,
-    title: &str,
-    x: i32,
-    y: i32,
-    cols: u32,
-    extra_rows: u32,
-    bg: u32,
-    fg: u32,
-    text: &str,
-) {
-    let rows = (text.lines().count() as u32) + extra_rows;
-    let id = rt
-        .desktop
-        .wm
-        .create_titled_window(x, y, cols * GLYPH_W, rows * GLYPH_H, bg, title);
-    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        let _ = render_text_into_surface(&mut w.surface, text, cols, fg, bg);
-    }
-    rt.desktop.wm.raise_to_top(id);
-    rt.frame_due = true;
-}
-
-/// Render a multi-line text string into a Surface.
-/// Returns the number of lines rendered.
-fn render_text_into_surface(
-    surface: &mut lattice::surface::Surface,
-    text: &str,
-    max_cols: u32,
-    fg_color: u32,
-    bg_color: u32,
-) -> u32 {
-    use lattice::terminal_surface;
-    use lattice::terminal_surface::Cell as LatticeCell;
-
-    let cols = max_cols as usize;
-    let lines_count = text.lines().count() as u32;
-    let total = (cols as u32 * lines_count) as usize;
-    let mut cells: Vec<LatticeCell> = Vec::new();
-    cells.resize(
-        total,
-        LatticeCell {
-            ch: b' ',
-            fg: fg_color,
-            bg: bg_color,
-        },
-    );
-
-    for (row, line) in text.lines().enumerate() {
-        for (col, ch) in line.bytes().enumerate() {
-            if col < cols {
-                let idx = row * cols + col;
-                if idx < cells.len() {
-                    cells[idx] = LatticeCell {
-                        ch,
-                        fg: fg_color,
-                        bg: bg_color,
-                    };
-                }
-            }
-        }
-    }
-
-    terminal_surface::render(terminal_surface::RenderParams {
-        surface,
-        cells: &cells,
-        cols: cols as u32,
-        cursor_col: None,
-        cursor_row: None,
-        cursor_visible: false,
-    });
-
-    lines_count
-}
-
-// ── Theme / wallpaper bridges (avoid kernel → lattice coupling) ─────
-
+// ── Theme / wallpaper bridges ────────────────────────────────
 pub use lattice::theme::{ThemeVariant, current_theme_variant, set_theme, toggle_theme};
 pub use lattice::wallpaper::{
     WallpaperMode, WallpaperPreset, find_preset, get_wallpaper, set_wallpaper, wallpaper_presets,
 };
 
-// ── Window API (for external apps like RLE Player) ────────────────
-
-/// Create a new titled window on the desktop and return its ID.
-///
-/// The returned [`WindowId`] can be used with the other window API
-/// functions to draw into the surface, trigger redraws, or close
-/// the window.
+// ── Window API (for external apps like RLE Player) ───────────
 pub fn create_window(
-    title: impl Into<alloc::string::String>,
+    title: impl Into<String>,
     x: i32,
     y: i32,
     width: u32,
@@ -1897,10 +1115,6 @@ pub fn create_window(
             .create_titled_window(x, y, width, height, 0x000000, title)
     })
 }
-
-/// Get a mutable reference to a window's surface pixels.
-///
-/// Returns `None` if the window does not exist or is minimized.
 pub fn with_window_surface<F, R>(id: WindowId, f: F) -> Option<R>
 where
     F: FnOnce(&mut [u32], u32, u32) -> R,
@@ -1915,14 +1129,11 @@ where
         if w.minimized {
             return None;
         }
-        let width = w.surface.width();
-        let height = w.surface.height();
-        Some(f(w.surface.pixels_mut(), width, height))
+        let ww = w.surface.width();
+        let wh = w.surface.height();
+        Some(f(w.surface.pixels_mut(), ww, wh))
     })
 }
-
-/// Mark a window's surface as dirty so it will be redrawn on the
-/// next compositor pass.
 pub fn invalidate_window(id: WindowId) {
     if let Some(ref mut rt) = *RUNTIME.lock() {
         rt.desktop.invalidate_window(id);
@@ -1930,29 +1141,48 @@ pub fn invalidate_window(id: WindowId) {
         rt.term_dirty = true;
     }
 }
-
-/// Close (remove) a window from the desktop.
 pub fn close_window(id: WindowId) -> bool {
     RUNTIME
         .lock()
         .as_mut()
         .map_or(false, |rt| rt.desktop.wm.close_window(id))
 }
-
-/// Get the current framebuffer dimensions.
 pub fn framebuffer_dims() -> (u32, u32) {
     let (w, h, _) = *FB_DIMS.lock();
     (w, h)
 }
 
-// ── Shell bootstrap (moved from kernel to respect dependency direction)
+/// Ensure a terminal window exists for the shell, creating one if necessary.
+/// Returns the WindowId of the terminal window.
+pub fn ensure_terminal_window() -> Option<WindowId> {
+    let mut rt = RUNTIME.lock();
+    let rt = rt.as_mut()?;
+    if let Some(id) = rt.term_window {
+        // Check the window still exists (hasn't been closed)
+        if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
+            return Some(id);
+        }
+    }
+    // Create a new terminal window
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
+    rt.term_window = Some(id);
+    rt.desktop.force_full_redraw();
+    rt.frame_due = true;
+    rt.term_dirty = true;
+    Some(id)
+}
 
-/// Run the nozzle shell on the given terminal.
-/// This function lives in solvent so the kernel does not need to depend on
-/// nozzle / lattice directly (AGENTS.md §3).
+// ── Shell bootstrap (kernel→solvent direction per AGENTS.md §3)
 pub fn run_shell_on(terminal: &mut dyn nozzle::Terminal, prompt: &str) {
     let commands = nozzle::default_commands();
     let mut shell = nozzle::Shell::new(terminal, commands);
     shell.set_prompt(prompt);
     shell.run();
 }
+
+/// Track whether a Super key is held (for shortcuts).
+pub(crate) static SUPER_HELD: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);

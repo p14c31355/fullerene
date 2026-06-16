@@ -45,7 +45,7 @@ static DIM_TABLE: [u32; 256] = {
 
 /// Apply dim (~40% luminance) to a colour using the pre‑computed table.
 #[inline]
-fn dim_color(color: u32) -> u32 {
+pub(crate) fn dim_color(color: u32) -> u32 {
     let r = DIM_TABLE[((color >> 16) & 0xFF) as usize];
     let g = DIM_TABLE[((color >> 8) & 0xFF) as usize];
     let b = DIM_TABLE[(color & 0xFF) as usize];
@@ -363,7 +363,7 @@ impl Compositor {
 
         // Draw menu text on top of overlay rectangles
         if let Some(menu) = scene.active_menu {
-            menu.render_text(framebuffer, fb_width, fb_height);
+            menu.render_text(framebuffer, fb_width, fb_height, fb_width);
             inc_draw_calls();
         }
 

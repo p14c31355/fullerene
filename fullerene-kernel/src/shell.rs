@@ -50,32 +50,29 @@ fn register_nozzle_hooks() {
                 }
             }
         }),
-        read: Some(|ctx, path| {
-            match crate::vfs::open(path, 0) {
-                Ok(fd) => {
-                    let mut buf = [0u8; 512];
-                    loop {
-                        match crate::vfs::read(fd.fd, &mut buf) {
-                            Ok(0) => break,
-                            Ok(n) => {
-                                ctx.terminal.write_str(
-                                    core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"),
-                                );
-                            }
-                            Err(e) => {
-                                let msg = format!("cat: {}\n", e);
-                                ctx.terminal.write_str(&msg);
-                                break;
-                            }
+        read: Some(|ctx, path| match crate::vfs::open(path, 0) {
+            Ok(fd) => {
+                let mut buf = [0u8; 512];
+                loop {
+                    match crate::vfs::read(fd.fd, &mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            ctx.terminal
+                                .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
+                        }
+                        Err(e) => {
+                            let msg = format!("cat: {}\n", e);
+                            ctx.terminal.write_str(&msg);
+                            break;
                         }
                     }
-                    let _ = crate::vfs::close(fd.fd);
-                    ctx.terminal.write_str("\n");
                 }
-                Err(e) => {
-                    let msg = format!("cat: {}: {}\n", path, e);
-                    ctx.terminal.write_str(&msg);
-                }
+                let _ = crate::vfs::close(fd.fd);
+                ctx.terminal.write_str("\n");
+            }
+            Err(e) => {
+                let msg = format!("cat: {}: {}\n", path, e);
+                ctx.terminal.write_str(&msg);
             }
         }),
         pwd: Some(|ctx| match crate::vfs::working_directory() {
@@ -198,25 +195,23 @@ fn register_nozzle_hooks() {
                 ctx.terminal.write_str(&msg);
             }
         }),
-        touch: Some(|ctx, path| {
-            match crate::vfs::open(path, 0) {
+        touch: Some(|ctx, path| match crate::vfs::open(path, 0) {
+            Ok(fd) => {
+                let _ = crate::vfs::close(fd.fd);
+                let msg = format!("Touched {}\n", path);
+                ctx.terminal.write_str(&msg);
+            }
+            Err(_) => match crate::vfs::create(path) {
                 Ok(fd) => {
                     let _ = crate::vfs::close(fd.fd);
                     let msg = format!("Touched {}\n", path);
                     ctx.terminal.write_str(&msg);
                 }
-                Err(_) => match crate::vfs::create(path) {
-                    Ok(fd) => {
-                        let _ = crate::vfs::close(fd.fd);
-                        let msg = format!("Touched {}\n", path);
-                        ctx.terminal.write_str(&msg);
-                    }
-                    Err(e) => {
-                        let msg = format!("touch: {}: {}\n", path, e);
-                        ctx.terminal.write_str(&msg);
-                    }
-                },
-            }
+                Err(e) => {
+                    let msg = format!("touch: {}: {}\n", path, e);
+                    ctx.terminal.write_str(&msg);
+                }
+            },
         }),
         df: Some(|ctx| {
             match crate::fs::walk_dir("/") {
@@ -229,7 +224,8 @@ fn register_nozzle_hooks() {
                             let parent = if pos == 0 { "/" } else { &path[..pos] };
                             let name = &path[pos + 1..];
                             if let Ok(parent_entries) = crate::fs::list_dir(parent) {
-                                if let Some(entry) = parent_entries.iter().find(|e| e.name == name) {
+                                if let Some(entry) = parent_entries.iter().find(|e| e.name == name)
+                                {
                                     if entry.is_dir {
                                         dir_count += 1;
                                     } else {

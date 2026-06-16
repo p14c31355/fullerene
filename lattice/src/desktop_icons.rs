@@ -34,7 +34,7 @@ impl DesktopIconLayer {
 
         // Default desktop icons (Xfce-like)
         icons.push(DesktopIcon {
-            label: String::from("Terminal"),
+            label: String::from("Shell"),
             x: 24,
             y: 32,
             size: 64,

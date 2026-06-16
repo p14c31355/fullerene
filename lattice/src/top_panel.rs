@@ -38,7 +38,11 @@ impl TopPanel {
     }
 
     /// Render the top panel onto the framebuffer.
-    pub fn render(&self, fb: &mut [u32], fb_width: u32, fb_height: u32) {
+    ///
+    /// `fb_width` is the logical screen width; `fb_stride` is the actual
+    /// pixels‑per‑scan‑line (may be larger on real hardware with GOP padding).
+    pub fn render(&self, fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32) {
+        let stride = fb_stride as usize;
         let fb_w = fb_width as usize;
         let panel_h = TOP_PANEL_HEIGHT;
 
@@ -48,7 +52,7 @@ impl TopPanel {
 
         // Fill panel background
         for row in 0..panel_h {
-            let rs = (row as usize) * fb_w;
+            let rs = (row as usize) * stride;
             fb[rs..rs + fb_w].fill(TOP_PANEL_BG);
         }
 
@@ -64,7 +68,7 @@ impl TopPanel {
         let btn_h = panel_h - 8;
 
         for row in btn_y..btn_y + btn_h {
-            let rs = (row as usize) * fb_w + btn_x as usize;
+            let rs = (row as usize) * stride + btn_x as usize;
             let end = rs + btn_w as usize;
             if end <= fb.len() {
                 fb[rs..end].fill(btn_bg);
@@ -90,7 +94,7 @@ impl TopPanel {
                         continue;
                     }
                     if crate::font::get_glyph_pixel(*ch, gry as u32, grx as u32) {
-                        let idx = (py as usize) * fb_w + px as usize;
+                        let idx = (py as usize) * stride + px as usize;
                         if idx < fb.len() {
                             fb[idx] = COLOR_TEXT;
                         }
@@ -116,7 +120,7 @@ impl TopPanel {
                         let py = clock_y + gry;
                         if px < fb_width && py < fb_height {
                             if crate::font::get_glyph_pixel(*ch, gry as u32, grx as u32) {
-                                let idx = (py as usize) * fb_w + px as usize;
+                                let idx = (py as usize) * stride + px as usize;
                                 if idx < fb.len() {
                                     fb[idx] = COLOR_PRIMARY;
                                 }

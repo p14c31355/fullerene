@@ -1,7 +1,7 @@
 //! Integration tests for page table types.
 
-use super::types::*;
 use super::Pte;
+use super::types::*;
 
 #[test]
 fn test_canonical_address() {

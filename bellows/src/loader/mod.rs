@@ -51,16 +51,38 @@ pub fn exit_boot_services_and_jump(
 
     // Allocate memory for KernelArgs, L4 table, and initial kernel stack before exiting boot services
     // We allocate a larger block (KERNEL_ARGS_PAGES pages) to ensure the stack and arguments are far apart.
+    // CRITICAL: The allocated address MUST be below 64GB (0x10_0000_0000) because the
+    // world-switch shallow clone_page_table only identity-maps the first 64GB (huge pages).
+    // If args_phys_addr ≥ 64GB, the identity mapping is missing and efi_main_stage2
+    // will dereference garbage, corrupting framebuffer parameters.
+    // We use AllocateAnyPages and validate the address; if it's too high we free and retry.
+    const MAX_ARGS_ADDR: u64 = 0x10_0000_0000; // 64 GiB
+    const ARGS_ALLOC_RETRIES: u32 = 16;
     let mut args_phys_addr: usize = 0;
-    let args_alloc_status = (bs.allocate_pages)(
-        0usize,
-        EfiMemoryType::EfiLoaderData,
-        KERNEL_ARGS_PAGES,
-        &mut args_phys_addr,
-    );
-    if EfiStatus::from(args_alloc_status) != EfiStatus::Success {
+    let mut args_alloc_ok = false;
+    for _ in 0..ARGS_ALLOC_RETRIES {
+        let args_alloc_status = (bs.allocate_pages)(
+            0usize, // AllocateAnyPages
+            EfiMemoryType::EfiLoaderData,
+            KERNEL_ARGS_PAGES,
+            &mut args_phys_addr,
+        );
+        if EfiStatus::from(args_alloc_status) != EfiStatus::Success {
+            return Err(BellowsError::AllocationFailed(
+                "Failed to allocate memory for KernelArgs.",
+            ));
+        }
+        let alloc_end = args_phys_addr as u64 + (KERNEL_ARGS_PAGES as u64 * PAGE_SIZE_4K);
+        if alloc_end <= MAX_ARGS_ADDR {
+            args_alloc_ok = true;
+            break;
+        }
+        // Address too high — free and retry
+        let _ = (bs.free_pages)(args_phys_addr, KERNEL_ARGS_PAGES);
+    }
+    if !args_alloc_ok {
         return Err(BellowsError::AllocationFailed(
-            "Failed to allocate memory for KernelArgs.",
+            "Failed to allocate KernelArgs below 64 GiB after retries.",
         ));
     }
 

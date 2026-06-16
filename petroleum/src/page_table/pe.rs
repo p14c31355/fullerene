@@ -1,7 +1,7 @@
 use crate::common::{BellowsError, EfiMemoryType, EfiStatus, EfiSystemTable};
 use core::ffi::c_void;
 use goblin::pe::PE;
-use x86_64::{structures::paging::PageTableFlags, PhysAddr};
+use x86_64::{PhysAddr, structures::paging::PageTableFlags};
 
 pub const KERNEL_MEMORY_PADDING: u64 = 1024 * 1024;
 pub const FALLBACK_KERNEL_SIZE: u64 = 64 * 1024 * 1024;
