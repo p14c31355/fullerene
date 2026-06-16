@@ -8,7 +8,7 @@
 //!
 //! All rendering is done in software — no GPU / 3D acceleration required.
 
-use crate::compositor::{COLOR_PRIMARY, COLOR_TEXT};
+use crate::compositor::{COLOR_PRIMARY, COLOR_TEXT, dim_color};
 use crate::window::Window;
 
 /// Shell state — determines which overlay to draw.
@@ -20,39 +20,65 @@ pub enum ShellState {
     TimeZoneSelector,
 }
 
-/// Render the Task Overview overlay on top of the current framebuffer.
-///
-/// `windows` provides the list of open windows for thumbnail rendering.
-/// `fb` is the current framebuffer (already containing rendered desktop).
-/// `fbw` is the logical screen width (in pixels) and `fb_stride` is the
-/// actual pixels‑per‑scan‑line in the framebuffer (may be larger than `fbw`
-/// on real hardware with GOP row‑padding).
-pub fn render_task_overview(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32, windows: &[Window]) {
-    let stride = fb_stride as usize;
-    let _fb_w = fbw as usize;
-    let fb_h = fbh as usize;
-
-    // Validate framebuffer dimensions
-    if fb.len() < stride * fb_h {
-        return;
-    }
-
-    // ── Semi‑transparent black backdrop ──────────────────
-    // Blend 60% opaque black over the entire framebuffer.
-    for row in 0..fbh {
-        let off = (row as usize) * stride;
+/// Apply semi‑transparent black (~60% dim) to the full framebuffer.
+fn dim_backdrop(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
+    for row in 0..fbh as usize {
+        let off = row * stride;
         for col in 0..fbw as usize {
-            let bg = fb[off + col];
-            let r = ((bg >> 16) & 0xFF) as u32;
-            let g = ((bg >> 8) & 0xFF) as u32;
-            let b = (bg & 0xFF) as u32;
-            // Blend with black (0x000000) at 60% opacity.
-            let r2 = (r * 2) / 5;
-            let g2 = (g * 2) / 5;
-            let b2 = (b * 2) / 5;
-            fb[off + col] = (r2 << 16) | (g2 << 8) | b2;
+            fb[off + col] = dim_color(fb[off + col]);
         }
     }
+}
+
+/// Render glyph-based text at `(x, y)` in the given colour.
+fn render_text(
+    fb: &mut [u32],
+    fbw: u32,
+    fbh: u32,
+    stride: usize,
+    text: &str,
+    x: u32,
+    y: u32,
+    color: u32,
+) {
+    for (i, ch) in text.bytes().enumerate() {
+        if !(32..=126).contains(&ch) {
+            continue;
+        }
+        for gry in 0..12 {
+            let py = y + gry;
+            if py >= fbh {
+                continue;
+            }
+            for grx in 0..8 {
+                let px = x + (i as u32) * 8 + grx;
+                if px >= fbw {
+                    continue;
+                }
+                if crate::font::get_glyph_pixel(ch, gry, grx) {
+                    let idx = (py as usize) * stride + px as usize;
+                    if idx < fb.len() {
+                        fb[idx] = color;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Render the Task Overview overlay on top of the current framebuffer.
+pub fn render_task_overview(
+    fb: &mut [u32],
+    fbw: u32,
+    fbh: u32,
+    fb_stride: u32,
+    windows: &[Window],
+) {
+    let stride = fb_stride as usize;
+    if fb.len() < stride * fbh as usize {
+        return;
+    }
+    dim_backdrop(fb, fbw, fbh, stride);
 
     // ── Window thumbnails ─────────────────────────────────
     let thumb_w = 160u32;
@@ -103,31 +129,16 @@ pub fn render_task_overview(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32, 
             .as_ref()
             .map(|t| t.as_str())
             .unwrap_or("Window");
-        let label_x = tx + 2;
-        let label_y = ty + thumb_h + 3;
-        for (j, ch) in title.bytes().enumerate() {
-            if ch < 32 || ch > 126 {
-                continue;
-            }
-            for gry in 0..12 {
-                let py = label_y + gry;
-                if py >= fbh {
-                    continue;
-                }
-                for grx in 0..8 {
-                    let px = label_x + (j as u32) * 8 + grx;
-                    if px >= fbw {
-                        continue;
-                    }
-                    if crate::font::get_glyph_pixel(ch, gry, grx) {
-                        let idx = (py as usize) * stride + px as usize;
-                        if idx < fb.len() {
-                            fb[idx] = COLOR_TEXT;
-                        }
-                    }
-                }
-            }
-        }
+        render_text(
+            fb,
+            fbw,
+            fbh,
+            stride,
+            title,
+            tx + 2,
+            ty + thumb_h + 3,
+            COLOR_TEXT,
+        );
     }
 
     // ── "Activities" label at top ──────────────────────────
@@ -145,28 +156,10 @@ pub fn render_task_overview(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32, 
 /// Render the App Grid overlay.
 pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     let stride = fb_stride as usize;
-    let _fb_w = fbw as usize;
-    let fb_h = fbh as usize;
-
-    // Validate framebuffer dimensions
-    if fb.len() < stride * fb_h {
+    if fb.len() < stride * fbh as usize {
         return;
     }
-
-    // ── Semi‑transparent black backdrop ──────────────────
-    for row in 0..fbh {
-        let off = (row as usize) * stride;
-        for col in 0..fbw as usize {
-            let bg = fb[off + col];
-            let r = ((bg >> 16) & 0xFF) as u32;
-            let g = ((bg >> 8) & 0xFF) as u32;
-            let b = (bg & 0xFF) as u32;
-            let r2 = (r * 2) / 5;
-            let g2 = (g * 2) / 5;
-            let b2 = (b * 2) / 5;
-            fb[off + col] = (r2 << 16) | (g2 << 8) | b2;
-        }
-    }
+    dim_backdrop(fb, fbw, fbh, stride);
 
     // ── App launcher grid ─────────────────────────────────
     #[derive(Clone, Copy)]
@@ -233,31 +226,16 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
         }
 
         // App label below icon
-        let label_x = ax + 2;
-        let label_y = ay + icon_size + 2;
-        for (j, ch) in app.label.bytes().enumerate() {
-            if ch < 32 || ch > 126 {
-                continue;
-            }
-            for gry in 0..12 {
-                let py = label_y + gry;
-                if py >= fbh {
-                    continue;
-                }
-                for grx in 0..8 {
-                    let px = label_x + (j as u32) * 8 + grx;
-                    if px >= fbw {
-                        continue;
-                    }
-                    if crate::font::get_glyph_pixel(ch, gry, grx) {
-                        let idx = (py as usize) * stride + px as usize;
-                        if idx < fb.len() {
-                            fb[idx] = COLOR_TEXT;
-                        }
-                    }
-                }
-            }
-        }
+        render_text(
+            fb,
+            fbw,
+            fbh,
+            stride,
+            app.label,
+            ax + 2,
+            ay + icon_size + 2,
+            COLOR_TEXT,
+        );
     }
 
     // Label
@@ -273,30 +251,18 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
 }
 
 /// Render the timezone selector overlay.
-pub fn render_timezone_selector(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32, current_offset: i8) {
+pub fn render_timezone_selector(
+    fb: &mut [u32],
+    fbw: u32,
+    fbh: u32,
+    fb_stride: u32,
+    current_offset: i8,
+) {
     let stride = fb_stride as usize;
-    let _fb_w = fbw as usize;
-    let fb_h = fbh as usize;
-
-    // Validate framebuffer dimensions
-    if fb.len() < stride * fb_h {
+    if fb.len() < stride * fbh as usize {
         return;
     }
-
-    // ── Semi‑transparent black backdrop ──────────────────
-    for row in 0..fbh {
-        let off = (row as usize) * stride;
-        for col in 0..fbw as usize {
-            let bg = fb[off + col];
-            let r = ((bg >> 16) & 0xFF) as u32;
-            let g = ((bg >> 8) & 0xFF) as u32;
-            let b = (bg & 0xFF) as u32;
-            let r2 = (r * 2) / 5;
-            let g2 = (g * 2) / 5;
-            let b2 = (b * 2) / 5;
-            fb[off + col] = (r2 << 16) | (g2 << 8) | b2;
-        }
-    }
+    dim_backdrop(fb, fbw, fbh, stride);
 
     // ── Timezone entries ─────────────────────────────────
     let timezones: &[(&str, i8)] = &[
@@ -346,31 +312,7 @@ pub fn render_timezone_selector(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u
         }
 
         // Entry label
-        let lx = ex + 4;
-        let ly = ey + 6;
-        for (j, ch) in label.bytes().enumerate() {
-            if ch < 32 || ch > 126 {
-                continue;
-            }
-            for gry in 0..12 {
-                let py = ly + gry;
-                if py >= fbh {
-                    continue;
-                }
-                for grx in 0..8 {
-                    let px = lx + (j as u32) * 8 + grx;
-                    if px >= fbw {
-                        continue;
-                    }
-                    if crate::font::get_glyph_pixel(ch, gry, grx) {
-                        let idx = (py as usize) * stride + px as usize;
-                        if idx < fb.len() {
-                            fb[idx] = COLOR_TEXT;
-                        }
-                    }
-                }
-            }
-        }
+        render_text(fb, fbw, fbh, stride, label, ex + 4, ey + 6, COLOR_TEXT);
     }
 
     // Title

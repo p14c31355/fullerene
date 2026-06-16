@@ -1,57 +1,38 @@
 use crate::event::Event;
 use alloc::collections::VecDeque;
+use core::ops::{Deref, DerefMut};
 
 #[derive(Clone, Debug, Default)]
-pub struct EventQueue {
-    queue: VecDeque<Event>,
+pub struct EventQueue(VecDeque<Event>);
+
+impl Deref for EventQueue {
+    type Target = VecDeque<Event>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for EventQueue {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl EventQueue {
     pub fn new() -> Self {
         Self::default()
     }
-
     pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            queue: VecDeque::with_capacity(capacity),
-        }
+        Self(VecDeque::with_capacity(capacity))
     }
-
-    pub fn push(&mut self, event: Event) {
-        self.queue.push_back(event);
-    }
-
-    pub fn push_front(&mut self, event: Event) {
-        self.queue.push_front(event);
-    }
-
     pub fn pop(&mut self) -> Option<Event> {
-        self.queue.pop_front()
+        self.0.pop_front()
     }
-
-    pub fn len(&self) -> usize {
-        self.queue.len()
+    pub fn push(&mut self, event: Event) {
+        self.0.push_back(event);
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-
     pub fn drain_all(&mut self) -> alloc::collections::vec_deque::Drain<'_, Event> {
-        self.queue.drain(..)
-    }
-
-    pub fn clear(&mut self) {
-        self.queue.clear();
-    }
-}
-
-impl IntoIterator for EventQueue {
-    type Item = Event;
-    type IntoIter = alloc::collections::vec_deque::IntoIter<Event>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.queue.into_iter()
+        self.0.drain(..)
     }
 }
 
@@ -97,7 +78,8 @@ mod tests {
         let mut eq = EventQueue::new();
         eq.push(Event::Input(InputEvent::MouseMove { x: 1, y: 2 }));
         eq.push(Event::Input(InputEvent::MouseDown(MouseButton::Left)));
-        assert_eq!(eq.into_iter().count(), 2);
+        let count = eq.drain(..).count();
+        assert_eq!(count, 2);
     }
 
     #[test]
