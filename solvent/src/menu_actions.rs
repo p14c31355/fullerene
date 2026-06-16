@@ -1,7 +1,7 @@
 //! Menu actions and info-window dispatch.
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
-use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, truncate_to_chars};
+use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, ensure_terminal_window, truncate_to_chars};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -10,8 +10,6 @@ use lattice::desktop::DesktopAction;
 use lattice::surface::Surface;
 use lattice::terminal_surface;
 use lattice::terminal_surface::Cell as LatticeCell;
-use lattice::window::WindowId;
-
 /// Glyph dimensions (from lattice::font).
 const GLYPH_W: u32 = 8;
 const GLYPH_H: u32 = 16;
@@ -54,6 +52,7 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
             rt.frame_due = true;
         }
         NewShell => {
+            ensure_terminal_window();
             crate::launch_shell();
             rt.desktop.force_full_redraw();
             rt.frame_due = true;

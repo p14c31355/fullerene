@@ -5,10 +5,9 @@
 
 use crate::cursor_lightweight_update;
 use crate::{
-    FB_DIMS, MOUSE_STATE, RUNTIME, SOLVENT_CALLBACKS, SUPER_HELD, TIMEZONE_OFFSET_HOURS,
-    launch_shell,
+    FB_DIMS, MOUSE_STATE, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS,
+    ensure_terminal_window, launch_shell,
 };
-use alloc::boxed::Box;
 use lattice::shell_overlay::ShellState;
 use lattice::wm::DragState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
@@ -41,6 +40,21 @@ impl EventHandler for WmEventHandler {
             Event::Input(InputEvent::MouseDown(btn)) => {
                 let cx = rt.desktop.cursor.x;
                 let cy = rt.desktop.cursor.y;
+
+                // Check desktop icon clicks (left button only)
+                if *btn == MouseButton::Left {
+                    if let Some(icon_idx) = rt.desktop.desktop_icons.hit_test(cx, cy) {
+                        if let Some(icon) = rt.desktop.desktop_icons.icons.get(icon_idx) {
+                            if icon.label == "Shell" {
+                                // Ensure terminal window exists, then launch the shell
+                                ensure_terminal_window();
+                                launch_shell();
+                                rt.frame_due = true;
+                                return true;
+                            }
+                        }
+                    }
+                }
 
                 if *btn == MouseButton::Right {
                     let hit_window = rt.desktop.wm.window_at(cx, cy);
@@ -152,6 +166,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
         if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
             match idx {
                 0 => {
+                    ensure_terminal_window();
                     launch_shell();
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;

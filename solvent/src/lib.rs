@@ -166,7 +166,7 @@ pub(crate) static LAST_FB: Mutex<(usize, u32, u32, u32)> = Mutex::new((0, 0, 0, 
 
 pub struct RuntimeState {
     pub desktop: Desktop,
-    pub term_window: WindowId,
+    pub term_window: Option<WindowId>,
     pub term_buf: TerminalBuffer,
     pub chrono: ChronoLine,
     pub cursor_visible: bool,
@@ -184,10 +184,8 @@ pub struct RuntimeState {
 }
 
 pub fn init() {
-    let mut desktop = Desktop::new(BG_COLOR);
-    let term_window = desktop
-        .wm
-        .create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
+    let desktop = Desktop::new(BG_COLOR);
+    // Terminal window is created lazily when the user clicks the Shell icon.
     let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();
@@ -217,7 +215,7 @@ pub fn init() {
 
     *RUNTIME.lock() = Some(RuntimeState {
         desktop,
-        term_window,
+        term_window: None,
         term_buf,
         chrono,
         cursor_visible: true,
@@ -818,10 +816,14 @@ unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
     }
 }
 
-fn render_terminal(rt: &mut RuntimeState, term_window: WindowId) {
+fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
     if !rt.term_dirty {
         return;
     }
+    let term_window = match term_window {
+        Some(id) => id,
+        None => return,
+    };
     let window = match rt
         .desktop
         .wm
@@ -1126,6 +1128,29 @@ pub fn close_window(id: WindowId) -> bool {
 pub fn framebuffer_dims() -> (u32, u32) {
     let (w, h, _) = *FB_DIMS.lock();
     (w, h)
+}
+
+/// Ensure a terminal window exists for the shell, creating one if necessary.
+/// Returns the WindowId of the terminal window.
+pub fn ensure_terminal_window() -> Option<WindowId> {
+    let mut rt = RUNTIME.lock();
+    let rt = rt.as_mut()?;
+    if let Some(id) = rt.term_window {
+        // Check the window still exists (hasn't been closed)
+        if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
+            return Some(id);
+        }
+    }
+    // Create a new terminal window
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(40, 30, TERM_WIN_W, TERM_WIN_H, 0x000000, "Terminal");
+    rt.term_window = Some(id);
+    rt.desktop.force_full_redraw();
+    rt.frame_due = true;
+    rt.term_dirty = true;
+    Some(id)
 }
 
 // ── Shell bootstrap (kernel→solvent direction per AGENTS.md §3)
