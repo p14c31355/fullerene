@@ -82,8 +82,31 @@ impl FramebufferDiscovery {
                 STORED_FB_PIXEL_FORMAT,
             )
         };
-        if phys < 0x100000 || w == 0 || w > 16384 || h == 0 || h > 16384 || stride == 0 || bpp != 32
+        // Strict validation to reject garbage from a broken identity mapping.
+        // On InsydeH2O, if args_phys_addr ≥ 64GB, the shallow clone_page_table
+        // reads wrong physical memory, producing values like 1900544×4172873728.
+        //
+        // Checks:
+        //   1. phys must be in a plausible MMIO range (0x100000 .. 256 GiB)
+        //   2. width/height must be reasonable (80..16384 and 25..16384)
+        //   3. stride must be ≈ width×4, with up to 256 bytes of padding
+        //   4. bpp must be exactly 32
+        //   5. pixel_format must be 0 (RGB) or 1 (BGR)
+        if phys < 0x100000
+            || phys > 0x40_0000_0000 // 256 GiB — no PCI MMIO above this
+            || w < 80
+            || w > 16384
+            || h < 25
+            || h > 16384
+            || bpp != 32
+            || fmt_raw > 1
         {
+            return None;
+        }
+        // Stride sanity: should be ≈ width×4, with up to 256 bytes of padding
+        let expected_stride_min = w.saturating_mul(4);
+        let expected_stride_max = expected_stride_min.saturating_add(256);
+        if stride < expected_stride_min || stride > expected_stride_max {
             return None;
         }
         let pixel_format = match fmt_raw {

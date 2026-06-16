@@ -32,26 +32,46 @@ pub unsafe extern "C" fn efi_main_stage2(
         // Store raw integers NOW while args_ptr is valid.  Do NOT
         // dereference args_ptr later — it may be corrupted by the
         // world‑switch page‑table rebuild.
-        // NOTE: store GOP parameters into .data-section globals NOW
-        // while args_ptr is valid.  init_graphics() later reads them
-        // and builds the renderer.  Simple .data integers survive the
-        // world-switch + shallow clone_page_table reliably.
+        //
+        // VALIDATION: Before dereferencing args_ptr, verify the
+        // framebuffer fields are sane.  If args_ptr lies outside the
+        // identity huge-page range (0–64GB), the shallow clone_page_table
+        // will translate it to wrong physical memory and we'll read
+        // garbage.  Check that fb_width/height/stride/bpp/address are
+        // within plausible bounds.  If they aren't, skip the .data store
+        // and rely on the PCI BAR0 fallback later.
         crate::graphics::discovery::store_args_va(args_ptr as u64);
         {
             let args = &*args_ptr;
-            let stride_bytes = if args.fb_stride > 0 {
-                args.fb_stride.saturating_mul(4)
+            // Sanity-check: are the framebuffer fields plausible?
+            // On real InsydeH2O firmware, garbage reads produce values like
+            // 1900544×4172873728 — these are clearly out of range.
+            let fb_valid = args.fb_address >= 0x100000
+                && args.fb_width > 0
+                && args.fb_width <= 16384
+                && args.fb_height > 0
+                && args.fb_height <= 16384
+                && args.fb_bpp == 32;
+            if fb_valid {
+                let stride_bytes = if args.fb_stride > 0 {
+                    args.fb_stride.saturating_mul(4)
+                } else {
+                    args.fb_width.saturating_mul(4)
+                };
+                crate::graphics::discovery::store_boot_fb_params(
+                    args.fb_address,
+                    args.fb_width,
+                    args.fb_height,
+                    stride_bytes,
+                    args.fb_bpp,
+                    args.fb_pixel_format,
+                );
             } else {
-                args.fb_width.saturating_mul(4)
-            };
-            crate::graphics::discovery::store_boot_fb_params(
-                args.fb_address,
-                args.fb_width,
-                args.fb_height,
-                stride_bytes,
-                args.fb_bpp,
-                args.fb_pixel_format,
-            );
+                // Framebuffer fields are garbage — args_ptr was not
+                // identity-mapped correctly.  Do NOT store the corrupted
+                // values; the kernel will fall back to PCI BAR0 probe.
+                debug_serial(b"S2: WARNING: KernelArgs FB fields invalid, skipping .data store (identity map mismatch?)\n");
+            }
         }
 
         // Signal '3': After early FB param capture
