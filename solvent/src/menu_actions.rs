@@ -1,7 +1,7 @@
 //! Menu actions and info-window dispatch.
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
-use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, ensure_terminal_window, truncate_to_chars};
+use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, truncate_to_chars};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -52,8 +52,9 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
             rt.frame_due = true;
         }
         NewShell => {
-            ensure_terminal_window();
-            crate::launch_shell();
+            // Defer shell launch — cannot call ensure_terminal_window()
+            // or launch_shell() while holding RUNTIME lock (deadlock).
+            rt.shell_launch_pending = true;
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }

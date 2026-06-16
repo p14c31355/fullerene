@@ -175,6 +175,7 @@ pub struct RuntimeState {
     pub term_cells: Vec<LatticeCell>,
     pub term_dirty: bool,
     pub shell_state: ShellState,
+    pub shell_launch_pending: bool,
     pub clock_changed: bool,
     pub cursor_save_buf:
         [u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
@@ -224,6 +225,7 @@ pub fn init() {
         term_cells: Vec::new(),
         term_dirty: true,
         shell_state: ShellState::Desktop,
+        shell_launch_pending: false,
         clock_changed: false,
         cursor_save_buf: [0u32;
             lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
@@ -1004,6 +1006,16 @@ fn runtime_tick_no_fb() {
     update_clock();
     chrono_tick(now);
     process_events();
+    // Check for deferred shell launch (set by handlers while RUNTIME lock was held).
+    // Must be done outside the RUNTIME lock to avoid deadlock.
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let pending = r.shell_launch_pending;
+        r.shell_launch_pending = false;
+        pending
+    }) {
+        ensure_terminal_window();
+        launch_shell();
+    }
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         if due {
@@ -1040,6 +1052,16 @@ where
     update_clock();
     chrono_tick(now);
     process_events();
+    // Check for deferred shell launch (set by handlers while RUNTIME lock was held).
+    // Must be done outside the RUNTIME lock to avoid deadlock.
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let pending = r.shell_launch_pending;
+        r.shell_launch_pending = false;
+        pending
+    }) {
+        ensure_terminal_window();
+        launch_shell();
+    }
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         r.frame_due = false;

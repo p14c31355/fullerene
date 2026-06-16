@@ -6,7 +6,6 @@
 use crate::cursor_lightweight_update;
 use crate::{
     FB_DIMS, MOUSE_STATE, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS,
-    ensure_terminal_window, launch_shell,
 };
 use lattice::shell_overlay::ShellState;
 use lattice::wm::DragState;
@@ -46,9 +45,9 @@ impl EventHandler for WmEventHandler {
                     if let Some(icon_idx) = rt.desktop.desktop_icons.hit_test(cx, cy) {
                         if let Some(icon) = rt.desktop.desktop_icons.icons.get(icon_idx) {
                             if icon.label == "Shell" {
-                                // Ensure terminal window exists, then launch the shell
-                                ensure_terminal_window();
-                                launch_shell();
+                                // Defer shell launch — cannot call ensure_terminal_window()
+                                // or launch_shell() while holding RUNTIME lock (deadlock).
+                                rt.shell_launch_pending = true;
                                 rt.frame_due = true;
                                 return true;
                             }
@@ -166,8 +165,9 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
         if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
             match idx {
                 0 => {
-                    ensure_terminal_window();
-                    launch_shell();
+                    // Defer shell launch — cannot call ensure_terminal_window()
+                    // or launch_shell() while holding RUNTIME lock (deadlock).
+                    rt.shell_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
