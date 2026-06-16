@@ -22,6 +22,7 @@ pub enum DesktopAction {
     Reboot,
     Separator,
     ChangeWallpaperSettings,
+    OpenEditor,
 }
 
 impl DesktopAction {

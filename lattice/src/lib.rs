@@ -6,6 +6,7 @@ pub mod compositor;
 pub mod cursor;
 pub mod desktop;
 pub mod desktop_icons;
+pub mod editor;
 pub mod font;
 pub mod menu;
 pub mod renderer;

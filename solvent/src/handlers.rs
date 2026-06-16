@@ -178,7 +178,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
     let columns = ((fw as i32) / (icon_size + pad)).max(1);
     let start_y = 60i32;
 
-    for idx in 0i32..6 {
+    for idx in 0i32..7 {
         let col = idx % columns;
         let row = idx / columns;
         let ax = pad + col * (icon_size + pad);
@@ -193,7 +193,15 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                     rt.frame_due = true;
                     return true;
                 }
-                3 => {
+                2 => {
+                    // Defer editor launch — cannot call ensure_editor_window()
+                    // while holding RUNTIME lock (deadlock).
+                    rt.editor_launch_pending = true;
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                4 => {
                     rt.shell_state = ShellState::TimeZoneSelector;
                     rt.frame_due = true;
                     return true;
