@@ -390,9 +390,15 @@ pub fn poll_keyboard() {
             None => break,
         };
 
-        // If editor window exists, route key events to editor.
+        // Route key events to editor only when editor window exists
+        // and is the topmost (focused) window.
         let editor_active = RUNTIME.lock().as_ref().map_or(false, |r| {
-            r.editor_window.is_some()
+            if let Some(editor_id) = r.editor_window {
+                let wms = r.desktop.wm.windows();
+                wms.last().map_or(false, |top| top.id == editor_id)
+            } else {
+                false
+            }
         });
         if editor_active && pressed {
             editor_handle_key(scancode);
@@ -1098,6 +1104,14 @@ where
     }) {
         ensure_terminal_window();
         launch_shell();
+    }
+    // Check for deferred editor launch.
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let pending = r.editor_launch_pending;
+        r.editor_launch_pending = false;
+        pending
+    }) {
+        ensure_editor_window();
     }
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
