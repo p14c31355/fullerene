@@ -44,12 +44,37 @@ impl EventHandler for WmEventHandler {
                 if *btn == MouseButton::Left {
                     if let Some(icon_idx) = rt.desktop.desktop_icons.hit_test(cx, cy) {
                         if let Some(icon) = rt.desktop.desktop_icons.icons.get(icon_idx) {
-                            if icon.label == "Shell" {
-                                // Defer shell launch — cannot call ensure_terminal_window()
-                                // or launch_shell() while holding RUNTIME lock (deadlock).
-                                rt.shell_launch_pending = true;
-                                rt.frame_due = true;
-                                return true;
+                            match icon.label.as_str() {
+                                "Shell" => {
+                                    // Defer shell launch — cannot call
+                                    // ensure_terminal_window() or launch_shell()
+                                    // while holding RUNTIME lock (deadlock).
+                                    rt.shell_launch_pending = true;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                "Files" => {
+                                    crate::menu_actions::open_info_window(
+                                        rt,
+                                        crate::menu_actions::InfoWindow::FileManager,
+                                    );
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                "Settings" => {
+                                    rt.shell_state = ShellState::TimeZoneSelector;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                "About" => {
+                                    crate::menu_actions::open_info_window(
+                                        rt,
+                                        crate::menu_actions::InfoWindow::About,
+                                    );
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                _ => {}
                             }
                         }
                     }
