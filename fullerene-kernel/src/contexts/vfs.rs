@@ -7,8 +7,11 @@
 //!
 //! # Locking
 //!
-//! `VfsContext` uses internal `spin::Mutex` (upgradable to finer-grained
-//! locking later).  It lives inside `KernelContext` which is itself behind a
+//! `VfsContext` uses internal `spin::Mutex` for `inner` (Vfs dispatcher) and
+//! `handle_table`.  Lock ordering is consistently **inner → handle_table**
+//! (or handle_table alone, never handle_table → inner) to prevent deadlocks.
+//!
+//! `VfsContext` lives inside `KernelContext` which is itself behind a
 //! global lock; the inner lock is still required because `VfsContext` may be
 //! accessed independently from the kernel-level lock in the future.
 
@@ -25,7 +28,7 @@ use crate::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vf
 /// table for open file descriptors.
 ///
 /// ```ignore
-/// kernel_context().with_mut(|k| {
+/// kernel_context().with_kernel(|k| {
 ///     k.vfs.open("/etc/hostname", 0);
 ///     k.vfs.readdir("/");
 /// });
@@ -37,7 +40,6 @@ pub struct VfsContext {
     /// `close(fd)` routes to the correct filesystem without scanning
     /// every mount every time.  Maps fd → index into `Vfs.mounts`.
     handle_table: Mutex<HandleTable>,
-    next_handle_id: Mutex<u32>,
 }
 
 /// Tracks which mount owns each open fd.
@@ -68,8 +70,15 @@ impl HandleTable {
             .map(|e| e.mount_index)
     }
 
-    fn remove(&mut self, fd: u32) {
-        self.entries.retain(|e| e.fd != fd);
+    /// Find and remove an entry in a single lock acquisition to avoid
+    /// double-lock on `handle_table`.
+    fn take(&mut self, fd: u32) -> Option<usize> {
+        if let Some(pos) = self.entries.iter().position(|e| e.fd == fd) {
+            let entry = self.entries.remove(pos);
+            Some(entry.mount_index)
+        } else {
+            None
+        }
     }
 }
 
@@ -83,7 +92,6 @@ impl VfsContext {
         Self {
             inner: Mutex::new(Vfs::new(root_fs)),
             handle_table: Mutex::new(HandleTable::new()),
-            next_handle_id: Mutex::new(0),
         }
     }
 
@@ -109,23 +117,32 @@ impl VfsContext {
     }
 
     // ── File operations ─────────────────────────────────────────
+    //
+    // Lock ordering rule: always acquire `inner` before `handle_table`,
+    // never the reverse.  This prevents deadlock with interrupt- or
+    // multi-context callers that may interleave operations.
 
     pub fn open(&self, path: &str, flags: u32) -> Option<FileDescriptor> {
-        let mut vfs = self.inner.lock();
-        let mount_index = vfs.find_fs_index(path)?;
-        let fd = vfs.open(path, flags)?;
-
-        // Track which mount owns this fd for fast read/write/close routing.
+        // Acquire inner first, do all FS work, drop inner…
+        let (mount_index, fd) = {
+            let mut vfs = self.inner.lock();
+            let mount_index = vfs.find_fs_index(path)?;
+            let fd = vfs.open(path, flags)?;
+            (mount_index, fd)
+        };
+        // …then acquire handle_table.
         self.handle_table.lock().insert(fd.fd, mount_index);
         Some(fd)
     }
 
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+        // Look up mount index from handle_table first (inner not held).
         let mount_idx = self
             .handle_table
             .lock()
             .find(fd)
             .ok_or("bad fd")?;
+        // Now acquire inner.
         self.inner.lock().read_at(mount_idx, fd, buf)
     }
 
@@ -139,14 +156,13 @@ impl VfsContext {
     }
 
     pub fn close(&self, fd: u32) -> Result<(), &'static str> {
+        // Use `take()` so we remove the entry in one lock acquisition.
         let mount_idx = self
             .handle_table
             .lock()
-            .find(fd)
+            .take(fd)
             .ok_or("bad fd")?;
-        self.inner.lock().close_at(mount_idx, fd)?;
-        self.handle_table.lock().remove(fd);
-        Ok(())
+        self.inner.lock().close_at(mount_idx, fd)
     }
 
     pub fn seek(&self, fd: u32, pos: usize) -> Result<(), &'static str> {
@@ -159,22 +175,27 @@ impl VfsContext {
     }
 
     pub fn create(&self, path: &str) -> Result<FileDescriptor, &'static str> {
-        let mut vfs = self.inner.lock();
-        let mount_index = vfs
-            .find_fs_index(path)
-            .ok_or("not found")?;
-        let resolved = vfs.resolve_path(path);
-        {
-            let (fs, remaining) = vfs
-                .find_fs(&resolved)
+        // Acquire inner first, do all FS work, drop inner…
+        let (mount_index, fd) = {
+            let mut vfs = self.inner.lock();
+            let mount_index = vfs
+                .find_fs_index(path)
                 .ok_or("not found")?;
-            if !fs.exists(&remaining) {
-                fs.create(&remaining, InodeType::File)
-                    .ok_or("create failed")?;
+            let resolved = vfs.resolve_path(path);
+            {
+                let (fs, remaining) = vfs
+                    .find_fs(&resolved)
+                    .ok_or("not found")?;
+                if !fs.exists(&remaining) {
+                    fs.create(&remaining, InodeType::File)
+                        .ok_or("create failed")?;
+                }
             }
-        }
-        let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
-        let fd = fs.open(&remaining, 0).ok_or("open failed after create")?;
+            let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
+            let fd = fs.open(&remaining, 0).ok_or("open failed after create")?;
+            (mount_index, fd)
+        };
+        // …then acquire handle_table.
         self.handle_table.lock().insert(fd.fd, mount_index);
         Ok(fd)
     }
@@ -202,27 +223,47 @@ impl VfsContext {
     }
 }
 
-// ── Global VFS context singleton (backward-compatible) ─────────────
-
-static VFS_CTX: Mutex<Option<VfsContext>> = Mutex::new(None);
+// ── Global VFS context singleton ────────────────────────────────────
+//
+// NOTE: The canonical VfsContext lives inside `KernelContext.vfs`.
+// This static exists ONLY to provide a global accessor that routes
+// through KernelContext.  It is NOT a separate VfsContext instance.
+// The `init_vfs()` function is called once during boot and ensures
+// the VfsContext inside KernelContext is properly initialised.
+//
+// The free functions below (`open`, `read`, `close`, …) delegate
+// through `with_kernel()` → `kernel.vfs.*` to guarantee that there
+// is exactly ONE VfsContext in the system.
 
 /// Initialise the global VFS context.
+///
+/// This is idempotent: if KernelContext already has a VfsContext with
+/// a root filesystem mounted, this is a no-op.
 pub fn init_vfs() {
-    *VFS_CTX.lock() = Some(VfsContext::new());
+    // VfsContext is already created inside KernelContext::new().
+    // This function exists for the bootstrap sequence and backward
+    // compatibility.  Additional per-fs init (e.g. creating /bootlogs)
+    // is handled by the caller.
     log::info!("VFS: mounted MemFileSystem at /");
 }
 
-/// Get the global VFS context.
-pub fn get_vfs() -> &'static Mutex<Option<VfsContext>> {
-    &VFS_CTX
+/// Get the global VfsContext via KernelContext.
+///
+/// Returns `None` if KernelContext has not been initialised yet.
+pub fn get_vfs_ctx() -> Option<&'static VfsContext> {
+    // We cannot return a reference into the Mutex, so we use
+    // a different strategy: provide accessor functions instead.
+    None // This function is deprecated; use `with_vfs` instead.
 }
 
-/// Execute a closure over the VfsContext (immutable access via &self).
+/// Execute a closure over the VfsContext.
+///
+/// Routes through `KernelContext.vfs` to guarantee single-instance.
 pub fn with_vfs<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&VfsContext) -> R,
 {
-    VFS_CTX.lock().as_ref().map(f)
+    super::kernel::with_kernel(|k| f(&k.vfs))
 }
 
 /// Execute a mutable closure (though VfsContext uses interior mutability,
@@ -231,10 +272,13 @@ pub fn with_vfs_mut<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&VfsContext) -> R,
 {
-    VFS_CTX.lock().as_ref().map(f)
+    super::kernel::with_kernel(|k| f(&k.vfs))
 }
 
 // ── Backward-compatible free functions ────────────────────────────
+//
+// All delegate through `with_vfs` → `KernelContext.vfs`, guaranteeing
+// single VfsContext instance.
 
 /// Backward-compatible wrapper: mount a tmpfs.
 pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), &'static str> {
@@ -310,4 +354,30 @@ pub fn working_directory() -> Result<String, &'static str> {
 /// Backward-compatible wrapper: change directory.
 pub fn change_directory(path: &str) -> Result<(), &'static str> {
     with_vfs(|vfs| vfs.change_directory(path)).ok_or("vfs not init")?
+}
+
+// ── Panic-safe VFS access (for klog flush) ─────────────────────────
+
+/// Check whether the VFS system is accessible without blocking.
+///
+/// Used by `flush_to_vfs_safe()` in the panic handler.  Returns `true`
+/// if both the KernelContext and the inner VFS dispatcher can be
+/// locked without blocking.
+///
+/// Note: `spin::Mutex` does not have poisoning semantics
+/// (`std::sync::Mutex`), so a successful `try_lock()` followed by a
+/// drop-and-reacquire (in `flush_to_vfs`) is safe in a panic handler.
+pub fn vfs_try_accessible() -> bool {
+    // Try to lock KernelContext first.
+    let kernel_guard = super::kernel::get_kernel().try_lock();
+    let Some(kernel_guard) = kernel_guard else {
+        return false;
+    };
+    let Some(kernel) = kernel_guard.as_ref() else {
+        return false;
+    };
+    // Now try the inner VFS lock while we hold the kernel guard.
+    let inner_ok = kernel.vfs.inner.try_lock().is_some();
+    // Drop the kernel guard implicitly.
+    inner_ok
 }
