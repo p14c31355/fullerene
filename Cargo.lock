@@ -799,6 +799,9 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 [[package]]
 name = "resonance"
 version = "0.1.0"
+dependencies = [
+ "x86_64 0.15.4",
+]
 
 [[package]]
 name = "rle_player"

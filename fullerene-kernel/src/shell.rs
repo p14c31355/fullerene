@@ -435,7 +435,7 @@ fn register_nozzle_hooks() {
         "badapple" => {
             ctx.terminal
                 .write_str("Playing Bad Apple!! (press any key to stop)...\n");
-            crate::badapple::play_badapple();
+            crate::apps::badapple::play_badapple();
             ctx.terminal.write_str("Bad Apple finished.\n");
         }
         "date" => {
