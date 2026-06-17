@@ -54,24 +54,5 @@ impl ShellContext {
     }
 }
 
-// ── Global singleton ────────────────────────────────────────────────
-
-static SHELL_CTX: Mutex<Option<ShellContext>> = Mutex::new(None);
-
-/// Initialise the global ShellContext.
-pub fn init_shell() {
-    *SHELL_CTX.lock() = Some(ShellContext::new());
-}
-
-/// Get the global ShellContext.
-pub fn get_shell() -> &'static Mutex<Option<ShellContext>> {
-    &SHELL_CTX
-}
-
-/// Execute a closure over the ShellContext.
-pub fn with_shell<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&ShellContext) -> R,
-{
-    SHELL_CTX.lock().as_ref().map(f)
-}
+// The canonical ShellContext lives inside KernelContext.shell.
+// No separate global singleton is needed — use `kernel.shell` instead.

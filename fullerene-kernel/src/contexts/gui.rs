@@ -42,24 +42,5 @@ impl GuiContext {
     }
 }
 
-// ── Global singleton ────────────────────────────────────────────────
-
-static GUI_CTX: Mutex<Option<GuiContext>> = Mutex::new(None);
-
-/// Initialise the global GuiContext.
-pub fn init_gui_ctx() {
-    *GUI_CTX.lock() = Some(GuiContext::new());
-}
-
-/// Get the global GuiContext.
-pub fn get_gui() -> &'static Mutex<Option<GuiContext>> {
-    &GUI_CTX
-}
-
-/// Execute a closure over the GuiContext.
-pub fn with_gui<F, R>(f: F) -> Option<R>
-where
-    F: FnOnce(&GuiContext) -> R,
-{
-    GUI_CTX.lock().as_ref().map(f)
-}
+// The canonical GuiContext lives inside KernelContext.gui.
+// No separate global singleton is needed — use `kernel.gui` instead.

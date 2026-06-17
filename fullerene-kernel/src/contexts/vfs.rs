@@ -247,15 +247,6 @@ pub fn init_vfs() {
     log::info!("VFS: mounted MemFileSystem at /");
 }
 
-/// Get the global VfsContext via KernelContext.
-///
-/// Returns `None` if KernelContext has not been initialised yet.
-pub fn get_vfs_ctx() -> Option<&'static VfsContext> {
-    // We cannot return a reference into the Mutex, so we use
-    // a different strategy: provide accessor functions instead.
-    None // This function is deprecated; use `with_vfs` instead.
-}
-
 /// Execute a closure over the VfsContext.
 ///
 /// Routes through `KernelContext.vfs` to guarantee single-instance.

@@ -1,7 +1,18 @@
 //! Unified Context System — replaces scattered statics with named structs.
 //!
-//! All contexts use `define_context!` macro for zero-boilerplate singleton management.
-//! KernelContext bundles all sub-contexts for single-lock access.
+//! Every subsystem context lives inside [`KernelContext`], the single source of
+//! truth for kernel state.  There are no separate per-context global singletons;
+//! all access goes through `kernel_context().with_kernel(|k| k.vfs.open(…))`.
+//!
+//! # Adding a new context
+//!
+//! 1. Create `contexts/<name>.rs` with a `pub struct <Name>Context { … }`
+//! 2. Add `pub mod <name>;` and `pub use <name>::<Name>Context;` below
+//! 3. Add a `pub <name>: <Name>Context` field to `KernelContext` in `kernel.rs`
+//!
+//! The `define_context!` macro in `macros.rs` is kept for reference but
+//! is no longer the recommended pattern — new code should use
+//! `KernelContext` aggregation.
 
 #[macro_use]
 pub mod macros;
