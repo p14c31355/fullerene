@@ -17,9 +17,12 @@ use super::audio::AudioContext;
 use super::boot::BootContext;
 use super::event::EventContext;
 use super::framebuffer::FramebufferContext;
+use super::gui::GuiContext;
 use super::input::InputContext;
 use super::memory::MemoryContext;
 use super::pci::PciContext;
+use super::shell::ShellContext;
+use super::vfs::VfsContext;
 use super::window::WindowContext;
 
 use spin::Mutex;
@@ -37,6 +40,9 @@ pub struct KernelContext {
     pub window: WindowContext,
     pub audio: AudioContext,
     pub event: EventContext,
+    pub vfs: VfsContext,
+    pub shell: ShellContext,
+    pub gui: GuiContext,
 }
 
 // KernelContext is only stored behind a Mutex; interior mutability is
@@ -60,6 +66,9 @@ impl KernelContext {
             window: WindowContext::new(),
             audio: AudioContext::new(),
             event: EventContext::new(),
+            vfs: VfsContext::new(),
+            shell: ShellContext::new(),
+            gui: GuiContext::new(),
         }
     }
 

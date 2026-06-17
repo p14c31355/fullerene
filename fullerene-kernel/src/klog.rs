@@ -221,7 +221,7 @@ pub fn flush_to_vfs() -> Result<(), ()> {
 /// panicking thread, so we must not attempt to acquire it if it's
 /// already poisoned.  We try `flush_to_vfs()` but swallow any error.
 pub fn flush_to_vfs_safe() {
-    if crate::vfs::vfs().try_lock().is_some() {
+    if crate::contexts::vfs::get_vfs().try_lock().is_some() {
         let _ = flush_to_vfs();
     }
 }
