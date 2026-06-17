@@ -651,13 +651,21 @@ pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    if *RENDERING_SUSPENDED.lock() {
+    if RENDERING_SUSPENDED.load(core::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    // Prevent re-entrancy: if a timer IRQ fires while we hold RUNTIME.lock(),
+    // the inner runtime_tick() → process_events() would spin forever trying to
+    // acquire the same lock.  Setting RENDERING_SUSPENDED tells runtime_tick()
+    // to bail out immediately.
+    RENDERING_SUSPENDED.store(true, core::sync::atomic::Ordering::SeqCst);
     let mut rt_lock = RUNTIME.lock();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
-        None => return,
+        None => {
+            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+            return;
+        }
     };
 
     static PREV_SHELL_STATE: Mutex<ShellState> = Mutex::new(ShellState::Desktop);
@@ -678,7 +686,10 @@ where
     let tb_changed = rt.desktop.update_taskbar();
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
-        None => return,
+        None => {
+            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+            return;
+        }
     };
     *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
     *LAST_FB.lock() = (
@@ -708,6 +719,7 @@ where
     let fb_len = fb_stride.saturating_mul(fb_height as usize);
     let back_len = (fb_width as usize) * (fb_height as usize);
     if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
+        RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
         return;
     }
     rt.back_len = back_len;
@@ -845,6 +857,7 @@ where
             );
         }
     }
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 
 unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
@@ -1031,11 +1044,12 @@ pub fn set_render_fn(f: fn()) {
 }
 
 fn runtime_tick_no_fb() {
-    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
-    if *RENDERING_SUSPENDED.lock() {
+    // Prevent re‑entrancy from timer IRQs while this tick is in progress.
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
     poll_keyboard();
     update_clock();
@@ -1075,6 +1089,10 @@ fn runtime_tick_no_fb() {
         }
         due
     });
+    // Clear the re‑entrancy flag before calling render(), so render()
+    // can set it again for its own critical section (where it holds
+    // RUNTIME.lock() and touches the framebuffer).
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         if let Some(render_fn) = *RENDER_FN.lock() {
             render_fn();
@@ -1086,10 +1104,11 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
-    if *RENDERING_SUSPENDED.lock() {
+    // Prevent re‑entrancy from timer IRQs while this tick is in progress.
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
     poll_keyboard();
     update_clock();
@@ -1118,6 +1137,9 @@ where
         r.frame_due = false;
         due
     });
+    // Clear the re‑entrancy flag before calling render(), so render()
+    // can set it again for its own critical section.
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         render(framebuffer_fn);
     }
@@ -1132,12 +1154,13 @@ pub fn write_terminal(s: &str) {
 
 // ── Rendering suspend / resume ───────────────────────────────
 
-static RENDERING_SUSPENDED: spin::Mutex<bool> = spin::Mutex::new(false);
+static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 pub fn suspend_rendering() {
-    *RENDERING_SUSPENDED.lock() = true;
+    RENDERING_SUSPENDED.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 pub fn resume_rendering() {
-    *RENDERING_SUSPENDED.lock() = false;
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 pub fn force_desktop_redraw() {
     if let Some(ref mut r) = *RUNTIME.lock() {

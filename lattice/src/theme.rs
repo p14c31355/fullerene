@@ -73,36 +73,49 @@ pub const LIGHT_THEME: ThemeColors = ThemeColors {
 };
 
 /// Global theme state, toggleable at runtime.
-use spin::Mutex;
+use core::sync::atomic::{AtomicBool, Ordering};
 
-static CURRENT_THEME: Mutex<ThemeVariant> = Mutex::new(ThemeVariant::Dark);
+/// false = Dark, true = Light
+static CURRENT_THEME: AtomicBool = AtomicBool::new(false);
 
 /// Get the currently active theme variant.
 pub fn current_theme_variant() -> ThemeVariant {
-    *CURRENT_THEME.lock()
+    if CURRENT_THEME.load(Ordering::SeqCst) {
+        ThemeVariant::Light
+    } else {
+        ThemeVariant::Dark
+    }
 }
 
 /// Get the currently active theme colours.
 pub fn current_colors() -> ThemeColors {
-    match *CURRENT_THEME.lock() {
-        ThemeVariant::Dark => DARK_THEME,
-        ThemeVariant::Light => LIGHT_THEME,
+    if CURRENT_THEME.load(Ordering::SeqCst) {
+        LIGHT_THEME
+    } else {
+        DARK_THEME
     }
 }
 
 /// Toggle between dark and light theme.
 pub fn toggle_theme() -> ThemeVariant {
-    let mut theme = CURRENT_THEME.lock();
-    *theme = match *theme {
-        ThemeVariant::Dark => ThemeVariant::Light,
-        ThemeVariant::Light => ThemeVariant::Dark,
-    };
-    *theme
+    let was_dark = CURRENT_THEME.swap(true, Ordering::SeqCst);
+    // was_dark == false means it was Dark, now switched to Light
+    // was_dark == true means it was Light, now switched to Dark
+    if was_dark {
+        // Was Light → now Dark
+        CURRENT_THEME.store(false, Ordering::SeqCst);
+        ThemeVariant::Dark
+    } else {
+        ThemeVariant::Light
+    }
 }
 
 /// Set the theme explicitly.
 pub fn set_theme(variant: ThemeVariant) {
-    *CURRENT_THEME.lock() = variant;
+    CURRENT_THEME.store(
+        matches!(variant, ThemeVariant::Light),
+        Ordering::SeqCst,
+    );
 }
 
 /// Get a single colour value by name (for shell / settings app).
