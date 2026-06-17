@@ -1163,10 +1163,19 @@ pub fn resume_rendering() {
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 pub fn force_desktop_redraw() {
+    // Prevent re-entrancy from timer IRQs while we hold RUNTIME.lock().
+    // This is called from sys_control hooks (shell commands like
+    // "wallpaper mountain") which run in a different kernel process
+    // context.  If a timer IRQ fires while we hold the lock, the inner
+    // runtime_tick() would deadlock on the same spin::Mutex.
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     if let Some(ref mut r) = *RUNTIME.lock() {
         r.desktop.force_full_redraw();
         r.frame_due = true;
     }
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 
 // ── Theme / wallpaper bridges ────────────────────────────────
