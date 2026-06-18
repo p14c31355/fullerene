@@ -391,7 +391,7 @@ impl EhciController {
         // Since we're in a single-address-space environment, we can use
         // the virtual address directly by converting to physical via ctx.
         // For simplicity, we copy to a known page.
-        let setup_page_phys = self.qtd_pool_phys + 128 * 32; // use one past the pool
+        let setup_page_phys = self.qtd_pool_phys + 120 * 32; // use the reserved area at the end of the page
         let setup_page_virt = unsafe { (*self.ctx).phys_to_virt(setup_page_phys) } as *mut u8;
         unsafe {
             core::ptr::copy_nonoverlapping(setup_bytes.as_ptr(), setup_page_virt, 8);
