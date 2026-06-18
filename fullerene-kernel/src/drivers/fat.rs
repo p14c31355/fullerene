@@ -278,7 +278,13 @@ impl FatFileSystem {
             let ebpb: &ExFatBootSector = unsafe { &*(boot.as_ptr() as *const ExFatBootSector) };
 
             let bps_shift = ebpb.bytes_per_sector_shift as u32;
+            if bps_shift < 9 || bps_shift > 12 {
+                return Err("invalid bytes_per_sector_shift");
+            }
             let spc_shift = ebpb.sectors_per_cluster_shift as u32;
+            if spc_shift > 25 {
+                return Err("invalid sectors_per_cluster_shift");
+            }
             let bps = 1u32 << bps_shift;
             let spc = 1u32 << spc_shift;
             let reserved = ebpb.fat_offset;
