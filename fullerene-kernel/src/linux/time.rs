@@ -15,8 +15,13 @@ pub fn sys_nanosleep(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     unsafe { copy_val_to_user(req, &ts) }.ok();
 
     // Read the timespec from user space
-    let sec = unsafe { core::ptr::read_volatile(req as *const i64) };
-    let nsec = unsafe { core::ptr::read_volatile((req + 8) as *const i64) };
+    let ts_data = match unsafe { copy_from_user(req, core::mem::size_of::<LinuxTimespec>()) } {
+        Ok(d) => d,
+        Err(e) => return errno_code(e),
+    };
+    let ts = unsafe { core::ptr::read_unaligned(ts_data.as_ptr() as *const LinuxTimespec) };
+    let sec = ts.tv_sec;
+    let nsec = ts.tv_nsec;
 
     if nsec < 0 || nsec > 999999999 {
         return errno_code(EINVAL);
