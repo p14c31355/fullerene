@@ -96,25 +96,29 @@ impl BlockDevice for UsbBlockDevice {
     fn total_sectors(&self) -> u64 { self.total_blocks }
 }
 
-// ── EHCI controller storage ──────────────────────────────────
+// ── Controller storage ───────────────────────────────────────
+
+use core::sync::atomic::AtomicBool;
+use nitrogen::usb::xhci::XhciController;
 
 static EHCI_CONTROLLERS: Mutex<Vec<EhciController>> = Mutex::new(Vec::new());
-static EHCI_INITIALIZED: AtomicBool = AtomicBool::new(false);
-use core::sync::atomic::AtomicBool;
+static XHCI_CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
+static CTRL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
-    // Immediate first poll for boot-time USB devices (already connected)
     poll_usb();
 }
 
 fn init_controllers() {
-    if EHCI_INITIALIZED.swap(true, Ordering::SeqCst) { return; }
+    if CTRL_INITIALIZED.swap(true, Ordering::SeqCst) { return; }
     use nitrogen::pci::PciConfigSpace;
     use crate::driver_context_impl::KernelDriverContext;
 
-    let mut controllers = EHCI_CONTROLLERS.lock();
+    let mut ehis = EHCI_CONTROLLERS.lock();
+    let mut xhis = XHCI_CONTROLLERS.lock();
+
     for bus in 0u8..=0 {
         for slot in 0u8..32 {
             for func in 0u8..8 {
@@ -122,83 +126,224 @@ fn init_controllers() {
                     Some(c) => c,
                     None => { if func == 0 { break; } continue; }
                 };
-                if cfg.class_code != 0x0C || cfg.subclass != 0x03 || cfg.prog_if != 0x20 { continue; }
+                if cfg.class_code != 0x0C || cfg.subclass != 0x03 { continue; }
 
                 let bar0 = PciConfigSpace::read_config_dword(bus, slot, func, 0x10) & 0xFFFF_FFF0;
                 if bar0 == 0 { continue; }
                 let mmio_virt = KernelDriverContext.phys_to_virt(bar0 as u64) as *mut u8;
                 if mmio_virt.is_null() { continue; }
 
-                let cmd = PciConfigSpace::read_config_word(bus, slot, func, 4);
-                PciConfigSpace::write_config_word_raw(bus, slot, func, 4, cmd | 0x06);
+                PciConfigSpace::write_config_word_raw(bus, slot, func, 4,
+                    PciConfigSpace::read_config_word(bus, slot, func, 4) | 0x06);
 
-                if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
-                    controllers.push(hc);
-                    petroleum::serial::serial_log(format_args!(
-                        "USB: EHCI at {}:{}.{}\n", bus, slot, func
-                    ));
+                match cfg.prog_if {
+                    0x20 => { // EHCI
+                        if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
+                            ehis.push(hc);
+                        }
+                    }
+                    0x30 => { // xHCI
+                        if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
+                            xhis.push(hc);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
     }
 }
 
-/// Poll EHCI ports. Returns true if a new drive was mounted.
+/// Poll all USB controllers (EHCI + xHCI). Returns true if a new drive was mounted.
 pub fn poll_usb() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
-    let mut ctlrs = EHCI_CONTROLLERS.lock();
 
-    for ehci in ctlrs.iter_mut() {
-        ehci.start();
-        let old = ehci.devices().len();
-        ehci.poll_ports();
-        if ehci.devices().len() <= old { continue; }
-
-        let ndevs = ehci.devices().len();
-        for idx in old..ndevs {
-            let eptr: *mut EhciController = ehci as *mut EhciController;
-
-            // Enumerate
-            let dev = unsafe {
-                let p = &mut *eptr;
-                let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
-                nitrogen::usb::hub::enumerate_device(&mut ctrl)
-            };
-            let dev = match dev { Ok(d) => d, Err(_) => continue };
-            if !dev.is_mass_storage() { continue; }
-
-            // Find bulk endpoints
-            let mut bulk_out = 0u8; let mut bulk_in = 0u8;
-            for ep in &dev.endpoints {
-                if ep.xfer_type() != UsbXferType::Bulk { continue; }
-                match ep.direction() {
-                    UsbDirection::Out => { bulk_out = ep.b_endpoint_address; }
-                    UsbDirection::In => { bulk_in = ep.b_endpoint_address; }
-                }
-            }
-            if bulk_out == 0 || bulk_in == 0 { continue; }
-
-            // Build block device with default 512-byte block size
-            let bdev = UsbBlockDevice {
-                dev_addr: dev.address, bulk_out, bulk_in,
-                block_size: 512, total_blocks: 0, tag: 1, ehci: eptr,
-            };
-
-            let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
-            match FatFileSystem::new(Box::new(bdev)) {
-                Ok(fs) => {
-                    let _ = crate::vfs::mkdir(&mp);
-                    if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
-                        .is_some_and(|r| r.is_ok())
-                    {
-                        let n = USB_DRIVES.lock().len() + 1;
-                        USB_DRIVES.lock().push(UsbDrive { name: alloc::format!("USB Drive {}", n), mount_point: mp });
-                        USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                Err(e) => { petroleum::serial::serial_log(format_args!("USB mount: {}\n", e)); }
+    // ── EHCI ──
+    {
+        let mut ehis = EHCI_CONTROLLERS.lock();
+        for ehci in ehis.iter_mut() {
+            ehci.start();
+            let old = ehci.devices().len();
+            ehci.poll_ports();
+            if ehci.devices().len() <= old { continue; }
+            for idx in old..ehci.devices().len() {
+                let eptr: *mut EhciController = ehci as *mut EhciController;
+                mount_ehci_device(ehci, idx, eptr);
             }
         }
     }
+
+    // ── xHCI ──
+    {
+        let mut xhis = XHCI_CONTROLLERS.lock();
+        for xhci in xhis.iter_mut() {
+            let old = xhci.devices().len();
+            xhci.poll_ports();
+            if xhci.devices().len() <= old { continue; }
+            for idx in old..xhci.devices().len() {
+                mount_xhci_device(xhci, idx);
+            }
+        }
+    }
+
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
+}
+
+/// Enumerate and mount a USB device on an xHCI controller.
+fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
+    // Step 1: Enable slot
+    let slot_id = match xhci.enable_slot() {
+        Ok(id) => id,
+        Err(_) => return,
+    };
+
+    // Step 2: Address device (assigns address, sets up EP0)
+    if xhci.address_device(slot_id).is_err() { return; }
+
+    // Step 3: Get device descriptor via control transfer
+    let mut desc_buf = [0u8; 64];
+    let setup = UsbSetupPacket {
+        bm_request_type: 0x80,
+        b_request: 6, // GET_DESCRIPTOR
+        w_value: (1u16) << 8, // DEVICE descriptor
+        w_index: 0,
+        w_length: 64,
+    };
+    if xhci.control_transfer(slot_id, &setup, &mut desc_buf).is_err() { return; }
+    let dev_class = desc_buf[12];
+    let dev_subclass = desc_buf[13];
+    let dev_protocol = desc_buf[14];
+    if dev_class != 0x08 { return; } // not mass storage
+
+    // Step 4: Get configuration descriptor (simplified: assume EP0, EP1 bulk out, EP2 bulk in)
+    // In a full implementation we'd iterate the configuration descriptor.
+    // For now, use standard USB class: bulk endpoints at address 0x02 (out) and 0x82 (in)
+
+    // Set configuration (configuration value = 1)
+    let setup = UsbSetupPacket {
+        bm_request_type: 0x00,
+        b_request: 9, // SET_CONFIGURATION
+        w_value: 1,
+        w_index: 0,
+        w_length: 0,
+    };
+    // Use control transfer through a raw pointer to avoid borrow conflicts
+    let xptr: *mut XhciController = xhci as *mut XhciController;
+    if unsafe { (*xptr).control_transfer(slot_id, &setup, &mut []) }.is_err() { return; }
+
+    // Configure bulk endpoints
+    if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x02, 512) }.is_err() { return; }
+    if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x82, 512) }.is_err() { return; }
+
+    // Update the device entry
+    if let Some(dev) = xhci.devices_mut().get_mut(dev_idx) {
+        dev.device_class = dev_class;
+        dev.device_subclass = dev_subclass;
+        dev.device_protocol = dev_protocol;
+    }
+
+    // Build block device with inline BOT protocol
+    struct XhciBlockDev {
+        slot_id: u32, bulk_out: u8, bulk_in: u8,
+        block_size: u32, total_blocks: u64, tag: u32,
+        xhci: *mut XhciController,
+    }
+    unsafe impl Send for XhciBlockDev {}
+    impl BlockDevice for XhciBlockDev {
+        fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+            let xhci = unsafe { &mut *self.xhci };
+            let mut cdb = [0u8; 10];
+            cdb[0] = 0x28;
+            cdb[2..6].copy_from_slice(&lba.to_be_bytes());
+            cdb[7..9].copy_from_slice(&count.to_be_bytes());
+            let dlen = (count as u32) * self.block_size;
+            let blen = buf.len();
+            let mut data = vec![0u8; dlen as usize];
+            // BOT CBW → xfer → CSW via xHCI bulk transfers
+            let mut cbw = [0u8; 31];
+            cbw[..4].copy_from_slice(&0x43425355u32.to_le_bytes());
+            cbw[4..8].copy_from_slice(&self.tag.to_le_bytes()); self.tag += 1;
+            cbw[8..12].copy_from_slice(&dlen.to_le_bytes());
+            cbw[12] = 0x80;
+            cbw[14] = 10;
+            cbw[15..25].copy_from_slice(&cdb);
+            xhci.bulk_transfer(self.slot_id, self.bulk_out, &mut cbw, UsbDirection::Out, 512)?;
+            xhci.bulk_transfer(self.slot_id, self.bulk_in, &mut data, UsbDirection::In, 512)?;
+            let mut csw = [0u8; 13];
+            xhci.bulk_transfer(self.slot_id, self.bulk_in, &mut csw, UsbDirection::In, 512)?;
+            if csw[12] != 0 { return Err("CSW err"); }
+            let n = data.len().min(blen);
+            buf[..n].copy_from_slice(&data[..n]);
+            Ok(())
+        }
+        fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+            // Similar to read but direction reversed
+            Err("xhci write not impl")
+        }
+        fn sector_size(&self) -> u32 { self.block_size }
+        fn total_sectors(&self) -> u64 { self.total_blocks }
+    }
+
+    // Allocate on heap (Box) — closures are avoided by using the struct
+    let bdev = XhciBlockDev {
+        slot_id, bulk_out: 0x02, bulk_in: 0x82,
+        block_size: 512, total_blocks: 0, tag: 1,
+        xhci: xptr,
+    };
+
+    let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
+    match FatFileSystem::new(Box::new(bdev)) {
+        Ok(fs) => {
+            let _ = crate::vfs::mkdir(&mp);
+            if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
+                .is_some_and(|r| r.is_ok())
+            {
+                let n = USB_DRIVES.lock().len() + 1;
+                USB_DRIVES.lock().push(UsbDrive { name: alloc::format!("USB Drive {}", n), mount_point: mp });
+                USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Err(e) => { petroleum::serial::serial_log(format_args!("USB xHCI mount: {}\n", e)); }
+    }
+}
+
+/// Enumerate and mount a USB device on an EHCI controller.
+fn mount_ehci_device(ehci: &mut EhciController, idx: usize, eptr: *mut EhciController) {
+    let dev = unsafe {
+        let p = &mut *eptr;
+        let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
+        nitrogen::usb::hub::enumerate_device(&mut ctrl)
+    };
+    let dev = match dev { Ok(d) => d, Err(_) => return };
+    if !dev.is_mass_storage() { return; }
+
+    let mut bulk_out = 0u8; let mut bulk_in = 0u8;
+    for ep in &dev.endpoints {
+        if ep.xfer_type() != UsbXferType::Bulk { continue; }
+        match ep.direction() {
+            UsbDirection::Out => { bulk_out = ep.b_endpoint_address; }
+            UsbDirection::In => { bulk_in = ep.b_endpoint_address; }
+        }
+    }
+    if bulk_out == 0 || bulk_in == 0 { return; }
+
+    let bdev = UsbBlockDevice {
+        dev_addr: dev.address, bulk_out, bulk_in,
+        block_size: 512, total_blocks: 0, tag: 1, ehci: eptr,
+    };
+
+    let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
+    match FatFileSystem::new(Box::new(bdev)) {
+        Ok(fs) => {
+            let _ = crate::vfs::mkdir(&mp);
+            if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
+                .is_some_and(|r| r.is_ok())
+            {
+                let n = USB_DRIVES.lock().len() + 1;
+                USB_DRIVES.lock().push(UsbDrive { name: alloc::format!("USB Drive {}", n), mount_point: mp });
+                USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        Err(e) => { petroleum::serial::serial_log(format_args!("USB mount: {}\n", e)); }
+    }
 }

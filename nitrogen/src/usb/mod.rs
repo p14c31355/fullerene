@@ -32,6 +32,7 @@ pub mod ehci;
 pub mod hub;
 pub mod msd;
 pub mod scsi;
+pub mod xhci;
 
 use core::fmt;
 

@@ -126,6 +126,8 @@ pub struct EhciController {
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
     next_address: u8,
+    /// Bitmask of ports already processed (bit N = port N).
+    processed_ports: u32,
 }
 
 impl EhciController {
@@ -224,6 +226,7 @@ impl EhciController {
             devices: Vec::new(),
             ctx,
             next_address: 1,
+            processed_ports: 0,
         })
     }
 
@@ -560,44 +563,66 @@ impl EhciController {
 
     /// Poll all ports for newly connected devices.
     ///
-    /// Handles two cases:
-    /// - **Firmware-enabled port** (UEFI booted from USB): `PORTSC_PE` is already set.
-    ///   We register the device without resetting.
-    /// - **Hotplug**: `PORTSC_CCS` is set but `PORTSC_PE` is clear.
-    ///   We reset the port, enable it, then register.
+    /// Uses `processed_ports` bitmask to avoid re-registering the same device.
+    /// Detects hotplug by checking USBSTS Port Change Detect (PCD) — when set,
+    /// all port CCS bits are re-evaluated and `processed_ports` is adjusted.
     pub fn poll_ports(&mut self) {
         let op_base = unsafe { self.mmio_base.add(self.op_offset as usize) };
+        let sts = unsafe { core::ptr::read_volatile((op_base.add(USBSTS as usize)) as *const u32) };
+        let pcd = sts & STS_PCD != 0;
+
         for port in 0..self.n_ports {
             let paddr = (op_base as usize + PORTSC_BASE as usize + (port * 4) as usize) as *mut u32;
             let portsc = unsafe { core::ptr::read_volatile(paddr) };
-            if portsc & PORTSC_CCS == 0 { continue; }
+            let has_dev = portsc & PORTSC_CCS != 0;
 
-            // Check if this port was already processed
-            let already_known = self.devices.iter().any(|d| {
-                d.vendor_id == 0 && d.speed == UsbSpeed::High
-            });
-            if already_known { continue; }
+            // If PCD was set, re-evaluate this port
+            if pcd && !has_dev {
+                self.processed_ports &= !(1 << port);
+                continue;
+            }
+            if pcd && has_dev && self.processed_ports & (1 << port) != 0 {
+                // Device was removed and re-inserted → clear flag for re-process
+                self.processed_ports &= !(1 << port);
+            }
+
+            // Already processed → skip
+            if self.processed_ports & (1 << port) != 0 { continue; }
+
+            // No device → mark and skip
+            if !has_dev {
+                self.processed_ports |= 1 << port;
+                continue;
+            }
 
             if portsc & PORTSC_PE == 0 {
-                // Hotplug: reset the port
-                unsafe { core::ptr::write_volatile(paddr, portsc | PORTSC_RESET); }
-                for _ in 0..50_000 { let _ = unsafe { core::ptr::read_volatile(paddr) }; }
-                unsafe { core::ptr::write_volatile(paddr, portsc & !PORTSC_RESET); }
+                unsafe {
+                    core::ptr::write_volatile(paddr, portsc | PORTSC_RESET);
+                    for _ in 0..50_000 { core::ptr::read_volatile(paddr); }
+                    core::ptr::write_volatile(paddr, portsc & !PORTSC_RESET);
+                }
                 for _ in 0..10_000 {
                     if unsafe { core::ptr::read_volatile(paddr) } & PORTSC_PE != 0 { break; }
+                }
+                if unsafe { core::ptr::read_volatile(paddr) } & PORTSC_CCS == 0 {
+                    self.processed_ports |= 1 << port;
+                    continue;
                 }
             }
 
             let speed = UsbSpeed::from_portsc(unsafe { core::ptr::read_volatile(paddr) });
-            if speed != UsbSpeed::High { continue; }
+            if speed != UsbSpeed::High {
+                self.processed_ports |= 1 << port;
+                continue;
+            }
 
-            // Register device (address will be assigned during enumeration)
             self.devices.push(UsbDevice {
                 address: 0, speed, max_packet_size_0: 64,
                 vendor_id: 0, product_id: 0, device_class: 0,
                 device_subclass: 0, device_protocol: 0, configurations: 0,
                 endpoints: Vec::new(),
             });
+            self.processed_ports |= 1 << port;
         }
     }
 
