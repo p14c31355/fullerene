@@ -21,7 +21,7 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
     let ctx = KernelDriverContext;
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
 
-    // 1. Hardware-level init (PCI probe, BAR mapping, queues, display)
+    // 1. Hardware-level init (PCI probe, BAR mapping, queues)
     let mut result = nitrogen::virtio::gpu::init::init(&ctx)?;
 
     // 2. Framebuffer info
@@ -58,6 +58,17 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
             None
         })?;
     }
+
+    // 3.5. Negotiate display (scanout + resource attach)
+    let fb_size = (fb_config.stride * fb_config.height * (fb_config.bpp / 8)) as u32;
+    result
+        .gpu
+        .init_display(fb_config.width, fb_config.height, fb_phys, fb_size)
+        .ok()
+        .or_else(|| {
+            log::error!("virtio_gpu: failed to negotiate display");
+            None
+        })?;
 
     // 4. Create renderer
     let fb_info = petroleum::graphics::color::FramebufferInfo {
