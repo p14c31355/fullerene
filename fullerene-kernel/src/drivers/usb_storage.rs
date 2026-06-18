@@ -11,6 +11,7 @@ use nitrogen::DriverContext;
 use spin::Mutex;
 
 use crate::drivers::fat::{BlockDevice, FatFileSystem};
+use crate::klog_fmt;
 
 pub static USB_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static USB_DRIVES: Mutex<Vec<UsbDrive>> = Mutex::new(Vec::new());
@@ -151,11 +152,15 @@ fn init_controllers() {
                     0x20 => { // EHCI
                         if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
                             ehis.push(hc);
+                            klog_fmt!("USB: EHCI at {}:{}.{}\n", bus, slot, func);
                         }
                     }
                     0x30 => { // xHCI
                         if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
                             xhis.push(hc);
+                             klog_fmt!("USB: xHCI at {}:{}.{}\n", bus, slot, func);
+                         } else {
+                             klog_fmt!("USB: xHCI at {}:{}.{} FAILED init\n", bus, slot, func);
                         }
                     }
                     _ => {}
@@ -190,8 +195,10 @@ pub fn poll_usb() -> bool {
         for xhci in xhis.iter_mut() {
             let old = xhci.devices().len();
             xhci.poll_ports();
-            if xhci.devices().len() <= old { continue; }
-            for idx in old..xhci.devices().len() {
+            let new = xhci.devices().len();
+            klog_fmt!("xHCI poll: ports {} old={} new={}\n", xhci.n_ports(), old, new);
+            if new <= old { continue; }
+            for idx in old..new {
                 mount_xhci_device(xhci, idx);
             }
         }
@@ -303,7 +310,7 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
     };
 
     let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
-    match FatFileSystem::new(Box::new(bdev)) {
+    match FatFileSystem::from_device(Box::new(bdev)) {
         Ok(fs) => {
             let _ = crate::vfs::mkdir(&mp);
             if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
@@ -314,7 +321,7 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
                 USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         }
-        Err(e) => { petroleum::serial::serial_log(format_args!("USB xHCI mount: {}\n", e)); }
+        Err(e) => { klog_fmt!("USB xHCI mount: {}\n", e); }
     }
 }
 
@@ -344,7 +351,7 @@ fn mount_ehci_device(ehci: &mut EhciController, idx: usize, eptr: *mut EhciContr
     };
 
     let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
-    match FatFileSystem::new(Box::new(bdev)) {
+    match FatFileSystem::from_device(Box::new(bdev)) {
         Ok(fs) => {
             let _ = crate::vfs::mkdir(&mp);
             if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
@@ -355,6 +362,6 @@ fn mount_ehci_device(ehci: &mut EhciController, idx: usize, eptr: *mut EhciContr
                 USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
             }
         }
-        Err(e) => { petroleum::serial::serial_log(format_args!("USB mount: {}\n", e)); }
+        Err(e) => { klog_fmt!("USB mount: {}\n", e); }
     }
 }

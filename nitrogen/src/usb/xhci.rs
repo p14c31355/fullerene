@@ -43,6 +43,7 @@ const ERSDP_OFF: u32 = 0x18; // Event Ring Dequeue Pointer
 const PORTSC_CCS: u32 = 1 << 0;
 const PORTSC_PED: u32 = 1 << 1;
 const PORTSC_PR: u32 = 1 << 4;
+const PORTSC_PP: u32 = 1 << 9;
 
 // TRB type (bits 10..15 of flags)
 const TRB_NORMAL: u8 = 1;
@@ -209,6 +210,7 @@ pub struct XhciController {
     db_off: u32,
     n_ports: u32,
     max_slots: u32,
+    ppc: bool, // Port Power Control supported
     dcbaa_phys: u64,
     dcbaa: &'static mut [u64; 256],
     slots: Vec<SlotState>,
@@ -242,6 +244,7 @@ impl XhciController {
 
         let n_ports = (hcs1 >> 24) & 0xFF;
         let max_slots = hcs1 & 0xFF;
+        let ppc = (hcs1 & (1 << 4)) != 0; // Port Power Control supported
         let db_off = db_off_val & 0xFFFF_FFFC;
         let rt_off = rt_off_val & 0xFFFF_FFFC;
         let op_off = caplength;
@@ -330,7 +333,7 @@ impl XhciController {
         unsafe { core::ptr::write_volatile((rt_base.add(IMAN_OFF as usize)) as *mut u32, 1 << 1); }
 
         Some(Self {
-            mmio: mmio_base, op_off, rt_off, db_off, n_ports, max_slots,
+            mmio: mmio_base, op_off, rt_off, db_off, n_ports, max_slots, ppc,
             dcbaa_phys: dcbaa_p, dcbaa,
             slots: Vec::new(),
             cmd_ring: cmd, ev_ring: ev, erst_phys: erst_p,
@@ -504,14 +507,28 @@ impl XhciController {
 
     // ── Port management ───────────────────────────────────────
 
+    /// Called after start. Returns number of newly detected devices.
     pub fn poll_ports(&mut self) {
         for port in 0..self.n_ports {
             if self.ports_done & (1 << port) != 0 { continue; }
-            let portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
-            if portsc & PORTSC_CCS == 0 {
-                self.ports_done |= 1 << port;
-                continue;
+
+            // Ensure port is powered (PPC controllers require OS to set PP=1)
+            if self.ppc {
+                let mut portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                if portsc & PORTSC_PP == 0 {
+                    unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PP); }
+                    // Wait for power to stabilize
+                    for _ in 0..20_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                    portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                }
             }
+
+            let portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+
+            // No device connected → will retry on next poll
+            if portsc & PORTSC_CCS == 0 { continue; }
+
+            // Device connected but port not yet enabled → reset
             if portsc & PORTSC_PED == 0 {
                 unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PR); }
                 for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
@@ -522,10 +539,15 @@ impl XhciController {
                 for _ in 0..200_000 {
                     if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
                 }
+                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
+                    continue;
+                }
             }
+
             let ps = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
             let speed_val = (ps >> 10) & 0xF;
             let usb_speed = port_speed_to_usb(speed_val);
+
             self.devices.push(UsbDevice {
                 address: 0, speed: usb_speed, max_packet_size_0: 64,
                 vendor_id: 0, product_id: 0, device_class: 0,
@@ -538,6 +560,7 @@ impl XhciController {
 
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
+    pub fn n_ports(&self) -> u32 { self.n_ports }
     pub fn slot_id_for_device(&self, dev_idx: usize) -> Option<u32> {
         self.slots.get(dev_idx).map(|s| s.slot_id)
     }

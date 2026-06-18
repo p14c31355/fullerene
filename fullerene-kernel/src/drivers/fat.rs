@@ -11,6 +11,86 @@ use alloc::vec::Vec;
 use core::cmp::min;
 
 use crate::vfs::{FileSystem, FileDescriptor, VNode, InodeType};
+use crate::klog_fmt;
+// Master Boot Record at LBA 0. Partition entries at offset 0x1BE.
+
+#[repr(C, packed)]
+struct MbrPartitionEntry {
+    status: u8,
+    chs_first: [u8; 3],
+    partition_type: u8,
+    chs_last: [u8; 3],
+    lba_start: u32,
+    sector_count: u32,
+}
+
+const MBR_SIGNATURE: u16 = 0xAA55;
+const PARTITION_FAT32: u8 = 0x0B;  // FAT32 CHS
+const PARTITION_FAT32_LBA: u8 = 0x0C; // FAT32 LBA
+const PARTITION_FAT16: u8 = 0x06;
+const PARTITION_FAT16_LBA: u8 = 0x0E;
+const PARTITION_EXFAT: u8 = 0x07; // exFAT often uses 0x07
+
+/// Detect whether LBA 0 contains an MBR and find the first FAT partition.
+/// Returns `Some(lba_start)` if found, or `None` if LBA 0 is already a FAT BPB.
+pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static str> {
+    let mut boot = [0u8; 512];
+    device.read_sectors(0, 1, &mut boot)?;
+
+    // Check if LBA 0 is already a FAT32/ExFAT BPB (not an MBR)
+    if is_exfat(&boot) {
+        klog_fmt!("FAT: raw exFAT at LBA 0\n");
+        return Ok(0);
+    }
+    // Check for FAT32 BPB signature (bytes 0x0B at offset 11 = 0x00 for FAT)
+    // A FAT32 BPB has bytes_per_sector at offset 11-12 which is usually 512 (0x200)
+    let bps = u16::from_le_bytes([boot[11], boot[12]]);
+    if bps == 512 || bps == 1024 || bps == 2048 || bps == 4096 {
+        // Likely a FAT BPB, not MBR
+        klog_fmt!("FAT: raw FAT32 at LBA 0 (bps={})\n", bps);
+        return Ok(0);
+    }
+
+    // Check MBR signature
+    let sig = u16::from_le_bytes([boot[0x1FE], boot[0x1FF]]);
+    if sig != MBR_SIGNATURE {
+        klog_fmt!("FAT: no MBR signature at LBA 0 (0x{:04X})\n", sig);
+        return Ok(0); // Assume raw filesystem
+    }
+
+    // Scan partition entries (at offset 0x1BE, 4 entries × 16 bytes)
+    for i in 0..4 {
+        let off = 0x1BE + i * 16;
+        // SAFETY: boot[off..] has at least 16 bytes, and MbrPartitionEntry
+        // is #[repr(C, packed)] so it has no padding requirement.
+        let entry: &MbrPartitionEntry = unsafe {
+            &*(boot[off..].as_ptr() as *const MbrPartitionEntry)
+        };
+        // Read fields with explicit unaligned accesses
+        let ptype = unsafe {
+            core::ptr::read_unaligned(&raw const entry.partition_type)
+        };
+        let lba_start = unsafe {
+            core::ptr::read_unaligned(&raw const entry.lba_start)
+        };
+        match ptype {
+            PARTITION_FAT32 | PARTITION_FAT32_LBA => {
+                klog_fmt!("FAT: MBR partition {} FAT32 at LBA {}\n", i, lba_start);
+                return Ok(lba_start);
+            }
+            PARTITION_FAT16 | PARTITION_FAT16_LBA => {
+                klog_fmt!("FAT: MBR partition {} FAT16 at LBA {} (stub)\n", i, lba_start);
+            }
+            PARTITION_EXFAT => {
+                klog_fmt!("FAT: MBR partition {} exFAT at LBA {}\n", i, lba_start);
+                return Ok(lba_start);
+            }
+            _ => {}
+        }
+    }
+    klog_fmt!("FAT: no FAT partition found in MBR\n");
+    Err("no FAT partition")
+}
 
 // ── Block device abstraction ──────────────────────────────────
 // The block device provides sector-level read/write.
@@ -20,6 +100,23 @@ pub trait BlockDevice: Send {
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str>;
     fn sector_size(&self) -> u32;
     fn total_sectors(&self) -> u64;
+}
+
+/// Wraps a block device and applies an LBA offset (for partition access).
+pub struct PartitionBlockDevice {
+    inner: Box<dyn BlockDevice>,
+    offset: u32,
+}
+
+impl BlockDevice for PartitionBlockDevice {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        self.inner.read_sectors(lba + self.offset, count, buf)
+    }
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        self.inner.write_sectors(lba + self.offset, count, buf)
+    }
+    fn sector_size(&self) -> u32 { self.inner.sector_size() }
+    fn total_sectors(&self) -> u64 { self.inner.total_sectors().saturating_sub(self.offset as u64) }
 }
 
 // ── FAT32 Boot Sector (BPB) ──────────────────────────────────
@@ -122,7 +219,7 @@ const EXFAT_ENTRY_UP_CASE: u8 = 0x81;      // up-case table (root dir only)
 const EXFAT_ENTRY_BITMAP: u8 = 0x81;       // allocation bitmap (root dir only)
 const EXFAT_ENTRY_VOLUME_LABEL: u8 = 0x83; // volume label
 
-fn is_exfat(boot: &[u8; 512]) -> bool {
+pub fn is_exfat(boot: &[u8; 512]) -> bool {
     &boot[3..11] == b"EXFAT   "
 }
 
@@ -151,6 +248,28 @@ pub struct FatFileSystem {
 }
 
 impl FatFileSystem {
+    /// Create a FAT/exFAT filesystem from a block device, auto-detecting
+    /// MBR partition tables and parsing the correct boot sector.
+    pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
+        let lba = find_fat_partition(&mut *device)?;
+        if lba > 0 {
+            // Repoint the device to read from partition start.
+            // We wrap the device to add an LBA offset.
+            let wrapped = PartitionBlockDevice {
+                inner: device,
+                offset: lba,
+            };
+            return Self::new_at(Box::new(wrapped), 0);
+        }
+        Self::new_at(device, 0)
+    }
+
+    /// Create from device at a specific LBA offset (relative to the device).
+    fn new_at(device: Box<dyn BlockDevice>, _lba_offset: u32) -> Result<Self, &'static str> {
+        // Delegate to `new` which reads LBA 0 of the given device
+        Self::new(device)
+    }
+
     pub fn new(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
         let mut boot = [0u8; 512];
         device.read_sectors(0, 1, &mut boot)?;

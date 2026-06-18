@@ -589,11 +589,8 @@ impl EhciController {
             // Already processed → skip
             if self.processed_ports & (1 << port) != 0 { continue; }
 
-            // No device → mark and skip
-            if !has_dev {
-                self.processed_ports |= 1 << port;
-                continue;
-            }
+            // No device → leave unmarked, will poll again next time
+            if !has_dev { continue; }
 
             if portsc & PORTSC_PE == 0 {
                 unsafe {
