@@ -180,8 +180,17 @@ pub fn poll_usb() -> bool {
         for ehci in ehis.iter_mut() {
             ehci.start();
             let old = ehci.devices().len();
+            let n_ports = ehci.n_ports();
+            // Dump first 2 EHCI PORTSC for debug
+            for p in 0..2.min(n_ports) {
+                let ps = ehci.read_portsc(p);
+                klog_fmt!("EHCI PORTSC[{}]: 0x{:08X} (CCS={} PE={})\n",
+                    p, ps, (ps>>0)&1, (ps>>2)&1);
+            }
             ehci.poll_ports();
-            if ehci.devices().len() <= old { continue; }
+            let new = ehci.devices().len();
+            klog_fmt!("EHCI poll: {} ports old={} new={}\n", n_ports, old, new);
+            if new <= old { continue; }
             for idx in old..ehci.devices().len() {
                 let eptr: *mut EhciController = ehci as *mut EhciController;
                 mount_ehci_device(ehci, idx, eptr);
@@ -194,9 +203,17 @@ pub fn poll_usb() -> bool {
         let mut xhis = XHCI_CONTROLLERS.lock();
         for xhci in xhis.iter_mut() {
             let old = xhci.devices().len();
+            // Dump first 3 PORTSC registers for debug
+            for p in 0..3.min(xhci.n_ports()) {
+                let ps = xhci.read_portsc(p);
+                if ps != 0xFFFF {
+                    klog_fmt!("xHCI PORTSC[{}]: 0x{:08X} (CCS={} PED={} PP={} speed={})\n",
+                        p, ps, (ps>>0)&1, (ps>>1)&1, (ps>>9)&1, (ps>>10)&0xF);
+                }
+            }
             xhci.poll_ports();
             let new = xhci.devices().len();
-            klog_fmt!("xHCI poll: ports {} old={} new={}\n", xhci.n_ports(), old, new);
+            klog_fmt!("xHCI poll: {} ports old={} new={}\n", xhci.n_ports(), old, new);
             if new <= old { continue; }
             for idx in old..new {
                 mount_xhci_device(xhci, idx);

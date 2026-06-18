@@ -561,6 +561,10 @@ impl XhciController {
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
+    pub fn read_portsc(&self, port: u32) -> u32 {
+        if port >= self.n_ports { return 0xFFFF; }
+        unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) }
+    }
     pub fn slot_id_for_device(&self, dev_idx: usize) -> Option<u32> {
         self.slots.get(dev_idx).map(|s| s.slot_id)
     }
