@@ -157,7 +157,7 @@ impl VfsContext {
 
     pub fn close(&self, fd: u32) -> Result<(), &'static str> {
         // Acquire inner first, then handle_table (correct lock order).
-        // Use `take()` so we remove the entry in one lock acquisition.
+    pub fn close(&self, fd: u32) -> Result<(), &'static str> {
         let mut vfs = self.inner.lock();
         let mount_idx = self
             .handle_table
