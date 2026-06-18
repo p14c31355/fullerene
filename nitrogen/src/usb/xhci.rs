@@ -277,13 +277,32 @@ impl XhciController {
             }
         }
 
-        // Reset
-        unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_HCRST); }
-        for _ in 0..200_000 {
-            if unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) } & CMD_HCRST == 0 { break; }
+        // Check if controller is already running (firmware initialized for boot)
+        let sts = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
+        let already_running = (sts & STS_HCH) == 0;
+
+        if already_running {
+            // Firmware left the controller running — don't reset, which would
+            // clear port power state (PPC=0 means PP is read-only hardware-
+            // managed, and HCRST would lose port power without recovery).
+            // We stop the controller first to program our registers, then restart.
+        } else {
+            // Reset
+            unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_HCRST); }
+            for _ in 0..200_000 {
+                if unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) } & CMD_HCRST == 0 { break; }
+            }
+            for _ in 0..200_000 {
+                if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH != 0 { break; }
+            }
         }
-        for _ in 0..200_000 {
-            if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH != 0 { break; }
+
+        // Stop the controller before programming (if running)
+        if already_running {
+            unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, 0); }
+            for _ in 0..200_000 {
+                if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH != 0 { break; }
+            }
         }
 
         // Allocate DCBAA (aligned to 64 bytes)
@@ -512,15 +531,13 @@ impl XhciController {
         for port in 0..self.n_ports {
             if self.ports_done & (1 << port) != 0 { continue; }
 
-            // Ensure port is powered (PPC controllers require OS to set PP=1)
-            if self.ppc {
-                let mut portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
-                if portsc & PORTSC_PP == 0 {
-                    unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PP); }
-                    // Wait for power to stabilize
-                    for _ in 0..20_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                    portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
-                }
+            // Ensure port is powered (some controllers lose PP after HCRST)
+            let mut portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+            if portsc & PORTSC_PP == 0 {
+                unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PP); }
+                // Wait 20ms for power to stabilize
+                for _ in 0..20_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
             }
 
             let portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
@@ -561,6 +578,9 @@ impl XhciController {
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
+    pub fn read_cap(&self, offset: u32) -> u32 {
+        unsafe { core::ptr::read_volatile((self.mmio.add(offset as usize)) as *const u32) }
+    }
     pub fn read_portsc(&self, port: u32) -> u32 {
         if port >= self.n_ports { return 0xFFFF; }
         unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) }

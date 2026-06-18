@@ -203,6 +203,16 @@ pub fn poll_usb() -> bool {
         let mut xhis = XHCI_CONTROLLERS.lock();
         for xhci in xhis.iter_mut() {
             let old = xhci.devices().len();
+            let hcs1 = xhci.read_cap(4);
+            klog_fmt!("xHCI HCSPARAMS1=0x{:08X} (slots={} ports={} PPC={})\n",
+                hcs1, hcs1 & 0xFF, (hcs1>>24)&0xFF, (hcs1>>4)&1);
+            // Check if HCRST was skipped (PPC=0 + port power preserved)
+            let ps0 = xhci.read_portsc(0);
+            klog_fmt!("xHCI PORTSC[0] after init: 0x{:08X} (PP={} CCS={})\n",
+                ps0, (ps0>>9)&1, ps0&1);
+            let hcc1 = xhci.read_cap(0x10);
+            klog_fmt!("xHCI HCCPARAMS1=0x{:08X} (64bit={} xECP=0x{:x})\n",
+                hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
             // Dump first 3 PORTSC registers for debug
             for p in 0..3.min(xhci.n_ports()) {
                 let ps = xhci.read_portsc(p);
