@@ -61,6 +61,8 @@ pub struct SolventCallbacks {
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
     /// List mounted USB drives (name strings).
     pub usb_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
+    /// Poll USB controllers for newly connected devices. Returns true if new drive mounted.
+    pub usb_poll: Option<fn() -> bool>,
 }
 
 impl SolventCallbacks {
@@ -79,6 +81,7 @@ impl SolventCallbacks {
             process_list: None,
             device_list: None,
             usb_drive_list: None,
+            usb_poll: None,
         }
     }
     pub fn install(self) {
@@ -1170,6 +1173,27 @@ where
     }) {
         ensure_editor_window();
     }
+    // Poll USB every ~100 ticks (~2 seconds at 17ms/tick)
+    static LAST_USB_POLL: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(0);
+    let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
+    if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
+        LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
+        let changed = SOLVENT_CALLBACKS.lock().usb_poll
+            .map(|f| f())
+            .unwrap_or(false);
+        if changed {
+            if let Some(ref mut r) = *RUNTIME.lock() {
+                // Force explorer sidebar refresh on next render
+                if let Some(ref mut e) = r.explorer {
+                    e.refresh_sidebar();
+                    r.explorer_dirty = true;
+                    r.frame_due = true;
+                }
+            }
+        }
+    }
+
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         r.frame_due = false;

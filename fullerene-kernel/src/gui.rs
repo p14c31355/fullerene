@@ -124,6 +124,7 @@ pub fn init() {
             let drives = crate::drivers::usb_storage::USB_DRIVES.lock();
             drives.iter().map(|d| (d.name.clone(), d.mount_point.clone())).collect()
         }),
+        usb_poll: Some(|| crate::drivers::usb_storage::poll_usb()),
         shell_cmd: None,
         launch_shell: Some(|| {
             crate::scheduler::request_shell_launch();

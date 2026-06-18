@@ -624,7 +624,19 @@ fn draw_file_list(ctx: &ExplorerContext, surface: &mut Surface, win_w: u32, win_
 
 fn draw_statusbar(ctx: &ExplorerContext, surface: &mut Surface, _win_w: u32, win_h: u32) {
     let sy = win_h - STATUSBAR_HEIGHT;
-    let text = format!("{} items  |  {}", ctx.entries.len(), ctx.current_dir);
+    let is_usb_path = ctx.current_dir.contains("/mnt");
+    let items_text = if ctx.entries.is_empty() && is_usb_path {
+        "USB storage not yet available"
+    } else if ctx.entries.is_empty() {
+        "(empty directory)"
+    } else {
+        ""
+    };
+    let text = if !items_text.is_empty() {
+        format!("{}  |  {}", items_text, ctx.current_dir)
+    } else {
+        format!("{} items  |  {}", ctx.entries.len(), ctx.current_dir)
+    };
     draw_text(surface, &text, 8, sy + 2, MUTED_COLOR, STATUSBAR_BG);
 }
 
