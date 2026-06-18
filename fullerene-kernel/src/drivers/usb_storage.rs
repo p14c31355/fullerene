@@ -175,6 +175,12 @@ fn init_controllers() {
 pub fn poll_usb() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
 
+    // Phase 1: Poll controllers while holding locks to detect new devices.
+    // Phase 2: Mount new devices after releasing locks (avoid deadlock with
+    //          BlockDevice::read_sectors which also acquires the same lock).
+    let mut ehci_pending: Vec<(usize, usize)> = Vec::new();
+    let mut xhci_pending: Vec<(usize, usize)> = Vec::new();
+
     // ── EHCI ──
     {
         let mut ehis = EHCI_CONTROLLERS.lock();
@@ -183,7 +189,6 @@ pub fn poll_usb() -> bool {
             ehci.start();
             let old = ehci.devices().len();
             let n_ports = ehci.n_ports();
-            // Dump first 2 EHCI PORTSC for debug
             for p in 0..2.min(n_ports) {
                 let ps = ehci.read_portsc(p);
                 klog_fmt!("EHCI PORTSC[{}]: 0x{:08X} (CCS={} PE={})\n",
@@ -192,9 +197,10 @@ pub fn poll_usb() -> bool {
             ehci.poll_ports();
             let new = ehci.devices().len();
             klog_fmt!("EHCI poll: {} ports old={} new={}\n", n_ports, old, new);
-            if new <= old { continue; }
-            for idx in old..ehci.devices().len() {
-                mount_ehci_device(ehci, idx, ctrl_idx);
+            if new > old {
+                for idx in old..new {
+                    ehci_pending.push((ctrl_idx, idx));
+                }
             }
         }
     }
@@ -208,14 +214,12 @@ pub fn poll_usb() -> bool {
             let hcs1 = xhci.read_cap(4);
             klog_fmt!("xHCI HCSPARAMS1=0x{:08X} (slots={} ports={} PPC={})\n",
                 hcs1, hcs1 & 0xFF, (hcs1>>24)&0xFF, (hcs1>>4)&1);
-            // Check if HCRST was skipped (PPC=0 + port power preserved)
             let ps0 = xhci.read_portsc(0);
             klog_fmt!("xHCI PORTSC[0] after init: 0x{:08X} (PP={} CCS={})\n",
                 ps0, (ps0>>9)&1, ps0&1);
             let hcc1 = xhci.read_cap(0x10);
             klog_fmt!("xHCI HCCPARAMS1=0x{:08X} (64bit={} xECP=0x{:x})\n",
                 hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
-            // Dump first 3 PORTSC registers for debug
             for p in 0..3.min(xhci.n_ports()) {
                 let ps = xhci.read_portsc(p);
                 if ps != 0xFFFF {
@@ -226,11 +230,24 @@ pub fn poll_usb() -> bool {
             xhci.poll_ports();
             let new = xhci.devices().len();
             klog_fmt!("xHCI poll: {} ports old={} new={}\n", xhci.n_ports(), old, new);
-            if new <= old { continue; }
-            for idx in old..new {
-                mount_xhci_device(xhci, idx, ctrl_idx);
+            if new > old {
+                for idx in old..new {
+                    xhci_pending.push((ctrl_idx, idx));
+                }
             }
         }
+    }
+
+    // Phase 2: Mount new devices (locks are already released)
+    for (ctrl_idx, idx) in ehci_pending {
+        let mut ehis = EHCI_CONTROLLERS.lock();
+        let ehci = ehis[ctrl_idx].as_mut();
+        mount_ehci_device(ehci, idx, ctrl_idx);
+    }
+    for (ctrl_idx, idx) in xhci_pending {
+        let mut xhis = XHCI_CONTROLLERS.lock();
+        let xhci = xhis[ctrl_idx].as_mut();
+        mount_xhci_device(xhci, idx, ctrl_idx);
     }
 
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before

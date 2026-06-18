@@ -562,7 +562,7 @@ impl FatFileSystem {
             if remaining == 0 { break; }
             match self.read_fat_entry(clus) {
                 Ok(next) if !Self::is_end_of_chain(next) => clus = next,
-                _ => break,
+                _ => return Err("out of space or end of cluster chain"),
             }
         }
         Ok(())
@@ -604,22 +604,18 @@ impl FileSystem for FatFileSystem {
         let mut dst_off = 0usize;
         while remaining > 0 {
             let sector_base = self.cluster_to_sector(clus);
-            let skip_in_cluster = remaining_offset;
-            let cluster_bytes = self.spc * self.bps;
-            for i in 0..self.spc {
+            let start_sector_idx = remaining_offset / self.bps;
+            let mut sector_off = (remaining_offset % self.bps) as usize;
+            for i in start_sector_idx..self.spc {
                 if remaining == 0 { break; }
                 let sector = sector_base + i;
-                let start_in_sector = if i == 0 && skip_in_cluster > 0 {
-                    (skip_in_cluster % self.bps) as usize
-                } else {
-                    0
-                };
-                let to_copy_in_sector = min(remaining as usize, (self.bps - start_in_sector as u32) as usize);
+                let to_copy_in_sector = min(remaining as usize, (self.bps - sector_off as u32) as usize);
                 self.device.read_sectors(sector, 1, &mut self.sector_buf)?;
                 buf[dst_off..dst_off + to_copy_in_sector]
-                    .copy_from_slice(&self.sector_buf[start_in_sector..start_in_sector + to_copy_in_sector]);
+                    .copy_from_slice(&self.sector_buf[sector_off..sector_off + to_copy_in_sector]);
                 dst_off += to_copy_in_sector;
                 remaining -= to_copy_in_sector as u32;
+                sector_off = 0;
             }
             // Reset inner offset for subsequent clusters
             remaining_offset = 0;

@@ -20,7 +20,9 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         // Single byte reads are most common for terminal input
         if count == 1 {
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
-                unsafe { core::ptr::write_volatile(buf as *mut u8, ch) };
+                if unsafe { copy_to_user(buf, &[ch]) }.is_err() {
+                    return errno_code(EFAULT);
+                }
                 return 1;
             }
             return 0;

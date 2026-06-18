@@ -17,8 +17,11 @@ const GLYPH_SIZE: u32 = 8;
 // ── Generic helpers ──────────────────────────────────────────
 
 fn read_file(path: &str) -> Result<Vec<u8>, &'static str> {
-    let cb = SOLVENT_CALLBACKS.lock();
-    (cb.vfs_read.ok_or("no VFS read")?)(path)
+    let read_fn = {
+        let cb = SOLVENT_CALLBACKS.lock();
+        cb.vfs_read.ok_or("no VFS read")?
+    };
+    read_fn(path)
 }
 
 fn show_window(rt: &mut RuntimeState, title: &str, x: i32, y: i32, w: u32, h: u32, bg: u32) {

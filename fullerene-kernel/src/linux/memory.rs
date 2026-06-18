@@ -212,18 +212,29 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
                 for i in 0..num_pages {
                     let page_vaddr = start_page + (i as u64) * align;
-                    if let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
-                        let page_flags = PageTableFlags::PRESENT
-                            | PageTableFlags::WRITABLE
-                            | PageTableFlags::USER_ACCESSIBLE;
-                        let _ = PageTableHelper::map_page(
-                            ptm,
-                            page_vaddr as usize,
-                            frame.start_address().as_u64() as usize,
-                            page_flags,
-                            frame_alloc,
-                        );
-                    }
+                    let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
+                        Some(f) => f,
+                        None => {
+                            // Rollback previously mapped pages on OOM
+                            for j in 0..i {
+                                let unmap_vaddr = (start_page + (j as u64) * align) as usize;
+                                if mgr.page_table_manager().translate_address(unmap_vaddr).is_ok() {
+                                    let _ = mgr.safe_unmap_page(unmap_vaddr);
+                                }
+                            }
+                            return old_brk;
+                        }
+                    };
+                    let page_flags = PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE;
+                    let _ = PageTableHelper::map_page(
+                        ptm,
+                        page_vaddr as usize,
+                        frame.start_address().as_u64() as usize,
+                        page_flags,
+                        frame_alloc,
+                    );
                 }
             }
         }
