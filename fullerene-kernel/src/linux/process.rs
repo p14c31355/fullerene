@@ -114,7 +114,11 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         exit_code: None,
         parent_id: Some(current_pid),
         task_data: 0,
-        dispatch_mode: None,
+        dispatch_mode: {
+            let mut child_rt = super::runtime::LinuxRuntime::new(child_pid.0, rt.initial_break);
+            child_rt.fd_table.entries = rt.fd_table.entries.clone();
+            Some(super::runtime::DispatchMode::Linux(child_rt))
+        },
     };
 
     let child_box = alloc::boxed::Box::new(child_process);
@@ -300,15 +304,20 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         //   [after argv]   = envp[0], envp[1], ..., NULL
         //   [after envp]   = auxiliary vector (AT_NULL terminated)
 
-        // Set RSP to stack top with argc=1, argv[0]=path, NULL, envp=NULL
+        // Set RSP and write initial stack frame (argc, argv, envp)
         let stack_top = stack_top_vaddr_default;
-        let argc: u64 = 1;
+        let rsp = stack_top - 32;
+        p.context.regs[7] = rsp;
 
-        // Write to the new stack (it's mapped in the process address space,
-        // and we're in kernel mode with the kernel page table. We need to
-        // write through the process's page table).
-        // For now, just set up a minimal stack.
-        p.context.regs[7] = stack_top - 16; // push two zeros as envp[0]=NULL then argv[1]=NULL
+        // Since the user stack is mapped in the active page table, we can write
+        // the initial stack frame (argc, argv, envp) directly.
+        unsafe {
+            let stack_ptr = rsp as *mut u64;
+            core::ptr::write_volatile(stack_ptr, 1);      // argc = 1
+            core::ptr::write_volatile(stack_ptr.add(1), 0); // argv[0] = NULL
+            core::ptr::write_volatile(stack_ptr.add(2), 0); // argv[1] = NULL (terminator)
+            core::ptr::write_volatile(stack_ptr.add(3), 0); // envp[0] = NULL (terminator)
+        }
 
         // Reset runtime state
         rt.program_break = rt.initial_break;

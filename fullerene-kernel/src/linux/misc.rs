@@ -86,23 +86,29 @@ pub fn sys_getrandom(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
 
-    // Use a simple LCG with rdtsc-based entropy mixing
-    // Global atomic seed ensures non-deterministic output across calls
     use core::sync::atomic::{AtomicU64, Ordering};
     static SEED: AtomicU64 = AtomicU64::new(0);
-    let mut seed = SEED.load(Ordering::Relaxed);
-    if seed == 0 {
-        // Initialize with rdtsc for entropy
-        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        seed = tsc ^ 0x9e3779b97f4a7c15; // mix with a constant
-        SEED.store(seed, Ordering::Relaxed);
+
+    let mut bytes = alloc::vec![0u8; count as usize];
+    for byte in bytes.iter_mut() {
+        let mut current = SEED.load(Ordering::Relaxed);
+        if current == 0 {
+            current = unsafe { core::arch::x86_64::_rdtsc() } ^ 0x9e3779b97f4a7c15;
+        }
+        let mut next = current;
+        loop {
+            next = next.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            match SEED.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+        *byte = (next >> 32) as u8;
     }
-    for i in 0..count {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        let byte = (seed >> 32) as u8;
-        unsafe { core::ptr::write_volatile((buf as *mut u8).add(i as usize), byte) };
+
+    if unsafe { copy_to_user(buf, &bytes) }.is_err() {
+        return errno_code(EFAULT);
     }
-    SEED.store(seed, Ordering::Relaxed);
     count as u64
 }
 

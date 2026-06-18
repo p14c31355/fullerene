@@ -662,21 +662,26 @@ impl XhciController {
     ) -> Result<usize, &'static str> {
         let len = buf.len().min(65536);
 
-        // Get ring phys and cycle before mutable borrow
-        let (ring_phys, ring_cycle) = {
+        // Allocate a dedicated contiguous-physical staging buffer
+        let staging_pages = (len + 4095) / 4096;
+        let staging_phys = unsafe { (*self.ctx).allocate_contiguous_frames(staging_pages) }
+            .map_err(|_| "no staging memory")?;
+        let staging_virt = unsafe { (*self.ctx).phys_to_virt(staging_phys) as *mut u8 };
+
+        // Copy OUT data to staging
+        if dir == UsbDirection::Out {
+            unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len); }
+        }
+
+        // Get ring cycle before mutable borrow
+        let ring_cycle = {
             let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
             let ring = match dir {
                 UsbDirection::In => slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?,
                 UsbDirection::Out => slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?,
             };
-            (ring.phys, ring.cycle)
+            ring.cycle
         };
-
-        // Copy OUT data to staging
-        if dir == UsbDirection::Out {
-            let staging = unsafe { (*self.ctx).phys_to_virt(ring_phys) as *mut u8 };
-            unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), staging, len); }
-        }
 
         // Enqueue TRB on the ring (re-borrow slot mutably)
         if let Some(slot) = self.slots.iter_mut().find(|s| s.slot_id == slot_id) {
@@ -685,8 +690,8 @@ impl XhciController {
                 UsbDirection::Out => slot.bulk_out_ring.as_mut().ok_or("no bulk out ring")?,
             };
             let mut trb = Trb::new(TRB_NORMAL, ring.cycle);
-            trb.params[..4].copy_from_slice(&(ring_phys as u32).to_le_bytes());
-            trb.params[4..8].copy_from_slice(&(ring_phys >> 32).to_le_bytes());
+            trb.params[..4].copy_from_slice(&(staging_phys as u32).to_le_bytes());
+            trb.params[4..8].copy_from_slice(&(staging_phys >> 32).to_le_bytes());
             trb.status = (len as u32) & 0x1FFFF;
             if dir == UsbDirection::In { trb.flags |= TRB_DIR_IN; }
             trb.flags |= TRB_IOC | TRB_ENT;
@@ -700,8 +705,7 @@ impl XhciController {
         self.wait_event(5_000_000)?;
 
         if dir == UsbDirection::In {
-            let staging = unsafe { (*self.ctx).phys_to_virt(ring_phys) as *mut u8 };
-            unsafe { core::ptr::copy_nonoverlapping(staging, buf.as_mut_ptr(), len); }
+            unsafe { core::ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
         }
         Ok(len)
     }
