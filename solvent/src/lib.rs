@@ -21,6 +21,7 @@ extern crate alloc;
 mod handlers;
 mod menu_actions;
 mod explorer;
+mod viewers;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -1488,7 +1489,21 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
         return;
     }
 
-    // For other file types, show the app name in a simple info window
+    // Dispatch to format-specific viewers
+    match ext {
+        "bmp" => { crate::viewers::open_bmp(rt, path, name); return; }
+        #[cfg(feature = "minipng")]
+        "png" => { crate::viewers::open_png(rt, path, name); return; }
+        "wav" => { crate::viewers::open_wav(rt, path, name); return; }
+        #[cfg(feature = "rmp3")]
+        "mp3" => { crate::viewers::open_mp3(rt, path, name); return; }
+        #[cfg(feature = "shiguredo_mp4")]
+        "mp4" => { crate::viewers::open_mp4(rt, path, name); return; }
+        "tar" | "gz" | "xz" => { crate::viewers::open_tar(rt, path, name); return; }
+        _ => {}
+    }
+
+    // Unknown file type: show info window
     let app_name = app.unwrap_or("Unknown");
     let msg = alloc::format!(
         "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",

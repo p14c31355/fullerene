@@ -44,6 +44,7 @@ pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
     FileAssociation { extensions: &["wav"], app_name: "Music Player" },
     FileAssociation { extensions: &["mp3"], app_name: "Music Player" },
     FileAssociation { extensions: &["tar", "gz", "xz", "zip"], app_name: "Archive Manager" },
+    FileAssociation { extensions: &["mp4"], app_name: "Movie Player" },
     FileAssociation { extensions: &["rle"], app_name: "RLE Player" },
 ];
 
