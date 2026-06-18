@@ -70,7 +70,10 @@ impl DriverContext for KernelDriverContext {
             .as_mut()
             .ok_or(DriverContextError::MmioMappingFailed)?;
 
-        let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE;
+        let mut pte_flags = PageTableFlags::PRESENT;
+        if !flags.executable {
+            pte_flags |= PageTableFlags::NO_EXECUTE;
+        }
         if flags.writable {
             pte_flags |= PageTableFlags::WRITABLE;
         }
