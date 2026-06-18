@@ -20,6 +20,7 @@ extern crate alloc;
 // ── Modules (god-module decomposition per AGENTS.md §10) ────
 mod handlers;
 mod menu_actions;
+mod explorer;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -188,6 +189,9 @@ pub struct RuntimeState {
     pub editor_buf: EditorBuffer,
     pub editor_launch_pending: bool,
     pub editor_dirty: bool,
+    /// File explorer state
+    pub explorer: Option<explorer::ExplorerContext>,
+    pub explorer_dirty: bool,
 }
 
 pub fn init() {
@@ -242,6 +246,8 @@ pub fn init() {
         editor_buf: EditorBuffer::new(),
         editor_launch_pending: false,
         editor_dirty: false,
+        explorer: None,
+        explorer_dirty: false,
     });
 }
 
@@ -687,6 +693,9 @@ where
     render_terminal(rt, rt.term_window);
     if rt.editor_dirty {
         render_editor(rt);
+    }
+    if rt.explorer_dirty {
+        render_explorer(rt);
     }
     let tb_changed = rt.desktop.update_taskbar();
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
@@ -1364,6 +1373,35 @@ fn render_editor(rt: &mut RuntimeState) {
     });
     rt.desktop.invalidate_window(editor_window);
     rt.editor_dirty = false;
+}
+
+// ── Explorer ──────────────────────────────────────────────────
+
+fn render_explorer(rt: &mut RuntimeState) {
+    let explorer = match rt.explorer.as_mut() {
+        Some(e) => e,
+        None => return,
+    };
+    let explorer_id = match explorer.window_id {
+        Some(id) => id,
+        None => return,
+    };
+    let window = match rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == explorer_id)
+    {
+        Some(w) => w,
+        None => {
+            rt.explorer = None;
+            return;
+        }
+    };
+    explorer::render_explorer(explorer, &mut window.surface);
+    rt.desktop.invalidate_window(explorer_id);
+    rt.explorer_dirty = false;
 }
 
 /// Handle a key event for the editor.

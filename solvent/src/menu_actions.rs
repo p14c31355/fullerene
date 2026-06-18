@@ -110,6 +110,11 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
 }
 
 pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
+    // FileManager uses interactive explorer window, not text window
+    if matches!(kind, InfoWindow::FileManager) {
+        open_explorer_window(rt);
+        return;
+    }
     let text = match kind {
         InfoWindow::TaskManager => {
             let Some(get_procs) = SOLVENT_CALLBACKS.lock().process_list else {
@@ -176,69 +181,44 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             }
             s
         }
-        InfoWindow::FileManager => {
-            let Some(readdir) = SOLVENT_CALLBACKS.lock().vfs_readdir else {
-                return show_text_window(
-                    rt,
-                    "File Manager",
-                    160,
-                    120,
-                    50,
-                    3,
-                    0x1a1a0d,
-                    0xFFFFCC,
-                    "  Name              Size        Type\n------------------  ----------  ----\n (no VFS readdir callback)\n",
-                );
-            };
-            match readdir("/") {
-                Ok(entries) => {
-                    let mut s = String::from(
-                        "  Name              Size        Type\n------------------  ----------  ----\n",
-                    );
-                    for e in &entries {
-                        let size = if e.is_dir {
-                            String::from("--")
-                        } else if e.size >= 1048576 {
-                            format!(
-                                "{}.{} MB",
-                                e.size / 1048576,
-                                ((e.size % 1048576) * 10) / 1048576
-                            )
-                        } else if e.size >= 1024 {
-                            format!("{}.{} KB", e.size / 1024, (e.size % 1024) * 10 / 1024)
-                        } else {
-                            format!("{} B", e.size)
-                        };
-                        let n = {
-                            let l = (0..=18)
-                                .rev()
-                                .find(|&l| e.name.is_char_boundary(l))
-                                .unwrap_or(0);
-                            &e.name[..l]
-                        };
-                        let _ = core::write!(
-                            &mut s,
-                            "  {:<18}  {:<10}  {}\n",
-                            n,
-                            size,
-                            if e.is_dir { "dir" } else { "file" }
-                        );
-                    }
-                    if entries.is_empty() {
-                        s.push_str("  (empty directory)\n");
-                    }
-                    s.push_str(&format!("\n  Path: {}\n  {} entries", "/", entries.len()));
-                    s
-                }
-                Err(e) => format!("  Error reading directory:\n  {} ({})\n", "/", e),
-            }
-        }
+        InfoWindow::FileManager => String::new(),
         InfoWindow::About => String::from(
             "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
         ),
     };
     let (title, x, y, cols, extra_rows, bg, fg) = kind.params();
     show_text_window(rt, title, x, y, cols, extra_rows, bg, fg, &text);
+}
+
+/// Open the interactive explorer file manager window.
+fn open_explorer_window(rt: &mut RuntimeState) {
+    // If already open, just focus it
+    if let Some(ref explorer) = rt.explorer {
+        if let Some(id) = explorer.window_id {
+            rt.desktop.wm.raise_to_top(id);
+            rt.frame_due = true;
+        }
+        return;
+    }
+    let win_w = 640;
+    let win_h = 400;
+    let id = rt.desktop.wm.create_titled_window(
+        100, 60, win_w, win_h,
+        0x1E1E2E, "File Manager",
+    );
+    let mut explorer = crate::explorer::ExplorerContext::new();
+    explorer.window_id = Some(id);
+    explorer.navigate_to("/");
+    {
+        let window = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id);
+        if let Some(w) = window {
+            crate::explorer::render_explorer(&explorer, &mut w.surface);
+            rt.desktop.invalidate_window(id);
+        }
+    }
+    rt.explorer = Some(explorer);
+    rt.explorer_dirty = true;
+    rt.frame_due = true;
 }
 
 /// Create a titled window, fill its surface with `text`, raise to top, and schedule a redraw.
