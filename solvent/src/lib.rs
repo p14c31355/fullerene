@@ -60,7 +60,7 @@ pub struct SolventCallbacks {
     pub process_list: Option<fn() -> Vec<ProcessEntry>>,
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
     /// List mounted USB drives (name strings).
-    pub usb_drive_list: Option<fn() -> Vec<alloc::string::String>>,
+    pub usb_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
 }
 
 impl SolventCallbacks {
@@ -130,7 +130,7 @@ pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
 const MAX_FB_PIXELS: usize = 3840 * 2160;
 
-pub fn get_usb_drives() -> alloc::vec::Vec<alloc::string::String> {
+pub fn get_usb_drives() -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)> {
     SOLVENT_CALLBACKS.lock().usb_drive_list
         .map(|f| f())
         .unwrap_or_default()

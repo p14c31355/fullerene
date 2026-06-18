@@ -214,13 +214,9 @@ impl ExplorerContext {
             SidebarItem { label: String::from("Music"), path: String::from("/Music") },
             SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures") },
         ];
-        // Add mounted USB drives under "Devices" section
-        let usb_drives = crate::get_usb_drives();
-        for drive in usb_drives {
-            items.push(SidebarItem {
-                label: drive,
-                path: String::from("/mnt/usb"),
-            });
+        // Add mounted USB drives with their actual mount points
+        for (name, mount_path) in crate::get_usb_drives() {
+            items.push(SidebarItem { label: name, path: mount_path });
         }
         items
     }
@@ -270,8 +266,7 @@ impl ExplorerContext {
 
     /// Refresh sidebar items (re-detect USB drives etc.).
     pub fn refresh_sidebar(&mut self) {
-        // Rebuild sidebar: favorites + USB drives
-        let favorites = vec![
+        let mut items = vec![
             SidebarItem { label: String::from("Home"), path: String::from("/") },
             SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop") },
             SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads") },
@@ -279,14 +274,10 @@ impl ExplorerContext {
             SidebarItem { label: String::from("Music"), path: String::from("/Music") },
             SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures") },
         ];
-        self.sidebar_items = favorites;
-        let usb_drives = crate::get_usb_drives();
-        for drive in usb_drives {
-            self.sidebar_items.push(SidebarItem {
-                label: drive,
-                path: String::from("/mnt/usb"),
-            });
+        for (name, mount_path) in crate::get_usb_drives() {
+            items.push(SidebarItem { label: name, path: mount_path });
         }
+        self.sidebar_items = items;
     }
 
     fn sort_entries(&mut self) {

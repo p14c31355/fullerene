@@ -26,7 +26,7 @@
 //!   PORTSC(i)   — port status and control
 //! ```
 
-use crate::usb::{UsbDevice, UsbSpeed, UsbSetupPacket, UsbEndpointDesc, UsbDirection, UsbXferType};
+use crate::usb::{UsbDevice, UsbSpeed, UsbSetupPacket, UsbEndpointDesc, UsbDirection};
 use crate::DriverContext;
 use alloc::vec::Vec;
 

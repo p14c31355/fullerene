@@ -122,7 +122,7 @@ pub fn init() {
         }),
         usb_drive_list: Some(|| {
             let drives = crate::drivers::usb_storage::USB_DRIVES.lock();
-            drives.iter().map(|d| d.name.clone()).collect()
+            drives.iter().map(|d| (d.name.clone(), d.mount_point.clone())).collect()
         }),
         shell_cmd: None,
         launch_shell: Some(|| {

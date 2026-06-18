@@ -9,9 +9,9 @@
 
 use crate::usb::{
     UsbDevice, UsbDeviceDescriptor, UsbSetupPacket, UsbEndpointDesc,
-    DESC_DEVICE, DESC_CONFIGURATION, DESC_INTERFACE, DESC_ENDPOINT,
+    DESC_DEVICE, DESC_CONFIGURATION, DESC_ENDPOINT,
     REQ_GET_DESCRIPTOR, REQ_SET_ADDRESS, REQ_SET_CONFIGURATION,
-    UsbConfigDescriptor, UsbInterfaceDescriptor,
+    UsbConfigDescriptor,
 };
 use alloc::vec::Vec;
 

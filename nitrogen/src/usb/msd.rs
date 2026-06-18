@@ -17,7 +17,7 @@
 //! Device → Host:  CSW (13 bytes, bulk IN endpoint)
 //! ```
 
-use crate::usb::{UsbDevice, UsbDirection, UsbXferType, UsbEndpointDesc};
+use crate::usb::{UsbDevice, UsbDirection, UsbXferType};
 use crate::usb::scsi::{
     ScsiCdb10, ScsiReadCapacity10Cdb, ScsiReadCapacity10Data, ScsiInquiryCdb,
     SCSI_READ_10, SCSI_WRITE_10,
