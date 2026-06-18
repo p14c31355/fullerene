@@ -263,10 +263,10 @@ impl EhciController {
     }
 
     fn alloc_qh(&mut self) -> Option<(&'static mut QueueHead, u64)> {
-        if self.qh_pool_used >= 85 { return None; }
+        if self.qh_pool_used >= 64 { return None; }
         let idx = self.qh_pool_used;
         self.qh_pool_used += 1;
-        let phys = self.qh_pool_phys + (idx as u64) * 48;
+        let phys = self.qh_pool_phys + (idx as u64) * core::mem::size_of::<QueueHead>() as u64;
         let ptr = &mut self.qh_pool[idx] as *mut QueueHead;
         Some(unsafe { (&mut *ptr, phys) })
     }
