@@ -399,13 +399,12 @@ impl FatFileSystem {
             for entry_idx in 0..(self.spc * self.bps / 32) {
                 let sec = sector + entry_idx / (self.bps / 32);
                 let off = ((entry_idx % (self.bps / 32)) * 32) as usize;
-                let mut buf = [0u8; 512];
+                let mut buf = alloc::vec![0u8; self.bps as usize];
                 if self.device.read_sectors(sec, 1, &mut buf).is_err() {
                     return None;
                 }
                 // SAFETY: FatDirEntry is #[repr(C, packed)]. `off` is derived from
-                // the entry index within the sector, and `buf` is exactly 512 bytes,
-                // so `buf[off..]` has at least 32 bytes remaining.
+                // the entry index within the sector, and `buf` has at least 32 bytes remaining from `off`.
                 let entry: &FatDirEntry = unsafe { &*(buf[off..].as_ptr() as *const FatDirEntry) };
                 if entry.name[0] == 0 {
                     return None; // end of directory
