@@ -1321,14 +1321,14 @@ fn render_editor(rt: &mut RuntimeState) {
     );
 
     let scroll = rt.editor_buf.scroll_row;
+    let scroll = rt.editor_buf.scroll_row;
     for (row_idx, line) in visible.iter().enumerate() {
-        let bytes = line.as_bytes();
-        for (col, &ch) in bytes.iter().enumerate() {
+        for (col, ch) in line.chars().enumerate() {
             if col < new_cols as usize {
                 let cell_idx = row_idx * (new_cols as usize) + col;
                 if cell_idx < total {
                     cells[cell_idx] = LatticeCell {
-                        ch,
+                        ch: if ch.is_ascii() { ch as u8 } else { b'?' },
                         fg: 0xCCCCCC,
                         bg: 0x0a0a1e,
                     };
