@@ -197,7 +197,7 @@ impl EhciController {
         }
 
         let qh_slice = unsafe {
-            core::slice::from_raw_parts_mut(qh_pool_virt, 85)
+            core::slice::from_raw_parts_mut(qh_pool_virt, 64)
         };
         for q in qh_slice.iter_mut() {
             unsafe {
