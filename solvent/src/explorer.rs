@@ -95,6 +95,8 @@ pub const HEADER_TEXT: u32 = 0xAAAAAA;
 pub const DIVIDER_COLOR: u32 = 0x333344;
 pub const CMENU_BG: u32 = 0x2A2A3E;
 pub const CMENU_HOVER: u32 = 0x3A7BD5;
+pub const SECTION_TEXT: u32 = 0x6A6A8A;
+pub const USB_DRIVE_COLOR: u32 = 0x4A90D9;
 
 // ── Sort mode ──────────────────────────────────────────────────
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +119,7 @@ pub struct FileEntryDisplay {
 pub struct SidebarItem {
     pub label: String,
     pub path: String,
+    pub is_usb: bool,
 }
 
 // ── Context menu action ───────────────────────────────────────
@@ -207,16 +210,16 @@ impl ExplorerContext {
 
     fn default_sidebar() -> Vec<SidebarItem> {
         let mut items = vec![
-            SidebarItem { label: String::from("Home"), path: String::from("/") },
-            SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop") },
-            SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads") },
-            SidebarItem { label: String::from("Documents"), path: String::from("/Documents") },
-            SidebarItem { label: String::from("Music"), path: String::from("/Music") },
-            SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures") },
+            SidebarItem { label: String::from("Home"), path: String::from("/"), is_usb: false },
+            SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop"), is_usb: false },
+            SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads"), is_usb: false },
+            SidebarItem { label: String::from("Documents"), path: String::from("/Documents"), is_usb: false },
+            SidebarItem { label: String::from("Music"), path: String::from("/Music"), is_usb: false },
+            SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures"), is_usb: false },
         ];
         // Add mounted USB drives with their actual mount points
         for (name, mount_path) in crate::get_usb_drives() {
-            items.push(SidebarItem { label: name, path: mount_path });
+            items.push(SidebarItem { label: name, path: mount_path, is_usb: true });
         }
         items
     }
@@ -267,15 +270,15 @@ impl ExplorerContext {
     /// Refresh sidebar items (re-detect USB drives etc.).
     pub fn refresh_sidebar(&mut self) {
         let mut items = vec![
-            SidebarItem { label: String::from("Home"), path: String::from("/") },
-            SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop") },
-            SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads") },
-            SidebarItem { label: String::from("Documents"), path: String::from("/Documents") },
-            SidebarItem { label: String::from("Music"), path: String::from("/Music") },
-            SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures") },
+            SidebarItem { label: String::from("Home"), path: String::from("/"), is_usb: false },
+            SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop"), is_usb: false },
+            SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads"), is_usb: false },
+            SidebarItem { label: String::from("Documents"), path: String::from("/Documents"), is_usb: false },
+            SidebarItem { label: String::from("Music"), path: String::from("/Music"), is_usb: false },
+            SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures"), is_usb: false },
         ];
         for (name, mount_path) in crate::get_usb_drives() {
-            items.push(SidebarItem { label: name, path: mount_path });
+            items.push(SidebarItem { label: name, path: mount_path, is_usb: true });
         }
         self.sidebar_items = items;
     }
@@ -552,23 +555,47 @@ fn draw_toolbar(ctx: &ExplorerContext, surface: &mut Surface) {
 }
 
 fn draw_sidebar(ctx: &ExplorerContext, surface: &mut Surface) {
-    for (i, item) in ctx.sidebar_items.iter().enumerate() {
-        let y = TOOLBAR_HEIGHT + i as u32 * ROW_HEIGHT;
+    let mut row = 0u32;
+    // Favorites first
+    for item in ctx.sidebar_items.iter() {
+        if item.is_usb { break; } // stop at first USB entry
+        let y = TOOLBAR_HEIGHT + row * ROW_HEIGHT;
         if y + ROW_HEIGHT > surface.height() - STATUSBAR_HEIGHT { break; }
 
-        let bg = if ctx.selected_sidebar == Some(i) {
-            SIDEBAR_ACTIVE
-        } else {
-            SIDEBAR_BG
-        };
+        let bg = if ctx.sidebar_items.iter().position(|x| x.label == item.label && x.path == item.path)
+            .map(|idx| ctx.selected_sidebar == Some(idx)).unwrap_or(false)
+        { SIDEBAR_ACTIVE } else { SIDEBAR_BG };
         surface.fill_rect(0, y, SIDEBAR_WIDTH, ROW_HEIGHT, bg);
-
-        // Folder icon
         draw_glyph(surface, b'+', 6, y + 2, FOLDER_COLOR, bg);
+        draw_text(surface, &item.label, 18, y + 2, TEXT_COLOR, bg);
+        row += 1;
+    }
 
-        // Label
-        let tx = 6 + 8 + 4;
-        draw_text(surface, &item.label, tx, y + 2, TEXT_COLOR, bg);
+    // Devices section header
+    let has_usb = ctx.sidebar_items.iter().any(|x| x.is_usb);
+    if has_usb {
+        let y = TOOLBAR_HEIGHT + row * ROW_HEIGHT;
+        if y + ROW_HEIGHT <= surface.height() - STATUSBAR_HEIGHT {
+            surface.fill_rect(0, y, SIDEBAR_WIDTH, ROW_HEIGHT, SIDEBAR_BG);
+            draw_text(surface, "── Devices ──", 6, y + 2, SECTION_TEXT, SIDEBAR_BG);
+            row += 1;
+        }
+    }
+
+    // USB drives
+    for item in ctx.sidebar_items.iter() {
+        if !item.is_usb { continue; }
+        let y = TOOLBAR_HEIGHT + row * ROW_HEIGHT;
+        if y + ROW_HEIGHT > surface.height() - STATUSBAR_HEIGHT { break; }
+
+        let bg = if ctx.sidebar_items.iter().position(|x| x.label == item.label && x.path == item.path)
+            .map(|idx| ctx.selected_sidebar == Some(idx)).unwrap_or(false)
+        { SIDEBAR_ACTIVE } else { SIDEBAR_BG };
+        surface.fill_rect(0, y, SIDEBAR_WIDTH, ROW_HEIGHT, bg);
+        // USB drive icon
+        draw_glyph(surface, b'U', 6, y + 2, USB_DRIVE_COLOR, bg);
+        draw_text(surface, &item.label, 18, y + 2, USB_DRIVE_COLOR, bg);
+        row += 1;
     }
 }
 
