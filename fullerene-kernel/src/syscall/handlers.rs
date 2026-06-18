@@ -63,21 +63,34 @@ pub unsafe extern "C" fn handle_syscall(
     }).unwrap_or(false);
 
     if dispatch_mode {
-        // Route through the process's Linux runtime
-        let ret = current_pid.and_then(|pid| {
+        // Take the LinuxRuntime out of the process to avoid holding
+        // the PROCESS_MANAGER lock across syscall dispatch (which would
+        // cause a deadlock when the syscall itself accesses PROCESS_MANAGER).
+        let mut linux_rt = current_pid.and_then(|pid| {
             crate::process::PROCESS_MANAGER.with_process(pid, |p| {
-                if let Some(ref mut mode) = p.dispatch_mode {
-                    match mode {
-                        crate::linux::DispatchMode::Linux(rt) => {
-                            Some(rt.dispatch(syscall_num, &[arg1, arg2, arg3, arg4, arg5, arg6]))
-                        }
-                        _ => None,
+                p.dispatch_mode.take().and_then(|mode| {
+                    if let crate::linux::DispatchMode::Linux(rt) = mode {
+                        Some(rt)
+                    } else {
+                        p.dispatch_mode = Some(mode);
+                        None
                     }
-                } else {
-                    None
-                }
+                })
             }).flatten()
-        }).unwrap_or(crate::linux::errno_code(crate::linux::ENOSYS));
+        });
+
+        let ret = if let Some(mut rt) = linux_rt.take() {
+            let result = rt.dispatch(syscall_num, &[arg1, arg2, arg3, arg4, arg5, arg6]);
+            // Put the runtime back into the process
+            if let Some(pid) = current_pid {
+                crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+                    p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(rt));
+                });
+            }
+            result
+        } else {
+            crate::linux::errno_code(crate::linux::ENOSYS)
+        };
         return ret;
     }
 

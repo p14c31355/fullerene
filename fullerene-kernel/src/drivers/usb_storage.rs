@@ -72,8 +72,7 @@ impl UsbBlockDevice {
 
 impl BlockDevice for UsbBlockDevice {
     fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
-        let mut controllers = EHCI_CONTROLLERS.lock();
-        let ehci = controllers.iter_mut().find(|c| c as *mut EhciController == self.ehci).ok_or("controller not found")?;
+        let ehci = unsafe { &mut *self.ehci };
         let mut cdb = [0u8; 10];
         cdb[0] = 0x28;
         cdb[2..6].copy_from_slice(&lba.to_be_bytes());
@@ -86,8 +85,7 @@ impl BlockDevice for UsbBlockDevice {
     }
 
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-        let mut controllers = EHCI_CONTROLLERS.lock();
-        let ehci = controllers.iter_mut().find(|c| c as *mut EhciController == self.ehci).ok_or("controller not found")?;
+        let ehci = unsafe { &mut *self.ehci };
         let mut cdb = [0u8; 10];
         cdb[0] = 0x2A;
         cdb[2..6].copy_from_slice(&lba.to_be_bytes());
@@ -104,8 +102,8 @@ impl BlockDevice for UsbBlockDevice {
 use core::sync::atomic::AtomicBool;
 use nitrogen::usb::xhci::XhciController;
 
-static EHCI_CONTROLLERS: Mutex<Vec<EhciController>> = Mutex::new(Vec::new());
-static XHCI_CONTROLLERS: Mutex<Vec<XhciController>> = Mutex::new(Vec::new());
+static EHCI_CONTROLLERS: Mutex<Vec<Box<EhciController>>> = Mutex::new(Vec::new());
+static XHCI_CONTROLLERS: Mutex<Vec<Box<XhciController>>> = Mutex::new(Vec::new());
 static CTRL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
@@ -133,6 +131,7 @@ fn init_controllers() {
 
                 // Read BAR0 (MMIO base). Handle both 32-bit and 64-bit BARs.
                 let bar0_raw = PciConfigSpace::read_config_dword(bus, slot, func, 0x10);
+                if bar0_raw & 1 != 0 { continue; } // Skip I/O space BARs
                 let bar_type = (bar0_raw >> 1) & 3;
                 let mmio_base = if bar_type == 2 {
                     // 64-bit MMIO BAR: read upper dword at offset 0x14
@@ -153,13 +152,13 @@ fn init_controllers() {
                 match cfg.prog_if {
                     0x20 => { // EHCI
                         if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
-                            ehis.push(hc);
+                            ehis.push(Box::new(hc));
                             klog_fmt!("USB: EHCI at {}:{}.{}\n", bus, slot, func);
                         }
                     }
                     0x30 => { // xHCI
                         if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
-                            xhis.push(hc);
+                            xhis.push(Box::new(hc));
                              klog_fmt!("USB: xHCI at {}:{}.{}\n", bus, slot, func);
                          } else {
                              klog_fmt!("USB: xHCI at {}:{}.{} FAILED init\n", bus, slot, func);
@@ -179,7 +178,8 @@ pub fn poll_usb() -> bool {
     // ── EHCI ──
     {
         let mut ehis = EHCI_CONTROLLERS.lock();
-        for ehci in ehis.iter_mut() {
+        for ehci_box in ehis.iter_mut() {
+            let ehci = ehci_box.as_mut();
             ehci.start();
             let old = ehci.devices().len();
             let n_ports = ehci.n_ports();
@@ -193,9 +193,9 @@ pub fn poll_usb() -> bool {
             let new = ehci.devices().len();
             klog_fmt!("EHCI poll: {} ports old={} new={}\n", n_ports, old, new);
             if new <= old { continue; }
+            let ehci_ptr: *mut EhciController = ehci as *mut EhciController;
             for idx in old..ehci.devices().len() {
-                let eptr: *mut EhciController = ehci as *mut EhciController;
-                mount_ehci_device(ehci, idx, eptr);
+                mount_ehci_device(ehci, idx, ehci_ptr);
             }
         }
     }
@@ -203,7 +203,8 @@ pub fn poll_usb() -> bool {
     // ── xHCI ──
     {
         let mut xhis = XHCI_CONTROLLERS.lock();
-        for xhci in xhis.iter_mut() {
+        for xhci_box in xhis.iter_mut() {
+            let xhci = xhci_box.as_mut();
             let old = xhci.devices().len();
             let hcs1 = xhci.read_cap(4);
             klog_fmt!("xHCI HCSPARAMS1=0x{:08X} (slots={} ports={} PPC={})\n",

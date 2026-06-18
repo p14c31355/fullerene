@@ -8,6 +8,8 @@ use x86_64::structures::paging::{PageTableFlags, FrameAllocator as X86FrameAlloc
 use x86_64::structures::paging::Size4KiB;
 
 /// Simple page allocator for Linux processes.
+// FIXME: These static muts break multi-process isolation. They should be moved
+// into LinuxRuntime so each process tracks its own virtual memory regions independently.
 static mut LINUX_PAGES: [Option<LinuxMmapRegion>; 256] = [None; 256];
 static mut LINUX_PAGE_COUNT: usize = 0;
 
