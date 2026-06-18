@@ -138,7 +138,7 @@ impl EhciController {
     pub fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
         let caplength = unsafe { core::ptr::read_volatile(mmio_base as *const u8) } as u32;
         let hcsparams = unsafe { core::ptr::read_volatile(mmio_base.add(4) as *const u32) };
-        let n_ports = ((hcsparams >> 24) & 0x0F).max(1);
+        let n_ports = (hcsparams & 0x0F).max(1);
         let op_offset = caplength;
 
         // Reset the controller
