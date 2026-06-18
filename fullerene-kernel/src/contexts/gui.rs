@@ -28,9 +28,6 @@ pub struct GuiContext {
     pub height: Mutex<u32>,
 }
 
-unsafe impl Send for GuiContext {}
-unsafe impl Sync for GuiContext {}
-
 impl GuiContext {
     pub fn new() -> Self {
         Self {

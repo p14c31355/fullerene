@@ -126,10 +126,17 @@ impl EditorBuffer {
 
     // ── Cursor movement ─────────────────────────────────────
 
-    /// Move cursor left by one column.
+    /// Move cursor left by one UTF-8 character.
     pub fn cursor_left(&mut self) {
         if self.cursor_col > 0 {
-            self.cursor_col -= 1;
+            let row = &self.rows[self.cursor_row];
+            let s = row.as_str();
+            self.cursor_col = s
+                .char_indices()
+                .map(|(idx, _)| idx)
+                .filter(|&idx| idx < self.cursor_col)
+                .last()
+                .unwrap_or(0);
         } else if self.cursor_row > 0 {
             self.cursor_row -= 1;
             self.cursor_col = self.rows[self.cursor_row].len();
@@ -137,11 +144,16 @@ impl EditorBuffer {
         self.clamp_scroll();
     }
 
-    /// Move cursor right by one column.
+    /// Move cursor right by one UTF-8 character.
     pub fn cursor_right(&mut self) {
-        let row_len = self.rows[self.cursor_row].len();
-        if self.cursor_col < row_len {
-            self.cursor_col += 1;
+        let row = &self.rows[self.cursor_row];
+        let s = row.as_str();
+        if self.cursor_col < s.len() {
+            self.cursor_col = s
+                .char_indices()
+                .map(|(idx, _)| idx)
+                .find(|&idx| idx > self.cursor_col)
+                .unwrap_or(s.len());
         } else if self.cursor_row + 1 < self.rows.len() {
             self.cursor_row += 1;
             self.cursor_col = 0;

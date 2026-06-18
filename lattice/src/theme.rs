@@ -98,12 +98,8 @@ pub fn current_colors() -> ThemeColors {
 
 /// Toggle between dark and light theme.
 pub fn toggle_theme() -> ThemeVariant {
-    let was_dark = CURRENT_THEME.swap(true, Ordering::SeqCst);
-    // was_dark == false means it was Dark, now switched to Light
-    // was_dark == true means it was Light, now switched to Dark
-    if was_dark {
-        // Was Light → now Dark
-        CURRENT_THEME.store(false, Ordering::SeqCst);
+    let was_light = CURRENT_THEME.fetch_xor(true, Ordering::SeqCst);
+    if was_light {
         ThemeVariant::Dark
     } else {
         ThemeVariant::Light

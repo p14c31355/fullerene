@@ -658,13 +658,19 @@ where
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
+
+    struct SuspendGuard;
+    impl Drop for SuspendGuard {
+        fn drop(&mut self) {
+            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _guard = SuspendGuard;
+
     let mut rt_lock = RUNTIME.lock();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
-        None => {
-            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-            return;
-        }
+        None => return,
     };
 
     static PREV_SHELL_STATE: Mutex<ShellState> = Mutex::new(ShellState::Desktop);
@@ -685,10 +691,7 @@ where
     let tb_changed = rt.desktop.update_taskbar();
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
-        None => {
-            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-            return;
-        }
+        None => return,
     };
     *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
     *LAST_FB.lock() = (
@@ -718,7 +721,6 @@ where
     let fb_len = fb_stride.saturating_mul(fb_height as usize);
     let back_len = (fb_width as usize) * (fb_height as usize);
     if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
-        RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
         return;
     }
     rt.back_len = back_len;
@@ -856,7 +858,6 @@ where
             );
         }
     }
-    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 
 unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
