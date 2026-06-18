@@ -148,8 +148,8 @@ impl EhciController {
         }
         let mut wait = 0u32;
         while wait < 250_000 {
-            let sts = unsafe { core::ptr::read_volatile((op_base.add(USBSTS as usize)) as *const u32) };
-            if sts & CMD_HCRESET == 0 { break; }
+            let cmd = unsafe { core::ptr::read_volatile((op_base.add(USBCMD as usize)) as *const u32) };
+            if cmd & CMD_HCRESET == 0 { break; }
             wait += 1;
         }
         if wait >= 250_000 { return None; }
