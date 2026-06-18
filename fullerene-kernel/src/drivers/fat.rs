@@ -450,7 +450,7 @@ impl FatFileSystem {
             while off < dir_size {
                 let sec = sector_base + off / self.bps;
                 let buf_off = (off % self.bps) as usize;
-                let mut buf = [0u8; 512];
+                let mut buf = alloc::vec![0u8; self.bps as usize];
                 if self.device.read_sectors(sec, 1, &mut buf).is_err() {
                     return None;
                 }
