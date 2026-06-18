@@ -36,7 +36,7 @@ pub fn sys_nanosleep(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
             // Yield periodically to avoid starving other tasks
             if now.wrapping_sub(start) % (1_000_000 * tsc_per_ns) < 100 {
-                core::hint::spin_loop();
+                crate::process::yield_current();
             }
         }
     }
