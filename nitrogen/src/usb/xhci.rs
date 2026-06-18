@@ -702,9 +702,10 @@ impl XhciController {
         } else {
             return Err("bad slot");
         }
-
-        let ep_id = (endpoint & 0x0F) as u32;
-        self.doorbell(slot_id, ep_id);
+        let ep_num = (endpoint & 0x0F) as u32;
+        let is_in = (endpoint & 0x80) != 0;
+        let dci = ep_num * 2 + if is_in { 1 } else { 0 };
+        self.doorbell(slot_id, dci);
         self.wait_event(5_000_000)?;
 
         if dir == UsbDirection::In {
