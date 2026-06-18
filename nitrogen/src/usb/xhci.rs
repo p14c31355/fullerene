@@ -98,7 +98,8 @@ impl Ring {
         // Link back to self for circular behaviour
         if n > 1 {
             let last = &mut entries[n - 1];
-            last.flags = TRB_LINK_BIT | 1; // Link TRB with cycle=1, toggle cycle
+            // Link TRB: type=6, TC=1 (toggle cycle on wrap), cycle=1
+            last.flags = TRB_LINK_BIT | (1 << 1) | 1;
             last.params[..8].copy_from_slice(&p.to_le_bytes());
         }
         Some(Self { entries, phys: p, enq: 0, cycle: 1, len: n })
@@ -243,9 +244,35 @@ impl XhciController {
         let max_slots = hcs1 & 0xFF;
         let db_off = db_off_val & 0xFFFF_FFFC;
         let rt_off = rt_off_val & 0xFFFF_FFFC;
-        let has_64bit = (hcc1 & 1) != 0;
         let op_off = caplength;
         let op = unsafe { mmio_base.add(op_off as usize) };
+
+        // ── xHCI Legacy Support Handoff ────────────────────────
+        // Scan extended capabilities for USB Legacy Support (ID=1).
+        // If BIOS holds ownership, we must claim it.
+        {
+            let mut ec_off = ((hcc1 >> 16) & 0xFFFF) as usize;
+            while ec_off != 0 && ec_off < 0x400 {
+                let ec_id = unsafe { core::ptr::read_volatile(caps.add(ec_off) as *const u8) };
+                let ec_next = unsafe { core::ptr::read_volatile(caps.add(ec_off + 1) as *const u8) as usize } * 4;
+                if ec_id == 1 {
+                    // USB Legacy Support capability found
+                    let bios_sem = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
+                    if bios_sem & 1 != 0 {
+                        // BIOS owns the controller — take ownership
+                        unsafe {
+                            core::ptr::write_volatile(caps.add(ec_off + 3) as *mut u8, 1);
+                        }
+                        // Wait for BIOS to release ownership (up to 1 second)
+                        for _ in 0..1_000_000 {
+                            let b = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
+                            if b & 1 == 0 { break; }
+                        }
+                    }
+                }
+                ec_off = ec_next;
+            }
+        }
 
         // Reset
         unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_HCRST); }

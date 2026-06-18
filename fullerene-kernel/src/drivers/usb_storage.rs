@@ -128,9 +128,20 @@ fn init_controllers() {
                 };
                 if cfg.class_code != 0x0C || cfg.subclass != 0x03 { continue; }
 
-                let bar0 = PciConfigSpace::read_config_dword(bus, slot, func, 0x10) & 0xFFFF_FFF0;
-                if bar0 == 0 { continue; }
-                let mmio_virt = KernelDriverContext.phys_to_virt(bar0 as u64) as *mut u8;
+                // Read BAR0 (MMIO base). Handle both 32-bit and 64-bit BARs.
+                let bar0_raw = PciConfigSpace::read_config_dword(bus, slot, func, 0x10);
+                let bar_type = (bar0_raw >> 1) & 3;
+                let mmio_base = if bar_type == 2 {
+                    // 64-bit MMIO BAR: read upper dword at offset 0x14
+                    let low = bar0_raw & 0xFFFF_FFF0;
+                    let high = PciConfigSpace::read_config_dword(bus, slot, func, 0x14);
+                    (low as u64) | ((high as u64) << 32)
+                } else {
+                    (bar0_raw & 0xFFFF_FFF0) as u64
+                };
+                if mmio_base == 0 { continue; }
+
+                let mmio_virt = KernelDriverContext.phys_to_virt(mmio_base) as *mut u8;
                 if mmio_virt.is_null() { continue; }
 
                 PciConfigSpace::write_config_word_raw(bus, slot, func, 4,
