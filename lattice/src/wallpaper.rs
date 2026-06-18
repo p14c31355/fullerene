@@ -6,7 +6,7 @@
 //! shell command.
 
 use crate::theme;
-use spin::Mutex;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Wallpaper mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,6 +19,46 @@ pub enum WallpaperMode {
     Gradient,
     /// Named preset (index into [`wallpaper_presets`]).
     Preset(usize),
+}
+
+// ── Atomic walllpaper mode encoding ──────────────────────────
+//
+// WallpaperMode is packed into a u32 so it can be stored in an AtomicU32,
+// avoiding spin::Mutex lock contention (and potential deadlocks) in bare‑metal
+// no_std environments where the same CPU may re-enter the lock from interrupt
+// or nested runtime contexts.
+//
+// Encoding:
+//   bits 0..1  : discriminant (0=SolidColor, 1=GridPattern, 2=Gradient, 3=Preset)
+//   bits 2..31 : preset index (only valid when discriminant == 3)
+
+const DISC_SOLID: u32 = 0;
+const DISC_GRID: u32 = 1;
+const DISC_GRADIENT: u32 = 2;
+const DISC_PRESET: u32 = 3;
+
+impl WallpaperMode {
+    /// Pack this mode into a u32.
+    pub const fn into_u32(self) -> u32 {
+        match self {
+            WallpaperMode::SolidColor => DISC_SOLID,
+            WallpaperMode::GridPattern => DISC_GRID,
+            WallpaperMode::Gradient => DISC_GRADIENT,
+            WallpaperMode::Preset(idx) => DISC_PRESET | ((idx as u32) << 2),
+        }
+    }
+
+    /// Unpack a u32 back into a WallpaperMode.
+    /// Unknown discriminants default to SolidColor.
+    pub const fn from_u32(raw: u32) -> Self {
+        match raw & 0b11 {
+            DISC_SOLID => WallpaperMode::SolidColor,
+            DISC_GRID => WallpaperMode::GridPattern,
+            DISC_GRADIENT => WallpaperMode::Gradient,
+            DISC_PRESET => WallpaperMode::Preset((raw >> 2) as usize),
+            _ => WallpaperMode::SolidColor,
+        }
+    }
 }
 
 /// A named wallpaper preset with raw pixel data (tileable).
@@ -275,17 +315,17 @@ pub fn wallpaper_presets() -> &'static [WallpaperPreset] {
     &WALLPAPER_PRESETS
 }
 
-/// Global wallpaper state.
-static WALLPAPER_MODE: Mutex<WallpaperMode> = Mutex::new(WallpaperMode::GridPattern);
+/// Global wallpaper state (lock‑free atomic).
+static WALLPAPER_MODE: AtomicU32 = AtomicU32::new(DISC_GRID); // GridPattern is default
 
 /// Set the wallpaper mode.
 pub fn set_wallpaper(mode: WallpaperMode) {
-    *WALLPAPER_MODE.lock() = mode;
+    WALLPAPER_MODE.store(mode.into_u32(), Ordering::SeqCst);
 }
 
 /// Get the current wallpaper mode.
 pub fn get_wallpaper() -> WallpaperMode {
-    *WALLPAPER_MODE.lock()
+    WallpaperMode::from_u32(WALLPAPER_MODE.load(Ordering::SeqCst))
 }
 
 /// Look up a wallpaper preset by name (case-insensitive).
@@ -300,11 +340,9 @@ pub fn find_preset(name: &str) -> Option<usize> {
 /// This is consumed by `Desktop::bg_color()`.
 pub fn background_color() -> u32 {
     let colors = theme::current_colors();
-    match *WALLPAPER_MODE.lock() {
-        WallpaperMode::SolidColor => colors.bg,
-        WallpaperMode::GridPattern | WallpaperMode::Gradient => colors.bg,
-        WallpaperMode::Preset(_) => colors.bg, // fallback bg behind preset
-    }
+    let _mode = get_wallpaper();
+    // All modes use the theme bg as fallback.
+    colors.bg
 }
 
 /// Render the wallpaper pattern into the framebuffer.
@@ -335,7 +373,7 @@ pub fn render_wallpaper(
         return;
     }
 
-    let mode = *WALLPAPER_MODE.lock();
+    let mode = get_wallpaper();
     let colors = theme::current_colors();
     let fb_w = fb_width as usize;
     let cx = clipped_x0;

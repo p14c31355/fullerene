@@ -8,6 +8,7 @@
 //! Design principle: Nitrogen provides the register-level programming; the
 //! caller owns all memory management policy.
 
+pub mod init;
 use crate::pci::PciDevice;
 use crate::virtio::cap::{
     VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG, VIRTIO_PCI_CAP_PCI_CFG, get_virtio_caps,

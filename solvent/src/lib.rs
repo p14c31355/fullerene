@@ -34,6 +34,7 @@ use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, Event, EventQueue, InputEvent, KeyCode, MouseButton};
 use spin::Mutex;
+use lattice::editor::EditorBuffer;
 
 // ── Aggregated kernel callbacks ──────────────────────────────
 
@@ -182,6 +183,11 @@ pub struct RuntimeState {
     pub cursor_save_x: i32,
     pub cursor_save_y: i32,
     pub cursor_save_valid: bool,
+    /// Editor state
+    pub editor_window: Option<WindowId>,
+    pub editor_buf: EditorBuffer,
+    pub editor_launch_pending: bool,
+    pub editor_dirty: bool,
 }
 
 pub fn init() {
@@ -232,6 +238,10 @@ pub fn init() {
         cursor_save_x: 0,
         cursor_save_y: 0,
         cursor_save_valid: false,
+        editor_window: None,
+        editor_buf: EditorBuffer::new(),
+        editor_launch_pending: false,
+        editor_dirty: false,
     });
 }
 
@@ -379,6 +389,28 @@ pub fn poll_keyboard() {
             Some(k) => k,
             None => break,
         };
+
+        // Route key events to editor only when editor window exists
+        // and is the topmost (focused) window.
+        let editor_active = RUNTIME.lock().as_ref().map_or(false, |r| {
+            if let Some(editor_id) = r.editor_window {
+                let wms = r.desktop.wm.windows();
+                wms.last().map_or(false, |top| top.id == editor_id)
+            } else {
+                false
+            }
+        });
+        if editor_active && pressed {
+            editor_handle_key(scancode);
+            // Still push KeyDown to event queue for other handlers
+            let key = scancode_to_resonance_keycode(scancode);
+            let event = Event::Input(InputEvent::KeyDown(key));
+            if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+                queue.push(event);
+            }
+            continue;
+        }
+
         let key = scancode_to_resonance_keycode(scancode);
         let event = if pressed {
             Event::Input(InputEvent::KeyDown(key))
@@ -619,9 +651,22 @@ pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    if *RENDERING_SUSPENDED.lock() {
+    // Prevent re-entrancy: if a timer IRQ fires while we hold RUNTIME.lock(),
+    // the inner runtime_tick() → process_events() would spin forever trying to
+    // acquire the same lock.  Setting RENDERING_SUSPENDED tells runtime_tick()
+    // to bail out immediately.
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
+
+    struct SuspendGuard;
+    impl Drop for SuspendGuard {
+        fn drop(&mut self) {
+            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _guard = SuspendGuard;
+
     let mut rt_lock = RUNTIME.lock();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
@@ -640,6 +685,9 @@ where
     }
 
     render_terminal(rt, rt.term_window);
+    if rt.editor_dirty {
+        render_editor(rt);
+    }
     let tb_changed = rt.desktop.update_taskbar();
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
@@ -996,11 +1044,12 @@ pub fn set_render_fn(f: fn()) {
 }
 
 fn runtime_tick_no_fb() {
-    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
-    if *RENDERING_SUSPENDED.lock() {
+    // Prevent re‑entrancy from timer IRQs while this tick is in progress.
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
     poll_keyboard();
     update_clock();
@@ -1015,6 +1064,14 @@ fn runtime_tick_no_fb() {
     }) {
         ensure_terminal_window();
         launch_shell();
+    }
+    // Check for deferred editor launch.
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let pending = r.editor_launch_pending;
+        r.editor_launch_pending = false;
+        pending
+    }) {
+        ensure_editor_window();
     }
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
@@ -1032,6 +1089,10 @@ fn runtime_tick_no_fb() {
         }
         due
     });
+    // Clear the re‑entrancy flag before calling render(), so render()
+    // can set it again for its own critical section (where it holds
+    // RUNTIME.lock() and touches the framebuffer).
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         if let Some(render_fn) = *RENDER_FN.lock() {
             render_fn();
@@ -1043,10 +1104,11 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
-    if *RENDERING_SUSPENDED.lock() {
+    // Prevent re‑entrancy from timer IRQs while this tick is in progress.
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
     poll_keyboard();
     update_clock();
@@ -1062,11 +1124,22 @@ where
         ensure_terminal_window();
         launch_shell();
     }
+    // Check for deferred editor launch.
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let pending = r.editor_launch_pending;
+        r.editor_launch_pending = false;
+        pending
+    }) {
+        ensure_editor_window();
+    }
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         r.frame_due = false;
         due
     });
+    // Clear the re‑entrancy flag before calling render(), so render()
+    // can set it again for its own critical section.
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         render(framebuffer_fn);
     }
@@ -1081,18 +1154,28 @@ pub fn write_terminal(s: &str) {
 
 // ── Rendering suspend / resume ───────────────────────────────
 
-static RENDERING_SUSPENDED: spin::Mutex<bool> = spin::Mutex::new(false);
+static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 pub fn suspend_rendering() {
-    *RENDERING_SUSPENDED.lock() = true;
+    RENDERING_SUSPENDED.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 pub fn resume_rendering() {
-    *RENDERING_SUSPENDED.lock() = false;
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 pub fn force_desktop_redraw() {
+    // Prevent re-entrancy from timer IRQs while we hold RUNTIME.lock().
+    // This is called from sys_control hooks (shell commands like
+    // "wallpaper mountain") which run in a different kernel process
+    // context.  If a timer IRQ fires while we hold the lock, the inner
+    // runtime_tick() would deadlock on the same spin::Mutex.
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     if let Some(ref mut r) = *RUNTIME.lock() {
         r.desktop.force_full_redraw();
         r.frame_due = true;
     }
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 
 // ── Theme / wallpaper bridges ────────────────────────────────
@@ -1173,6 +1256,343 @@ pub fn ensure_terminal_window() -> Option<WindowId> {
     rt.frame_due = true;
     rt.term_dirty = true;
     Some(id)
+}
+
+// ── Editor ───────────────────────────────────────────────────
+
+/// Ensure an editor window exists, creating one if necessary.
+pub fn ensure_editor_window() -> Option<WindowId> {
+    let mut rt = RUNTIME.lock();
+    let rt = rt.as_mut()?;
+    if let Some(id) = rt.editor_window {
+        if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
+            return Some(id);
+        }
+    }
+    let id = rt.desktop.wm.create_titled_window(
+        100,
+        80,
+        DEFAULT_COLS * GLYPH_W,
+        DEFAULT_ROWS * GLYPH_H,
+        0x0a0a1e,
+        "Text Editor",
+    );
+    rt.editor_window = Some(id);
+    rt.editor_dirty = true;
+    rt.desktop.force_full_redraw();
+    rt.frame_due = true;
+    Some(id)
+}
+
+/// Render the editor buffer into its window surface.
+fn render_editor(rt: &mut RuntimeState) {
+    let editor_window = match rt.editor_window {
+        Some(id) => id,
+        None => return,
+    };
+    let window = match rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == editor_window)
+    {
+        Some(w) => w,
+        None => {
+            rt.editor_window = None;
+            return;
+        }
+    };
+
+    let new_cols = (window.width / GLYPH_W).max(1);
+    let new_rows = (window.height / GLYPH_H).max(1);
+
+    rt.editor_buf.ensure_cursor_visible(new_rows as usize);
+
+    let visible = rt.editor_buf.visible_lines(new_rows as usize);
+    let total = (new_cols * new_rows) as usize;
+    let mut cells: Vec<LatticeCell> = Vec::with_capacity(total);
+    cells.resize(
+        total,
+        LatticeCell {
+            ch: b' ',
+            fg: 0xCCCCCC,
+            bg: 0x0a0a1e,
+        },
+    );
+
+    let scroll = rt.editor_buf.scroll_row;
+    let scroll = rt.editor_buf.scroll_row;
+    for (row_idx, line) in visible.iter().enumerate() {
+        for (col, ch) in line.chars().enumerate() {
+            if col < new_cols as usize {
+                let cell_idx = row_idx * (new_cols as usize) + col;
+                if cell_idx < total {
+                    cells[cell_idx] = LatticeCell {
+                        ch: if ch.is_ascii() { ch as u8 } else { b'?' },
+                        fg: 0xCCCCCC,
+                        bg: 0x0a0a1e,
+                    };
+                }
+            }
+        }
+    }
+
+    // Draw cursor if it's in the visible range
+    if rt.editor_buf.cursor_row >= scroll
+        && rt.editor_buf.cursor_row < scroll + new_rows as usize
+    {
+        let cursor_display_row = rt.editor_buf.cursor_row - scroll;
+        let cursor_display_col = rt.editor_buf.cursor_col.min((new_cols - 1) as usize);
+        let cursor_idx = cursor_display_row * (new_cols as usize) + cursor_display_col;
+        if cursor_idx < total && rt.cursor_visible {
+            cells[cursor_idx] = LatticeCell {
+                ch: cells[cursor_idx].ch,
+                fg: 0x0a0a1e,
+                bg: 0xCCCCCC,
+            };
+        }
+    }
+
+    terminal_surface::render(terminal_surface::RenderParams {
+        surface: &mut window.surface,
+        cells: &cells,
+        cols: new_cols,
+        cursor_col: None,
+        cursor_row: None,
+        cursor_visible: false,
+    });
+    rt.desktop.invalidate_window(editor_window);
+    rt.editor_dirty = false;
+}
+
+/// Handle a key event for the editor.
+pub fn editor_handle_key(scancode: u8) {
+    let key = crate::scancode_to_resonance_keycode(scancode);
+    let mut rt = RUNTIME.lock();
+    let rt = match rt.as_mut() {
+        Some(r) => r,
+        None => return,
+    };
+    match key {
+        KeyCode::Enter => {
+            rt.editor_buf.insert_char(b'\n');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Backspace => {
+            rt.editor_buf.backspace();
+            rt.editor_dirty = true;
+        }
+        KeyCode::Left => {
+            rt.editor_buf.cursor_left();
+            rt.editor_dirty = true;
+        }
+        KeyCode::Right => {
+            rt.editor_buf.cursor_right();
+            rt.editor_dirty = true;
+        }
+        KeyCode::Up => {
+            rt.editor_buf.cursor_up();
+            rt.editor_dirty = true;
+        }
+        KeyCode::Down => {
+            rt.editor_buf.cursor_down();
+            rt.editor_dirty = true;
+        }
+        KeyCode::Home => {
+            rt.editor_buf.cursor_home();
+            rt.editor_dirty = true;
+        }
+        KeyCode::End => {
+            rt.editor_buf.cursor_end();
+            rt.editor_dirty = true;
+        }
+        KeyCode::PageUp => {
+            // Calculate viewport from editor window dimensions, not terminal buffer.
+            let viewport = if let Some(editor_window) = rt.editor_window {
+                if let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_window) {
+                    ((window.height / GLYPH_H).max(1) as usize)
+                } else {
+                    10 // fallback if window not found
+                }
+            } else {
+                10 // fallback if no editor window
+            };
+            rt.editor_buf.page_up(viewport);
+            rt.editor_dirty = true;
+        }
+        KeyCode::PageDown => {
+            // Calculate viewport from editor window dimensions, not terminal buffer.
+            let viewport = if let Some(editor_window) = rt.editor_window {
+                if let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_window) {
+                    ((window.height / GLYPH_H).max(1) as usize)
+                } else {
+                    10 // fallback if window not found
+                }
+            } else {
+                10 // fallback if no editor window
+            };
+            rt.editor_buf.page_down(viewport);
+            rt.editor_dirty = true;
+        }
+        KeyCode::Space => {
+            rt.editor_buf.insert_char(b' ');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Tab => {
+            rt.editor_buf.insert_char(b' ');
+            rt.editor_buf.insert_char(b' ');
+            rt.editor_dirty = true;
+        }
+        KeyCode::A => {
+            rt.editor_buf.insert_char(b'a');
+            rt.editor_dirty = true;
+        }
+        KeyCode::B => {
+            rt.editor_buf.insert_char(b'b');
+            rt.editor_dirty = true;
+        }
+        KeyCode::C => {
+            rt.editor_buf.insert_char(b'c');
+            rt.editor_dirty = true;
+        }
+        KeyCode::D => {
+            rt.editor_buf.insert_char(b'd');
+            rt.editor_dirty = true;
+        }
+        KeyCode::E => {
+            rt.editor_buf.insert_char(b'e');
+            rt.editor_dirty = true;
+        }
+        KeyCode::F => {
+            rt.editor_buf.insert_char(b'f');
+            rt.editor_dirty = true;
+        }
+        KeyCode::G => {
+            rt.editor_buf.insert_char(b'g');
+            rt.editor_dirty = true;
+        }
+        KeyCode::H => {
+            rt.editor_buf.insert_char(b'h');
+            rt.editor_dirty = true;
+        }
+        KeyCode::I => {
+            rt.editor_buf.insert_char(b'i');
+            rt.editor_dirty = true;
+        }
+        KeyCode::J => {
+            rt.editor_buf.insert_char(b'j');
+            rt.editor_dirty = true;
+        }
+        KeyCode::K => {
+            rt.editor_buf.insert_char(b'k');
+            rt.editor_dirty = true;
+        }
+        KeyCode::L => {
+            rt.editor_buf.insert_char(b'l');
+            rt.editor_dirty = true;
+        }
+        KeyCode::M => {
+            rt.editor_buf.insert_char(b'm');
+            rt.editor_dirty = true;
+        }
+        KeyCode::N => {
+            rt.editor_buf.insert_char(b'n');
+            rt.editor_dirty = true;
+        }
+        KeyCode::O => {
+            rt.editor_buf.insert_char(b'o');
+            rt.editor_dirty = true;
+        }
+        KeyCode::P => {
+            rt.editor_buf.insert_char(b'p');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Q => {
+            rt.editor_buf.insert_char(b'q');
+            rt.editor_dirty = true;
+        }
+        KeyCode::R => {
+            rt.editor_buf.insert_char(b'r');
+            rt.editor_dirty = true;
+        }
+        KeyCode::S => {
+            rt.editor_buf.insert_char(b's');
+            rt.editor_dirty = true;
+        }
+        KeyCode::T => {
+            rt.editor_buf.insert_char(b't');
+            rt.editor_dirty = true;
+        }
+        KeyCode::U => {
+            rt.editor_buf.insert_char(b'u');
+            rt.editor_dirty = true;
+        }
+        KeyCode::V => {
+            rt.editor_buf.insert_char(b'v');
+            rt.editor_dirty = true;
+        }
+        KeyCode::W => {
+            rt.editor_buf.insert_char(b'w');
+            rt.editor_dirty = true;
+        }
+        KeyCode::X => {
+            rt.editor_buf.insert_char(b'x');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Y => {
+            rt.editor_buf.insert_char(b'y');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Z => {
+            rt.editor_buf.insert_char(b'z');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit1 => {
+            rt.editor_buf.insert_char(b'1');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit2 => {
+            rt.editor_buf.insert_char(b'2');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit3 => {
+            rt.editor_buf.insert_char(b'3');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit4 => {
+            rt.editor_buf.insert_char(b'4');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit5 => {
+            rt.editor_buf.insert_char(b'5');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit6 => {
+            rt.editor_buf.insert_char(b'6');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit7 => {
+            rt.editor_buf.insert_char(b'7');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit8 => {
+            rt.editor_buf.insert_char(b'8');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit9 => {
+            rt.editor_buf.insert_char(b'9');
+            rt.editor_dirty = true;
+        }
+        KeyCode::Digit0 => {
+            rt.editor_buf.insert_char(b'0');
+            rt.editor_dirty = true;
+        }
+        _ => {}
+    }
+    if rt.editor_dirty {
+        rt.frame_due = true;
+    }
 }
 
 // ── Shell bootstrap (kernel→solvent direction per AGENTS.md §3)

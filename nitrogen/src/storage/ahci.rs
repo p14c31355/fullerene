@@ -10,9 +10,10 @@
 
 use alloc::vec::Vec;
 use core::ptr;
-use nitrogen::pci::PciDevice;
-use petroleum::initializer::FrameAllocator;
 use spin::Mutex;
+
+use crate::driver_context::{DriverContext, DriverContextError, PageFlags};
+use crate::pci::{PciDevice, PciScanner};
 
 /// Global list of discovered AHCI controllers.
 static CONTROLLERS: Mutex<Vec<AhciController>> = Mutex::new(Vec::new());
@@ -68,44 +69,42 @@ const SSTS_DET_PHY_OK: u32 = 0x03;
 // ── Command Header ───────────────────────────────────────────────
 #[repr(C)]
 struct CommandHeader {
-    dword0: u32, // CFL(5) | PMP(4) | PRDTL(16) | Rsvd(1) | A(1) | W(1) | P(1) | R(1) | C(1)
-    prdbc: u32,  // PRD Byte Count transferred
-    ctba: u32,   // Command Table Base Address (low)
-    ctbau: u32,  // Command Table Base Address (upper)
+    dword0: u32,
+    prdbc: u32,
+    ctba: u32,
+    ctbau: u32,
     rsvd: [u32; 4],
 }
 
 // ── Command Table ────────────────────────────────────────────────
 #[repr(C, align(128))]
 struct CommandTable {
-    cfis: [u8; 64], // Command FIS
-    acmd: [u8; 16], // ATAPI Command
+    cfis: [u8; 64],
+    acmd: [u8; 16],
     rsvd: [u8; 48],
-    prdt: [PrdtEntry; 1], // PRDT (at least 1 entry)
+    prdt: [PrdtEntry; 1],
 }
 
 // ── PRDT Entry ───────────────────────────────────────────────────
 #[repr(C)]
 struct PrdtEntry {
-    dba: u32,  // Data Base Address (low)
-    dbau: u32, // Data Base Address (upper)
+    dba: u32,
+    dbau: u32,
     rsvd: u32,
-    dbc: u32, // Byte Count (22 bits) | Rsvd(9) | I(1)
+    dbc: u32,
 }
-
-const PRDT_I: u32 = 1 << 31; // Interrupt on completion
 
 // ── Received FIS structure ───────────────────────────────────────
 #[repr(C, align(256))]
 struct ReceivedFis {
-    dsfis: [u8; 28], // DMA Setup FIS
+    dsfis: [u8; 28],
     pad0: [u8; 4],
-    psfis: [u8; 24], // PIO Setup FIS
+    psfis: [u8; 24],
     pad1: [u8; 8],
-    rfis: [u8; 24], // D2H Register FIS
+    rfis: [u8; 24],
     pad2: [u8; 4],
-    sdbfis: [u8; 8], // Set Device Bits FIS
-    ufis: [u8; 64],  // Unknown FIS
+    sdbfis: [u8; 8],
+    ufis: [u8; 64],
     rsvd: [u8; 96],
 }
 
@@ -143,22 +142,23 @@ unsafe impl Sync for AhciController {}
 
 impl AhciController {
     /// Initialise an AHCI controller found on the PCI bus.
-    pub fn init(device: PciDevice) -> Option<Self> {
+    ///
+    /// `ctx` provides memory allocation, MMIO mapping, and address
+    /// translation services (typically the kernel's [`DriverContext`]).
+    pub fn init(ctx: &dyn DriverContext, device: PciDevice) -> Option<Self> {
         let bar5 = device.get_bar_info(5)?;
         if bar5.is_io {
-            return None; // Legacy mode — not supported
+            return None;
         }
         let hba_phys = bar5.address;
-        let hba_virt =
-            petroleum::common::memory::physical_to_virtual(hba_phys as usize) as *mut u32;
+        let hba_virt = ctx.phys_to_virt(hba_phys) as *mut u32;
 
-        // Map the ABAR MMIO region
-        {
-            let mut mgr = crate::memory_management::get_memory_manager().lock();
-            let m = mgr.as_mut()?;
-            m.map_mmio_region(hba_phys as usize, hba_virt as usize, bar5.size as usize)
-                .ok()?;
-        }
+        ctx.map_mmio_region(
+            hba_phys as usize,
+            hba_virt as usize,
+            bar5.size as usize,
+        )
+        .ok()?;
 
         let mut ctrl = Self {
             device,
@@ -167,16 +167,9 @@ impl AhciController {
             num_ports: 0,
         };
 
-        // Enable AHCI and reset HBA.
-        // Per the AHCI spec §3.1.7: set GHC.AE, set GHC.HR, then poll
-        // GHC.HR until hardware clears it.  Manually writing 0 to HR
-        // may interfere with the reset state machine.
-        //
-        // SAFETY: On real hardware (InsydeH2O), the HBA reset may take
-        // longer than usual.  We use a bounded poll loop to avoid hanging.
         let ghc = ctrl.r32(HBA_GHC);
-        ctrl.w32(HBA_GHC, ghc | GHC_AE); // AHCI Enable
-        ctrl.w32(HBA_GHC, ghc | GHC_AE | GHC_HR); // HBA Reset
+        ctrl.w32(HBA_GHC, ghc | GHC_AE);
+        ctrl.w32(HBA_GHC, ghc | GHC_AE | GHC_HR);
         let mut reset_ok = false;
         for _ in 0..2_000_000 {
             if (ctrl.r32(HBA_GHC) & GHC_HR) == 0 {
@@ -187,21 +180,16 @@ impl AhciController {
         }
         if !reset_ok {
             log::warn!("AHCI: HBA reset timed out — controller may be unresponsive");
-            // Don't abort: some controllers work even if reset doesn't complete cleanly.
-            // Clear HR manually as a fallback.
             ctrl.w32(HBA_GHC, ctrl.r32(HBA_GHC) & !GHC_HR);
         }
 
-        let pi = ctrl.r32(HBA_PI); // Ports Implemented
+        let pi = ctrl.r32(HBA_PI);
         ctrl.num_ports = pi.count_ones() as u32;
 
-        // CRITICAL: On InsydeH2O, not all ports reported by PI may actually
-        // have working PHY.  Verify SStatus before attempting init_port.
         for i in 0..32 {
             if (pi >> i) & 1 == 0 {
                 continue;
             }
-            // Quick pre-check: read SStatus to see if PHY is ready
             let port_base = 0x100 + (i as usize) * 0x80;
             let port_mmio = unsafe { ctrl.hba_mmio.add(port_base / 4) };
             let ssts = unsafe { core::ptr::read_volatile(port_mmio.add(PXSSTS / 4)) };
@@ -210,20 +198,18 @@ impl AhciController {
                 log::info!("AHCI port {}: no PHY (SSTS={:#x}), skipping init", i, ssts);
                 continue;
             }
-            ctrl.init_port(i);
+            ctrl.init_port(ctx, i);
         }
 
         Some(ctrl)
     }
 
-    fn init_port(&self, port: u8) {
+    fn init_port(&self, ctx: &dyn DriverContext, port: u8) {
         let port_base = 0x100 + (port as usize) * 0x80;
         let port_mmio = unsafe { self.hba_mmio.add(port_base / 4) };
 
-        // Stop command engine and FIS receive
         let cmd = self.r32_port(port_mmio, PXCMD);
         self.w32_port(port_mmio, PXCMD, cmd & !(PXCMD_ST | PXCMD_FRE));
-        // Wait for CR and FR to clear
         for _ in 0..1_000_000 {
             let c = self.r32_port(port_mmio, PXCMD);
             if (c & (PXCMD_CR | PXCMD_FR)) == 0 {
@@ -232,7 +218,6 @@ impl AhciController {
             core::hint::spin_loop();
         }
 
-        // Check device presence
         let ssts = self.r32_port(port_mmio, PXSSTS);
         let det = ssts & SSTS_DET_MASK;
         if det != SSTS_DET_PHY_OK {
@@ -240,13 +225,33 @@ impl AhciController {
             return;
         }
 
-        // Allocate command list (1 slot) and FIS
-        let cmd_list_phys = allocate_frame_phys();
-        let cmd_list = phys_to_virt_mut::<CommandHeader>(cmd_list_phys);
-        let fis_phys = allocate_frame_phys();
-        let fis = phys_to_virt_mut::<ReceivedFis>(fis_phys);
-        let cmd_table_phys = allocate_frame_phys();
-        let cmd_table = phys_to_virt_mut::<CommandTable>(cmd_table_phys);
+        let cmd_list_phys = match ctx.allocate_frame() {
+            Ok(phys) => phys,
+            Err(e) => {
+                log::error!("AHCI port {}: failed to allocate cmd_list frame: {}", port, e);
+                return;
+            }
+        };
+        let cmd_list = ctx.phys_to_virt(cmd_list_phys) as *mut CommandHeader;
+        let fis_phys = match ctx.allocate_frame() {
+            Ok(phys) => phys,
+            Err(e) => {
+                log::error!("AHCI port {}: failed to allocate FIS frame: {}", port, e);
+                ctx.free_frame(cmd_list_phys);
+                return;
+            }
+        };
+        let fis = ctx.phys_to_virt(fis_phys) as *mut ReceivedFis;
+        let cmd_table_phys = match ctx.allocate_frame() {
+            Ok(phys) => phys,
+            Err(e) => {
+                log::error!("AHCI port {}: failed to allocate cmd_table frame: {}", port, e);
+                ctx.free_frame(cmd_list_phys);
+                ctx.free_frame(fis_phys);
+                return;
+            }
+        };
+        let cmd_table = ctx.phys_to_virt(cmd_table_phys) as *mut CommandTable;
 
         unsafe {
             ptr::write_bytes(cmd_list as *mut u8, 0, 4096);
@@ -254,25 +259,21 @@ impl AhciController {
             ptr::write_bytes(cmd_table as *mut u8, 0, 4096);
         }
 
-        // Set command list and FIS base
         self.w32_port(port_mmio, PXCLB, cmd_list_phys as u32);
         self.w32_port(port_mmio, PXCLBU, (cmd_list_phys >> 32) as u32);
         self.w32_port(port_mmio, PXFB, fis_phys as u32);
         self.w32_port(port_mmio, PXFBU, (fis_phys >> 32) as u32);
 
-        // Link command header[0] → command table
         unsafe {
             (*cmd_list).ctba = cmd_table_phys as u32;
             (*cmd_list).ctbau = (cmd_table_phys >> 32) as u32;
-            (*cmd_list).dword0 = 0; // no PRDT entries yet
+            (*cmd_list).dword0 = 0;
         }
 
-        // Clear errors
         self.w32_port(port_mmio, PXSERR, 0xFFFFFFFF);
         self.w32_port(port_mmio, PXIS, 0xFFFFFFFF);
         self.w32_port(port_mmio, PXIE, 0);
 
-        // Enable FIS receive and start command engine
         self.w32_port(port_mmio, PXCMD, cmd | PXCMD_FRE | PXCMD_ST);
     }
 
@@ -297,11 +298,12 @@ impl AhciController {
 // ── Globals ──────────────────────────────────────────────────────
 
 /// Initialise all AHCI controllers found on the PCI bus.
-pub fn init() {
-    let mut scanner = nitrogen::pci::PciScanner::new();
+///
+/// `ctx` provides memory allocation and MMIO mapping services.
+pub fn init(ctx: &dyn DriverContext) {
+    let mut scanner = PciScanner::new();
     let _ = scanner.scan_all_buses();
     for dev in scanner.get_devices() {
-        // SATA controller: class 0x01 (mass storage), subclass 0x06
         if dev.class_code == 0x01 && dev.subclass == 0x06 {
             log::info!(
                 "AHCI: found device {:#06x}:{:#06x}",
@@ -309,7 +311,7 @@ pub fn init() {
                 dev.device_id
             );
             dev.enable_memory_access();
-            if let Some(ctrl) = AhciController::init(dev.clone()) {
+            if let Some(ctrl) = AhciController::init(ctx, dev.clone()) {
                 log::info!("AHCI: controller initialised ({} ports)", ctrl.num_ports);
                 CONTROLLERS.lock().push(ctrl);
             }
@@ -318,17 +320,4 @@ pub fn init() {
     if CONTROLLERS.lock().is_empty() {
         log::info!("AHCI: no SATA controllers found");
     }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────
-
-fn allocate_frame_phys() -> u64 {
-    let mut mgr = crate::memory_management::get_memory_manager().lock();
-    let m = mgr.as_mut().expect("ahci: memory manager not ready");
-    m.allocate_frame().expect("ahci: frame alloc failed") as u64
-}
-
-fn phys_to_virt_mut<T>(phys: u64) -> *mut T {
-    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    (phys + off) as *mut T
 }

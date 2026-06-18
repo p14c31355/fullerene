@@ -74,6 +74,13 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
+        OpenEditor => {
+            // Defer editor launch — cannot call ensure_editor_window()
+            // while holding RUNTIME lock (deadlock).
+            rt.editor_launch_pending = true;
+            rt.desktop.force_full_redraw();
+            rt.frame_due = true;
+        }
         SysInfo | Shutdown | Reboot | Separator => {} // TODO
         ChangeWallpaperSettings => {
             let presets = crate::wallpaper_presets();

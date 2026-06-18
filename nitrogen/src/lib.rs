@@ -23,6 +23,7 @@ extern crate alloc;
 pub mod apic;
 pub mod apic_controller;
 pub mod audio;
+pub mod driver_context;
 pub mod framebuffer;
 pub mod hda;
 pub mod ioapic;
@@ -31,4 +32,7 @@ pub mod pci;
 pub mod pic;
 pub mod port;
 pub mod ps2;
+pub mod storage;
 pub mod virtio;
+
+pub use driver_context::{DriverContext, DriverContextError, PageFlags};

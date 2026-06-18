@@ -178,6 +178,10 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
             color: 0x333344,
         },
         AppEntry {
+            label: "Editor",
+            color: 0x1a1a3a,
+        },
+        AppEntry {
             label: "Clock",
             color: 0x333344,
         },

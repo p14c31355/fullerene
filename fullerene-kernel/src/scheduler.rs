@@ -18,16 +18,13 @@
 //! working.  Any failure after that is isolated to the specific app
 //! being launched.
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use crate::gui;
-
-/// Flag set by the solvent callback when the user requests a shell.
-static LAUNCH_SHELL: AtomicBool = AtomicBool::new(false);
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {
-    LAUNCH_SHELL.store(true, Ordering::SeqCst);
+    crate::contexts::kernel::with_kernel(|k| {
+        k.shell.request_launch();
+    });
 }
 
 /// Main kernel scheduler loop.
@@ -79,7 +76,7 @@ pub fn scheduler_loop() -> ! {
         gui::runtime_tick(tick_counter);
 
         // Check if the user requested a shell launch (via AppGrid / menu).
-        if LAUNCH_SHELL.swap(false, Ordering::SeqCst) {
+        if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false) {
             petroleum::serial::_print(format_args!("Launching shell on demand\n"));
             crate::shell::shell_main();
             // After shell exits, re‑render the desktop and keep idling.

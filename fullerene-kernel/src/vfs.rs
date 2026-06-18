@@ -28,7 +28,6 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use spin::Mutex;
 
 /// Maximum depth for symbolic link resolution to prevent infinite loops.
 const MAX_SYMLINK_DEPTH: u32 = 8;
@@ -478,10 +477,34 @@ impl Vfs {
         Ok(())
     }
 
-    // ── Path resolution ─────────────────────────────────────────
+    // ── Mount lookup by index (for VfsContext handle routing) ─
+
+    /// Return the mount-table index for the filesystem responsible
+    /// for `path`, without actually locking the fs.
+    pub fn find_fs_index(&self, path: &str) -> Option<usize> {
+        let absolute_path = self.resolve_path(path);
+        let path = if absolute_path.starts_with('/') {
+            &absolute_path
+        } else {
+            return None;
+        };
+        for (idx, entry) in self.mounts.iter().enumerate() {
+            let mp = &entry.mount_point;
+            if mp == "/" {
+                return Some(idx);
+            }
+            let mp_with_slash = alloc::format!("{}/", mp.as_str());
+            if path == mp.as_str() || path.starts_with(&mp_with_slash) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    // ── Path resolution (pub for VfsContext) ────────────────────
 
     /// Resolve a potentially relative path to an absolute one.
-    fn resolve_path(&self, path: &str) -> String {
+    pub fn resolve_path(&self, path: &str) -> String {
         if path.starts_with('/') {
             normalize_path(path)
         } else if path.is_empty() {
@@ -500,7 +523,7 @@ impl Vfs {
     /// Find the filesystem responsible for `absolute_path`.
     ///
     /// Returns `(filesystem, remaining_path_relative_to_mount_point)`.
-    fn find_fs(&mut self, absolute_path: &str) -> Option<(&mut Box<dyn FileSystem>, String)> {
+    pub(crate) fn find_fs(&mut self, absolute_path: &str) -> Option<(&mut Box<dyn FileSystem>, String)> {
         // Ensure path starts with /
         let path = if absolute_path.starts_with('/') {
             absolute_path
@@ -578,6 +601,40 @@ impl Vfs {
         Err("bad fd")
     }
 
+    // ── Indexed operations (for VfsContext handle routing) ─────
+
+    pub fn read_at(&mut self, mount_idx: usize, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+        self.mounts
+            .get_mut(mount_idx)
+            .ok_or("bad mount index")?
+            .fs
+            .read(fd, buf)
+    }
+
+    pub fn write_at(&mut self, mount_idx: usize, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
+        self.mounts
+            .get_mut(mount_idx)
+            .ok_or("bad mount index")?
+            .fs
+            .write(fd, data)
+    }
+
+    pub fn close_at(&mut self, mount_idx: usize, fd: u32) -> Result<(), &'static str> {
+        self.mounts
+            .get_mut(mount_idx)
+            .ok_or("bad mount index")?
+            .fs
+            .close(fd)
+    }
+
+    pub fn seek_at(&mut self, mount_idx: usize, fd: u32, pos: usize) -> Result<(), &'static str> {
+        self.mounts
+            .get_mut(mount_idx)
+            .ok_or("bad mount index")?
+            .fs
+            .seek(fd, pos)
+    }
+
     pub fn create(&mut self, path: &str) -> Option<u64> {
         let resolved = self.resolve_path(path);
         let (fs, remaining) = self.find_fs(&resolved)?;
@@ -638,124 +695,75 @@ fn normalize_path(path: &str) -> String {
     result
 }
 
-// ── Global VFS state ────────────────────────────────────────────
-
-static VFS: Mutex<Option<Vfs>> = Mutex::new(None);
-
-pub(crate) fn vfs() -> &'static Mutex<Option<Vfs>> {
-    &VFS
-}
-
-// ── Public API (backward-compatible with pre-trait code) ─────────
+// ── Public API — delegated to VfsContext ────────────────────────
 
 /// Initialise the VFS with a memory-backed root filesystem.
+/// Delegates to `crate::contexts::vfs::init_vfs()`.
 pub fn init() {
-    let root_fs = Box::new(MemFileSystem::new());
-    let mut guard = VFS.lock();
-    *guard = Some(Vfs::new(root_fs));
-    log::info!("VFS: mounted MemFileSystem at /");
+    crate::contexts::vfs::init_vfs();
 }
 
 /// Mount a filesystem at `mount_point`.
-///
-/// Currently only `tmpfs` type is supported (creates a new
-/// [`MemFileSystem`]).
 pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), &'static str> {
-    let mut guard = vfs().lock();
-    let vfs = guard.as_mut().ok_or("vfs not init")?;
-    match fs_type {
-        "tmpfs" => {
-            let memfs = Box::new(MemFileSystem::new());
-            vfs.mount(mount_point, memfs)?;
-            log::info!("VFS: mounted tmpfs from {} at {}", device, mount_point);
-            Ok(())
-        }
-        _ => Err("unsupported filesystem type"),
-    }
+    crate::contexts::vfs::mount(device, mount_point, fs_type)
 }
 
 /// Open a file at `path` and return a file descriptor.
 pub fn open(path: &str, flags: u32) -> Result<FileDescriptor, &'static str> {
-    vfs()
-        .lock()
-        .as_mut()
-        .ok_or("vfs not init")?
-        .open(path, flags)
-        .ok_or("not found")
+    crate::contexts::vfs::open(path, flags)
 }
 
 /// Read from an open file descriptor into `buf`.
 pub fn read(fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?.read(fd, buf)
+    crate::contexts::vfs::read(fd, buf)
 }
 
 /// Write `data` to an open file descriptor.
 pub fn write(fd: u32, data: &[u8]) -> Result<usize, &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?.write(fd, data)
+    crate::contexts::vfs::write(fd, data)
 }
 
 /// Close a file descriptor.
 pub fn close(fd: u32) -> Result<(), &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?.close(fd)
+    crate::contexts::vfs::close(fd)
 }
 
 /// List directory contents at `path`.
 pub fn readdir(path: &str) -> Result<Vec<VNode>, &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?.readdir(path)
+    crate::contexts::vfs::readdir(path)
 }
 
 /// Seek to `pos` in an open file descriptor.
 pub fn seek(fd: u32, pos: usize) -> Result<(), &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?.seek(fd, pos)
+    crate::contexts::vfs::seek(fd, pos)
 }
 
 /// Create a regular file at `path` (or open existing), returning a fd.
 pub fn create(path: &str) -> Result<FileDescriptor, &'static str> {
-    let mut guard = vfs().lock();
-    let vfs = guard.as_mut().ok_or("vfs not init")?;
-    let resolved = vfs.resolve_path(path);
-    {
-        let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
-        if !fs.exists(&remaining) {
-            fs.create(&remaining, InodeType::File)
-                .ok_or("create failed")?;
-        }
-    }
-    // Re-resolve to open the created file.
-    let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
-    fs.open(&remaining, 0).ok_or("open failed after create")
+    crate::contexts::vfs::create(path)
 }
 
 /// Create a directory at `path`.
 pub fn mkdir(path: &str) -> Result<(), &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?.mkdir(path)
+    crate::contexts::vfs::mkdir(path)
 }
 
 /// Remove a file or empty directory at `path`.
 pub fn unlink(path: &str) -> Result<(), &'static str> {
-    vfs().lock().as_mut().ok_or("vfs not init")?.unlink(path)
+    crate::contexts::vfs::unlink(path)
 }
 
 /// Check whether `path` exists.
 pub fn exists(path: &str) -> bool {
-    match vfs().lock().as_mut() {
-        Some(vfs) => vfs.exists(path),
-        None => false,
-    }
+    crate::contexts::vfs::exists(path)
 }
 
 /// Get the current working directory.
 pub fn working_directory() -> Result<String, &'static str> {
-    let guard = vfs().lock();
-    let vfs = guard.as_ref().ok_or("vfs not init")?;
-    Ok(String::from(vfs.working_directory()))
+    crate::contexts::vfs::working_directory()
 }
 
 /// Change the current working directory.
 pub fn change_directory(path: &str) -> Result<(), &'static str> {
-    vfs()
-        .lock()
-        .as_mut()
-        .ok_or("vfs not init")?
-        .change_directory(path)
+    crate::contexts::vfs::change_directory(path)
 }
