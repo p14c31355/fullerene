@@ -42,6 +42,9 @@ pub mod apps;
 // ── Drivers (storage, GPU, network) ───────────────────────────────
 pub mod drivers;
 
+// ── DriverContext bridge (kernel → nitrogen) ──────────────────────
+pub mod driver_context_impl;
+
 // ── Kernel core ────────────────────────────────────────────────────
 pub mod boot;
 pub mod boot_stage;
