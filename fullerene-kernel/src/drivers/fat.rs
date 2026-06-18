@@ -593,11 +593,11 @@ impl FileSystem for FatFileSystem {
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
         let pos = self.handles.iter().position(|h| h.0 == fd).ok_or("bad fd")?;
-        let cluster = self.handles[pos].0;
+        let cluster = self.handles[pos].1;
         self.write_file_data(cluster, data)?;
         let len = data.len();
-        self.handles[pos].1 += len as u32;
-        self.handles[pos].2 = self.handles[pos].1.max(self.handles[pos].2);
+        self.handles[pos].2 += len as u32;
+        self.handles[pos].3 = self.handles[pos].2.max(self.handles[pos].3);
         Ok(len)
     }
 
