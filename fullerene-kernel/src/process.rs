@@ -13,6 +13,8 @@ use petroleum::page_table::PageTableHelper as _;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
 
+use crate::linux::runtime::DispatchMode;
+
 /// Maximum number of processes managed by the system
 const MAX_PROCESSES: usize = 64;
 
@@ -110,6 +112,8 @@ pub struct Process {
     pub parent_id: Option<ProcessId>,
     /// Opaque data for async task futures (used by task.rs spawn/entry)
     pub task_data: u64,
+    /// Runtime dispatch mode (Fullerene native, Linux ABI, etc.)
+    pub dispatch_mode: Option<DispatchMode>,
 }
 
 impl Process {
@@ -131,6 +135,7 @@ impl Process {
             exit_code: None,
             parent_id: None, // Will be set by fork
             task_data: 0,
+            dispatch_mode: None,
         }
     }
 
@@ -363,6 +368,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
             exit_code: None,
             parent_id: None,
             task_data: 0,
+            dispatch_mode: None,
         });
 
         // Take ownership of static process via Box::from_raw
