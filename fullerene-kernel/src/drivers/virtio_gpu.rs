@@ -22,7 +22,7 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
 
     // 1. Hardware-level init (PCI probe, BAR mapping, queues, display)
-    let result = nitrogen::virtio::gpu::init::init(&ctx)?;
+    let mut result = nitrogen::virtio::gpu::init::init(&ctx)?;
 
     // 2. Framebuffer info
     let fb_config = {
