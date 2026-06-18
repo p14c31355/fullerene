@@ -17,17 +17,18 @@ use crate::virtio::gpu::{self, VirtioGpu, VringAvail, VringDesc, VringUsed};
 
 /// RAII guard that holds a contiguous frame allocation.
 ///
-/// The guard is always disarmed via [`forget`](Self::forget) before drop,
-/// so the drop implementation is a debug-only no-op.
-struct ContiguousFrameGuard {
+/// The guard frees the allocated frames on drop unless disarmed with
+/// [`forget`](Self::forget).
+struct ContiguousFrameGuard<'c> {
     phys: u64,
     pages: usize,
+    ctx: &'c dyn DriverContext,
 }
 
-impl ContiguousFrameGuard {
-    fn allocate(ctx: &dyn DriverContext, pages: usize) -> Option<Self> {
+impl<'c> ContiguousFrameGuard<'c> {
+    fn allocate(ctx: &'c dyn DriverContext, pages: usize) -> Option<Self> {
         let phys = ctx.allocate_contiguous_frames(pages).ok()?;
-        Some(Self { phys, pages })
+        Some(Self { phys, pages, ctx })
     }
     fn phys(&self) -> u64 {
         self.phys
@@ -36,6 +37,14 @@ impl ContiguousFrameGuard {
         let phys = self.phys;
         self.pages = 0;
         phys
+    }
+}
+
+impl<'c> Drop for ContiguousFrameGuard<'c> {
+    fn drop(&mut self) {
+        if self.pages > 0 {
+            self.ctx.free_contiguous_frames(self.phys, self.pages);
+        }
     }
 }
 

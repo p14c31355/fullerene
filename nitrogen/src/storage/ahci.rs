@@ -237,6 +237,7 @@ impl AhciController {
             Ok(phys) => phys,
             Err(e) => {
                 log::error!("AHCI port {}: failed to allocate FIS frame: {}", port, e);
+                ctx.free_frame(cmd_list_phys);
                 return;
             }
         };
@@ -245,6 +246,8 @@ impl AhciController {
             Ok(phys) => phys,
             Err(e) => {
                 log::error!("AHCI port {}: failed to allocate cmd_table frame: {}", port, e);
+                ctx.free_frame(cmd_list_phys);
+                ctx.free_frame(fis_phys);
                 return;
             }
         };

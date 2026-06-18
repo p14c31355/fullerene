@@ -26,6 +26,7 @@ kernel-syscall = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+lattice = { path = "../lattice" }
 petroleum = { path = "../petroleum" }
 
 [[bin]]

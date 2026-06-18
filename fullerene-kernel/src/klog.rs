@@ -221,7 +221,11 @@ pub fn flush_to_vfs() -> Result<(), ()> {
 /// panicking thread, so we must not attempt to acquire it if it's
 /// already poisoned.  We try `flush_to_vfs()` but swallow any error.
 pub fn flush_to_vfs_safe() {
-    if crate::contexts::vfs::vfs_try_accessible() {
+    // Acquire a VfsAccessGuard to prove all locks are free before
+    // proceeding.  Dropping the guard releases the locks, after which
+    // flush_to_vfs() can re-acquire them safely (no other thread can
+    // steal the locks in a single-threaded kernel).
+    if crate::contexts::vfs::vfs_try_access().is_some() {
         let _ = flush_to_vfs();
     }
 }

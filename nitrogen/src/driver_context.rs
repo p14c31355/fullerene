@@ -92,6 +92,22 @@ pub trait DriverContext {
         phys: usize,
         flags: PageFlags,
     ) -> Result<(), DriverContextError>;
+
+    /// Free a single physical 4 KiB frame previously returned by
+    /// [`allocate_frame`](Self::allocate_frame).
+    ///
+    /// `phys` must be the exact physical address returned by
+    /// `allocate_frame`.  Behaviour is undefined if `phys` was not
+    /// allocated through this trait or has already been freed.
+    fn free_frame(&self, phys: u64);
+
+    /// Free `count` contiguous physical 4 KiB frames previously returned by
+    /// [`allocate_contiguous_frames`](Self::allocate_contiguous_frames).
+    ///
+    /// `phys` must be the exact physical address returned by
+    /// `allocate_contiguous_frames`.  Behaviour is undefined if the region
+    /// was not allocated through this trait or has already been freed.
+    fn free_contiguous_frames(&self, phys: u64, count: usize);
 }
 
 /// Simplified page-table flags for driver mapping requests.

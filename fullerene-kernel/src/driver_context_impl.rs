@@ -81,4 +81,18 @@ impl DriverContext for KernelDriverContext {
         m.safe_map_page(virt, phys, pte_flags)
             .map_err(|_| DriverContextError::MmioMappingFailed)
     }
+
+    fn free_frame(&self, phys: u64) {
+        let mut mgr = crate::memory_management::get_memory_manager().lock();
+        if let Some(m) = mgr.as_mut() {
+            let _ = m.free_frame(phys as usize);
+        }
+    }
+
+    fn free_contiguous_frames(&self, phys: u64, count: usize) {
+        let mut mgr = crate::memory_management::get_memory_manager().lock();
+        if let Some(m) = mgr.as_mut() {
+            let _ = m.free_contiguous_frames(phys as usize, count);
+        }
+    }
 }

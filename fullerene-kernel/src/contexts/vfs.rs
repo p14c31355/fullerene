@@ -348,27 +348,59 @@ pub fn change_directory(path: &str) -> Result<(), &'static str> {
 
 // ── Panic-safe VFS access (for klog flush) ─────────────────────────
 
-/// Check whether the VFS system is accessible without blocking.
+/// RAII guard proving that all VFS-related locks were successfully
+/// acquired via `try_lock`.  Holding this guard guarantees that no
+/// other thread holds the kernel, VFS inner, or handle_table locks,
+/// so a subsequent blocking `flush_to_vfs()` call cannot deadlock.
 ///
-/// Used by `flush_to_vfs_safe()` in the panic handler.  Returns `true`
-/// if the KernelContext, the inner VFS dispatcher, and the handle_table
-/// can all be locked without blocking.
+/// `spin::Mutex` does not have poisoning semantics, so re-acquiring
+/// the same locks after dropping this guard is safe in a panic handler.
+pub struct VfsAccessGuard {
+    _kernel: spin::MutexGuard<'static, Option<super::kernel::KernelContext>>,
+    _inner: spin::MutexGuard<'static, crate::vfs::Vfs>,
+    _handle_table: spin::MutexGuard<'static, super::vfs::HandleTable>,
+}
+
+// SAFETY: VfsAccessGuard is !Send + !Sync by construction (it holds
+// MutexGuard which is !Send).  This is intentional — the guard must
+// not be held across await points or thread boundaries.
+// No manual impl needed; the auto-derived negative impls are correct.
+
+/// Try to acquire all VFS-related locks without blocking.
 ///
-/// Note: `spin::Mutex` does not have poisoning semantics
-/// (`std::sync::Mutex`), so a successful `try_lock()` followed by a
-/// drop-and-reacquire (in `flush_to_vfs`) is safe in a panic handler.
-pub fn vfs_try_accessible() -> bool {
-    // Try to lock KernelContext first.
-    let kernel_guard = super::kernel::get_kernel().try_lock();
-    let Some(kernel_guard) = kernel_guard else {
-        return false;
-    };
-    let Some(kernel) = kernel_guard.as_ref() else {
-        return false;
-    };
-    // Now try the inner VFS lock and handle_table lock while we hold the kernel guard.
-    let inner_ok = kernel.vfs.inner.try_lock().is_some();
-    let handle_table_ok = kernel.vfs.handle_table.try_lock().is_some();
-    // Drop the kernel guard implicitly.
-    inner_ok && handle_table_ok
+/// Returns `Some(guard)` if the kernel context, VFS dispatcher, and
+/// handle table were all successfully locked via `try_lock`.
+/// Returns `None` if any lock is currently held by another thread
+/// (or by the panicking thread itself in a re-entrant scenario).
+///
+/// The returned [`VfsAccessGuard`] proves that the coast is clear;
+/// the caller can drop it and immediately call `flush_to_vfs()` with
+/// confidence that the locks are free (in a single-threaded kernel,
+/// no other thread can steal them between drop and re-acquire).
+pub fn vfs_try_access() -> Option<VfsAccessGuard> {
+    // SAFETY: kernel_guard borrows from a global static that lives for
+    // the entire program.  Transmute to 'static before accessing inner
+    // fields to avoid borrow conflicts during the move into VfsAccessGuard.
+    let kernel_guard = super::kernel::get_kernel().try_lock()?;
+    let kernel_guard: spin::MutexGuard<'static, Option<super::kernel::KernelContext>> =
+        unsafe { core::mem::transmute(kernel_guard) };
+    let kernel = kernel_guard.as_ref()?;
+
+    // Acquire inner and handle_table while holding the kernel guard
+    // to preserve lock ordering (kernel → inner → handle_table).
+    let inner_guard = kernel.vfs.inner.try_lock()?;
+    let handle_table_guard = kernel.vfs.handle_table.try_lock()?;
+
+    // SAFETY: inner_guard and handle_table_guard also borrow from global
+    // statics inside KernelContext.vfs, which lives forever.
+    let inner_guard: spin::MutexGuard<'static, crate::vfs::Vfs> =
+        unsafe { core::mem::transmute(inner_guard) };
+    let handle_table_guard: spin::MutexGuard<'static, super::vfs::HandleTable> =
+        unsafe { core::mem::transmute(handle_table_guard) };
+
+    Some(VfsAccessGuard {
+        _kernel: kernel_guard,
+        _inner: inner_guard,
+        _handle_table: handle_table_guard,
+    })
 }
