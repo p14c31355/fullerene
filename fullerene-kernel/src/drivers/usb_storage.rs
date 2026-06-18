@@ -72,7 +72,8 @@ impl UsbBlockDevice {
 
 impl BlockDevice for UsbBlockDevice {
     fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
-        let ehci = unsafe { &mut *self.ehci };
+        let mut controllers = EHCI_CONTROLLERS.lock();
+        let ehci = controllers.iter_mut().find(|c| c as *mut EhciController == self.ehci).ok_or("controller not found")?;
         let mut cdb = [0u8; 10];
         cdb[0] = 0x28;
         cdb[2..6].copy_from_slice(&lba.to_be_bytes());
