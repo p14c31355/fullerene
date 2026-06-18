@@ -15,13 +15,13 @@ use spin::Mutex;
 /// Kernel shell context.
 ///
 /// Holds the state needed by the shell subsystem: current working
-/// directory, command history, and the launch-on-demand flag.
+/// directory and the launch-on-demand flag.
 pub struct ShellContext {
     /// Current working directory (mirrors VFS cwd for quick access).
     pub cwd: Mutex<String>,
 
     /// Whether a shell launch has been requested (by AppGrid / menu).
-    /// Set by `request_shell_launch()`, consumed by the scheduler loop.
+    /// Set by `request_launch()`, consumed by the scheduler loop.
     pub launch_requested: Mutex<bool>,
 
     /// Whether the shell subsystem has been initialised.

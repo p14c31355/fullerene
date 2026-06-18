@@ -82,9 +82,6 @@ impl HandleTable {
     }
 }
 
-unsafe impl Send for VfsContext {}
-unsafe impl Sync for VfsContext {}
-
 impl VfsContext {
     /// Create a new VFS context with a memory-backed root filesystem.
     pub fn new() -> Self {
@@ -136,42 +133,48 @@ impl VfsContext {
     }
 
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-        // Look up mount index from handle_table first (inner not held).
+        // Acquire inner first, then handle_table (correct lock order).
+        let mut vfs = self.inner.lock();
         let mount_idx = self
             .handle_table
             .lock()
             .find(fd)
             .ok_or("bad fd")?;
-        // Now acquire inner.
-        self.inner.lock().read_at(mount_idx, fd, buf)
+        vfs.read_at(mount_idx, fd, buf)
     }
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
+        // Acquire inner first, then handle_table (correct lock order).
+        let mut vfs = self.inner.lock();
         let mount_idx = self
             .handle_table
             .lock()
             .find(fd)
             .ok_or("bad fd")?;
-        self.inner.lock().write_at(mount_idx, fd, data)
+        vfs.write_at(mount_idx, fd, data)
     }
 
     pub fn close(&self, fd: u32) -> Result<(), &'static str> {
+        // Acquire inner first, then handle_table (correct lock order).
         // Use `take()` so we remove the entry in one lock acquisition.
+        let mut vfs = self.inner.lock();
         let mount_idx = self
             .handle_table
             .lock()
             .take(fd)
             .ok_or("bad fd")?;
-        self.inner.lock().close_at(mount_idx, fd)
+        vfs.close_at(mount_idx, fd)
     }
 
     pub fn seek(&self, fd: u32, pos: usize) -> Result<(), &'static str> {
+        // Acquire inner first, then handle_table (correct lock order).
+        let mut vfs = self.inner.lock();
         let mount_idx = self
             .handle_table
             .lock()
             .find(fd)
             .ok_or("bad fd")?;
-        self.inner.lock().seek_at(mount_idx, fd, pos)
+        vfs.seek_at(mount_idx, fd, pos)
     }
 
     pub fn create(&self, path: &str) -> Result<FileDescriptor, &'static str> {
@@ -352,8 +355,8 @@ pub fn change_directory(path: &str) -> Result<(), &'static str> {
 /// Check whether the VFS system is accessible without blocking.
 ///
 /// Used by `flush_to_vfs_safe()` in the panic handler.  Returns `true`
-/// if both the KernelContext and the inner VFS dispatcher can be
-/// locked without blocking.
+/// if the KernelContext, the inner VFS dispatcher, and the handle_table
+/// can all be locked without blocking.
 ///
 /// Note: `spin::Mutex` does not have poisoning semantics
 /// (`std::sync::Mutex`), so a successful `try_lock()` followed by a
@@ -367,8 +370,9 @@ pub fn vfs_try_accessible() -> bool {
     let Some(kernel) = kernel_guard.as_ref() else {
         return false;
     };
-    // Now try the inner VFS lock while we hold the kernel guard.
+    // Now try the inner VFS lock and handle_table lock while we hold the kernel guard.
     let inner_ok = kernel.vfs.inner.try_lock().is_some();
+    let handle_table_ok = kernel.vfs.handle_table.try_lock().is_some();
     // Drop the kernel guard implicitly.
-    inner_ok
+    inner_ok && handle_table_ok
 }

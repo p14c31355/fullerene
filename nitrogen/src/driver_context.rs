@@ -35,7 +35,7 @@ pub enum DriverContextError {
     /// The requested memory allocation could not be satisfied.
     OutOfMemory,
     /// The MMIO region could not be mapped (e.g. address conflict).
-    MmiMappingFailed,
+    MmioMappingFailed,
     /// An invalid (null or misaligned) argument was supplied.
     InvalidArgument,
 }
@@ -44,7 +44,7 @@ impl fmt::Display for DriverContextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OutOfMemory => f.write_str("out of memory"),
-            Self::MmiMappingFailed => f.write_str("MMIO mapping failed"),
+            Self::MmioMappingFailed => f.write_str("MMIO mapping failed"),
             Self::InvalidArgument => f.write_str("invalid argument"),
         }
     }

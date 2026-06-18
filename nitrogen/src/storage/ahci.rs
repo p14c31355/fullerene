@@ -225,11 +225,29 @@ impl AhciController {
             return;
         }
 
-        let cmd_list_phys = ctx.allocate_frame().expect("ahci: frame alloc failed");
+        let cmd_list_phys = match ctx.allocate_frame() {
+            Ok(phys) => phys,
+            Err(e) => {
+                log::error!("AHCI port {}: failed to allocate cmd_list frame: {}", port, e);
+                return;
+            }
+        };
         let cmd_list = ctx.phys_to_virt(cmd_list_phys) as *mut CommandHeader;
-        let fis_phys = ctx.allocate_frame().expect("ahci: frame alloc failed");
+        let fis_phys = match ctx.allocate_frame() {
+            Ok(phys) => phys,
+            Err(e) => {
+                log::error!("AHCI port {}: failed to allocate FIS frame: {}", port, e);
+                return;
+            }
+        };
         let fis = ctx.phys_to_virt(fis_phys) as *mut ReceivedFis;
-        let cmd_table_phys = ctx.allocate_frame().expect("ahci: frame alloc failed");
+        let cmd_table_phys = match ctx.allocate_frame() {
+            Ok(phys) => phys,
+            Err(e) => {
+                log::error!("AHCI port {}: failed to allocate cmd_table frame: {}", port, e);
+                return;
+            }
+        };
         let cmd_table = ctx.phys_to_virt(cmd_table_phys) as *mut CommandTable;
 
         unsafe {

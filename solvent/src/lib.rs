@@ -651,14 +651,13 @@ pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    if RENDERING_SUSPENDED.load(core::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
     // Prevent re-entrancy: if a timer IRQ fires while we hold RUNTIME.lock(),
     // the inner runtime_tick() → process_events() would spin forever trying to
     // acquire the same lock.  Setting RENDERING_SUSPENDED tells runtime_tick()
     // to bail out immediately.
-    RENDERING_SUSPENDED.store(true, core::sync::atomic::Ordering::SeqCst);
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
     let mut rt_lock = RUNTIME.lock();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
@@ -1408,12 +1407,30 @@ pub fn editor_handle_key(scancode: u8) {
             rt.editor_dirty = true;
         }
         KeyCode::PageUp => {
-            let viewport = rt.term_buf.rows() as usize;
+            // Calculate viewport from editor window dimensions, not terminal buffer.
+            let viewport = if let Some(editor_window) = rt.editor_window {
+                if let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_window) {
+                    ((window.height / GLYPH_H).max(1) as usize)
+                } else {
+                    10 // fallback if window not found
+                }
+            } else {
+                10 // fallback if no editor window
+            };
             rt.editor_buf.page_up(viewport);
             rt.editor_dirty = true;
         }
         KeyCode::PageDown => {
-            let viewport = rt.term_buf.rows() as usize;
+            // Calculate viewport from editor window dimensions, not terminal buffer.
+            let viewport = if let Some(editor_window) = rt.editor_window {
+                if let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_window) {
+                    ((window.height / GLYPH_H).max(1) as usize)
+                } else {
+                    10 // fallback if window not found
+                }
+            } else {
+                10 // fallback if no editor window
+            };
             rt.editor_buf.page_down(viewport);
             rt.editor_dirty = true;
         }

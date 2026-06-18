@@ -2,7 +2,7 @@
 //!
 //! Every subsystem context lives inside [`KernelContext`], the single source of
 //! truth for kernel state.  There are no separate per-context global singletons;
-//! all access goes through `kernel_context().with_kernel(|k| k.vfs.open(…))`.
+//! all access goes through `with_kernel(|k| k.vfs.open(…))` or `with_kernel_mut(…)`.
 //!
 //! # Adding a new context
 //!

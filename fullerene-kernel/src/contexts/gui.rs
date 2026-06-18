@@ -13,9 +13,9 @@ use spin::Mutex;
 
 /// Kernel GUI / compositor context.
 ///
-/// Owns the high-level GUI state: compositor readiness, theme variant,
-/// wallpaper mode, and cursor shape.  The actual rendering is delegated
-/// to `solvent` via the framebuffer slice held in `FramebufferContext`.
+/// Owns the high-level GUI state: initialization flags and framebuffer
+/// dimensions.  The actual rendering is delegated to `solvent` via the
+/// framebuffer slice held in `FramebufferContext`.
 pub struct GuiContext {
     /// Whether the GUI subsystem has been initialised.
     pub initialized: Mutex<bool>,
