@@ -13,7 +13,6 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
     // Stdin: read from keyboard
     if fd == 0 {
-        // Check if user buffer is writable
         if buf == 0 {
             return errno_code(EFAULT);
         }
@@ -26,9 +25,14 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
             return 0;
         }
-        // Multi-byte: drain line buffer
-        let data = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, count_min) };
-        let n = nitrogen::ps2::keyboard::drain_line_buffer(data);
+        // Multi-byte: drain line buffer into a kernel buffer, then copy to user
+        let mut kernel_buf = [0u8; 512];
+        let n = nitrogen::ps2::keyboard::drain_line_buffer(&mut kernel_buf[..count_min]);
+        if n > 0 {
+            if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_err() {
+                return errno_code(EFAULT);
+            }
+        }
         return n as u64;
     }
     // Stdout/stderr: write to serial
@@ -69,9 +73,13 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return 0;
     }
     if fd == 1 || fd == 2 {
-        let data = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, data);
-        return count as u64;
+        // Read data from user space into kernel buffer, then write to serial
+        let data = match unsafe { copy_from_user(buf, count.min(4096)) } {
+            Ok(d) => d,
+            Err(_) => return errno_code(EFAULT),
+        };
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, &data);
+        return data.len() as u64;
     }
     if fd == 0 {
         return errno_code(EBADF);
@@ -80,8 +88,12 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
-    let data = unsafe { core::slice::from_raw_parts(buf as *const u8, count) };
-    match crate::contexts::vfs::write(desc.vfs_fd, data) {
+    // Read data from user space into kernel buffer
+    let kernel_buf = match unsafe { copy_from_user(buf, count) } {
+        Ok(d) => d,
+        Err(_) => return errno_code(EFAULT),
+    };
+    match crate::contexts::vfs::write(desc.vfs_fd, &kernel_buf) {
         Ok(n) => {
             if let Some(d) = rt.fd_table.get_mut(fd) {
                 d.offset += n as u64;
@@ -660,10 +672,11 @@ pub fn sys_getcwd(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if bytes.len() + 1 > size as usize {
         return errno_code(ERANGE);
     }
-    unsafe {
-        let dst = core::slice::from_raw_parts_mut(buf as *mut u8, size as usize);
-        dst[..bytes.len()].copy_from_slice(bytes);
-        dst[bytes.len()] = 0;
+    if unsafe { copy_to_user(buf, bytes) }.is_err() {
+        return errno_code(EFAULT);
+    }
+    if unsafe { copy_to_user(buf + bytes.len() as u64, &[0u8]) }.is_err() {
+        return errno_code(EFAULT);
     }
     buf
 }

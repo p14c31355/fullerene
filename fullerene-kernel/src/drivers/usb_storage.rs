@@ -4,8 +4,9 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use nitrogen::usb::ehci::EhciController;
+use nitrogen::usb::xhci::XhciController;
 use nitrogen::usb::{UsbDirection, UsbSetupPacket, UsbXferType};
 use nitrogen::DriverContext;
 use spin::Mutex;
@@ -30,7 +31,7 @@ struct UsbBlockDevice {
     block_size: u32,
     total_blocks: u64,
     tag: u32,
-    ehci: *mut EhciController,
+    ctrl_index: usize,
 }
 
 unsafe impl Send for UsbBlockDevice {}
@@ -72,7 +73,8 @@ impl UsbBlockDevice {
 
 impl BlockDevice for UsbBlockDevice {
     fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
-        let ehci = unsafe { &mut *self.ehci };
+        let mut ehis = EHCI_CONTROLLERS.lock();
+        let ehci = ehis[self.ctrl_index].as_mut();
         let mut cdb = [0u8; 10];
         cdb[0] = 0x28;
         cdb[2..6].copy_from_slice(&lba.to_be_bytes());
@@ -85,7 +87,8 @@ impl BlockDevice for UsbBlockDevice {
     }
 
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-        let ehci = unsafe { &mut *self.ehci };
+        let mut ehis = EHCI_CONTROLLERS.lock();
+        let ehci = ehis[self.ctrl_index].as_mut();
         let mut cdb = [0u8; 10];
         cdb[0] = 0x2A;
         cdb[2..6].copy_from_slice(&lba.to_be_bytes());
@@ -98,9 +101,6 @@ impl BlockDevice for UsbBlockDevice {
 }
 
 // ── Controller storage ───────────────────────────────────────
-
-use core::sync::atomic::AtomicBool;
-use nitrogen::usb::xhci::XhciController;
 
 static EHCI_CONTROLLERS: Mutex<Vec<Box<EhciController>>> = Mutex::new(Vec::new());
 static XHCI_CONTROLLERS: Mutex<Vec<Box<XhciController>>> = Mutex::new(Vec::new());
@@ -178,7 +178,7 @@ pub fn poll_usb() -> bool {
     // ── EHCI ──
     {
         let mut ehis = EHCI_CONTROLLERS.lock();
-        for ehci_box in ehis.iter_mut() {
+        for (ctrl_idx, ehci_box) in ehis.iter_mut().enumerate() {
             let ehci = ehci_box.as_mut();
             ehci.start();
             let old = ehci.devices().len();
@@ -193,9 +193,8 @@ pub fn poll_usb() -> bool {
             let new = ehci.devices().len();
             klog_fmt!("EHCI poll: {} ports old={} new={}\n", n_ports, old, new);
             if new <= old { continue; }
-            let ehci_ptr: *mut EhciController = ehci as *mut EhciController;
             for idx in old..ehci.devices().len() {
-                mount_ehci_device(ehci, idx, ehci_ptr);
+                mount_ehci_device(ehci, idx, ctrl_idx);
             }
         }
     }
@@ -203,7 +202,7 @@ pub fn poll_usb() -> bool {
     // ── xHCI ──
     {
         let mut xhis = XHCI_CONTROLLERS.lock();
-        for xhci_box in xhis.iter_mut() {
+        for (ctrl_idx, xhci_box) in xhis.iter_mut().enumerate() {
             let xhci = xhci_box.as_mut();
             let old = xhci.devices().len();
             let hcs1 = xhci.read_cap(4);
@@ -229,7 +228,7 @@ pub fn poll_usb() -> bool {
             klog_fmt!("xHCI poll: {} ports old={} new={}\n", xhci.n_ports(), old, new);
             if new <= old { continue; }
             for idx in old..new {
-                mount_xhci_device(xhci, idx);
+                mount_xhci_device(xhci, idx, ctrl_idx);
             }
         }
     }
@@ -238,7 +237,7 @@ pub fn poll_usb() -> bool {
 }
 
 /// Enumerate and mount a USB device on an xHCI controller.
-fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
+fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize, ctrl_index: usize) {
     // Step 1: Enable slot
     let slot_id = match xhci.enable_slot() {
         Ok(id) => id,
@@ -294,12 +293,13 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
     struct XhciBlockDev {
         slot_id: u32, bulk_out: u8, bulk_in: u8,
         block_size: u32, total_blocks: u64, tag: u32,
-        xhci: *mut XhciController,
+        ctrl_index: usize,
     }
     unsafe impl Send for XhciBlockDev {}
     impl BlockDevice for XhciBlockDev {
         fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
-            let xhci = unsafe { &mut *self.xhci };
+            let mut xhis = XHCI_CONTROLLERS.lock();
+            let xhci = xhis[self.ctrl_index].as_mut();
             let mut cdb = [0u8; 10];
             cdb[0] = 0x28;
             cdb[2..6].copy_from_slice(&lba.to_be_bytes());
@@ -329,7 +329,6 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
             Ok(())
         }
         fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-            // Similar to read but direction reversed
             Err("xhci write not impl")
         }
         fn sector_size(&self) -> u32 { self.block_size }
@@ -340,7 +339,7 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
     let bdev = XhciBlockDev {
         slot_id, bulk_out: 0x02, bulk_in: 0x82,
         block_size: 512, total_blocks: 0, tag: 1,
-        xhci: xptr,
+        ctrl_index,
     };
 
     let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
@@ -360,9 +359,11 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
 }
 
 /// Enumerate and mount a USB device on an EHCI controller.
-fn mount_ehci_device(ehci: &mut EhciController, idx: usize, eptr: *mut EhciController) {
+fn mount_ehci_device(ehci: &mut EhciController, idx: usize, ctrl_index: usize) {
     let dev = unsafe {
-        let p = &mut *eptr;
+        // SAFETY: enumerate_device takes a closure that performs control transfers.
+        // We guarantee the closure outlives this call.
+        let p: &mut EhciController = &mut *ehci;
         let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
         nitrogen::usb::hub::enumerate_device(&mut ctrl)
     };
@@ -381,7 +382,7 @@ fn mount_ehci_device(ehci: &mut EhciController, idx: usize, eptr: *mut EhciContr
 
     let bdev = UsbBlockDevice {
         dev_addr: dev.address, bulk_out, bulk_in,
-        block_size: 512, total_blocks: 0, tag: 1, ehci: eptr,
+        block_size: 512, total_blocks: 0, tag: 1, ctrl_index,
     };
 
     let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);

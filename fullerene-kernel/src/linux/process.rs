@@ -216,6 +216,10 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                     if page_offset < file_sz {
                         let copy_len = (file_sz - page_offset).min(4096);
                         let src_offset = file_off + page_offset;
+                        // Validate that the slice range is within data bounds
+                        if src_offset + copy_len > data.len() {
+                            return errno_code(ENOEXEC);
+                        }
                         unsafe {
                             core::ptr::copy_nonoverlapping(
                                 data[src_offset..src_offset + copy_len].as_ptr(),

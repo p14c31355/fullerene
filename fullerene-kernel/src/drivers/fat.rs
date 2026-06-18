@@ -576,12 +576,57 @@ impl FileSystem for FatFileSystem {
         let pos = self.handles.iter().position(|h| h.0 == fd).ok_or("bad fd")?;
         let cluster = self.handles[pos].1;
         let offset = self.handles[pos].2;
-        let data = self.read_file_data(cluster, offset + buf.len() as u32)?;
-        let available = data.len().saturating_sub(offset as usize);
-        let to_copy = min(available, buf.len());
-        buf[..to_copy].copy_from_slice(&data[offset as usize..offset as usize + to_copy]);
-        self.handles[pos].2 += to_copy as u32;
-        Ok(to_copy)
+        let file_size = self.handles[pos].3;
+        let to_read = min(buf.len() as u32, file_size.saturating_sub(offset));
+        // Walk the cluster chain to the starting offset, then read only what's needed.
+        let mut total = 0usize;
+        let mut clus = cluster;
+        let mut remaining_offset = offset;
+        // Skip clusters until we reach the cluster containing `offset`
+        loop {
+            let cluster_bytes = self.spc * self.bps;
+            if remaining_offset < cluster_bytes {
+                break;
+            }
+            remaining_offset -= cluster_bytes;
+            match self.read_fat_entry(clus) {
+                Ok(next) if !Self::is_end_of_chain(next) => clus = next,
+                _ => return Ok(0),
+            }
+        }
+        let mut remaining = to_read;
+        let mut dst_off = 0usize;
+        while remaining > 0 {
+            let sector_base = self.cluster_to_sector(clus);
+            let skip_in_cluster = remaining_offset;
+            let cluster_bytes = self.spc * self.bps;
+            for i in 0..self.spc {
+                if remaining == 0 { break; }
+                let sector = sector_base + i;
+                let start_in_sector = if i == 0 && skip_in_cluster > 0 {
+                    (skip_in_cluster % self.bps) as usize
+                } else {
+                    0
+                };
+                let to_copy_in_sector = min(remaining as usize, (self.bps - start_in_sector as u32) as usize);
+                let mut sec_buf = vec![0u8; self.bps as usize];
+                self.device.read_sectors(sector, 1, &mut sec_buf)?;
+                buf[dst_off..dst_off + to_copy_in_sector]
+                    .copy_from_slice(&sec_buf[start_in_sector..start_in_sector + to_copy_in_sector]);
+                dst_off += to_copy_in_sector;
+                remaining -= to_copy_in_sector as u32;
+            }
+            // Reset inner offset for subsequent clusters
+            remaining_offset = 0;
+            if remaining > 0 {
+                match self.read_fat_entry(clus) {
+                    Ok(next) if !Self::is_end_of_chain(next) => clus = next,
+                    _ => break,
+                }
+            }
+        }
+        self.handles[pos].2 += dst_off as u32;
+        Ok(dst_off)
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {

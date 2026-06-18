@@ -32,8 +32,7 @@ pub fn sys_rt_sigaction(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 if data.len() < SIGACTION_SIZE {
                     return errno_code(EFAULT);
                 }
-                let ptr = data.as_ptr() as *const LinuxSigAction;
-                unsafe { core::ptr::read_volatile(ptr) }
+                unsafe { core::ptr::read_unaligned(data.as_ptr() as *const LinuxSigAction) }
             }
             Err(_) => return errno_code(EFAULT),
         };
