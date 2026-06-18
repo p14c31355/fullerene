@@ -193,9 +193,17 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                 explorer.selected_index = Some(idx);
 
                 if is_double {
-                    // Open folder or file
-                    explorer.open_selected(idx);
-                    explorer.last_click_entry = None;
+                    if idx < explorer.raw_is_dir.len() && explorer.raw_is_dir[idx] {
+                        explorer.open_selected(idx);
+                        explorer.last_click_entry = None;
+                    } else if let Some(path) = explorer.get_file_path(idx) {
+                        // Save path, drop explorer borrow, then launch
+                        explorer.last_click_entry = None;
+                        let file_path = path;
+                        drop(explorer);
+                        crate::launch_file(rt, &file_path);
+                        return;
+                    }
                 } else {
                     explorer.last_click_entry = Some(idx);
                     explorer.last_click_tick = now;

@@ -33,6 +33,7 @@ pub mod pic;
 pub mod port;
 pub mod ps2;
 pub mod storage;
+pub mod usb;
 pub mod virtio;
 
 pub use driver_context::{DriverContext, DriverContextError, PageFlags};

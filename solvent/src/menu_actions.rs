@@ -246,7 +246,7 @@ fn show_text_window(
 }
 
 /// Render a multi-line text string into a Surface. Returns the number of lines rendered.
-fn render_text_into_surface(
+pub(crate) fn render_text_into_surface(
     surface: &mut Surface,
     text: &str,
     max_cols: u32,

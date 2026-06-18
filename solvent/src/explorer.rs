@@ -30,6 +30,44 @@ use alloc::vec::Vec;
 use lattice::surface::Surface;
 use lattice::window::WindowId;
 
+// ── File associations ──────────────────────────────────────────
+
+pub struct FileAssociation {
+    pub extensions: &'static [&'static str],
+    pub app_name: &'static str,
+}
+
+pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
+    FileAssociation { extensions: &["txt", "md", "log", "toml", "rs", "c", "h", "py", "js", "json", "xml", "yml", "yaml", "ini", "cfg", "conf", "sh", "bat", "env", "gitignore", "lock"], app_name: "Text Editor" },
+    FileAssociation { extensions: &["bmp"], app_name: "Image Viewer" },
+    FileAssociation { extensions: &["png"], app_name: "Image Viewer" },
+    FileAssociation { extensions: &["wav"], app_name: "Music Player" },
+    FileAssociation { extensions: &["mp3"], app_name: "Music Player" },
+    FileAssociation { extensions: &["tar", "gz", "xz", "zip"], app_name: "Archive Manager" },
+    FileAssociation { extensions: &["rle"], app_name: "RLE Player" },
+];
+
+/// Extract the extension from a filename (case-preserved).
+pub fn extension_of(name: &str) -> &str {
+    if let Some(dot) = name.rfind('.') {
+        &name[dot + 1..]
+    } else {
+        ""
+    }
+}
+
+/// Look up the app name for a given extension (case-insensitive).
+pub fn lookup_association(ext: &str) -> Option<&'static str> {
+    for assoc in FILE_ASSOCIATIONS {
+        for e in assoc.extensions {
+            if ext.eq_ignore_ascii_case(e) {
+                return Some(assoc.app_name);
+            }
+        }
+    }
+    None
+}
+
 // ── Layout constants ───────────────────────────────────────────
 pub const GLYPH_W: u32 = 8;
 pub const GLYPH_H: u32 = 16;
@@ -167,14 +205,23 @@ impl ExplorerContext {
     }
 
     fn default_sidebar() -> Vec<SidebarItem> {
-        vec![
+        let mut items = vec![
             SidebarItem { label: String::from("Home"), path: String::from("/") },
             SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop") },
             SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads") },
             SidebarItem { label: String::from("Documents"), path: String::from("/Documents") },
             SidebarItem { label: String::from("Music"), path: String::from("/Music") },
             SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures") },
-        ]
+        ];
+        // Add mounted USB drives under "Devices" section
+        let usb_drives = crate::get_usb_drives();
+        for drive in usb_drives {
+            items.push(SidebarItem {
+                label: drive,
+                path: String::from("/mnt/usb"),
+            });
+        }
+        items
     }
 
     pub fn navigate_to(&mut self, path: &str) {
@@ -218,6 +265,27 @@ impl ExplorerContext {
     pub fn refresh(&mut self) {
         let dir = self.current_dir.clone();
         self.navigate_to(&dir);
+    }
+
+    /// Refresh sidebar items (re-detect USB drives etc.).
+    pub fn refresh_sidebar(&mut self) {
+        // Rebuild sidebar: favorites + USB drives
+        let favorites = vec![
+            SidebarItem { label: String::from("Home"), path: String::from("/") },
+            SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop") },
+            SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads") },
+            SidebarItem { label: String::from("Documents"), path: String::from("/Documents") },
+            SidebarItem { label: String::from("Music"), path: String::from("/Music") },
+            SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures") },
+        ];
+        self.sidebar_items = favorites;
+        let usb_drives = crate::get_usb_drives();
+        for drive in usb_drives {
+            self.sidebar_items.push(SidebarItem {
+                label: drive,
+                path: String::from("/mnt/usb"),
+            });
+        }
     }
 
     fn sort_entries(&mut self) {
@@ -307,7 +375,15 @@ impl ExplorerContext {
             let new_path = join_path(&self.current_dir, name);
             self.navigate_to(&new_path);
         }
-        // For files, we would open them in an appropriate app
+    }
+
+    /// Get the full path of a file entry (for launching).
+    pub fn get_file_path(&self, idx: usize) -> Option<String> {
+        if idx < self.raw_names.len() {
+            Some(join_path(&self.current_dir, &self.raw_names[idx]))
+        } else {
+            None
+        }
     }
 }
 
