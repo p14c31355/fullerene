@@ -63,16 +63,9 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static 
         let off = 0x1BE + i * 16;
         // SAFETY: boot[off..] has at least 16 bytes, and MbrPartitionEntry
         // is #[repr(C, packed)] so it has no padding requirement.
-        let entry: &MbrPartitionEntry = unsafe {
-            &*(boot[off..].as_ptr() as *const MbrPartitionEntry)
-        };
-        // Read fields with explicit unaligned accesses
-        let ptype = unsafe {
-            core::ptr::read_unaligned(&raw const entry.partition_type)
-        };
-        let lba_start = unsafe {
-            core::ptr::read_unaligned(&raw const entry.lba_start)
-        };
+        let entry_ptr = boot[off..].as_ptr() as *const MbrPartitionEntry;
+        let ptype = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).partition_type) };
+        let lba_start = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).lba_start) };
         match ptype {
             PARTITION_FAT32 | PARTITION_FAT32_LBA => {
                 klog_fmt!("FAT: MBR partition {} FAT32 at LBA {}\n", i, lba_start);
