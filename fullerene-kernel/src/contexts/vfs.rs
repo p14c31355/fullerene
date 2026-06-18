@@ -145,6 +145,7 @@ impl VfsContext {
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
         // Acquire inner first, then handle_table (correct lock order).
+    pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
         let mut vfs = self.inner.lock();
         let mount_idx = self
             .handle_table
