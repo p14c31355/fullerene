@@ -179,7 +179,7 @@ impl LinuxUtsname {
 
 /// Linux struct dirent64 for getdents64
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct LinuxDirent64 {
     pub d_ino: u64,
     pub d_off: i64,

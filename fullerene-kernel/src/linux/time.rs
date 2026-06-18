@@ -1,5 +1,5 @@
 // Linux time syscall implementations
-use super::runtime::{LinuxRuntime, Runtime, copy_val_to_user, errno_code};
+use super::runtime::{LinuxRuntime, Runtime, copy_from_user, copy_val_to_user, errno_code};
 use super::numbers::*;
 use super::types::*;
 

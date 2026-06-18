@@ -90,8 +90,9 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
-    // Read data from user space into kernel buffer
-    let kernel_buf = match unsafe { copy_from_user(buf, count) } {
+    // Read data from user space into kernel buffer (capped to avoid OOM)
+    let limit = count.min(65536);
+    let kernel_buf = match unsafe { copy_from_user(buf, limit) } {
         Ok(d) => d,
         Err(_) => return errno_code(EFAULT),
     };
@@ -546,8 +547,10 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                     bufname
                 },
             };
-            let dst = (base + written as u64) as *mut LinuxDirent64;
-            core::ptr::write_volatile(dst, d);
+            let dst = base + written as u64;
+            if unsafe { copy_val_to_user(dst, &d) }.is_err() {
+                return errno_code(EFAULT);
+            }
             written += reclen as u32;
         }
     }
