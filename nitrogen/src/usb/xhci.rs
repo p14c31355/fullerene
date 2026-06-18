@@ -257,7 +257,7 @@ impl XhciController {
         // Scan extended capabilities for USB Legacy Support (ID=1).
         // If BIOS holds ownership, we must claim it.
         {
-            let mut ec_off = ((hcc1 >> 16) & 0xFFFF) as usize;
+            let mut ec_off = (((hcc1 >> 16) & 0xFFFF) as usize) * 4;
             while ec_off != 0 && ec_off < 0x400 {
                 let ec_id = unsafe { core::ptr::read_volatile(caps.add(ec_off) as *const u8) };
                 let ec_next = unsafe { core::ptr::read_volatile(caps.add(ec_off + 1) as *const u8) as usize } * 4;
