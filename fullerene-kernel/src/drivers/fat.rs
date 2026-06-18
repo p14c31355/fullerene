@@ -581,13 +581,13 @@ impl FileSystem for FatFileSystem {
 
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
         let pos = self.handles.iter().position(|h| h.0 == fd).ok_or("bad fd")?;
-        let cluster = self.handles[pos].0;
-        let offset = self.handles[pos].1;
+        let cluster = self.handles[pos].1;
+        let offset = self.handles[pos].2;
         let data = self.read_file_data(cluster, offset + buf.len() as u32)?;
         let available = data.len().saturating_sub(offset as usize);
         let to_copy = min(available, buf.len());
         buf[..to_copy].copy_from_slice(&data[offset as usize..offset as usize + to_copy]);
-        self.handles[pos].1 += to_copy as u32;
+        self.handles[pos].2 += to_copy as u32;
         Ok(to_copy)
     }
 
