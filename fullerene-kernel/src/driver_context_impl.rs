@@ -54,9 +54,9 @@ impl DriverContext for KernelDriverContext {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
         let m = mgr
             .as_mut()
-            .ok_or(DriverContextError::MmiMappingFailed)?;
+            .ok_or(DriverContextError::MmioMappingFailed)?;
         m.map_mmio_region(phys, virt, size)
-            .map_err(|_| DriverContextError::MmiMappingFailed)
+            .map_err(|_| DriverContextError::MmioMappingFailed)
     }
 
     fn map_page(
@@ -68,7 +68,7 @@ impl DriverContext for KernelDriverContext {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
         let m = mgr
             .as_mut()
-            .ok_or(DriverContextError::MmiMappingFailed)?;
+            .ok_or(DriverContextError::MmioMappingFailed)?;
 
         let mut pte_flags = PageTableFlags::PRESENT | PageTableFlags::NO_EXECUTE;
         if flags.writable {
@@ -79,6 +79,6 @@ impl DriverContext for KernelDriverContext {
         }
 
         m.safe_map_page(virt, phys, pte_flags)
-            .map_err(|_| DriverContextError::MmiMappingFailed)
+            .map_err(|_| DriverContextError::MmioMappingFailed)
     }
 }
