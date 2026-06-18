@@ -1173,22 +1173,23 @@ where
     }) {
         ensure_editor_window();
     }
-    // Poll USB every ~100 ticks (~2 seconds at 17ms/tick)
+    // Poll USB every ~100 ticks (~2 seconds at 17ms/tick).
+    // Callback pointer is extracted before invocation to avoid holding
+    // SOLVENT_CALLBACKS lock while VFS locks are acquired inside poll_usb().
     static LAST_USB_POLL: core::sync::atomic::AtomicU64 =
         core::sync::atomic::AtomicU64::new(0);
     let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
     if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
         LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
-        let changed = SOLVENT_CALLBACKS.lock().usb_poll
-            .map(|f| f())
-            .unwrap_or(false);
-        if changed {
-            if let Some(ref mut r) = *RUNTIME.lock() {
-                // Force explorer sidebar refresh on next render
-                if let Some(ref mut e) = r.explorer {
-                    e.refresh_sidebar();
-                    r.explorer_dirty = true;
-                    r.frame_due = true;
+        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
+        if let Some(f) = poll_fn {
+            if f() {
+                if let Some(ref mut r) = *RUNTIME.lock() {
+                    if let Some(ref mut e) = r.explorer {
+                        e.refresh_sidebar();
+                        r.explorer_dirty = true;
+                        r.frame_due = true;
+                    }
                 }
             }
         }

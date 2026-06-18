@@ -105,6 +105,8 @@ use core::sync::atomic::AtomicBool;
 pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
+    // Immediate first poll for boot-time USB devices (already connected)
+    poll_usb();
 }
 
 fn init_controllers() {
@@ -132,6 +134,9 @@ fn init_controllers() {
 
                 if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
                     controllers.push(hc);
+                    petroleum::serial::serial_log(format_args!(
+                        "USB: EHCI at {}:{}.{}\n", bus, slot, func
+                    ));
                 }
             }
         }

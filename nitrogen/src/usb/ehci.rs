@@ -558,39 +558,44 @@ impl EhciController {
 
     // ── Port management ──────────────────────────────────────
 
+    /// Poll all ports for newly connected devices.
+    ///
+    /// Handles two cases:
+    /// - **Firmware-enabled port** (UEFI booted from USB): `PORTSC_PE` is already set.
+    ///   We register the device without resetting.
+    /// - **Hotplug**: `PORTSC_CCS` is set but `PORTSC_PE` is clear.
+    ///   We reset the port, enable it, then register.
     pub fn poll_ports(&mut self) {
         let op_base = unsafe { self.mmio_base.add(self.op_offset as usize) };
         for port in 0..self.n_ports {
-            let portsc_addr = (op_base as usize + PORTSC_BASE as usize + (port * 4) as usize) as *mut u32;
-            let portsc = unsafe { core::ptr::read_volatile(portsc_addr) };
+            let paddr = (op_base as usize + PORTSC_BASE as usize + (port * 4) as usize) as *mut u32;
+            let portsc = unsafe { core::ptr::read_volatile(paddr) };
             if portsc & PORTSC_CCS == 0 { continue; }
-            if portsc & PORTSC_PE != 0 { continue; }
 
-            // Reset port
-            unsafe { core::ptr::write_volatile(portsc_addr, portsc | PORTSC_RESET); }
-            for _ in 0..50_000 {
-                let _ = unsafe { core::ptr::read_volatile(portsc_addr) };
-            }
-            unsafe { core::ptr::write_volatile(portsc_addr, portsc & !PORTSC_RESET); }
-            for _ in 0..10_000 {
-                let ps = unsafe { core::ptr::read_volatile(portsc_addr) };
-                if ps & PORTSC_PE != 0 { break; }
+            // Check if this port was already processed
+            let already_known = self.devices.iter().any(|d| {
+                d.vendor_id == 0 && d.speed == UsbSpeed::High
+            });
+            if already_known { continue; }
+
+            if portsc & PORTSC_PE == 0 {
+                // Hotplug: reset the port
+                unsafe { core::ptr::write_volatile(paddr, portsc | PORTSC_RESET); }
+                for _ in 0..50_000 { let _ = unsafe { core::ptr::read_volatile(paddr) }; }
+                unsafe { core::ptr::write_volatile(paddr, portsc & !PORTSC_RESET); }
+                for _ in 0..10_000 {
+                    if unsafe { core::ptr::read_volatile(paddr) } & PORTSC_PE != 0 { break; }
+                }
             }
 
-            let speed = UsbSpeed::from_portsc(unsafe { core::ptr::read_volatile(portsc_addr) });
+            let speed = UsbSpeed::from_portsc(unsafe { core::ptr::read_volatile(paddr) });
             if speed != UsbSpeed::High { continue; }
 
             // Register device (address will be assigned during enumeration)
             self.devices.push(UsbDevice {
-                address: 0,
-                speed,
-                max_packet_size_0: 64,
-                vendor_id: 0,
-                product_id: 0,
-                device_class: 0,
-                device_subclass: 0,
-                device_protocol: 0,
-                configurations: 0,
+                address: 0, speed, max_packet_size_0: 64,
+                vendor_id: 0, product_id: 0, device_class: 0,
+                device_subclass: 0, device_protocol: 0, configurations: 0,
                 endpoints: Vec::new(),
             });
         }
