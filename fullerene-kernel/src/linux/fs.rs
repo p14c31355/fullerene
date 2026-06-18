@@ -223,16 +223,14 @@ pub fn sys_close(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), &'static str> {
     let vfs_fd = crate::contexts::vfs::open(path, 0)?;
     let info = fill_stat_from_fd(vfs_fd.fd);
-    let _ = crate::contexts::vfs::close(vfs_fd.fd);
 
     // Check if path is a directory by trying to readdir
     let is_dir = crate::contexts::vfs::readdir(path).is_ok();
     let size = if is_dir { 0 } else {
         let mut buf = [0u8; 512];
         let mut total = 0usize;
-        let mut f = vfs_fd;
         loop {
-            match crate::contexts::vfs::read(f.fd, &mut buf) {
+            match crate::contexts::vfs::read(vfs_fd.fd, &mut buf) {
                 Ok(0) => break,
                 Ok(n) => total += n,
                 Err(_) => break,
@@ -240,6 +238,8 @@ fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), &'static str> {
         }
         total
     };
+    let _ = crate::contexts::vfs::close(vfs_fd.fd);
+}
 
     let stat = LinuxStat {
         st_dev: 0,
