@@ -40,7 +40,8 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
-    let mut kernel_buf = unsafe { copy_from_user(buf, count) }.unwrap_or_default();
+    let limit = count.min(65536);
+    let mut kernel_buf = alloc::vec![0u8; limit];
     if kernel_buf.is_empty() {
         return 0;
     }

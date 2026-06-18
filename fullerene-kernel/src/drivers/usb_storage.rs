@@ -316,6 +316,10 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize) {
             xhci.bulk_transfer(self.slot_id, self.bulk_in, &mut data, UsbDirection::In, 512)?;
             let mut csw = [0u8; 13];
             xhci.bulk_transfer(self.slot_id, self.bulk_in, &mut csw, UsbDirection::In, 512)?;
+            let sig = u32::from_le_bytes([csw[0], csw[1], csw[2], csw[3]]);
+            if sig != 0x53425355 { return Err("bad CSW"); }
+            let tag = u32::from_le_bytes([csw[4], csw[5], csw[6], csw[7]]);
+            if tag != self.tag - 1 { return Err("CSW tag mismatch"); }
             if csw[12] != 0 { return Err("CSW err"); }
             let n = data.len().min(blen);
             buf[..n].copy_from_slice(&data[..n]);

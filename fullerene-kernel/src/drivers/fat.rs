@@ -244,6 +244,7 @@ pub struct FatFileSystem {
     is_exfat: bool,
     /// Open file handles: fd → (cluster, offset, size, path)
     handles: Vec<(u32, u32, u32, u32, String)>,
+    next_fd: u32,
 }
 
 impl FatFileSystem {

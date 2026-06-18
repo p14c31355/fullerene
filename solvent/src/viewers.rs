@@ -248,9 +248,12 @@ pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
         let type_flag = block[156];
         let kind = match type_flag { b'5' => "dir", b'2' => "link", _ => "file" };
         entries.push(format!("{} {:>8}  {}", kind, size, entry_name));
-        let total = 512 + ((size + 511) / 512 * 512) as usize;
-        off += total;
-        if off > data.len() { break; }
+        let Some(blocks) = size.checked_add(511).map(|s| s / 512 * 512) else { break; };
+        let Some(total) = (512 as usize).checked_add(blocks as usize) else { break; };
+        off = match off.checked_add(total) {
+            Some(o) => o,
+            None => break,
+        };
     }
 
     let mut msg = format!("Archive: {}\n{} entries\n\n", name, entries.len());

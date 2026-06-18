@@ -86,13 +86,23 @@ pub fn sys_getrandom(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
 
-    // Use a simple LCG to generate "random" bytes
-    let mut seed: u64 = 0xdeadbeefcafebabeu64;
+    // Use a simple LCG with rdtsc-based entropy mixing
+    // Global atomic seed ensures non-deterministic output across calls
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static SEED: AtomicU64 = AtomicU64::new(0);
+    let mut seed = SEED.load(Ordering::Relaxed);
+    if seed == 0 {
+        // Initialize with rdtsc for entropy
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        seed = tsc ^ 0x9e3779b97f4a7c15; // mix with a constant
+        SEED.store(seed, Ordering::Relaxed);
+    }
     for i in 0..count {
         seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let byte = (seed >> 32) as u8;
         unsafe { core::ptr::write_volatile((buf as *mut u8).add(i as usize), byte) };
     }
+    SEED.store(seed, Ordering::Relaxed);
     count as u64
 }
 

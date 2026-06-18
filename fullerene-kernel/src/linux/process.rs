@@ -185,42 +185,10 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     }
 
-    // ── Load new segments ─────────────────────────────────
-    {
-        let mgr_opt = crate::memory_management::get_memory_manager().lock();
-        let mgr = match mgr_opt.as_ref() {
-            Some(m) => m,
-            None => return errno_code(ENOMEM),
-        };
-        let pt = mgr.page_table_manager();
-
-        for &(vaddr, file_off, file_sz, mem_sz, _flags) in &segments {
-            // Copy file data through physical memory
-            if file_sz > 0 {
-                let src = &data[file_off..file_off + file_sz];
-                if let Ok(phys) = pt.translate_address(vaddr as usize) {
-                    unsafe {
-                        let dst = petroleum::common::memory::physical_to_virtual(phys);
-                        core::ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut u8, file_sz);
-                    }
-                }
-                if mem_sz > file_sz {
-                    let bss_vaddr = vaddr + file_sz as u64;
-                    if let Ok(bss_phys) = pt.translate_address(bss_vaddr as usize) {
-                        unsafe {
-                            let dst = petroleum::common::memory::physical_to_virtual(bss_phys);
-                            core::ptr::write_bytes(dst as *mut u8, 0, mem_sz - file_sz);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // Lock released here; allocation/remapping needs a new lock acquisition.
-    // Allocate and map pages for the new segments
+    // ── Load and map new segments ─────────────────────────
     let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
     if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
-        for &(vaddr, _file_off, _file_sz, mem_sz, flags) in &segments {
+        for &(vaddr, file_off, file_sz, mem_sz, flags) in &segments {
             let num_pages = ((mem_sz + 4095) / 4096) as usize;
             for page_idx in 0..num_pages {
                 let page_vaddr = (vaddr + (page_idx as u64) * 4096) as usize;
@@ -237,6 +205,33 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                         frame.start_address().as_u64() as usize,
                         page_flags,
                     );
+
+                    // Copy segment data to the newly allocated frame
+                    let frame_vaddr = petroleum::common::memory::physical_to_virtual(frame.start_address().as_u64() as usize);
+                    let page_offset = page_idx * 4096;
+                    if page_offset < file_sz {
+                        let copy_len = (file_sz - page_offset).min(4096);
+                        let src_offset = file_off + page_offset;
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                data[src_offset..src_offset + copy_len].as_ptr(),
+                                frame_vaddr as *mut u8,
+                                copy_len,
+                            );
+                            if copy_len < 4096 {
+                                core::ptr::write_bytes(
+                                    (frame_vaddr as *mut u8).add(copy_len),
+                                    0,
+                                    4096 - copy_len,
+                                );
+                            }
+                        }
+                    } else {
+                        // Zero-fill BSS page
+                        unsafe {
+                            core::ptr::write_bytes(frame_vaddr as *mut u8, 0, 4096);
+                        }
+                    }
                 }
             }
         }

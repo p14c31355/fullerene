@@ -112,25 +112,39 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         for i in 0..num_pages {
             let page_vaddr = addr + (i as u64) * 4096;
 
-            if let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
-                let mut page_flags = PageTableFlags::PRESENT
-                    | PageTableFlags::USER_ACCESSIBLE;
-
-                if (prot & PROT_WRITE) != 0 {
-                    page_flags |= PageTableFlags::WRITABLE;
+            let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
+                Some(f) => f,
+                None => {
+                    // Unmap pages we've already mapped in this call
+                    if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+                        for j in 0..i {
+                            let unmap_vaddr = (addr + (j as u64) * 4096) as usize;
+                            if mgr.page_table_manager().translate_address(unmap_vaddr).is_ok() {
+                                let _ = mgr.safe_unmap_page(unmap_vaddr);
+                            }
+                        }
+                    }
+                    return errno_code(ENOMEM);
                 }
+            };
 
-                if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
-                    let ptm = mgr.page_table_manager_mut() as *mut _;
-                    let ptm = unsafe { &mut *ptm };
-                    let _ = PageTableHelper::map_page(
-                        ptm,
-                        page_vaddr as usize,
-                        frame.start_address().as_u64() as usize,
-                        page_flags,
-                        frame_alloc,
-                    );
-                }
+            let mut page_flags = PageTableFlags::PRESENT
+                | PageTableFlags::USER_ACCESSIBLE;
+
+            if (prot & PROT_WRITE) != 0 {
+                page_flags |= PageTableFlags::WRITABLE;
+            }
+
+            if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+                let ptm = mgr.page_table_manager_mut() as *mut _;
+                let ptm = unsafe { &mut *ptm };
+                let _ = PageTableHelper::map_page(
+                    ptm,
+                    page_vaddr as usize,
+                    frame.start_address().as_u64() as usize,
+                    page_flags,
+                    frame_alloc,
+                );
             }
         }
 
