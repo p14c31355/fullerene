@@ -140,7 +140,6 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
     // Handle creation or opening for writing
     if create || truncate || write_only || read_write || append {
         if create {
-            let _ = crate::contexts::vfs::mkdir(path);
             match crate::contexts::vfs::create(path) {
                 Ok(vfs_fd) => {
                     let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
@@ -195,7 +194,6 @@ pub fn sys_creat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Ok(p) => p,
         Err(e) => return errno_code(e),
     };
-    let _ = crate::contexts::vfs::mkdir(&path);
     match crate::contexts::vfs::create(&path) {
         Ok(vfs_fd) => {
             let fd = rt.fd_table.alloc(vfs_fd.fd, 0, O_WRONLY | O_CREAT | O_TRUNC);
@@ -518,11 +516,8 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
     };
-    // We need to get the directory path from the vfs fd.
-    // For simplicity, readdir on the current working directory.
-    // Real implementation would track paths per fd.
-    let _ = desc;
-    // Try to find the path from the fd name
+    // TODO: Track directory paths per fd for proper getdents64 support.
+    // For now, always read the root directory.
     let path = "/";
     let entries = match crate::contexts::vfs::readdir(path) {
         Ok(e) => e,

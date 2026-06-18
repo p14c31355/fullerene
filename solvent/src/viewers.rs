@@ -407,9 +407,9 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
 
                     // Parse the keyframe sample data (MP4 format → Annex B for decoder)
                     let start = sample.data_offset as usize;
-                    let start = sample.data_offset as usize;
                     let end = start.checked_add(sample.data_size as usize).unwrap_or(usize::MAX);
                     if end <= data.len() {
+                        let sample_data = &data[start..end];
                         // Use parse_avcc with length_size=4 (MP4 standard)
                         let nals = rust_h264::nal::parse_avcc(sample_data, 4);
                         for nal in &nals {

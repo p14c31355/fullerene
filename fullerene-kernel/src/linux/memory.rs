@@ -7,37 +7,28 @@ use petroleum::page_table::types::PageTableHelper;
 use x86_64::structures::paging::{PageTableFlags, FrameAllocator as X86FrameAllocator};
 use x86_64::structures::paging::Size4KiB;
 
-/// Simple page allocator for Linux processes.
-// FIXME: These static muts break multi-process isolation. They should be moved
-// into LinuxRuntime so each process tracks its own virtual memory regions independently.
-static mut LINUX_PAGES: [Option<LinuxMmapRegion>; 256] = [None; 256];
-static mut LINUX_PAGE_COUNT: usize = 0;
-
+/// Per-process virtual memory region tracked for mmap/munmap.
 #[derive(Clone, Copy)]
-struct LinuxMmapRegion {
-    addr: u64,
-    size: u64,
-    prot: i32,
-    flags: i32,
+pub struct LinuxMmapRegion {
+    pub addr: u64,
+    pub size: u64,
+    pub prot: i32,
+    pub flags: i32,
 }
 
-fn find_free_anon_region(size: u64) -> u64 {
+fn find_free_anon_region(rt: &mut LinuxRuntime, size: u64) -> u64 {
     let base: u64 = 0x60000000;
     let mut candidate = base;
     loop {
         let mut overlap = false;
-        unsafe {
-            for i in 0..LINUX_PAGE_COUNT {
-                if let Some(reg) = &LINUX_PAGES[i] {
-                    let r_start = reg.addr;
-                    let r_end = r_start + reg.size;
-                    let c_end = candidate + size;
-                    if candidate < r_end && c_end > r_start {
-                        overlap = true;
-                        candidate = r_end;
-                        break;
-                    }
-                }
+        for reg in &rt.mmap_regions {
+            let r_start = reg.addr;
+            let r_end = r_start + reg.size;
+            let c_end = candidate + size;
+            if candidate < r_end && c_end > r_start {
+                overlap = true;
+                candidate = r_end;
+                break;
             }
         }
         if !overlap {
@@ -49,35 +40,18 @@ fn find_free_anon_region(size: u64) -> u64 {
     }
 }
 
-fn track_region(addr: u64, size: u64, prot: i32, flags: i32) -> bool {
-    unsafe {
-        if LINUX_PAGE_COUNT >= 256 {
-            return false;
-        }
-        LINUX_PAGES[LINUX_PAGE_COUNT] = Some(LinuxMmapRegion { addr, size, prot, flags });
-        LINUX_PAGE_COUNT += 1;
-    }
+fn track_region(rt: &mut LinuxRuntime, addr: u64, size: u64, prot: i32, flags: i32) -> bool {
+    rt.mmap_regions.push(LinuxMmapRegion { addr, size, prot, flags });
     true
 }
 
-fn untrack_region(addr: u64) -> bool {
-    unsafe {
-        for i in 0..LINUX_PAGE_COUNT {
-            if let Some(reg) = &LINUX_PAGES[i] {
-                if reg.addr == addr {
-                    LINUX_PAGES[i] = None;
-                    if i < LINUX_PAGE_COUNT - 1 {
-                        LINUX_PAGES[i] = LINUX_PAGES[LINUX_PAGE_COUNT - 1].take();
-                    } else {
-                        LINUX_PAGES[i] = None;
-                    }
-                    LINUX_PAGE_COUNT -= 1;
-                    return true;
-                }
-            }
-        }
+fn untrack_region(rt: &mut LinuxRuntime, addr: u64) -> bool {
+    if let Some(pos) = rt.mmap_regions.iter().position(|r| r.addr == addr) {
+        rt.mmap_regions.remove(pos);
+        true
+    } else {
+        false
     }
-    false
 }
 
 pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -101,7 +75,7 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         let addr = if addr_hint != 0 && addr_hint >= 0x10000 {
             addr_hint & !4095
         } else {
-            find_free_anon_region(aligned_len)
+            find_free_anon_region(rt, aligned_len)
         };
 
         if addr == 0 {
@@ -150,7 +124,7 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
         }
 
-        track_region(addr, aligned_len, prot, flags);
+        track_region(rt, addr, aligned_len, prot, flags);
         return addr;
     }
 
@@ -177,7 +151,7 @@ pub fn sys_munmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     }
 
-    untrack_region(addr);
+    untrack_region(rt, addr);
     0
 }
 

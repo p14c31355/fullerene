@@ -238,6 +238,8 @@ pub struct FatFileSystem {
     /// Open file handles: fd → (cluster, offset, size, path)
     handles: Vec<(u32, u32, u32, u32, String)>,
     next_fd: u32,
+    /// Reusable sector buffer to avoid per-call allocation
+    sector_buf: Vec<u8>,
 }
 
 impl FatFileSystem {
@@ -299,6 +301,7 @@ impl FatFileSystem {
                 is_exfat: true,
                 handles: Vec::new(),
                 next_fd: 1,
+                sector_buf: vec![0u8; bps as usize],
             })
         } else {
             // SAFETY: FatBootSector is #[repr(C, packed)] and boot[..512] is valid.
@@ -327,6 +330,7 @@ impl FatFileSystem {
                 is_exfat: false,
                 handles: Vec::new(),
                 next_fd: 1,
+                sector_buf: vec![0u8; bps as usize],
             })
         }
     }
@@ -341,9 +345,13 @@ impl FatFileSystem {
         let fat_offset = cluster * 4; // FAT32: 4 bytes per entry
         let sector = self.reserved_sectors + fat_offset / self.bps;
         let offset = (fat_offset % self.bps) as usize;
-        let mut sec = alloc::vec![0u8; self.bps as usize];
-        self.device.read_sectors(sector, 1, &mut sec)?;
-        let val = u32::from_le_bytes([sec[offset], sec[offset + 1], sec[offset + 2], sec[offset + 3]]);
+        self.device.read_sectors(sector, 1, &mut self.sector_buf)?;
+        let val = u32::from_le_bytes([
+            self.sector_buf[offset],
+            self.sector_buf[offset + 1],
+            self.sector_buf[offset + 2],
+            self.sector_buf[offset + 3],
+        ]);
         Ok(val & 0x0FFFFFFF)
     }
 
@@ -393,13 +401,12 @@ impl FatFileSystem {
             for entry_idx in 0..(self.spc * self.bps / 32) {
                 let sec = sector + entry_idx / (self.bps / 32);
                 let off = ((entry_idx % (self.bps / 32)) * 32) as usize;
-                let mut buf = alloc::vec![0u8; self.bps as usize];
-                if self.device.read_sectors(sec, 1, &mut buf).is_err() {
+                if self.device.read_sectors(sec, 1, &mut self.sector_buf).is_err() {
                     return None;
                 }
                 // SAFETY: FatDirEntry is #[repr(C, packed)]. `off` is derived from
-                // the entry index within the sector, and `buf` has at least 32 bytes remaining from `off`.
-                let entry: &FatDirEntry = unsafe { &*(buf[off..].as_ptr() as *const FatDirEntry) };
+                // the entry index within the sector, and `sector_buf` has at least 32 bytes remaining from `off`.
+                let entry: &FatDirEntry = unsafe { &*(self.sector_buf[off..].as_ptr() as *const FatDirEntry) };
                 if entry.name[0] == 0 {
                     return None; // end of directory
                 }
@@ -512,9 +519,8 @@ impl FatFileSystem {
             for i in 0..self.spc {
                 if remaining == 0 { break; }
                 let to_read = min(remaining, self.bps);
-                let mut buf = vec![0u8; self.bps as usize];
-                self.device.read_sectors(sector + i, 1, &mut buf)?;
-                data.extend_from_slice(&buf[..to_read as usize]);
+                self.device.read_sectors(sector + i, 1, &mut self.sector_buf)?;
+                data.extend_from_slice(&self.sector_buf[..to_read as usize]);
                 remaining -= to_read;
             }
             if remaining == 0 { break; }
@@ -609,10 +615,9 @@ impl FileSystem for FatFileSystem {
                     0
                 };
                 let to_copy_in_sector = min(remaining as usize, (self.bps - start_in_sector as u32) as usize);
-                let mut sec_buf = vec![0u8; self.bps as usize];
-                self.device.read_sectors(sector, 1, &mut sec_buf)?;
+                self.device.read_sectors(sector, 1, &mut self.sector_buf)?;
                 buf[dst_off..dst_off + to_copy_in_sector]
-                    .copy_from_slice(&sec_buf[start_in_sector..start_in_sector + to_copy_in_sector]);
+                    .copy_from_slice(&self.sector_buf[start_in_sector..start_in_sector + to_copy_in_sector]);
                 dst_off += to_copy_in_sector;
                 remaining -= to_copy_in_sector as u32;
             }

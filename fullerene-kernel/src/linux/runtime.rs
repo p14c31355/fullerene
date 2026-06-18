@@ -3,6 +3,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use super::types::*;
+use super::memory::LinuxMmapRegion;
 use super::numbers::*;
 use super::fs as linux_fs;
 use super::memory as linux_mem;
@@ -97,6 +98,8 @@ pub struct LinuxRuntime {
     pub cwd_fd: i32,
     /// Umask
     pub umask: u32,
+    /// Per-process virtual memory regions tracked for mmap/munmap
+    pub mmap_regions: Vec<LinuxMmapRegion>,
 }
 
 impl LinuxRuntime {
@@ -114,6 +117,7 @@ impl LinuxRuntime {
             robust_list_len: 0,
             cwd_fd: -100,
             umask: 0o22,
+            mmap_regions: Vec::new(),
         }
     }
 

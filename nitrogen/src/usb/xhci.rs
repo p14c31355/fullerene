@@ -111,6 +111,9 @@ impl Ring {
         self.entries[self.enq] = trb;
         self.enq += 1;
         if self.enq >= self.len - 1 { // wrap before link TRB
+            // Update Link TRB cycle bit to match current cycle
+            let link_idx = self.len - 1;
+            self.entries[link_idx].flags = (self.entries[link_idx].flags & !TRB_C) | self.cycle;
             self.enq = 0;
             self.cycle ^= 1;
         }
