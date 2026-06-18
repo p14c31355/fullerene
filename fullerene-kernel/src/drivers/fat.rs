@@ -609,7 +609,7 @@ impl FileSystem for FatFileSystem {
 
     fn seek(&mut self, fd: u32, pos: usize) -> Result<(), &'static str> {
         let h = self.handles.iter_mut().find(|h| h.0 == fd).ok_or("bad fd")?;
-        h.1 = pos as u32;
+        h.2 = pos as u32;
         Ok(())
     }
 
