@@ -169,6 +169,7 @@ impl VfsContext {
 
     pub fn seek(&self, fd: u32, pos: usize) -> Result<(), &'static str> {
         // Acquire inner first, then handle_table (correct lock order).
+    pub fn seek(&self, fd: u32, pos: usize) -> Result<(), &'static str> {
         let mut vfs = self.inner.lock();
         let mount_idx = self
             .handle_table
