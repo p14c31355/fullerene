@@ -575,7 +575,7 @@ impl FileSystem for FatFileSystem {
         let (cluster, size, _name) = self.find_entry(path).ok()?;
         let fd = self.next_fd;
         self.next_fd += 1;
-        self.handles.push((cluster, 0, size, String::from(path)));
+        self.handles.push((fd, cluster, 0, size, String::from(path)));
         Some(FileDescriptor { fd, ino: cluster as u64, offset: 0, flags })
     }
 
