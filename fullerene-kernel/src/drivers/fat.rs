@@ -347,7 +347,7 @@ impl FatFileSystem {
         let fat_offset = cluster * 4; // FAT32: 4 bytes per entry
         let sector = self.reserved_sectors + fat_offset / self.bps;
         let offset = (fat_offset % self.bps) as usize;
-        let mut sec = [0u8; 512];
+        let mut sec = alloc::vec![0u8; self.bps as usize];
         self.device.read_sectors(sector, 1, &mut sec)?;
         let val = u32::from_le_bytes([sec[offset], sec[offset + 1], sec[offset + 2], sec[offset + 3]]);
         Ok(val & 0x0FFFFFFF)
