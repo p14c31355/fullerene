@@ -565,8 +565,9 @@ fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> SyscallResult 
     }
 
     if addr_hint != 0 {
+        let end_vaddr = addr_hint.checked_add(length).ok_or(SyscallError::InvalidArgument)?;
         let start_addr = VirtAddr::new(addr_hint);
-        let end_addr = VirtAddr::new(addr_hint + length - 1);
+        let end_addr = VirtAddr::new(end_vaddr - 1);
         if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
             return Err(SyscallError::PermissionDenied);
         }
