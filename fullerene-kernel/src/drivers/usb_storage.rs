@@ -120,7 +120,7 @@ pub fn init() {
     // A second poll after a spin delay catches devices that weren't
     // ready during the first poll.
     for _ in 0..1_500_000 {
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+        nitrogen::port::PortWriter::<u8>::new(0x80).write_safe(0u8);
     }
     if poll_usb() {
         return;
@@ -355,6 +355,7 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             w_index: 0,
             w_length: 256,
         };
+        let xptr: *mut XhciController = xhci as *mut XhciController;
         if unsafe { (*xptr).control_transfer(slot_id, &setup_cfg_read, &mut cfg_buf) }.is_err() {
             // Fall back to device-level class check if CONFIG read fails
             if dev_class != 0x08 { return; }
