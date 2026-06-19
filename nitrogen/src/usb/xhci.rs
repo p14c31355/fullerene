@@ -395,14 +395,48 @@ impl XhciController {
         // Start
         unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_RUN); }
 
-        // Wait for ports to stabilise.  USB 3.0 PHY negotiation can take
-        // >1 second; Linux waits ~1.2 s before detecting SuperSpeed devices.
-        // A generous spin delay here avoids the first poll_usb() finding
-        // all ports in Rx.Detect (PLS=5).
-        // Extended from 3M to 6M iterations to cover slow USB3/USB2 fallback
-        // on laptops where firmware-speed re‑negotiation runs longer.
-        for _ in 0..6_000_000 {
+        // ── Force all ports into RxDetect ─────────────────────
+        // After HCRST, many laptop chipsets leave USB3 ports in
+        // Disconnected (PLS=4) or U3 (PLS=3) and they never auto-detect.
+        // Explicitly set PP=1 and PLS=5 (RxDetect) on every port so the
+        // PHY starts looking for attached devices.
+        const PLS_RXDETECT: u32 = 5 << 5;
+        const RW1C_MASK: u32 = 0x00FE0000;
+        for port in 0..n_ports {
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let ps = unsafe { core::ptr::read_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+            ) };
+            let cur_pls = (ps >> 5) & 0xF;
+            log::info!("xHCI: PORTSC[{}] before force-RxDetect PP={} PLS={} CCS={}",
+                port, (ps>>9)&1, cur_pls, ps & 1);
+            // Power on + set PLS to RxDetect
+            let new_ps = PORTSC_PP | PLS_RXDETECT;
+            unsafe {
+                core::ptr::write_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                    new_ps
+                );
+            }
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+        }
+
+        // Wait for USB 3.0 PHY link training.  SuperSpeed negotiation
+        // (RxDetect → Polling → U0) takes 1-3 seconds on real hardware.
+        // We use 12M I/O port writes (~18 sec worst case) to be safe.
+        for _ in 0..12_000_000 {
             crate::port::PortWriter::new(0x80).write_safe(0u8);
+        }
+        log::info!("xHCI: PHY stabilisation delay complete");
+
+        // Log final PORTSC state after delay
+        for port in 0..n_ports.min(4) {
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let ps = unsafe { core::ptr::read_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+            ) };
+            log::info!("xHCI: PORTSC[{}] after-phy-delay=0x{:08X} CCS={} PP={} PLS={} PED={} speed={}",
+                port, ps, ps & 1, (ps>>9)&1, (ps>>5)&0xF, (ps>>1)&1, (ps>>10)&0xF);
         }
 
         // Unmask interrupt
@@ -606,71 +640,111 @@ impl XhciController {
 
     /// Called after start. Returns number of newly detected devices.
     pub fn poll_ports(&mut self) {
+        const CSC: u32 = 1 << 17;  // Connect Status Change
+        const PEC: u32 = 1 << 18;  // Port Enabled/Disabled Change
+        const CEC: u32 = 1 << 23;  // Port Config Error Change
+        const RW1C_BITS: u32 = CSC | PEC | CEC | (1 << 22) | (1 << 20) | (1 << 19); // bits 17-23 are RW1C
+
         for port in 0..self.n_ports {
             if self.ports_done & (1 << port) != 0 {
                 if port < 4 { log::info!("xHCI: poll_ports port {} — already done, skip", port); }
                 continue;
             }
 
-            const PORTSC_RW1C_MASK: u32 = 0x00FE0000; // bits 17-23 are RW1C (clear-on-write-1)
-
-            // Ensure port is powered (some controllers lose PP after HCRST)
-            let mut portsc = self.op_read(PORTSC_BASE + port * 0x10);
-            if portsc & PORTSC_PP == 0 {
-                log::info!("xHCI: poll_ports port {} — PP=0, attempting to power on", port);
-                self.op_write(PORTSC_BASE + port * 0x10, (portsc & !PORTSC_RW1C_MASK) | PORTSC_PP);
-                for _ in 0..20_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                portsc = self.op_read(PORTSC_BASE + port * 0x10);
+            // ── Step 1: Read initial state ──────────────────────
+            let portsc = self.op_read(PORTSC_BASE + port * 0x10);
+            let pls = (portsc >> 5) & 0xF;
+            let pp_on = portsc & PORTSC_PP != 0;
+            if port < 8 {
+                log::info!("xHCI: poll_ports port {} initial PORTSC=0x{:08X} CCS={} PP={} PLS={} speed={} PED={}",
+                    port, portsc, portsc & PORTSC_CCS, pp_on, pls,
+                    (portsc >> 10) & 0xF, (portsc >> 1) & 1);
             }
 
+            // ── Step 2: Force port power on ────────────────────
+            // On many laptops, firmware leaves PP=0 after HCRST even
+            // though a device is plugged in.  Explicitly power the port.
+            // USB 3.0 spec requires VBUS off ≥ 100ms for a full power cycle,
+            // so we do a proper cold reset: off → delay → on → delay.
+            let do_cold_reset = !pp_on || pls == 5; // PLS=5 = RxDetect (no device seen yet)
+            if do_cold_reset {
+                log::info!("xHCI: poll_ports port {} — cold reset (PP={}, PLS={})", port, pp_on, pls);
+                // Power off
+                let v = self.op_read(PORTSC_BASE + port * 0x10);
+                self.op_write(PORTSC_BASE + port * 0x10, v & !(PORTSC_PP | RW1C_BITS));
+                // Wait ≥100ms for VBUS discharge (USB 3.0 §7.3.1)
+                for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                // Power on
+                let v2 = self.op_read(PORTSC_BASE + port * 0x10);
+                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP);
+                // Wait for PHY detection + link training (USB 3.0 can be slow)
+                for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+            }
+
+            // ── Step 3: Check CCS after power stabilisation ────
+            let portsc = self.op_read(PORTSC_BASE + port * 0x10);
+            let pls = (portsc >> 5) & 0xF;
+            if port < 8 {
+                log::info!("xHCI: poll_ports port {} after-power PORTSC=0x{:08X} CCS={} PP={} PLS={} PED={}",
+                    port, portsc, portsc & PORTSC_CCS, portsc & PORTSC_PP != 0, pls,
+                    (portsc >> 1) & 1);
+            }
+
+            // ── Step 4: If still CCS=0, try warm port reset ────
+            // Warm reset transitions USB3 ports from inactive states
+            // back to RxDetect, which starts the link training
+            // (Polling → U0) and eventually sets CCS/PED.
+            if portsc & PORTSC_CCS == 0 && portsc & PORTSC_PP != 0 {
+                log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
+                // Assert WPR (bit 20) — clear RW1C bits first, then set WPR
+                let v = self.op_read(PORTSC_BASE + port * 0x10);
+                const WPR: u32 = 1 << 20;
+                self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) | WPR);
+                // Wait for WPR to complete (controller clears it)
+                for _ in 0..200_000 {
+                    let p = self.op_read(PORTSC_BASE + port * 0x10);
+                    if p & WPR == 0 { break; }
+                }
+                // Wait for link training after warm reset
+                for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+            }
+
+            // ── Step 5: Final CCS check ────────────────────────
             let portsc = self.op_read(PORTSC_BASE + port * 0x10);
             if port < 8 {
-                log::info!("xHCI: poll_ports port {} PORTSC=0x{:08X} CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={}",
-                    port, portsc, portsc & 1, (portsc>>1)&1, (portsc>>4)&1,
-                    (portsc>>9)&1, (portsc>>5)&0xF, (portsc>>20)&1, (portsc>>10)&0xF);
+                log::info!("xHCI: poll_ports port {} final PORTSC=0x{:08X} CCS={} PED={} PP={} PLS={} speed={}",
+                    port, portsc, portsc & PORTSC_CCS, (portsc >> 1) & 1,
+                    portsc & PORTSC_PP != 0, (portsc >> 5) & 0xF, (portsc >> 10) & 0xF);
             }
 
-            if portsc & PORTSC_CCS != 0 {
-                log::info!("xHCI: poll_ports port {} — CCS=1, doing port reset", port);
-                self.op_write(PORTSC_BASE + port * 0x10, (portsc & !PORTSC_RW1C_MASK) | PORTSC_PR);
+            if portsc & PORTSC_CCS == 0 {
+                log::info!("xHCI: poll_ports port {} — CCS still 0 after all attempts, giving up", port);
+                // Mark as done to avoid infinite retries; a hotplug event
+                // (USBSTS.PCD) will clear the bit and re-trigger detection.
+                self.ports_done |= 1 << port;
+                continue;
+            }
+
+            // ── Step 6: Port reset for newly detected device ───
+            if portsc & PORTSC_PED == 0 {
+                log::info!("xHCI: poll_ports port {} — CCS=1 PED=0, doing port reset", port);
+                // Assert PR (bit 4)
+                self.op_write(PORTSC_BASE + port * 0x10,
+                    (portsc & !RW1C_BITS) | PORTSC_PR);
                 for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                {
-                    let v = self.op_read(PORTSC_BASE + port * 0x10);
-                    self.op_write(PORTSC_BASE + port * 0x10, (v & !PORTSC_RW1C_MASK) & !PORTSC_PR);
-                }
+                // Clear PR
+                let v = self.op_read(PORTSC_BASE + port * 0x10);
+                self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) & !PORTSC_PR);
+                // Wait for PED
                 for _ in 0..200_000 {
                     if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_PED != 0 { break; }
                 }
-                if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_CCS == 0 {
+                // Re-read to check CCS survived
+                let portsc2 = self.op_read(PORTSC_BASE + port * 0x10);
+                if portsc2 & PORTSC_CCS == 0 {
                     log::info!("xHCI: poll_ports port {} — CCS lost after reset", port);
                     continue;
                 }
-            } else if portsc & PORTSC_PP != 0 {
-                log::info!("xHCI: poll_ports port {} — CCS=0 PP=1, trying warm reset", port);
-                self.op_write(PORTSC_BASE + port * 0x10, (portsc & !PORTSC_RW1C_MASK) | PORTSC_WPR);
-                for _ in 0..200_000 {
-                    let p = self.op_read(PORTSC_BASE + port * 0x10);
-                    if p & PORTSC_WPR == 0 { break; }
-                }
-                let portsc_wpr = self.op_read(PORTSC_BASE + port * 0x10);
-                log::info!("xHCI: poll_ports port {} — after WPR, PORTSC=0x{:08X} CCS={}", port, portsc_wpr, portsc_wpr & 1);
-                for _ in 0..100_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                let p = self.op_read(PORTSC_BASE + port * 0x10);
-                if p & PORTSC_CCS == 0 {
-                    log::info!("xHCI: poll_ports port {} — still CCS=0 after warm reset", port);
-                    continue;
-                }
-                log::info!("xHCI: poll_ports port {} — CCS=1 after warm reset!", port);
-                for _ in 0..200_000 {
-                    if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_PED != 0 { break; }
-                }
-                if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_CCS == 0 {
-                    log::info!("xHCI: poll_ports port {} — CCS lost after WPR+wait", port);
-                    continue;
-                }
-            } else {
-                log::info!("xHCI: poll_ports port {} — CCS=0 PP=0, skip", port);
-                continue;
             }
 
             let ps = self.op_read(PORTSC_BASE + port * 0x10);
