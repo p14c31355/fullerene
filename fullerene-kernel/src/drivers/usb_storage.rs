@@ -384,7 +384,7 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
 
                 match dtype {
                     4 => { // INTERFACE descriptor
-                        if offset + 9 <= 256 {
+                        if dlen >= 9 {
                             let iface_class = cfg_buf[offset + 5];
                             let iface_subclass = cfg_buf[offset + 6];
                             let iface_protocol = cfg_buf[offset + 7];
