@@ -109,6 +109,27 @@ static CTRL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
+
+    // Phase 1: Immediate poll — catches EHCI devices and xHCI devices
+    // that were ready right after controller reset.
+    poll_usb();
+
+    // Phase 2: Delayed re-poll for xHCI devices.
+    // After HCRST (controller reset) the xHCI ports need time to
+    // re-negotiate SuperSpeed / HighSpeed links (typically 1-2 s).
+    // A second poll after a spin delay catches devices that weren't
+    // ready during the first poll.
+    for _ in 0..3_000_000 {
+        core::hint::spin_loop();
+    }
+    if poll_usb() {
+        return;
+    }
+
+    // Phase 3: One more attempt for stubborn controllers/firmware.
+    for _ in 0..3_000_000 {
+        core::hint::spin_loop();
+    }
     poll_usb();
 }
 
@@ -276,6 +297,8 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
     let dev_class;
     let dev_subclass;
     let dev_protocol;
+    let bulk_out_ep: u8;
+    let bulk_in_ep: u8;
     {
         let mut xhis = XHCI_CONTROLLERS.lock();
         let xhci = xhis[ctrl_index].as_mut();
@@ -289,7 +312,9 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
         // Step 2: Address device (assigns address, sets up EP0)
         if xhci.address_device(slot_id).is_err() { return; }
 
-        // Step 3: Get device descriptor via control transfer
+        // Step 3: Get device descriptor via control transfer.
+        // Fix: the device descriptor bDeviceClass is at offset 4,
+        // not offset 12 (the old code read bcdDevice instead).
         let mut desc_buf = [0u8; 64];
         let setup = UsbSetupPacket {
             bm_request_type: 0x80,
@@ -299,25 +324,113 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             w_length: 64,
         };
         if xhci.control_transfer(slot_id, &setup, &mut desc_buf).is_err() { return; }
-        dev_class = desc_buf[12];
-        dev_subclass = desc_buf[13];
-        dev_protocol = desc_buf[14];
-        if dev_class != 0x08 { return; } // not mass storage
+        dev_class = desc_buf[4];   // bDeviceClass    (was offset 12 — bug)
+        dev_subclass = desc_buf[5]; // bDeviceSubClass  (was offset 13)
+        dev_protocol = desc_buf[6]; // bDeviceProtocol  (was offset 14)
+        let num_cfgs = desc_buf[17]; // bNumConfigurations
+
+        // Mass-storage check: many USB flash drives report bDeviceClass=0x00
+        // and specify the Mass-Storage class at the interface level.
+        // Accept devices that are MSC at device-level OR have at least one
+        // configuration (interface-level class is checked after CONFIG read).
+        if dev_class != 0x08 && num_cfgs == 0 { return; }
 
         // Set configuration (configuration value = 1)
-        let setup = UsbSetupPacket {
+        let xptr: *mut XhciController = xhci as *mut XhciController;
+        let setup_cfg = UsbSetupPacket {
             bm_request_type: 0x00,
             b_request: 9, // SET_CONFIGURATION
             w_value: 1,
             w_index: 0,
             w_length: 0,
         };
-        let xptr: *mut XhciController = xhci as *mut XhciController;
-        if unsafe { (*xptr).control_transfer(slot_id, &setup, &mut []) }.is_err() { return; }
+        if unsafe { (*xptr).control_transfer(slot_id, &setup_cfg, &mut []) }.is_err() { return; }
 
-        // Configure bulk endpoints
-        if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x02, 512) }.is_err() { return; }
-        if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x82, 512) }.is_err() { return; }
+        // Step 4: Read configuration descriptor to discover interface class
+        // and endpoint addresses (instead of hardcoding 0x02/0x82).
+        let mut cfg_buf = [0u8; 256];
+        let setup_cfg_read = UsbSetupPacket {
+            bm_request_type: 0x80,
+            b_request: 6, // GET_DESCRIPTOR
+            w_value: (2u16) << 8, // CONFIGURATION descriptor, index 0
+            w_index: 0,
+            w_length: 256,
+        };
+        if unsafe { (*xptr).control_transfer(slot_id, &setup_cfg_read, &mut cfg_buf) }.is_err() {
+            // Fall back to device-level class check if CONFIG read fails
+            if dev_class != 0x08 { return; }
+            // else use hardcoded endpoints as last resort
+            bulk_out_ep = 0x02;
+            bulk_in_ep = 0x82;
+        } else {
+            // Parse configuration descriptor (header is 9 bytes)
+            let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
+            let mut offset: usize = 9; // skip config header
+            let mut iface_class_ok = false;
+            let mut found_out = None;
+            let mut found_in = None;
+
+            while offset < total_len.min(256) && offset + 2 <= 256 {
+                let dlen = cfg_buf[offset] as usize;
+                let dtype = cfg_buf[offset + 1];
+                if dlen < 2 { break; }
+
+                match dtype {
+                    4 => { // INTERFACE descriptor
+                        if offset + 9 <= 256 {
+                            let iface_class = cfg_buf[offset + 5];
+                            let iface_subclass = cfg_buf[offset + 6];
+                            let iface_protocol = cfg_buf[offset + 7];
+                            if iface_class == 0x08 {
+                                // Mass Storage interface with SCSI/BOT
+                                iface_class_ok = true;
+                                klog_fmt!("xHCI: MSC iface class={:02X} sub={:02X} prot={:02X}\n",
+                                    iface_class, iface_subclass, iface_protocol);
+                            }
+                        }
+                    }
+                    5 => { // ENDPOINT descriptor
+                        if offset + 7 <= 256 {
+                            let ep_addr = cfg_buf[offset + 2];
+                            let ep_attr = cfg_buf[offset + 3];
+                            let xfer_type = ep_attr & 0x03;
+                            let mps = u16::from_le_bytes([cfg_buf[offset + 4], cfg_buf[offset + 5]]) & 0x07FF;
+                            if xfer_type == 2 { // Bulk
+                                if ep_addr & 0x80 != 0 {
+                                    found_in = Some(ep_addr);
+                                } else {
+                                    found_out = Some(ep_addr);
+                                }
+                                klog_fmt!("xHCI: bulk EP addr=0x{:02X} mps={}\n", ep_addr, mps);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                offset += dlen;
+            }
+
+            // If device class wasn't 0x08, check interface class
+            if dev_class != 0x08 && !iface_class_ok {
+                klog_fmt!("xHCI: not a mass-storage device (dev_class={:02X}, iface_msc={})\n",
+                    dev_class, iface_class_ok);
+                return;
+            }
+
+            bulk_out_ep = found_out.unwrap_or(0x02);
+            bulk_in_ep = found_in.unwrap_or(0x82);
+        }
+
+        // Configure bulk endpoints with dynamically discovered addresses
+        let xptr2: *mut XhciController = xhci as *mut XhciController;
+        if unsafe { (*xptr2).configure_endpoint_bulk(slot_id, bulk_out_ep, 512) }.is_err() {
+            klog_fmt!("xHCI: configure bulk OUT 0x{:02X} failed\n", bulk_out_ep);
+            return;
+        }
+        if unsafe { (*xptr2).configure_endpoint_bulk(slot_id, bulk_in_ep, 512) }.is_err() {
+            klog_fmt!("xHCI: configure bulk IN 0x{:02X} failed\n", bulk_in_ep);
+            return;
+        }
 
         // Update the device entry
         if let Some(dev) = xhci.devices_mut().get_mut(dev_idx) {
@@ -325,6 +438,9 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             dev.device_subclass = dev_subclass;
             dev.device_protocol = dev_protocol;
         }
+
+        klog_fmt!("xHCI: device enumerated slot={} class={:02X} ep_out=0x{:02X} ep_in=0x{:02X}\n",
+            slot_id, dev_class, bulk_out_ep, bulk_in_ep);
     } // Lock is dropped here
 
     // Phase B: Build block device and mount (no lock held — FatFileSystem
@@ -375,7 +491,7 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
     }
 
     let bdev = XhciBlockDev {
-        slot_id, bulk_out: 0x02, bulk_in: 0x82,
+        slot_id, bulk_out: bulk_out_ep, bulk_in: bulk_in_ep,
         block_size: 512, total_blocks: 0, tag: 1,
         ctrl_index,
     };

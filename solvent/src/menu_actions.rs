@@ -192,13 +192,27 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
 
 /// Open the interactive explorer file manager window.
 fn open_explorer_window(rt: &mut RuntimeState) {
-    // If already open, just focus it
-    if let Some(ref explorer) = rt.explorer {
+    // If already open, just focus it and refresh sidebar
+    if let Some(ref mut explorer) = rt.explorer {
         if let Some(id) = explorer.window_id {
+            // Poll USB to pick up newly inserted drives since last open
+            let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
+            if let Some(f) = poll_fn {
+                let _ = f();
+            }
+            explorer.refresh_sidebar();
             rt.desktop.wm.raise_to_top(id);
+            rt.explorer_dirty = true;
             rt.frame_due = true;
         }
         return;
+    }
+    // Poll USB before creating the explorer so that USB drives
+    // detected after boot (e.g. slow xHCI re-enumeration) are
+    // visible in the sidebar immediately.
+    let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
+    if let Some(f) = poll_fn {
+        let _ = f();
     }
     let win_w = 640;
     let win_h = 400;
@@ -208,6 +222,9 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     );
     let mut explorer = crate::explorer::ExplorerContext::new();
     explorer.window_id = Some(id);
+    // sidebar is populated from get_usb_drives() inside ExplorerContext::new(),
+    // but we refresh after the explicit poll so the latest USB discovery is captured.
+    explorer.refresh_sidebar();
     explorer.navigate_to("/");
     {
         let window = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id);

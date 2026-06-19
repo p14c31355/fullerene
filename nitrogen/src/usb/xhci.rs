@@ -387,7 +387,9 @@ impl XhciController {
         // >1 second; Linux waits ~1.2 s before detecting SuperSpeed devices.
         // A generous spin delay here avoids the first poll_usb() finding
         // all ports in Rx.Detect (PLS=5).
-        for _ in 0..3_000_000 {
+        // Extended from 3M to 6M iterations to cover slow USB3/USB2 fallback
+        // on laptops where firmware-speed re‑negotiation runs longer.
+        for _ in 0..6_000_000 {
             crate::port::PortWriter::new(0x80).write_safe(0u8);
         }
 
