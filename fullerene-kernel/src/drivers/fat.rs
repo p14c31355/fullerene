@@ -208,6 +208,7 @@ struct ExFatDirEntry {
 
 // File entry type codes
 const EXFAT_ENTRY_FILE_INFO: u8 = 0x85;    // file info (name follows)
+const EXFAT_ENTRY_STREAM_EXT: u8 = 0xC0;   // stream extension (contains file size)
 const EXFAT_ENTRY_FILE_NAME: u8 = 0xC1;    // file name (continued)
 const EXFAT_ENTRY_UP_CASE: u8 = 0x81;      // up-case table (root dir only)
 const EXFAT_ENTRY_BITMAP: u8 = 0x81;       // allocation bitmap (root dir only)
@@ -677,7 +678,15 @@ impl FatFileSystem {
                 let entry_type = self.sector_buf[buf_off];
 
                 if entry_type == 0 {
-                    // End of directory
+                    // End of directory — flush last entry before returning
+                    if in_entry && !current_name.is_empty() {
+                        let name = utf16le_to_string(&current_name);
+                        entries.push(VNode {
+                            name,
+                            size: current_size,
+                            is_dir: current_is_dir,
+                        });
+                    }
                     return Ok(entries);
                 }
 
@@ -693,6 +702,15 @@ impl FatFileSystem {
                     }
 
                     let file_attributes = self.sector_buf[buf_off + 4];
+                    // In exFAT, the file size is stored in the Stream Extension (0xC0),
+                    // not in the File Info (0x85) entry.  Initialize to 0 here; it will
+                    // be populated when we encounter the accompanying 0xC0 entry.
+                    current_size = 0;
+                    current_is_dir = (file_attributes & ATTR_DIRECTORY) != 0;
+                    current_name.clear();
+                    in_entry = true;
+                } else if entry_type == EXFAT_ENTRY_STREAM_EXT && in_entry {
+                    // Stream Extension: bytes 24-31 hold the data length (file size)
                     let sz = u64::from_le_bytes([
                         self.sector_buf[buf_off + 24], self.sector_buf[buf_off + 25],
                         self.sector_buf[buf_off + 26], self.sector_buf[buf_off + 27],
@@ -700,9 +718,6 @@ impl FatFileSystem {
                         self.sector_buf[buf_off + 30], self.sector_buf[buf_off + 31],
                     ]);
                     current_size = sz;
-                    current_is_dir = (file_attributes & ATTR_DIRECTORY) != 0;
-                    current_name.clear();
-                    in_entry = true;
                 } else if entry_type == EXFAT_ENTRY_FILE_NAME && in_entry {
                     for i in 0..15 {
                         let lo = self.sector_buf[buf_off + 2 + i * 2] as u16;
@@ -732,6 +747,16 @@ impl FatFileSystem {
                 Ok(next) if !Self::is_end_of_chain(next) => cluster = next,
                 _ => break,
             }
+        }
+
+        // Flush last pending entry if we exit via end-of-chain
+        if in_entry && !current_name.is_empty() {
+            let name = utf16le_to_string(&current_name);
+            entries.push(VNode {
+                name,
+                size: current_size,
+                is_dir: current_is_dir,
+            });
         }
 
         Ok(entries)
@@ -886,16 +911,22 @@ fn name_to_83(name: &str) -> [u8; 11] {
 /// Convert a FAT32 8.3 name (11 bytes) into a display String.
 fn name_from_83(raw: &[u8]) -> String {
     let mut s = String::new();
-    // Base name (bytes 0-7), trim trailing spaces
-    let base = raw.iter().take(8).take_while(|&&b| b != 0x20).copied().collect::<Vec<_>>();
-    // Extension (bytes 8-10), trim trailing spaces
-    let ext = raw.iter().skip(8).take(3).take_while(|&&b| b != 0x20).copied().collect::<Vec<_>>();
-    for &b in &base {
+    // Trim trailing spaces from base name (bytes 0-7)
+    let mut base_len = 8;
+    while base_len > 0 && raw[base_len - 1] == 0x20 {
+        base_len -= 1;
+    }
+    // Trim trailing spaces from extension (bytes 8-10)
+    let mut ext_len = 3;
+    while ext_len > 0 && raw[8 + ext_len - 1] == 0x20 {
+        ext_len -= 1;
+    }
+    for &b in &raw[..base_len] {
         s.push(b as char);
     }
-    if !ext.is_empty() {
+    if ext_len > 0 {
         s.push('.');
-        for &b in &ext {
+        for &b in &raw[8..8 + ext_len] {
             s.push(b as char);
         }
     }
@@ -910,13 +941,13 @@ fn read_lfn_name(lfn_entries: &[[u8; 32]]) -> String {
     // We need logical order: seq 1, seq 2, ..., seq N
     // Just reverse the slice.
     let mut utf16: Vec<u16> = Vec::new();
-    for entry in lfn_entries.iter().rev() {
+    'outer: for entry in lfn_entries.iter().rev() {
         // Characters 1-5 at bytes 1-10 (5 UTF-16LE chars)
         for i in 0..5 {
             let lo = entry[1 + i * 2] as u16;
             let hi = entry[2 + i * 2] as u16;
             let cp = (hi << 8) | lo;
-            if cp == 0 || cp == 0xFFFF { break; }
+            if cp == 0 || cp == 0xFFFF { break 'outer; }
             utf16.push(cp);
         }
         // Characters 6-11 at bytes 14-25 (6 UTF-16LE chars)
@@ -924,7 +955,7 @@ fn read_lfn_name(lfn_entries: &[[u8; 32]]) -> String {
             let lo = entry[14 + i * 2] as u16;
             let hi = entry[15 + i * 2] as u16;
             let cp = (hi << 8) | lo;
-            if cp == 0 || cp == 0xFFFF { break; }
+            if cp == 0 || cp == 0xFFFF { break 'outer; }
             utf16.push(cp);
         }
         // Characters 12-13 at bytes 28-31 (2 UTF-16LE chars)
@@ -932,22 +963,14 @@ fn read_lfn_name(lfn_entries: &[[u8; 32]]) -> String {
             let lo = entry[28 + i * 2] as u16;
             let hi = entry[29 + i * 2] as u16;
             let cp = (hi << 8) | lo;
-            if cp == 0 || cp == 0xFFFF { break; }
+            if cp == 0 || cp == 0xFFFF { break 'outer; }
             utf16.push(cp);
         }
     }
     utf16le_to_string(&utf16)
 }
 
-/// Simplified UTF-16LE to String conversion (ASCII subset, others become '?').
+/// UTF-16LE to String conversion using the standard library.
 fn utf16le_to_string(codepoints: &[u16]) -> String {
-    let mut s = String::new();
-    for &cp in codepoints {
-        if cp <= 0x7F {
-            s.push(cp as u8 as char);
-        } else {
-            s.push('?');
-        }
-    }
-    s
+    String::from_utf16_lossy(codepoints)
 }

@@ -302,7 +302,7 @@ impl EhciController {
                 log::warn!("EHCI: remove_qh exceeded max iterations, possible list corruption");
                 break;
             }
-            let prev_virt = unsafe { (*self.ctx).phys_to_virt(prev_phys) } as *const QueueHead;
+            let prev_virt = unsafe { (*self.ctx).phys_to_virt(prev_phys) } as *mut QueueHead;
             let prev_qh = unsafe { &*prev_virt };
             let next_link = unsafe { core::ptr::read_volatile(&prev_qh.horz_link) };
             let next_phys = (next_link & !0x1F) as u64; // strip type bits, keep alignment
@@ -313,7 +313,7 @@ impl EhciController {
                 let qh_next = unsafe { core::ptr::read_volatile(&qh.horz_link) };
                 unsafe {
                     core::ptr::write_volatile(
-                        &mut (*((*self.ctx).phys_to_virt(prev_phys) as *mut QueueHead)).horz_link,
+                        &mut (*prev_virt).horz_link,
                         qh_next,
                     );
                 }
@@ -557,7 +557,11 @@ impl EhciController {
 
         self.insert_qh(qh_phys);
         let r = self.wait_qtd(qtd, 5_000_000);
-        if r.is_err() { self.remove_qh(qh_phys); return r.map(|_| 0); }
+        if r.is_err() {
+            self.remove_qh(qh_phys);
+            unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
+            return r.map(|_| 0);
+        }
 
         // For IN, copy data back
         if dir == UsbDirection::In {
@@ -567,6 +571,7 @@ impl EhciController {
         }
 
         self.remove_qh(qh_phys);
+        unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
         Ok(len)
     }
 
