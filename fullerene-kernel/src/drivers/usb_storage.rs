@@ -387,7 +387,9 @@ fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
     {
         let mut ehis = EHCI_CONTROLLERS.lock();
         let ehci = ehis[ctrl_index].as_mut();
-        let _ = dev_idx; // keep index for reference
+
+        // Reset qH/qTD pools so control/bulk transfers always have free entries.
+        ehci.reset_pools();
 
         let result = unsafe {
             let p: &mut EhciController = &mut *ehci;
@@ -396,6 +398,12 @@ fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
         };
         dev = match result { Ok(d) => d, Err(_) => return };
         if !dev.is_mass_storage() { return; }
+
+        // Write back enumerated device metadata into the controller's device list
+        // so address / endpoints are available for subsequent bulk transfers.
+        if let Some(slot) = ehci.devices_mut().get_mut(dev_idx) {
+            *slot = dev.clone();
+        }
 
         for ep in &dev.endpoints {
             if ep.xfer_type() != UsbXferType::Bulk { continue; }

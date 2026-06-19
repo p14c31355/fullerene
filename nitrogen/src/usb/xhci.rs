@@ -548,20 +548,20 @@ impl XhciController {
             // No device connected → will retry on next poll
             if portsc & PORTSC_CCS == 0 { continue; }
 
-            // Device connected but port not yet enabled → reset
-            if portsc & PORTSC_PED == 0 {
-                unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PR); }
-                for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                unsafe {
-                    let v = core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10));
-                    core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), v & !PORTSC_PR);
-                }
-                for _ in 0..200_000 {
-                    if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
-                }
-                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
-                    continue;
-                }
+            // Always reset the port when a device is newly detected.
+            // This clears any leftover state (firmware-assigned slot/address)
+            // and ensures clean enumeration from address 0.
+            unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PR); }
+            for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+            unsafe {
+                let v = core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10));
+                core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), v & !PORTSC_PR);
+            }
+            for _ in 0..200_000 {
+                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
+            }
+            if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
+                continue;
             }
 
             let ps = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };

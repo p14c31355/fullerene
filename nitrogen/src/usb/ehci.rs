@@ -631,6 +631,13 @@ impl EhciController {
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
+    /// Reset qTD and qH pool usage counters so control/bulk transfers
+    /// from a new enumeration always have free entries.
+    pub fn reset_pools(&mut self) {
+        self.qtd_pool_used = 0;
+        self.qh_pool_used = 0;
+    }
+
     pub fn read_portsc(&self, port: u32) -> u32 {
         if port >= self.n_ports { return 0xFFFF; }
         let op_base = unsafe { self.mmio_base.add(self.op_offset as usize) };
