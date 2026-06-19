@@ -356,13 +356,15 @@ pub unsafe fn copy_user_string(ptr: u64, max_len: usize) -> Result<alloc::string
     alloc::string::String::from_utf8(s).map_err(|_| EINVAL)
 }
 
-/// Copy data from user space to kernel.
+/// Copy data from user space to kernel (capped to prevent memory-exhaustion DoS).
+const MAX_USER_COPY: usize = 65536;
 pub unsafe fn copy_from_user(buf: u64, count: usize) -> Result<alloc::vec::Vec<u8>, i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    let mut data = alloc::vec::Vec::with_capacity(count);
-    for i in 0..count {
+    let limit = count.min(MAX_USER_COPY);
+    let mut data = alloc::vec::Vec::with_capacity(limit);
+    for i in 0..limit {
         data.push(unsafe { core::ptr::read_volatile((buf as *const u8).add(i)) });
     }
     Ok(data)

@@ -239,7 +239,6 @@ fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), &'static str> {
         total
     };
     let _ = crate::contexts::vfs::close(vfs_fd.fd);
-}
 
     let stat = LinuxStat {
         st_dev: 0,
@@ -442,9 +441,11 @@ pub fn sys_readv(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mut total = 0u64;
     for i in 0..iovcnt {
         let base_ptr = iov + (i * core::mem::size_of::<LinuxIovec>()) as u64;
-        let mut iovec: LinuxIovec = LinuxIovec { iov_base: 0, iov_len: 0 };
-        unsafe { copy_val_to_user(base_ptr, &iovec) }.ok();
-        // Actually read the iovec from user space
+        let iovec_data = match unsafe { copy_from_user(base_ptr, core::mem::size_of::<LinuxIovec>()) } {
+            Ok(d) => d,
+            Err(_) => return if total > 0 { total } else { errno_code(EFAULT) },
+        };
+        let iovec: LinuxIovec = unsafe { core::ptr::read_unaligned(iovec_data.as_ptr() as *const LinuxIovec) };
         if iovec.iov_base == 0 {
             continue;
         }
@@ -466,8 +467,11 @@ pub fn sys_writev(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mut total = 0u64;
     for i in 0..iovcnt {
         let base_ptr = iov + (i * core::mem::size_of::<LinuxIovec>()) as u64;
-        let iovec: LinuxIovec = LinuxIovec { iov_base: 0, iov_len: 0 };
-        unsafe { copy_val_to_user(base_ptr, &iovec) }.ok();
+        let iovec_data = match unsafe { copy_from_user(base_ptr, core::mem::size_of::<LinuxIovec>()) } {
+            Ok(d) => d,
+            Err(_) => return if total > 0 { total } else { errno_code(EFAULT) },
+        };
+        let iovec: LinuxIovec = unsafe { core::ptr::read_unaligned(iovec_data.as_ptr() as *const LinuxIovec) };
         if iovec.iov_base == 0 {
             continue;
         }

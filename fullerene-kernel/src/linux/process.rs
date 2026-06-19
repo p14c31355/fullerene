@@ -13,7 +13,7 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let code = args[0] as i32;
     // Clear child TID if set
     if rt.child_clear_tid != 0 {
-        unsafe { core::ptr::write_volatile(rt.child_clear_tid as *mut i32, 0) };
+        let _ = unsafe { copy_val_to_user(rt.child_clear_tid, &0i32) };
     }
     if let Some(pid) = process::current_pid() {
         process::terminate_process(pid, code);
@@ -377,7 +377,8 @@ pub fn sys_wait4(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if status != 0 {
         // Encode exit status in the format wait4 expects:
         // WIFEXITED = true, WEXITSTATUS = exit_code
-        unsafe { core::ptr::write_volatile(status as *mut i32, (exit_code & 0xff) << 8) };
+        let status_val: i32 = (exit_code & 0xff) << 8;
+        let _ = unsafe { copy_val_to_user(status, &status_val) };
     }
 
     // Remove the child process
