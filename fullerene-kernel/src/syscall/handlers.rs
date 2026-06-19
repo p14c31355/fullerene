@@ -604,9 +604,9 @@ fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> SyscallResult 
         {
             addr_hint as usize
         } else {
-            // For simplicity, allocate at a fixed offset from 0x1_0000_0000_0000
-            // A real implementation would consult VirtualMemoryContext.
-            0x100_0000_0000 + (len * NEXT_HANDLE.load(Ordering::Relaxed) as usize)
+            static NEXT_VADDR: AtomicU64 = AtomicU64::new(0x100_0000_0000);
+            let aligned_len = (len + 4095) & !4095;
+            NEXT_VADDR.fetch_add(aligned_len as u64, Ordering::Relaxed) as usize
         };
 
         let num_pages = (len + 4095) / 4096;
