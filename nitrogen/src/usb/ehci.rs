@@ -280,11 +280,11 @@ impl EhciController {
             core::ptr::write_volatile(&mut self.async_head.horz_link,
                 (qh_phys as u32) | QH_HORZ_TYPE_QH);
         }
-        // Find the last qH before the head loop-back and set its horz_link to new
-        // Actually, simpler: set new's horz_link to head's old next
+        // Convert physical to virtual, then write new qH's horz_link to head's old next
+        let qh_virt = unsafe { (*self.ctx).phys_to_virt(qh_phys) } as *mut QueueHead;
         unsafe {
             core::ptr::write_volatile(
-                &mut (*((qh_phys as usize) as *mut QueueHead)).horz_link,
+                &mut (*qh_virt).horz_link,
                 head_next,
             );
         }
@@ -293,25 +293,27 @@ impl EhciController {
     /// Remove a qH from the async list.
     fn remove_qh(&mut self, qh_phys: u64) {
         // Walk the list from head to find the one pointing to 'qh_phys'
-        let mut prev = self.async_head_phys;
+        let mut prev_phys = self.async_head_phys;
         loop {
-            let prev_qh = unsafe { &*(prev as usize as *const QueueHead) };
+            let prev_virt = unsafe { (*self.ctx).phys_to_virt(prev_phys) } as *const QueueHead;
+            let prev_qh = unsafe { &*prev_virt };
             let next_link = unsafe { core::ptr::read_volatile(&prev_qh.horz_link) };
-            let next_phys = next_link & !0x1F; // strip type bits, keep alignment
-            if next_phys == qh_phys as u32 {
+            let next_phys = (next_link & !0x1F) as u64; // strip type bits, keep alignment
+            if next_phys == qh_phys {
                 // Found it. Point prev to qh's next.
-                let qh = unsafe { &*((qh_phys as usize) as *const QueueHead) };
+                let qh_virt = unsafe { (*self.ctx).phys_to_virt(qh_phys) } as *const QueueHead;
+                let qh = unsafe { &*qh_virt };
                 let qh_next = unsafe { core::ptr::read_volatile(&qh.horz_link) };
                 unsafe {
                     core::ptr::write_volatile(
-                        &mut (*((prev as usize) as *mut QueueHead)).horz_link,
+                        &mut (*((*self.ctx).phys_to_virt(prev_phys) as *mut QueueHead)).horz_link,
                         qh_next,
                     );
                 }
                 return;
             }
-            if next_phys == self.async_head_phys as u32 { break; } // back to head → not found
-            prev = next_phys as u64;
+            if next_phys == self.async_head_phys { break; } // back to head → not found
+            prev_phys = next_phys;
         }
     }
 
@@ -512,8 +514,10 @@ impl EhciController {
         // Allocate qTD
         let (qtd, qtd_phys) = self.alloc_qtd().ok_or("no qTD")?;
 
-        // For OUT, copy data to staging. For IN, read back after.
-        let staging_phys = self.qtd_pool_phys + 128 * 32;
+        // Allocate dedicated staging buffer (qtd_pool only covers one 4KB page).
+        let staging_pages = (len + 4095) / 4096;
+        let staging_phys = unsafe { (*self.ctx).allocate_contiguous_frames(staging_pages) }
+            .map_err(|_| "no staging memory")?;
         let staging_virt = unsafe { (*self.ctx).phys_to_virt(staging_phys) } as *mut u8;
         if dir == UsbDirection::Out {
             unsafe {

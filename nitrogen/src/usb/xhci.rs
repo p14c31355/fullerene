@@ -603,17 +603,28 @@ impl XhciController {
         let is_in = (setup.bm_request_type & 0x80) != 0;
         let data_len = setup.w_length as usize;
 
-        // Extract ep0_ring.phys and ep0_ring.cycle before mutable borrow
-        let (ep0_phys, ep0_cycle, staged) = {
+        // Allocate dedicated staging buffer for data phase.
+        // Control transfers use at most one page (w_length ≤ 4096 typically).
+        let staging_phys = if data_len > 0 {
+            unsafe { (*self.ctx).allocate_contiguous_frames((data_len + 4095) / 4096) }
+                .map_err(|_| "no staging memory")?
+        } else {
+            0
+        };
+        let staging_virt = if staging_phys != 0 {
+            unsafe { (*self.ctx).phys_to_virt(staging_phys) as *mut u8 }
+        } else {
+            core::ptr::null_mut()
+        };
+
+        // Copy OUT data to staging buffer
+        if data_len > 0 && !is_in {
+            unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, data_len); }
+        }
+
+        let ep0_cycle = {
             let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
-            let stage_phys = slot.ep0_ring.phys;
-            let scycle = slot.ep0_ring.cycle;
-            // Copy OUT data to staging page
-            if data_len > 0 && !is_in {
-                let staging = unsafe { (*self.ctx).phys_to_virt(stage_phys) as *mut u8 };
-                unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), staging, data_len.min(4096)); }
-            }
-            (stage_phys, scycle, stage_phys)
+            slot.ep0_ring.cycle
         };
 
         // Setup TRB
@@ -629,8 +640,8 @@ impl XhciController {
 
             if data_len > 0 {
                 let mut d_trb = Trb::new(TRB_DATA, slot.ep0_ring.cycle);
-                d_trb.params[..4].copy_from_slice(&(ep0_phys as u32).to_le_bytes());
-                d_trb.params[4..8].copy_from_slice(&(ep0_phys >> 32).to_le_bytes());
+                d_trb.params[..4].copy_from_slice(&(staging_phys as u32).to_le_bytes());
+                d_trb.params[4..8].copy_from_slice(&(staging_phys >> 32).to_le_bytes());
                 d_trb.status = (data_len as u32) & 0x1FFFF;
                 if is_in { d_trb.flags |= TRB_DIR_IN | TRB_CHAIN; } else { d_trb.flags |= TRB_CHAIN; }
                 slot.ep0_ring.enqueue(d_trb);
@@ -646,9 +657,9 @@ impl XhciController {
         self.doorbell(slot_id, 0);
         self.wait_event(5_000_000)?;
 
+        // Copy IN data from staging buffer back to caller
         if is_in && data_len > 0 {
-            let staging = unsafe { (*self.ctx).phys_to_virt(ep0_phys) as *mut u8 };
-            unsafe { core::ptr::copy_nonoverlapping(staging, buf.as_mut_ptr(), data_len.min(4096)); }
+            unsafe { core::ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), data_len); }
         }
         Ok(data_len)
     }
