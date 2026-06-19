@@ -115,6 +115,11 @@ pub enum SystemError {
     UnknownError = 999,
     FsInvalidFileDescriptor = 8,
     TooManyProcesses = 600,
+    OperationAgain = 11,
+    OperationTimedOut = 110,
+    NoSuchDevice = 19,
+    BadHandle = 104,
+    WouldBlock = 140,
 }
 
 /// Logging trait for system errors with context — used by initializer's HardwareDevice.
