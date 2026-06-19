@@ -603,11 +603,13 @@ impl XhciController {
                 continue;
             }
 
+            const PORTSC_RW1C_MASK: u32 = 0x00FE0000; // bits 17-23 are RW1C (clear-on-write-1)
+
             // Ensure port is powered (some controllers lose PP after HCRST)
             let mut portsc = self.op_read(PORTSC_BASE + port * 0x10);
             if portsc & PORTSC_PP == 0 {
                 log::info!("xHCI: poll_ports port {} — PP=0, attempting to power on", port);
-                self.op_write(PORTSC_BASE + port * 0x10, portsc | PORTSC_PP);
+                self.op_write(PORTSC_BASE + port * 0x10, (portsc & !PORTSC_RW1C_MASK) | PORTSC_PP);
                 for _ in 0..20_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
                 portsc = self.op_read(PORTSC_BASE + port * 0x10);
             }
@@ -621,11 +623,11 @@ impl XhciController {
 
             if portsc & PORTSC_CCS != 0 {
                 log::info!("xHCI: poll_ports port {} — CCS=1, doing port reset", port);
-                self.op_write(PORTSC_BASE + port * 0x10, portsc | PORTSC_PR);
+                self.op_write(PORTSC_BASE + port * 0x10, (portsc & !PORTSC_RW1C_MASK) | PORTSC_PR);
                 for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
                 {
                     let v = self.op_read(PORTSC_BASE + port * 0x10);
-                    self.op_write(PORTSC_BASE + port * 0x10, v & !PORTSC_PR);
+                    self.op_write(PORTSC_BASE + port * 0x10, (v & !PORTSC_RW1C_MASK) & !PORTSC_PR);
                 }
                 for _ in 0..200_000 {
                     if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_PED != 0 { break; }
@@ -636,7 +638,7 @@ impl XhciController {
                 }
             } else if portsc & PORTSC_PP != 0 {
                 log::info!("xHCI: poll_ports port {} — CCS=0 PP=1, trying warm reset", port);
-                self.op_write(PORTSC_BASE + port * 0x10, portsc | PORTSC_WPR);
+                self.op_write(PORTSC_BASE + port * 0x10, (portsc & !PORTSC_RW1C_MASK) | PORTSC_WPR);
                 for _ in 0..200_000 {
                     let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & PORTSC_WPR == 0 { break; }
@@ -717,6 +719,12 @@ impl XhciController {
         let is_in = (setup.bm_request_type & 0x80) != 0;
         let data_len = setup.w_length as usize;
 
+        // Check slot validity first to avoid leaking staging buffer on early return
+        let ep0_cycle = {
+            let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
+            slot.ep0_ring.cycle
+        };
+
         // Allocate dedicated staging buffer for data phase.
         // Control transfers use at most one page (w_length ≤ 4096 typically).
         let staging_phys = if data_len > 0 {
@@ -735,11 +743,6 @@ impl XhciController {
         if data_len > 0 && !is_in {
             unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, data_len); }
         }
-
-        let ep0_cycle = {
-            let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
-            slot.ep0_ring.cycle
-        };
 
         // Setup TRB
         let setup_bytes = unsafe { core::slice::from_raw_parts(setup as *const UsbSetupPacket as *const u8, 8) };
@@ -796,6 +799,16 @@ impl XhciController {
     ) -> Result<usize, &'static str> {
         let len = buf.len().min(65536);
 
+        // Validate slot and ring existence before allocating staging memory
+        let ring_cycle = {
+            let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
+            let ring = match dir {
+                UsbDirection::In => slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?,
+                UsbDirection::Out => slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?,
+            };
+            ring.cycle
+        };
+
         // Allocate a dedicated contiguous-physical staging buffer
         let staging_pages = (len + 4095) / 4096;
         let staging_phys = unsafe { (*self.ctx).allocate_contiguous_frames(staging_pages) }
@@ -806,16 +819,6 @@ impl XhciController {
         if dir == UsbDirection::Out {
             unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len); }
         }
-
-        // Get ring cycle before mutable borrow
-        let ring_cycle = {
-            let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
-            let ring = match dir {
-                UsbDirection::In => slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?,
-                UsbDirection::Out => slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?,
-            };
-            ring.cycle
-        };
 
         // Enqueue TRB on the ring (re-borrow slot mutably)
         if let Some(slot) = self.slots.iter_mut().find(|s| s.slot_id == slot_id) {

@@ -467,10 +467,24 @@ impl FatFileSystem {
                 let entry_type = buf[buf_off];
 
                 if entry_type == 0 {
-                    // end of directory
+                    // end of directory — check last entry before giving up
+                    if in_entry && !name_buf.is_empty() {
+                        let name_str = core::str::from_utf8(&name_buf).unwrap_or("");
+                        if name_str.eq_ignore_ascii_case(target_name) {
+                            return Some((entry_cluster, entry_size as u32, entry_is_dir));
+                        }
+                    }
                     return None;
                 }
                 if entry_type == EXFAT_ENTRY_FILE_INFO {
+                    // Check previous entry's name before starting a new entry
+                    if in_entry && !name_buf.is_empty() {
+                        let name_str = core::str::from_utf8(&name_buf).unwrap_or("");
+                        if name_str.eq_ignore_ascii_case(target_name) {
+                            return Some((entry_cluster, entry_size as u32, entry_is_dir));
+                        }
+                    }
+
                     let attribs = buf[buf_off + 4];
                     let cl = u32::from_le_bytes([
                         buf[buf_off + 20], buf[buf_off + 21],
