@@ -815,7 +815,7 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
     };
 
     thread_process.context.regs[0] = 0;
-    thread_process.context.regs[7] = thread_process.kernel_stack.as_u64();
+    thread_process.context.regs[7] = thread_process.user_stack.as_u64();
     thread_process.context.rip = entry;
 
     let thread_box = Box::new(thread_process);
