@@ -17,6 +17,10 @@ use crate::contexts::kernel;
 // ── Global tables ──────────────────────────────────────────────
 
 /// Global file-descriptor table mapping integer FDs to FileDesc.
+///
+/// NOTE: This is a process-global table.  For proper process isolation,
+/// the FD table should be per-process (stored inside the Process struct)
+/// so that each process has its own private namespace of file descriptors.
 static FD_TABLE: Mutex<BTreeMap<u32, crate::fs::FileDesc>> = Mutex::new(BTreeMap::new());
 static NEXT_FD: Mutex<u32> = Mutex::new(3); // Start after stdin/stdout/stderr
 
@@ -25,6 +29,12 @@ static NEXT_FD: Mutex<u32> = Mutex::new(3); // Start after stdin/stdout/stderr
 /// Every kernel object (event, thread, window, device, channel, pipe, timer)
 /// that is exposed to user-space gets a unique [`Handle`] allocated here.
 /// Handles are never re-used within a boot cycle.
+///
+/// NOTE: This is a global table — any process can access any handle by
+/// guessing/brute-forcing the integer ID.  For proper process isolation,
+/// handles should be per-process or access should be gated by ownership
+/// checks (e.g. storing the owning PID in each object and verifying on
+/// access).
 static HANDLE_TABLE: Mutex<BTreeMap<u64, KernelObject>> = Mutex::new(BTreeMap::new());
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1000);
 
@@ -44,19 +54,30 @@ enum KernelObject {
 
 // ── Per-object state types ─────────────────────────────────────
 
-struct EventState {
+/// Inner state shared between duplicated event handles.
+struct EventInner {
     signaled: bool,
     manual_reset: bool,
-    /// PIDs blocked on this event.
     waiters: Vec<process::ProcessId>,
 }
 
-struct ThreadState {
+struct EventState {
+    /// Shared inner state so duplicated handles see the same event.
+    inner: alloc::sync::Arc<Mutex<EventInner>>,
+}
+
+/// Inner state shared between duplicated thread handles.
+struct ThreadInner {
     tid: u64,
     pid: process::ProcessId,
     detached: bool,
     exit_code: Option<i32>,
     waiters: Vec<process::ProcessId>,
+}
+
+struct ThreadState {
+    /// Shared inner state so duplicated handles see the same thread state.
+    inner: alloc::sync::Arc<Mutex<ThreadInner>>,
 }
 
 struct WindowState {
@@ -711,11 +732,12 @@ const EVENT_MANUAL_RESET: u64 = 1;
 
 fn syscall_create_event(flags: u64) -> SyscallResult {
     let manual_reset = (flags & EVENT_MANUAL_RESET) != 0;
-    let state = EventState {
+    let inner = alloc::sync::Arc::new(Mutex::new(EventInner {
         signaled: false,
         manual_reset,
         waiters: Vec::new(),
-    };
+    }));
+    let state = EventState { inner };
     let handle = alloc_handle(KernelObject::Event(state));
 
     // Also push the event into the global EventContext system queue so
@@ -736,9 +758,10 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
             KernelObject::Event(e) => e,
             _ => return Err(SyscallError::BadHandle),
         };
-        if event.signaled {
-            if !event.manual_reset {
-                event.signaled = false;
+        let mut inner = event.inner.lock();
+        if inner.signaled {
+            if !inner.manual_reset {
+                inner.signaled = false;
             }
             Ok(true)
         } else {
@@ -749,7 +772,7 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
             }
             // Register the current PID as a waiter and block.
             let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-            event.waiters.push(pid);
+            inner.waiters.push(pid);
             Ok(false)
         }
     })?;
@@ -776,9 +799,10 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
                 KernelObject::Event(e) => e,
                 _ => return Err(SyscallError::BadHandle),
             };
-            if event.signaled {
-                if !event.manual_reset {
-                    event.signaled = false;
+            let mut inner = event.inner.lock();
+            if inner.signaled {
+                if !inner.manual_reset {
+                    inner.signaled = false;
                 }
                 Ok(0)
             } else {
@@ -794,8 +818,9 @@ fn syscall_signal_event(handle: u64) -> SyscallResult {
             KernelObject::Event(e) => e,
             _ => return Err(SyscallError::BadHandle),
         };
-        event.signaled = true;
-        let waiters = core::mem::take(&mut event.waiters);
+        let mut inner = event.inner.lock();
+        inner.signaled = true;
+        let waiters = core::mem::take(&mut inner.waiters);
         Ok(waiters)
     })?;
 
@@ -841,6 +866,12 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
 
     // Threads share the parent's address space → fork a lightweight process
     // that uses the same page table.
+    //
+    // NOTE: The child process shares the parent's page table.  If the parent
+    // terminates first and deallocates the PML4 frame, this thread will fault
+    // when scheduled.  A proper fix requires reference-counting the page
+    // table (e.g. Arc) or terminating all child threads before deallocating
+    // the parent's page table.
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
     let (parent_pt_phys, parent_context) = {
@@ -891,13 +922,14 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
         })?;
 
     // Allocate a thread handle for join/detach
-    let tstate = ThreadState {
+    let inner = alloc::sync::Arc::new(Mutex::new(ThreadInner {
         tid: child_pid.0,
         pid: child_pid,
         detached: false,
         exit_code: None,
         waiters: Vec::new(),
-    };
+    }));
+    let tstate = ThreadState { inner };
     let handle = alloc_handle(KernelObject::Thread(tstate));
 
     Ok(handle)
@@ -910,11 +942,12 @@ fn syscall_join_thread(handle: u64) -> SyscallResult {
             KernelObject::Thread(t) => t,
             _ => return Err(SyscallError::BadHandle),
         };
-        if let Some(exit_code) = thread.exit_code {
+        let mut inner = thread.inner.lock();
+        if let Some(exit_code) = inner.exit_code {
             Ok(Some(exit_code))
         } else {
             let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-            thread.waiters.push(pid);
+            inner.waiters.push(pid);
             Ok(None)
         }
     })?;
@@ -929,7 +962,8 @@ fn syscall_join_thread(handle: u64) -> SyscallResult {
                     KernelObject::Thread(t) => t,
                     _ => return Err(SyscallError::BadHandle),
                 };
-                thread.exit_code.map(|ec| ec as u64).ok_or(SyscallError::NoSuchProcess)
+                let inner = thread.inner.lock();
+                inner.exit_code.map(|ec| ec as u64).ok_or(SyscallError::NoSuchProcess)
             })
         }
     }
@@ -941,7 +975,8 @@ fn syscall_detach_thread(handle: u64) -> SyscallResult {
             KernelObject::Thread(t) => t,
             _ => return Err(SyscallError::BadHandle),
         };
-        thread.detached = true;
+        let mut inner = thread.inner.lock();
+        inner.detached = true;
         Ok(0)
     })
 }
@@ -949,17 +984,18 @@ fn syscall_detach_thread(handle: u64) -> SyscallResult {
 fn syscall_exit_thread(exit_code: i32) -> SyscallResult {
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    // Update the thread handle if it exists
+    // Update all matching thread handles (covers duplicated handles too).
     let waiters: Vec<process::ProcessId> = {
         let mut table = HANDLE_TABLE.lock();
         let mut found_waiters: Vec<process::ProcessId> = Vec::new();
         for (_h, obj) in table.iter_mut() {
             if let KernelObject::Thread(t) = obj {
-                if t.pid == pid {
-                    t.exit_code = Some(exit_code);
-                    let mut taken = core::mem::take(&mut t.waiters);
+                let mut inner = t.inner.lock();
+                if inner.pid == pid {
+                    inner.exit_code = Some(exit_code);
+                    let mut taken = core::mem::take(&mut inner.waiters);
                     found_waiters.append(&mut taken);
-                    break;
+                    // Don't break — update all duplicated handles.
                 }
             }
         }
@@ -1133,9 +1169,9 @@ fn syscall_enumerate_devices(
             }
         };
 
-        // Serialize device info: [class_tag(u32), vendor(u32), device(u32), id_len(u8), id...]
+        // Serialize device info: each descriptor is 16 bytes.
         let mut offset = 0;
-        for dev in devices.iter().take(buf_size / 32) {
+        for _dev in devices.iter().take(buf_size / 16) {
             if offset + 16 > buf_size {
                 break;
             }
@@ -1199,7 +1235,7 @@ fn syscall_channel_send(handle: u64, data_ptr: *const u8, data_size: u64) -> Sys
         return Err(SyscallError::InvalidArgument);
     }
 
-petroleum::validate_user_buffer(data_ptr as usize, size, false)?;
+    petroleum::validate_user_buffer(data_ptr as usize, size, false)?;
     let data = unsafe { user_slice(data_ptr, size, false) }
         .map_err(|_| SyscallError::InvalidArgument)?;
 
@@ -1323,26 +1359,22 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
     let mut table = HANDLE_TABLE.lock();
     if let Some(obj) = table.get(&handle) {
         let new_h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-        // Shallow duplicate: clone the KernelObject.  This is not a deep copy for
-        // complex objects (channel messages are lost, etc.) — a real implementation
-        // would ref-count.
+        // Shallow duplicate: clone the KernelObject handle.
+        // Objects with Arc-wrapped inner state (Event, Thread, Channel, Pipe)
+        // share the underlying state so duplicated handles observe the same
+        // object.  Objects without shared state (Window, Device) get a
+        // shallow copy of their state.
         match obj {
             KernelObject::Event(e) => {
                 let copy = EventState {
-                    signaled: e.signaled,
-                    manual_reset: e.manual_reset,
-                    waiters: Vec::new(),
+                    inner: alloc::sync::Arc::clone(&e.inner),
                 };
                 table.insert(new_h, KernelObject::Event(copy));
                 Ok(new_h)
             }
             KernelObject::Thread(t) => {
                 let copy = ThreadState {
-                    tid: t.tid,
-                    pid: t.pid,
-                    detached: t.detached,
-                    exit_code: t.exit_code,
-                    waiters: Vec::new(),
+                    inner: alloc::sync::Arc::clone(&t.inner),
                 };
                 table.insert(new_h, KernelObject::Thread(copy));
                 Ok(new_h)
