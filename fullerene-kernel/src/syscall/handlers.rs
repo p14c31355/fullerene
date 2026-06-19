@@ -929,8 +929,9 @@ fn syscall_create_window(
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
     let window_index: usize = match kernel::with_kernel_mut(|k| {
+        let win_id = k.window.next_window_id();
         let win = crate::contexts::window::Window::new(
-            crate::contexts::window::WindowId(pid.0),
+            win_id,
             "New Window",
             x,
             y,
