@@ -769,10 +769,10 @@ impl XhciController {
         }
 
         self.doorbell(slot_id, 0);
-        self.wait_event(5_000_000)?;
+        let res = self.wait_event(5_000_000);
 
         // Copy IN data from staging buffer back to caller
-        if is_in && data_len > 0 {
+        if res.is_ok() && is_in && data_len > 0 {
             unsafe { core::ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), data_len); }
         }
 
@@ -781,7 +781,7 @@ impl XhciController {
             let staging_pages = (data_len + 4095) / 4096;
             unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
         }
-        Ok(data_len)
+        res.map(|_| data_len)
     }
 
     // ── Bulk transfer ─────────────────────────────────────────
@@ -837,14 +837,14 @@ impl XhciController {
         let is_in = (endpoint & 0x80) != 0;
         let dci = ep_num * 2 + if is_in { 1 } else { 0 };
         self.doorbell(slot_id, dci);
-        self.wait_event(5_000_000)?;
+        let res = self.wait_event(5_000_000);
 
-        if dir == UsbDirection::In {
+        if res.is_ok() && dir == UsbDirection::In {
             unsafe { core::ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
         }
 
         // Free staging buffer
         unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
-        Ok(len)
+        res.map(|_| len)
     }
 }
