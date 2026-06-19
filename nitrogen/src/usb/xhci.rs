@@ -225,6 +225,8 @@ pub struct XhciController {
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
     n_slots_used: u32,
+    /// Did legacy handoff succeed?
+    legacy_handoff_done: bool,
 }
 
 struct SlotState {
@@ -266,9 +268,9 @@ impl XhciController {
         }
 
         // ── xHCI Legacy Support Handoff ────────────────────────
+        let mut legacy_found = false;
         {
             let mut ec_off = (((hcc1 >> 16) & 0xFFFF) as usize) * 4;
-            let mut legacy_found = false;
             while ec_off != 0 && ec_off < 0x10000 {
                 let ec_id = unsafe { core::ptr::read_volatile(caps.add(ec_off) as *const u8) };
                 let ec_next_raw = unsafe { core::ptr::read_volatile(caps.add(ec_off + 1) as *const u8) };
@@ -395,6 +397,7 @@ impl XhciController {
             ports_done: 0, devices: Vec::new(),
             ctx: ctx as *const dyn DriverContext,
             n_slots_used: 0,
+            legacy_handoff_done: legacy_found,
         })
     }
 
@@ -654,9 +657,20 @@ impl XhciController {
         if port >= self.n_ports { return 0xFFFF; }
         unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) }
     }
+    /// Read an operational register.
+    pub fn read_op_reg(&self, offset: u32) -> u32 {
+        unsafe { core::ptr::read_volatile(self.op(offset as u32)) }
+    }
     pub fn slot_id_for_device(&self, dev_idx: usize) -> Option<u32> {
         self.slots.get(dev_idx).map(|s| s.slot_id)
     }
+    pub fn is_running(&self) -> bool {
+        let sts = self.read_op_reg(0x04); // USBSTS
+        (sts & 1) == 0 // HCHalted = 0 → running
+    }
+    pub fn max_slots(&self) -> u32 { self.max_slots }
+    pub fn ppc_enabled(&self) -> bool { self.ppc }
+    pub fn legacy_handoff_done(&self) -> bool { self.legacy_handoff_done }
 
     // ── Control transfer ──────────────────────────────────────
 

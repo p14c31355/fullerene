@@ -202,22 +202,25 @@ pub fn poll_usb() -> bool {
         for (ctrl_idx, xhci_box) in xhis.iter_mut().enumerate() {
             let xhci = xhci_box.as_mut();
             let old = xhci.devices().len();
+
             let hcs1 = xhci.read_cap(4);
-            klog_fmt!("xHCI HCSPARAMS1=0x{:08X} (slots={} ports={} PPC={})\n",
-                hcs1, hcs1 & 0xFF, (hcs1>>24)&0xFF, (hcs1>>4)&1);
-            let ps0 = xhci.read_portsc(0);
-            klog_fmt!("xHCI PORTSC[0] after init: 0x{:08X} (PP={} CCS={})\n",
-                ps0, (ps0>>9)&1, ps0&1);
             let hcc1 = xhci.read_cap(0x10);
-            klog_fmt!("xHCI HCCPARAMS1=0x{:08X} (64bit={} xECP=0x{:x})\n",
-                hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
-            for p in 0..3.min(xhci.n_ports()) {
+            let usbcmd = xhci.read_op_reg(0x00);
+            let usbsts = xhci.read_op_reg(0x04);
+            klog_fmt!("xHCI HCSPARAMS1=0x{:08X} HCCPARAMS1=0x{:08X}\n", hcs1, hcc1);
+            klog_fmt!("xHCI USBCMD=0x{:08X} USBSTS=0x{:08X} running={} slots={} ports={} ppc={} legacy={}\n",
+                usbcmd, usbsts, xhci.is_running(), hcs1 & 0xFF, (hcs1>>24)&0xFF,
+                xhci.ppc_enabled(), xhci.legacy_handoff_done());
+
+            for p in 0..xhci.n_ports().min(8) {
                 let ps = xhci.read_portsc(p);
                 if ps != 0xFFFF {
-                    klog_fmt!("xHCI PORTSC[{}]: 0x{:08X} (CCS={} PED={} PP={} speed={})\n",
-                        p, ps, (ps>>0)&1, (ps>>1)&1, (ps>>9)&1, (ps>>10)&0xF);
+                    klog_fmt!("xHCI PORTSC[{}]=0x{:08X} CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={}\n",
+                        p, ps, ps&1, (ps>>1)&1, (ps>>4)&1, (ps>>9)&1,
+                        (ps>>5)&0xF, (ps>>20)&1, (ps>>10)&0xF);
                 }
             }
+
             xhci.poll_ports();
             let new = xhci.devices().len();
             klog_fmt!("xHCI poll: {} ports old={} new={}\n", xhci.n_ports(), old, new);
