@@ -422,12 +422,12 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
         }
 
         // Configure bulk endpoints with dynamically discovered addresses
-        let xptr2: *mut XhciController = xhci as *mut XhciController;
-        if unsafe { (*xptr2).configure_endpoint_bulk(slot_id, bulk_out_ep, 512) }.is_err() {
+        // Configure bulk endpoints with dynamically discovered addresses
+        if xhci.configure_endpoint_bulk(slot_id, bulk_out_ep, 512).is_err() {
             klog_fmt!("xHCI: configure bulk OUT 0x{:02X} failed\n", bulk_out_ep);
             return;
         }
-        if unsafe { (*xptr2).configure_endpoint_bulk(slot_id, bulk_in_ep, 512) }.is_err() {
+        if xhci.configure_endpoint_bulk(slot_id, bulk_in_ep, 512).is_err() {
             klog_fmt!("xHCI: configure bulk IN 0x{:02X} failed\n", bulk_in_ep);
             return;
         }
