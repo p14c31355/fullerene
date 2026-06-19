@@ -114,59 +114,50 @@ pub fn init() {
 
 fn init_controllers() {
     if CTRL_INITIALIZED.swap(true, Ordering::SeqCst) { return; }
-    use nitrogen::pci::PciConfigSpace;
+    use nitrogen::pci::PciScanner;
     use crate::driver_context_impl::KernelDriverContext;
 
     let mut ehis = EHCI_CONTROLLERS.lock();
     let mut xhis = XHCI_CONTROLLERS.lock();
 
-    for bus in 0u8..=0 {
-        for slot in 0u8..32 {
-            for func in 0u8..8 {
-                let cfg = match PciConfigSpace::read_from_device(bus, slot, func) {
-                    Some(c) => c,
-                    None => { if func == 0 { break; } continue; }
-                };
-                if cfg.class_code != 0x0C || cfg.subclass != 0x03 { continue; }
+    // Use the comprehensive PCI scanner that handles multi-bus topologies
+    // and avoids probing non-existent buses (which can hang real hardware).
+    let mut scanner = PciScanner::new();
+    let _ = scanner.scan_all_buses();
+    for dev in scanner.get_devices() {
+        if dev.class_code != 0x0C || dev.subclass != 0x03 { continue; }
 
-                // Read BAR0 (MMIO base). Handle both 32-bit and 64-bit BARs.
-                let bar0_raw = PciConfigSpace::read_config_dword(bus, slot, func, 0x10);
-                if bar0_raw & 1 != 0 { continue; } // Skip I/O space BARs
-                let bar_type = (bar0_raw >> 1) & 3;
-                let mmio_base = if bar_type == 2 {
-                    // 64-bit MMIO BAR: read upper dword at offset 0x14
-                    let low = bar0_raw & 0xFFFF_FFF0;
-                    let high = PciConfigSpace::read_config_dword(bus, slot, func, 0x14);
-                    (low as u64) | ((high as u64) << 32)
-                } else {
-                    (bar0_raw & 0xFFFF_FFF0) as u64
-                };
-                if mmio_base == 0 { continue; }
+        // Read BAR0 via the PCI device helper (handles 32/64-bit BARs).
+        let mmio_base = match dev.read_bar(0) {
+            Some(addr) => addr,
+            None => { continue; }
+        };
 
-                let mmio_virt = KernelDriverContext.phys_to_virt(mmio_base) as *mut u8;
-                if mmio_virt.is_null() { continue; }
+        let mmio_virt = KernelDriverContext.phys_to_virt(mmio_base) as *mut u8;
+        if mmio_virt.is_null() { continue; }
 
-                PciConfigSpace::write_config_word_raw(bus, slot, func, 4,
-                    PciConfigSpace::read_config_word(bus, slot, func, 4) | 0x06);
+        // Enable memory space + bus mastering
+        dev.enable_memory_access();
 
-                match cfg.prog_if {
-                    0x20 => { // EHCI
-                        if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
-                            ehis.push(Box::new(hc));
-                            klog_fmt!("USB: EHCI at {}:{}.{}\n", bus, slot, func);
-                        }
-                    }
-                    0x30 => { // xHCI
-                        if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
-                            xhis.push(Box::new(hc));
-                             klog_fmt!("USB: xHCI at {}:{}.{}\n", bus, slot, func);
-                         } else {
-                             klog_fmt!("USB: xHCI at {}:{}.{} FAILED init\n", bus, slot, func);
-                        }
-                    }
-                    _ => {}
+        // Determine prog_if by reading it directly (PciDevice doesn't cache it).
+        let prog_if = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, dev.function, 0x09);
+
+        match prog_if {
+            0x20 => { // EHCI
+                if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
+                    ehis.push(Box::new(hc));
+                    klog_fmt!("USB: EHCI at {}:{}.{}\n", dev.bus, dev.device, dev.function);
                 }
             }
+            0x30 => { // xHCI
+                if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
+                    xhis.push(Box::new(hc));
+                    klog_fmt!("USB: xHCI at {}:{}.{}\n", dev.bus, dev.device, dev.function);
+                } else {
+                    klog_fmt!("USB: xHCI at {}:{}.{} FAILED init\n", dev.bus, dev.device, dev.function);
+                }
+            }
+            _ => {}
         }
     }
 }
