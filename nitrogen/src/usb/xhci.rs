@@ -314,31 +314,21 @@ impl XhciController {
         log::info!("xHCI: USBCMD=0x{:08X} USBSTS=0x{:08X} HCHalted={} already_running={}",
             usbcmd, sts, (sts>>0)&1, already_running);
 
-        if already_running {
-            // Firmware left the controller running with devices already
-            // enumerated (e.g. the boot device).  Do NOT reset or stop:
-            // doing so would lose port state and some hardware never
-            // re-detects the device after a stop/start cycle.
-            //
-            // We just slot our own command ring, event ring, and DCBAA
-            // in place while the controller stays running.  The command
-            // ring is idle after ExitBootServices, so CRR should be 0
-            // and we can safely write CRCR.
-            log::info!("xHCI: already running — taking over without reset");
-        } else {
-            log::info!("xHCI: cold start — performing HCRST");
-            unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_HCRST); }
-            for _ in 0..200_000 {
-                if unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) } & CMD_HCRST == 0 { break; }
-            }
-            let usbcmd_after = unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) };
-            log::info!("xHCI: after HCRST wait, USBCMD=0x{:08X}", usbcmd_after);
-            for _ in 0..200_000 {
-                if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH != 0 { break; }
-            }
-            let sts_after = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
-            log::info!("xHCI: after HCH wait, USBSTS=0x{:08X} HCHalted={}", sts_after, (sts_after>>0)&1);
+        // Always perform a full HCRST, regardless of firmware state.
+        // Linux does the same: it resets the controller and re-enumerates
+        // from scratch.  The firmware's configuration is not reused.
+        log::info!("xHCI: performing HCRST (firmware left running={})", already_running);
+        unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_HCRST); }
+        for _ in 0..200_000 {
+            if unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) } & CMD_HCRST == 0 { break; }
         }
+        let usbcmd_after = unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) };
+        log::info!("xHCI: after HCRST wait, USBCMD=0x{:08X}", usbcmd_after);
+        for _ in 0..200_000 {
+            if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH != 0 { break; }
+        }
+        let sts_after = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
+        log::info!("xHCI: after HCH wait, USBSTS=0x{:08X} HCHalted={}", sts_after, (sts_after>>0)&1);
 
         // Log PORTSC after reset/init decisions
         for p in 0..n_ports.min(4) {
@@ -392,6 +382,14 @@ impl XhciController {
 
         // Start
         unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_RUN); }
+
+        // Wait for ports to stabilise.  USB 3.0 PHY negotiation can take
+        // >1 second; Linux waits ~1.2 s before detecting SuperSpeed devices.
+        // A generous spin delay here avoids the first poll_usb() finding
+        // all ports in Rx.Detect (PLS=5).
+        for _ in 0..3_000_000 {
+            crate::port::PortWriter::new(0x80).write_safe(0u8);
+        }
 
         // Unmask interrupt
         unsafe { core::ptr::write_volatile((rt_base.add(IMAN_OFF as usize)) as *mut u32, 1 << 1); }
