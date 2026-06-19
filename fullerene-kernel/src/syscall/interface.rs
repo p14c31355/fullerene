@@ -10,18 +10,32 @@ pub type SyscallResult = Result<u64, SyscallError>;
 pub enum SyscallError {
     /// Invalid system call number
     InvalidSyscall = 1,
-    /// Invalid file descriptor
-    BadFileDescriptor = 9,
-    /// Permission denied
-    PermissionDenied = 13,
     /// File not found
     FileNotFound = 2,
     /// No such process
     NoSuchProcess = 3,
-    /// Invalid argument
-    InvalidArgument = 22,
+    /// Bad file descriptor
+    BadFileDescriptor = 9,
     /// Out of memory
     OutOfMemory = 12,
+    /// Permission denied
+    PermissionDenied = 13,
+    /// Invalid argument
+    InvalidArgument = 22,
+    /// Resource temporarily unavailable (try again)
+    Again = 11,
+    /// Operation timed out
+    TimedOut = 110,
+    /// Operation not supported
+    NotSupported = 95,
+    /// Resource already exists
+    AlreadyExists = 17,
+    /// No such device
+    NoSuchDevice = 19,
+    /// Bad handle
+    BadHandle = 104,
+    /// Operation would block
+    WouldBlock = 140,
 }
 
 petroleum::error_chain!(SyscallError, petroleum::common::logging::SystemError,
@@ -32,6 +46,13 @@ petroleum::error_chain!(SyscallError, petroleum::common::logging::SystemError,
     SyscallError::NoSuchProcess => petroleum::common::logging::SystemError::NoSuchProcess,
     SyscallError::InvalidArgument => petroleum::common::logging::SystemError::InvalidArgument,
     SyscallError::OutOfMemory => petroleum::common::logging::SystemError::SyscallOutOfMemory,
+    SyscallError::Again => petroleum::common::logging::SystemError::OperationAgain,
+    SyscallError::TimedOut => petroleum::common::logging::SystemError::OperationTimedOut,
+    SyscallError::NotSupported => petroleum::common::logging::SystemError::NotSupported,
+    SyscallError::AlreadyExists => petroleum::common::logging::SystemError::FileExists,
+    SyscallError::NoSuchDevice => petroleum::common::logging::SystemError::NoSuchDevice,
+    SyscallError::BadHandle => petroleum::common::logging::SystemError::BadHandle,
+    SyscallError::WouldBlock => petroleum::common::logging::SystemError::WouldBlock,
 );
 
 impl From<petroleum::common::logging::SystemError> for SyscallError {

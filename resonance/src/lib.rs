@@ -3,7 +3,7 @@
 extern crate alloc;
 
 mod dispatcher;
-mod event;
+pub mod event;
 mod handler;
 mod queue;
 mod source;

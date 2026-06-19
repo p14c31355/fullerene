@@ -21,8 +21,6 @@
 # Drivers
 
 ## Graphics
-- [x] VirtIO-GPU stabilization
-- [x] double buffering
 - [ ] hardware cursor
 - [ ] vsync
 
