@@ -81,8 +81,8 @@ struct ChannelState {
 }
 
 struct PipeState {
-    /// Pipe buffer.
-    buffer: Vec<u8>,
+    /// Shared pipe buffer (read and write ends share the same buffer).
+    buffer: alloc::sync::Arc<Mutex<Vec<u8>>>,
     /// Whether this is the read end or write end.
     is_read_end: bool,
     /// PID blocked on the other end.
@@ -341,7 +341,7 @@ fn syscall_fork() -> SyscallResult {
     };
 
     child_process.context.regs[0] = 0;
-    child_process.context.regs[7] = child_process.kernel_stack.as_u64();
+    child_process.context.regs[7] = child_process.user_stack.as_u64();
 
     let child_box = Box::new(child_process);
 
@@ -610,12 +610,11 @@ fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
     match kernel::with_kernel_mut(|k| -> SyscallResult {
         let memory = &mut k.memory;
         let num_pages = (len + 4095) / 4096;
+        let mgr = memory.manager.as_mut().ok_or(SyscallError::OutOfMemory)?;
         for i in 0..num_pages {
             let _vaddr = addr as usize + i * 4096;
-            // Identity-unmap by mapping a zero page (lazy – real impl would
-            // flush TLB and free frames)
-            memory
-                .map_page(_vaddr, 0, x86_64::structures::paging::PageTableFlags::empty())
+            // Unmap and free the underlying physical frame.
+            mgr.safe_unmap_page(_vaddr)
                 .map_err(|_| SyscallError::OutOfMemory)?;
         }
         Ok(0)
@@ -692,6 +691,11 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
             }
             Ok(true)
         } else {
+            // If non-blocking (timeout_us == 0), return immediately without
+            // registering as a waiter.
+            if timeout_us == 0 {
+                return Ok(false);
+            }
             // Register the current PID as a waiter and block.
             let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
             event.waiters.push(pid);
@@ -701,9 +705,6 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
 
     if signaled {
         Ok(0)
-    } else if timeout_us == 0 {
-        // Non-blocking: return "would block"
-        Err(SyscallError::WouldBlock)
     } else {
         // Block the calling process until signalled or timeout.
         // Timeout handling is a stub here: we simply block.
@@ -1174,28 +1175,24 @@ fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> SyscallResu
             dest[..copy_len].copy_from_slice(&msg[..copy_len]);
             Ok(copy_len as u64)
         } else {
-            // Block until a message arrives
-            let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-            channel.waiters.push(pid);
+            // No message available — return WouldBlock without registering
+            // as a waiter (this is a non-blocking call).
             Err(SyscallError::WouldBlock)
         }
     })
 }
 
 fn syscall_pipe_create(_flags: u64) -> SyscallResult {
-    // Create paired read/write handles
-    let buffer: Vec<u8> = Vec::with_capacity(4096);
-    let shared_buffer = alloc::sync::Arc::new(Mutex::new(buffer));
+    // Create a shared buffer for both pipe ends.
+    let shared_buffer = alloc::sync::Arc::new(Mutex::new(Vec::with_capacity(4096)));
 
-    // We store a shared reference via two handles using a "tag" scheme.
-    // Simplified: two pipes with a shared buffer key.
     let read_end = PipeState {
-        buffer: Vec::new(),
+        buffer: alloc::sync::Arc::clone(&shared_buffer),
         is_read_end: true,
         peer_waiters: Vec::new(),
     };
     let write_end = PipeState {
-        buffer: Vec::new(),
+        buffer: shared_buffer,
         is_read_end: false,
         peer_waiters: Vec::new(),
     };
@@ -1236,13 +1233,13 @@ fn syscall_handle_transfer(target_pid: u64, handle: u64) -> SyscallResult {
 
 fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
     let mut table = HANDLE_TABLE.lock();
-    if table.contains_key(&handle) {
+    if let Some(obj) = table.get(&handle) {
         let new_h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         // Shallow duplicate: clone the KernelObject.  This is not a deep copy for
         // complex objects (channel messages are lost, etc.) — a real implementation
         // would ref-count.
-        match table.get(&handle) {
-            Some(KernelObject::Event(e)) => {
+        match obj {
+            KernelObject::Event(e) => {
                 let copy = EventState {
                     signaled: e.signaled,
                     manual_reset: e.manual_reset,
@@ -1251,7 +1248,7 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
                 table.insert(new_h, KernelObject::Event(copy));
                 Ok(new_h)
             }
-            Some(KernelObject::Thread(t)) => {
+            KernelObject::Thread(t) => {
                 let copy = ThreadState {
                     tid: t.tid,
                     pid: t.pid,
@@ -1262,7 +1259,7 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
                 table.insert(new_h, KernelObject::Thread(copy));
                 Ok(new_h)
             }
-            Some(KernelObject::Channel(ch)) => {
+            KernelObject::Channel(ch) => {
                 let copy = ChannelState {
                     messages: Vec::with_capacity(ch.max_messages),
                     waiters: Vec::new(),
@@ -1271,7 +1268,7 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
                 table.insert(new_h, KernelObject::Channel(copy));
                 Ok(new_h)
             }
-            Some(KernelObject::Window(w)) => {
+            KernelObject::Window(w) => {
                 let copy = WindowState {
                     window_index: w.window_index,
                     pid: w.pid,
@@ -1366,11 +1363,10 @@ fn syscall_sleep(us: u64) -> SyscallResult {
         }
         Ok(0)
     } else {
-        // Yield to scheduler while waiting for deadline.
-        // A real implementation would set a timer interrupt and unblock on expiry.
-        while uptime_us() < deadline {
-            process::yield_current();
-        }
+        // Block until the deadline expires.
+        // TODO: Register with a timer queue so the process is unblocked
+        // when the deadline expires, instead of blocking indefinitely.
+        process::block_current();
         Ok(0)
     }
 }
