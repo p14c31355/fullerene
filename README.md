@@ -4,8 +4,8 @@
 
 ---
 
-![](docs/history/fullerene_202606182121_desktop.png)
-![](docs/history/fullerene_202606100455_desktop.png)
+![Fullerene desktop screenshot showing graphical compositor with terminal window](docs/history/fullerene_202606182121_desktop.png)
+![Fullerene desktop screenshot showing early development version](docs/history/fullerene_202606100455_desktop.png)
 
 [development_history](docs/history)
 

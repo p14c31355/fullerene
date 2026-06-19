@@ -11,7 +11,7 @@
 Run the task runner, which handles building, ISO creation, and QEMU emulation:
 
 ```bash
-cargo run --bin flasks
+cargo run -p flasks --bin flasks
 ```
 
 This command:
@@ -65,7 +65,7 @@ To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).
 - Use `RUST_LOG=debug cargo run --bin flasks` for more verbose output.
 
-For release builds, modify `flasks/src/main.rs` to use `--profile release` or run `cargo build --release`.
+For release builds, use `cargo build --release` to compile with optimizations.
 
 ## Manual Build Steps
 

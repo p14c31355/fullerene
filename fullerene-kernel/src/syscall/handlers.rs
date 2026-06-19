@@ -161,7 +161,9 @@ pub unsafe extern "C" fn handle_syscall(
     let current_pid = crate::process::current_pid();
     let dispatch_mode = current_pid
         .and_then(|pid| {
-            crate::process::PROCESS_MANAGER.with_process(pid, |p| p.dispatch_mode.is_some())
+            crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+                matches!(p.dispatch_mode, Some(crate::linux::DispatchMode::Linux(_)))
+            })
         })
         .unwrap_or(false);
 
@@ -614,7 +616,7 @@ fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
             // flush TLB and free frames)
             memory
                 .map_page(_vaddr, 0, x86_64::structures::paging::PageTableFlags::empty())
-                .ok();
+                .map_err(|_| SyscallError::OutOfMemory)?;
         }
         Ok(0)
     }) {
@@ -768,6 +770,10 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
     let user_stack = VirtAddr::new(stack);
 
     if !petroleum::is_user_address(entry_point) {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    if !petroleum::is_user_address(user_stack) {
         return Err(SyscallError::InvalidArgument);
     }
 
@@ -1159,7 +1165,8 @@ fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> SyscallResu
             KernelObject::Channel(ch) => ch,
             _ => return Err(SyscallError::BadHandle),
         };
-        if let Some(msg) = channel.messages.pop() {
+        if !channel.messages.is_empty() {
+            let msg = channel.messages.remove(0);
             let copy_len = msg.len().min(max);
             let dest = unsafe { user_slice_mut(buf, max, false) }
                 .map_err(|_| SyscallError::InvalidArgument)?;
@@ -1350,7 +1357,7 @@ fn syscall_timer_create(_clock_id: u64, deadline_ns: u64, event_handle: u64) -> 
 fn syscall_sleep(us: u64) -> SyscallResult {
     let deadline = uptime_us() + us;
 
-    // Busy-wait for short sleeps (< 1 ms), block for longer.
+    // Busy-wait for short sleeps (< 1 ms), yield for longer.
     if us < 1000 {
         let start = uptime_us();
         while uptime_us() < start + us {
@@ -1358,12 +1365,10 @@ fn syscall_sleep(us: u64) -> SyscallResult {
         }
         Ok(0)
     } else {
-        // Block the current process.  A real implementation would set
-        // a timer interrupt and unblock on expiry.
-        // For now, just busy-wait (this is a stub).
-        let start = uptime_us();
+        // Yield to scheduler while waiting for deadline.
+        // A real implementation would set a timer interrupt and unblock on expiry.
         while uptime_us() < deadline {
-            core::hint::spin_loop();
+            process::yield_current();
         }
         Ok(0)
     }
