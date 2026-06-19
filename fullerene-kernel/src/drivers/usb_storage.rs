@@ -323,8 +323,12 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             w_index: 0,
             w_length: 64,
         };
-        if xhci.control_transfer(slot_id, &setup, &mut desc_buf).is_err() { return; }
-        dev_class = desc_buf[4];   // bDeviceClass    (was offset 12 — bug)
+        let desc_len = match xhci.control_transfer(slot_id, &setup, &mut desc_buf) {
+            Ok(len) => len,
+            Err(_) => return,
+        };
+        if desc_len < 18 { return; }
+        dev_class = desc_buf[4];   // bDeviceClass    (was offset 12 - bug)
         dev_subclass = desc_buf[5]; // bDeviceSubClass  (was offset 13)
         dev_protocol = desc_buf[6]; // bDeviceProtocol  (was offset 14)
         let num_cfgs = desc_buf[17]; // bNumConfigurations
