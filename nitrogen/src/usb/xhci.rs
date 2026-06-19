@@ -779,8 +779,10 @@ impl XhciController {
             unsafe { core::ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), data_len); }
         }
 
-        // Free staging buffer
-        if staging_phys != 0 {
+        // Free staging buffer only if transfer completed successfully.
+        // If wait_event timed out, the controller may still own the TRB and be
+        // accessing the DMA buffer, so freeing it would cause memory corruption.
+        if res.is_ok() && staging_phys != 0 {
             let staging_pages = (data_len + 4095) / 4096;
             unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
         }
