@@ -119,8 +119,8 @@ pub fn init() {
     // re-negotiate SuperSpeed / HighSpeed links (typically 1-2 s).
     // A second poll after a spin delay catches devices that weren't
     // ready during the first poll.
-    for _ in 0..3_000_000 {
-        core::hint::spin_loop();
+    for _ in 0..1_500_000 {
+        crate::port::PortWriter::new(0x80).write_safe(0u8);
     }
     if poll_usb() {
         return;
