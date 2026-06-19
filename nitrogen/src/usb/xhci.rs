@@ -44,6 +44,7 @@ const PORTSC_CCS: u32 = 1 << 0;
 const PORTSC_PED: u32 = 1 << 1;
 const PORTSC_PR: u32 = 1 << 4;
 const PORTSC_PP: u32 = 1 << 9;
+const PORTSC_WPR: u32 = 1 << 20; // Warm Port Reset (USB3)
 
 // TRB type (bits 10..15 of flags)
 const TRB_NORMAL: u8 = 1;
@@ -253,59 +254,91 @@ impl XhciController {
         let op_off = caplength;
         let op = unsafe { mmio_base.add(op_off as usize) };
 
+        log::info!("xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={} ppc={}", hcs1, n_ports, max_slots, ppc);
+        log::info!("xHCI: HCCPARAMS1=0x{:08X} 64bit={} xECP=0x{:x}", hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
+
+        // Log PORTSC for all ports BEFORE any change
+        for p in 0..n_ports.min(4) {
+            let ps = unsafe { core::ptr::read_volatile(op.add((PORTSC_BASE + p * 0x10) as usize) as *const u32) };
+            log::info!("xHCI: PORTSC[{}] BEFORE=0x{:08X} (CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={})",
+                p, ps, ps & 1, (ps>>1)&1, (ps>>4)&1, (ps>>9)&1,
+                (ps>>5)&0xF, (ps>>20)&1, (ps>>10)&0xF);
+        }
+
         // ── xHCI Legacy Support Handoff ────────────────────────
-        // Scan extended capabilities for USB Legacy Support (ID=1).
-        // If BIOS holds ownership, we must claim it.
         {
             let mut ec_off = (((hcc1 >> 16) & 0xFFFF) as usize) * 4;
-            while ec_off != 0 && ec_off < 0x400 {
+            let mut legacy_found = false;
+            while ec_off != 0 && ec_off < 0x10000 {
                 let ec_id = unsafe { core::ptr::read_volatile(caps.add(ec_off) as *const u8) };
-                let ec_next = unsafe { core::ptr::read_volatile(caps.add(ec_off + 1) as *const u8) as usize } * 4;
+                let ec_next_raw = unsafe { core::ptr::read_volatile(caps.add(ec_off + 1) as *const u8) };
+                let ec_next = (ec_next_raw as usize) * 4;
+                log::info!("xHCI: xECP at 0x{:x}: id={} next_ptr={}", ec_off, ec_id, ec_next_raw);
                 if ec_id == 1 {
-                    // USB Legacy Support capability found
+                    legacy_found = true;
                     let bios_sem = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
+                    let os_sem = unsafe { core::ptr::read_volatile(caps.add(ec_off + 3) as *const u8) };
+                    log::info!("xHCI: USB Legacy Support: BIOS_SEM={} OS_SEM={}", bios_sem, os_sem);
                     if bios_sem & 1 != 0 {
-                        // BIOS owns the controller — take ownership
-                        unsafe {
-                            core::ptr::write_volatile(caps.add(ec_off + 3) as *mut u8, 1);
-                        }
-                        // Wait for BIOS to release ownership (up to 1 second)
+                        log::info!("xHCI: BIOS owns controller — requesting handoff");
+                        unsafe { core::ptr::write_volatile(caps.add(ec_off + 3) as *mut u8, 1); }
                         for _ in 0..1_000_000 {
                             let b = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
                             if b & 1 == 0 { break; }
                         }
+                        let final_bios = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
+                        log::info!("xHCI: Legacy handoff done, BIOS_SEM={}", final_bios);
+                    } else {
+                        log::info!("xHCI: OS already owns controller");
                     }
                 }
+                if ec_next_raw == 0 { break; }
                 ec_off = ec_next;
+            }
+            if !legacy_found {
+                log::info!("xHCI: no USB Legacy Support capability found");
             }
         }
 
-        // Check if controller is already running (firmware initialized for boot)
+        // ── Controller initialisation ───────────────────────────
+        let usbcmd = unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) };
         let sts = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
         let already_running = (sts & STS_HCH) == 0;
+        log::info!("xHCI: USBCMD=0x{:08X} USBSTS=0x{:08X} HCHalted={} already_running={}",
+            usbcmd, sts, (sts>>0)&1, already_running);
 
         if already_running {
-            // Firmware left the controller running — don't reset, which would
-            // clear port power state (PPC=0 means PP is read-only hardware-
-            // managed, and HCRST would lose port power without recovery).
-            // We stop the controller first to program our registers, then restart.
+            // Firmware left the controller running with devices already
+            // enumerated (e.g. the boot device).  Do NOT reset or stop:
+            // doing so would lose port state and some hardware never
+            // re-detects the device after a stop/start cycle.
+            //
+            // We just slot our own command ring, event ring, and DCBAA
+            // in place while the controller stays running.  The command
+            // ring is idle after ExitBootServices, so CRR should be 0
+            // and we can safely write CRCR.
+            log::info!("xHCI: already running — taking over without reset");
         } else {
-            // Reset
+            log::info!("xHCI: cold start — performing HCRST");
             unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_HCRST); }
             for _ in 0..200_000 {
                 if unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) } & CMD_HCRST == 0 { break; }
             }
+            let usbcmd_after = unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) };
+            log::info!("xHCI: after HCRST wait, USBCMD=0x{:08X}", usbcmd_after);
             for _ in 0..200_000 {
                 if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH != 0 { break; }
             }
+            let sts_after = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
+            log::info!("xHCI: after HCH wait, USBSTS=0x{:08X} HCHalted={}", sts_after, (sts_after>>0)&1);
         }
 
-        // Stop the controller before programming (if running)
-        if already_running {
-            unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, 0); }
-            for _ in 0..200_000 {
-                if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH != 0 { break; }
-            }
+        // Log PORTSC after reset/init decisions
+        for p in 0..n_ports.min(4) {
+            let ps = unsafe { core::ptr::read_volatile(op.add((PORTSC_BASE + p * 0x10) as usize) as *const u32) };
+            log::info!("xHCI: PORTSC[{}] AFTER-RESET=0x{:08X} (CCS={} PED={} PR={} PP={} PLS={} WPR={})",
+                p, ps, ps & 1, (ps>>1)&1, (ps>>4)&1, (ps>>9)&1,
+                (ps>>5)&0xF, (ps>>20)&1);
         }
 
         // Allocate DCBAA (aligned to 64 bytes)
@@ -532,41 +565,74 @@ impl XhciController {
     /// Called after start. Returns number of newly detected devices.
     pub fn poll_ports(&mut self) {
         for port in 0..self.n_ports {
-            if self.ports_done & (1 << port) != 0 { continue; }
+            if self.ports_done & (1 << port) != 0 {
+                if port < 4 { log::info!("xHCI: poll_ports port {} — already done, skip", port); }
+                continue;
+            }
 
             // Ensure port is powered (some controllers lose PP after HCRST)
             let mut portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
             if portsc & PORTSC_PP == 0 {
+                log::info!("xHCI: poll_ports port {} — PP=0, attempting to power on", port);
                 unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PP); }
-                // Wait 20ms for power to stabilize
                 for _ in 0..20_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
                 portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
             }
 
             let portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
-
-            // No device connected → will retry on next poll
-            if portsc & PORTSC_CCS == 0 { continue; }
-
-            // Always reset the port when a device is newly detected.
-            // This clears any leftover state (firmware-assigned slot/address)
-            // and ensures clean enumeration from address 0.
-            unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PR); }
-            for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-            unsafe {
-                let v = core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10));
-                core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), v & !PORTSC_PR);
+            if port < 8 {
+                log::info!("xHCI: poll_ports port {} PORTSC=0x{:08X} CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={}",
+                    port, portsc, portsc & 1, (portsc>>1)&1, (portsc>>4)&1,
+                    (portsc>>9)&1, (portsc>>5)&0xF, (portsc>>20)&1, (portsc>>10)&0xF);
             }
-            for _ in 0..200_000 {
-                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
-            }
-            if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
+
+            if portsc & PORTSC_CCS != 0 {
+                log::info!("xHCI: poll_ports port {} — CCS=1, doing port reset", port);
+                unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PR); }
+                for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                unsafe {
+                    let v = core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10));
+                    core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), v & !PORTSC_PR);
+                }
+                for _ in 0..200_000 {
+                    if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
+                }
+                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
+                    log::info!("xHCI: poll_ports port {} — CCS lost after reset", port);
+                    continue;
+                }
+            } else if portsc & PORTSC_PP != 0 {
+                log::info!("xHCI: poll_ports port {} — CCS=0 PP=1, trying warm reset", port);
+                unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_WPR); }
+                for _ in 0..200_000 {
+                    let p = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                    if p & PORTSC_WPR == 0 { break; }
+                }
+                let portsc_wpr = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                log::info!("xHCI: poll_ports port {} — after WPR, PORTSC=0x{:08X} CCS={}", port, portsc_wpr, portsc_wpr & 1);
+                for _ in 0..100_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                let p = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                if p & PORTSC_CCS == 0 {
+                    log::info!("xHCI: poll_ports port {} — still CCS=0 after warm reset", port);
+                    continue;
+                }
+                log::info!("xHCI: poll_ports port {} — CCS=1 after warm reset!", port);
+                for _ in 0..200_000 {
+                    if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
+                }
+                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
+                    log::info!("xHCI: poll_ports port {} — CCS lost after WPR+wait", port);
+                    continue;
+                }
+            } else {
+                log::info!("xHCI: poll_ports port {} — CCS=0 PP=0, skip", port);
                 continue;
             }
 
             let ps = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
             let speed_val = (ps >> 10) & 0xF;
             let usb_speed = port_speed_to_usb(speed_val);
+            log::info!("xHCI: poll_ports port {} — device detected speed={}", port, speed_val);
 
             self.devices.push(UsbDevice {
                 address: 0, speed: usb_speed, max_packet_size_0: 64,
