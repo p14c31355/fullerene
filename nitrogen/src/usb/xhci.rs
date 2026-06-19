@@ -775,6 +775,12 @@ impl XhciController {
         if is_in && data_len > 0 {
             unsafe { core::ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), data_len); }
         }
+
+        // Free staging buffer
+        if staging_phys != 0 {
+            let staging_pages = (data_len + 4095) / 4096;
+            unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
+        }
         Ok(data_len)
     }
 
@@ -836,6 +842,9 @@ impl XhciController {
         if dir == UsbDirection::In {
             unsafe { core::ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
         }
+
+        // Free staging buffer
+        unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
         Ok(len)
     }
 }

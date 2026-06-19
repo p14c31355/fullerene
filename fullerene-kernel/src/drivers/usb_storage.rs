@@ -359,14 +359,16 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             w_index: 0,
             w_length: 256,
         };
-        let xptr: *mut XhciController = xhci as *mut XhciController;
-        if unsafe { (*xptr).control_transfer(slot_id, &setup_cfg_read, &mut cfg_buf) }.is_err() {
+        let cfg_res = xhci.control_transfer(slot_id, &setup_cfg_read, &mut cfg_buf);
+        if cfg_res.is_err() {
             // Fall back to device-level class check if CONFIG read fails
             if dev_class != 0x08 { return; }
             // else use hardcoded endpoints as last resort
             bulk_out_ep = 0x02;
             bulk_in_ep = 0x82;
         } else {
+            let cfg_len = cfg_res.unwrap();
+            if cfg_len < 9 { return; }
             // Parse configuration descriptor (header is 9 bytes)
             let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
             let mut offset: usize = 9; // skip config header
@@ -374,10 +376,11 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             let mut found_out = None;
             let mut found_in = None;
 
-            while offset < total_len.min(256) && offset + 2 <= 256 {
+            let limit = total_len.min(cfg_len).min(256);
+            while offset + 2 <= limit {
                 let dlen = cfg_buf[offset] as usize;
+                if dlen < 2 || offset + dlen > limit { break; }
                 let dtype = cfg_buf[offset + 1];
-                if dlen < 2 { break; }
 
                 match dtype {
                     4 => { // INTERFACE descriptor

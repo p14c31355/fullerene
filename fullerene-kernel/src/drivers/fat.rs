@@ -399,7 +399,7 @@ impl FatFileSystem {
     fn find_in_dir(&mut self, dir_cluster: u32, name: &str) -> Option<(u32, u32, bool)> {
         if self.is_exfat {
             // exFAT: use the entry-set reader
-            return self.read_exfat_dir(dir_cluster, name).map(|(c, sz)| (c, sz, false));
+            return self.read_exfat_dir(dir_cluster, name);
         }
         // FAT32: use 8.3 short-name + LFN entries
         let mut cluster = dir_cluster;
@@ -445,11 +445,12 @@ impl FatFileSystem {
         &mut self,
         dir_cluster: u32,
         target_name: &str,
-    ) -> Option<(u32, u32)> {
+    ) -> Option<(u32, u32, bool)> {
         let mut cluster = dir_cluster;
         let mut name_buf = alloc::vec::Vec::new();
         let mut entry_cluster: u32 = 0;
         let mut entry_size: u64 = 0;
+        let mut entry_is_dir = false;
         let mut in_entry = false;
 
         loop {
@@ -470,21 +471,25 @@ impl FatFileSystem {
                     return None;
                 }
                 if entry_type == EXFAT_ENTRY_FILE_INFO {
-                    // Read cluster (offset 20-23) and size (offset 24-31)
+                    let attribs = buf[buf_off + 4];
                     let cl = u32::from_le_bytes([
                         buf[buf_off + 20], buf[buf_off + 21],
                         buf[buf_off + 22], buf[buf_off + 23],
                     ]);
+                    entry_cluster = cl;
+                    entry_is_dir = (attribs & ATTR_DIRECTORY) != 0;
+                    entry_size = 0; // will be populated by Stream Extension
+                    name_buf.clear();
+                    in_entry = true;
+                } else if entry_type == EXFAT_ENTRY_STREAM_EXT && in_entry {
+                    // Stream Extension holds the data length (file size) at bytes 24-31
                     let sz = u64::from_le_bytes([
                         buf[buf_off + 24], buf[buf_off + 25],
                         buf[buf_off + 26], buf[buf_off + 27],
                         buf[buf_off + 28], buf[buf_off + 29],
                         buf[buf_off + 30], buf[buf_off + 31],
                     ]);
-                    entry_cluster = cl;
                     entry_size = sz;
-                    name_buf.clear();
-                    in_entry = true;
                 } else if entry_type == EXFAT_ENTRY_FILE_NAME && in_entry {
                     // UTF-16LE characters at offset 2-31 (15 chars per entry)
                     for i in 0..15 {
@@ -502,7 +507,7 @@ impl FatFileSystem {
                         // Check if this name matches
                         let name_str = core::str::from_utf8(&name_buf).unwrap_or("");
                         if name_str.eq_ignore_ascii_case(target_name) {
-                            return Some((entry_cluster, entry_size as u32));
+                            return Some((entry_cluster, entry_size as u32, entry_is_dir));
                         }
                     }
                     name_buf.clear();
