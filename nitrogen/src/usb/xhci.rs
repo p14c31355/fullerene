@@ -177,21 +177,30 @@ struct ErstEntry {
     rsvd: u32,
 }
 
-// ── Device / Input Context (simplified to one 64-byte page) ──
-// Each context is 32 dwords (128 bytes): 4 for slot, 4×31 for endpoints (more than enough)
-// We use a 4KB page per device context (4096/128=32, but xHCI requires 64-byte alignment)
+// ── Device / Input Context structures ───────────────────────
+// Per xHCI spec §6.2.3, each context is 8 dwords (32 bytes).
+// The input context page (4KB, 64-byte aligned) holds up to 31
+// endpoint contexts plus the slot context, but we only define
+// the first few explicitly and write the rest via raw pointer
+// offsets.
 #[repr(C, align(64))]
 struct DevCtx {
-    data: [u32; 8],  // Slot context (4) + control ep ctx (4)
+    data: [u32; 8],  // Slot context (8 dwords)
 }
 
+/// Input Context — xHCI §6.2.5.1
+///
+/// Drop/Add Context flags (4 bytes each), 28 bytes reserved,
+/// then Slot context (32 bytes) followed by EP0–EP31 contexts
+/// (32 bytes each). The entire structure fits within one 4KB page
+/// which is allocated by `enable_slot`.
 #[repr(C, align(64))]
 struct InputCtx {
-    drop: u32,
-    add: u32,
-    rsvd: [u32; 6],
-    slot: [u32; 4],
-    ep0: [u32; 4],
+    drop_flags: u32,
+    add_flags: u32,
+    _rsvd: [u32; 7],        // 7 dwords = 28 bytes reserved
+    slot: [u32; 8],         // Slot context (8 dwords = 32 bytes)
+    ep0: [u32; 8],          // EP0 context (8 dwords = 32 bytes)
 }
 
 // ── Port speed mapping ───────────────────────────────────────
@@ -523,7 +532,7 @@ impl XhciController {
         // Set up Input Context
         let in_ctx_v = unsafe { (*self.ctx).phys_to_virt(in_ctx_phys) as *mut InputCtx };
         let in_ctx = unsafe { &mut *in_ctx_v };
-        in_ctx.add = 3;
+        in_ctx.add_flags = 3;  // add slot context (bit 0) + ep0 context (bit 1)
         in_ctx.slot[0] = 0;
         in_ctx.slot[1] = (dev_addr as u32) << 24;
         in_ctx.ep0[0] = (64 << 16) | (4 << 3); // mps=64, type=control
@@ -554,26 +563,23 @@ impl XhciController {
 
         let in_ctx_v = unsafe { (*self.ctx).phys_to_virt(slot.in_ctx_phys) as *mut InputCtx };
         let in_ctx = unsafe { &mut *in_ctx_v };
-        in_ctx.add = 0;
-        in_ctx.drop = 0;
+        in_ctx.add_flags = 0;
+        in_ctx.drop_flags = 0;
 
         // Allocate transfer ring for this bulk endpoint
         let ctx_ref = unsafe { &*self.ctx };
         let bulk_ring = Ring::alloc(ctx_ref, 64).ok_or("no ring")?;
         let b_phys = bulk_ring.phys;
 
-        // Set context array index: for EP1 out = 2, EP1 in = 3, EP2 out = 4, etc.
-        let ctx_idx = 2 + ep_num * 2 + if is_in { 1 } else { 0 };
-        in_ctx.add = 1 << ctx_idx;
+        // Set context array index: Slot=0, EP0=1, EP1out=2, EP1in=3, EP2out=4, EP2in=5, etc.
+        let ctx_idx = 1 + ep_num * 2 + if is_in { 1 } else { 0 };
+        in_ctx.add_flags = 1 << ctx_idx;
 
-        // Endpoint context: type=2 (bulk), max packet size, TR dequeue
-        // ep context is 4 dwords; we need to extend InputCtx or use raw access
-
-        // Write endpoint context at the proper index in the input context page
+        // Endpoint context: each context is 8 dwords (32 bytes) per xHCI spec §6.2.3.
         let ep_type = 2u32; // Bulk
         unsafe {
             let base = in_ctx_v as *mut u32;
-            let ep_base = base.add(ctx_idx * 4);
+            let ep_base = base.add(ctx_idx * 8);
             core::ptr::write_volatile(ep_base, (mps as u32) << 16 | ep_type << 3);
             core::ptr::write_volatile(ep_base.add(1), b_phys as u32);
             core::ptr::write_volatile(ep_base.add(2), (b_phys >> 32) as u32);
