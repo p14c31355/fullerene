@@ -1007,10 +1007,10 @@ fn syscall_destroy_window(handle: u64) -> SyscallResult {
             KernelObject::Window(w) => w,
             _ => return Err(SyscallError::BadHandle),
         };
-        let idx = window.window_index;
+        let id = window.window_id;
         kernel::with_kernel_mut(|k| {
-            if idx < k.window.windows.len() {
-                k.window.windows[idx].visible = false;
+            if let Some(win) = k.window.windows.iter_mut().find(|w| w.id == id) {
+                win.visible = false;
             }
         });
         Ok(0)
