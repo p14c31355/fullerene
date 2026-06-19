@@ -44,10 +44,28 @@ impl Drop for CrxSwitchGuard {
     }
 }
 
-/// Load a program from raw bytes and create a process for it using goblin
+/// Load a program from raw bytes and create a process for it using goblin.
+/// If `linux_abi` is true, attaches a LinuxRuntime for Linux ABI emulation.
 pub fn load_program(
     image_data: &[u8],
     name: &'static str,
+) -> Result<process::ProcessId, LoadError> {
+    load_program_inner(image_data, name, false)
+}
+
+/// Load a program, optionally with Linux ABI emulation.
+pub fn load_program_with_runtime(
+    image_data: &[u8],
+    name: &'static str,
+    is_linux: bool,
+) -> Result<process::ProcessId, LoadError> {
+    load_program_inner(image_data, name, is_linux)
+}
+
+fn load_program_inner(
+    image_data: &[u8],
+    name: &'static str,
+    is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
     // Parse ELF using goblin
     let elf = goblin::elf::Elf::parse(image_data).map_err(|_| LoadError::InvalidFormat)?;
@@ -62,6 +80,18 @@ pub fn load_program(
 
     // Create process with the loaded program (user mode)
     let pid = process::create_process(name, entry_point_address, true)?;
+
+    // Attach LinuxRuntime if this is a Linux binary
+    if is_linux {
+        process::PROCESS_MANAGER.with_process(pid, |p| {
+            let initial_break = 0x60000000u64;
+            let rt = crate::linux::LinuxRuntime::new(
+                p.id.0,
+                initial_break,
+            );
+            p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(rt));
+        });
+    }
 
     // Load program segments using goblin
     process::PROCESS_MANAGER

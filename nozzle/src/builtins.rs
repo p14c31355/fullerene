@@ -276,6 +276,24 @@ pub fn cmd_write(ctx: &mut CommandContext) -> bool {
     true
 }
 
+/// `hello_linux` — launch the built-in Linux test binary
+pub fn cmd_hello_linux(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "hello_linux");
+    true
+}
+
+/// `linux_run` — launch a Linux ELF binary from the filesystem
+pub fn cmd_linux_run(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "linux_run");
+    true
+}
+
+/// `run_busybox` — launch BusyBox shell
+pub fn cmd_run_busybox(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "run_busybox");
+    true
+}
+
 /// `rm` — remove a file or directory
 pub fn cmd_rm(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() < 2 {

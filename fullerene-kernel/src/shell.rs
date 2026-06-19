@@ -404,6 +404,49 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str("Usage: run <app_name>\n");
             ctx.terminal.write_str("Available: toluene, hello\n");
         }
+        "linux_run" => {
+            if ctx.args.len() > 1 {
+                let path = ctx.args[1];
+                let msg = alloc::format!("Loading Linux binary: {}\n", path);
+                ctx.terminal.write_str(&msg);
+                match crate::linux::launch::launch_linux_binary(path) {
+                    Ok(pid) => {
+                        let msg = alloc::format!("Linux process started (PID: {})\n", pid.0);
+                        ctx.terminal.write_str(&msg);
+                    }
+                    Err(e) => {
+                        let msg = alloc::format!("Failed to launch: {:?}\n", e);
+                        ctx.terminal.write_str(&msg);
+                    }
+                }
+            } else {
+                ctx.terminal.write_str("Usage: linux_run <path>\n");
+            }
+        }
+        "run_busybox" => {
+            match crate::linux::launch::launch_busybox() {
+                Ok(pid) => {
+                    let msg = alloc::format!("BusyBox shell started (PID: {})\n", pid.0);
+                    ctx.terminal.write_str(&msg);
+                }
+                Err(e) => {
+                    let msg = alloc::format!("Failed to launch BusyBox: {:?}\n", e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }
+        "hello_linux" => {
+            match crate::linux::launch::launch_test_binary() {
+                Ok(pid) => {
+                    let msg = alloc::format!("Test Linux binary started (PID: {})\n", pid.0);
+                    ctx.terminal.write_str(&msg);
+                }
+                Err(e) => {
+                    let msg = alloc::format!("Failed to launch test binary: {:?}\n", e);
+                    ctx.terminal.write_str(&msg);
+                }
+            }
+        }
         "pci" => {
             use alloc::format;
             use nitrogen::pci::PciScanner;

@@ -20,6 +20,8 @@ extern crate alloc;
 // ── Modules (god-module decomposition per AGENTS.md §10) ────
 mod handlers;
 mod menu_actions;
+mod explorer;
+mod viewers;
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -44,8 +46,23 @@ pub struct SolventCallbacks {
     pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
     pub wall_clock: Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>,
     pub vfs_readdir: Option<fn(&str) -> Result<Vec<VfsEntry>, &'static str>>,
+    /// Read a file's entire content into a byte vector.
+    /// Opens, reads all bytes, closes.
+    pub vfs_read: Option<fn(&str) -> Result<Vec<u8>, &'static str>>,
+    /// Write bytes to a file (creates or overwrites).
+    pub vfs_write: Option<fn(&str, &[u8]) -> Result<(), &'static str>>,
+    /// Create a new empty file.
+    pub vfs_create: Option<fn(&str) -> Result<(), &'static str>>,
+    /// Create a directory.
+    pub vfs_mkdir: Option<fn(&str) -> Result<(), &'static str>>,
+    /// Delete a file or empty directory.
+    pub vfs_unlink: Option<fn(&str) -> Result<(), &'static str>>,
     pub process_list: Option<fn() -> Vec<ProcessEntry>>,
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
+    /// List mounted USB drives (name strings).
+    pub usb_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
+    /// Poll USB controllers for newly connected devices. Returns true if new drive mounted.
+    pub usb_poll: Option<fn() -> bool>,
 }
 
 impl SolventCallbacks {
@@ -56,8 +73,15 @@ impl SolventCallbacks {
             heap_extend: None,
             wall_clock: None,
             vfs_readdir: None,
+            vfs_read: None,
+            vfs_write: None,
+            vfs_create: None,
+            vfs_mkdir: None,
+            vfs_unlink: None,
             process_list: None,
             device_list: None,
+            usb_drive_list: None,
+            usb_poll: None,
         }
     }
     pub fn install(self) {
@@ -108,6 +132,12 @@ const FRAME_TIMER_ID: TimerId = TimerId(2);
 pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
 const MAX_FB_PIXELS: usize = 3840 * 2160;
+
+pub fn get_usb_drives() -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)> {
+    SOLVENT_CALLBACKS.lock().usb_drive_list
+        .map(|f| f())
+        .unwrap_or_default()
+}
 
 pub fn set_tsc_per_ms(val: u64) {
     TSC_PER_MS.store(val, core::sync::atomic::Ordering::Relaxed);
@@ -188,6 +218,11 @@ pub struct RuntimeState {
     pub editor_buf: EditorBuffer,
     pub editor_launch_pending: bool,
     pub editor_dirty: bool,
+    /// Path of the file currently open in the editor (for save).
+    pub editor_file_path: Option<alloc::string::String>,
+    /// File explorer state
+    pub explorer: Option<explorer::ExplorerContext>,
+    pub explorer_dirty: bool,
 }
 
 pub fn init() {
@@ -242,6 +277,9 @@ pub fn init() {
         editor_buf: EditorBuffer::new(),
         editor_launch_pending: false,
         editor_dirty: false,
+        editor_file_path: None,
+        explorer: None,
+        explorer_dirty: false,
     });
 }
 
@@ -688,6 +726,9 @@ where
     if rt.editor_dirty {
         render_editor(rt);
     }
+    if rt.explorer_dirty {
+        render_explorer(rt);
+    }
     let tb_changed = rt.desktop.update_taskbar();
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
@@ -1132,6 +1173,28 @@ where
     }) {
         ensure_editor_window();
     }
+    // Poll USB every ~100 ticks (~2 seconds at 17ms/tick).
+    // Callback pointer is extracted before invocation to avoid holding
+    // SOLVENT_CALLBACKS lock while VFS locks are acquired inside poll_usb().
+    static LAST_USB_POLL: core::sync::atomic::AtomicU64 =
+        core::sync::atomic::AtomicU64::new(0);
+    let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
+    if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
+        LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
+        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
+        if let Some(f) = poll_fn {
+            if f() {
+                if let Some(ref mut r) = *RUNTIME.lock() {
+                    if let Some(ref mut e) = r.explorer {
+                        e.refresh_sidebar();
+                        r.explorer_dirty = true;
+                        r.frame_due = true;
+                    }
+                }
+            }
+        }
+    }
+
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         r.frame_due = false;
@@ -1366,6 +1429,146 @@ fn render_editor(rt: &mut RuntimeState) {
     rt.editor_dirty = false;
 }
 
+// ── Explorer ──────────────────────────────────────────────────
+
+fn render_explorer(rt: &mut RuntimeState) {
+    let explorer = match rt.explorer.as_mut() {
+        Some(e) => e,
+        None => return,
+    };
+    let explorer_id = match explorer.window_id {
+        Some(id) => id,
+        None => return,
+    };
+    let window = match rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == explorer_id)
+    {
+        Some(w) => w,
+        None => {
+            rt.explorer = None;
+            return;
+        }
+    };
+    explorer::render_explorer(explorer, &mut window.surface);
+    rt.desktop.invalidate_window(explorer_id);
+    rt.explorer_dirty = false;
+}
+
+/// Launch a file based on its extension association.
+///
+/// Called when the user double-clicks a file in the explorer.
+/// Reads the file content (if applicable) and opens the appropriate app.
+pub fn launch_file(rt: &mut RuntimeState, path: &str) {
+    let name = match path.rsplit('/').next() {
+        Some(n) => n,
+        None => path,
+    };
+    let ext = explorer::extension_of(name);
+    let app = explorer::lookup_association(ext);
+
+    // For text-based files, read content and open in editor
+    let is_text = matches!(
+        ext,
+        "txt" | "md" | "log" | "toml" | "rs" | "c" | "h" | "py"
+            | "js" | "json" | "xml" | "yml" | "yaml" | "ini"
+            | "cfg" | "sh" | "bat" | "env" | "gitignore" | "lock"
+    );
+
+    if is_text {
+        // Read file content in a separate scope to release SOLVENT_CALLBACKS lock
+        let file_content = {
+            let read_fn = match SOLVENT_CALLBACKS.lock().vfs_read {
+                Some(f) => f,
+                None => return,
+            };
+            match read_fn(path) {
+                Ok(data) => match core::str::from_utf8(&data) {
+                    Ok(s) => alloc::string::String::from(s),
+                    Err(_) => return,
+                },
+                Err(_) => return,
+            }
+        };
+        // Open editor with file content
+        let id = rt.desktop.wm.create_titled_window(
+            100, 80,
+            DEFAULT_COLS * GLYPH_W, DEFAULT_ROWS * GLYPH_H,
+            0x0a0a1e, "Text Editor",
+        );
+        if let Some(old_id) = rt.editor_window {
+            if rt.desktop.wm.windows().iter().any(|w| w.id == old_id) {
+                rt.desktop.wm.close_window(old_id);
+            }
+        }
+        rt.editor_window = Some(id);
+        rt.editor_buf = lattice::editor::EditorBuffer::from_text(&file_content);
+        rt.editor_file_path = Some(alloc::string::String::from(path));
+        rt.editor_dirty = true;
+        rt.desktop.force_full_redraw();
+        rt.frame_due = true;
+        rt.explorer_dirty = true;
+        return;
+    }
+
+    // Dispatch to format-specific viewers
+    match ext {
+        "bmp" => { crate::viewers::open_bmp(rt, path, name); return; }
+        #[cfg(feature = "minipng")]
+        "png" => { crate::viewers::open_png(rt, path, name); return; }
+        "wav" => { crate::viewers::open_wav(rt, path, name); return; }
+        #[cfg(feature = "rmp3")]
+        "mp3" => { crate::viewers::open_mp3(rt, path, name); return; }
+        #[cfg(feature = "shiguredo_mp4")]
+        "mp4" => { crate::viewers::open_mp4(rt, path, name); return; }
+        "tar" | "gz" | "xz" => { crate::viewers::open_tar(rt, path, name); return; }
+        _ => {}
+    }
+
+    // Unknown file type: show info window
+    let app_name = app.unwrap_or("Unknown");
+    let msg = alloc::format!(
+        "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
+        name, ext, app_name, app_name
+    );
+    let cols = 50;
+    let rows = (msg.lines().count() as u32) + 3;
+    let id = rt.desktop.wm.create_titled_window(
+        200, 160, cols * GLYPH_W, rows * GLYPH_H,
+        0x1a1a0d, "Open File",
+    );
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = crate::menu_actions::render_text_into_surface(
+            &mut w.surface, &msg, cols, 0xFFFFCC, 0x1a1a0d,
+        );
+    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Save the current editor buffer to its associated file.
+fn editor_save_current(rt: &mut RuntimeState) {
+    let path = match rt.editor_file_path.as_ref() {
+        Some(p) => p.clone(),
+        None => return,
+    };
+    let content = rt.editor_buf.full_text();
+    // Write via VFS callback
+    let write_fn = match SOLVENT_CALLBACKS.lock().vfs_write {
+        Some(f) => f,
+        None => return,
+    };
+    let result = write_fn(&path, content.as_bytes());
+    if result.is_ok() {
+        rt.editor_buf.dirty = false;
+    }
+    rt.editor_dirty = true;
+    rt.frame_due = true;
+}
+
 /// Handle a key event for the editor.
 pub fn editor_handle_key(scancode: u8) {
     let key = crate::scancode_to_resonance_keycode(scancode);
@@ -1374,6 +1577,22 @@ pub fn editor_handle_key(scancode: u8) {
         Some(r) => r,
         None => return,
     };
+
+    // Track Ctrl key state for shortcuts
+    static EDITOR_CTRL_HELD: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    match key {
+        KeyCode::Ctrl => {
+            EDITOR_CTRL_HELD.store(scancode & 0x80 == 0, core::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        _ => {}
+    }
+    if key == KeyCode::S && EDITOR_CTRL_HELD.load(core::sync::atomic::Ordering::Relaxed) {
+        editor_save_current(rt);
+        return;
+    }
+
     match key {
         KeyCode::Enter => {
             rt.editor_buf.insert_char(b'\n');

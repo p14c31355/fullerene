@@ -47,6 +47,42 @@ pub fn init() {
             }
             Ok(result)
         }),
+        vfs_read: Some(|path| {
+            let fd = crate::vfs::open(path, 0).map_err(|e| e)?;
+            let mut buf = alloc::vec::Vec::new();
+            let mut tmp = [0u8; 4096];
+            loop {
+                match crate::vfs::read(fd.fd, &mut tmp) {
+                    Ok(0) => break,
+                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                    Err(e) => {
+                        let _ = crate::vfs::close(fd.fd);
+                        return Err(e);
+                    }
+                }
+            }
+            let _ = crate::vfs::close(fd.fd);
+            Ok(buf)
+        }),
+        vfs_write: Some(|path, data| {
+            // Open existing file, write, close
+            let fd = crate::vfs::open(path, 0).map_err(|e| e)?;
+            if crate::vfs::write(fd.fd, data).is_err() {
+                let _ = crate::vfs::close(fd.fd);
+                return Err("write failed");
+            }
+            let _ = crate::vfs::close(fd.fd);
+            Ok(())
+        }),
+        vfs_create: Some(|path| {
+            crate::vfs::create(path).map(|_| ())
+        }),
+        vfs_mkdir: Some(|path| {
+            crate::vfs::mkdir(path)
+        }),
+        vfs_unlink: Some(|path| {
+            crate::vfs::unlink(path)
+        }),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
             crate::process::PROCESS_MANAGER.with_list(|list| {
@@ -84,6 +120,11 @@ pub fn init() {
             }
             result
         }),
+        usb_drive_list: Some(|| {
+            let drives = crate::drivers::usb_storage::USB_DRIVES.lock();
+            drives.iter().map(|d| (d.name.clone(), d.mount_point.clone())).collect()
+        }),
+        usb_poll: Some(|| crate::drivers::usb_storage::poll_usb()),
         shell_cmd: None,
         launch_shell: Some(|| {
             crate::scheduler::request_shell_launch();

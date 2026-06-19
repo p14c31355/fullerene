@@ -21,6 +21,12 @@ resonance = { path = "../resonance" }
 chronoline = { path = "../chronoline" }
 log = { version = "0.4.29", default-features = false }
 
+# Media format parsers
+minipng = { version = "1", default-features = false, optional = true }
+rmp3 = { version = "0.3", default-features = false, optional = true }
+shiguredo_mp4 = { version = "2026.3", default-features = false, optional = true }
+rust_h264 = { version = "0.4", default-features = false, optional = true }
+
 [lib]
 name = "solvent"
 path = "src/lib.rs"

@@ -9,6 +9,8 @@ use petroleum::common::memory::{user_slice, user_slice_mut};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
+use crate::linux::Runtime as LinuxRuntimeTrait;
+
 // Global FD table mapping integer FDs to FileDesc.
 // Uses u32 to prevent negative FD wraparound attacks (a negative i32
 // would wrap to a large u32 and potentially alias another file).
@@ -46,10 +48,53 @@ pub unsafe extern "C" fn handle_syscall(
     arg1: u64,
     arg2: u64,
     arg3: u64,
-    _arg4: u64,
-    _arg5: u64,
-    _arg6: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
 ) -> u64 {
+    // Check if the current process has a runtime dispatch mode.
+    let current_pid = crate::process::current_pid();
+    let dispatch_mode = current_pid.and_then(|pid| {
+        crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+            // Note: DispatchMode contains LinuxRuntime which is !Clone.
+            // We just check if it exists and return a bool.
+            p.dispatch_mode.is_some()
+        })
+    }).unwrap_or(false);
+
+    if dispatch_mode {
+        // Take the LinuxRuntime out of the process to avoid holding
+        // the PROCESS_MANAGER lock across syscall dispatch (which would
+        // cause a deadlock when the syscall itself accesses PROCESS_MANAGER).
+        let mut linux_rt = current_pid.and_then(|pid| {
+            crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+                p.dispatch_mode.take().and_then(|mode| {
+                    if let crate::linux::DispatchMode::Linux(rt) = mode {
+                        Some(rt)
+                    } else {
+                        p.dispatch_mode = Some(mode);
+                        None
+                    }
+                })
+            }).flatten()
+        });
+
+        let ret = if let Some(mut rt) = linux_rt.take() {
+            let result = rt.dispatch(syscall_num, &[arg1, arg2, arg3, arg4, arg5, arg6]);
+            // Put the runtime back into the process
+            if let Some(pid) = current_pid {
+                crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+                    p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(rt));
+                });
+            }
+            result
+        } else {
+            crate::linux::errno_code(crate::linux::ENOSYS)
+        };
+        return ret;
+    }
+
+    // Fullerene native syscall dispatch (existing behavior)
     let result = match syscall_num {
         1 => syscall_exit(arg1 as i32),
         2 => syscall_fork(),
@@ -152,6 +197,7 @@ fn syscall_fork() -> SyscallResult {
         task_data: 0,
         exit_code: None,
         parent_id: Some(current_pid),
+        dispatch_mode: None,
     };
 
     // Set child context to return 0 from fork

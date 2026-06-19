@@ -104,6 +104,11 @@ impl EventHandler for WmEventHandler {
                     crate::menu_actions::dispatch_menu_action(rt, &action);
                 }
 
+                // Handle clicks within the explorer window's client area
+                if *btn == MouseButton::Left || *btn == MouseButton::Right {
+                    handle_explorer_click(rt, *btn, cx, cy);
+                }
+
                 rt.term_dirty = true;
                 true
             }
@@ -114,6 +119,117 @@ impl EventHandler for WmEventHandler {
             }
             _ => false,
         }
+    }
+}
+
+// ── Explorer event handling ──────────────────────────────────
+
+fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32, cy: i32) {
+    let explorer = match rt.explorer.as_mut() {
+        Some(e) => e,
+        None => return,
+    };
+    let win_id = match explorer.window_id {
+        Some(id) => id,
+        None => return,
+    };
+    let window = match rt.desktop.wm.windows().iter().find(|w| w.id == win_id) {
+        Some(w) => w,
+        None => return,
+    };
+    // Only process clicks within the explorer's client area (below title bar)
+    if !window.contains(cx, cy) {
+        return;
+    }
+    let rel_x = cx - window.x;
+    let rel_y = cy - window.y - lattice::compositor::TITLE_BAR_HEIGHT as i32;
+
+    // If context menu is open, handle clicks on it first
+    if explorer.context_menu.open {
+        crate::explorer::handle_context_menu_click(explorer, rel_x, rel_y);
+        rt.explorer_dirty = true;
+        rt.frame_due = true;
+        return;
+    }
+
+    match btn {
+        MouseButton::Left => {
+            // Check toolbar buttons
+            if let Some(btn_id) = crate::explorer::hit_toolbar_button(rel_x, rel_y) {
+                match btn_id {
+                    b'b' => explorer.go_back(),
+                    b'f' => explorer.go_forward(),
+                    b'u' => explorer.go_up(),
+                    b'r' => explorer.refresh(),
+                    _ => {}
+                }
+                rt.explorer_dirty = true;
+                rt.frame_due = true;
+                return;
+            }
+
+            // Check sidebar click
+            if let Some(idx) = crate::explorer::hit_sidebar(explorer, rel_x, rel_y) {
+                explorer.selected_sidebar = Some(idx);
+                if let Some(item) = explorer.sidebar_items.get(idx) {
+                    let path = item.path.clone();
+                    explorer.navigate_to(&path);
+                }
+                rt.explorer_dirty = true;
+                rt.frame_due = true;
+                return;
+            }
+
+            // Check file list click
+            let win_w = window.width;
+            let win_h = window.height;
+            if let Some(idx) = crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y) {
+                // Double-click detection
+                let now = crate::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
+                let is_double = explorer.selected_index == Some(idx)
+                    && explorer.last_click_entry == Some(idx)
+                    && now.wrapping_sub(explorer.last_click_tick) < 30; // ~30 ticks for double-click
+
+                explorer.selected_index = Some(idx);
+
+                if is_double {
+                    if idx < explorer.raw_is_dir.len() && explorer.raw_is_dir[idx] {
+                        explorer.open_selected(idx);
+                        explorer.last_click_entry = None;
+                    } else if let Some(path) = explorer.get_file_path(idx) {
+                        // Save path, drop explorer borrow, then launch
+                        explorer.last_click_entry = None;
+                        let file_path = path;
+                        drop(explorer);
+                        crate::launch_file(rt, &file_path);
+                        return;
+                    }
+                } else {
+                    explorer.last_click_entry = Some(idx);
+                    explorer.last_click_tick = now;
+                }
+
+                rt.explorer_dirty = true;
+                rt.frame_due = true;
+            }
+        }
+        MouseButton::Right => {
+            let win_w = window.width;
+            let win_h = window.height;
+            // Only show context menu for file list hits
+            if crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y).is_some() {
+                explorer.context_menu.open = true;
+                explorer.context_menu.x = rel_x as u32;
+                explorer.context_menu.y = rel_y as u32;
+                // Also select the item under cursor
+                if let Some(idx) = crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y) {
+                    explorer.selected_index = Some(idx);
+                }
+                rt.explorer_dirty = true;
+                rt.frame_due = true;
+            }
+        }
+        _ => {}
     }
 }
 

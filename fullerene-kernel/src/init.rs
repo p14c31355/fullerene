@@ -147,10 +147,19 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::LoaderReady);
             Ok(())
         }),
+        petroleum::init_step!("initramfs", || {
+            crate::linux::launch::init_initramfs();
+            Ok(())
+        }),
         petroleum::init_step!("device_manager", || {
             crate::hardware::device_manager::init_device_manager()
                 .map_err(|_| "Failed to initialize device manager")?;
             petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
+            Ok(())
+        }),
+        petroleum::init_step!("usb_storage", || {
+            crate::drivers::usb_storage::init();
+            petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
             Ok(())
         }),
         petroleum::init_step!("gui", || {
