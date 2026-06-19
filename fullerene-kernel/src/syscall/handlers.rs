@@ -61,6 +61,9 @@ struct ThreadState {
 
 struct WindowState {
     /// Native window index in WindowContext.
+    ///
+    /// TODO: Store `WindowId` instead of a raw index.  Indices become
+    /// stale if windows are ever removed or reordered.
     window_index: usize,
     pid: process::ProcessId,
 }
@@ -347,7 +350,11 @@ fn syscall_fork() -> SyscallResult {
 
     crate::process::PROCESS_MANAGER
         .add(child_box)
-        .map_err(|_| SyscallError::OutOfMemory)?;
+        .map_err(|_| {
+            // TODO: Deallocate kernel_stack (kernel_stack_ptr) and
+            // cloned page-table frames on failure.
+            SyscallError::OutOfMemory
+        })?;
 
     Ok(child_pid as u64)
 }
@@ -538,6 +545,19 @@ const MAP_ANONYMOUS: u64 = 1 << 10;
 const MAP_SHARED: u64 = 0x01;
 const MAP_PRIVATE: u64 = 0x02;
 
+/// Helper: unmap+free all pages in `pages` on a partial failure during
+/// [`syscall_map_memory`].
+fn rollback_mapped_pages(
+    memory: &mut crate::contexts::memory::MemoryContext,
+    pages: &[usize],
+) {
+    if let Some(mgr) = memory.manager.as_mut() {
+        for vaddr in pages {
+            let _ = mgr.safe_unmap_page(*vaddr);
+        }
+    }
+}
+
 fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> SyscallResult {
     let len = length as usize;
     if len == 0 || len > (128 << 20) {
@@ -583,14 +603,26 @@ fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> SyscallResult 
 
         let num_pages = (len + 4095) / 4096;
 
+        // Track successfully-mapped virtual addresses so we can
+        // unmap+free them on a partial failure.
+        let mut mapped_pages: Vec<usize> = Vec::with_capacity(num_pages);
         for i in 0..num_pages {
             let frame = memory
                 .allocate_frame()
-                .map_err(|_| SyscallError::OutOfMemory)?;
+                .map_err(|_| {
+                    rollback_mapped_pages(memory, &mapped_pages);
+                    SyscallError::OutOfMemory
+                })?;
             let vaddr = virt_base + i * 4096;
             memory
                 .map_page(vaddr, frame, pt_flags)
-                .map_err(|_| SyscallError::OutOfMemory)?;
+                .map_err(|_| {
+                    // Free the frame we just allocated (not yet tracked).
+                    let _ = memory.free_frame(frame);
+                    rollback_mapped_pages(memory, &mapped_pages);
+                    SyscallError::OutOfMemory
+                })?;
+            mapped_pages.push(vaddr);
         }
 
         Ok(virt_base as u64)
@@ -705,6 +737,9 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
 
     if signaled {
         Ok(0)
+    } else if timeout_us == 0 {
+        // Non-blocking: return "would block" immediately.
+        Err(SyscallError::WouldBlock)
     } else {
         // Block the calling process until signalled or timeout.
         // Timeout handling is a stub here: we simply block.
@@ -822,7 +857,10 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
     let thread_box = Box::new(thread_process);
     crate::process::PROCESS_MANAGER
         .add(thread_box)
-        .map_err(|_| SyscallError::OutOfMemory)?;
+        .map_err(|_| {
+            // TODO: Deallocate kernel_stack (kernel_stack_ptr) on failure.
+            SyscallError::OutOfMemory
+        })?;
 
     // Allocate a thread handle for join/detach
     let tstate = ThreadState {
@@ -1177,7 +1215,9 @@ fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> SyscallResu
             Ok(copy_len as u64)
         } else {
             // No message available — return WouldBlock without registering
-            // as a waiter (this is a non-blocking call).
+            // as a waiter.
+            // NOTE: ChannelState::waiters exists for future blocking-recv
+            // support (where the caller would be added to waiters and blocked).
             Err(SyscallError::WouldBlock)
         }
     })
@@ -1364,10 +1404,12 @@ fn syscall_sleep(us: u64) -> SyscallResult {
         }
         Ok(0)
     } else {
-        // Block until the deadline expires.
-        // TODO: Register with a timer queue so the process is unblocked
-        // when the deadline expires, instead of blocking indefinitely.
-        process::block_current();
+        // Yield to scheduler while waiting for deadline.
+        // TODO: Register with a timer queue so the process is set to
+        // Blocked and unblocked on expiry.
+        while uptime_us() < deadline {
+            process::yield_current();
+        }
         Ok(0)
     }
 }
