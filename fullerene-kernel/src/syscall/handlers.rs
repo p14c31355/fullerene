@@ -645,9 +645,10 @@ fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
     if len == 0 || (addr % 4096) != 0 {
         return Err(SyscallError::InvalidArgument);
     }
+    let end_vaddr = addr.checked_add(length).ok_or(SyscallError::InvalidArgument)?;
     // Validate that the entire range is in user space.
     let start_addr = VirtAddr::new(addr);
-    let end_addr = VirtAddr::new(addr + length as u64 - 1);
+    let end_addr = VirtAddr::new(end_vaddr - 1);
     if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
         return Err(SyscallError::PermissionDenied);
     }
