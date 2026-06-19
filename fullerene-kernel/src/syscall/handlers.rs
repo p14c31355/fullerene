@@ -72,12 +72,16 @@ struct DeviceState {
     device_class: alloc::string::String,
 }
 
-struct ChannelState {
-    /// Buffered messages (each message is a Vec<u8>).
+/// Inner state shared between duplicated channel handles.
+struct ChannelInner {
     messages: Vec<Vec<u8>>,
-    /// PIDs blocked on recv.
     waiters: Vec<process::ProcessId>,
     max_messages: usize,
+}
+
+struct ChannelState {
+    /// Shared inner state so duplicated handles see the same queue.
+    inner: alloc::sync::Arc<Mutex<ChannelInner>>,
 }
 
 struct PipeState {
@@ -756,8 +760,15 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
         // Non-blocking: return "would block" immediately.
         Err(SyscallError::WouldBlock)
     } else {
-        // Block the calling process until signalled or timeout.
-        // Timeout handling is a stub here: we simply block.
+        // NOTE: There is a known lost-wakeup race here: between releasing
+        // the HANDLE_TABLE lock (inside with_handle_mut) and calling
+        // block_current(), a concurrent signal_event can see our PID in
+        // waiters and call unblock_process — but since we haven't blocked
+        // yet, the unblock has no effect and we block forever.
+        //
+        // A proper fix requires an atomic "mark Blocked + re-check
+        // condition" primitive or a wait-queue that coordinates the
+        // process state under a single lock.
         crate::process::block_current();
         // After unblock, re-check the event
         with_handle_mut(handle, |obj| {
@@ -1172,11 +1183,12 @@ fn syscall_device_ioctl(handle: u64, _cmd: u64, _arg: u64) -> SyscallResult {
 // ===================================================================
 
 fn syscall_channel_create(_flags: u64) -> SyscallResult {
-    let state = ChannelState {
+    let inner = alloc::sync::Arc::new(Mutex::new(ChannelInner {
         messages: Vec::with_capacity(16),
         waiters: Vec::new(),
         max_messages: 64,
-    };
+    }));
+    let state = ChannelState { inner };
     let handle = alloc_handle(KernelObject::Channel(state));
     Ok(handle)
 }
@@ -1199,11 +1211,12 @@ petroleum::validate_user_buffer(data_ptr as usize, size, false)?;
             KernelObject::Channel(ch) => ch,
             _ => return Err(SyscallError::BadHandle),
         };
-        if channel.messages.len() >= channel.max_messages {
+        let mut inner = channel.inner.lock();
+        if inner.messages.len() >= inner.max_messages {
             return Err(SyscallError::Again);
         }
-        channel.messages.push(msg_vec);
-        Ok(core::mem::take(&mut channel.waiters))
+        inner.messages.push(msg_vec);
+        Ok(core::mem::take(&mut inner.waiters))
     })?;
 
     for pid in recv_waiters {
@@ -1228,8 +1241,9 @@ fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> SyscallResu
             KernelObject::Channel(ch) => ch,
             _ => return Err(SyscallError::BadHandle),
         };
-        if !channel.messages.is_empty() {
-            Ok(Some(channel.messages.remove(0)))
+        let mut inner = channel.inner.lock();
+        if !inner.messages.is_empty() {
+            Ok(Some(inner.messages.remove(0)))
         } else {
             Ok(None)
         }
@@ -1267,7 +1281,14 @@ fn syscall_pipe_create(_flags: u64) -> SyscallResult {
     let read_h = alloc_handle(KernelObject::Pipe(read_end));
     let write_h = alloc_handle(KernelObject::Pipe(write_end));
 
-    // Pack two handles into return: low 32 = read, high 32 = write.
+    // Returns two handles packed into a single u64.
+    //
+    // NOTE: This assumes both handles fit within 32 bits.  If the system
+    // runs long enough or allocates handles rapidly and a handle exceeds
+    // u32::MAX, it will be truncated, causing subsequent lookups to fail
+    // with BadHandle.  A future version should use a user-space buffer
+    // (e.g. `buf: *mut [u64; 2]`) to return both handles without
+    // truncation risk.
     Ok(read_h | (write_h << 32))
 }
 
@@ -1328,9 +1349,7 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
             }
             KernelObject::Channel(ch) => {
                 let copy = ChannelState {
-                    messages: Vec::with_capacity(ch.max_messages),
-                    waiters: Vec::new(),
-                    max_messages: ch.max_messages,
+                    inner: alloc::sync::Arc::clone(&ch.inner),
                 };
                 table.insert(new_h, KernelObject::Channel(copy));
                 Ok(new_h)
