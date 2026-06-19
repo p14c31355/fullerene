@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::min;
+use core::str;
 
 use crate::vfs::{FileSystem, FileDescriptor, VNode, InodeType};
 use crate::klog_fmt;
@@ -575,6 +576,164 @@ impl FatFileSystem {
     }
 }
 
+// ── Directory reading helpers ──────────────────────────────────
+
+impl FatFileSystem {
+    /// Read all entries in a FAT32 directory cluster chain.
+    fn readdir_fat32_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, &'static str> {
+        let mut entries = Vec::new();
+        let mut cluster = dir_cluster;
+        // LFN entries precede the main entry in reverse order
+        let mut lfn_entries: Vec<[u8; 32]> = Vec::new();
+
+        loop {
+            let sector_base = self.cluster_to_sector(cluster);
+            let entries_per_sector = self.bps / 32;
+            let total_entries = (self.spc * entries_per_sector) as usize;
+
+            let mut current_sector = !0u32;
+            for entry_idx in 0..total_entries {
+                let sec = sector_base + (entry_idx as u32) / entries_per_sector;
+                let off = ((entry_idx as u32) % entries_per_sector * 32) as usize;
+
+                if sec != current_sector {
+                    self.device.read_sectors(sec, 1, &mut self.sector_buf)?;
+                    current_sector = sec;
+                }
+
+                let first_byte = self.sector_buf[off];
+                if first_byte == 0 {
+                    // End of directory
+                    return Ok(entries);
+                }
+                if first_byte == 0xE5 {
+                    // Deleted entry — discard any pending LFN
+                    lfn_entries.clear();
+                    continue;
+                }
+
+                let attr = self.sector_buf[off + 11];
+                if attr == ATTR_LFN {
+                    let mut raw = [0u8; 32];
+                    raw.copy_from_slice(&self.sector_buf[off..off + 32]);
+                    lfn_entries.push(raw);
+                    continue;
+                }
+
+                // Regular entry — reconstruct name
+                let name = if lfn_entries.is_empty() {
+                    name_from_83(&self.sector_buf[off..off + 11])
+                } else {
+                    read_lfn_name(&lfn_entries)
+                };
+                lfn_entries.clear();
+
+                // Skip volume label
+                if attr == 0x08 { continue; }
+
+                let file_size = u32::from_le_bytes([
+                    self.sector_buf[off + 28], self.sector_buf[off + 29],
+                    self.sector_buf[off + 30], self.sector_buf[off + 31],
+                ]);
+
+                entries.push(VNode {
+                    name,
+                    size: file_size as u64,
+                    is_dir: attr & ATTR_DIRECTORY != 0,
+                });
+            }
+
+            match self.read_fat_entry(cluster) {
+                Ok(next) if !Self::is_end_of_chain(next) => cluster = next,
+                _ => break,
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Read all entries in an exFAT directory cluster chain.
+    fn readdir_exfat_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, &'static str> {
+        let mut entries = Vec::new();
+        let mut cluster = dir_cluster;
+        let mut current_size: u64 = 0;
+        let mut current_name: Vec<u16> = Vec::new();
+        let mut in_entry = false;
+
+        loop {
+            let sector_base = self.cluster_to_sector(cluster);
+            let dir_size = self.spc * self.bps;
+
+            let mut off = 0u32;
+            while off < dir_size {
+                let sec = sector_base + off / self.bps;
+                let buf_off = (off % self.bps) as usize;
+
+                if buf_off == 0 {
+                    self.device.read_sectors(sec, 1, &mut self.sector_buf)?;
+                }
+
+                let entry_type = self.sector_buf[buf_off];
+
+                if entry_type == 0 {
+                    // End of directory
+                    return Ok(entries);
+                }
+
+                if entry_type == EXFAT_ENTRY_FILE_INFO {
+                    // Flush previous entry if any
+                    if in_entry && !current_name.is_empty() {
+                        let name = utf16le_to_string(&current_name);
+                        entries.push(VNode {
+                            name,
+                            size: current_size,
+                            is_dir: false,
+                        });
+                    }
+
+                    let sz = u64::from_le_bytes([
+                        self.sector_buf[buf_off + 24], self.sector_buf[buf_off + 25],
+                        self.sector_buf[buf_off + 26], self.sector_buf[buf_off + 27],
+                        self.sector_buf[buf_off + 28], self.sector_buf[buf_off + 29],
+                        self.sector_buf[buf_off + 30], self.sector_buf[buf_off + 31],
+                    ]);
+                    current_size = sz;
+                    current_name.clear();
+                    in_entry = true;
+                } else if entry_type == EXFAT_ENTRY_FILE_NAME && in_entry {
+                    for i in 0..15 {
+                        let lo = self.sector_buf[buf_off + 2 + i * 2] as u16;
+                        let hi = self.sector_buf[buf_off + 3 + i * 2] as u16;
+                        let cp = (hi << 8) | lo;
+                        if cp == 0 { break; }
+                        current_name.push(cp);
+                    }
+                } else {
+                    if in_entry && !current_name.is_empty() {
+                        let name = utf16le_to_string(&current_name);
+                        entries.push(VNode {
+                            name,
+                            size: current_size,
+                            is_dir: false,
+                        });
+                    }
+                    current_name.clear();
+                    in_entry = false;
+                }
+
+                off += 32;
+            }
+
+            match self.read_fat_entry(cluster) {
+                Ok(next) if !Self::is_end_of_chain(next) => cluster = next,
+                _ => break,
+            }
+        }
+
+        Ok(entries)
+    }
+}
+
 impl FileSystem for FatFileSystem {
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
         let (cluster, size, _name) = self.find_entry(path).ok()?;
@@ -671,12 +830,34 @@ impl FileSystem for FatFileSystem {
         Err("unlink not implemented")
     }
 
-    fn readdir(&self, path: &str) -> Result<Vec<VNode>, &'static str> {
-        Err("readdir not yet implemented via FatFileSystem")
+    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
+        let path = path.trim_matches('/');
+        let cluster = if path.is_empty() {
+            self.root_cluster
+        } else {
+            let mut cluster = self.root_cluster;
+            for component in path.split('/') {
+                if component.is_empty() { continue; }
+                match self.find_in_dir(cluster, component) {
+                    Some((entry_cluster, _, is_dir)) => {
+                        if !is_dir { return Err("not a directory"); }
+                        cluster = entry_cluster;
+                    }
+                    None => return Err("not found"),
+                }
+            }
+            cluster
+        };
+
+        if self.is_exfat {
+            self.readdir_exfat_all(cluster)
+        } else {
+            self.readdir_fat32_all(cluster)
+        }
     }
 
-    fn exists(&self, path: &str) -> bool {
-        false
+    fn exists(&mut self, path: &str) -> bool {
+        self.find_entry(path).is_ok()
     }
 }
 
@@ -696,4 +877,73 @@ fn name_to_83(name: &str) -> [u8; 11] {
         result[8 + i] = b.to_ascii_uppercase();
     }
     result
+}
+
+/// Convert a FAT32 8.3 name (11 bytes) into a display String.
+fn name_from_83(raw: &[u8]) -> String {
+    let mut s = String::new();
+    // Base name (bytes 0-7), trim trailing spaces
+    let base = raw.iter().take(8).take_while(|&&b| b != 0x20).copied().collect::<Vec<_>>();
+    // Extension (bytes 8-10), trim trailing spaces
+    let ext = raw.iter().skip(8).take(3).take_while(|&&b| b != 0x20).copied().collect::<Vec<_>>();
+    for &b in &base {
+        s.push(b as char);
+    }
+    if !ext.is_empty() {
+        s.push('.');
+        for &b in &ext {
+            s.push(b as char);
+        }
+    }
+    s
+}
+
+/// Reconstruct a long file name from collected LFN entries.
+/// LFN entries are stored in reverse order (last LFN entry first in the directory).
+/// The caller should pass them in physical order, and this function reverses internally.
+fn read_lfn_name(lfn_entries: &[[u8; 32]]) -> String {
+    // LFN entries are in physical order: seq N (with 0x40), seq N-1, ..., seq 1
+    // We need logical order: seq 1, seq 2, ..., seq N
+    // Just reverse the slice.
+    let mut utf16: Vec<u16> = Vec::new();
+    for entry in lfn_entries.iter().rev() {
+        // Characters 1-5 at bytes 1-10 (5 UTF-16LE chars)
+        for i in 0..5 {
+            let lo = entry[1 + i * 2] as u16;
+            let hi = entry[2 + i * 2] as u16;
+            let cp = (hi << 8) | lo;
+            if cp == 0 || cp == 0xFFFF { break; }
+            utf16.push(cp);
+        }
+        // Characters 6-11 at bytes 14-25 (6 UTF-16LE chars)
+        for i in 0..6 {
+            let lo = entry[14 + i * 2] as u16;
+            let hi = entry[15 + i * 2] as u16;
+            let cp = (hi << 8) | lo;
+            if cp == 0 || cp == 0xFFFF { break; }
+            utf16.push(cp);
+        }
+        // Characters 12-13 at bytes 28-31 (2 UTF-16LE chars)
+        for i in 0..2 {
+            let lo = entry[28 + i * 2] as u16;
+            let hi = entry[29 + i * 2] as u16;
+            let cp = (hi << 8) | lo;
+            if cp == 0 || cp == 0xFFFF { break; }
+            utf16.push(cp);
+        }
+    }
+    utf16le_to_string(&utf16)
+}
+
+/// Simplified UTF-16LE to String conversion (ASCII subset, others become '?').
+fn utf16le_to_string(codepoints: &[u16]) -> String {
+    let mut s = String::new();
+    for &cp in codepoints {
+        if cp <= 0x7F {
+            s.push(cp as u8 as char);
+        } else {
+            s.push('?');
+        }
+    }
+    s
 }

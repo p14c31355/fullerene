@@ -133,10 +133,10 @@ pub trait FileSystem: Send {
     fn unlink(&mut self, path: &str) -> Result<(), &'static str>;
 
     /// List directory contents.
-    fn readdir(&self, path: &str) -> Result<Vec<VNode>, &'static str>;
+    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str>;
 
     /// Check whether `path` exists.
-    fn exists(&self, path: &str) -> bool;
+    fn exists(&mut self, path: &str) -> bool;
 }
 
 // ── MemFileSystem (in-memory tmpfs) ─────────────────────────────
@@ -368,7 +368,7 @@ impl FileSystem for MemFileSystem {
         Ok(())
     }
 
-    fn readdir(&self, path: &str) -> Result<Vec<VNode>, &'static str> {
+    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
         let ino = self.lookup(path).ok_or("not found")?;
         let inode = self.inodes.get(&ino).ok_or("not found")?;
         let mut entries = Vec::new();
@@ -384,7 +384,7 @@ impl FileSystem for MemFileSystem {
         Ok(entries)
     }
 
-    fn exists(&self, path: &str) -> bool {
+    fn exists(&mut self, path: &str) -> bool {
         self.lookup(path).is_some()
     }
 }
