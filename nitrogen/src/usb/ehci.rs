@@ -294,7 +294,14 @@ impl EhciController {
     fn remove_qh(&mut self, qh_phys: u64) {
         // Walk the list from head to find the one pointing to 'qh_phys'
         let mut prev_phys = self.async_head_phys;
+        let mut iteration_count = 0;
+        const MAX_ITERATIONS: usize = 1024; // Maximum number of queue heads expected
         loop {
+            iteration_count += 1;
+            if iteration_count > MAX_ITERATIONS {
+                log::warn!("EHCI: remove_qh exceeded max iterations, possible list corruption");
+                break;
+            }
             let prev_virt = unsafe { (*self.ctx).phys_to_virt(prev_phys) } as *const QueueHead;
             let prev_qh = unsafe { &*prev_virt };
             let next_link = unsafe { core::ptr::read_volatile(&prev_qh.horz_link) };

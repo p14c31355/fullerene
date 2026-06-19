@@ -658,6 +658,7 @@ impl FatFileSystem {
         let mut cluster = dir_cluster;
         let mut current_size: u64 = 0;
         let mut current_name: Vec<u16> = Vec::new();
+        let mut current_is_dir = false;
         let mut in_entry = false;
 
         loop {
@@ -687,10 +688,11 @@ impl FatFileSystem {
                         entries.push(VNode {
                             name,
                             size: current_size,
-                            is_dir: false,
+                            is_dir: current_is_dir,
                         });
                     }
 
+                    let file_attributes = self.sector_buf[buf_off + 4];
                     let sz = u64::from_le_bytes([
                         self.sector_buf[buf_off + 24], self.sector_buf[buf_off + 25],
                         self.sector_buf[buf_off + 26], self.sector_buf[buf_off + 27],
@@ -698,6 +700,7 @@ impl FatFileSystem {
                         self.sector_buf[buf_off + 30], self.sector_buf[buf_off + 31],
                     ]);
                     current_size = sz;
+                    current_is_dir = (file_attributes & ATTR_DIRECTORY) != 0;
                     current_name.clear();
                     in_entry = true;
                 } else if entry_type == EXFAT_ENTRY_FILE_NAME && in_entry {
@@ -714,10 +717,11 @@ impl FatFileSystem {
                         entries.push(VNode {
                             name,
                             size: current_size,
-                            is_dir: false,
+                            is_dir: current_is_dir,
                         });
                     }
                     current_name.clear();
+                    current_is_dir = false;
                     in_entry = false;
                 }
 
