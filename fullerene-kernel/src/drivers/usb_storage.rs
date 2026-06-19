@@ -336,7 +336,6 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
         if dev_class != 0x08 && num_cfgs == 0 { return; }
 
         // Set configuration (configuration value = 1)
-        let xptr: *mut XhciController = xhci as *mut XhciController;
         let setup_cfg = UsbSetupPacket {
             bm_request_type: 0x00,
             b_request: 9, // SET_CONFIGURATION
@@ -344,7 +343,7 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             w_index: 0,
             w_length: 0,
         };
-        if unsafe { (*xptr).control_transfer(slot_id, &setup_cfg, &mut []) }.is_err() { return; }
+        if xhci.control_transfer(slot_id, &setup_cfg, &mut []).is_err() { return; }
 
         // Step 4: Read configuration descriptor to discover interface class
         // and endpoint addresses (instead of hardcoding 0x02/0x82).
