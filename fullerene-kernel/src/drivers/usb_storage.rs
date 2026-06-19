@@ -238,75 +238,79 @@ pub fn poll_usb() -> bool {
         }
     }
 
-    // Phase 2: Mount new devices (locks are already released)
+    // Phase 2: Mount new devices WITHOUT holding controller locks.
+    // (FatFileSystem::from_device → read_sectors → locks the controller
+    //  internally, so holding the lock here causes a deadlock.)
     for (ctrl_idx, idx) in ehci_pending {
-        let mut ehis = EHCI_CONTROLLERS.lock();
-        let ehci = ehis[ctrl_idx].as_mut();
-        mount_ehci_device(ehci, idx, ctrl_idx);
+        mount_ehci_device(ctrl_idx, idx);
     }
     for (ctrl_idx, idx) in xhci_pending {
-        let mut xhis = XHCI_CONTROLLERS.lock();
-        let xhci = xhis[ctrl_idx].as_mut();
-        mount_xhci_device(xhci, idx, ctrl_idx);
+        mount_xhci_device(ctrl_idx, idx);
     }
 
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
 }
 
 /// Enumerate and mount a USB device on an xHCI controller.
-fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize, ctrl_index: usize) {
-    // Step 1: Enable slot
-    let slot_id = match xhci.enable_slot() {
-        Ok(id) => id,
-        Err(_) => return,
-    };
+fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
+    // Phase A: Enumerate the device while holding the controller lock.
+    let slot_id;
+    let dev_class;
+    let dev_subclass;
+    let dev_protocol;
+    {
+        let mut xhis = XHCI_CONTROLLERS.lock();
+        let xhci = xhis[ctrl_index].as_mut();
 
-    // Step 2: Address device (assigns address, sets up EP0)
-    if xhci.address_device(slot_id).is_err() { return; }
+        // Step 1: Enable slot
+        slot_id = match xhci.enable_slot() {
+            Ok(id) => id,
+            Err(_) => return,
+        };
 
-    // Step 3: Get device descriptor via control transfer
-    let mut desc_buf = [0u8; 64];
-    let setup = UsbSetupPacket {
-        bm_request_type: 0x80,
-        b_request: 6, // GET_DESCRIPTOR
-        w_value: (1u16) << 8, // DEVICE descriptor
-        w_index: 0,
-        w_length: 64,
-    };
-    if xhci.control_transfer(slot_id, &setup, &mut desc_buf).is_err() { return; }
-    let dev_class = desc_buf[12];
-    let dev_subclass = desc_buf[13];
-    let dev_protocol = desc_buf[14];
-    if dev_class != 0x08 { return; } // not mass storage
+        // Step 2: Address device (assigns address, sets up EP0)
+        if xhci.address_device(slot_id).is_err() { return; }
 
-    // Step 4: Get configuration descriptor (simplified: assume EP0, EP1 bulk out, EP2 bulk in)
-    // In a full implementation we'd iterate the configuration descriptor.
-    // For now, use standard USB class: bulk endpoints at address 0x02 (out) and 0x82 (in)
+        // Step 3: Get device descriptor via control transfer
+        let mut desc_buf = [0u8; 64];
+        let setup = UsbSetupPacket {
+            bm_request_type: 0x80,
+            b_request: 6, // GET_DESCRIPTOR
+            w_value: (1u16) << 8, // DEVICE descriptor
+            w_index: 0,
+            w_length: 64,
+        };
+        if xhci.control_transfer(slot_id, &setup, &mut desc_buf).is_err() { return; }
+        dev_class = desc_buf[12];
+        dev_subclass = desc_buf[13];
+        dev_protocol = desc_buf[14];
+        if dev_class != 0x08 { return; } // not mass storage
 
-    // Set configuration (configuration value = 1)
-    let setup = UsbSetupPacket {
-        bm_request_type: 0x00,
-        b_request: 9, // SET_CONFIGURATION
-        w_value: 1,
-        w_index: 0,
-        w_length: 0,
-    };
-    // Use control transfer through a raw pointer to avoid borrow conflicts
-    let xptr: *mut XhciController = xhci as *mut XhciController;
-    if unsafe { (*xptr).control_transfer(slot_id, &setup, &mut []) }.is_err() { return; }
+        // Set configuration (configuration value = 1)
+        let setup = UsbSetupPacket {
+            bm_request_type: 0x00,
+            b_request: 9, // SET_CONFIGURATION
+            w_value: 1,
+            w_index: 0,
+            w_length: 0,
+        };
+        let xptr: *mut XhciController = xhci as *mut XhciController;
+        if unsafe { (*xptr).control_transfer(slot_id, &setup, &mut []) }.is_err() { return; }
 
-    // Configure bulk endpoints
-    if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x02, 512) }.is_err() { return; }
-    if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x82, 512) }.is_err() { return; }
+        // Configure bulk endpoints
+        if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x02, 512) }.is_err() { return; }
+        if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x82, 512) }.is_err() { return; }
 
-    // Update the device entry
-    if let Some(dev) = xhci.devices_mut().get_mut(dev_idx) {
-        dev.device_class = dev_class;
-        dev.device_subclass = dev_subclass;
-        dev.device_protocol = dev_protocol;
-    }
+        // Update the device entry
+        if let Some(dev) = xhci.devices_mut().get_mut(dev_idx) {
+            dev.device_class = dev_class;
+            dev.device_subclass = dev_subclass;
+            dev.device_protocol = dev_protocol;
+        }
+    } // Lock is dropped here
 
-    // Build block device with inline BOT protocol
+    // Phase B: Build block device and mount (no lock held — FatFileSystem
+    //          will acquire it internally when reading sectors).
     struct XhciBlockDev {
         slot_id: u32, bulk_out: u8, bulk_in: u8,
         block_size: u32, total_blocks: u64, tag: u32,
@@ -345,14 +349,13 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize, ctrl_index: usiz
             buf[..n].copy_from_slice(&data[..n]);
             Ok(())
         }
-        fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        fn write_sectors(&mut self, _lba: u32, _count: u16, _buf: &[u8]) -> Result<(), &'static str> {
             Err("xhci write not impl")
         }
         fn sector_size(&self) -> u32 { self.block_size }
         fn total_sectors(&self) -> u64 { self.total_blocks }
     }
 
-    // Allocate on heap (Box) — closures are avoided by using the struct
     let bdev = XhciBlockDev {
         slot_id, bulk_out: 0x02, bulk_in: 0x82,
         block_size: 512, total_blocks: 0, tag: 1,
@@ -376,27 +379,36 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize, ctrl_index: usiz
 }
 
 /// Enumerate and mount a USB device on an EHCI controller.
-fn mount_ehci_device(ehci: &mut EhciController, idx: usize, ctrl_index: usize) {
-    let dev = unsafe {
-        // SAFETY: enumerate_device takes a closure that performs control transfers.
-        // We guarantee the closure outlives this call.
-        let p: &mut EhciController = &mut *ehci;
-        let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
-        nitrogen::usb::hub::enumerate_device(&mut ctrl)
-    };
-    let dev = match dev { Ok(d) => d, Err(_) => return };
-    if !dev.is_mass_storage() { return; }
+fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
+    // Phase A: Enumerate the device while holding the controller lock.
+    let dev;
+    let mut bulk_out = 0u8;
+    let mut bulk_in = 0u8;
+    {
+        let mut ehis = EHCI_CONTROLLERS.lock();
+        let ehci = ehis[ctrl_index].as_mut();
+        let _ = dev_idx; // keep index for reference
 
-    let mut bulk_out = 0u8; let mut bulk_in = 0u8;
-    for ep in &dev.endpoints {
-        if ep.xfer_type() != UsbXferType::Bulk { continue; }
-        match ep.direction() {
-            UsbDirection::Out => { bulk_out = ep.b_endpoint_address; }
-            UsbDirection::In => { bulk_in = ep.b_endpoint_address; }
+        let result = unsafe {
+            let p: &mut EhciController = &mut *ehci;
+            let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
+            nitrogen::usb::hub::enumerate_device(&mut ctrl)
+        };
+        dev = match result { Ok(d) => d, Err(_) => return };
+        if !dev.is_mass_storage() { return; }
+
+        for ep in &dev.endpoints {
+            if ep.xfer_type() != UsbXferType::Bulk { continue; }
+            match ep.direction() {
+                UsbDirection::Out => { bulk_out = ep.b_endpoint_address; }
+                UsbDirection::In => { bulk_in = ep.b_endpoint_address; }
+            }
         }
-    }
+    } // Lock is dropped here
+
     if bulk_out == 0 || bulk_in == 0 { return; }
 
+    // Phase B: Build block device and mount (no lock held).
     let bdev = UsbBlockDevice {
         dev_addr: dev.address, bulk_out, bulk_in,
         block_size: 512, total_blocks: 0, tag: 1, ctrl_index,

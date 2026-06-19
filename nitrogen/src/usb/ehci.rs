@@ -596,19 +596,20 @@ impl EhciController {
             // No device → leave unmarked, will poll again next time
             if !has_dev { continue; }
 
-            if portsc & PORTSC_PE == 0 {
-                unsafe {
-                    core::ptr::write_volatile(paddr, portsc | PORTSC_RESET);
-                    for _ in 0..50_000 { core::ptr::read_volatile(paddr); }
-                    core::ptr::write_volatile(paddr, portsc & !PORTSC_RESET);
-                }
-                for _ in 0..10_000 {
-                    if unsafe { core::ptr::read_volatile(paddr) } & PORTSC_PE != 0 { break; }
-                }
-                if unsafe { core::ptr::read_volatile(paddr) } & PORTSC_CCS == 0 {
-                    self.processed_ports |= 1 << port;
-                    continue;
-                }
+            // Always perform a port reset when a new device is detected.
+            // This clears any leftover state (e.g. UEFI-assigned address) and
+            // ensures the device starts from address 0 for enumeration.
+            unsafe {
+                core::ptr::write_volatile(paddr, portsc | PORTSC_RESET);
+                for _ in 0..50_000 { core::ptr::read_volatile(paddr); }
+                core::ptr::write_volatile(paddr, portsc & !PORTSC_RESET);
+            }
+            for _ in 0..10_000 {
+                if unsafe { core::ptr::read_volatile(paddr) } & PORTSC_PE != 0 { break; }
+            }
+            if unsafe { core::ptr::read_volatile(paddr) } & PORTSC_CCS == 0 {
+                self.processed_ports |= 1 << port;
+                continue;
             }
 
             let speed = UsbSpeed::from_portsc(unsafe { core::ptr::read_volatile(paddr) });
