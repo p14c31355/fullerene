@@ -109,64 +109,76 @@ static CTRL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
+
+    // Phase 1: Immediate poll — catches EHCI devices and xHCI devices
+    // that were ready right after controller reset.
+    poll_usb();
+
+    // Phase 2: Delayed re-poll for xHCI devices.
+    // After HCRST (controller reset) the xHCI ports need time to
+    // re-negotiate SuperSpeed / HighSpeed links (typically 1-2 s).
+    // A second poll after a spin delay catches devices that weren't
+    // ready during the first poll.
+    for _ in 0..1_500_000 {
+        nitrogen::port::PortWriter::<u8>::new(0x80).write_safe(0u8);
+    }
+    if poll_usb() {
+        return;
+    }
+
+    // Phase 3: One more attempt for stubborn controllers/firmware.
+    for _ in 0..3_000_000 {
+        core::hint::spin_loop();
+    }
     poll_usb();
 }
 
 fn init_controllers() {
     if CTRL_INITIALIZED.swap(true, Ordering::SeqCst) { return; }
-    use nitrogen::pci::PciConfigSpace;
+    use nitrogen::pci::PciScanner;
     use crate::driver_context_impl::KernelDriverContext;
 
     let mut ehis = EHCI_CONTROLLERS.lock();
     let mut xhis = XHCI_CONTROLLERS.lock();
 
-    for bus in 0u8..=0 {
-        for slot in 0u8..32 {
-            for func in 0u8..8 {
-                let cfg = match PciConfigSpace::read_from_device(bus, slot, func) {
-                    Some(c) => c,
-                    None => { if func == 0 { break; } continue; }
-                };
-                if cfg.class_code != 0x0C || cfg.subclass != 0x03 { continue; }
+    // Use the comprehensive PCI scanner that handles multi-bus topologies
+    // and avoids probing non-existent buses (which can hang real hardware).
+    let mut scanner = PciScanner::new();
+    let _ = scanner.scan_all_buses();
+    for dev in scanner.get_devices() {
+        if dev.class_code != 0x0C || dev.subclass != 0x03 { continue; }
 
-                // Read BAR0 (MMIO base). Handle both 32-bit and 64-bit BARs.
-                let bar0_raw = PciConfigSpace::read_config_dword(bus, slot, func, 0x10);
-                if bar0_raw & 1 != 0 { continue; } // Skip I/O space BARs
-                let bar_type = (bar0_raw >> 1) & 3;
-                let mmio_base = if bar_type == 2 {
-                    // 64-bit MMIO BAR: read upper dword at offset 0x14
-                    let low = bar0_raw & 0xFFFF_FFF0;
-                    let high = PciConfigSpace::read_config_dword(bus, slot, func, 0x14);
-                    (low as u64) | ((high as u64) << 32)
-                } else {
-                    (bar0_raw & 0xFFFF_FFF0) as u64
-                };
-                if mmio_base == 0 { continue; }
+        // Read BAR0 via the PCI device helper (handles 32/64-bit BARs).
+        let mmio_base = match dev.read_bar(0) {
+            Some(addr) => addr,
+            None => { continue; }
+        };
 
-                let mmio_virt = KernelDriverContext.phys_to_virt(mmio_base) as *mut u8;
-                if mmio_virt.is_null() { continue; }
+        let mmio_virt = KernelDriverContext.phys_to_virt(mmio_base) as *mut u8;
+        if mmio_virt.is_null() { continue; }
 
-                PciConfigSpace::write_config_word_raw(bus, slot, func, 4,
-                    PciConfigSpace::read_config_word(bus, slot, func, 4) | 0x06);
+        // Enable memory space + bus mastering
+        dev.enable_memory_access();
 
-                match cfg.prog_if {
-                    0x20 => { // EHCI
-                        if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
-                            ehis.push(Box::new(hc));
-                            klog_fmt!("USB: EHCI at {}:{}.{}\n", bus, slot, func);
-                        }
-                    }
-                    0x30 => { // xHCI
-                        if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
-                            xhis.push(Box::new(hc));
-                             klog_fmt!("USB: xHCI at {}:{}.{}\n", bus, slot, func);
-                         } else {
-                             klog_fmt!("USB: xHCI at {}:{}.{} FAILED init\n", bus, slot, func);
-                        }
-                    }
-                    _ => {}
+        // Determine prog_if by reading it directly (PciDevice doesn't cache it).
+        let prog_if = nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, dev.function, 0x09);
+
+        match prog_if {
+            0x20 => { // EHCI
+                if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
+                    ehis.push(Box::new(hc));
+                    klog_fmt!("USB: EHCI at {}:{}.{}\n", dev.bus, dev.device, dev.function);
                 }
             }
+            0x30 => { // xHCI
+                if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
+                    xhis.push(Box::new(hc));
+                    klog_fmt!("USB: xHCI at {}:{}.{}\n", dev.bus, dev.device, dev.function);
+                } else {
+                    klog_fmt!("USB: xHCI at {}:{}.{} FAILED init\n", dev.bus, dev.device, dev.function);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -211,25 +223,52 @@ pub fn poll_usb() -> bool {
         for (ctrl_idx, xhci_box) in xhis.iter_mut().enumerate() {
             let xhci = xhci_box.as_mut();
             let old = xhci.devices().len();
+
             let hcs1 = xhci.read_cap(4);
-            klog_fmt!("xHCI HCSPARAMS1=0x{:08X} (slots={} ports={} PPC={})\n",
-                hcs1, hcs1 & 0xFF, (hcs1>>24)&0xFF, (hcs1>>4)&1);
-            let ps0 = xhci.read_portsc(0);
-            klog_fmt!("xHCI PORTSC[0] after init: 0x{:08X} (PP={} CCS={})\n",
-                ps0, (ps0>>9)&1, ps0&1);
             let hcc1 = xhci.read_cap(0x10);
-            klog_fmt!("xHCI HCCPARAMS1=0x{:08X} (64bit={} xECP=0x{:x})\n",
-                hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
-            for p in 0..3.min(xhci.n_ports()) {
+            let usbcmd = xhci.read_op_reg(0x00);
+            let usbsts = xhci.read_op_reg(0x04);
+            klog_fmt!("xHCI HCSPARAMS1=0x{:08X} HCCPARAMS1=0x{:08X}\n", hcs1, hcc1);
+            klog_fmt!("xHCI USBCMD=0x{:08X} USBSTS=0x{:08X} running={} slots={} ports={} ppc={} legacy={}\n",
+                usbcmd, usbsts, xhci.is_running(), hcs1 & 0xFF, (hcs1>>24)&0xFF,
+                xhci.ppc_enabled(), xhci.legacy_handoff_done());
+
+            for p in 0..xhci.n_ports().min(8) {
                 let ps = xhci.read_portsc(p);
                 if ps != 0xFFFF {
-                    klog_fmt!("xHCI PORTSC[{}]: 0x{:08X} (CCS={} PED={} PP={} speed={})\n",
-                        p, ps, (ps>>0)&1, (ps>>1)&1, (ps>>9)&1, (ps>>10)&0xF);
+                    klog_fmt!("xHCI PORTSC[{}]=0x{:08X} CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={}\n",
+                        p, ps, ps&1, (ps>>1)&1, (ps>>4)&1, (ps>>9)&1,
+                        (ps>>5)&0xF, (ps>>20)&1, (ps>>10)&0xF);
                 }
             }
+
             xhci.poll_ports();
             let new = xhci.devices().len();
             klog_fmt!("xHCI poll: {} ports old={} new={}\n", xhci.n_ports(), old, new);
+
+            // If no devices found and we have powered ports, try warm reset
+            if new == 0 {
+                for p in 0..xhci.n_ports().min(8) {
+                    let ps = xhci.read_portsc(p);
+                    if ps != 0xFFFF && ps & (1 << 9) != 0 && ps & 1 == 0 {
+                        klog_fmt!("xHCI warm reset port {}\n", p);
+                        xhci.write_portsc(p, ps | (1 << 20));
+                        for _ in 0..200_000 { /* delay */ }
+                        let after = xhci.read_portsc(p);
+                        klog_fmt!("xHCI after warm reset port {}: 0x{:08X} CCS={}\n", p, after, after & 1);
+                    }
+                }
+                // Re-check after warm resets
+                xhci.poll_ports();
+                let new2 = xhci.devices().len();
+                klog_fmt!("xHCI poll after warm reset: old={} new={}\n", new, new2);
+                if new2 > new {
+                    for idx in new..new2 {
+                        xhci_pending.push((ctrl_idx, idx));
+                    }
+                }
+            }
+
             if new > old {
                 for idx in old..new {
                     xhci_pending.push((ctrl_idx, idx));
@@ -238,75 +277,181 @@ pub fn poll_usb() -> bool {
         }
     }
 
-    // Phase 2: Mount new devices (locks are already released)
+    // Phase 2: Mount new devices WITHOUT holding controller locks.
+    // (FatFileSystem::from_device → read_sectors → locks the controller
+    //  internally, so holding the lock here causes a deadlock.)
     for (ctrl_idx, idx) in ehci_pending {
-        let mut ehis = EHCI_CONTROLLERS.lock();
-        let ehci = ehis[ctrl_idx].as_mut();
-        mount_ehci_device(ehci, idx, ctrl_idx);
+        mount_ehci_device(ctrl_idx, idx);
     }
     for (ctrl_idx, idx) in xhci_pending {
-        let mut xhis = XHCI_CONTROLLERS.lock();
-        let xhci = xhis[ctrl_idx].as_mut();
-        mount_xhci_device(xhci, idx, ctrl_idx);
+        mount_xhci_device(ctrl_idx, idx);
     }
 
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
 }
 
 /// Enumerate and mount a USB device on an xHCI controller.
-fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize, ctrl_index: usize) {
-    // Step 1: Enable slot
-    let slot_id = match xhci.enable_slot() {
-        Ok(id) => id,
-        Err(_) => return,
-    };
+fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
+    // Phase A: Enumerate the device while holding the controller lock.
+    let slot_id;
+    let dev_class;
+    let dev_subclass;
+    let dev_protocol;
+    let bulk_out_ep: u8;
+    let bulk_in_ep: u8;
+    {
+        let mut xhis = XHCI_CONTROLLERS.lock();
+        let xhci = xhis[ctrl_index].as_mut();
 
-    // Step 2: Address device (assigns address, sets up EP0)
-    if xhci.address_device(slot_id).is_err() { return; }
+        // Step 1: Enable slot
+        slot_id = match xhci.enable_slot() {
+            Ok(id) => id,
+            Err(_) => return,
+        };
 
-    // Step 3: Get device descriptor via control transfer
-    let mut desc_buf = [0u8; 64];
-    let setup = UsbSetupPacket {
-        bm_request_type: 0x80,
-        b_request: 6, // GET_DESCRIPTOR
-        w_value: (1u16) << 8, // DEVICE descriptor
-        w_index: 0,
-        w_length: 64,
-    };
-    if xhci.control_transfer(slot_id, &setup, &mut desc_buf).is_err() { return; }
-    let dev_class = desc_buf[12];
-    let dev_subclass = desc_buf[13];
-    let dev_protocol = desc_buf[14];
-    if dev_class != 0x08 { return; } // not mass storage
+        // Step 2: Address device (assigns address, sets up EP0)
+        if xhci.address_device(slot_id).is_err() { return; }
 
-    // Step 4: Get configuration descriptor (simplified: assume EP0, EP1 bulk out, EP2 bulk in)
-    // In a full implementation we'd iterate the configuration descriptor.
-    // For now, use standard USB class: bulk endpoints at address 0x02 (out) and 0x82 (in)
+        // Step 3: Get device descriptor via control transfer.
+        // Fix: the device descriptor bDeviceClass is at offset 4,
+        // not offset 12 (the old code read bcdDevice instead).
+        let mut desc_buf = [0u8; 64];
+        let setup = UsbSetupPacket {
+            bm_request_type: 0x80,
+            b_request: 6, // GET_DESCRIPTOR
+            w_value: (1u16) << 8, // DEVICE descriptor
+            w_index: 0,
+            w_length: 64,
+        };
+        let desc_len = match xhci.control_transfer(slot_id, &setup, &mut desc_buf) {
+            Ok(len) => len,
+            Err(_) => return,
+        };
+        if desc_len < 18 { return; }
+        dev_class = desc_buf[4];   // bDeviceClass    (was offset 12 - bug)
+        dev_subclass = desc_buf[5]; // bDeviceSubClass  (was offset 13)
+        dev_protocol = desc_buf[6]; // bDeviceProtocol  (was offset 14)
+        let num_cfgs = desc_buf[17]; // bNumConfigurations
 
-    // Set configuration (configuration value = 1)
-    let setup = UsbSetupPacket {
-        bm_request_type: 0x00,
-        b_request: 9, // SET_CONFIGURATION
-        w_value: 1,
-        w_index: 0,
-        w_length: 0,
-    };
-    // Use control transfer through a raw pointer to avoid borrow conflicts
-    let xptr: *mut XhciController = xhci as *mut XhciController;
-    if unsafe { (*xptr).control_transfer(slot_id, &setup, &mut []) }.is_err() { return; }
+        // Mass-storage check: many USB flash drives report bDeviceClass=0x00
+        // and specify the Mass-Storage class at the interface level.
+        // Accept devices that are MSC at device-level OR have at least one
+        // configuration (interface-level class is checked after CONFIG read).
+        if dev_class != 0x08 && num_cfgs == 0 { return; }
 
-    // Configure bulk endpoints
-    if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x02, 512) }.is_err() { return; }
-    if unsafe { (*xptr).configure_endpoint_bulk(slot_id, 0x82, 512) }.is_err() { return; }
+        // Set configuration (configuration value = 1)
+        let setup_cfg = UsbSetupPacket {
+            bm_request_type: 0x00,
+            b_request: 9, // SET_CONFIGURATION
+            w_value: 1,
+            w_index: 0,
+            w_length: 0,
+        };
+        if xhci.control_transfer(slot_id, &setup_cfg, &mut []).is_err() { return; }
 
-    // Update the device entry
-    if let Some(dev) = xhci.devices_mut().get_mut(dev_idx) {
-        dev.device_class = dev_class;
-        dev.device_subclass = dev_subclass;
-        dev.device_protocol = dev_protocol;
-    }
+        // Step 4: Read configuration descriptor to discover interface class
+        // and endpoint addresses (instead of hardcoding 0x02/0x82).
+        let mut cfg_buf = [0u8; 256];
+        let setup_cfg_read = UsbSetupPacket {
+            bm_request_type: 0x80,
+            b_request: 6, // GET_DESCRIPTOR
+            w_value: (2u16) << 8, // CONFIGURATION descriptor, index 0
+            w_index: 0,
+            w_length: 256,
+        };
+        let cfg_res = xhci.control_transfer(slot_id, &setup_cfg_read, &mut cfg_buf);
+        if cfg_res.is_err() {
+            // Fall back to device-level class check if CONFIG read fails
+            if dev_class != 0x08 { return; }
+            // else use hardcoded endpoints as last resort
+            bulk_out_ep = 0x02;
+            bulk_in_ep = 0x82;
+        } else {
+            let cfg_len = cfg_res.unwrap();
+            if cfg_len < 9 { return; }
+            // Parse configuration descriptor (header is 9 bytes)
+            let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
+            let mut offset: usize = 9; // skip config header
+            let mut iface_class_ok = false;
+            let mut found_out = None;
+            let mut found_in = None;
 
-    // Build block device with inline BOT protocol
+            let limit = total_len.min(cfg_len).min(256);
+            while offset + 2 <= limit {
+                let dlen = cfg_buf[offset] as usize;
+                if dlen < 2 || offset + dlen > limit { break; }
+                let dtype = cfg_buf[offset + 1];
+
+                match dtype {
+                    4 => { // INTERFACE descriptor
+                        if dlen >= 9 {
+                            let iface_class = cfg_buf[offset + 5];
+                            let iface_subclass = cfg_buf[offset + 6];
+                            let iface_protocol = cfg_buf[offset + 7];
+                            if iface_class == 0x08 {
+                                // Mass Storage interface with SCSI/BOT
+                                iface_class_ok = true;
+                                klog_fmt!("xHCI: MSC iface class={:02X} sub={:02X} prot={:02X}\n",
+                                    iface_class, iface_subclass, iface_protocol);
+                            }
+                        }
+                    }
+                    5 => { // ENDPOINT descriptor
+                        if dlen >= 7 {
+                            let ep_addr = cfg_buf[offset + 2];
+                            let ep_attr = cfg_buf[offset + 3];
+                            let xfer_type = ep_attr & 0x03;
+                            let mps = u16::from_le_bytes([cfg_buf[offset + 4], cfg_buf[offset + 5]]) & 0x07FF;
+                            if xfer_type == 2 { // Bulk
+                                if ep_addr & 0x80 != 0 {
+                                    found_in = Some(ep_addr);
+                                } else {
+                                    found_out = Some(ep_addr);
+                                }
+                                klog_fmt!("xHCI: bulk EP addr=0x{:02X} mps={}\n", ep_addr, mps);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                offset += dlen;
+            }
+
+            // If device class wasn't 0x08, check interface class
+            if dev_class != 0x08 && !iface_class_ok {
+                klog_fmt!("xHCI: not a mass-storage device (dev_class={:02X}, iface_msc={})\n",
+                    dev_class, iface_class_ok);
+                return;
+            }
+
+            bulk_out_ep = found_out.unwrap_or(0x02);
+            bulk_in_ep = found_in.unwrap_or(0x82);
+        }
+
+        // Configure bulk endpoints with dynamically discovered addresses
+        // Configure bulk endpoints with dynamically discovered addresses
+        if xhci.configure_endpoint_bulk(slot_id, bulk_out_ep, 512).is_err() {
+            klog_fmt!("xHCI: configure bulk OUT 0x{:02X} failed\n", bulk_out_ep);
+            return;
+        }
+        if xhci.configure_endpoint_bulk(slot_id, bulk_in_ep, 512).is_err() {
+            klog_fmt!("xHCI: configure bulk IN 0x{:02X} failed\n", bulk_in_ep);
+            return;
+        }
+
+        // Update the device entry
+        if let Some(dev) = xhci.devices_mut().get_mut(dev_idx) {
+            dev.device_class = dev_class;
+            dev.device_subclass = dev_subclass;
+            dev.device_protocol = dev_protocol;
+        }
+
+        klog_fmt!("xHCI: device enumerated slot={} class={:02X} ep_out=0x{:02X} ep_in=0x{:02X}\n",
+            slot_id, dev_class, bulk_out_ep, bulk_in_ep);
+    } // Lock is dropped here
+
+    // Phase B: Build block device and mount (no lock held — FatFileSystem
+    //          will acquire it internally when reading sectors).
     struct XhciBlockDev {
         slot_id: u32, bulk_out: u8, bulk_in: u8,
         block_size: u32, total_blocks: u64, tag: u32,
@@ -345,16 +490,15 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize, ctrl_index: usiz
             buf[..n].copy_from_slice(&data[..n]);
             Ok(())
         }
-        fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        fn write_sectors(&mut self, _lba: u32, _count: u16, _buf: &[u8]) -> Result<(), &'static str> {
             Err("xhci write not impl")
         }
         fn sector_size(&self) -> u32 { self.block_size }
         fn total_sectors(&self) -> u64 { self.total_blocks }
     }
 
-    // Allocate on heap (Box) — closures are avoided by using the struct
     let bdev = XhciBlockDev {
-        slot_id, bulk_out: 0x02, bulk_in: 0x82,
+        slot_id, bulk_out: bulk_out_ep, bulk_in: bulk_in_ep,
         block_size: 512, total_blocks: 0, tag: 1,
         ctrl_index,
     };
@@ -376,27 +520,44 @@ fn mount_xhci_device(xhci: &mut XhciController, dev_idx: usize, ctrl_index: usiz
 }
 
 /// Enumerate and mount a USB device on an EHCI controller.
-fn mount_ehci_device(ehci: &mut EhciController, idx: usize, ctrl_index: usize) {
-    let dev = unsafe {
-        // SAFETY: enumerate_device takes a closure that performs control transfers.
-        // We guarantee the closure outlives this call.
-        let p: &mut EhciController = &mut *ehci;
-        let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
-        nitrogen::usb::hub::enumerate_device(&mut ctrl)
-    };
-    let dev = match dev { Ok(d) => d, Err(_) => return };
-    if !dev.is_mass_storage() { return; }
+fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
+    // Phase A: Enumerate the device while holding the controller lock.
+    let dev;
+    let mut bulk_out = 0u8;
+    let mut bulk_in = 0u8;
+    {
+        let mut ehis = EHCI_CONTROLLERS.lock();
+        let ehci = ehis[ctrl_index].as_mut();
 
-    let mut bulk_out = 0u8; let mut bulk_in = 0u8;
-    for ep in &dev.endpoints {
-        if ep.xfer_type() != UsbXferType::Bulk { continue; }
-        match ep.direction() {
-            UsbDirection::Out => { bulk_out = ep.b_endpoint_address; }
-            UsbDirection::In => { bulk_in = ep.b_endpoint_address; }
+        // Reset qH/qTD pools so control/bulk transfers always have free entries.
+        ehci.reset_pools();
+
+        let result = unsafe {
+            let p: &mut EhciController = &mut *ehci;
+            let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
+            nitrogen::usb::hub::enumerate_device(&mut ctrl)
+        };
+        dev = match result { Ok(d) => d, Err(_) => return };
+        if !dev.is_mass_storage() { return; }
+
+        // Write back enumerated device metadata into the controller's device list
+        // so address / endpoints are available for subsequent bulk transfers.
+        if let Some(slot) = ehci.devices_mut().get_mut(dev_idx) {
+            *slot = dev.clone();
         }
-    }
+
+        for ep in &dev.endpoints {
+            if ep.xfer_type() != UsbXferType::Bulk { continue; }
+            match ep.direction() {
+                UsbDirection::Out => { bulk_out = ep.b_endpoint_address; }
+                UsbDirection::In => { bulk_in = ep.b_endpoint_address; }
+            }
+        }
+    } // Lock is dropped here
+
     if bulk_out == 0 || bulk_in == 0 { return; }
 
+    // Phase B: Build block device and mount (no lock held).
     let bdev = UsbBlockDevice {
         dev_addr: dev.address, bulk_out, bulk_in,
         block_size: 512, total_blocks: 0, tag: 1, ctrl_index,
