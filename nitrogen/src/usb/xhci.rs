@@ -606,7 +606,8 @@ impl XhciController {
         let b_phys = bulk_ring.phys;
 
         // Set context array index: Slot=0, EP0=1, EP1out=2, EP1in=3, EP2out=4, EP2in=5, etc.
-        let ctx_idx = 1 + ep_num * 2 + if is_in { 1 } else { 0 };
+        // Formula: ctx_idx = 2 * N + (is_in ? 1 : 0)  per xHCI §6.2.3
+        let ctx_idx = 2 * ep_num + if is_in { 1 } else { 0 };
         in_ctx.add_flags = 1 << ctx_idx;
 
         // Endpoint context: each context is 8 dwords (32 bytes) per xHCI spec §6.2.3.
@@ -654,7 +655,7 @@ impl XhciController {
             // ── Step 1: Read initial state ──────────────────────
             let portsc = self.op_read(PORTSC_BASE + port * 0x10);
             let pls = (portsc >> 5) & 0xF;
-            let pp_on = portsc & PORTSC_PP != 0;
+            let pp_on = (portsc & PORTSC_PP) != 0;
             if port < 8 {
                 log::info!("xHCI: poll_ports port {} initial PORTSC=0x{:08X} CCS={} PP={} PLS={} speed={} PED={}",
                     port, portsc, portsc & PORTSC_CCS, pp_on, pls,
@@ -686,7 +687,7 @@ impl XhciController {
             let pls = (portsc >> 5) & 0xF;
             if port < 8 {
                 log::info!("xHCI: poll_ports port {} after-power PORTSC=0x{:08X} CCS={} PP={} PLS={} PED={}",
-                    port, portsc, portsc & PORTSC_CCS, portsc & PORTSC_PP != 0, pls,
+                    port, portsc, portsc & PORTSC_CCS, (portsc & PORTSC_PP) != 0, pls,
                     (portsc >> 1) & 1);
             }
 
@@ -694,7 +695,7 @@ impl XhciController {
             // Warm reset transitions USB3 ports from inactive states
             // back to RxDetect, which starts the link training
             // (Polling → U0) and eventually sets CCS/PED.
-            if portsc & PORTSC_CCS == 0 && portsc & PORTSC_PP != 0 {
+            if (portsc & PORTSC_CCS) == 0 && (portsc & PORTSC_PP) != 0 {
                 log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
                 // Assert WPR (bit 20) — clear RW1C bits first, then set WPR
                 let v = self.op_read(PORTSC_BASE + port * 0x10);
@@ -714,7 +715,7 @@ impl XhciController {
             if port < 8 {
                 log::info!("xHCI: poll_ports port {} final PORTSC=0x{:08X} CCS={} PED={} PP={} PLS={} speed={}",
                     port, portsc, portsc & PORTSC_CCS, (portsc >> 1) & 1,
-                    portsc & PORTSC_PP != 0, (portsc >> 5) & 0xF, (portsc >> 10) & 0xF);
+                    (portsc & PORTSC_PP) != 0, (portsc >> 5) & 0xF, (portsc >> 10) & 0xF);
             }
 
             if portsc & PORTSC_CCS == 0 {
@@ -858,7 +859,8 @@ impl XhciController {
             return Err("bad slot");
         }
 
-        self.doorbell(slot_id, 0);
+        // Doorbell DCI=1 for EP0 Context (xHCI §4.11.1)
+        self.doorbell(slot_id, 1);
         let res = self.wait_event(5_000_000);
 
         // Copy IN data from staging buffer back to caller
