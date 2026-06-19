@@ -260,8 +260,11 @@ impl XhciController {
         log::info!("xHCI: HCCPARAMS1=0x{:08X} 64bit={} xECP=0x{:x}", hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
 
         // Log PORTSC for all ports BEFORE any change
+        // Use direct reads with clflush since `self` is not available yet.
         for p in 0..n_ports.min(4) {
-            let ps = unsafe { core::ptr::read_volatile(op.add((PORTSC_BASE + p * 0x10) as usize) as *const u32) };
+            let ptr = unsafe { op.add((PORTSC_BASE + p * 0x10) as usize) as *const u32 };
+            Self::clflush(ptr as *const u8);
+            let ps = unsafe { core::ptr::read_volatile(ptr) };
             log::info!("xHCI: PORTSC[{}] BEFORE=0x{:08X} (CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={})",
                 p, ps, ps & 1, (ps>>1)&1, (ps>>4)&1, (ps>>9)&1,
                 (ps>>5)&0xF, (ps>>20)&1, (ps>>10)&0xF);
@@ -303,8 +306,10 @@ impl XhciController {
         }
 
         // ── Controller initialisation ───────────────────────────
-        let usbcmd = unsafe { core::ptr::read_volatile((op.add(USBCMD as usize)) as *const u32) };
-        let sts = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
+        Self::clflush(unsafe { op.add(USBCMD as usize) } as *const u8);
+        let usbcmd = unsafe { core::ptr::read_volatile(op.add(USBCMD as usize) as *const u32) };
+        Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+        let sts = unsafe { core::ptr::read_volatile(op.add(USBSTS as usize) as *const u32) };
         let already_running = (sts & STS_HCH) == 0;
         log::info!("xHCI: USBCMD=0x{:08X} USBSTS=0x{:08X} HCHalted={} already_running={}",
             usbcmd, sts, (sts>>0)&1, already_running);
@@ -337,7 +342,9 @@ impl XhciController {
 
         // Log PORTSC after reset/init decisions
         for p in 0..n_ports.min(4) {
-            let ps = unsafe { core::ptr::read_volatile(op.add((PORTSC_BASE + p * 0x10) as usize) as *const u32) };
+            let ptr = unsafe { op.add((PORTSC_BASE + p * 0x10) as usize) as *const u32 };
+            Self::clflush(ptr as *const u8);
+            let ps = unsafe { core::ptr::read_volatile(ptr) };
             log::info!("xHCI: PORTSC[{}] AFTER-RESET=0x{:08X} (CCS={} PED={} PR={} PP={} PLS={} WPR={})",
                 p, ps, ps & 1, (ps>>1)&1, (ps>>4)&1, (ps>>9)&1,
                 (ps>>5)&0xF, (ps>>20)&1);
@@ -403,6 +410,29 @@ impl XhciController {
 
     fn op(&self, off: u32) -> *mut u32 {
         unsafe { (self.mmio.add(self.op_off as usize).add(off as usize)) as *mut u32 }
+    }
+
+    /// Flush a cache line by virtual address (using the CLFLUSH instruction).
+    fn clflush(addr: *const u8) {
+        unsafe { core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags)) }
+    }
+
+    /// Read operational register with cache-line flush (for WB-mapped MMIO).
+    fn op_read(&self, off: u32) -> u32 {
+        let ptr = self.op(off);
+        // The initial identity mapping uses Write-Back (WB) huge pages.
+        // Without UC/WC attributes, volatile reads may return stale cache
+        // data.  Flush the cache line before each MMIO read to work around
+        // this on hardware where changing page attributes is unsafe.
+        Self::clflush(ptr as *const u8);
+        unsafe { core::ptr::read_volatile(ptr) }
+    }
+
+    /// Write operational register with cache-line flush.
+    fn op_write(&self, off: u32, val: u32) {
+        let ptr = self.op(off);
+        unsafe { core::ptr::write_volatile(ptr, val) };
+        Self::clflush(ptr as *const u8);
     }
 
     fn rt(&self) -> *mut u32 {
@@ -574,15 +604,15 @@ impl XhciController {
             }
 
             // Ensure port is powered (some controllers lose PP after HCRST)
-            let mut portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+            let mut portsc = self.op_read(PORTSC_BASE + port * 0x10);
             if portsc & PORTSC_PP == 0 {
                 log::info!("xHCI: poll_ports port {} — PP=0, attempting to power on", port);
-                unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PP); }
+                self.op_write(PORTSC_BASE + port * 0x10, portsc | PORTSC_PP);
                 for _ in 0..20_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                portsc = self.op_read(PORTSC_BASE + port * 0x10);
             }
 
-            let portsc = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+            let portsc = self.op_read(PORTSC_BASE + port * 0x10);
             if port < 8 {
                 log::info!("xHCI: poll_ports port {} PORTSC=0x{:08X} CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={}",
                     port, portsc, portsc & 1, (portsc>>1)&1, (portsc>>4)&1,
@@ -591,39 +621,39 @@ impl XhciController {
 
             if portsc & PORTSC_CCS != 0 {
                 log::info!("xHCI: poll_ports port {} — CCS=1, doing port reset", port);
-                unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_PR); }
+                self.op_write(PORTSC_BASE + port * 0x10, portsc | PORTSC_PR);
                 for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                unsafe {
-                    let v = core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10));
-                    core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), v & !PORTSC_PR);
+                {
+                    let v = self.op_read(PORTSC_BASE + port * 0x10);
+                    self.op_write(PORTSC_BASE + port * 0x10, v & !PORTSC_PR);
                 }
                 for _ in 0..200_000 {
-                    if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
+                    if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_PED != 0 { break; }
                 }
-                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
+                if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_CCS == 0 {
                     log::info!("xHCI: poll_ports port {} — CCS lost after reset", port);
                     continue;
                 }
             } else if portsc & PORTSC_PP != 0 {
                 log::info!("xHCI: poll_ports port {} — CCS=0 PP=1, trying warm reset", port);
-                unsafe { core::ptr::write_volatile(self.op(PORTSC_BASE + port * 0x10), portsc | PORTSC_WPR); }
+                self.op_write(PORTSC_BASE + port * 0x10, portsc | PORTSC_WPR);
                 for _ in 0..200_000 {
-                    let p = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                    let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & PORTSC_WPR == 0 { break; }
                 }
-                let portsc_wpr = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                let portsc_wpr = self.op_read(PORTSC_BASE + port * 0x10);
                 log::info!("xHCI: poll_ports port {} — after WPR, PORTSC=0x{:08X} CCS={}", port, portsc_wpr, portsc_wpr & 1);
                 for _ in 0..100_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                let p = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+                let p = self.op_read(PORTSC_BASE + port * 0x10);
                 if p & PORTSC_CCS == 0 {
                     log::info!("xHCI: poll_ports port {} — still CCS=0 after warm reset", port);
                     continue;
                 }
                 log::info!("xHCI: poll_ports port {} — CCS=1 after warm reset!", port);
                 for _ in 0..200_000 {
-                    if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_PED != 0 { break; }
+                    if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_PED != 0 { break; }
                 }
-                if unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) } & PORTSC_CCS == 0 {
+                if self.op_read(PORTSC_BASE + port * 0x10) & PORTSC_CCS == 0 {
                     log::info!("xHCI: poll_ports port {} — CCS lost after WPR+wait", port);
                     continue;
                 }
@@ -632,7 +662,7 @@ impl XhciController {
                 continue;
             }
 
-            let ps = unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) };
+            let ps = self.op_read(PORTSC_BASE + port * 0x10);
             let speed_val = (ps >> 10) & 0xF;
             let usb_speed = port_speed_to_usb(speed_val);
             log::info!("xHCI: poll_ports port {} — device detected speed={}", port, speed_val);
@@ -655,11 +685,15 @@ impl XhciController {
     }
     pub fn read_portsc(&self, port: u32) -> u32 {
         if port >= self.n_ports { return 0xFFFF; }
-        unsafe { core::ptr::read_volatile(self.op(PORTSC_BASE + port * 0x10)) }
+        self.op_read(PORTSC_BASE + port * 0x10)
     }
-    /// Read an operational register.
+    pub fn write_portsc(&self, port: u32, value: u32) {
+        if port >= self.n_ports { return; }
+        self.op_write(PORTSC_BASE + port * 0x10, value);
+    }
+    /// Read an operational register (with cache-line flush).
     pub fn read_op_reg(&self, offset: u32) -> u32 {
-        unsafe { core::ptr::read_volatile(self.op(offset as u32)) }
+        self.op_read(offset as u32)
     }
     pub fn slot_id_for_device(&self, dev_idx: usize) -> Option<u32> {
         self.slots.get(dev_idx).map(|s| s.slot_id)

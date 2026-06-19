@@ -224,6 +224,30 @@ pub fn poll_usb() -> bool {
             xhci.poll_ports();
             let new = xhci.devices().len();
             klog_fmt!("xHCI poll: {} ports old={} new={}\n", xhci.n_ports(), old, new);
+
+            // If no devices found and we have powered ports, try warm reset
+            if new == 0 {
+                for p in 0..xhci.n_ports().min(8) {
+                    let ps = xhci.read_portsc(p);
+                    if ps != 0xFFFF && ps & (1 << 9) != 0 && ps & 1 == 0 {
+                        klog_fmt!("xHCI warm reset port {}\n", p);
+                        xhci.write_portsc(p, ps | (1 << 20));
+                        for _ in 0..200_000 { /* delay */ }
+                        let after = xhci.read_portsc(p);
+                        klog_fmt!("xHCI after warm reset port {}: 0x{:08X} CCS={}\n", p, after, after & 1);
+                    }
+                }
+                // Re-check after warm resets
+                xhci.poll_ports();
+                let new2 = xhci.devices().len();
+                klog_fmt!("xHCI poll after warm reset: old={} new={}\n", new, new2);
+                if new2 > new {
+                    for idx in new..new2 {
+                        xhci_pending.push((ctrl_idx, idx));
+                    }
+                }
+            }
+
             if new > old {
                 for idx in old..new {
                     xhci_pending.push((ctrl_idx, idx));
