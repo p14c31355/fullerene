@@ -69,6 +69,11 @@ use spin::{Mutex, Once};
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
 
+/// Common QEMU framebuffer probe configurations.
+///
+/// Entries are ordered: higher-resolution variants first, then lower-resolution
+/// fallbacks.  Each address may appear twice (once per resolution); the probe
+/// loop returns the **first** match, so higher resolutions take priority.
 pub const QEMU_CONFIGS: [QemuConfig; 9] = [
     QemuConfig {
         address: 0xFC000000,

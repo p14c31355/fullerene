@@ -56,7 +56,7 @@ pub unsafe extern "efiapi" fn efi_main(
         None => {
             petroleum::bootloader_log!("No graphics protocols found, initializing VGA text mode.");
             init_basic_vga_text_mode();
-            install_vga_framebuffer_config(st);
+            install_vga_framebuffer_config();
             petroleum::bootloader_log!(
                 "VGA framebuffer config installed, continuing with kernel load."
             );
@@ -116,15 +116,15 @@ fn init_basic_vga_text_mode() {
     petroleum::println!("Basic VGA text mode initialized as fallback.");
 }
 
-fn install_vga_framebuffer_config(_st: &EfiSystemTable) {
+fn install_vga_framebuffer_config() {
     petroleum::println!("Installing VGA framebuffer config for UEFI...");
     let config = FullereneFramebufferConfig {
-        address: 0xA0000,
-        width: 320,
-        height: 200,
+        address: 0xB8000,
+        width: 80,
+        height: 25,
         pixel_format: EfiGraphicsPixelFormat::PixelFormatMax,
-        bpp: 8,
-        stride: 320,
+        bpp: 16,
+        stride: 160,
     };
     petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
     petroleum::println!("VGA framebuffer config saved globally successfully.");

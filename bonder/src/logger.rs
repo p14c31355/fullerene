@@ -31,8 +31,11 @@ use crate::NetDevice;
 use crate::ethernet::{EtherType, MacAddress};
 use crate::ipv4::{IpProtocol, Ipv4Addr};
 
-/// Ethernet MTU (1500) minus Ethernet header (14) + IPv4 header (20) + UDP header (8).
-const MAX_LOG_PAYLOAD: usize = 1500 - 14 - 20 - 8;
+/// Maximum log payload = Ethernet MTU (1500) minus header overhead.
+const MAX_LOG_PAYLOAD: usize = 1500
+    - crate::ethernet::EthernetHeader::SIZE
+    - crate::ipv4::Ipv4Header::SIZE
+    - crate::udp::UdpHeader::SIZE;
 
 /// Maximum log message length. Longer messages are truncated.
 const MAX_LOG_MESSAGE: usize = MAX_LOG_PAYLOAD - 64; // headroom for timestamp / level / newline

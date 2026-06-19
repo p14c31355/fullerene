@@ -24,8 +24,8 @@ impl UdpHeader {
 
     pub fn new(src_port: u16, dst_port: u16, payload_len: usize) -> Self {
         Self {
-            src_port: src_port.to_be(),
-            dst_port: dst_port.to_be(),
+            src_port,
+            dst_port,
             length: (Self::SIZE + payload_len) as u16,
             checksum: 0,
         }
