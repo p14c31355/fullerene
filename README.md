@@ -1,4 +1,6 @@
 # Fullerene
+> **Fullerene is a Rust operating system for x86_64 UEFI featuring a graphical desktop, multitasking kernel, interactive shell, and real hardware support.**
+
 
 ---
 
@@ -12,7 +14,7 @@ The community is still new, but we welcome you!
 
 ---
 
-Fullerene is a complete operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, syscall interfaces, GUI compositing, and event-driven shell interaction, all implemented in a safe, no_std environment.
+Fullerene is an operating system kernel written in Rust, targeting x86_64 architecture with UEFI booting. It explores modern systems programming concepts including process scheduling, virtual memory management, filesystem abstraction, syscall interfaces, GUI compositing, and event-driven shell interaction, all implemented in a safe, no_std environment.
 
 Fullerene provides a full-featured kernel with multitasking capabilities, running in QEMU virtual machine. The system includes a bootloader, kernel scheduler, process management, memory allocation, device drivers, GUI windowing system, interactive shell, and user-space support scaffolding.
 
@@ -21,12 +23,13 @@ Fullerene provides a full-featured kernel with multitasking capabilities, runnin
 ## Design Goals
 
 - **REAL HARDWARE FIRST**
+  - Features are validated on physical machines, not only in QEMU.
 
 ---
 
-- **Minimizing architectural cognitive load through large context structures**
-- **Minimizing inline assembly maximizes code stability**
-- **Maximizing the use of the bare metal Rust ecosystem**
+- **Context-oriented architecture** - Large Rust context structures reduce architectural cognitive load.
+- **Minimizing inline assembly maximizes code stability** - Hardware-specific code is isolated to improve maintainability.
+- **Maximizing the use of the bare metal Rust ecosystem** - Prefer reusable no_std crates over custom implementations whenever possible.
 
 ## Features
 
