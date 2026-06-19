@@ -271,7 +271,7 @@ impl XhciController {
         }
 
         // ── xHCI Legacy Support Handoff ────────────────────────
-        let mut legacy_found = false;
+        let mut legacy_handoff_ok = true;
         {
             let mut ec_off = (((hcc1 >> 16) & 0xFFFF) as usize) * 4;
             while ec_off != 0 && ec_off < 0x10000 {
@@ -280,28 +280,31 @@ impl XhciController {
                 let ec_next = (ec_next_raw as usize) * 4;
                 log::info!("xHCI: xECP at 0x{:x}: id={} next_ptr={}", ec_off, ec_id, ec_next_raw);
                 if ec_id == 1 {
-                    legacy_found = true;
                     let bios_sem = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
                     let os_sem = unsafe { core::ptr::read_volatile(caps.add(ec_off + 3) as *const u8) };
                     log::info!("xHCI: USB Legacy Support: BIOS_SEM={} OS_SEM={}", bios_sem, os_sem);
                     if bios_sem & 1 != 0 {
                         log::info!("xHCI: BIOS owns controller — requesting handoff");
+                        legacy_handoff_ok = false;
                         unsafe { core::ptr::write_volatile(caps.add(ec_off + 3) as *mut u8, 1); }
                         for _ in 0..1_000_000 {
                             let b = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
                             if b & 1 == 0 { break; }
                         }
                         let final_bios = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
-                        log::info!("xHCI: Legacy handoff done, BIOS_SEM={}", final_bios);
+                        legacy_handoff_ok = final_bios & 1 == 0;
+                        log::info!("xHCI: Legacy handoff done, BIOS_SEM={} ok={}", final_bios, legacy_handoff_ok);
                     } else {
                         log::info!("xHCI: OS already owns controller");
+                        legacy_handoff_ok = true;
                     }
                 }
                 if ec_next_raw == 0 { break; }
-                ec_off = ec_next;
+                ec_off += ec_next;
             }
-            if !legacy_found {
-                log::info!("xHCI: no USB Legacy Support capability found");
+            if !legacy_handoff_ok {
+                log::info!("xHCI: legacy handoff failed");
+                return None;
             }
         }
 
@@ -404,7 +407,7 @@ impl XhciController {
             ports_done: 0, devices: Vec::new(),
             ctx: ctx as *const dyn DriverContext,
             n_slots_used: 0,
-            legacy_handoff_done: legacy_found,
+            legacy_handoff_done: legacy_handoff_ok,
         })
     }
 
@@ -691,7 +694,8 @@ impl XhciController {
     }
     pub fn write_portsc(&self, port: u32, value: u32) {
         if port >= self.n_ports { return; }
-        self.op_write(PORTSC_BASE + port * 0x10, value);
+        const PORTSC_RW1C: u32 = 0x00FE0000;
+        self.op_write(PORTSC_BASE + port * 0x10, value & !PORTSC_RW1C);
     }
     /// Read an operational register (with cache-line flush).
     pub fn read_op_reg(&self, offset: u32) -> u32 {
@@ -718,6 +722,9 @@ impl XhciController {
     ) -> Result<usize, &'static str> {
         let is_in = (setup.bm_request_type & 0x80) != 0;
         let data_len = setup.w_length as usize;
+        if data_len > buf.len() {
+            return Err("control buffer too small");
+        }
 
         // Check slot validity first to avoid leaking staging buffer on early return
         let ep0_cycle = {
@@ -799,7 +806,13 @@ impl XhciController {
         dir: UsbDirection,
         _mps: u16,
     ) -> Result<usize, &'static str> {
-        let len = buf.len().min(65536);
+        if buf.len() > 65536 {
+            return Err("bulk transfer too large");
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let len = buf.len();
 
         // Validate slot and ring existence before allocating staging memory
         let ring_cycle = {
