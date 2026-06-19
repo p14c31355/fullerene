@@ -397,7 +397,7 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
                         }
                     }
                     5 => { // ENDPOINT descriptor
-                        if offset + 7 <= 256 {
+                        if dlen >= 7 {
                             let ep_addr = cfg_buf[offset + 2];
                             let ep_attr = cfg_buf[offset + 3];
                             let xfer_type = ep_attr & 0x03;
