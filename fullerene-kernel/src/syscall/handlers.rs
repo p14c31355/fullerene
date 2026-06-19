@@ -60,11 +60,8 @@ struct ThreadState {
 }
 
 struct WindowState {
-    /// Native window index in WindowContext.
-    ///
-    /// TODO: Store `WindowId` instead of a raw index.  Indices become
-    /// stale if windows are ever removed or reordered.
-    window_index: usize,
+    /// Native window ID in WindowContext.
+    window_id: crate::contexts::window::WindowId,
     pid: process::ProcessId,
 }
 
@@ -351,8 +348,10 @@ fn syscall_fork() -> SyscallResult {
     crate::process::PROCESS_MANAGER
         .add(child_box)
         .map_err(|_| {
-            // TODO: Deallocate kernel_stack (kernel_stack_ptr) and
-            // cloned page-table frames on failure.
+            // Deallocate kernel stack and cloned page-table frames on failure.
+            let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+            petroleum::common::memory::deallocate_layout(kernel_stack_ptr, layout);
+            crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
             SyscallError::OutOfMemory
         })?;
 
@@ -646,6 +645,12 @@ fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
     if len == 0 || (addr % 4096) != 0 {
         return Err(SyscallError::InvalidArgument);
     }
+    // Validate that the entire range is in user space.
+    let start_addr = VirtAddr::new(addr);
+    let end_addr = VirtAddr::new(addr + length as u64 - 1);
+    if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
+        return Err(SyscallError::PermissionDenied);
+    }
 
     match kernel::with_kernel_mut(|k| -> SyscallResult {
         let memory = &mut k.memory;
@@ -866,7 +871,9 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
     crate::process::PROCESS_MANAGER
         .add(thread_box)
         .map_err(|_| {
-            // TODO: Deallocate kernel_stack (kernel_stack_ptr) on failure.
+            // Deallocate kernel stack on failure.
+            let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+            petroleum::common::memory::deallocate_layout(kernel_stack_ptr, layout);
             SyscallError::OutOfMemory
         })?;
 
@@ -975,7 +982,7 @@ fn syscall_create_window(
 
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let window_index: usize = match kernel::with_kernel_mut(|k| {
+    let win_id: crate::contexts::window::WindowId = match kernel::with_kernel_mut(|k| {
         let win_id = k.window.next_window_id();
         let win = crate::contexts::window::Window::new(
             win_id,
@@ -986,14 +993,14 @@ fn syscall_create_window(
             height,
         );
         k.window.add_window(win);
-        k.window.windows.len().wrapping_sub(1)
+        win_id
     }) {
-        Some(idx) => idx,
+        Some(id) => id,
         None => return Err(SyscallError::OutOfMemory),
     };
 
     let state = WindowState {
-        window_index,
+        window_id: win_id,
         pid,
     };
     let handle = alloc_handle(KernelObject::Window(state));
@@ -1026,11 +1033,11 @@ fn syscall_resize_window(handle: u64, width: u32, height: u32) -> SyscallResult 
             KernelObject::Window(w) => w,
             _ => return Err(SyscallError::BadHandle),
         };
-        let idx = window.window_index;
+        let id = window.window_id;
         kernel::with_kernel_mut(|k| {
-            if idx < k.window.windows.len() {
-                k.window.windows[idx].width = width;
-                k.window.windows[idx].height = height;
+            if let Some(win) = k.window.windows.iter_mut().find(|w| w.id == id) {
+                win.width = width;
+                win.height = height;
             }
         });
         Ok(0)
@@ -1043,14 +1050,14 @@ fn syscall_present_window(handle: u64) -> SyscallResult {
             KernelObject::Window(w) => w,
             _ => return Err(SyscallError::BadHandle),
         };
-        let idx = window.window_index;
+        let id = window.window_id;
         kernel::with_kernel_mut(|k| {
-            if idx < k.window.windows.len() {
-                k.window.windows[idx].visible = true;
+            if let Some(win) = k.window.windows.iter_mut().find(|w| w.id == id) {
+                win.visible = true;
                 // Mark redraw pending via event system
                 use resonance::Event as ResonanceEvent;
                 k.event.push(ResonanceEvent::Window(
-                    resonance::event::WindowEvent::Redraw(k.window.windows[idx].id.0),
+                    resonance::event::WindowEvent::Redraw(win.id.0),
                 ));
             }
         });
@@ -1182,6 +1189,9 @@ petroleum::validate_user_buffer(data_ptr as usize, size, false)?;
     let data = unsafe { user_slice(data_ptr, size, false) }
         .map_err(|_| SyscallError::InvalidArgument)?;
 
+    // Allocate the message vector outside the lock to reduce contention.
+    let msg_vec = Vec::from(data);
+
     let recv_waiters: Vec<process::ProcessId> = with_handle_mut(handle, |obj| {
         let channel = match obj {
             KernelObject::Channel(ch) => ch,
@@ -1190,7 +1200,6 @@ petroleum::validate_user_buffer(data_ptr as usize, size, false)?;
         if channel.messages.len() >= channel.max_messages {
             return Err(SyscallError::Again);
         }
-        let msg_vec = Vec::from(data);
         channel.messages.push(msg_vec);
         Ok(core::mem::take(&mut channel.waiters))
     })?;
@@ -1209,26 +1218,33 @@ fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> SyscallResu
     }
     petroleum::validate_user_buffer(buf as usize, max, false)?;
 
-    with_handle_mut(handle, |obj| {
+    // Dequeue the message inside the lock, then copy to user space
+    // outside the lock to avoid holding the spinlock during a
+    // potential page fault.
+    let msg: Option<Vec<u8>> = with_handle_mut(handle, |obj| {
         let channel = match obj {
             KernelObject::Channel(ch) => ch,
             _ => return Err(SyscallError::BadHandle),
         };
         if !channel.messages.is_empty() {
-            let msg = channel.messages.remove(0);
-            let copy_len = msg.len().min(max);
-            let dest = unsafe { user_slice_mut(buf, max, false) }
-                .map_err(|_| SyscallError::InvalidArgument)?;
-            dest[..copy_len].copy_from_slice(&msg[..copy_len]);
-            Ok(copy_len as u64)
+            Ok(Some(channel.messages.remove(0)))
         } else {
-            // No message available — return WouldBlock without registering
-            // as a waiter.
-            // NOTE: ChannelState::waiters exists for future blocking-recv
-            // support (where the caller would be added to waiters and blocked).
-            Err(SyscallError::WouldBlock)
+            Ok(None)
         }
-    })
+    })?;
+
+    if let Some(msg) = msg {
+        let copy_len = msg.len().min(max);
+        let dest = unsafe { user_slice_mut(buf, max, false) }
+            .map_err(|_| SyscallError::InvalidArgument)?;
+        dest[..copy_len].copy_from_slice(&msg[..copy_len]);
+        Ok(copy_len as u64)
+    } else {
+        // No message available — return WouldBlock.
+        // NOTE: ChannelState::waiters exists for future blocking-recv
+        // support (where the caller would be added to waiters and blocked).
+        Err(SyscallError::WouldBlock)
+    }
 }
 
 fn syscall_pipe_create(_flags: u64) -> SyscallResult {
@@ -1319,10 +1335,19 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
             }
             KernelObject::Window(w) => {
                 let copy = WindowState {
-                    window_index: w.window_index,
+                    window_id: w.window_id,
                     pid: w.pid,
                 };
                 table.insert(new_h, KernelObject::Window(copy));
+                Ok(new_h)
+            }
+            KernelObject::Pipe(p) => {
+                let copy = PipeState {
+                    buffer: alloc::sync::Arc::clone(&p.buffer),
+                    is_read_end: p.is_read_end,
+                    peer_waiters: Vec::new(),
+                };
+                table.insert(new_h, KernelObject::Pipe(copy));
                 Ok(new_h)
             }
             _ => Err(SyscallError::NotSupported),
