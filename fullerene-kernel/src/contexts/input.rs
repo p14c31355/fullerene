@@ -114,6 +114,13 @@ impl InputContext {
     pub fn set_sensitivity(&mut self, s: i16) {
         self.sensitivity = s;
     }
+    /// Read sensitivity from SettingsContext if available, otherwise use the
+    /// locally-configured value.
+    pub fn apply_settings_sensitivity(&mut self) {
+        if let Some(val) = super::kernel::with_kernel(|k| k.settings.mouse.sensitivity_raw()) {
+            self.sensitivity = val;
+        }
+    }
     pub fn poll(&mut self) {
         let ps2 = nitrogen::ps2::mouse::consume_state();
         let (dx, dy, btn) = (

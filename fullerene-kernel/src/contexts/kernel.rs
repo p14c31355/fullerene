@@ -21,6 +21,7 @@ use super::gui::GuiContext;
 use super::input::InputContext;
 use super::memory::MemoryContext;
 use super::pci::PciContext;
+use super::settings::SettingsContext;
 use super::shell::ShellContext;
 use super::vfs::VfsContext;
 use super::window::WindowContext;
@@ -43,6 +44,7 @@ pub struct KernelContext {
     pub vfs: VfsContext,
     pub shell: ShellContext,
     pub gui: GuiContext,
+    pub settings: SettingsContext,
 }
 
 // KernelContext is only stored behind a Mutex; interior mutability is
@@ -69,6 +71,7 @@ impl KernelContext {
             vfs: VfsContext::new(),
             shell: ShellContext::new(),
             gui: GuiContext::new(),
+            settings: SettingsContext::new(),
         }
     }
 

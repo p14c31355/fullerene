@@ -125,7 +125,26 @@ const TERM_WIN_H: u32 = DEFAULT_ROWS * GLYPH_H;
 const BG_COLOR: u32 = 0x1a1a2e;
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
-pub(crate) const MOUSE_SENSITIVITY: i16 = 6;
+/// Mouse sensitivity multiplier (set by kernel from SettingsContext).
+/// Default = 6 (legacy default).  The kernel updates this whenever the
+/// user changes the mouse sensitivity setting.
+pub static MOUSE_SENSITIVITY: core::sync::atomic::AtomicI16 =
+    core::sync::atomic::AtomicI16::new(6);
+
+/// Apply settings from the kernel (called at boot and when settings change).
+pub fn apply_settings(sensitivity: f32, brightness_x100: u32, top_panel_enabled: bool) {
+    let sens_i16 = (sensitivity * 6.0) as i16; // scale to legacy multiplier
+    MOUSE_SENSITIVITY.store(sens_i16, core::sync::atomic::Ordering::Relaxed);
+    DISPLAY_BRIGHTNESS_X100.store(brightness_x100, core::sync::atomic::Ordering::Relaxed);
+    lattice::top_panel::set_top_panel_enabled(top_panel_enabled);
+    force_desktop_redraw();
+}
+
+/// Software display brightness × 100 (set by kernel from SettingsContext).
+/// Default = 100 (1.0×).  Range: 10..100.
+/// Applied in the compositor as a post‑processing step.
+pub static DISPLAY_BRIGHTNESS_X100: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(100);
 const FRAME_INTERVAL_TICKS: u64 = 8;
 const FRAME_INTERVAL_MS: u64 = 17;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
@@ -390,10 +409,11 @@ pub fn poll_mouse_state() {
         let mut mouse = MOUSE_STATE.lock();
         let old_x = mouse.x;
         let old_y = mouse.y;
-        mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(MOUSE_SENSITIVITY));
+        let sens = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
+        mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(sens));
         mouse.y = mouse
             .y
-            .wrapping_add(dy.wrapping_mul(MOUSE_SENSITIVITY).wrapping_neg());
+            .wrapping_add(dy.wrapping_mul(sens).wrapping_neg());
         mouse.buttons = btn;
         let cx = mouse.x as i32;
         let cy = mouse.y as i32;
@@ -755,9 +775,17 @@ where
             bar_h,
         ));
     }
+    // Top panel dirty rect (when clock changes or enabled)
     if rt.clock_changed {
-        rt.desktop
-            .push_dirty_rect(lattice::scene::DirtyRect::new(0, 0, fb_width, 24));
+        let panel_h = if lattice::top_panel::is_top_panel_enabled() {
+            lattice::top_panel::TOP_PANEL_HEIGHT
+        } else {
+            0
+        };
+        if panel_h > 0 {
+            rt.desktop
+                .push_dirty_rect(lattice::scene::DirtyRect::new(0, 0, fb_width, panel_h));
+        }
     }
     rt.clock_changed = false;
 
@@ -851,7 +879,10 @@ where
             ShellState::Desktop => {}
         }
 
-        if rt.shell_state == ShellState::Desktop {
+        // Render top panel only when enabled
+        if rt.shell_state == ShellState::Desktop
+            && lattice::top_panel::is_top_panel_enabled()
+        {
             rt.desktop
                 .top_panel
                 .render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
@@ -901,6 +932,21 @@ where
                 fb_height,
                 &rt.desktop.cursor,
             );
+        }
+
+        // ── Post‑processing: apply software brightness ─────
+        let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
+        if brightness < 100 {
+            let fb_stride_u = fb_stride_pixels as usize;
+            for row in 0..fb_height as usize {
+                let row_off = row * fb_stride_u;
+                for col in 0..fb_width as usize {
+                    let idx = row_off + col;
+                    if idx < fb_len {
+                        fb_pixels[idx] = lattice::compositor::apply_brightness(fb_pixels[idx], brightness);
+                    }
+                }
+            }
         }
     }
 }

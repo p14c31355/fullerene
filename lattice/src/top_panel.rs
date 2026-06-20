@@ -9,8 +9,38 @@
 
 use crate::compositor::{COLOR_PRIMARY, COLOR_TEXT};
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 /// Top panel height in pixels.
 pub const TOP_PANEL_HEIGHT: u32 = 26;
+
+/// Global atomic: top panel enabled (1 = on, 0 = off).
+/// Set by the kernel from SettingsContext.
+static TOP_PANEL_ENABLED: AtomicU32 = AtomicU32::new(1);
+
+/// Check whether the GNOME-style top panel is enabled.
+#[inline]
+pub fn is_top_panel_enabled() -> bool {
+    TOP_PANEL_ENABLED.load(Ordering::Relaxed) != 0
+}
+
+/// Toggle the top panel on/off. Returns the new state.
+pub fn toggle_top_panel() -> bool {
+    let prev = TOP_PANEL_ENABLED.load(Ordering::Relaxed);
+    let next = if prev != 0 { 0 } else { 1 };
+    TOP_PANEL_ENABLED.store(next, Ordering::Relaxed);
+    next != 0
+}
+
+/// Set the top panel enabled state explicitly.
+pub fn set_top_panel_enabled(on: bool) {
+    TOP_PANEL_ENABLED.store(if on { 1 } else { 0 }, Ordering::Relaxed);
+}
+
+/// Get a reference to the underlying atomic for kernel sync.
+pub fn top_panel_enabled_atomic() -> &'static AtomicU32 {
+    &TOP_PANEL_ENABLED
+}
 
 /// Top panel background colour.
 pub const TOP_PANEL_BG: u32 = 0x0a0a14;

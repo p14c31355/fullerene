@@ -62,7 +62,7 @@ impl EventHandler for WmEventHandler {
                                     return true;
                                 }
                                 "Settings" => {
-                                    rt.shell_state = ShellState::TimeZoneSelector;
+                                    crate::menu_actions::open_settings_window(rt);
                                     rt.frame_due = true;
                                     return true;
                                 }

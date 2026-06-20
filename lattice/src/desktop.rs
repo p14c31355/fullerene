@@ -137,10 +137,25 @@ impl Desktop {
         }
     }
 
-    /// Return the usable work area (screen minus taskbar).
+    /// Return the usable work area (screen minus taskbar and top panel if visible).
     pub fn work_area(&self, fb_width: u32, fb_height: u32) -> (u32, u32) {
         let bar_h = crate::taskbar::TASKBAR_HEIGHT;
-        (fb_width, fb_height.saturating_sub(bar_h))
+        let panel_h = if crate::top_panel::is_top_panel_enabled() {
+            crate::top_panel::TOP_PANEL_HEIGHT
+        } else {
+            0
+        };
+        let total_h = fb_height.saturating_sub(bar_h).saturating_sub(panel_h);
+        (fb_width, total_h)
+    }
+
+    /// Offset from top edge due to top panel.
+    pub fn top_panel_offset(&self) -> u32 {
+        if crate::top_panel::is_top_panel_enabled() {
+            crate::top_panel::TOP_PANEL_HEIGHT
+        } else {
+            0
+        }
     }
 
     // ── convenience delegates ───────────────────────────────

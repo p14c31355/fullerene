@@ -2,6 +2,7 @@
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
 use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, truncate_to_chars};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -239,6 +240,56 @@ fn open_explorer_window(rt: &mut RuntimeState) {
 
 /// Create a titled window, fill its surface with `text`, raise to top, and schedule a redraw.
 fn show_text_window(
+    rt: &mut RuntimeState,
+    title: &str,
+    x: i32,
+    y: i32,
+    cols: u32,
+    extra_rows: u32,
+    bg: u32,
+    fg: u32,
+    text: &str,
+) {
+    let rows = (text.lines().count() as u32) + extra_rows;
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(x, y, cols * GLYPH_W, rows * GLYPH_H, bg, title);
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = render_text_into_surface(&mut w.surface, text, cols, fg, bg);
+    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Open a simple Settings info window showing current mouse sensitivity,
+/// brightness, and top panel status.
+pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
+    let sens = crate::MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
+    let brightness = crate::DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
+    let top_panel = lattice::top_panel::is_top_panel_enabled();
+
+    let info = alloc::format!(
+        "Settings\n\
+         \n\
+         Mouse Sensitivity: {}  (0.25 - 4.0)\n\
+         \n\
+         Display Brightness: {}.{:02}  (0.10 - 1.00)\n\
+         \n\
+         Top Panel: {}",
+        sens as f32,
+        brightness / 100,
+        brightness % 100,
+        if top_panel { "ON" } else { "OFF" }
+    );
+
+    let cols = 34u32;
+    let lines = info.lines().count() as u32;
+    open_info_window_raw(rt, "Settings", 200, 100, cols, 1, 0x0d1a1a, 0xCCFFFF, &info);
+}
+
+/// Open an info window with custom text and coordinates.
+fn open_info_window_raw(
     rt: &mut RuntimeState,
     title: &str,
     x: i32,

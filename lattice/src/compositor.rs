@@ -52,6 +52,21 @@ pub(crate) fn dim_color(color: u32) -> u32 {
     (r << 16) | (g << 8) | b
 }
 
+/// Apply software brightness to a colour.
+///
+/// `brightness_x100` is the brightness value × 100 (range 10..100, default 100).
+/// Each channel is multiplied by `brightness_x100 / 100`.
+#[inline]
+pub fn apply_brightness(color: u32, brightness_x100: u32) -> u32 {
+    if brightness_x100 >= 100 {
+        return color; // no change at 100% or above
+    }
+    let r = ((color >> 16) & 0xFF) * brightness_x100 / 100;
+    let g = ((color >> 8) & 0xFF) * brightness_x100 / 100;
+    let b = (color & 0xFF) * brightness_x100 / 100;
+    (r << 16) | (g << 8) | b
+}
+
 /// Alpha-blend a source pixel over a destination pixel, writing the result.
 /// Returns the blending was performed (useful for callers to `continue` in
 /// tight loops).
