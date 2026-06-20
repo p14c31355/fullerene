@@ -410,8 +410,11 @@ impl XhciController {
             let cur_pls = (ps >> 5) & 0xF;
             log::info!("xHCI: PORTSC[{}] before force-RxDetect PP={} PLS={} CCS={}",
                 port, (ps>>9)&1, cur_pls, ps & 1);
-            // Power on + set PLS to RxDetect
-            let new_ps = PORTSC_PP | PLS_RXDETECT;
+            // Power on + set PLS to RxDetect.
+            // xHCI §5.4.8: LWS (bit 16) MUST be 1 when writing PLS,
+            // otherwise the write is silently ignored.
+            const LWS: u32 = 1 << 16;
+            let new_ps = PORTSC_PP | PLS_RXDETECT | LWS;
             unsafe {
                 core::ptr::write_volatile(
                     op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
@@ -645,6 +648,8 @@ impl XhciController {
         const PEC: u32 = 1 << 18;  // Port Enabled/Disabled Change
         const CEC: u32 = 1 << 23;  // Port Config Error Change
         const RW1C_BITS: u32 = CSC | PEC | CEC | (1 << 22) | (1 << 20) | (1 << 19); // bits 17-23 are RW1C
+        const LWS: u32 = 1 << 16;  // Link Write Strobe (xHCI §5.4.8)
+        const WPR: u32 = 1 << 20;  // Warm Port Reset
 
         for port in 0..self.n_ports {
             if self.ports_done & (1 << port) != 0 {
@@ -675,9 +680,10 @@ impl XhciController {
                 self.op_write(PORTSC_BASE + port * 0x10, v & !(PORTSC_PP | RW1C_BITS));
                 // Wait ≥100ms for VBUS discharge (USB 3.0 §7.3.1)
                 for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                // Power on
+                // Power on + set PLS=RxDetect with LWS
                 let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP);
+                let pls5: u32 = 5 << 5; // RxDetect
+                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
                 // Wait for PHY detection + link training (USB 3.0 can be slow)
                 for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
             }
@@ -699,15 +705,19 @@ impl XhciController {
                 log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
                 // Assert WPR (bit 20) — clear RW1C bits first, then set WPR
                 let v = self.op_read(PORTSC_BASE + port * 0x10);
-                const WPR: u32 = 1 << 20;
                 self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) | WPR);
                 // Wait for WPR to complete (controller clears it)
                 for _ in 0..200_000 {
                     let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & WPR == 0 { break; }
                 }
+                // After WPR completes, force PLS=RxDetect+LWS to restart
+                // link training (some controllers stay in Disconnected after WPR).
+                let v2 = self.op_read(PORTSC_BASE + port * 0x10);
+                let pls5: u32 = 5 << 5;
+                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
                 // Wait for link training after warm reset
-                for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
             }
 
             // ── Step 5: Final CCS check ────────────────────────
