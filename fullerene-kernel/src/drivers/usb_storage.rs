@@ -328,8 +328,9 @@ pub fn poll_usb_all() -> bool {
     let mut pending: Vec<(usize, usize)> = Vec::new();
     {
         // Unmount existing USB filesystems from VFS before clearing state
-        for drive in USB_DRIVES.lock().iter() {
-            let _ = crate::vfs::unmount(&drive.mount_point);
+        let mount_points: Vec<String> = USB_DRIVES.lock().iter().map(|d| d.mount_point.clone()).collect();
+        for mp in mount_points {
+            let _ = crate::vfs::unmount(&mp);
         }
         USB_DRIVES.lock().clear();
         USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
