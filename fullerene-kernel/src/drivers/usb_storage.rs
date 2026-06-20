@@ -53,6 +53,7 @@ impl UsbBlockDevice {
         let dlen = data.as_ref().map(|d| d.len() as u32).unwrap_or(0);
         cbw[8..12].copy_from_slice(&dlen.to_le_bytes());
         cbw[12] = if dir_in { 0x80 } else { 0x00 };
+        cbw[13] = 0; // bCBWLUN
         cbw[14] = cdb.len().min(16) as u8;
         cbw[15..15 + cdb.len().min(16)].copy_from_slice(&cdb[..cdb.len().min(16)]);
 
@@ -66,6 +67,8 @@ impl UsbBlockDevice {
         ehci.bulk_transfer(self.dev_addr, self.bulk_in, &mut csw, UsbDirection::In, 512)?;
         let sig = u32::from_le_bytes([csw[0], csw[1], csw[2], csw[3]]);
         if sig != 0x53425355 { return Err("bad CSW"); }
+        let csw_tag = u32::from_le_bytes([csw[4], csw[5], csw[6], csw[7]]);
+        if csw_tag != tag { return Err("CSW tag mismatch"); }
         if csw[12] != 0 { return Err("CSW err"); }
         Ok(())
     }
@@ -428,13 +431,11 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             bulk_in_ep = found_in.unwrap_or(0x82);
         }
 
-        // Configure bulk endpoints with dynamically discovered addresses
-        // Configure bulk endpoints with dynamically discovered addresses
-        if xhci.configure_endpoint_bulk(slot_id, bulk_out_ep, 512).is_err() {
+        if xhci.configure_endpoint_bulk(slot_id, bulk_out_ep, 1024).is_err() {
             klog_fmt!("xHCI: configure bulk OUT 0x{:02X} failed\n", bulk_out_ep);
             return;
         }
-        if xhci.configure_endpoint_bulk(slot_id, bulk_in_ep, 512).is_err() {
+        if xhci.configure_endpoint_bulk(slot_id, bulk_in_ep, 1024).is_err() {
             klog_fmt!("xHCI: configure bulk IN 0x{:02X} failed\n", bulk_in_ep);
             return;
         }
@@ -471,10 +472,12 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             let mut data = vec![0u8; dlen as usize];
             // BOT CBW → xfer → CSW via xHCI bulk transfers
             let mut cbw = [0u8; 31];
+            let tag = self.tag; self.tag += 1;
             cbw[..4].copy_from_slice(&0x43425355u32.to_le_bytes());
-            cbw[4..8].copy_from_slice(&self.tag.to_le_bytes()); self.tag += 1;
+            cbw[4..8].copy_from_slice(&tag.to_le_bytes());
             cbw[8..12].copy_from_slice(&dlen.to_le_bytes());
             cbw[12] = 0x80;
+            cbw[13] = 0;
             cbw[14] = 10;
             cbw[15..25].copy_from_slice(&cdb);
             xhci.bulk_transfer(self.slot_id, self.bulk_out, &mut cbw, UsbDirection::Out, 512)?;
@@ -483,15 +486,41 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             xhci.bulk_transfer(self.slot_id, self.bulk_in, &mut csw, UsbDirection::In, 512)?;
             let sig = u32::from_le_bytes([csw[0], csw[1], csw[2], csw[3]]);
             if sig != 0x53425355 { return Err("bad CSW"); }
-            let tag = u32::from_le_bytes([csw[4], csw[5], csw[6], csw[7]]);
-            if tag != self.tag - 1 { return Err("CSW tag mismatch"); }
+            let csw_tag = u32::from_le_bytes([csw[4], csw[5], csw[6], csw[7]]);
+            if csw_tag != tag { return Err("CSW tag mismatch"); }
             if csw[12] != 0 { return Err("CSW err"); }
             let n = data.len().min(blen);
             buf[..n].copy_from_slice(&data[..n]);
             Ok(())
         }
-        fn write_sectors(&mut self, _lba: u32, _count: u16, _buf: &[u8]) -> Result<(), &'static str> {
-            Err("xhci write not impl")
+        fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+            let mut xhis = XHCI_CONTROLLERS.lock();
+            let xhci = xhis[self.ctrl_index].as_mut();
+            let mut cdb = [0u8; 10];
+            cdb[0] = 0x2A; // WRITE_10
+            cdb[2..6].copy_from_slice(&lba.to_be_bytes());
+            cdb[7..9].copy_from_slice(&count.to_be_bytes());
+            let dlen = (count as u32) * self.block_size;
+            let tag = self.tag; self.tag += 1;
+            let mut cbw = [0u8; 31];
+            cbw[..4].copy_from_slice(&0x43425355u32.to_le_bytes());
+            cbw[4..8].copy_from_slice(&tag.to_le_bytes());
+            cbw[8..12].copy_from_slice(&dlen.to_le_bytes());
+            cbw[12] = 0x00;
+            cbw[13] = 0;
+            cbw[14] = 10;
+            cbw[15..25].copy_from_slice(&cdb);
+            xhci.bulk_transfer(self.slot_id, self.bulk_out, &mut cbw, UsbDirection::Out, 512)?;
+            let mut wbuf = buf.to_vec();
+            xhci.bulk_transfer(self.slot_id, self.bulk_out, &mut wbuf, UsbDirection::Out, 512)?;
+            let mut csw = [0u8; 13];
+            xhci.bulk_transfer(self.slot_id, self.bulk_in, &mut csw, UsbDirection::In, 512)?;
+            let sig = u32::from_le_bytes([csw[0], csw[1], csw[2], csw[3]]);
+            if sig != 0x53425355 { return Err("bad CSW"); }
+            let csw_tag = u32::from_le_bytes([csw[4], csw[5], csw[6], csw[7]]);
+            if csw_tag != tag { return Err("CSW tag mismatch"); }
+            if csw[12] != 0 { return Err("CSW err"); }
+            Ok(())
         }
         fn sector_size(&self) -> u32 { self.block_size }
         fn total_sectors(&self) -> u64 { self.total_blocks }

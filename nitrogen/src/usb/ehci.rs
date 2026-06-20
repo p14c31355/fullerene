@@ -105,22 +105,19 @@ pub struct EhciController {
     mmio_base: *mut u8,
     op_offset: u32,
     n_ports: u32,
-    /// Physical+virtual address of the async list head qH.
     async_head_phys: u64,
     async_head: &'static mut QueueHead,
-    /// A pool of qTDs for transfers (pre-allocated from a page).
     qtd_pool_phys: u64,
     qtd_pool: &'static mut [Qtd],
-    qtd_pool_used: usize,
-    /// Allocated qH entries for endpoints (from a second page).
+    qtd_free: [usize; 128],
+    qtd_free_len: usize,
     qh_pool_phys: u64,
     qh_pool: &'static mut [QueueHead],
-    qh_pool_used: usize,
+    qh_free: [usize; 64],
+    qh_free_len: usize,
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
-    #[allow(dead_code)]
     next_address: u8,
-    /// Bitmask of ports already processed (bit N = port N).
     processed_ports: u32,
 }
 
@@ -205,6 +202,10 @@ impl EhciController {
             }
         }
 
+        let mut qtd_free = [0usize; 128];
+        for i in 0..128 { qtd_free[i] = i; }
+        let mut qh_free = [0usize; 64];
+        for i in 0..64 { qh_free[i] = i; }
         Some(Self {
             mmio_base,
             op_offset,
@@ -213,10 +214,12 @@ impl EhciController {
             async_head,
             qtd_pool_phys,
             qtd_pool: qtd_slice,
-            qtd_pool_used: 0,
-            qh_pool_phys: qh_pool_phys,
+            qtd_free,
+            qtd_free_len: 128,
+            qh_pool_phys,
             qh_pool: qh_slice,
-            qh_pool_used: 0,
+            qh_free,
+            qh_free_len: 64,
             devices: Vec::new(),
             ctx,
             next_address: 1,
@@ -248,21 +251,37 @@ impl EhciController {
     }
 
     fn alloc_qtd(&mut self) -> Option<(&'static mut Qtd, u64)> {
-        if self.qtd_pool_used >= 128 { return None; }
-        let idx = self.qtd_pool_used;
-        self.qtd_pool_used += 1;
+        if self.qtd_free_len == 0 { return None; }
+        self.qtd_free_len -= 1;
+        let idx = self.qtd_free[self.qtd_free_len];
         let phys = self.qtd_pool_phys + (idx as u64) * 32;
         let ptr = &mut self.qtd_pool[idx] as *mut Qtd;
         Some(unsafe { (&mut *ptr, phys) })
     }
 
+    fn free_qtd(&mut self, _qtd: &mut Qtd) {
+        let idx = ((_qtd as *mut Qtd as usize) - (self.qtd_pool.as_ptr() as usize)) / core::mem::size_of::<Qtd>();
+        if idx < 128 && self.qtd_free_len < 128 {
+            self.qtd_free[self.qtd_free_len] = idx;
+            self.qtd_free_len += 1;
+        }
+    }
+
     fn alloc_qh(&mut self) -> Option<(&'static mut QueueHead, u64)> {
-        if self.qh_pool_used >= 64 { return None; }
-        let idx = self.qh_pool_used;
-        self.qh_pool_used += 1;
+        if self.qh_free_len == 0 { return None; }
+        self.qh_free_len -= 1;
+        let idx = self.qh_free[self.qh_free_len];
         let phys = self.qh_pool_phys + (idx as u64) * core::mem::size_of::<QueueHead>() as u64;
         let ptr = &mut self.qh_pool[idx] as *mut QueueHead;
         Some(unsafe { (&mut *ptr, phys) })
+    }
+
+    fn free_qh(&mut self, _qh: &mut QueueHead) {
+        let idx = ((_qh as *mut QueueHead as usize) - (self.qh_pool.as_ptr() as usize)) / core::mem::size_of::<QueueHead>();
+        if idx < 64 && self.qh_free_len < 64 {
+            self.qh_free[self.qh_free_len] = idx;
+            self.qh_free_len += 1;
+        }
     }
 
     /// Insert a qH into the async list (after the head).
@@ -481,8 +500,11 @@ impl EhciController {
         let r = self.wait_qtd(&qtd_status, timeout);
         if r.is_err() { self.remove_qh(qh_phys); return r.map(|_| 0); }
 
-        // Remove qH from async schedule
         self.remove_qh(qh_phys);
+        self.free_qtd(qtd_setup);
+        if let Some((d, _)) = qtd_data { self.free_qtd(d); }
+        self.free_qtd(qtd_status);
+        self.free_qh(qh);
         Ok(data_len)
     }
 
@@ -565,6 +587,8 @@ impl EhciController {
         }
 
         self.remove_qh(qh_phys);
+        self.free_qtd(qtd);
+        self.free_qh(qh);
         unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
         Ok(len)
     }
@@ -640,8 +664,10 @@ impl EhciController {
     /// Reset qTD and qH pool usage counters so control/bulk transfers
     /// from a new enumeration always have free entries.
     pub fn reset_pools(&mut self) {
-        self.qtd_pool_used = 0;
-        self.qh_pool_used = 0;
+        self.qtd_free_len = 128;
+        for i in 0..128 { self.qtd_free[i] = 127 - i; }
+        self.qh_free_len = 64;
+        for i in 0..64 { self.qh_free[i] = 63 - i; }
     }
 
     pub fn read_portsc(&self, port: u32) -> u32 {
