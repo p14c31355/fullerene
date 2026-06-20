@@ -97,8 +97,8 @@ impl Ipv4Header {
         Self {
             ver_ihl: 0x45,
             dscp_ecn: 0,
-            total_length: total_length.to_be(),
-            identification: identification.to_be(),
+            total_length,
+            identification,
             flags_frag: 0,
             ttl,
             protocol: protocol.to_u8(),

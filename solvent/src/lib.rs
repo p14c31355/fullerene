@@ -1385,7 +1385,6 @@ fn render_editor(rt: &mut RuntimeState) {
     );
 
     let scroll = rt.editor_buf.scroll_row;
-    let scroll = rt.editor_buf.scroll_row;
     for (row_idx, line) in visible.iter().enumerate() {
         for (col, ch) in line.chars().enumerate() {
             if col < new_cols as usize {

@@ -24,8 +24,8 @@ impl UdpHeader {
 
     pub fn new(src_port: u16, dst_port: u16, payload_len: usize) -> Self {
         Self {
-            src_port: src_port.to_be(),
-            dst_port: dst_port.to_be(),
+            src_port,
+            dst_port,
             length: (Self::SIZE + payload_len) as u16,
             checksum: 0,
         }
@@ -148,7 +148,7 @@ pub fn build_datagram(
     let cs = udp_checksum(src, dst_addr, src_port, dst_port, payload);
 
     let mut hdr = UdpHeader::new(src_port, dst_port, payload.len());
-    hdr.checksum = cs.to_be();
+    hdr.checksum = cs;
     hdr.write_to(&mut dst[..UdpHeader::SIZE]);
     dst[UdpHeader::SIZE..total].copy_from_slice(payload);
 

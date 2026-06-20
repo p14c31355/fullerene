@@ -84,8 +84,18 @@ impl ChronoLine {
         self.now = self.now.saturating_add(delta);
     }
 
+    /// Set the current time to the given absolute tick value.
+    ///
+    /// Note: This only moves time forward. If the clock source resets
+    /// (e.g. wraps to 0), call `reset_now(0)` before resuming `tick()`.
     pub fn tick(&mut self, now: u64) {
         self.now = self.now.max(now);
+    }
+
+    /// Reset the current time to `now`, even if it moves backwards.
+    /// Use when the underlying clock source has wrapped around.
+    pub fn reset_now(&mut self, now: u64) {
+        self.now = now;
     }
 
     pub fn pop_expired(&mut self) -> Option<Timer> {
