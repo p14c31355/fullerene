@@ -388,7 +388,9 @@ impl XhciController {
         // Start the controller and wait for it to exit HCHalted
         unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_RUN); }
         for _ in 0..200_000 {
-            if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH == 0 { break; }
+            let ptr = unsafe { op.add(USBSTS as usize) as *const u32 };
+            Self::clflush(ptr as *const u8);
+            if unsafe { core::ptr::read_volatile(ptr) } & STS_HCH == 0 { break; }
             crate::port::PortWriter::new(0x80).write_safe(0u8);
         }
         let sts_after_run = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
