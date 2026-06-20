@@ -15,9 +15,6 @@ use crate::usb::{
 };
 use alloc::vec::Vec;
 
-/// Maximum enumeration attempts.
-const MAX_ENUM_ATTEMPTS: u32 = 3;
-
 /// Enumerate a newly connected device on the given port.
 ///
 /// `control_fn` is a callback that performs a control transfer:

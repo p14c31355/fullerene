@@ -1,7 +1,6 @@
 // Linux memory syscall implementations
-use super::runtime::{LinuxRuntime, Runtime, copy_to_user, copy_val_to_user, errno_code};
+use super::runtime::{LinuxRuntime, errno_code};
 use super::numbers::*;
-use super::types::*;
 
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::structures::paging::{PageTableFlags, FrameAllocator as X86FrameAllocator};

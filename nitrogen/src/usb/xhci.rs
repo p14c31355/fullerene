@@ -8,18 +8,11 @@
 //! - Control transfer (slot_id, setup_packet, data buffer)
 //! - Bulk transfer (slot_id, endpoint, data buffer, direction)
 
-use crate::usb::{UsbDevice, UsbSetupPacket, UsbEndpointDesc, UsbDirection, UsbXferType};
+use crate::usb::{UsbDevice, UsbSetupPacket, UsbDirection};
 use crate::DriverContext;
 use alloc::vec::Vec;
 
 // ── Register offsets ─────────────────────────────────────────
-// Capability
-const CAPLENGTH: u32 = 0x00;
-const HCSPARAMS1: u32 = 0x04;
-const HCCPARAMS1: u32 = 0x10;
-const DBOFF: u32 = 0x14;
-const RTSOFF: u32 = 0x18;
-
 // Operational (relative to CAPLENGTH)
 const USBCMD: u32 = 0x00;
 const USBSTS: u32 = 0x04;
@@ -34,7 +27,6 @@ const STS_HCH: u32 = 1 << 0;
 
 // Runtime registers (relative to RTSOFF)
 const IMAN_OFF: u32 = 0x00;  // interrupter 0: IMAN
-const IMOD_OFF: u32 = 0x04;  // IMOD
 const ERSTZ_OFF: u32 = 0x08; // Event Ring Segment Table Size
 const ERSTBA_OFF: u32 = 0x10; // Event Ring Segment Table Base Address
 const ERSDP_OFF: u32 = 0x18; // Event Ring Dequeue Pointer
@@ -44,7 +36,7 @@ const PORTSC_CCS: u32 = 1 << 0;
 const PORTSC_PED: u32 = 1 << 1;
 const PORTSC_PR: u32 = 1 << 4;
 const PORTSC_PP: u32 = 1 << 9;
-const PORTSC_WPR: u32 = 1 << 31; // Warm Port Reset (USB3)
+
 
 // TRB type (bits 10..15 of flags)
 const TRB_NORMAL: u8 = 1;
@@ -60,10 +52,8 @@ const TRB_CONFIGURE_ENDPOINT: u8 = 11;
 const TRB_C: u32 = 1 << 0;
 const TRB_CHAIN: u32 = 1 << 4;
 const TRB_IOC: u32 = 1 << 5;
-const TRB_IDT: u32 = 1 << 6;
 const TRB_ENT: u32 = 1 << 11;
 const TRB_DIR_IN: u32 = 1 << 16;
-const TRB_TRT_MASK: u32 = 3 << 16; // Transfer Type for Setup TRB
 
 const TRB_SIZE: usize = 16;
 
@@ -224,13 +214,16 @@ pub struct XhciController {
     n_ports: u32,
     max_slots: u32,
     ppc: bool, // Port Power Control supported
+    #[allow(dead_code)]
     dcbaa_phys: u64,
     dcbaa: &'static mut [u64; 256],
     slots: Vec<SlotState>,
     cmd_ring: Ring,
     ev_ring: EventRing,
+    #[allow(dead_code)]
     erst_phys: u64,
-    ports_done: u32, // bitmask
+    ports_done: u32,
+    wpr_done: u32,  // bitmask — ports that have already had WPR attempted
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
     n_slots_used: u32,
@@ -244,6 +237,7 @@ struct SlotState {
     ep0_ring: Ring,
     bulk_out_ring: Option<Ring>,
     bulk_in_ring: Option<Ring>,
+    #[allow(dead_code)]
     dev_ctx_phys: u64,
     in_ctx_phys: u64,
 }
@@ -252,14 +246,14 @@ impl XhciController {
     pub fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
         let caps = mmio_base;
         let caplength = unsafe { core::ptr::read_volatile(caps as *const u8) } as u32;
-        let hcs1 = unsafe { core::ptr::read_volatile((caps.add(4) as *const u32)) };
-        let hcc1 = unsafe { core::ptr::read_volatile((caps.add(0x10) as *const u32)) };
-        let db_off_val = unsafe { core::ptr::read_volatile((caps.add(0x14) as *const u32)) };
-        let rt_off_val = unsafe { core::ptr::read_volatile((caps.add(0x18) as *const u32)) };
+        let hcs1 = unsafe { core::ptr::read_volatile(caps.add(4) as *const u32) };
+        let hcc1 = unsafe { core::ptr::read_volatile(caps.add(0x10) as *const u32) };
+        let db_off_val = unsafe { core::ptr::read_volatile(caps.add(0x14) as *const u32) };
+        let rt_off_val = unsafe { core::ptr::read_volatile(caps.add(0x18) as *const u32) };
 
         let n_ports = (hcs1 >> 24) & 0xFF;
         let max_slots = hcs1 & 0xFF;
-        let ppc = (hcs1 & (1 << 4)) != 0; // Port Power Control supported
+        let ppc = (hcs1 & (1 << 4)) != 0; // Port Power Control (HCSPARAMS1 bit4)
         let db_off = db_off_val & 0xFFFF_FFFC;
         let rt_off = rt_off_val & 0xFFFF_FFFC;
         let op_off = caplength;
@@ -294,7 +288,6 @@ impl XhciController {
                     log::info!("xHCI: USB Legacy Support: BIOS_SEM={} OS_SEM={}", bios_sem, os_sem);
                     if bios_sem & 1 != 0 {
                         log::info!("xHCI: BIOS owns controller — requesting handoff");
-                        legacy_handoff_ok = false;
                         unsafe { core::ptr::write_volatile(caps.add(ec_off + 3) as *mut u8, 1); }
                         for _ in 0..1_000_000 {
                             let b = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
@@ -392,53 +385,111 @@ impl XhciController {
         let deq = ev.phys | 1; // cycle = 1, EHB bit not set
         unsafe { core::ptr::write_volatile((rt_base.add(ERSDP_OFF as usize)) as *mut u64, deq); }
 
-        // Start
+        // Start the controller and wait for it to exit HCHalted
         unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_RUN); }
+        for _ in 0..200_000 {
+            let ptr = unsafe { op.add(USBSTS as usize) as *const u32 };
+            Self::clflush(ptr as *const u8);
+            if unsafe { core::ptr::read_volatile(ptr) } & STS_HCH == 0 { break; }
+            crate::port::PortWriter::new(0x80).write_safe(0u8);
+        }
+        let sts_after_run = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
+        log::info!("xHCI: after CMD_RUN wait, USBSTS=0x{:08X} HCHalted={}", sts_after_run, sts_after_run & 1);
+        if sts_after_run & STS_HCH != 0 {
+            log::error!("xHCI: controller failed to start (HCHalted)");
+            return None;
+        }
 
-        // ── Force all ports into RxDetect ─────────────────────
-        // After HCRST, many laptop chipsets leave USB3 ports in
-        // Disconnected (PLS=4) or U3 (PLS=3) and they never auto-detect.
-        // Explicitly set PP=1 and PLS=5 (RxDetect) on every port so the
-        // PHY starts looking for attached devices.
-        const PLS_RXDETECT: u32 = 5 << 5;
-        const RW1C_MASK: u32 = 0x00FE0000;
+        // ── Clear RW1C status bits on all ports ──────────────
+        // After HCRST, RW1C bits like CSC, WRC, PEC may be set,
+        // which prevents the port from reporting new connection events.
         for port in 0..n_ports {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             let ps = unsafe { core::ptr::read_volatile(
                 op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
             ) };
-            let cur_pls = (ps >> 5) & 0xF;
-            log::info!("xHCI: PORTSC[{}] before force-RxDetect PP={} PLS={} CCS={}",
-                port, (ps>>9)&1, cur_pls, ps & 1);
-            // Power on + set PLS to RxDetect.
-            // xHCI §5.4.8: LWS (bit 16) MUST be 1 when writing PLS,
-            // otherwise the write is silently ignored.
-            const LWS: u32 = 1 << 16;
-            let new_ps = PORTSC_PP | PLS_RXDETECT | LWS;
-            unsafe {
-                core::ptr::write_volatile(
+            // RW1C mask: bits 17-23 (CSC, PEC, WRC, etc.)
+            const RW1C: u32 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23);
+            if ps & RW1C != 0 {
+                unsafe { core::ptr::write_volatile(
                     op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                    new_ps
-                );
+                    ps | RW1C
+                ); }
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             }
+        }
+
+        // ── Power on all ports (PPC=1 only) ───────────────────
+        if ppc {
+            for port in 0..n_ports {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let ps = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                if ps & PORTSC_PP == 0 {
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        PORTSC_PP
+                    ); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                }
+            }
+        }
+
+        // ── Warm Port Reset on all ports + global delay ──────
+        // After HCRST, the xHCI controller and all connected devices
+        // are reset.  The ports need to re-establish the USB 3.0 link
+        // (RxDetect → Polling → U0), which can take 3-5 seconds.
+        // We issue WPR (Warm Port Reset) on every powered port to kick
+        // the PHY, then wait globally for link training to complete.
+        for port in 0..n_ports {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let cur = unsafe { core::ptr::read_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+            ) };
+            if cur & PORTSC_PP != 0 {
+                unsafe { core::ptr::write_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                    (cur & !0x00FE0000) | (1u32 << 31)
+                ); }
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            }
         }
+        // Wait for warm resets + link training (≈3 seconds)
+        for _ in 0..3_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
 
-        // Wait for USB 3.0 PHY link training.  SuperSpeed negotiation
-        // (RxDetect → Polling → U0) takes 1-3 seconds on real hardware.
-        // We use 12M I/O port writes (~18 sec worst case) to be safe.
-        for _ in 0..12_000_000 {
-            crate::port::PortWriter::new(0x80).write_safe(0u8);
-        }
-        log::info!("xHCI: PHY stabilisation delay complete");
-
-        // Log final PORTSC state after delay
-        for port in 0..n_ports.min(4) {
+        // After the global delay, do one quick check of all ports
+        for port in 0..n_ports.min(8) {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             let ps = unsafe { core::ptr::read_volatile(
                 op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
             ) };
-            log::info!("xHCI: PORTSC[{}] after-phy-delay=0x{:08X} CCS={} PP={} PLS={} PED={} speed={}",
+            if ps & 1 != 0 {
+                log::info!("xHCI: PORTSC[{}] device detected after WPR — CCS=1 PLS={} PED={}",
+                    port, (ps>>5)&0xF, (ps>>1)&1);
+                if ps & PORTSC_PED == 0 {
+                    log::info!("xHCI: PORTSC[{}] — PED=0, asserting PR", port);
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        (ps & !(1 << 20 | 1 << 17 | 1 << 18 | 1 << 19 | 1 << 21 | 1 << 22 | 1 << 23)) | PORTSC_PR
+                    ); }
+                    for _ in 0..200_000 { core::hint::spin_loop(); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                    let ps2 = unsafe { core::ptr::read_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                    ) };
+                    log::info!("xHCI: PORTSC[{}] after PR — PED={}", port, (ps2>>1)&1);
+                }
+            }
+        }
+
+        // Log final PORTSC state after delay
+        for port in 0..n_ports {
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let ps = unsafe { core::ptr::read_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+            ) };
+            log::info!("xHCI: PORTSC[{}] after-init=0x{:08X} CCS={} PP={} PLS={} PED={} speed={}",
                 port, ps, ps & 1, (ps>>9)&1, (ps>>5)&0xF, (ps>>1)&1, (ps>>10)&0xF);
         }
 
@@ -450,7 +501,7 @@ impl XhciController {
             dcbaa_phys: dcbaa_p, dcbaa,
             slots: Vec::new(),
             cmd_ring: cmd, ev_ring: ev, erst_phys: erst_p,
-            ports_done: 0, devices: Vec::new(),
+            ports_done: 0, wpr_done: 0, devices: Vec::new(),
             ctx: ctx as *const dyn DriverContext,
             n_slots_used: 0,
             legacy_handoff_done: legacy_handoff_ok,
@@ -535,9 +586,6 @@ impl XhciController {
 
         // Set DCBAA entry
         self.dcbaa[slot_id as usize] = dev_ctx_p;
-
-        let dev_ctx = unsafe { &mut *dev_ctx_v };
-        let in_ctx = unsafe { &mut *in_ctx_v };
 
         // Allocate EP0 transfer ring
         let ctx_ref = unsafe { &*self.ctx };
@@ -667,24 +715,15 @@ impl XhciController {
                     (portsc >> 10) & 0xF, (portsc >> 1) & 1);
             }
 
-            // ── Step 2: Force port power on ────────────────────
-            // On many laptops, firmware leaves PP=0 after HCRST even
-            // though a device is plugged in.  Explicitly power the port.
-            // USB 3.0 spec requires VBUS off ≥ 100ms for a full power cycle,
-            // so we do a proper cold reset: off → delay → on → delay.
-            let do_cold_reset = !pp_on || pls == 5; // PLS=5 = RxDetect (no device seen yet)
-            if do_cold_reset {
-                log::info!("xHCI: poll_ports port {} — cold reset (PP={}, PLS={})", port, pp_on, pls);
-                // Power off
-                let v = self.op_read(PORTSC_BASE + port * 0x10);
-                self.op_write(PORTSC_BASE + port * 0x10, v & !(PORTSC_PP | RW1C_BITS));
-                // Wait ≥100ms for VBUS discharge (USB 3.0 §7.3.1)
+            // ── Step 2: Power-cycle port (PPC=1 only) ─────────
+            // PPC=0:  PP is hardware-managed; the port auto-detects.
+            //         Just skip — no need for software intervention.
+            if self.ppc && (!pp_on || pls == 5) {
+                log::info!("xHCI: poll_ports port {} — power cycle (PP={}, PLS={})", port, pp_on, pls);
+                self.op_write(PORTSC_BASE + port * 0x10, portsc & !(PORTSC_PP | RW1C_BITS));
                 for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                // Power on + set PLS=RxDetect with LWS
                 let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                let pls5: u32 = 5 << 5; // RxDetect
-                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
-                // Wait for PHY detection + link training (USB 3.0 can be slow)
+                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP);
                 for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
             }
 
@@ -698,26 +737,38 @@ impl XhciController {
             }
 
             // ── Step 4: If still CCS=0, try warm port reset ────
-            // Warm reset transitions USB3 ports from inactive states
-            // back to RxDetect, which starts the link training
-            // (Polling → U0) and eventually sets CCS/PED.
-            if (portsc & PORTSC_CCS) == 0 && (portsc & PORTSC_PP) != 0 {
+            // WPR is expensive (~3 seconds), so only do it once per
+            // port per `clear_ports_done()` cycle, and only when the
+            // port is stuck in Inactive (PLS=6) or Compliance (PLS=10)
+            // mode — not for normally empty/disconnected ports.
+            let pls = (portsc >> 5) & 0xF;
+            let wpr_needed = (portsc & PORTSC_CCS) == 0
+                && (portsc & PORTSC_PP) != 0
+                && (pls == 6 || pls == 10)
+                && (self.wpr_done & (1 << port)) == 0;
+            if wpr_needed {
+                self.wpr_done |= 1 << port;
                 log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
-                // Assert WPR (bit 20) — clear RW1C bits first, then set WPR
                 let v = self.op_read(PORTSC_BASE + port * 0x10);
                 self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) | WPR);
-                // Wait for WPR to complete (controller clears it)
                 for _ in 0..200_000 {
                     let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & WPR == 0 { break; }
                 }
-                // After WPR completes, force PLS=RxDetect+LWS to restart
-                // link training (some controllers stay in Disconnected after WPR).
                 let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                let pls5: u32 = 5 << 5;
-                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
-                // Wait for link training after warm reset
-                for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                // Clear PLS field (bits 5-8) before setting new value
+                const PLS_MASK: u32 = 0x0F << 5;
+                self.op_write(PORTSC_BASE + port * 0x10,
+                    ((v2 & !RW1C_BITS) & !PLS_MASK) | RW1C_BITS | (5 << 5) | LWS);
+                for attempt in 0..60 {
+                    for _ in 0..50_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                    let ps = self.op_read(PORTSC_BASE + port * 0x10);
+                    if ps & PORTSC_CCS != 0 {
+                        log::info!("xHCI: poll_ports port {} — CCS=1 after {} sub-attempts (PLS={} PED={})",
+                            port, attempt + 1, (ps>>5)&0xF, (ps>>1)&1);
+                        break;
+                    }
+                }
             }
 
             // ── Step 5: Final CCS check ────────────────────────
@@ -776,6 +827,39 @@ impl XhciController {
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
+    pub fn ports_done_mask(&self) -> u32 { self.ports_done }
+    pub fn clear_ports_done(&mut self) { self.ports_done = 0; self.wpr_done = 0; }
+    pub fn clear_devices(&mut self) { self.devices.clear(); }
+
+    /// Disable all active slots and free their resources.
+    ///
+    /// Frees device context pages, input context pages, and removes slot state.
+    pub fn disable_all_slots(&mut self) {
+        let ctx = unsafe { &*self.ctx };
+        let slots = core::mem::take(&mut self.slots);
+        for slot in slots {
+            // Clear DCBAA entry
+            self.dcbaa[slot.slot_id as usize] = 0;
+            // Free device context and input context pages
+            ctx.free_contiguous_frames(slot.dev_ctx_phys, 1);
+            ctx.free_contiguous_frames(slot.in_ctx_phys, 1);
+        }
+        self.n_slots_used = 0;
+    }
+
+    /// Dump port status for debugging.
+    pub fn portsc_dump(&self) {
+        for p in 0..self.n_ports {
+            let ps = self.read_portsc(p);
+            if ps == 0xFFFF { continue; }
+            log::info!("xHCI-PORTSC[{}]=0x{:08X} CCS={} PED={} PLS={} PP={} speed={}",
+                p, ps, ps&1, (ps>>1)&1, (ps>>5)&0xF,
+                (ps>>9)&1, (ps>>10)&0xF);
+        }
+    }
+
+
+
     pub fn read_cap(&self, offset: u32) -> u32 {
         unsafe { core::ptr::read_volatile((self.mmio.add(offset as usize)) as *const u32) }
     }
@@ -906,16 +990,6 @@ impl XhciController {
         }
         let len = buf.len();
 
-        // Validate slot and ring existence before allocating staging memory
-        let ring_cycle = {
-            let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
-            let ring = match dir {
-                UsbDirection::In => slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?,
-                UsbDirection::Out => slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?,
-            };
-            ring.cycle
-        };
-
         // Allocate a dedicated contiguous-physical staging buffer
         let staging_pages = (len + 4095) / 4096;
         let staging_phys = unsafe { (*self.ctx).allocate_contiguous_frames(staging_pages) }
@@ -928,20 +1002,27 @@ impl XhciController {
         }
 
         // Enqueue TRB on the ring (re-borrow slot mutably)
-        if let Some(slot) = self.slots.iter_mut().find(|s| s.slot_id == slot_id) {
-            let ring = match dir {
-                UsbDirection::In => slot.bulk_in_ring.as_mut().ok_or("no bulk in ring")?,
-                UsbDirection::Out => slot.bulk_out_ring.as_mut().ok_or("no bulk out ring")?,
-            };
-            let mut trb = Trb::new(TRB_NORMAL, ring.cycle);
-            trb.params[..4].copy_from_slice(&(staging_phys as u32).to_le_bytes());
-            trb.params[4..8].copy_from_slice(&(staging_phys >> 32).to_le_bytes());
-            trb.status = (len as u32) & 0x1FFFF;
-            if dir == UsbDirection::In { trb.flags |= TRB_DIR_IN; }
-            trb.flags |= TRB_IOC | TRB_ENT;
-            ring.enqueue(trb);
-        } else {
-            return Err("bad slot");
+        let enqueue_res = (|| -> Result<(), &'static str> {
+            if let Some(slot) = self.slots.iter_mut().find(|s| s.slot_id == slot_id) {
+                let ring = match dir {
+                    UsbDirection::In => slot.bulk_in_ring.as_mut().ok_or("no bulk in ring")?,
+                    UsbDirection::Out => slot.bulk_out_ring.as_mut().ok_or("no bulk out ring")?,
+                };
+                let mut trb = Trb::new(TRB_NORMAL, ring.cycle);
+                trb.params[..4].copy_from_slice(&(staging_phys as u32).to_le_bytes());
+                trb.params[4..8].copy_from_slice(&(staging_phys >> 32).to_le_bytes());
+                trb.status = (len as u32) & 0x1FFFF;
+                if dir == UsbDirection::In { trb.flags |= TRB_DIR_IN; }
+                trb.flags |= TRB_IOC | TRB_ENT;
+                ring.enqueue(trb);
+                Ok(())
+            } else {
+                Err("bad slot")
+            }
+        })();
+        if let Err(e) = enqueue_res {
+            unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
+            return Err(e);
         }
         let ep_num = (endpoint & 0x0F) as u32;
         let is_in = (endpoint & 0x80) != 0;

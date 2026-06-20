@@ -15,10 +15,6 @@ use alloc::vec::Vec;
 // ── Operational register offsets ─────────────────────────────
 const USBCMD: u32 = 0x00;
 const USBSTS: u32 = 0x04;
-const USBINTR: u32 = 0x08;
-const FRINDEX: u32 = 0x0C;
-const CTRLDSSEGMENT: u32 = 0x10;
-const PERIODICLISTBASE: u32 = 0x14;
 const ASYNCLISTADDR: u32 = 0x18;
 const PORTSC_BASE: u32 = 0x44;
 
@@ -26,7 +22,6 @@ const PORTSC_BASE: u32 = 0x44;
 const CMD_RUN: u32 = 1 << 0;
 const CMD_HCRESET: u32 = 1 << 1;
 const CMD_ASSE: u32 = 1 << 5;
-const CMD_PSE: u32 = 1 << 4;
 
 // ── USBSTS bits ──────────────────────────────────────────────
 const STS_HCHALTED: u32 = 1 << 0;
@@ -38,7 +33,6 @@ const PORTSC_PE: u32 = 1 << 2;
 const PORTSC_RESET: u32 = 1 << 8;
 
 // ── qH constants ─────────────────────────────────────────────
-const QH_HORZ_TERMINATE: u32 = 0x01;
 const QH_HORZ_TYPE_QH: u32 = 0x02; // bit 1 = 1 → qH
 
 // qH endpoint characteristics fields
@@ -64,7 +58,6 @@ const QTD_PID_OUT: u32 = 0 << 8;
 const QTD_PID_IN: u32 = 1 << 8;
 const QTD_PID_SETUP: u32 = 2 << 8;
 const QTD_CERR: u32 = 3 << 10; // 3 error counts
-const QTD_IOC: u32 = 1 << 15;
 
 const fn qtd_total_bytes(n: u32) -> u32 {
     if n == 0 { 0x8000 } else { (n << 16) & 0x7FFF_0000 } // bit 31 = 0 if n>0
@@ -112,21 +105,19 @@ pub struct EhciController {
     mmio_base: *mut u8,
     op_offset: u32,
     n_ports: u32,
-    /// Physical+virtual address of the async list head qH.
     async_head_phys: u64,
     async_head: &'static mut QueueHead,
-    /// A pool of qTDs for transfers (pre-allocated from a page).
     qtd_pool_phys: u64,
     qtd_pool: &'static mut [Qtd],
-    qtd_pool_used: usize,
-    /// Allocated qH entries for endpoints (from a second page).
+    qtd_free: [usize; 128],
+    qtd_free_len: usize,
     qh_pool_phys: u64,
     qh_pool: &'static mut [QueueHead],
-    qh_pool_used: usize,
+    qh_free: [usize; 64],
+    qh_free_len: usize,
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
     next_address: u8,
-    /// Bitmask of ports already processed (bit N = port N).
     processed_ports: u32,
 }
 
@@ -211,6 +202,17 @@ impl EhciController {
             }
         }
 
+        let mut qtd_free = [0usize; 128];
+        let mut qtd_free_count = 0usize;
+        for i in 0..128 {
+            // Reserve slots 120-127 for control_transfer DMA buffer
+            if i < 120 {
+                qtd_free[qtd_free_count] = i;
+                qtd_free_count += 1;
+            }
+        }
+        let mut qh_free = [0usize; 64];
+        for i in 0..64 { qh_free[i] = i; }
         Some(Self {
             mmio_base,
             op_offset,
@@ -219,10 +221,12 @@ impl EhciController {
             async_head,
             qtd_pool_phys,
             qtd_pool: qtd_slice,
-            qtd_pool_used: 0,
-            qh_pool_phys: qh_pool_phys,
+            qtd_free,
+            qtd_free_len: qtd_free_count,
+            qh_pool_phys,
             qh_pool: qh_slice,
-            qh_pool_used: 0,
+            qh_free,
+            qh_free_len: 64,
             devices: Vec::new(),
             ctx,
             next_address: 1,
@@ -254,21 +258,37 @@ impl EhciController {
     }
 
     fn alloc_qtd(&mut self) -> Option<(&'static mut Qtd, u64)> {
-        if self.qtd_pool_used >= 128 { return None; }
-        let idx = self.qtd_pool_used;
-        self.qtd_pool_used += 1;
+        if self.qtd_free_len == 0 { return None; }
+        self.qtd_free_len -= 1;
+        let idx = self.qtd_free[self.qtd_free_len];
         let phys = self.qtd_pool_phys + (idx as u64) * 32;
         let ptr = &mut self.qtd_pool[idx] as *mut Qtd;
         Some(unsafe { (&mut *ptr, phys) })
     }
 
+    fn free_qtd(&mut self, _qtd: &mut Qtd) {
+        let idx = ((_qtd as *mut Qtd as usize) - (self.qtd_pool.as_ptr() as usize)) / core::mem::size_of::<Qtd>();
+        if idx < 128 && self.qtd_free_len < 128 {
+            self.qtd_free[self.qtd_free_len] = idx;
+            self.qtd_free_len += 1;
+        }
+    }
+
     fn alloc_qh(&mut self) -> Option<(&'static mut QueueHead, u64)> {
-        if self.qh_pool_used >= 64 { return None; }
-        let idx = self.qh_pool_used;
-        self.qh_pool_used += 1;
+        if self.qh_free_len == 0 { return None; }
+        self.qh_free_len -= 1;
+        let idx = self.qh_free[self.qh_free_len];
         let phys = self.qh_pool_phys + (idx as u64) * core::mem::size_of::<QueueHead>() as u64;
         let ptr = &mut self.qh_pool[idx] as *mut QueueHead;
         Some(unsafe { (&mut *ptr, phys) })
+    }
+
+    fn free_qh(&mut self, _qh: &mut QueueHead) {
+        let idx = ((_qh as *mut QueueHead as usize) - (self.qh_pool.as_ptr() as usize)) / core::mem::size_of::<QueueHead>();
+        if idx < 64 && self.qh_free_len < 64 {
+            self.qh_free[self.qh_free_len] = idx;
+            self.qh_free_len += 1;
+        }
     }
 
     /// Insert a qH into the async list (after the head).
@@ -467,29 +487,45 @@ impl EhciController {
         self.insert_qh(qh_phys);
 
         // Wait for completion (poll all 3 qTDs)
-        let mut timeout = 5_000_000u32; // 5 seconds
-        let result = self.wait_qtd(&qtd_setup, timeout);
-        if result.is_err() { self.remove_qh(qh_phys); return result.map(|_| 0); }
-
-        if data_len > 0 {
+        let timeout = 5_000_000u32; // 5 seconds
+        let mut result: Result<usize, &'static str> = Ok(0);
+        let r = self.wait_qtd(&qtd_setup, timeout);
+        if r.is_err() {
+            result = r.map(|_| 0);
+        } else if data_len > 0 {
             let (data_qh_ptr, _) = qtd_data.as_ref().unwrap();
-            let r = self.wait_qtd(data_qh_ptr, timeout);
-            if r.is_err() { self.remove_qh(qh_phys); return r.map(|_| 0); }
-
-            if is_in {
-                unsafe {
-                    let n = data_len.min(4096);
-                    core::ptr::copy_nonoverlapping(setup_page_virt, buf.as_mut_ptr(), n);
+            let r2 = self.wait_qtd(data_qh_ptr, timeout);
+            if r2.is_err() {
+                result = r2.map(|_| 0);
+            } else {
+                if is_in {
+                    unsafe {
+                        let n = data_len.min(4096);
+                        core::ptr::copy_nonoverlapping(setup_page_virt, buf.as_mut_ptr(), n);
+                    }
+                }
+                let r3 = self.wait_qtd(&qtd_status, timeout);
+                if r3.is_err() {
+                    result = r3.map(|_| 0);
                 }
             }
+        } else {
+            let r3 = self.wait_qtd(&qtd_status, timeout);
+            if r3.is_err() {
+                result = r3.map(|_| 0);
+            }
+        }
+        if result.is_ok() {
+            result = Ok(data_len);
         }
 
-        let r = self.wait_qtd(&qtd_status, timeout);
-        if r.is_err() { self.remove_qh(qh_phys); return r.map(|_| 0); }
-
-        // Remove qH from async schedule
+        // Free resources on both success and error paths
         self.remove_qh(qh_phys);
-        Ok(data_len)
+        self.free_qtd(qtd_setup);
+        if let Some((d, _)) = qtd_data { self.free_qtd(d); }
+        self.free_qtd(qtd_status);
+        self.free_qh(qh);
+        result
     }
 
     // ── Bulk Transfer ────────────────────────────────────────
@@ -571,6 +607,8 @@ impl EhciController {
         }
 
         self.remove_qh(qh_phys);
+        self.free_qtd(qtd);
+        self.free_qh(qh);
         unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
         Ok(len)
     }
@@ -646,8 +684,14 @@ impl EhciController {
     /// Reset qTD and qH pool usage counters so control/bulk transfers
     /// from a new enumeration always have free entries.
     pub fn reset_pools(&mut self) {
-        self.qtd_pool_used = 0;
-        self.qh_pool_used = 0;
+        // Rebuild free list, excluding reserved slots 120-127
+        self.qtd_free_len = 0;
+        for i in 0..120 {
+            self.qtd_free[self.qtd_free_len] = 119 - i;
+            self.qtd_free_len += 1;
+        }
+        self.qh_free_len = 64;
+        for i in 0..64 { self.qh_free[i] = 63 - i; }
     }
 
     pub fn read_portsc(&self, port: u32) -> u32 {

@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::ptr;
 use spin::Mutex;
 
-use crate::driver_context::{DriverContext, DriverContextError, PageFlags};
+use crate::driver_context::DriverContext;
 use crate::pci::{PciDevice, PciScanner};
 
 /// Global list of discovered AHCI controllers.
@@ -20,22 +20,12 @@ static CONTROLLERS: Mutex<Vec<AhciController>> = Mutex::new(Vec::new());
 
 // ── HBA memory register offsets ──────────────────────────────────
 
-const HBA_CAP: usize = 0x00; // Host Capability
 const HBA_GHC: usize = 0x04; // Global Host Control
-const HBA_IS: usize = 0x08; // Interrupt Status
 const HBA_PI: usize = 0x0C; // Ports Implemented
-const HBA_VS: usize = 0x10; // Version
-const HBA_CCC_CTL: usize = 0x14; // Command Completion Coalescing Control
-const HBA_CCC_PORTS: usize = 0x18; // Command Completion Coalescing Ports
-const HBA_EM_LOC: usize = 0x1C; // Enclosure Management Location
-const HBA_EM_CTL: usize = 0x20; // Enclosure Management Control
-const HBA_CAP2: usize = 0x24; // Host Capabilities Extended
-const HBA_BOHC: usize = 0x28; // BIOS/OS Handoff Control and Status
 
 // ── GHC bits ─────────────────────────────────────────────────────
-const GHC_HR: u32 = 1 << 0; // HBA Reset
-const GHC_IE: u32 = 1 << 1; // Interrupt Enable
-const GHC_AE: u32 = 1 << 31; // AHCI Enable
+const GHC_HR: u32 = 1 << 0;
+const GHC_AE: u32 = 1 << 31;
 
 // ── Port register offsets (relative to port base) ────────────────
 const PXCLB: usize = 0x00; // Command List Base Address
@@ -45,19 +35,11 @@ const PXFBU: usize = 0x0C; // FIS Base Address Upper
 const PXIS: usize = 0x10; // Interrupt Status
 const PXIE: usize = 0x14; // Interrupt Enable
 const PXCMD: usize = 0x18; // Command and Status
-const PXTFD: usize = 0x20; // Task File Data
-const PXSIG: usize = 0x24; // Signature
 const PXSSTS: usize = 0x28; // SATA Status (SCR0: SStatus)
-const PXSCTL: usize = 0x2C; // SATA Control (SCR2: SControl)
 const PXSERR: usize = 0x30; // SATA Error (SCR1: SError)
-const PXSACT: usize = 0x34; // SATA Active
-const PXCI: usize = 0x38; // Command Issue
-const PXSNTF: usize = 0x3C; // SATA Notification
 
 // ── PxCMD bits ───────────────────────────────────────────────────
 const PXCMD_ST: u32 = 1 << 0; // Start DMA
-const PXCMD_SUD: u32 = 1 << 1; // Spin-Up Device
-const PXCMD_POD: u32 = 1 << 2; // Power-On Device
 const PXCMD_FRE: u32 = 1 << 4; // FIS Receive Enable
 const PXCMD_FR: u32 = 1 << 14; // FIS Receive Running
 const PXCMD_CR: u32 = 1 << 15; // Command List Running
@@ -108,13 +90,9 @@ struct ReceivedFis {
     rsvd: [u8; 96],
 }
 
-// ── ATA commands ─────────────────────────────────────────────────
-const ATA_IDENTIFY: u8 = 0xEC;
-const ATA_READ_DMA_EXT: u8 = 0x25;
-const ATA_WRITE_DMA_EXT: u8 = 0x35;
-
 // ── Controller ───────────────────────────────────────────────────
 
+#[allow(dead_code)]
 struct AhciPort {
     index: u8,
     hba_mmio: *mut u32,
@@ -128,8 +106,10 @@ struct AhciPort {
 }
 
 pub struct AhciController {
+    #[allow(dead_code)]
     device: PciDevice,
     hba_mmio: *mut u32,
+    #[allow(dead_code)]
     hba_phys: u64,
     /// Number of implemented ports (0–31).
     num_ports: u32,

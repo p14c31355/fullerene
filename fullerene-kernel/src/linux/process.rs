@@ -1,6 +1,6 @@
 // Linux process syscall implementations
 extern crate alloc;
-use super::runtime::{LinuxRuntime, Runtime, copy_user_string, copy_val_to_user, errno_code};
+use super::runtime::{LinuxRuntime, copy_user_string, copy_val_to_user, errno_code};
 use super::numbers::*;
 use crate::process::{self, ProcessId, ProcessContext};
 use alloc::boxed::Box;

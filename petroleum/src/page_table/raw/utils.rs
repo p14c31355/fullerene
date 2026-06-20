@@ -78,6 +78,7 @@ pub fn dump_entry(entry: &PageTableEntry, label: &str) {
 
 // ── Backward-compat mapping functions ────────────────────────
 
+#[allow(non_snake_case)]
 pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
     mapper: &mut x86_64::structures::paging::OffsetPageTable,
     allocator: &mut A,

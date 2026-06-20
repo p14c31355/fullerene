@@ -113,6 +113,33 @@ impl VfsContext {
         self.inner.lock().mount(mount_point, fs)
     }
 
+    /// Unmount a filesystem at `mount_point`.
+    ///
+    /// Returns `Ok(true)` if a mount was removed, `Ok(false)` if none existed.
+    /// The root `"/"` cannot be unmounted.
+    ///
+    /// Also updates the handle table: open file descriptors belonging to the
+    /// unmounted filesystem are discarded, and indices of remaining mounts
+    /// that shifted left are decremented.
+    pub fn unmount(&self, mount_point: &str) -> Result<bool, &'static str> {
+        let mut vfs = self.inner.lock();
+        let mut handle_table = self.handle_table.lock();
+        let target_idx = match vfs.find_fs_index(mount_point) {
+            Some(idx) => idx,
+            None => return Ok(false),
+        };
+        let removed = vfs.unmount(mount_point)?;
+        if removed {
+            handle_table.entries.retain(|entry| entry.mount_index != target_idx);
+            for entry in &mut handle_table.entries {
+                if entry.mount_index > target_idx {
+                    entry.mount_index -= 1;
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     // ── File operations ─────────────────────────────────────────
     //
     // Lock ordering rule: always acquire `inner` before `handle_table`,
@@ -282,6 +309,11 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), &'sta
         _ => Err("unsupported filesystem type"),
     })
     .ok_or("vfs not init")?
+}
+
+/// Backward-compatible wrapper: unmount a filesystem at `mount_point`.
+pub fn unmount(mount_point: &str) -> Result<bool, &'static str> {
+    with_vfs(|vfs| vfs.unmount(mount_point)).ok_or("vfs not init")?
 }
 
 /// Backward-compatible wrapper: open a file.

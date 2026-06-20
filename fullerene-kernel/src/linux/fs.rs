@@ -1,8 +1,7 @@
 // Linux file system syscall implementations
-use super::runtime::{LinuxRuntime, Runtime, LinuxFileDesc, copy_user_string, copy_from_user, copy_to_user, copy_val_to_user, errno_code, errno_result, to_linux_errno};
+use super::runtime::{LinuxRuntime, Runtime, LinuxFileDesc, copy_user_string, copy_from_user, copy_to_user, copy_val_to_user, errno_code, errno_result};
 use super::types::*;
 use super::numbers::*;
-use crate::vfs;
 
 pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;

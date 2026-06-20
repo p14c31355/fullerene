@@ -47,15 +47,3 @@ log = { version = "0.4.29", default-features = false }
 [features]
 default = []
 user_space = []
-
-[profile.dev]
-debug = true
-split-debuginfo = "packed"
-panic = "abort"
-
-[profile.release]
-debug = true
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-overflow-checks = true

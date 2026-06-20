@@ -477,6 +477,20 @@ impl Vfs {
         Ok(())
     }
 
+    /// Unmount a filesystem at `mount_point`.
+    ///
+    /// Returns `Ok(true)` if a mount was removed, `Ok(false)` if no mount
+    /// existed at that point. The root mount point `"/"` cannot be unmounted.
+    pub fn unmount(&mut self, mount_point: &str) -> Result<bool, &'static str> {
+        let mp = normalize_path(mount_point);
+        if mp == "/" {
+            return Err("cannot unmount root");
+        }
+        let len_before = self.mounts.len();
+        self.mounts.retain(|m| m.mount_point != mp);
+        Ok(self.mounts.len() < len_before)
+    }
+
     // ── Mount lookup by index (for VfsContext handle routing) ─
 
     /// Return the mount-table index for the filesystem responsible
@@ -706,6 +720,11 @@ pub fn init() {
 /// Mount a filesystem at `mount_point`.
 pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), &'static str> {
     crate::contexts::vfs::mount(device, mount_point, fs_type)
+}
+
+/// Unmount a filesystem at `mount_point`.
+pub fn unmount(mount_point: &str) -> Result<bool, &'static str> {
+    crate::contexts::vfs::unmount(mount_point)
 }
 
 /// Open a file at `path` and return a file descriptor.
