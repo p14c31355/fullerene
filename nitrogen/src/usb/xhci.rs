@@ -746,8 +746,10 @@ impl XhciController {
                     if p & WPR == 0 { break; }
                 }
                 let v2 = self.op_read(PORTSC_BASE + port * 0x10);
+                // Clear PLS field (bits 5-8) before setting new value
+                const PLS_MASK: u32 = 0x0F << 5;
                 self.op_write(PORTSC_BASE + port * 0x10,
-                    (v2 & !RW1C_BITS) | RW1C_BITS | (5 << 5) | LWS);
+                    ((v2 & !RW1C_BITS) & !PLS_MASK) | RW1C_BITS | (5 << 5) | LWS);
                 for attempt in 0..60 {
                     for _ in 0..50_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
                     let ps = self.op_read(PORTSC_BASE + port * 0x10);

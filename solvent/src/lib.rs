@@ -1579,11 +1579,12 @@ pub fn editor_handle_key(scancode: u8) {
 
     static EDITOR_CTRL_HELD: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
+    let is_press = (scancode & 0x80) == 0;
     if key == KeyCode::Ctrl {
-        EDITOR_CTRL_HELD.store(scancode & 0x80 == 0, core::sync::atomic::Ordering::Relaxed);
+        EDITOR_CTRL_HELD.store(is_press, core::sync::atomic::Ordering::Relaxed);
         return;
     }
-    if key == KeyCode::S && EDITOR_CTRL_HELD.load(core::sync::atomic::Ordering::Relaxed) {
+    if key == KeyCode::S && EDITOR_CTRL_HELD.load(core::sync::atomic::Ordering::Relaxed) && is_press {
         editor_save_current(rt);
         return;
     }

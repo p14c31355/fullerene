@@ -72,6 +72,14 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
     render_pixels(rt, w, h, &pixels, "Image Viewer");
 }
 
+#[cfg(not(feature = "tinybmp"))]
+pub fn open_bmp(rt: &mut RuntimeState, _path: &str, name: &str) {
+    show_error(rt, "BMP Error", &format!(
+        "File: {}\n\nBMP support not compiled in.\nRebuild with --features tinybmp to enable.",
+        name
+    ));
+}
+
 // ── PNG viewer ───────────────────────────────────────────────
 
 #[cfg(feature = "minipng")]

@@ -290,7 +290,7 @@ macro_rules! flush_tlb_and_verify {
     () => {{
         x86_64::instructions::tlb::flush_all();
         let (frame, flags) = x86_64::registers::control::Cr3::read();
-        x86_64::registers::control::Cr3::write(frame, flags);
+        unsafe { x86_64::registers::control::Cr3::write(frame, flags) };
     }};
 }
 

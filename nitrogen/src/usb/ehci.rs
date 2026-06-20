@@ -203,7 +203,14 @@ impl EhciController {
         }
 
         let mut qtd_free = [0usize; 128];
-        for i in 0..128 { qtd_free[i] = i; }
+        let mut qtd_free_count = 0usize;
+        for i in 0..128 {
+            // Reserve slots 120-127 for control_transfer DMA buffer
+            if i < 120 {
+                qtd_free[qtd_free_count] = i;
+                qtd_free_count += 1;
+            }
+        }
         let mut qh_free = [0usize; 64];
         for i in 0..64 { qh_free[i] = i; }
         Some(Self {
@@ -215,7 +222,7 @@ impl EhciController {
             qtd_pool_phys,
             qtd_pool: qtd_slice,
             qtd_free,
-            qtd_free_len: 128,
+            qtd_free_len: qtd_free_count,
             qh_pool_phys,
             qh_pool: qh_slice,
             qh_free,
@@ -664,8 +671,12 @@ impl EhciController {
     /// Reset qTD and qH pool usage counters so control/bulk transfers
     /// from a new enumeration always have free entries.
     pub fn reset_pools(&mut self) {
-        self.qtd_free_len = 128;
-        for i in 0..128 { self.qtd_free[i] = 127 - i; }
+        // Rebuild free list, excluding reserved slots 120-127
+        self.qtd_free_len = 0;
+        for i in 0..120 {
+            self.qtd_free[self.qtd_free_len] = 119 - i;
+            self.qtd_free_len += 1;
+        }
         self.qh_free_len = 64;
         for i in 0..64 { self.qh_free[i] = 63 - i; }
     }

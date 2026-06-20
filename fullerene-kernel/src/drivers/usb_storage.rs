@@ -271,7 +271,10 @@ pub fn poll_usb() -> bool {
 
             // Clear ports_done before every poll so previously-skipped
             // ports (e.g. the boot USB drive) get re-evaluated.
-            xhci.clear_ports_done();
+            // Skip clearing if we already have USB drives mounted (deduplication).
+            if USB_DRIVE_COUNT.load(Ordering::Relaxed) == 0 {
+                xhci.clear_ports_done();
+            }
 
             let old = xhci.devices().len();
 
@@ -326,6 +329,9 @@ pub fn poll_usb_all() -> bool {
     {
         let mut xhis = XHCI_CONTROLLERS.lock();
         for (ctrl_idx, xhci) in xhis.iter_mut().enumerate() {
+            // Clear existing mount state to match the cleared controller state
+            USB_DRIVES.lock().clear();
+            USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
             xhci.clear_ports_done();
             xhci.clear_devices();
             xhci.poll_ports();
@@ -423,8 +429,8 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
             let mut offset: usize = 9; // skip config header
             let mut iface_class_ok = false;
-            let mut found_out = None;
-            let mut found_in = None;
+            let mut found_out: Option<(u8, u16)> = None;
+            let mut found_in: Option<(u8, u16)> = None;
 
             let limit = total_len.min(cfg_len).min(256);
             while offset + 2 <= limit {
@@ -454,9 +460,9 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
                             let mps = u16::from_le_bytes([cfg_buf[offset + 4], cfg_buf[offset + 5]]) & 0x07FF;
                             if xfer_type == 2 { // Bulk
                                 if ep_addr & 0x80 != 0 {
-                                    found_in = Some(ep_addr);
+                                    found_in = Some((ep_addr, mps));
                                 } else {
-                                    found_out = Some(ep_addr);
+                                    found_out = Some((ep_addr, mps));
                                 }
                                 klog_fmt!("xHCI: bulk EP addr=0x{:02X} mps={}\n", ep_addr, mps);
                             }
@@ -474,17 +480,19 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
                 return;
             }
 
-            bulk_out_ep = found_out.unwrap_or(0x02);
-            bulk_in_ep = found_in.unwrap_or(0x82);
-        }
+            let (out_addr, out_mps) = found_out.unwrap_or((0x02, 512));
+            let (in_addr, in_mps) = found_in.unwrap_or((0x82, 512));
+            bulk_out_ep = out_addr;
+            bulk_in_ep = in_addr;
 
-        if xhci.configure_endpoint_bulk(slot_id, bulk_out_ep, 1024).is_err() {
-            klog_fmt!("xHCI: configure bulk OUT 0x{:02X} failed\n", bulk_out_ep);
-            return;
-        }
-        if xhci.configure_endpoint_bulk(slot_id, bulk_in_ep, 1024).is_err() {
-            klog_fmt!("xHCI: configure bulk IN 0x{:02X} failed\n", bulk_in_ep);
-            return;
+            if xhci.configure_endpoint_bulk(slot_id, bulk_out_ep, out_mps).is_err() {
+                klog_fmt!("xHCI: configure bulk OUT 0x{:02X} failed\n", bulk_out_ep);
+                return;
+            }
+            if xhci.configure_endpoint_bulk(slot_id, bulk_in_ep, in_mps).is_err() {
+                klog_fmt!("xHCI: configure bulk IN 0x{:02X} failed\n", bulk_in_ep);
+                return;
+            }
         }
 
         // Update the device entry
