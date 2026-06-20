@@ -44,7 +44,7 @@ const PORTSC_CCS: u32 = 1 << 0;
 const PORTSC_PED: u32 = 1 << 1;
 const PORTSC_PR: u32 = 1 << 4;
 const PORTSC_PP: u32 = 1 << 9;
-const PORTSC_WPR: u32 = 1 << 20; // Warm Port Reset (USB3)
+const PORTSC_WPR: u32 = 1 << 31; // Warm Port Reset (USB3)
 
 // TRB type (bits 10..15 of flags)
 const TRB_NORMAL: u8 = 1;
@@ -198,7 +198,7 @@ struct DevCtx {
 struct InputCtx {
     drop_flags: u32,
     add_flags: u32,
-    _rsvd: [u32; 7],        // 7 dwords = 28 bytes reserved
+    _rsvd: [u32; 6],        // 6 dwords = 24 bytes reserved
     slot: [u32; 8],         // Slot context (8 dwords = 32 bytes)
     ep0: [u32; 8],          // EP0 context (8 dwords = 32 bytes)
 }
@@ -617,7 +617,7 @@ impl XhciController {
         let ep_type = 2u32; // Bulk
         unsafe {
             let base = in_ctx_v as *mut u32;
-            let ep_base = base.add(ctx_idx * 8);
+            let ep_base = base.add(8 + ctx_idx * 8);
             core::ptr::write_volatile(ep_base, (mps as u32) << 16 | ep_type << 3);
             core::ptr::write_volatile(ep_base.add(1), b_phys as u32);
             core::ptr::write_volatile(ep_base.add(2), (b_phys >> 32) as u32);
@@ -647,9 +647,9 @@ impl XhciController {
         const CSC: u32 = 1 << 17;  // Connect Status Change
         const PEC: u32 = 1 << 18;  // Port Enabled/Disabled Change
         const CEC: u32 = 1 << 23;  // Port Config Error Change
-        const RW1C_BITS: u32 = CSC | PEC | CEC | (1 << 22) | (1 << 20) | (1 << 19); // bits 17-23 are RW1C
+        const RW1C_BITS: u32 = CSC | PEC | CEC | (1 << 22) | (1 << 21) | (1 << 20) | (1 << 19); // bits 17-23 are RW1C
         const LWS: u32 = 1 << 16;  // Link Write Strobe (xHCI §5.4.8)
-        const WPR: u32 = 1 << 20;  // Warm Port Reset
+        const WPR: u32 = 1 << 31;  // Warm Port Reset
 
         for port in 0..self.n_ports {
             if self.ports_done & (1 << port) != 0 {

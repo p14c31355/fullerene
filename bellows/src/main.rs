@@ -124,7 +124,7 @@ fn install_vga_framebuffer_config() {
         height: 25,
         pixel_format: EfiGraphicsPixelFormat::PixelFormatMax,
         bpp: 16,
-        stride: 160,
+        stride: 80,
     };
     petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
     petroleum::println!("VGA framebuffer config saved globally successfully.");

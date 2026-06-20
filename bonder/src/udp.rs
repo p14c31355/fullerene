@@ -148,7 +148,7 @@ pub fn build_datagram(
     let cs = udp_checksum(src, dst_addr, src_port, dst_port, payload);
 
     let mut hdr = UdpHeader::new(src_port, dst_port, payload.len());
-    hdr.checksum = cs.to_be();
+    hdr.checksum = cs;
     hdr.write_to(&mut dst[..UdpHeader::SIZE]);
     dst[UdpHeader::SIZE..total].copy_from_slice(payload);
 
