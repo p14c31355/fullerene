@@ -576,8 +576,8 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             if buf.len() < dlen as usize {
                 return Err("buffer too small");
             }
-            let mut wbuf = buf[..dlen as usize].to_vec();
-            xhci.bulk_transfer(self.slot_id, self.bulk_out, &mut wbuf, UsbDirection::Out, 512)?;
+            let mut_buf = unsafe { core::slice::from_raw_parts_mut(buf.as_ptr() as *mut u8, dlen as usize) };
+            xhci.bulk_transfer(self.slot_id, self.bulk_out, mut_buf, UsbDirection::Out, 512)?;
             let mut csw = [0u8; 13];
             xhci.bulk_transfer(self.slot_id, self.bulk_in, &mut csw, UsbDirection::In, 512)?;
             let sig = u32::from_le_bytes([csw[0], csw[1], csw[2], csw[3]]);
