@@ -210,8 +210,20 @@ pub fn debug_usb() {
     {
         let xhis = XHCI_CONTROLLERS.lock();
         for (i, xhci) in xhis.iter().enumerate() {
-            klog_fmt!("xHCI[{}] dump:\n", i);
-            xhci.dump_all();
+            let x = xhci;
+            klog_fmt!("xHCI[{}] ppc={} n_ports={} max_slots={} ports_done={:#x} legacy={}\n",
+                i, x.ppc_enabled(), x.n_ports(), x.max_slots(),
+                x.ports_done_mask(), x.legacy_handoff_done());
+            let usbcmd = x.read_op_reg(0x00);
+            let usbsts = x.read_op_reg(0x04);
+            klog_fmt!("xHCI USBCMD={:#x} USBSTS={:#x} HCHalted={}\n",
+                usbcmd, usbsts, (usbsts & 1) != 0);
+            for p in 0..x.n_ports() {
+                let ps = x.read_portsc(p);
+                if ps == 0xFFFF { continue; }
+                klog_fmt!("xHCI PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={} speed={}\n",
+                    p, ps, ps&1, (ps>>1)&1, (ps>>5)&0xF, (ps>>9)&1, (ps>>4)&1, (ps>>10)&0xF);
+            }
         }
     }
     klog_fmt!("=== USB END ===\n");
