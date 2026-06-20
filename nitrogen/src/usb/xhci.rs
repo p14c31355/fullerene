@@ -450,7 +450,7 @@ impl XhciController {
             if cur & PORTSC_PP != 0 {
                 unsafe { core::ptr::write_volatile(
                     op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                    cur | (1u32 << 31)
+                    (cur & !0x00FE0000) | (1u32 << 31)
                 ); }
                 Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             }
