@@ -252,14 +252,14 @@ impl XhciController {
 
         let n_ports = (hcs1 >> 24) & 0xFF;
         let max_slots = hcs1 & 0xFF;
-        let ppc = (hcs1 & (1 << 4)) != 0; // Port Power Control supported
+        let ppc = (hcc1 & (1 << 4)) != 0; // Port Power Control supported (HCCPARAMS1 bit4)
         let db_off = db_off_val & 0xFFFF_FFFC;
         let rt_off = rt_off_val & 0xFFFF_FFFC;
         let op_off = caplength;
         let op = unsafe { mmio_base.add(op_off as usize) };
 
-        log::info!("xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={} ppc={}", hcs1, n_ports, max_slots, ppc);
-        log::info!("xHCI: HCCPARAMS1=0x{:08X} 64bit={} xECP=0x{:x}", hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
+        log::info!("xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={}", hcs1, n_ports, max_slots);
+        log::info!("xHCI: HCCPARAMS1=0x{:08X} 64bit={} ppc={} xECP=0x{:x}", hcc1, hcc1 & 1, ppc, (hcc1>>16)&0xFFFF);
 
         // Log PORTSC for all ports BEFORE any change
         // Use direct reads with clflush since `self` is not available yet.
@@ -393,11 +393,14 @@ impl XhciController {
         let sts_after_run = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
         log::info!("xHCI: after CMD_RUN wait, USBSTS=0x{:08X} HCHalted={}", sts_after_run, sts_after_run & 1);
 
-        // ── Power on all ports ─────────────────────────────────
-        // After HCRST, many laptop chipsets have PP=0 for all ports.
-        // Setting PP=1 allows the port state machine to automatically
-        // transition through RxDetect → Polling → U0 when a device is
-        // connected.  Do NOT write PLS/LWS here — let hardware auto-detect.
+        // ── Initiate device detection on all ports ────────────
+        // After HCRST, ports may not automatically start link training.
+        // Write PLS=RxDetect with LWS to force the port state machine
+        // into device-detection mode.  For controllers with PPC=1 we also
+        // set PP=1 (port power).  For PPC=0, PP is hardware-managed and
+        // our writes to that bit are ignored.
+        const PLS_RXDETECT: u32 = 5 << 5;
+        const LWS: u32 = 1 << 16;
         for port in 0..n_ports.min(8) {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             let ps = unsafe { core::ptr::read_volatile(
@@ -405,16 +408,14 @@ impl XhciController {
             ) };
             log::info!("xHCI: PORTSC[{}] before-port-init PP={} PLS={} CCS={} PED={}",
                 port, (ps>>9)&1, (ps>>5)&0xF, ps&1, (ps>>1)&1);
-            // Some controllers need a power cycle: off → delay → on
-            if ps & PORTSC_PP == 0 {
-                unsafe {
-                    core::ptr::write_volatile(
-                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                        PORTSC_PP
-                    );
-                }
-                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let new_ps = if ppc { PORTSC_PP } else { 0 } | PLS_RXDETECT | LWS;
+            unsafe {
+                core::ptr::write_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                    new_ps
+                );
             }
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
         }
 
         // Wait for device detection on each port, polling for CCS==1
@@ -681,24 +682,24 @@ impl XhciController {
                     (portsc >> 10) & 0xF, (portsc >> 1) & 1);
             }
 
-            // ── Step 2: Force port power on ────────────────────
-            // On many laptops, firmware leaves PP=0 after HCRST even
-            // though a device is plugged in.  Explicitly power the port.
-            // USB 3.0 spec requires VBUS off ≥ 100ms for a full power cycle,
-            // so we do a proper cold reset: off → delay → on → delay.
-            let do_cold_reset = !pp_on || pls == 5; // PLS=5 = RxDetect (no device seen yet)
-            if do_cold_reset {
-                log::info!("xHCI: poll_ports port {} — cold reset (PP={}, PLS={})", port, pp_on, pls);
-                // Power off
-                let v = self.op_read(PORTSC_BASE + port * 0x10);
-                self.op_write(PORTSC_BASE + port * 0x10, v & !(PORTSC_PP | RW1C_BITS));
-                // Wait ≥100ms for VBUS discharge (USB 3.0 §7.3.1)
-                for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                // Power on + set PLS=RxDetect with LWS
-                let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                let pls5: u32 = 5 << 5; // RxDetect
-                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
-                // Wait for PHY detection + link training (USB 3.0 can be slow)
+            // ── Step 2: Initiate link training ─────────────────
+            // PPC=1:  Power-cycle the port (off → wait → on + RxDetect).
+            // PPC=0:  PP is hardware-managed; just write RxDetect+LWS
+            //         to restart the link training state machine.
+            let pls5: u32 = 5 << 5; // RxDetect
+            let do_restart = !pp_on || pls == 5;
+            if do_restart {
+                let cur = self.op_read(PORTSC_BASE + port * 0x10);
+                if self.ppc {
+                    log::info!("xHCI: poll_ports port {} — power cycle (PP={}, PLS={})", port, pp_on, pls);
+                    self.op_write(PORTSC_BASE + port * 0x10, cur & !(PORTSC_PP | RW1C_BITS));
+                    for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                    let v2 = self.op_read(PORTSC_BASE + port * 0x10);
+                    self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
+                } else {
+                    log::info!("xHCI: poll_ports port {} — RxDetect+LWS (PP={}, PLS={})", port, pp_on, pls);
+                    self.op_write(PORTSC_BASE + port * 0x10, (cur & !(RW1C_BITS)) | pls5 | LWS);
+                }
                 for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
             }
 
