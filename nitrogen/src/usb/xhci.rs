@@ -395,6 +395,10 @@ impl XhciController {
         }
         let sts_after_run = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
         log::info!("xHCI: after CMD_RUN wait, USBSTS=0x{:08X} HCHalted={}", sts_after_run, sts_after_run & 1);
+        if sts_after_run & STS_HCH != 0 {
+            log::error!("xHCI: controller failed to start (HCHalted)");
+            return None;
+        }
 
         // ── Clear RW1C status bits on all ports ──────────────
         // After HCRST, RW1C bits like CSC, WRC, PEC may be set,
