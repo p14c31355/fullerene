@@ -327,11 +327,11 @@ pub fn poll_usb_all() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
     let mut pending: Vec<(usize, usize)> = Vec::new();
     {
+        // Clear existing mount state once before re-enumerating all controllers
+        USB_DRIVES.lock().clear();
+        USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
         let mut xhis = XHCI_CONTROLLERS.lock();
         for (ctrl_idx, xhci) in xhis.iter_mut().enumerate() {
-            // Clear existing mount state to match the cleared controller state
-            USB_DRIVES.lock().clear();
-            USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
             xhci.clear_ports_done();
             xhci.clear_devices();
             xhci.poll_ports();

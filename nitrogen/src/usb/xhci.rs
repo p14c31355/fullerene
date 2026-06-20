@@ -978,20 +978,27 @@ impl XhciController {
         }
 
         // Enqueue TRB on the ring (re-borrow slot mutably)
-        if let Some(slot) = self.slots.iter_mut().find(|s| s.slot_id == slot_id) {
-            let ring = match dir {
-                UsbDirection::In => slot.bulk_in_ring.as_mut().ok_or("no bulk in ring")?,
-                UsbDirection::Out => slot.bulk_out_ring.as_mut().ok_or("no bulk out ring")?,
-            };
-            let mut trb = Trb::new(TRB_NORMAL, ring.cycle);
-            trb.params[..4].copy_from_slice(&(staging_phys as u32).to_le_bytes());
-            trb.params[4..8].copy_from_slice(&(staging_phys >> 32).to_le_bytes());
-            trb.status = (len as u32) & 0x1FFFF;
-            if dir == UsbDirection::In { trb.flags |= TRB_DIR_IN; }
-            trb.flags |= TRB_IOC | TRB_ENT;
-            ring.enqueue(trb);
-        } else {
-            return Err("bad slot");
+        let enqueue_res = (|| -> Result<(), &'static str> {
+            if let Some(slot) = self.slots.iter_mut().find(|s| s.slot_id == slot_id) {
+                let ring = match dir {
+                    UsbDirection::In => slot.bulk_in_ring.as_mut().ok_or("no bulk in ring")?,
+                    UsbDirection::Out => slot.bulk_out_ring.as_mut().ok_or("no bulk out ring")?,
+                };
+                let mut trb = Trb::new(TRB_NORMAL, ring.cycle);
+                trb.params[..4].copy_from_slice(&(staging_phys as u32).to_le_bytes());
+                trb.params[4..8].copy_from_slice(&(staging_phys >> 32).to_le_bytes());
+                trb.status = (len as u32) & 0x1FFFF;
+                if dir == UsbDirection::In { trb.flags |= TRB_DIR_IN; }
+                trb.flags |= TRB_IOC | TRB_ENT;
+                ring.enqueue(trb);
+                Ok(())
+            } else {
+                Err("bad slot")
+            }
+        })();
+        if let Err(e) = enqueue_res {
+            unsafe { (*self.ctx).free_contiguous_frames(staging_phys, staging_pages); }
+            return Err(e);
         }
         let ep_num = (endpoint & 0x0F) as u32;
         let is_in = (endpoint & 0x80) != 0;

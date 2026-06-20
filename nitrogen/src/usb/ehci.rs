@@ -488,31 +488,44 @@ impl EhciController {
 
         // Wait for completion (poll all 3 qTDs)
         let timeout = 5_000_000u32; // 5 seconds
-        let result = self.wait_qtd(&qtd_setup, timeout);
-        if result.is_err() { self.remove_qh(qh_phys); return result.map(|_| 0); }
-
-        if data_len > 0 {
+        let mut result: Result<usize, &'static str> = Ok(0);
+        let r = self.wait_qtd(&qtd_setup, timeout);
+        if r.is_err() {
+            result = r.map(|_| 0);
+        } else if data_len > 0 {
             let (data_qh_ptr, _) = qtd_data.as_ref().unwrap();
-            let r = self.wait_qtd(data_qh_ptr, timeout);
-            if r.is_err() { self.remove_qh(qh_phys); return r.map(|_| 0); }
-
-            if is_in {
-                unsafe {
-                    let n = data_len.min(4096);
-                    core::ptr::copy_nonoverlapping(setup_page_virt, buf.as_mut_ptr(), n);
+            let r2 = self.wait_qtd(data_qh_ptr, timeout);
+            if r2.is_err() {
+                result = r2.map(|_| 0);
+            } else {
+                if is_in {
+                    unsafe {
+                        let n = data_len.min(4096);
+                        core::ptr::copy_nonoverlapping(setup_page_virt, buf.as_mut_ptr(), n);
+                    }
+                }
+                let r3 = self.wait_qtd(&qtd_status, timeout);
+                if r3.is_err() {
+                    result = r3.map(|_| 0);
                 }
             }
+        } else {
+            let r3 = self.wait_qtd(&qtd_status, timeout);
+            if r3.is_err() {
+                result = r3.map(|_| 0);
+            }
+        }
+        if result.is_ok() {
+            result = Ok(data_len);
         }
 
-        let r = self.wait_qtd(&qtd_status, timeout);
-        if r.is_err() { self.remove_qh(qh_phys); return r.map(|_| 0); }
-
+        // Free resources on both success and error paths
         self.remove_qh(qh_phys);
         self.free_qtd(qtd_setup);
         if let Some((d, _)) = qtd_data { self.free_qtd(d); }
         self.free_qtd(qtd_status);
         self.free_qh(qh);
-        Ok(data_len)
+        result
     }
 
     // ── Bulk Transfer ────────────────────────────────────────

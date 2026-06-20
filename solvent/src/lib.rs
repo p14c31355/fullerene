@@ -438,11 +438,15 @@ pub fn poll_keyboard() {
                 false
             }
         });
-        if editor_active && pressed {
+        if editor_active {
             editor_handle_key(scancode);
-            // Still push KeyDown to event queue for other handlers
+            // Still push KeyDown/KeyUp to event queue for other handlers
             let key = scancode_to_resonance_keycode(scancode);
-            let event = Event::Input(InputEvent::KeyDown(key));
+            let event = if pressed {
+                Event::Input(InputEvent::KeyDown(key))
+            } else {
+                Event::Input(InputEvent::KeyUp(key))
+            };
             if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
                 queue.push(event);
             }
