@@ -255,7 +255,8 @@ impl Desktop {
             }
             if window.hit_maximize_button(self.cursor.x, self.cursor.y) {
                 let (ww, wh) = self.work_area(fb_width, fb_height);
-                self.wm.toggle_maximize(id, ww, wh);
+                let wy = self.top_panel_offset() as i32;
+                self.wm.toggle_maximize(id, 0, wy, ww, wh);
                 return;
             }
         }

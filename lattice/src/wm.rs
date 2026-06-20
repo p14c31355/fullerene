@@ -432,21 +432,31 @@ impl WindowManager {
 
     /// Toggle maximize for a window.
     ///
-    /// The window is moved to 0,0 and expanded to fill the work area.
+    /// The window is moved to (`work_x`, `work_y`) and expanded to fill the
+    /// work area.  `work_y` accounts for the top panel so windows don't
+    /// overlap the panel when maximized.
+    ///
     /// Surface is **not** resized — the compositor clips the surface
     /// at its native size.  The caller (render loop) should adjust the
     /// terminal grid (cols × rows) to match the new window dimensions
     /// and recreate the surface only for the grid, not for the full
     /// window.  This avoids OOM on small heaps (e.g. 4 MiB kernel heap).
-    pub fn toggle_maximize(&mut self, id: WindowId, work_width: u32, work_height: u32) -> bool {
+    pub fn toggle_maximize(
+        &mut self,
+        id: WindowId,
+        work_x: i32,
+        work_y: i32,
+        work_width: u32,
+        work_height: u32,
+    ) -> bool {
         let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
             return false;
         };
         match w.maximized {
             false => {
                 w.restore_rect = Some((w.x, w.y, w.width, w.height));
-                w.x = 0;
-                w.y = 0;
+                w.x = work_x;
+                w.y = work_y;
                 w.width = work_width;
                 w.height = work_height;
                 w.maximized = true;

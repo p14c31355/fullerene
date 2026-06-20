@@ -747,6 +747,26 @@ where
     }
 
     render_terminal(rt, rt.term_window);
+
+    // Detect editor surface-size mismatch (e.g. after maximize) and
+    // force a re-render even when `editor_dirty` is false.  The window
+    // manager resizes the window but not the surface, so the compositor
+    // would fill the extra area with the surface's bg_fallback colour
+    // instead of editor text cells.
+    if !rt.editor_dirty {
+        if let Some(editor_id) = rt.editor_window {
+            if let Some(w) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_id) {
+                let new_cols = (w.width / GLYPH_W).max(1);
+                let new_rows = (w.height / GLYPH_H).max(1);
+                if w.surface.width() != new_cols * GLYPH_W
+                    || w.surface.height() != new_rows * GLYPH_H
+                {
+                    rt.editor_dirty = true;
+                }
+            }
+        }
+    }
+
     if rt.editor_dirty {
         render_editor(rt);
     }
@@ -1420,6 +1440,30 @@ fn render_editor(rt: &mut RuntimeState) {
     let new_cols = (window.width / GLYPH_W).max(1);
     let new_rows = (window.height / GLYPH_H).max(1);
 
+    // Resize the editor surface when the window changes (e.g. maximize).
+    // Extend the global heap if needed, same pattern as render_terminal.
+    let cur_surf_w = window.surface.width();
+    let cur_surf_h = window.surface.height();
+    let new_surf_w = new_cols * GLYPH_W;
+    let new_surf_h = new_rows * GLYPH_H;
+    if cur_surf_w != new_surf_w || cur_surf_h != new_surf_h {
+        let new_pixels = (new_surf_w * new_surf_h) as usize;
+        let needed = new_pixels * 4;
+        let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
+        if needed > reserve {
+            let additional = needed
+                .saturating_sub(reserve)
+                .next_multiple_of(4096);
+            if let Some(extend_fn) = SOLVENT_CALLBACKS.lock().heap_extend {
+                if extend_fn(additional).is_ok() {
+                    HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        let bg = window.surface.get_pixel(0, 0).unwrap_or(0x0a0a1e);
+        window.surface = lattice::surface::Surface::new(new_surf_w, new_surf_h, bg);
+    }
+
     rt.editor_buf.ensure_cursor_visible(new_rows as usize);
 
     let visible = rt.editor_buf.visible_lines(new_rows as usize);
@@ -1651,22 +1695,25 @@ pub fn editor_handle_key(scancode: u8) {
         }).unwrap_or(10)
     };
 
+    let vp = viewport(rt);
+
     match key {
-        KeyCode::Enter => rt.editor_buf.insert_char(b'\n'),
-        KeyCode::Backspace => rt.editor_buf.backspace(),
-        KeyCode::Left => rt.editor_buf.cursor_left(),
-        KeyCode::Right => rt.editor_buf.cursor_right(),
-        KeyCode::Up => rt.editor_buf.cursor_up(),
-        KeyCode::Down => rt.editor_buf.cursor_down(),
-        KeyCode::Home => rt.editor_buf.cursor_home(),
-        KeyCode::End => rt.editor_buf.cursor_end(),
-        KeyCode::PageUp => rt.editor_buf.page_up(viewport(rt)),
-        KeyCode::PageDown => rt.editor_buf.page_down(viewport(rt)),
-        KeyCode::Space => rt.editor_buf.insert_char(b' '),
-        KeyCode::Tab => { rt.editor_buf.insert_char(b' '); rt.editor_buf.insert_char(b' '); }
+        KeyCode::Enter => { rt.editor_buf.insert_char(b'\n'); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Backspace => { rt.editor_buf.backspace(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Left => { rt.editor_buf.cursor_left(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Right => { rt.editor_buf.cursor_right(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Up => { rt.editor_buf.cursor_up(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Down => { rt.editor_buf.cursor_down(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Home => { rt.editor_buf.cursor_home(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::End => { rt.editor_buf.cursor_end(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::PageUp => { rt.editor_buf.page_up(vp); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::PageDown => { rt.editor_buf.page_down(vp); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Space => { rt.editor_buf.insert_char(b' '); rt.editor_buf.clamp_scroll_with_viewport(vp); }
+        KeyCode::Tab => { rt.editor_buf.insert_char(b' '); rt.editor_buf.insert_char(b' '); rt.editor_buf.clamp_scroll_with_viewport(vp); }
         _ => {
             if let Some(byte) = key_to_char(key) {
                 rt.editor_buf.insert_char(byte);
+                rt.editor_buf.clamp_scroll_with_viewport(vp);
             } else { return; }
         }
     }
