@@ -252,7 +252,7 @@ impl XhciController {
 
         let n_ports = (hcs1 >> 24) & 0xFF;
         let max_slots = hcs1 & 0xFF;
-        let ppc = (hcc1 & (1 << 4)) != 0; // Port Power Control supported (HCCPARAMS1 bit4)
+        let ppc = (hcc1 & (1 << 3)) != 0; // Port Power Control (HCCPARAMS1 bit3)
         let db_off = db_off_val & 0xFFFF_FFFC;
         let rt_off = rt_off_val & 0xFFFF_FFFC;
         let op_off = caplength;
@@ -393,30 +393,51 @@ impl XhciController {
         let sts_after_run = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
         log::info!("xHCI: after CMD_RUN wait, USBSTS=0x{:08X} HCHalted={}", sts_after_run, sts_after_run & 1);
 
-        // ── Initiate device detection on all ports ────────────
-        // After HCRST, ports may not automatically start link training.
-        // Write PLS=RxDetect with LWS to force the port state machine
-        // into device-detection mode.  For controllers with PPC=1 we also
-        // set PP=1 (port power).  For PPC=0, PP is hardware-managed and
-        // our writes to that bit are ignored.
-        const PLS_RXDETECT: u32 = 5 << 5;
-        const LWS: u32 = 1 << 16;
-        for port in 0..n_ports.min(8) {
-            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            let ps = unsafe { core::ptr::read_volatile(
-                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
-            ) };
-            log::info!("xHCI: PORTSC[{}] before-port-init PP={} PLS={} CCS={} PED={}",
-                port, (ps>>9)&1, (ps>>5)&0xF, ps&1, (ps>>1)&1);
-            let new_ps = if ppc { PORTSC_PP } else { 0 } | PLS_RXDETECT | LWS;
-            unsafe {
-                core::ptr::write_volatile(
-                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                    new_ps
-                );
+        // ── Power on all ports (PPC=1 only) ───────────────────
+        // After HCRST, Linux simply sets PP=1 for each port (when PPC=1).
+        // The port state machine then automatically goes through
+        // RxDetect → Polling → U0 when a device is connected.
+        // Do NOT write PLS/LWS — the hardware handles link training.
+        if ppc {
+            for port in 0..n_ports.min(8) {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let ps = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                if ps & PORTSC_PP == 0 {
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        PORTSC_PP
+                    ); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                }
             }
-            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
         }
+
+        // ── Warm Port Reset on all ports ──────────────────────
+        // After HCRST, some controllers (notably Intel Wildcat Point-LP)
+        // leave ports in a state where the PHY does not start link training
+        // automatically.  A Warm Port Reset (WPR) forces the port into
+        // RxDetect, which triggers the full detection sequence.
+        // This is safe to do even when no device is connected.
+        for port in 0..n_ports.min(8) {
+            if ppc {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let cur = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                // WPR is bit 31; only valid when PP is set
+                if cur & PORTSC_PP != 0 {
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        cur | (1u32 << 31)
+                    ); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                }
+            }
+        }
+        // Wait for warm resets to complete on all ports
+        for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
 
         // Wait for device detection on each port, polling for CCS==1
         // with a generous timeout.  Real xHCI hardware can take 3-10 seconds
@@ -682,24 +703,15 @@ impl XhciController {
                     (portsc >> 10) & 0xF, (portsc >> 1) & 1);
             }
 
-            // ── Step 2: Initiate link training ─────────────────
-            // PPC=1:  Power-cycle the port (off → wait → on + RxDetect).
-            // PPC=0:  PP is hardware-managed; just write RxDetect+LWS
-            //         to restart the link training state machine.
-            let pls5: u32 = 5 << 5; // RxDetect
-            let do_restart = !pp_on || pls == 5;
-            if do_restart {
-                let cur = self.op_read(PORTSC_BASE + port * 0x10);
-                if self.ppc {
-                    log::info!("xHCI: poll_ports port {} — power cycle (PP={}, PLS={})", port, pp_on, pls);
-                    self.op_write(PORTSC_BASE + port * 0x10, cur & !(PORTSC_PP | RW1C_BITS));
-                    for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
-                    let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                    self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
-                } else {
-                    log::info!("xHCI: poll_ports port {} — RxDetect+LWS (PP={}, PLS={})", port, pp_on, pls);
-                    self.op_write(PORTSC_BASE + port * 0x10, (cur & !(RW1C_BITS)) | pls5 | LWS);
-                }
+            // ── Step 2: Power-cycle port (PPC=1 only) ─────────
+            // PPC=0:  PP is hardware-managed; the port auto-detects.
+            //         Just skip — no need for software intervention.
+            if self.ppc && (!pp_on || pls == 5) {
+                log::info!("xHCI: poll_ports port {} — power cycle (PP={}, PLS={})", port, pp_on, pls);
+                self.op_write(PORTSC_BASE + port * 0x10, portsc & !(PORTSC_PP | RW1C_BITS));
+                for _ in 0..600_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                let v2 = self.op_read(PORTSC_BASE + port * 0x10);
+                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP);
                 for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
             }
 
@@ -726,12 +738,7 @@ impl XhciController {
                     let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & WPR == 0 { break; }
                 }
-                // After WPR completes, force PLS=RxDetect+LWS to restart
-                // link training (some controllers stay in Disconnected after WPR).
-                let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                let pls5: u32 = 5 << 5;
-                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | PORTSC_PP | pls5 | LWS);
-                // Wait for link training after warm reset
+                // After WPR completes, wait for link training
                 for _ in 0..1_200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
             }
 
@@ -791,6 +798,27 @@ impl XhciController {
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
+    pub fn ports_done_mask(&self) -> u32 { self.ports_done }
+
+    /// Re-poll ALL ports, including those previously marked done.
+    /// Used when the boot device should appear after initial enumeration.
+    pub fn poll_ports_all(&mut self) {
+        self.ports_done = 0;
+        self.devices.clear();
+        self.poll_ports();
+    }
+
+    /// Dump port status for debugging.
+    pub fn portsc_dump(&self) {
+        for p in 0..self.n_ports.min(8) {
+            let ps = self.read_portsc(p);
+            if ps == 0xFFFF { continue; }
+            log::info!("xHCI-PORTSC[{}]=0x{:08X} CCS={} PED={} PLS={} PP={} speed={}",
+                p, ps, ps&1, (ps>>1)&1, (ps>>5)&0xF,
+                (ps>>9)&1, (ps>>10)&0xF);
+        }
+    }
+
     pub fn read_cap(&self, offset: u32) -> u32 {
         unsafe { core::ptr::read_volatile((self.mmio.add(offset as usize)) as *const u32) }
     }

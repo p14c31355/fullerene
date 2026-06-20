@@ -134,6 +134,14 @@ pub fn init() {
         core::hint::spin_loop();
     }
     poll_usb();
+
+    // Phase 4: Force re-poll with fresh ports_done — catches devices
+    // that were connected during boot (same USB drive) but missed due to
+    // timing or already-done filtering.
+    for _ in 0..500_000 { core::hint::spin_loop(); }
+    poll_usb_all();
+
+    debug_usb();
 }
 
 fn init_controllers() {
@@ -184,6 +192,30 @@ fn init_controllers() {
             _ => {}
         }
     }
+}
+
+/// Debug dump USB controller state
+pub fn debug_usb() {
+    klog_fmt!("=== USB DEBUG ===\n");
+    {
+        let ehis = EHCI_CONTROLLERS.lock();
+        for (i, ehci) in ehis.iter().enumerate() {
+            klog_fmt!("EHCI[{}]: {} ports\n", i, ehci.n_ports());
+            for p in 0..ehci.n_ports().min(4) {
+                let ps = ehci.read_portsc(p);
+                klog_fmt!("  PORTSC[{}]=0x{:08X}\n", p, ps);
+            }
+        }
+    }
+    {
+        let xhis = XHCI_CONTROLLERS.lock();
+        for (i, xhci) in xhis.iter().enumerate() {
+            klog_fmt!("xHCI[{}]: ports_done=0x{:x}, n_ports={}, ppc={}\n",
+                i, xhci.ports_done_mask(), xhci.n_ports(), xhci.ppc_enabled());
+            xhci.portsc_dump();
+        }
+    }
+    klog_fmt!("=== USB END ===\n");
 }
 
 /// Poll all USB controllers (EHCI + xHCI). Returns true if a new drive was mounted.
@@ -290,6 +322,30 @@ pub fn poll_usb() -> bool {
         mount_xhci_device(ctrl_idx, idx);
     }
 
+    USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
+}
+
+/// Force re-poll of all controller ports (clears ports_done mask).
+/// Returns true if a new drive was mounted.
+pub fn poll_usb_all() -> bool {
+    let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
+    {
+        let mut xhis = XHCI_CONTROLLERS.lock();
+        for xhci in xhis.iter_mut() {
+            xhci.poll_ports_all();
+        }
+    }
+    // Mount newly discovered devices
+    for (ctrl_idx, idx) in {
+        let mut v = Vec::new();
+        let xhis = XHCI_CONTROLLERS.lock();
+        for xhci in xhis.iter() {
+            for i in 0..xhci.devices().len() { v.push((0, i)); }
+        }
+        v
+    } {
+        mount_xhci_device(ctrl_idx, idx);
+    }
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
 }
 
