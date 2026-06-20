@@ -61,6 +61,10 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
         Ok(b) => b,
         Err(_) => { show_error(rt, "BMP Error", "Parse failed"); return; }
     };
+    if !matches!(bmp.header().bpp, tinybmp::Bpp::Bits24 | tinybmp::Bpp::Bits32) {
+        show_error(rt, "BMP Error", "Only 24-bit and 32-bit BMPs are supported");
+        return;
+    }
     let (w, h) = (bmp.header().image_size.width, bmp.header().image_size.height);
     if w > MAX_IMG_W || h > MAX_IMG_H {
         show_error(rt, "BMP Error", &format!("Image too large: {}x{}", w, h));

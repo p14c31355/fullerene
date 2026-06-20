@@ -738,9 +738,13 @@ impl XhciController {
 
             // ── Step 4: If still CCS=0, try warm port reset ────
             // WPR is expensive (~3 seconds), so only do it once per
-            // port per `clear_ports_done()` cycle.
+            // port per `clear_ports_done()` cycle, and only when the
+            // port is stuck in Inactive (PLS=6) or Compliance (PLS=10)
+            // mode — not for normally empty/disconnected ports.
+            let pls = (portsc >> 5) & 0xF;
             let wpr_needed = (portsc & PORTSC_CCS) == 0
                 && (portsc & PORTSC_PP) != 0
+                && (pls == 6 || pls == 10)
                 && (self.wpr_done & (1 << port)) == 0;
             if wpr_needed {
                 self.wpr_done |= 1 << port;

@@ -1593,6 +1593,11 @@ pub fn editor_handle_key(scancode: u8) {
         return;
     }
 
+    // Ignore key release events for all other keys — only presses produce editor actions
+    if !is_press {
+        return;
+    }
+
     let viewport = |rt: &RuntimeState| -> usize {
         rt.editor_window.and_then(|id| {
             rt.desktop.wm.windows().iter().find(|w| w.id == id)
