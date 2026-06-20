@@ -792,14 +792,8 @@ impl XhciController {
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
     pub fn ports_done_mask(&self) -> u32 { self.ports_done }
-
-    /// Re-poll ALL ports, including those previously marked done.
-    /// Used when the boot device should appear after initial enumeration.
-    pub fn poll_ports_all(&mut self) {
-        self.ports_done = 0;
-        self.devices.clear();
-        self.poll_ports();
-    }
+    pub fn clear_ports_done(&mut self) { self.ports_done = 0; }
+    pub fn clear_devices(&mut self) { self.devices.clear(); }
 
     /// Dump port status for debugging.
     pub fn portsc_dump(&self) {

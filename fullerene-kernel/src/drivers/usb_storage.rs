@@ -257,6 +257,11 @@ pub fn poll_usb() -> bool {
         let mut xhis = XHCI_CONTROLLERS.lock();
         for (ctrl_idx, xhci_box) in xhis.iter_mut().enumerate() {
             let xhci = xhci_box.as_mut();
+
+            // Clear ports_done before every poll so previously-skipped
+            // ports (e.g. the boot USB drive) get re-evaluated.
+            xhci.clear_ports_done();
+
             let old = xhci.devices().len();
 
             let hcs1 = xhci.read_cap(4);
@@ -268,7 +273,7 @@ pub fn poll_usb() -> bool {
                 usbcmd, usbsts, xhci.is_running(), hcs1 & 0xFF, (hcs1>>24)&0xFF,
                 xhci.ppc_enabled(), xhci.legacy_handoff_done());
 
-            for p in 0..xhci.n_ports().min(8) {
+            for p in 0..xhci.n_ports() {
                 let ps = xhci.read_portsc(p);
                 if ps != 0xFFFF {
                     klog_fmt!("xHCI PORTSC[{}]=0x{:08X} CCS={} PED={} PR={} PP={} PLS={} WPR={} speed={}\n",
@@ -280,29 +285,6 @@ pub fn poll_usb() -> bool {
             xhci.poll_ports();
             let new = xhci.devices().len();
             klog_fmt!("xHCI poll: {} ports old={} new={}\n", xhci.n_ports(), old, new);
-
-            // If no devices found and we have powered ports, try warm reset
-            if new == 0 {
-                for p in 0..xhci.n_ports().min(8) {
-                    let ps = xhci.read_portsc(p);
-                    if ps != 0xFFFF && ps & (1 << 9) != 0 && ps & 1 == 0 {
-                        klog_fmt!("xHCI warm reset port {}\n", p);
-                        xhci.write_portsc(p, ps | (1 << 20));
-                        for _ in 0..200_000 { /* delay */ }
-                        let after = xhci.read_portsc(p);
-                        klog_fmt!("xHCI after warm reset port {}: 0x{:08X} CCS={}\n", p, after, after & 1);
-                    }
-                }
-                // Re-check after warm resets
-                xhci.poll_ports();
-                let new2 = xhci.devices().len();
-                klog_fmt!("xHCI poll after warm reset: old={} new={}\n", new, new2);
-                if new2 > new {
-                    for idx in new..new2 {
-                        xhci_pending.push((ctrl_idx, idx));
-                    }
-                }
-            }
 
             if new > old {
                 for idx in old..new {
@@ -325,26 +307,24 @@ pub fn poll_usb() -> bool {
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
 }
 
-/// Force re-poll of all controller ports (clears ports_done mask).
+/// Force re-poll of all xHCI ports (clears ports_done mask).
 /// Returns true if a new drive was mounted.
 pub fn poll_usb_all() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
+    let mut pending: Vec<(usize, usize)> = Vec::new();
     {
         let mut xhis = XHCI_CONTROLLERS.lock();
-        for xhci in xhis.iter_mut() {
-            xhci.poll_ports_all();
+        for (ctrl_idx, xhci) in xhis.iter_mut().enumerate() {
+            xhci.clear_ports_done();
+            xhci.clear_devices();
+            xhci.poll_ports();
+            for dev_idx in 0..xhci.devices().len() {
+                pending.push((ctrl_idx, dev_idx));
+            }
         }
     }
-    // Mount newly discovered devices
-    for (ctrl_idx, idx) in {
-        let mut v = Vec::new();
-        let xhis = XHCI_CONTROLLERS.lock();
-        for xhci in xhis.iter() {
-            for i in 0..xhci.devices().len() { v.push((0, i)); }
-        }
-        v
-    } {
-        mount_xhci_device(ctrl_idx, idx);
+    for (ctrl_idx, dev_idx) in pending {
+        mount_xhci_device(ctrl_idx, dev_idx);
     }
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
 }
