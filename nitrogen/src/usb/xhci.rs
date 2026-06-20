@@ -384,52 +384,78 @@ impl XhciController {
         let deq = ev.phys | 1; // cycle = 1, EHB bit not set
         unsafe { core::ptr::write_volatile((rt_base.add(ERSDP_OFF as usize)) as *mut u64, deq); }
 
-        // Start
+        // Start the controller and wait for it to exit HCHalted
         unsafe { core::ptr::write_volatile((op.add(USBCMD as usize)) as *mut u32, CMD_RUN); }
-
-        // ── Force all ports into RxDetect ─────────────────────
-        // After HCRST, many laptop chipsets leave USB3 ports in
-        // Disconnected (PLS=4) or U3 (PLS=3) and they never auto-detect.
-        // Explicitly set PP=1 and PLS=5 (RxDetect) on every port so the
-        // PHY starts looking for attached devices.
-        const PLS_RXDETECT: u32 = 5 << 5;
-        for port in 0..n_ports {
-            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            let ps = unsafe { core::ptr::read_volatile(
-                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
-            ) };
-            let cur_pls = (ps >> 5) & 0xF;
-            log::info!("xHCI: PORTSC[{}] before force-RxDetect PP={} PLS={} CCS={}",
-                port, (ps>>9)&1, cur_pls, ps & 1);
-            // Power on + set PLS to RxDetect.
-            // xHCI §5.4.8: LWS (bit 16) MUST be 1 when writing PLS,
-            // otherwise the write is silently ignored.
-            const LWS: u32 = 1 << 16;
-            let new_ps = PORTSC_PP | PLS_RXDETECT | LWS;
-            unsafe {
-                core::ptr::write_volatile(
-                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                    new_ps
-                );
-            }
-            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-        }
-
-        // Wait for USB 3.0 PHY link training.  SuperSpeed negotiation
-        // (RxDetect → Polling → U0) takes 1-3 seconds on real hardware.
-        // We use 12M I/O port writes (~18 sec worst case) to be safe.
-        for _ in 0..12_000_000 {
+        for _ in 0..200_000 {
+            if unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) } & STS_HCH == 0 { break; }
             crate::port::PortWriter::new(0x80).write_safe(0u8);
         }
-        log::info!("xHCI: PHY stabilisation delay complete");
+        let sts_after_run = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
+        log::info!("xHCI: after CMD_RUN wait, USBSTS=0x{:08X} HCHalted={}", sts_after_run, sts_after_run & 1);
 
-        // Log final PORTSC state after delay
-        for port in 0..n_ports.min(4) {
+        // ── Power on all ports ─────────────────────────────────
+        // After HCRST, many laptop chipsets have PP=0 for all ports.
+        // Setting PP=1 allows the port state machine to automatically
+        // transition through RxDetect → Polling → U0 when a device is
+        // connected.  Do NOT write PLS/LWS here — let hardware auto-detect.
+        for port in 0..n_ports.min(8) {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             let ps = unsafe { core::ptr::read_volatile(
                 op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
             ) };
-            log::info!("xHCI: PORTSC[{}] after-phy-delay=0x{:08X} CCS={} PP={} PLS={} PED={} speed={}",
+            log::info!("xHCI: PORTSC[{}] before-port-init PP={} PLS={} CCS={} PED={}",
+                port, (ps>>9)&1, (ps>>5)&0xF, ps&1, (ps>>1)&1);
+            // Some controllers need a power cycle: off → delay → on
+            if ps & PORTSC_PP == 0 {
+                unsafe {
+                    core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        PORTSC_PP
+                    );
+                }
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            }
+        }
+
+        // Wait for device detection on each port, polling for CCS==1
+        // with a generous timeout.  Real xHCI hardware can take 3-10 seconds
+        // for SuperSpeed link training (RxDetect → Polling → U0).
+        for port in 0..n_ports.min(8) {
+            for attempt in 0..60 {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let ps = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                if ps & 1 != 0 {
+                    log::info!("xHCI: PORTSC[{}] device detected at attempt {} — CCS=1 PLS={} PED={}",
+                        port, attempt, (ps>>5)&0xF, (ps>>1)&1);
+                    if ps & PORTSC_PED == 0 {
+                        log::info!("xHCI: PORTSC[{}] — PED=0, asserting PR", port);
+                        unsafe { core::ptr::write_volatile(
+                            op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                            (ps & !(1 << 20 | 1 << 17 | 1 << 18 | 1 << 19 | 1 << 21 | 1 << 22 | 1 << 23)) | PORTSC_PR
+                        ); }
+                        for _ in 0..200_000 { core::hint::spin_loop(); }
+                        Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                        let ps2 = unsafe { core::ptr::read_volatile(
+                            op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                        ) };
+                        log::info!("xHCI: PORTSC[{}] after PR — PED={}", port, (ps2>>1)&1);
+                    }
+                    break;
+                }
+                // ~100ms per *attempt — port I/O write is approximately 1μs
+                for _ in 0..100_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+            }
+        }
+
+        // Log final PORTSC state after delay
+        for port in 0..n_ports.min(8) {
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let ps = unsafe { core::ptr::read_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+            ) };
+            log::info!("xHCI: PORTSC[{}] after-init=0x{:08X} CCS={} PP={} PLS={} PED={} speed={}",
                 port, ps, ps & 1, (ps>>9)&1, (ps>>5)&0xF, (ps>>1)&1, (ps>>10)&0xF);
         }
 
