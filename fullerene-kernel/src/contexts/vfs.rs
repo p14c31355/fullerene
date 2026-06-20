@@ -117,8 +117,27 @@ impl VfsContext {
     ///
     /// Returns `Ok(true)` if a mount was removed, `Ok(false)` if none existed.
     /// The root `"/"` cannot be unmounted.
+    ///
+    /// Also updates the handle table: open file descriptors belonging to the
+    /// unmounted filesystem are discarded, and indices of remaining mounts
+    /// that shifted left are decremented.
     pub fn unmount(&self, mount_point: &str) -> Result<bool, &'static str> {
-        self.inner.lock().unmount(mount_point)
+        let mut vfs = self.inner.lock();
+        let mut handle_table = self.handle_table.lock();
+        let target_idx = match vfs.find_fs_index(mount_point) {
+            Some(idx) => idx,
+            None => return Ok(false),
+        };
+        let removed = vfs.unmount(mount_point)?;
+        if removed {
+            handle_table.entries.retain(|entry| entry.mount_index != target_idx);
+            for entry in &mut handle_table.entries {
+                if entry.mount_index > target_idx {
+                    entry.mount_index -= 1;
+                }
+            }
+        }
+        Ok(removed)
     }
 
     // ── File operations ─────────────────────────────────────────
