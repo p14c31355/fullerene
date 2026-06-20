@@ -31,24 +31,6 @@ fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
     show_text_window(rt, title, msg, 50, 0x1a1a0d, 0xFFCCCC);
 }
 
-fn render_pixels(rt: &mut RuntimeState, w: u32, h: u32, pixels: &[(u8, u8, u8)], label: &str) {
-    let win_w = w.min(800).max(160);
-    let win_h = h.min(600).max(120);
-    let id = rt.desktop.wm.create_titled_window(120, 80, win_w, win_h, 0x000000, label);
-    if let Some(win) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        for y in 0..h.min(win_h) {
-            for x in 0..w.min(win_w) {
-                let idx = (y * w + x) as usize;
-                let (r, g, b) = if idx < pixels.len() { pixels[idx] } else { (0, 0, 0) };
-                win.surface.set_pixel(x, y, (r as u32) << 16 | (g as u32) << 8 | b as u32);
-            }
-        }
-        rt.desktop.invalidate_window(id);
-    }
-    rt.desktop.wm.raise_to_top(id);
-    rt.frame_due = true;
-}
-
 // ── BMP viewer (tinybmp) ─────────────────────────────────────
 
 #[cfg(feature = "tinybmp")]
@@ -65,15 +47,31 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
         show_error(rt, "BMP Error", "Only 24-bit and 32-bit BMPs are supported");
         return;
     }
-    let (w, h) = (bmp.header().image_size.width, bmp.header().image_size.height);
+    let w = bmp.header().image_size.width;
+    let h = bmp.header().image_size.height;
     if w > MAX_IMG_W || h > MAX_IMG_H {
         show_error(rt, "BMP Error", &format!("Image too large: {}x{}", w, h));
         return;
     }
-    let pixels: Vec<(u8, u8, u8)> = bmp.pixels().map(|p| {
-        ((p.color >> 16) as u8, (p.color >> 8) as u8, p.color as u8)
-    }).collect();
-    render_pixels(rt, w, h, &pixels, "Image Viewer");
+    let win_w = w.min(800).max(160);
+    let win_h = h.min(600).max(120);
+    let id = rt.desktop.wm.create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
+    if let Some(win) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        for pixel in bmp.pixels() {
+            let x = pixel.position.x;
+            let y = pixel.position.y;
+            if x >= 0 && y >= 0 {
+                let ux = x as u32;
+                let uy = y as u32;
+                if ux < win_w && uy < win_h {
+                    win.surface.set_pixel(ux, uy, pixel.color);
+                }
+            }
+        }
+        rt.desktop.invalidate_window(id);
+    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
 }
 
 #[cfg(not(feature = "tinybmp"))]

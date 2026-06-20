@@ -253,14 +253,14 @@ impl XhciController {
 
         let n_ports = (hcs1 >> 24) & 0xFF;
         let max_slots = hcs1 & 0xFF;
-        let ppc = (hcc1 & (1 << 3)) != 0; // Port Power Control (HCCPARAMS1 bit3)
+        let ppc = (hcs1 & (1 << 4)) != 0; // Port Power Control (HCSPARAMS1 bit4)
         let db_off = db_off_val & 0xFFFF_FFFC;
         let rt_off = rt_off_val & 0xFFFF_FFFC;
         let op_off = caplength;
         let op = unsafe { mmio_base.add(op_off as usize) };
 
-        log::info!("xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={}", hcs1, n_ports, max_slots);
-        log::info!("xHCI: HCCPARAMS1=0x{:08X} 64bit={} ppc={} xECP=0x{:x}", hcc1, hcc1 & 1, ppc, (hcc1>>16)&0xFFFF);
+        log::info!("xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={} ppc={}", hcs1, n_ports, max_slots, ppc);
+        log::info!("xHCI: HCCPARAMS1=0x{:08X} 64bit={} xECP=0x{:x}", hcc1, hcc1 & 1, (hcc1>>16)&0xFFFF);
 
         // Log PORTSC for all ports BEFORE any change
         // Use direct reads with clflush since `self` is not available yet.
