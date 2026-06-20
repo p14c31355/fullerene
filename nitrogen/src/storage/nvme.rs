@@ -11,16 +11,13 @@ use alloc::vec::Vec;
 use core::ptr;
 use spin::Mutex;
 
-use crate::driver_context::{DriverContext, DriverContextError, PageFlags};
+use crate::driver_context::DriverContext;
 use crate::pci::{PciDevice, PciScanner};
 
 static CONTROLLERS: Mutex<Vec<NvmeController>> = Mutex::new(Vec::new());
 
 // ── Controller registers (offset from BAR0) ─────────────────────
-const NVME_CAP: usize = 0x00;
-const NVME_VS: usize = 0x08;
 const NVME_INTMS: usize = 0x0C;
-const NVME_INTMC: usize = 0x10;
 const NVME_CC: usize = 0x14;
 const NVME_CSTS: usize = 0x1C;
 const NVME_AQA: usize = 0x24;
@@ -69,15 +66,20 @@ struct CqEntry {
 }
 
 pub struct NvmeController {
+    #[allow(dead_code)]
     device: PciDevice,
     mmio: *mut u32,
+    #[allow(dead_code)]
     bar0_phys: u64,
     asq: *mut SqEntry,
     asq_phys: u64,
+    #[allow(dead_code)]
     asq_tail: u16,
     acq: *mut CqEntry,
     acq_phys: u64,
+    #[allow(dead_code)]
     acq_head: u16,
+    #[allow(dead_code)]
     phase: u16,
     queue_phys: u64,
 }

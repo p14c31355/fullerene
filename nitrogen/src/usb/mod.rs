@@ -34,8 +34,6 @@ pub mod msd;
 pub mod scsi;
 pub mod xhci;
 
-use core::fmt;
-
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbSpeed {

@@ -2,7 +2,6 @@
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
 use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, truncate_to_chars};
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -272,7 +271,7 @@ pub(crate) fn render_text_into_surface(
 ) -> u32 {
     let cols = max_cols as usize;
     let lines_count = text.lines().count() as u32;
-    let total = (cols * lines_count as usize);
+    let total = cols * lines_count as usize;
     let mut cells: Vec<LatticeCell> = Vec::new();
     cells.resize(
         total,

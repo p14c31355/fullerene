@@ -181,8 +181,11 @@ impl_to_le!(AttachCmd {
 /// (command buffer, response buffer, virtqueue descriptor/avail/used)
 /// and providing both physical and virtual addresses.
 pub struct VirtioGpu {
+    #[allow(dead_code)]
     device: PciDevice,
+    #[allow(dead_code)]
     common_bar: u8,
+    #[allow(dead_code)]
     type5_bar: u8,
     common_virt_absolute: *mut u32,
     /// Base address of the notify BAR (raw BAR start, NOT including notify_cap.offset).
@@ -198,13 +201,16 @@ pub struct VirtioGpu {
     next_desc: u16,
     cmd_buf: *mut u8,
     cmd_buf_phys: u64,
+    #[allow(dead_code)]
     cmd_buf_len: u32,
     /// Separately allocated response buffer (physical address).
+    #[allow(dead_code)]
     resp_buf: *mut u8,
     resp_buf_phys: u64,
     resp_buf_len: u32,
     notify_off_multiplier: u32,
     queue_notify_offs: [u16; 2],
+    #[allow(dead_code)]
     common_bar_for_type5: u8,
 }
 

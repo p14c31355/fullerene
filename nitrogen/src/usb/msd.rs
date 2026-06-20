@@ -19,13 +19,12 @@
 
 use crate::usb::{UsbDevice, UsbDirection, UsbXferType};
 use crate::usb::scsi::{
-    ScsiCdb10, ScsiReadCapacity10Cdb, ScsiReadCapacity10Data, ScsiInquiryCdb,
-    SCSI_READ_10, SCSI_WRITE_10,
+    ScsiCdb10, ScsiReadCapacity10Cdb, ScsiReadCapacity10Data,
 };
-use alloc::vec::Vec;
 
 // ── CBW (Command Block Wrapper) — 31 bytes ────────────────────
 #[repr(C, packed)]
+#[allow(non_snake_case)]
 pub struct Cbw {
     pub dCBWSignature: u32,     // 0x43425355 ("USBC")
     pub dCBWTag: u32,           // command tag
@@ -57,6 +56,7 @@ impl Cbw {
 
 // ── CSW (Command Status Wrapper) — 13 bytes ───────────────────
 #[repr(C, packed)]
+#[allow(non_snake_case)]
 pub struct Csw {
     pub dCSWSignature: u32,     // 0x53425355 ("USBS")
     pub dCSWTag: u32,

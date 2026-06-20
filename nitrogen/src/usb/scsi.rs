@@ -7,8 +7,6 @@
 //! - READ_10
 //! - WRITE_10
 
-use alloc::vec::Vec;
-
 /// SCSI commands opcodes.
 pub const SCSI_TEST_UNIT_READY: u8 = 0x00;
 pub const SCSI_INQUIRY: u8 = 0x12;

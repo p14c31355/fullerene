@@ -1577,239 +1577,63 @@ pub fn editor_handle_key(scancode: u8) {
         None => return,
     };
 
-    // Track Ctrl key state for shortcuts
     static EDITOR_CTRL_HELD: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
-    match key {
-        KeyCode::Ctrl => {
-            EDITOR_CTRL_HELD.store(scancode & 0x80 == 0, core::sync::atomic::Ordering::Relaxed);
-            return;
-        }
-        _ => {}
+    if key == KeyCode::Ctrl {
+        EDITOR_CTRL_HELD.store(scancode & 0x80 == 0, core::sync::atomic::Ordering::Relaxed);
+        return;
     }
     if key == KeyCode::S && EDITOR_CTRL_HELD.load(core::sync::atomic::Ordering::Relaxed) {
         editor_save_current(rt);
         return;
     }
 
+    let viewport = |rt: &RuntimeState| -> usize {
+        rt.editor_window.and_then(|id| {
+            rt.desktop.wm.windows().iter().find(|w| w.id == id)
+                .map(|w| (w.height / GLYPH_H).max(1) as usize)
+        }).unwrap_or(10)
+    };
+
     match key {
-        KeyCode::Enter => {
-            rt.editor_buf.insert_char(b'\n');
-            rt.editor_dirty = true;
+        KeyCode::Enter => rt.editor_buf.insert_char(b'\n'),
+        KeyCode::Backspace => rt.editor_buf.backspace(),
+        KeyCode::Left => rt.editor_buf.cursor_left(),
+        KeyCode::Right => rt.editor_buf.cursor_right(),
+        KeyCode::Up => rt.editor_buf.cursor_up(),
+        KeyCode::Down => rt.editor_buf.cursor_down(),
+        KeyCode::Home => rt.editor_buf.cursor_home(),
+        KeyCode::End => rt.editor_buf.cursor_end(),
+        KeyCode::PageUp => rt.editor_buf.page_up(viewport(rt)),
+        KeyCode::PageDown => rt.editor_buf.page_down(viewport(rt)),
+        KeyCode::Space => rt.editor_buf.insert_char(b' '),
+        KeyCode::Tab => { rt.editor_buf.insert_char(b' '); rt.editor_buf.insert_char(b' '); }
+        _ => {
+            if let Some(byte) = key_to_char(key) {
+                rt.editor_buf.insert_char(byte);
+            } else { return; }
         }
-        KeyCode::Backspace => {
-            rt.editor_buf.backspace();
-            rt.editor_dirty = true;
-        }
-        KeyCode::Left => {
-            rt.editor_buf.cursor_left();
-            rt.editor_dirty = true;
-        }
-        KeyCode::Right => {
-            rt.editor_buf.cursor_right();
-            rt.editor_dirty = true;
-        }
-        KeyCode::Up => {
-            rt.editor_buf.cursor_up();
-            rt.editor_dirty = true;
-        }
-        KeyCode::Down => {
-            rt.editor_buf.cursor_down();
-            rt.editor_dirty = true;
-        }
-        KeyCode::Home => {
-            rt.editor_buf.cursor_home();
-            rt.editor_dirty = true;
-        }
-        KeyCode::End => {
-            rt.editor_buf.cursor_end();
-            rt.editor_dirty = true;
-        }
-        KeyCode::PageUp => {
-            // Calculate viewport from editor window dimensions, not terminal buffer.
-            let viewport = if let Some(editor_window) = rt.editor_window {
-                if let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_window) {
-                    ((window.height / GLYPH_H).max(1) as usize)
-                } else {
-                    10 // fallback if window not found
-                }
-            } else {
-                10 // fallback if no editor window
-            };
-            rt.editor_buf.page_up(viewport);
-            rt.editor_dirty = true;
-        }
-        KeyCode::PageDown => {
-            // Calculate viewport from editor window dimensions, not terminal buffer.
-            let viewport = if let Some(editor_window) = rt.editor_window {
-                if let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_window) {
-                    ((window.height / GLYPH_H).max(1) as usize)
-                } else {
-                    10 // fallback if window not found
-                }
-            } else {
-                10 // fallback if no editor window
-            };
-            rt.editor_buf.page_down(viewport);
-            rt.editor_dirty = true;
-        }
-        KeyCode::Space => {
-            rt.editor_buf.insert_char(b' ');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Tab => {
-            rt.editor_buf.insert_char(b' ');
-            rt.editor_buf.insert_char(b' ');
-            rt.editor_dirty = true;
-        }
-        KeyCode::A => {
-            rt.editor_buf.insert_char(b'a');
-            rt.editor_dirty = true;
-        }
-        KeyCode::B => {
-            rt.editor_buf.insert_char(b'b');
-            rt.editor_dirty = true;
-        }
-        KeyCode::C => {
-            rt.editor_buf.insert_char(b'c');
-            rt.editor_dirty = true;
-        }
-        KeyCode::D => {
-            rt.editor_buf.insert_char(b'd');
-            rt.editor_dirty = true;
-        }
-        KeyCode::E => {
-            rt.editor_buf.insert_char(b'e');
-            rt.editor_dirty = true;
-        }
-        KeyCode::F => {
-            rt.editor_buf.insert_char(b'f');
-            rt.editor_dirty = true;
-        }
-        KeyCode::G => {
-            rt.editor_buf.insert_char(b'g');
-            rt.editor_dirty = true;
-        }
-        KeyCode::H => {
-            rt.editor_buf.insert_char(b'h');
-            rt.editor_dirty = true;
-        }
-        KeyCode::I => {
-            rt.editor_buf.insert_char(b'i');
-            rt.editor_dirty = true;
-        }
-        KeyCode::J => {
-            rt.editor_buf.insert_char(b'j');
-            rt.editor_dirty = true;
-        }
-        KeyCode::K => {
-            rt.editor_buf.insert_char(b'k');
-            rt.editor_dirty = true;
-        }
-        KeyCode::L => {
-            rt.editor_buf.insert_char(b'l');
-            rt.editor_dirty = true;
-        }
-        KeyCode::M => {
-            rt.editor_buf.insert_char(b'm');
-            rt.editor_dirty = true;
-        }
-        KeyCode::N => {
-            rt.editor_buf.insert_char(b'n');
-            rt.editor_dirty = true;
-        }
-        KeyCode::O => {
-            rt.editor_buf.insert_char(b'o');
-            rt.editor_dirty = true;
-        }
-        KeyCode::P => {
-            rt.editor_buf.insert_char(b'p');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Q => {
-            rt.editor_buf.insert_char(b'q');
-            rt.editor_dirty = true;
-        }
-        KeyCode::R => {
-            rt.editor_buf.insert_char(b'r');
-            rt.editor_dirty = true;
-        }
-        KeyCode::S => {
-            rt.editor_buf.insert_char(b's');
-            rt.editor_dirty = true;
-        }
-        KeyCode::T => {
-            rt.editor_buf.insert_char(b't');
-            rt.editor_dirty = true;
-        }
-        KeyCode::U => {
-            rt.editor_buf.insert_char(b'u');
-            rt.editor_dirty = true;
-        }
-        KeyCode::V => {
-            rt.editor_buf.insert_char(b'v');
-            rt.editor_dirty = true;
-        }
-        KeyCode::W => {
-            rt.editor_buf.insert_char(b'w');
-            rt.editor_dirty = true;
-        }
-        KeyCode::X => {
-            rt.editor_buf.insert_char(b'x');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Y => {
-            rt.editor_buf.insert_char(b'y');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Z => {
-            rt.editor_buf.insert_char(b'z');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit1 => {
-            rt.editor_buf.insert_char(b'1');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit2 => {
-            rt.editor_buf.insert_char(b'2');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit3 => {
-            rt.editor_buf.insert_char(b'3');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit4 => {
-            rt.editor_buf.insert_char(b'4');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit5 => {
-            rt.editor_buf.insert_char(b'5');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit6 => {
-            rt.editor_buf.insert_char(b'6');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit7 => {
-            rt.editor_buf.insert_char(b'7');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit8 => {
-            rt.editor_buf.insert_char(b'8');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit9 => {
-            rt.editor_buf.insert_char(b'9');
-            rt.editor_dirty = true;
-        }
-        KeyCode::Digit0 => {
-            rt.editor_buf.insert_char(b'0');
-            rt.editor_dirty = true;
-        }
-        _ => {}
     }
-    if rt.editor_dirty {
-        rt.frame_due = true;
+    rt.editor_dirty = true;
+    rt.frame_due = true;
+}
+
+fn key_to_char(key: KeyCode) -> Option<u8> {
+    match key {
+        KeyCode::A => Some(b'a'), KeyCode::B => Some(b'b'), KeyCode::C => Some(b'c'),
+        KeyCode::D => Some(b'd'), KeyCode::E => Some(b'e'), KeyCode::F => Some(b'f'),
+        KeyCode::G => Some(b'g'), KeyCode::H => Some(b'h'), KeyCode::I => Some(b'i'),
+        KeyCode::J => Some(b'j'), KeyCode::K => Some(b'k'), KeyCode::L => Some(b'l'),
+        KeyCode::M => Some(b'm'), KeyCode::N => Some(b'n'), KeyCode::O => Some(b'o'),
+        KeyCode::P => Some(b'p'), KeyCode::Q => Some(b'q'), KeyCode::R => Some(b'r'),
+        KeyCode::S => Some(b's'), KeyCode::T => Some(b't'), KeyCode::U => Some(b'u'),
+        KeyCode::V => Some(b'v'), KeyCode::W => Some(b'w'), KeyCode::X => Some(b'x'),
+        KeyCode::Y => Some(b'y'), KeyCode::Z => Some(b'z'),
+        KeyCode::Digit1 => Some(b'1'), KeyCode::Digit2 => Some(b'2'), KeyCode::Digit3 => Some(b'3'),
+        KeyCode::Digit4 => Some(b'4'), KeyCode::Digit5 => Some(b'5'), KeyCode::Digit6 => Some(b'6'),
+        KeyCode::Digit7 => Some(b'7'), KeyCode::Digit8 => Some(b'8'), KeyCode::Digit9 => Some(b'9'),
+        KeyCode::Digit0 => Some(b'0'),
+        _ => None,
     }
 }
 

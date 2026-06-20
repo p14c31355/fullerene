@@ -78,6 +78,7 @@ pub fn dump_entry(entry: &PageTableEntry, label: &str) {
 
 // ── Backward-compat mapping functions ────────────────────────
 
+#[allow(non_snake_case)]
 pub unsafe fn map_range_4kiB<A: FrameAllocator<Size4KiB>>(
     mapper: &mut x86_64::structures::paging::OffsetPageTable,
     allocator: &mut A,
@@ -289,7 +290,7 @@ macro_rules! flush_tlb_and_verify {
     () => {{
         x86_64::instructions::tlb::flush_all();
         let (frame, flags) = x86_64::registers::control::Cr3::read();
-        unsafe { x86_64::registers::control::Cr3::write(frame, flags) };
+        x86_64::registers::control::Cr3::write(frame, flags);
     }};
 }
 

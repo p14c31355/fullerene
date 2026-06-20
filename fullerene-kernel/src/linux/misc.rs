@@ -1,5 +1,5 @@
 // Miscellaneous Linux syscall implementations
-use super::runtime::{LinuxRuntime, Runtime, copy_user_string, copy_val_to_user, copy_to_user, copy_from_user, errno_code, errno_result};
+use super::runtime::{LinuxRuntime, copy_val_to_user, copy_to_user, errno_code};
 use super::numbers::*;
 use super::types::*;
 

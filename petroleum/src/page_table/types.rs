@@ -403,6 +403,7 @@ pub struct PageTableEntry {
 }
 
 /// Flags for page table entries.
+#[allow(non_snake_case)]
 pub mod Flags {
     /// Present bit — entry is valid.
     pub const PRESENT: u64 = 1 << 0;

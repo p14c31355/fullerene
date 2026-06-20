@@ -3,38 +3,23 @@
 //! Each viewer reads file data via `vfs_read`, parses the format, and
 //! creates a window with the content rendered into the surface.
 
-use crate::{RuntimeState, SOLVENT_CALLBACKS, GLYPH_W, GLYPH_H};
+use crate::{RuntimeState, SOLVENT_CALLBACKS, GLYPH_H};
 use alloc::format;
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-/// Maximum image dimensions (pixels) to prevent OOM.
 const MAX_IMG_W: u32 = 1920;
 const MAX_IMG_H: u32 = 1080;
 const GLYPH_SIZE: u32 = 8;
 
-// ── Generic helpers ──────────────────────────────────────────
-
 fn read_file(path: &str) -> Result<Vec<u8>, &'static str> {
-    let read_fn = {
-        let cb = SOLVENT_CALLBACKS.lock();
-        cb.vfs_read.ok_or("no VFS read")?
-    };
+    let read_fn = SOLVENT_CALLBACKS.lock().vfs_read.ok_or("no VFS read")?;
     read_fn(path)
-}
-
-fn show_window(rt: &mut RuntimeState, title: &str, x: i32, y: i32, w: u32, h: u32, bg: u32) {
-    let id = rt.desktop.wm.create_titled_window(x, y, w, h, bg, title);
-    rt.desktop.wm.raise_to_top(id);
-    rt.frame_due = true;
 }
 
 fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg: u32, fg: u32) {
     let rows = (msg.lines().count() as u32).min(40) + 3;
-    let id = rt.desktop.wm.create_titled_window(
-        100, 60, cols * GLYPH_SIZE, rows * GLYPH_H, bg, title,
-    );
+    let id = rt.desktop.wm.create_titled_window(100, 60, cols * GLYPH_SIZE, rows * GLYPH_H, bg, title);
     if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let _ = crate::menu_actions::render_text_into_surface(&mut w.surface, msg, cols, fg, bg);
     }
@@ -46,36 +31,16 @@ fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
     show_text_window(rt, title, msg, 50, 0x1a1a0d, 0xFFCCCC);
 }
 
-/// Parse a BMP file and render pixels to a window surface.
-/// Handles 24-bit and 32-bit BMP without external crate dependency.
-fn render_bmp_to_window(rt: &mut RuntimeState, data: &[u8], win_w: u32, win_h: u32) {
-    if data.len() < 54 || &data[..2] != b"BM" { return; }
-    let data_offset = u32::from_le_bytes([data[10], data[11], data[12], data[13]]);
-    let hdr_size = u32::from_le_bytes([data[14], data[15], data[16], data[17]]);
-    let w = u32::from_le_bytes([data[18], data[19], data[20], data[21]]) as i32;
-    let h = u32::from_le_bytes([data[22], data[23], data[24], data[25]]) as i32;
-    let bpp = u16::from_le_bytes([data[28], data[29]]);
-    let compression = u32::from_le_bytes([data[30], data[31], data[32], data[33]]);
-
-    if w <= 0 || h <= 0 || (bpp != 24 && bpp != 32) || compression != 0 { return; }
-
-    let w = w as u32;
-    let h = h as u32;
-    let row_bytes = ((bpp as u32 * w + 31) / 32) * 4; // padded to 4 bytes
-
-    let id = rt.desktop.wm.create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
+fn render_pixels(rt: &mut RuntimeState, w: u32, h: u32, pixels: &[(u8, u8, u8)], label: &str) {
+    let win_w = w.min(800).max(160);
+    let win_h = h.min(600).max(120);
+    let id = rt.desktop.wm.create_titled_window(120, 80, win_w, win_h, 0x000000, label);
     if let Some(win) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         for y in 0..h.min(win_h) {
             for x in 0..w.min(win_w) {
-                let r = h - 1 - y; // BMP is bottom-up
-                let off = data_offset as usize + (r as usize) * (row_bytes as usize) + (x as usize) * (bpp as usize / 8);
-                if off + 2 >= data.len() { continue; }
-                let color = if bpp == 24 {
-                    (data[off + 2] as u32) << 16 | (data[off + 1] as u32) << 8 | data[off] as u32
-                } else {
-                    (data[off + 2] as u32) << 16 | (data[off + 1] as u32) << 8 | data[off] as u32
-                };
-                win.surface.set_pixel(x, y, color);
+                let idx = (y * w + x) as usize;
+                let (r, g, b) = if idx < pixels.len() { pixels[idx] } else { (0, 0, 0) };
+                win.surface.set_pixel(x, y, (r as u32) << 16 | (g as u32) << 8 | b as u32);
             }
         }
         rt.desktop.invalidate_window(id);
@@ -84,32 +49,33 @@ fn render_bmp_to_window(rt: &mut RuntimeState, data: &[u8], win_w: u32, win_h: u
     rt.frame_due = true;
 }
 
-// ── BMP viewer ───────────────────────────────────────────────
+// ── BMP viewer (tinybmp) ─────────────────────────────────────
 
-pub fn open_bmp(rt: &mut RuntimeState, path: &str, name: &str) {
+#[cfg(feature = "tinybmp")]
+pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
-        Err(e) => { show_error(rt, "BMP Error", &format!("Cannot read:\n{}", e)); return; }
+        Err(e) => { show_error(rt, "BMP Error", &format!("Cannot read: {}", e)); return; }
     };
-    if data.len() < 54 || &data[..2] != b"BM" {
-        show_error(rt, "BMP Error", "Not a valid BMP file");
-        return;
-    }
-    let w = u32::from_le_bytes([data[18], data[19], data[20], data[21]]);
-    let h = u32::from_le_bytes([data[22], data[23], data[24], data[25]]);
+    let bmp = match tinybmp::RawBmp::from_slice(&data) {
+        Ok(b) => b,
+        Err(_) => { show_error(rt, "BMP Error", "Parse failed"); return; }
+    };
+    let (w, h) = (bmp.header().image_size.width, bmp.header().image_size.height);
     if w > MAX_IMG_W || h > MAX_IMG_H {
         show_error(rt, "BMP Error", &format!("Image too large: {}x{}", w, h));
         return;
     }
-    let win_w = w.min(800).max(160);
-    let win_h = h.min(600).max(120);
-    render_bmp_to_window(rt, &data, win_w, win_h);
+    let pixels: Vec<(u8, u8, u8)> = bmp.pixels().map(|p| {
+        ((p.color >> 16) as u8, (p.color >> 8) as u8, p.color as u8)
+    }).collect();
+    render_pixels(rt, w, h, &pixels, "Image Viewer");
 }
 
 // ── PNG viewer ───────────────────────────────────────────────
 
 #[cfg(feature = "minipng")]
-pub fn open_png(rt: &mut RuntimeState, path: &str, name: &str) {
+pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
         Err(e) => { show_error(rt, "PNG Error", &format!("Cannot read:\n{}", e)); return; }

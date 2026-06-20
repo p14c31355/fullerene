@@ -1,6 +1,5 @@
 // Runtime trait and LinuxRuntime implementation
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 use super::types::*;
 use super::memory::LinuxMmapRegion;

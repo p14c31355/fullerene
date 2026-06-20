@@ -10,8 +10,8 @@
 
 use alloc::boxed::Box;
 
-use crate::driver_context::{DriverContext, DriverContextError, PageFlags};
-use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
+use crate::driver_context::DriverContext;
+use crate::pci::{PciConfigSpace, PciScanner};
 use crate::virtio::cap::{self, VIRTIO_PCI_CAP_COMMON_CFG, VIRTIO_PCI_CAP_NOTIFY_CFG};
 use crate::virtio::gpu::{self, VirtioGpu, VringAvail, VringDesc, VringUsed};
 

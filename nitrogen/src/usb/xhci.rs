@@ -8,18 +8,11 @@
 //! - Control transfer (slot_id, setup_packet, data buffer)
 //! - Bulk transfer (slot_id, endpoint, data buffer, direction)
 
-use crate::usb::{UsbDevice, UsbSetupPacket, UsbEndpointDesc, UsbDirection, UsbXferType};
+use crate::usb::{UsbDevice, UsbSetupPacket, UsbDirection};
 use crate::DriverContext;
 use alloc::vec::Vec;
 
 // ── Register offsets ─────────────────────────────────────────
-// Capability
-const CAPLENGTH: u32 = 0x00;
-const HCSPARAMS1: u32 = 0x04;
-const HCCPARAMS1: u32 = 0x10;
-const DBOFF: u32 = 0x14;
-const RTSOFF: u32 = 0x18;
-
 // Operational (relative to CAPLENGTH)
 const USBCMD: u32 = 0x00;
 const USBSTS: u32 = 0x04;
@@ -34,7 +27,6 @@ const STS_HCH: u32 = 1 << 0;
 
 // Runtime registers (relative to RTSOFF)
 const IMAN_OFF: u32 = 0x00;  // interrupter 0: IMAN
-const IMOD_OFF: u32 = 0x04;  // IMOD
 const ERSTZ_OFF: u32 = 0x08; // Event Ring Segment Table Size
 const ERSTBA_OFF: u32 = 0x10; // Event Ring Segment Table Base Address
 const ERSDP_OFF: u32 = 0x18; // Event Ring Dequeue Pointer
@@ -44,7 +36,7 @@ const PORTSC_CCS: u32 = 1 << 0;
 const PORTSC_PED: u32 = 1 << 1;
 const PORTSC_PR: u32 = 1 << 4;
 const PORTSC_PP: u32 = 1 << 9;
-const PORTSC_WPR: u32 = 1 << 31; // Warm Port Reset (USB3)
+
 
 // TRB type (bits 10..15 of flags)
 const TRB_NORMAL: u8 = 1;
@@ -60,10 +52,8 @@ const TRB_CONFIGURE_ENDPOINT: u8 = 11;
 const TRB_C: u32 = 1 << 0;
 const TRB_CHAIN: u32 = 1 << 4;
 const TRB_IOC: u32 = 1 << 5;
-const TRB_IDT: u32 = 1 << 6;
 const TRB_ENT: u32 = 1 << 11;
 const TRB_DIR_IN: u32 = 1 << 16;
-const TRB_TRT_MASK: u32 = 3 << 16; // Transfer Type for Setup TRB
 
 const TRB_SIZE: usize = 16;
 
@@ -224,11 +214,13 @@ pub struct XhciController {
     n_ports: u32,
     max_slots: u32,
     ppc: bool, // Port Power Control supported
+    #[allow(dead_code)]
     dcbaa_phys: u64,
     dcbaa: &'static mut [u64; 256],
     slots: Vec<SlotState>,
     cmd_ring: Ring,
     ev_ring: EventRing,
+    #[allow(dead_code)]
     erst_phys: u64,
     ports_done: u32, // bitmask
     devices: Vec<UsbDevice>,
@@ -244,6 +236,7 @@ struct SlotState {
     ep0_ring: Ring,
     bulk_out_ring: Option<Ring>,
     bulk_in_ring: Option<Ring>,
+    #[allow(dead_code)]
     dev_ctx_phys: u64,
     in_ctx_phys: u64,
 }
@@ -252,10 +245,10 @@ impl XhciController {
     pub fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
         let caps = mmio_base;
         let caplength = unsafe { core::ptr::read_volatile(caps as *const u8) } as u32;
-        let hcs1 = unsafe { core::ptr::read_volatile((caps.add(4) as *const u32)) };
-        let hcc1 = unsafe { core::ptr::read_volatile((caps.add(0x10) as *const u32)) };
-        let db_off_val = unsafe { core::ptr::read_volatile((caps.add(0x14) as *const u32)) };
-        let rt_off_val = unsafe { core::ptr::read_volatile((caps.add(0x18) as *const u32)) };
+        let hcs1 = unsafe { core::ptr::read_volatile(caps.add(4) as *const u32) };
+        let hcc1 = unsafe { core::ptr::read_volatile(caps.add(0x10) as *const u32) };
+        let db_off_val = unsafe { core::ptr::read_volatile(caps.add(0x14) as *const u32) };
+        let rt_off_val = unsafe { core::ptr::read_volatile(caps.add(0x18) as *const u32) };
 
         let n_ports = (hcs1 >> 24) & 0xFF;
         let max_slots = hcs1 & 0xFF;
@@ -294,7 +287,6 @@ impl XhciController {
                     log::info!("xHCI: USB Legacy Support: BIOS_SEM={} OS_SEM={}", bios_sem, os_sem);
                     if bios_sem & 1 != 0 {
                         log::info!("xHCI: BIOS owns controller — requesting handoff");
-                        legacy_handoff_ok = false;
                         unsafe { core::ptr::write_volatile(caps.add(ec_off + 3) as *mut u8, 1); }
                         for _ in 0..1_000_000 {
                             let b = unsafe { core::ptr::read_volatile(caps.add(ec_off + 2) as *const u8) };
@@ -401,7 +393,6 @@ impl XhciController {
         // Explicitly set PP=1 and PLS=5 (RxDetect) on every port so the
         // PHY starts looking for attached devices.
         const PLS_RXDETECT: u32 = 5 << 5;
-        const RW1C_MASK: u32 = 0x00FE0000;
         for port in 0..n_ports {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             let ps = unsafe { core::ptr::read_volatile(
@@ -535,9 +526,6 @@ impl XhciController {
 
         // Set DCBAA entry
         self.dcbaa[slot_id as usize] = dev_ctx_p;
-
-        let dev_ctx = unsafe { &mut *dev_ctx_v };
-        let in_ctx = unsafe { &mut *in_ctx_v };
 
         // Allocate EP0 transfer ring
         let ctx_ref = unsafe { &*self.ctx };
@@ -905,16 +893,6 @@ impl XhciController {
             return Ok(0);
         }
         let len = buf.len();
-
-        // Validate slot and ring existence before allocating staging memory
-        let ring_cycle = {
-            let slot = self.slots.iter().find(|s| s.slot_id == slot_id).ok_or("bad slot")?;
-            let ring = match dir {
-                UsbDirection::In => slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?,
-                UsbDirection::Out => slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?,
-            };
-            ring.cycle
-        };
 
         // Allocate a dedicated contiguous-physical staging buffer
         let staging_pages = (len + 4095) / 4096;

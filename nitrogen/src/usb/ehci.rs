@@ -15,10 +15,6 @@ use alloc::vec::Vec;
 // ── Operational register offsets ─────────────────────────────
 const USBCMD: u32 = 0x00;
 const USBSTS: u32 = 0x04;
-const USBINTR: u32 = 0x08;
-const FRINDEX: u32 = 0x0C;
-const CTRLDSSEGMENT: u32 = 0x10;
-const PERIODICLISTBASE: u32 = 0x14;
 const ASYNCLISTADDR: u32 = 0x18;
 const PORTSC_BASE: u32 = 0x44;
 
@@ -26,7 +22,6 @@ const PORTSC_BASE: u32 = 0x44;
 const CMD_RUN: u32 = 1 << 0;
 const CMD_HCRESET: u32 = 1 << 1;
 const CMD_ASSE: u32 = 1 << 5;
-const CMD_PSE: u32 = 1 << 4;
 
 // ── USBSTS bits ──────────────────────────────────────────────
 const STS_HCHALTED: u32 = 1 << 0;
@@ -38,7 +33,6 @@ const PORTSC_PE: u32 = 1 << 2;
 const PORTSC_RESET: u32 = 1 << 8;
 
 // ── qH constants ─────────────────────────────────────────────
-const QH_HORZ_TERMINATE: u32 = 0x01;
 const QH_HORZ_TYPE_QH: u32 = 0x02; // bit 1 = 1 → qH
 
 // qH endpoint characteristics fields
@@ -64,7 +58,6 @@ const QTD_PID_OUT: u32 = 0 << 8;
 const QTD_PID_IN: u32 = 1 << 8;
 const QTD_PID_SETUP: u32 = 2 << 8;
 const QTD_CERR: u32 = 3 << 10; // 3 error counts
-const QTD_IOC: u32 = 1 << 15;
 
 const fn qtd_total_bytes(n: u32) -> u32 {
     if n == 0 { 0x8000 } else { (n << 16) & 0x7FFF_0000 } // bit 31 = 0 if n>0
@@ -125,6 +118,7 @@ pub struct EhciController {
     qh_pool_used: usize,
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
+    #[allow(dead_code)]
     next_address: u8,
     /// Bitmask of ports already processed (bit N = port N).
     processed_ports: u32,
@@ -467,7 +461,7 @@ impl EhciController {
         self.insert_qh(qh_phys);
 
         // Wait for completion (poll all 3 qTDs)
-        let mut timeout = 5_000_000u32; // 5 seconds
+        let timeout = 5_000_000u32; // 5 seconds
         let result = self.wait_qtd(&qtd_setup, timeout);
         if result.is_err() { self.remove_qh(qh_phys); return result.map(|_| 0); }
 

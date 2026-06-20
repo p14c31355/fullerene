@@ -200,7 +200,7 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                         // Save path, drop explorer borrow, then launch
                         explorer.last_click_entry = None;
                         let file_path = path;
-                        drop(explorer);
+                        let _ = explorer;
                         crate::launch_file(rt, &file_path);
                         return;
                     }
