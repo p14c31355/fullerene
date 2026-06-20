@@ -831,6 +831,22 @@ impl XhciController {
     pub fn clear_ports_done(&mut self) { self.ports_done = 0; self.wpr_done = 0; }
     pub fn clear_devices(&mut self) { self.devices.clear(); }
 
+    /// Disable all active slots and free their resources.
+    ///
+    /// Frees device context pages, input context pages, and removes slot state.
+    pub fn disable_all_slots(&mut self) {
+        let ctx = unsafe { &*self.ctx };
+        let slots = core::mem::take(&mut self.slots);
+        for slot in slots {
+            // Clear DCBAA entry
+            self.dcbaa[slot.slot_id as usize] = 0;
+            // Free device context and input context pages
+            ctx.free_contiguous_frames(slot.dev_ctx_phys, 1);
+            ctx.free_contiguous_frames(slot.in_ctx_phys, 1);
+        }
+        self.n_slots_used = 0;
+    }
+
     /// Dump port status for debugging.
     pub fn portsc_dump(&self) {
         for p in 0..self.n_ports {

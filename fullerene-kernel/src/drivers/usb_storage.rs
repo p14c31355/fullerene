@@ -327,11 +327,17 @@ pub fn poll_usb_all() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
     let mut pending: Vec<(usize, usize)> = Vec::new();
     {
-        // Clear existing mount state once before re-enumerating all controllers
+        // Unmount existing USB filesystems from VFS before clearing state
+        for drive in USB_DRIVES.lock().iter() {
+            let _ = crate::vfs::unmount(&drive.mount_point);
+        }
         USB_DRIVES.lock().clear();
         USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
         let mut xhis = XHCI_CONTROLLERS.lock();
         for (ctrl_idx, xhci) in xhis.iter_mut().enumerate() {
+            // Disable all active slots to free device context / input context
+            // pages and transfer rings before re-enumerating.
+            xhci.disable_all_slots();
             xhci.clear_ports_done();
             xhci.clear_devices();
             xhci.poll_ports();

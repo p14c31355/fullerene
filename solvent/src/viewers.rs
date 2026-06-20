@@ -71,8 +71,7 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
         return;
     }
     let pixels: Vec<(u8, u8, u8)> = bmp.pixels().map(|p| {
-        let color = p.color.into_inner();
-        ((color >> 16) as u8, (color >> 8) as u8, color as u8)
+        ((p.color >> 16) as u8, (p.color >> 8) as u8, p.color as u8)
     }).collect();
     render_pixels(rt, w, h, &pixels, "Image Viewer");
 }
