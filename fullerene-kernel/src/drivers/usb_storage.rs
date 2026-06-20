@@ -203,16 +203,15 @@ pub fn debug_usb() {
             klog_fmt!("EHCI[{}]: {} ports\n", i, ehci.n_ports());
             for p in 0..ehci.n_ports().min(4) {
                 let ps = ehci.read_portsc(p);
-                klog_fmt!("  PORTSC[{}]=0x{:08X}\n", p, ps);
+                klog_fmt!("  PORTSC[{}]=0x{:08X} CCS={} PE={}\n", p, ps, ps&1, (ps>>2)&1);
             }
         }
     }
     {
         let xhis = XHCI_CONTROLLERS.lock();
         for (i, xhci) in xhis.iter().enumerate() {
-            klog_fmt!("xHCI[{}]: ports_done=0x{:x}, n_ports={}, ppc={}\n",
-                i, xhci.ports_done_mask(), xhci.n_ports(), xhci.ppc_enabled());
-            xhci.portsc_dump();
+            klog_fmt!("xHCI[{}] dump:\n", i);
+            xhci.dump_all();
         }
     }
     klog_fmt!("=== USB END ===\n");

@@ -806,6 +806,70 @@ impl XhciController {
         }
     }
 
+    /// Comprehensive dump of ALL xHCI registers and state.
+    pub fn dump_all(&self) {
+        log::info!("=== xHCI DUMP === ppc={} n_ports={} max_slots={} ports_done=0x{:04x} n_slots_used={}",
+            self.ppc, self.n_ports, self.max_slots, self.ports_done, self.n_slots_used);
+        // Capability registers
+        let hcs1 = self.read_cap(4);
+        let hcc1 = self.read_cap(0x10);
+        log::info!("xHCI HCSPARAMS1=0x{:08X} HCCPARAMS1=0x{:08X}", hcs1, hcc1);
+        // Operational registers
+        log::info!("xHCI USBCMD=0x{:08X} USBSTS=0x{:08X} DNCTRL=0x{:08X}",
+            self.read_op_reg(USBCMD), self.read_op_reg(USBSTS), self.read_op_reg(0x14));
+        log::info!("xHCI DCBAAP=0x{:016X} CONFIG=0x{:08X}",
+            self.read_op_reg64(DCBAAP), self.read_op_reg(CONFIG));
+        // Runtime registers (interrupter 0)
+        let rt_base = unsafe { self.mmio.add(self.rt_off as usize) };
+        let iman = unsafe { core::ptr::read_volatile(rt_base.add(IMAN_OFF as usize) as *const u32) };
+        let imod = unsafe { core::ptr::read_volatile(rt_base.add(0x04) as *const u32) };
+        let erstsz = unsafe { core::ptr::read_volatile(rt_base.add(ERSTZ_OFF as usize) as *const u32) };
+        let erstba = unsafe { core::ptr::read_volatile(rt_base.add(ERSTBA_OFF as usize) as *const u64) };
+        let erdp = unsafe { core::ptr::read_volatile(rt_base.add(ERSDP_OFF as usize) as *const u64) };
+        log::info!("xHCI RT IMAN=0x{:08X} IMOD=0x{:08X} ERSTSZ={} ERSTBA=0x{:016X} ERDP=0x{:016X}",
+            iman, imod, erstsz, erstba, erdp);
+        // Event ring state
+        let ev_deq = self.ev_ring.dequeue_ptr();
+        log::info!("xHCI EV_RING deq_ptr=0x{:016X} cycle={} pending={}",
+            ev_deq, self.ev_ring.cycle, self.ev_ring.has_pending());
+        // Cmd ring state
+        log::info!("xHCI CMD_RING enq={} cycle={} len={} phys=0x{:x} CRCR=0x{:016X}",
+            self.cmd_ring.enq, self.cmd_ring.cycle, self.cmd_ring.len, self.cmd_ring.phys,
+            self.read_op_reg64(CRCR));
+        // PORTSC for all ports
+        self.portsc_dump();
+        // DCBAA (device context base address array)
+        log::info!("xHCI DCBAA:");
+        for i in 0..self.n_slots_used.min(8) {
+            let ctx_pa = self.dcbaa[i as usize];
+            if ctx_pa != 0 {
+                log::info!("  slot[{}]: ctx=0x{:016X}", i, ctx_pa);
+            }
+        }
+        // Device slots
+        log::info!("xHCI slots: {} active", self.slots.len());
+        for s in &self.slots {
+            log::info!("  slot_id={} dev_addr={} dev_ctx_phys=0x{:016X} in_ctx_phys=0x{:016X} ep0={} bulk_out={} bulk_in={}",
+                s.slot_id, s.dev_addr, s.dev_ctx_phys, s.in_ctx_phys,
+                s.ep0_ring.len,
+                s.bulk_out_ring.as_ref().map_or(0, |r| r.len),
+                s.bulk_in_ring.as_ref().map_or(0, |r| r.len));
+        }
+        // Devices
+        log::info!("xHCI devices: {}", self.devices.len());
+        for (i, d) in self.devices.iter().enumerate() {
+            log::info!("  [{}] addr={} class={:02X} cfg={} eps={}",
+                i, d.address, d.device_class, d.configurations, d.endpoints.len());
+        }
+        log::info!("=== xHCI END ===");
+    }
+
+    fn read_op_reg64(&self, off: u32) -> u64 {
+        let ptr = self.op(off) as *const u64;
+        Self::clflush(ptr as *const u8);
+        unsafe { core::ptr::read_volatile(ptr) }
+    }
+
     pub fn read_cap(&self, offset: u32) -> u32 {
         unsafe { core::ptr::read_volatile((self.mmio.add(offset as usize)) as *const u32) }
     }
