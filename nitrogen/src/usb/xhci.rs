@@ -222,7 +222,8 @@ pub struct XhciController {
     ev_ring: EventRing,
     #[allow(dead_code)]
     erst_phys: u64,
-    ports_done: u32, // bitmask
+    ports_done: u32,
+    wpr_done: u32,  // bitmask — ports that have already had WPR attempted
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
     n_slots_used: u32,
@@ -393,11 +394,26 @@ impl XhciController {
         let sts_after_run = unsafe { core::ptr::read_volatile((op.add(USBSTS as usize)) as *const u32) };
         log::info!("xHCI: after CMD_RUN wait, USBSTS=0x{:08X} HCHalted={}", sts_after_run, sts_after_run & 1);
 
+        // ── Clear RW1C status bits on all ports ──────────────
+        // After HCRST, RW1C bits like CSC, WRC, PEC may be set,
+        // which prevents the port from reporting new connection events.
+        for port in 0..n_ports {
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let ps = unsafe { core::ptr::read_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+            ) };
+            // RW1C mask: bits 17-23 (CSC, PEC, WRC, etc.)
+            const RW1C: u32 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23);
+            if ps & RW1C != 0 {
+                unsafe { core::ptr::write_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                    ps | RW1C
+                ); }
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            }
+        }
+
         // ── Power on all ports (PPC=1 only) ───────────────────
-        // After HCRST, Linux simply sets PP=1 for each port (when PPC=1).
-        // The port state machine then automatically goes through
-        // RxDetect → Polling → U0 when a device is connected.
-        // Do NOT write PLS/LWS — the hardware handles link training.
         if ppc {
             for port in 0..n_ports {
                 Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
@@ -479,7 +495,7 @@ impl XhciController {
             dcbaa_phys: dcbaa_p, dcbaa,
             slots: Vec::new(),
             cmd_ring: cmd, ev_ring: ev, erst_phys: erst_p,
-            ports_done: 0, devices: Vec::new(),
+            ports_done: 0, wpr_done: 0, devices: Vec::new(),
             ctx: ctx as *const dyn DriverContext,
             n_slots_used: 0,
             legacy_handoff_done: legacy_handoff_ok,
@@ -715,25 +731,23 @@ impl XhciController {
             }
 
             // ── Step 4: If still CCS=0, try warm port reset ────
-            // Warm reset transitions USB3 ports from inactive states
-            // back to RxDetect, which starts the link training
-            // (Polling → U0) and eventually sets CCS/PED.
-            if (portsc & PORTSC_CCS) == 0 && (portsc & PORTSC_PP) != 0 {
+            // WPR is expensive (~3 seconds), so only do it once per
+            // port per `clear_ports_done()` cycle.
+            let wpr_needed = (portsc & PORTSC_CCS) == 0
+                && (portsc & PORTSC_PP) != 0
+                && (self.wpr_done & (1 << port)) == 0;
+            if wpr_needed {
+                self.wpr_done |= 1 << port;
                 log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
-                // Assert WPR (bit 20) — clear RW1C bits first, then set WPR
                 let v = self.op_read(PORTSC_BASE + port * 0x10);
                 self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) | WPR);
-                // Wait for WPR to complete (controller clears it)
                 for _ in 0..200_000 {
                     let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & WPR == 0 { break; }
                 }
-                // After WPR, force PLS=RxDetect+LWS to restart
-                // link training (some controllers stay inactive after WPR).
                 let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                self.op_write(PORTSC_BASE + port * 0x10, (v2 & !RW1C_BITS) | (v2 & PORTSC_PP) | (5 << 5) | LWS);
-                // Wait for link training to complete — USB 3.0 SuperSpeed
-                // negotiation can take 3-10 seconds.  Poll for CCS=1.
+                self.op_write(PORTSC_BASE + port * 0x10,
+                    (v2 & !RW1C_BITS) | RW1C_BITS | (5 << 5) | LWS);
                 for attempt in 0..60 {
                     for _ in 0..50_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
                     let ps = self.op_read(PORTSC_BASE + port * 0x10);
@@ -802,7 +816,7 @@ impl XhciController {
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
     pub fn ports_done_mask(&self) -> u32 { self.ports_done }
-    pub fn clear_ports_done(&mut self) { self.ports_done = 0; }
+    pub fn clear_ports_done(&mut self) { self.ports_done = 0; self.wpr_done = 0; }
     pub fn clear_devices(&mut self) { self.devices.clear(); }
 
     /// Dump port status for debugging.
