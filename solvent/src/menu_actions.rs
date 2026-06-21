@@ -262,30 +262,33 @@ fn show_text_window(
     rt.frame_due = true;
 }
 
-/// Open a simple Settings info window showing current mouse sensitivity,
-/// brightness, and top panel status.
+/// Open an interactive Settings window.
+///
+/// Stores the window ID in `rt.settings_window` so that
+/// `settings_handle_key` can process keyboard input and
+/// `render_settings` redraws the UI on changes.
 pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
-    let sens = crate::MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
-    let brightness = crate::DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
-    let top_panel = lattice::top_panel::is_top_panel_enabled();
+    // If already open, just focus it.
+    if let Some(id) = rt.settings_window {
+        if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
+            rt.desktop.wm.raise_to_top(id);
+            rt.settings_dirty = true;
+            rt.frame_due = true;
+            return;
+        }
+    }
 
-    let info = alloc::format!(
-        "Settings\n\
-         \n\
-         Mouse Sensitivity: {}  (0.25 - 4.0)\n\
-         \n\
-         Display Brightness: {}.{:02}  (0.10 - 1.00)\n\
-         \n\
-         Top Panel: {}",
-        sens as f32,
-        brightness / 100,
-        brightness % 100,
-        if top_panel { "ON" } else { "OFF" }
+    let cols = 38u32;
+    let rows = 9u32;
+    let id = rt.desktop.wm.create_titled_window(
+        150, 80, cols * GLYPH_W, rows * GLYPH_H,
+        0x0d1a1a, "Settings",
     );
-
-    let cols = 34u32;
-    let lines = info.lines().count() as u32;
-    open_info_window_raw(rt, "Settings", 200, 100, cols, 1, 0x0d1a1a, 0xCCFFFF, &info);
+    rt.desktop.wm.raise_to_top(id);
+    rt.settings_window = Some(id);
+    rt.settings_dirty = true;
+    rt.desktop.force_full_redraw();
+    rt.frame_due = true;
 }
 
 /// Open an info window with custom text and coordinates.

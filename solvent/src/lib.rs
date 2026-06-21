@@ -242,6 +242,9 @@ pub struct RuntimeState {
     /// File explorer state
     pub explorer: Option<explorer::ExplorerContext>,
     pub explorer_dirty: bool,
+    /// Settings interactive state
+    pub settings_window: Option<WindowId>,
+    pub settings_dirty: bool,
 }
 
 pub fn init() {
@@ -299,6 +302,8 @@ pub fn init() {
         editor_file_path: None,
         explorer: None,
         explorer_dirty: false,
+        settings_window: None,
+        settings_dirty: false,
     });
 }
 
@@ -448,30 +453,38 @@ pub fn poll_keyboard() {
             None => break,
         };
 
-        // Route key events to editor only when editor window exists
-        // and is the topmost (focused) window.
-        let editor_active = RUNTIME.lock().as_ref().map_or(false, |r| {
-            if let Some(editor_id) = r.editor_window {
-                let wms = r.desktop.wm.windows();
-                wms.last().map_or(false, |top| top.id == editor_id)
-            } else {
-                false
+        // Route key events to the topmost window if it's editor or settings.
+        // Use a single lock acquisition to check and dispatch atomically.
+        let mut rt = RUNTIME.lock();
+        if let Some(ref mut r) = *rt {
+            let wms = r.desktop.wm.windows();
+            let top_id = wms.last().map(|w| w.id);
+            // Editor routing
+            if top_id.is_some()
+                && r.editor_window == top_id
+            {
+                drop(rt);
+                editor_handle_key(scancode);
+                let key = scancode_to_resonance_keycode(scancode);
+                let event = if pressed {
+                    Event::Input(InputEvent::KeyDown(key))
+                } else {
+                    Event::Input(InputEvent::KeyUp(key))
+                };
+                if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+                    queue.push(event);
+                }
+                continue;
             }
-        });
-        if editor_active {
-            editor_handle_key(scancode);
-            // Still push KeyDown/KeyUp to event queue for other handlers
-            let key = scancode_to_resonance_keycode(scancode);
-            let event = if pressed {
-                Event::Input(InputEvent::KeyDown(key))
-            } else {
-                Event::Input(InputEvent::KeyUp(key))
-            };
-            if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
-                queue.push(event);
+            // Settings routing
+            if top_id.is_some()
+                && r.settings_window == top_id
+            {
+                settings_handle_key_inner(r, scancode);
+                continue;
             }
-            continue;
         }
+        drop(rt);
 
         let key = scancode_to_resonance_keycode(scancode);
         let event = if pressed {
@@ -773,6 +786,9 @@ where
     if rt.explorer_dirty {
         render_explorer(rt);
     }
+    if rt.settings_dirty {
+        render_settings(rt);
+    }
     let tb_changed = rt.desktop.update_taskbar();
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
@@ -1019,6 +1035,9 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
                 return;
             }
         }
+        // Save the old cursor position before replacing the buffer.
+        let old_cur_col = rt.term_buf.cursor_col();
+        let old_cur_row = rt.term_buf.cursor_row();
         let new_buf = TerminalBuffer::new(new_cols, new_rows);
         let old_buf = core::mem::replace(&mut rt.term_buf, new_buf);
         {
@@ -1040,6 +1059,11 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
                 }
             }
         }
+        // Restore the cursor to its old position, clamped to the new dimensions.
+        rt.term_buf.set_cursor(
+            old_cur_col.min(new_cols.saturating_sub(1)),
+            old_cur_row.min(new_rows.saturating_sub(1)),
+        );
         let _ = old_buf;
         window.surface = lattice::surface::Surface::new(
             new_cols * GLYPH_W,
@@ -1520,6 +1544,169 @@ fn render_editor(rt: &mut RuntimeState) {
     });
     rt.desktop.invalidate_window(editor_window);
     rt.editor_dirty = false;
+}
+
+// ── Settings (interactive) ───────────────────────────────────
+
+/// Selected row in the settings UI (0=mouse, 1=brightness, 2=top panel).
+/// Must be at module level so both `settings_handle_key_inner` and
+/// `render_settings` see the same state.
+static SETTINGS_SELECTED: Mutex<u32> = Mutex::new(0);
+
+/// Handle a key event when the settings window is focused.
+/// (Public entry point — acquires the runtime lock internally.)
+pub fn settings_handle_key(scancode: u8) {
+    let mut rt = RUNTIME.lock();
+    if let Some(ref mut r) = *rt {
+        settings_handle_key_inner(r, scancode);
+    }
+}
+
+fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8) {
+    let key = crate::scancode_to_resonance_keycode(scancode);
+    let is_press = (scancode & 0x80) == 0;
+    if !is_press {
+        return;
+    }
+
+    let mut sel = SETTINGS_SELECTED.lock();
+
+    match key {
+        KeyCode::Up => {
+            *sel = sel.saturating_sub(1).min(2);
+        }
+        KeyCode::Down => {
+            *sel = (*sel + 1).min(2);
+        }
+        KeyCode::Left | KeyCode::Right => {
+            let dec = key == KeyCode::Left;
+            match *sel {
+                0 => {
+                    // Mouse sensitivity: step by 0.25
+                    let cur = crate::MOUSE_SENSITIVITY
+                        .load(core::sync::atomic::Ordering::Relaxed) as f32;
+                    let step = 0.25f32;
+                    let new_val = if dec {
+                        (cur - step).max(0.25)
+                    } else {
+                        (cur + step).min(4.0)
+                    };
+                    // Convert back to i16 (scale = 6 for legacy compat)
+                    let new_i16 = (new_val * 6.0) as i16;
+                    crate::MOUSE_SENSITIVITY.store(new_i16, core::sync::atomic::Ordering::Relaxed);
+                }
+                1 => {
+                    // Brightness: step by 5 (out of 100)
+                    let cur = crate::DISPLAY_BRIGHTNESS_X100
+                        .load(core::sync::atomic::Ordering::Relaxed) as i32;
+                    let new_val = if dec {
+                        (cur - 5).max(10)
+                    } else {
+                        (cur + 5).min(100)
+                    };
+                    crate::DISPLAY_BRIGHTNESS_X100
+                        .store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
+                }
+                2 => {
+                    // Top panel toggle
+                    if key == KeyCode::Right || key == KeyCode::Left {
+                        lattice::top_panel::toggle_top_panel();
+                    }
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Escape => {
+            // Close settings window
+            if let Some(id) = rt.settings_window.take() {
+                rt.desktop.wm.close_window(id);
+            }
+            rt.settings_dirty = false;
+            return;
+        }
+        _ => {}
+    }
+    drop(sel);
+    rt.settings_dirty = true;
+    rt.frame_due = true;
+}
+
+fn render_settings(rt: &mut RuntimeState) {
+    let settings_id = match rt.settings_window {
+        Some(id) => id,
+        None => return,
+    };
+    let window = match rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == settings_id)
+    {
+        Some(w) => w,
+        None => {
+            rt.settings_window = None;
+            return;
+        }
+    };
+
+    let sens = crate::MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32;
+    let bright = crate::DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
+    let top_panel = lattice::top_panel::is_top_panel_enabled();
+
+    let sel = *SETTINGS_SELECTED.lock();
+
+    // Build the display text
+    let prefix = |row: u32| -> &str {
+        if row == sel { "> " } else { "  " }
+    };
+
+    let info = alloc::format!(
+        "{}Settings\n\
+         \n\
+         {}Mouse Sensitivity: {:.2}\n\
+         {}Display Brightness: {}.{:02}\n\
+         {}Top Panel: {}",
+        prefix(99), // title row (not selectable)
+        prefix(0), sens,
+        prefix(1), bright / 100, bright % 100,
+        prefix(2), if top_panel { "ON " } else { "OFF" },
+    );
+
+    let info_bytes = info.as_bytes();
+    let cols = 38u32;
+    let total = cols as usize * 9usize;
+    let mut cells: Vec<LatticeCell> = Vec::with_capacity(total);
+    cells.resize(
+        total,
+        LatticeCell {
+            ch: b' ',
+            fg: 0xCCFFFF,
+            bg: 0x0d1a1a,
+        },
+    );
+
+    for (row, line) in info.lines().enumerate() {
+        for (col, ch) in line.bytes().enumerate() {
+            if col < cols as usize {
+                let idx = row * (cols as usize) + col;
+                if idx < total {
+                    cells[idx] = LatticeCell { ch, fg: 0xCCFFFF, bg: 0x0d1a1a };
+                }
+            }
+        }
+    }
+
+    terminal_surface::render(terminal_surface::RenderParams {
+        surface: &mut window.surface,
+        cells: &cells,
+        cols,
+        cursor_col: None,
+        cursor_row: None,
+        cursor_visible: false,
+    });
+    rt.desktop.invalidate_window(settings_id);
+    rt.settings_dirty = false;
 }
 
 // ── Explorer ──────────────────────────────────────────────────
