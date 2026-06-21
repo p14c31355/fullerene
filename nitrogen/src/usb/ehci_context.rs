@@ -217,7 +217,8 @@ impl EhciContext {
             for _ in 0..50_000 {
                 op.portsc(port_idx); // delay
             }
-            op.write_portsc(port_idx, portsc & !PORTSC_RESET);
+            let cur_portsc = op.portsc(port_idx);
+            op.write_portsc(port_idx, cur_portsc & !PORTSC_RESET);
 
             // Wait for PE
             for _ in 0..10_000 {
@@ -560,6 +561,12 @@ impl EhciContext {
             ptr::write_volatile(&mut qtd.token,
                 QTD_ACTIVE | pid | QTD_CERR | qtd_total_bytes(len as u32));
             ptr::write_volatile(&mut qtd.buf0, staging_phys as u32);
+            // Populate subsequent buffer pointers for multi-page transfers (up to 20KB)
+            let mut p = (staging_phys & !0xFFF) + 0x1000;
+            if len > 4096 { ptr::write_volatile(&mut qtd.buf1, p as u32); p += 0x1000; }
+            if len > 8192 { ptr::write_volatile(&mut qtd.buf2, p as u32); p += 0x1000; }
+            if len > 12288 { ptr::write_volatile(&mut qtd.buf3, p as u32); p += 0x1000; }
+            if len > 16384 { ptr::write_volatile(&mut qtd.buf4, p as u32); }
         }
 
         unsafe {

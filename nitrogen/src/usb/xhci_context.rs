@@ -563,8 +563,11 @@ impl XhciContext {
 
         // Set up input context
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
-            in_ctx.add_flags = 1 << ctx_idx;
+            in_ctx.add_flags = (1 << ctx_idx) | 1; // Add endpoint + slot context
             in_ctx.drop_flags = 0;
+
+            // Update Context Entries in Slot Context to the highest active endpoint index
+            in_ctx.slot_ctx[0] = (in_ctx.slot_ctx[0] & !0xF800_0000) | ((ctx_idx as u32) << 27);
 
             if let Some(ep_ctx) = in_ctx.ep_ctx_mut(ctx_idx as u32) {
                 ep_ctx[0] = (mps as u32) << 16 | 2 << 3; // MPS, type=Bulk(2)
