@@ -868,6 +868,44 @@ impl XhciController {
         self.n_slots_used = 0;
     }
 
+    /// Clear Host System Error (HSE, USBSTS bit 4) and re-kick port link
+    /// training on all ports.  HSE indicates a severe internal error that
+    /// can leave ports stuck in Rx.Detect (PLS=5) with CCS=0 even when a
+    /// device is physically attached.  This must be called before each
+    /// poll cycle to recover from such errors.
+    pub fn clear_hse_and_recover(&mut self) {
+        let op = unsafe { self.mmio.add(self.op_off as usize) };
+        let sts_ptr = unsafe { op.add(USBSTS as usize) as *const u32 };
+        Self::clflush(sts_ptr as *const u8);
+        let sts = unsafe { core::ptr::read_volatile(sts_ptr) };
+        if sts & (1 << 4) != 0 {
+            log::info!("xHCI: HSE detected (USBSTS=0x{:08X}) — clearing and re-initialising ports", sts);
+            // RW1C: write 1 to clear HSE
+            unsafe { core::ptr::write_volatile(op.add(USBSTS as usize) as *mut u32, 1 << 4); }
+            Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+            // Re-kick link training on all ports: force PLS=RxDetect+LWS
+            const PLS_RXDETECT: u32 = 5 << 5;
+            const LWS: u32 = 1 << 16;
+            for port in 0..self.n_ports {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let ps = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                // Keep PP, force RxDetect + LWS
+                let val = (ps & PORTSC_PP) | PLS_RXDETECT | LWS;
+                unsafe { core::ptr::write_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32, val
+                ); }
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            }
+            // Clear done flags so ports get re-evaluated
+            self.ports_done = 0;
+            self.wpr_done = 0;
+            // Give the PHY time to detect the device
+            for _ in 0..3_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+        }
+    }
+
     /// Dump port status for debugging.
     pub fn portsc_dump(&self) {
         for p in 0..self.n_ports {

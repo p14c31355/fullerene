@@ -269,6 +269,12 @@ pub fn poll_usb() -> bool {
         for (ctrl_idx, xhci_box) in xhis.iter_mut().enumerate() {
             let xhci = xhci_box.as_mut();
 
+            // Check and recover from HSE (Host System Error) before polling.
+            // HSE leaves all ports stuck in Rx.Detect (PLS=5, CCS=0) even when
+            // a device is physically attached.  Clearing it and re-kicking link
+            // training lets the PHY detect the device.
+            xhci.clear_hse_and_recover();
+
             // Clear ports_done before every poll so previously-skipped
             // ports (e.g. the boot USB drive) get re-evaluated.
             // Skip clearing if we already have USB drives mounted (deduplication).
@@ -336,6 +342,9 @@ pub fn poll_usb_all() -> bool {
         USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
         let mut xhis = XHCI_CONTROLLERS.lock();
         for (ctrl_idx, xhci) in xhis.iter_mut().enumerate() {
+            // Check and recover from HSE before polling.
+            xhci.clear_hse_and_recover();
+
             // Disable all active slots to free device context / input context
             // pages and transfer rings before re-enumerating.
             xhci.disable_all_slots();
