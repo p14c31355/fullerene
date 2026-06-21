@@ -284,14 +284,42 @@ impl EditorBuffer {
 
     // ── Scrolling ───────────────────────────────────────────
 
-    /// Ensure the cursor is visible in the viewport.
+    /// Ensure the cursor is visible in the viewport given `viewport_rows`.
+    ///
+    /// This is a combined version that handles both upper and lower bounds
+    /// in a single call, so arrow-key navigation updates the scroll offset
+    /// immediately without requiring a separate `ensure_cursor_visible` call.
+    pub fn clamp_scroll_with_viewport(&mut self, viewport_rows: usize) {
+        if viewport_rows == 0 {
+            return;
+        }
+        let last_visible = self.scroll_row.saturating_add(viewport_rows).saturating_sub(1);
+        if self.cursor_row < self.scroll_row {
+            self.scroll_row = self.cursor_row;
+        } else if self.cursor_row > last_visible {
+            self.scroll_row = self.cursor_row.saturating_sub(viewport_rows.saturating_sub(1));
+        }
+        // Prevent overscroll past the end
+        if self.scroll_row.saturating_add(viewport_rows) > self.rows.len() {
+            self.scroll_row = self
+                .rows
+                .len()
+                .saturating_sub(viewport_rows)
+                .saturating_sub(0)
+                .min(self.scroll_row);
+            if self.rows.len() >= viewport_rows {
+                self.scroll_row = self.rows.len().saturating_sub(viewport_rows);
+            } else {
+                self.scroll_row = 0;
+            }
+        }
+    }
+
+    /// Legacy clamp (upward only).  Prefer [`clamp_scroll_with_viewport`].
     pub fn clamp_scroll(&mut self) {
-        // scroll_row is the first visible row index
         if self.cursor_row < self.scroll_row {
             self.scroll_row = self.cursor_row;
         }
-        // We don't know viewport_rows here, so caller should call
-        // `ensure_cursor_visible(viewport_rows)` after this.
     }
 
     /// Ensure cursor is within [scroll_row, scroll_row + viewport_rows).

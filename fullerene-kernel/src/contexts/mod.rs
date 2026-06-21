@@ -26,6 +26,8 @@ pub mod input;
 pub mod kernel;
 pub mod memory;
 pub mod pci;
+pub mod settings;
+pub mod settings_persist;
 pub mod shell;
 pub mod vfs;
 pub mod window;

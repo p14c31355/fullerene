@@ -495,9 +495,9 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "isobemak"
-version = "0.3.4"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d5253789d64ed58e6f62a9dff756f531860be0245f033a1e70aacefdf10dd40"
+checksum = "638c604d60d1b7c204c04205a253fb14a5e2d299c0913c89107a458f99cd2167"
 dependencies = [
  "crc32fast",
  "fatfs",

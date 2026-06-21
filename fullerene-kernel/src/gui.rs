@@ -129,6 +129,7 @@ pub fn init() {
         launch_shell: Some(|| {
             crate::scheduler::request_shell_launch();
         }),
+        settings_save: None,
     }
     .install();
 

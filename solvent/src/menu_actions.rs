@@ -2,6 +2,7 @@
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
 use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, truncate_to_chars};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -194,10 +195,9 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     // If already open, just focus it and refresh sidebar
     if let Some(ref mut explorer) = rt.explorer {
         if let Some(id) = explorer.window_id {
-            // Poll USB to pick up newly inserted drives since last open
-            let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-            if let Some(f) = poll_fn {
-                let _ = f();
+            // Defer USB poll to avoid blocking the event loop
+            if crate::get_usb_drives().is_empty() {
+                rt.usb_poll_pending = true;
             }
             explorer.refresh_sidebar();
             rt.desktop.wm.raise_to_top(id);
@@ -206,23 +206,24 @@ fn open_explorer_window(rt: &mut RuntimeState) {
         }
         return;
     }
-    // Poll USB before creating the explorer so that USB drives
-    // detected after boot (e.g. slow xHCI re-enumeration) are
-    // visible in the sidebar immediately.
-    let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-    if let Some(f) = poll_fn {
-        let _ = f();
-    }
-    let win_w = 640;
-    let win_h = 400;
+
+    // Create the explorer window first so the user sees immediate feedback,
+    // then conditionally poll USB in the background.  The sidebar is populated
+    // from refresh_sidebar() which calls get_usb_drives() — if drives are
+    // already available from boot, no poll is needed.
+    let win_w: u32 = 640;
+    let win_h: u32 = 400;
     let id = rt.desktop.wm.create_titled_window(
         100, 60, win_w, win_h,
         0x1E1E2E, "File Manager",
     );
     let mut explorer = crate::explorer::ExplorerContext::new();
     explorer.window_id = Some(id);
-    // sidebar is populated from get_usb_drives() inside ExplorerContext::new(),
-    // but we refresh after the explicit poll so the latest USB discovery is captured.
+
+    // Defer USB poll to avoid blocking before window is shown
+    if crate::get_usb_drives().is_empty() {
+        rt.usb_poll_pending = true;
+    }
     explorer.refresh_sidebar();
     explorer.navigate_to("/");
     {
@@ -239,6 +240,59 @@ fn open_explorer_window(rt: &mut RuntimeState) {
 
 /// Create a titled window, fill its surface with `text`, raise to top, and schedule a redraw.
 fn show_text_window(
+    rt: &mut RuntimeState,
+    title: &str,
+    x: i32,
+    y: i32,
+    cols: u32,
+    extra_rows: u32,
+    bg: u32,
+    fg: u32,
+    text: &str,
+) {
+    let rows = (text.lines().count() as u32) + extra_rows;
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(x, y, cols * GLYPH_W, rows * GLYPH_H, bg, title);
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = render_text_into_surface(&mut w.surface, text, cols, fg, bg);
+    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Open an interactive Settings window.
+///
+/// Stores the window ID in `rt.settings_window` so that
+/// `settings_handle_key` can process keyboard input and
+/// `render_settings` redraws the UI on changes.
+pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
+    // If already open, just focus it.
+    if let Some(id) = rt.settings_window {
+        if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
+            rt.desktop.wm.raise_to_top(id);
+            rt.settings_dirty = true;
+            rt.frame_due = true;
+            return;
+        }
+    }
+
+    let cols = 38u32;
+    let rows = 9u32;
+    let id = rt.desktop.wm.create_titled_window(
+        150, 80, cols * GLYPH_W, rows * GLYPH_H,
+        0x0d1a1a, "Settings",
+    );
+    rt.desktop.wm.raise_to_top(id);
+    rt.settings_window = Some(id);
+    rt.settings_dirty = true;
+    rt.desktop.force_full_redraw();
+    rt.frame_due = true;
+}
+
+/// Open an info window with custom text and coordinates.
+fn open_info_window_raw(
     rt: &mut RuntimeState,
     title: &str,
     x: i32,

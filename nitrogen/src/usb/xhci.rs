@@ -222,8 +222,8 @@ pub struct XhciController {
     ev_ring: EventRing,
     #[allow(dead_code)]
     erst_phys: u64,
-    ports_done: u32,
-    wpr_done: u32,  // bitmask — ports that have already had WPR attempted
+    ports_done: Vec<bool>,
+    wpr_done: Vec<bool>,  // ports that have already had WPR attempted
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
     n_slots_used: u32,
@@ -400,6 +400,11 @@ impl XhciController {
             return None;
         }
 
+        // Clear any pending Host System Error (HSE bit 4) so the
+        // controller starts with a clean status.
+        unsafe { core::ptr::write_volatile((op.add(USBSTS as usize)) as *mut u32, 1 << 4); }
+        Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+
         // ── Clear RW1C status bits on all ports ──────────────
         // After HCRST, RW1C bits like CSC, WRC, PEC may be set,
         // which prevents the port from reporting new connection events.
@@ -436,27 +441,40 @@ impl XhciController {
             }
         }
 
-        // ── Warm Port Reset on all ports + global delay ──────
-        // After HCRST, the xHCI controller and all connected devices
-        // are reset.  The ports need to re-establish the USB 3.0 link
-        // (RxDetect → Polling → U0), which can take 3-5 seconds.
-        // We issue WPR (Warm Port Reset) on every powered port to kick
-        // the PHY, then wait globally for link training to complete.
+        // ── Port init: force RxDetect+LWS on all ports ─────────
+        // After HCRST, ports should be in Rx.Detect (PLS=5) but some
+        // controllers (especially Intel LP) need an explicit PLS+LWS
+        // write to kick-start the PHY link training.  We also try to
+        // power-cycle the port (writing PP=0 even with PPC=0 — some
+        // controllers honour it despite the read-only bit).
+        // Do NOT issue WPR; it is unnecessary after HCRST and some
+        // controllers get stuck if WPR completes before the PHY
+        // has had time to stabilise after the chip-level reset.
         for port in 0..n_ports {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            let cur = unsafe { core::ptr::read_volatile(
-                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
-            ) };
-            if cur & PORTSC_PP != 0 {
-                unsafe { core::ptr::write_volatile(
-                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                    (cur & !0x00FE0000) | (1u32 << 31)
-                ); }
-                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            }
+            // Write 0: attempt PP=0 (power off), clear PLS (←U0),
+            // clear PR (no reset), clear RW1C status bits.
+            unsafe { core::ptr::write_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                0u32
+            ); }
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
         }
-        // Wait for warm resets + link training (≈3 seconds)
-        for _ in 0..3_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+        for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+
+        const PLS_RXDETECT: u32 = 5 << 5;
+        const LWS: u32 = 1 << 16;
+        for port in 0..n_ports {
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            unsafe { core::ptr::write_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                PORTSC_PP | PLS_RXDETECT | LWS
+            ); }
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+        }
+        // Wait for link training — USB 3.0 can take several seconds
+        // to negotiate the link after a cold reset.
+        for _ in 0..5_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
 
         // After the global delay, do one quick check of all ports
         for port in 0..n_ports.min(8) {
@@ -496,12 +514,18 @@ impl XhciController {
         // Unmask interrupt
         unsafe { core::ptr::write_volatile((rt_base.add(IMAN_OFF as usize)) as *mut u32, 1 << 1); }
 
+        let mut ports_done_vec = Vec::new();
+        let mut wpr_done_vec = Vec::new();
+        for _ in 0..n_ports {
+            ports_done_vec.push(false);
+            wpr_done_vec.push(false);
+        }
         Some(Self {
             mmio: mmio_base, op_off, rt_off, db_off, n_ports, max_slots, ppc,
             dcbaa_phys: dcbaa_p, dcbaa,
             slots: Vec::new(),
             cmd_ring: cmd, ev_ring: ev, erst_phys: erst_p,
-            ports_done: 0, wpr_done: 0, devices: Vec::new(),
+            ports_done: ports_done_vec, wpr_done: wpr_done_vec, devices: Vec::new(),
             ctx: ctx as *const dyn DriverContext,
             n_slots_used: 0,
             legacy_handoff_done: legacy_handoff_ok,
@@ -700,7 +724,7 @@ impl XhciController {
         const WPR: u32 = 1 << 31;  // Warm Port Reset
 
         for port in 0..self.n_ports {
-            if self.ports_done & (1 << port) != 0 {
+            if (port as usize) < self.ports_done.len() && self.ports_done[port as usize] {
                 if port < 4 { log::info!("xHCI: poll_ports port {} — already done, skip", port); }
                 continue;
             }
@@ -738,25 +762,32 @@ impl XhciController {
 
             // ── Step 4: If still CCS=0, try warm port reset ────
             // WPR is expensive (~3 seconds), so only do it once per
-            // port per `clear_ports_done()` cycle, and only when the
-            // port is stuck in Inactive (PLS=6) or Compliance (PLS=10)
-            // mode — not for normally empty/disconnected ports.
+            // port per `clear_ports_done()` cycle.  Try WPR whenever
+            // CCS=0 on a powered port including Rx.Detect (PLS=5)
+            // where the PHY might be stuck and not detecting a
+            // connected device.
             let pls = (portsc >> 5) & 0xF;
+            let wpr_already_done = (port as usize) < self.wpr_done.len() && self.wpr_done[port as usize];
             let wpr_needed = (portsc & PORTSC_CCS) == 0
                 && (portsc & PORTSC_PP) != 0
-                && (pls == 6 || pls == 10)
-                && (self.wpr_done & (1 << port)) == 0;
+                && !wpr_already_done;
             if wpr_needed {
-                self.wpr_done |= 1 << port;
+                if (port as usize) < self.wpr_done.len() {
+                    self.wpr_done[port as usize] = true;
+                }
                 log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
                 let v = self.op_read(PORTSC_BASE + port * 0x10);
                 self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) | WPR);
-                for _ in 0..200_000 {
+                // Poll WPR with IO-port delay — WPR takes 100–500ms on
+                // real hardware; the delay prevents a tight-loop timeout.
+                for _ in 0..1_000_000 {
                     let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & WPR == 0 { break; }
+                    crate::port::PortWriter::new(0x80).write_safe(0u8);
                 }
                 let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                // Clear PLS field (bits 5-8) before setting new value
+                // After WPR completes, force PLS=RxDetect+LWS to
+                // re-start link training.
                 const PLS_MASK: u32 = 0x0F << 5;
                 self.op_write(PORTSC_BASE + port * 0x10,
                     ((v2 & !RW1C_BITS) & !PLS_MASK) | RW1C_BITS | (5 << 5) | LWS);
@@ -780,11 +811,42 @@ impl XhciController {
             }
 
             if portsc & PORTSC_CCS == 0 {
-                log::info!("xHCI: poll_ports port {} — CCS still 0 after all attempts, giving up", port);
-                // Mark as done to avoid infinite retries; a hotplug event
-                // (USBSTS.PCD) will clear the bit and re-trigger detection.
-                self.ports_done |= 1 << port;
-                continue;
+                // Check for HSE before giving up.  If HSE is set, the PHY
+                // may be stuck and a recovery+retry cycle could still detect
+                // the device.
+                let op = unsafe { self.mmio.add(self.op_off as usize) };
+                Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+                let sts = unsafe { core::ptr::read_volatile(op.add(USBSTS as usize) as *const u32) };
+                if sts & (1 << 4) != 0 {
+                    log::info!("xHCI: poll_ports port {} — HSE detected, attempting recovery instead of giving up", port);
+                    // Clear HSE and re-kick this port's link training
+                    unsafe { core::ptr::write_volatile(op.add(USBSTS as usize) as *mut u32, 1 << 4); }
+                    Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+                    const PLS_MASK_HSE: u32 = 0x0F << 5;
+                    let v_recover = self.op_read(PORTSC_BASE + port * 0x10);
+                    self.op_write(PORTSC_BASE + port * 0x10,
+                        ((v_recover & PORTSC_PP) & !PLS_MASK_HSE) | (5 << 5) | LWS);
+                    for _ in 0..1_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                    let ps_after = self.op_read(PORTSC_BASE + port * 0x10);
+                    if ps_after & PORTSC_CCS != 0 {
+                        log::info!("xHCI: poll_ports port {} — CCS=1 after HSE recovery, continuing", port);
+                        // Fall through to step 6 below (port reset for newly detected device)
+                    } else {
+                        log::info!("xHCI: poll_ports port {} — CCS still 0 after HSE recovery, giving up", port);
+                        if (port as usize) < self.ports_done.len() {
+                            self.ports_done[port as usize] = true;
+                        }
+                        continue;
+                    }
+                } else {
+                    log::info!("xHCI: poll_ports port {} — CCS still 0 after all attempts, giving up", port);
+                    // Mark as done to avoid infinite retries; a hotplug event
+                    // (USBSTS.PCD) will clear the bit and re-trigger detection.
+                    if (port as usize) < self.ports_done.len() {
+                        self.ports_done[port as usize] = true;
+                    }
+                    continue;
+                }
             }
 
             // ── Step 6: Port reset for newly detected device ───
@@ -820,15 +882,32 @@ impl XhciController {
                 device_subclass: 0, device_protocol: 0, configurations: 0,
                 endpoints: Vec::new(),
             });
-            self.ports_done |= 1 << port;
+            if (port as usize) < self.ports_done.len() {
+                self.ports_done[port as usize] = true;
+            }
         }
     }
 
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
-    pub fn ports_done_mask(&self) -> u32 { self.ports_done }
-    pub fn clear_ports_done(&mut self) { self.ports_done = 0; self.wpr_done = 0; }
+    pub fn ports_done_mask(&self) -> u32 {
+        let mut mask = 0u32;
+        for (i, &done) in self.ports_done.iter().enumerate() {
+            if done && i < 32 {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
+    pub fn clear_ports_done(&mut self) {
+        for i in 0..self.ports_done.len() {
+            self.ports_done[i] = false;
+            if i < self.wpr_done.len() {
+                self.wpr_done[i] = false;
+            }
+        }
+    }
     pub fn clear_devices(&mut self) { self.devices.clear(); }
 
     /// Disable all active slots and free their resources.
@@ -845,6 +924,99 @@ impl XhciController {
             ctx.free_contiguous_frames(slot.in_ctx_phys, 1);
         }
         self.n_slots_used = 0;
+    }
+
+    /// Clear Host System Error (HSE, USBSTS bit 4) and re-kick port link
+    /// training on all ports.  HSE indicates a severe internal error that
+    /// can leave ports stuck in Rx.Detect (PLS=5) with CCS=0 even when a
+    /// device is physically attached.  This must be called before each
+    /// poll cycle to recover from such errors.
+    pub fn clear_hse_and_recover(&mut self) {
+        let op = unsafe { self.mmio.add(self.op_off as usize) };
+        let sts_ptr = unsafe { op.add(USBSTS as usize) as *const u32 };
+        Self::clflush(sts_ptr as *const u8);
+        let sts = unsafe { core::ptr::read_volatile(sts_ptr) };
+        if sts & (1 << 4) != 0 {
+            log::info!("xHCI: HSE detected (USBSTS=0x{:08X}) — clearing and re-initialising ports", sts);
+            // RW1C: write 1 to clear HSE
+            unsafe { core::ptr::write_volatile(op.add(USBSTS as usize) as *mut u32, 1 << 4); }
+            Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+
+            // Re-kick link training on all ports: force PLS=RxDetect+LWS,
+            // then issue WPR on ports that remain CCS=0 after the PHY
+            // stabilisation delay.  HSE can leave the PHY in a state where
+            // RxDetect alone won't re-acquire the link; WPR is needed.
+            const PLS_RXDETECT: u32 = 5 << 5;
+            const LWS: u32 = 1 << 16;
+            const WPR: u32 = 1 << 31;
+            const RW1C_BITS: u32 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23);
+
+            for port in 0..self.n_ports {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let ps = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                // Keep PP, force RxDetect + LWS
+                let val = (ps & PORTSC_PP) | PLS_RXDETECT | LWS;
+                unsafe { core::ptr::write_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32, val
+                ); }
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            }
+
+            // Clear done flags so ports get re-evaluated
+            for i in 0..self.ports_done.len() {
+                self.ports_done[i] = false;
+                if i < self.wpr_done.len() {
+                    self.wpr_done[i] = false;
+                }
+            }
+
+            // Give the PHY time to detect the device after RxDetect kick
+            for _ in 0..1_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+
+            // After PHY stabilisation, issue WPR on any CCS=0 powered ports
+            for port in 0..self.n_ports {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let ps = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                if (ps & PORTSC_CCS) == 0 && (ps & PORTSC_PP) != 0 {
+                    log::info!("xHCI: HSE recovery port {} — CCS=0, issuing WPR", port);
+                    if (port as usize) < self.wpr_done.len() {
+                        self.wpr_done[port as usize] = true;
+                    }
+                    let v = ps;
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        (v & !RW1C_BITS) | WPR
+                    ); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                    for _ in 0..1_000_000 {
+                        Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                        let p = unsafe { core::ptr::read_volatile(
+                            op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                        ) };
+                        if p & WPR == 0 { break; }
+                        crate::port::PortWriter::new(0x80).write_safe(0u8);
+                    }
+                    // Force RxDetect + LWS after WPR completes
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                    let v2 = unsafe { core::ptr::read_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                    ) };
+                    const PLS_MASK2: u32 = 0x0F << 5;
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        ((v2 & PORTSC_PP) & !PLS_MASK2) | (5 << 5) | LWS
+                    ); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                }
+            }
+
+            // Final PHY stabilisation
+            for _ in 0..2_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+        }
     }
 
     /// Dump port status for debugging.

@@ -208,20 +208,17 @@ impl ExplorerContext {
         }
     }
 
+    /// Build sidebar items without querying USB drives (fast path for construction).
+    /// USB drives are added later by `refresh_sidebar()` when the window opens.
     fn default_sidebar() -> Vec<SidebarItem> {
-        let mut items = vec![
+        vec![
             SidebarItem { label: String::from("Home"), path: String::from("/"), is_usb: false },
             SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop"), is_usb: false },
             SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads"), is_usb: false },
             SidebarItem { label: String::from("Documents"), path: String::from("/Documents"), is_usb: false },
             SidebarItem { label: String::from("Music"), path: String::from("/Music"), is_usb: false },
             SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures"), is_usb: false },
-        ];
-        // Add mounted USB drives with their actual mount points
-        for (name, mount_path) in crate::get_usb_drives() {
-            items.push(SidebarItem { label: name, path: mount_path, is_usb: true });
-        }
-        items
+        ]
     }
 
     pub fn navigate_to(&mut self, path: &str) {

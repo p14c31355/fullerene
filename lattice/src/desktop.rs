@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::vec::Vec;
 use crate::cursor::Cursor;
 use crate::menu::PopupMenu;
 use crate::scene::{DirtyRect, Scene};
@@ -137,10 +138,25 @@ impl Desktop {
         }
     }
 
-    /// Return the usable work area (screen minus taskbar).
+    /// Return the usable work area (screen minus taskbar and top panel if visible).
     pub fn work_area(&self, fb_width: u32, fb_height: u32) -> (u32, u32) {
         let bar_h = crate::taskbar::TASKBAR_HEIGHT;
-        (fb_width, fb_height.saturating_sub(bar_h))
+        let panel_h = if crate::top_panel::is_top_panel_enabled() {
+            crate::top_panel::TOP_PANEL_HEIGHT
+        } else {
+            0
+        };
+        let total_h = fb_height.saturating_sub(bar_h).saturating_sub(panel_h);
+        (fb_width, total_h)
+    }
+
+    /// Offset from top edge due to top panel.
+    pub fn top_panel_offset(&self) -> u32 {
+        if crate::top_panel::is_top_panel_enabled() {
+            crate::top_panel::TOP_PANEL_HEIGHT
+        } else {
+            0
+        }
     }
 
     // ── convenience delegates ───────────────────────────────
@@ -240,7 +256,8 @@ impl Desktop {
             }
             if window.hit_maximize_button(self.cursor.x, self.cursor.y) {
                 let (ww, wh) = self.work_area(fb_width, fb_height);
-                self.wm.toggle_maximize(id, ww, wh);
+                let wy = self.top_panel_offset() as i32;
+                self.wm.toggle_maximize(id, 0, wy, ww, wh);
                 return;
             }
         }
@@ -346,6 +363,26 @@ impl Desktop {
     /// Show the cursor.
     pub fn show_cursor(&mut self) {
         self.cursor.visible = true;
+    }
+
+    /// Re-layout all maximized windows using current work area and panel offset.
+    ///
+    /// Called after the top panel setting changes to ensure maximized windows
+    /// are repositioned to match the new panel state.
+    pub fn relayout_maximized_windows(&mut self, fb_width: u32, fb_height: u32) {
+        let (ww, wh) = self.work_area(fb_width, fb_height);
+        let wy = self.top_panel_offset() as i32;
+        let mut dirty_rects = Vec::new();
+        for w in self.wm.windows_mut().iter_mut() {
+            if w.maximized {
+                w.x = 0;
+                w.y = wy;
+                w.width = ww;
+                w.height = wh;
+                dirty_rects.push(crate::wm::window_dirty_rect(w));
+            }
+        }
+        self.wm.dirty_rects.extend(dirty_rects);
     }
 
     /// Update the taskbar entries from the current window list.
