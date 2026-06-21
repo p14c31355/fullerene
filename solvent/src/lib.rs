@@ -464,7 +464,7 @@ pub fn poll_keyboard() {
                 && r.editor_window == top_id
             {
                 drop(rt);
-                editor_handle_key(scancode);
+                editor_handle_key(scancode, pressed);
                 let key = scancode_to_resonance_keycode(scancode);
                 let event = if pressed {
                     Event::Input(InputEvent::KeyDown(key))
@@ -480,7 +480,7 @@ pub fn poll_keyboard() {
             if top_id.is_some()
                 && r.settings_window == top_id
             {
-                settings_handle_key_inner(r, scancode);
+                settings_handle_key_inner(r, scancode, pressed);
                 continue;
             }
         }
@@ -1555,17 +1555,16 @@ static SETTINGS_SELECTED: Mutex<u32> = Mutex::new(0);
 
 /// Handle a key event when the settings window is focused.
 /// (Public entry point — acquires the runtime lock internally.)
-pub fn settings_handle_key(scancode: u8) {
+pub fn settings_handle_key(scancode: u8, pressed: bool) {
     let mut rt = RUNTIME.lock();
     if let Some(ref mut r) = *rt {
-        settings_handle_key_inner(r, scancode);
+        settings_handle_key_inner(r, scancode, pressed);
     }
 }
 
-fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8) {
+fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
     let key = crate::scancode_to_resonance_keycode(scancode);
-    let is_press = (scancode & 0x80) == 0;
-    if !is_press {
+    if !pressed {
         return;
     }
 
@@ -1583,15 +1582,15 @@ fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8) {
             match *sel {
                 0 => {
                     // Mouse sensitivity: step by 0.25
-                    let cur = crate::MOUSE_SENSITIVITY
-                        .load(core::sync::atomic::Ordering::Relaxed) as f32;
+                    let cur = (crate::MOUSE_SENSITIVITY
+                        .load(core::sync::atomic::Ordering::Relaxed) as f32)
+                        / 6.0;
                     let step = 0.25f32;
                     let new_val = if dec {
                         (cur - step).max(0.25)
                     } else {
                         (cur + step).min(4.0)
                     };
-                    // Convert back to i16 (scale = 6 for legacy compat)
                     let new_i16 = (new_val * 6.0) as i16;
                     crate::MOUSE_SENSITIVITY.store(new_i16, core::sync::atomic::Ordering::Relaxed);
                 }
@@ -1650,7 +1649,7 @@ fn render_settings(rt: &mut RuntimeState) {
         }
     };
 
-    let sens = crate::MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32;
+    let sens = (crate::MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
     let bright = crate::DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
     let top_panel = lattice::top_panel::is_top_panel_enabled();
 
@@ -1850,7 +1849,7 @@ fn editor_save_current(rt: &mut RuntimeState) {
 }
 
 /// Handle a key event for the editor.
-pub fn editor_handle_key(scancode: u8) {
+pub fn editor_handle_key(scancode: u8, pressed: bool) {
     let key = crate::scancode_to_resonance_keycode(scancode);
     let mut rt = RUNTIME.lock();
     let rt = match rt.as_mut() {
@@ -1860,18 +1859,17 @@ pub fn editor_handle_key(scancode: u8) {
 
     static EDITOR_CTRL_HELD: core::sync::atomic::AtomicBool =
         core::sync::atomic::AtomicBool::new(false);
-    let is_press = (scancode & 0x80) == 0;
     if key == KeyCode::Ctrl {
-        EDITOR_CTRL_HELD.store(is_press, core::sync::atomic::Ordering::Relaxed);
+        EDITOR_CTRL_HELD.store(pressed, core::sync::atomic::Ordering::Relaxed);
         return;
     }
-    if key == KeyCode::S && EDITOR_CTRL_HELD.load(core::sync::atomic::Ordering::Relaxed) && is_press {
+    if key == KeyCode::S && EDITOR_CTRL_HELD.load(core::sync::atomic::Ordering::Relaxed) && pressed {
         editor_save_current(rt);
         return;
     }
 
     // Ignore key release events for all other keys — only presses produce editor actions
-    if !is_press {
+    if !pressed {
         return;
     }
 
