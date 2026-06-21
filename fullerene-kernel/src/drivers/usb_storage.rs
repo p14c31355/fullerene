@@ -5,8 +5,8 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use nitrogen::usb::ehci::EhciController;
-use nitrogen::usb::xhci::XhciController;
+use nitrogen::usb::ehci_context::EhciContext;
+use nitrogen::usb::xhci_context::XhciContext;
 use nitrogen::usb::{UsbDirection, UsbSetupPacket, UsbXferType};
 use nitrogen::DriverContext;
 use spin::Mutex;
@@ -42,7 +42,7 @@ impl UsbBlockDevice {
         cdb: &[u8],
         data: Option<&mut [u8]>,
         dir_in: bool,
-        ehci: &mut EhciController,
+        ehci: &mut EhciContext,
     ) -> Result<(), &'static str> {
         let tag = self.tag;
         self.tag = self.tag.wrapping_add(1);
@@ -105,8 +105,8 @@ impl BlockDevice for UsbBlockDevice {
 
 // ── Controller storage ───────────────────────────────────────
 
-static EHCI_CONTROLLERS: Mutex<Vec<Box<EhciController>>> = Mutex::new(Vec::new());
-static XHCI_CONTROLLERS: Mutex<Vec<Box<XhciController>>> = Mutex::new(Vec::new());
+static EHCI_CONTROLLERS: Mutex<Vec<Box<EhciContext>>> = Mutex::new(Vec::new());
+static XHCI_CONTROLLERS: Mutex<Vec<Box<XhciContext>>> = Mutex::new(Vec::new());
 static CTRL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 pub fn init() {
@@ -182,13 +182,13 @@ fn init_controllers() {
 
         match prog_if {
             0x20 => { // EHCI
-                if let Some(hc) = EhciController::new(mmio_virt, &KernelDriverContext) {
+                if let Some(hc) = EhciContext::new(mmio_virt, &KernelDriverContext) {
                     ehis.push(Box::new(hc));
                     klog_fmt!("USB: EHCI at {}:{}.{}\n", dev.bus, dev.device, dev.function);
                 }
             }
             0x30 => { // xHCI
-                if let Some(hc) = XhciController::new(mmio_virt, &KernelDriverContext) {
+                if let Some(hc) = XhciContext::new(mmio_virt, &KernelDriverContext) {
                     xhis.push(Box::new(hc));
                     klog_fmt!("USB: xHCI at {}:{}.{}\n", dev.bus, dev.device, dev.function);
                 } else {
@@ -642,7 +642,7 @@ fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
         ehci.reset_pools();
 
         let result = unsafe {
-            let p: &mut EhciController = &mut *ehci;
+            let p: &mut EhciContext = &mut *ehci;
             let mut ctrl = |a, ep, s: &UsbSetupPacket, b: &mut [u8]| p.control_transfer(a, ep, s, b);
             nitrogen::usb::hub::enumerate_device(&mut ctrl)
         };
