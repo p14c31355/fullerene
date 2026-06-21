@@ -45,7 +45,10 @@ pub fn init() {
     init_controllers();
 
     // Phase 1: Immediate poll
-    poll_usb();
+    if poll_usb() {
+        debug_usb();
+        return;
+    }
 
     // Phase 2: Short delay → re-poll for xHCI devices needing
     // additional time after HCRST.

@@ -248,7 +248,7 @@ pub fn enumerate_mass_storage(
         if cfg_len < 9 {
             return Err("config too short");
         }
-        parse_endpoints(&cfg_buf, cfg_len)?
+        parse_endpoints(&cfg_buf, cfg_len)
     } else {
         if dev_class != 0x08 {
             return Err("not MSC");
@@ -268,7 +268,7 @@ pub fn enumerate_mass_storage(
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.
-fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> Result<(u8, u8), &'static str> {
+fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u8) {
     let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let mut offset: usize = 9;
     let mut found_out: Option<u8> = None;
@@ -299,7 +299,7 @@ fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> Result<(u8, u8), &'static 
 
     let out = found_out.unwrap_or(0x02);
     let in_ep = found_in.unwrap_or(0x82);
-    Ok((out, in_ep))
+    (out, in_ep)
 }
 
 // EHCI-specific enumeration is in hub.rs (enumerate_device).

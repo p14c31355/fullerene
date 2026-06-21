@@ -163,19 +163,26 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
 
     // Assert PR
     op.write_portsc(port, (ps_raw & !PORTSC_RW1C_MASK) | PORTSC_PR);
+
+    // Poll PR until cleared by hardware (xHCI spec §5.4.8)
+    let mut pr_cleared = false;
     for _ in 0..200_000 {
+        if op.portsc(port).0 & PORTSC_PR == 0 {
+            pr_cleared = true;
+            break;
+        }
         crate::port::PortWriter::new(0x80).write_safe(0u8);
     }
-
-    // Clear PR
-    let v = op.portsc(port).0;
-    op.write_portsc(port, (v & !PORTSC_RW1C_MASK) & !PORTSC_PR);
+    if !pr_cleared {
+        return Err("port reset timeout");
+    }
 
     // Wait for PED
     for _ in 0..200_000 {
         if op.portsc(port).0 & PORTSC_PED != 0 {
             break;
         }
+        crate::port::PortWriter::new(0x80).write_safe(0u8);
     }
 
     // Check CCS survived

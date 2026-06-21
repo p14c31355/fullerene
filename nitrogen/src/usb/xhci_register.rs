@@ -453,7 +453,13 @@ impl RegisterContext {
 /// `Ok(false)` if the handoff succeeded, or `Err` if it failed.
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
     let mut ec_off = ext_cap_ptr as usize;
+    let mut iterations = 0;
     while ec_off != 0 && ec_off < 0x1000 {
+        iterations += 1;
+        if iterations > 64 {
+            log::warn!("xHCI: try_legacy_handoff exceeded max iterations, possible circular list");
+            return Err("circular capability list");
+        }
         let ec_id = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u8) };
         if ec_id == 1 {
            let bios_sem = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };

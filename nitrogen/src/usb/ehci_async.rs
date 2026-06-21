@@ -216,6 +216,7 @@ impl QtdPool {
     }
 
     /// Allocate a QTD. Returns (mutable ref, physical address).
+    /// Clears all buffer pointer fields to prevent stale DMA.
     pub fn allocate(&mut self) -> Option<(&'static mut Qtd, u64)> {
         if self.free_len == 0 {
             return None;
@@ -224,7 +225,15 @@ impl QtdPool {
         let idx = self.free[self.free_len];
         let ptr = &mut self.entries[idx] as *mut Qtd;
         let phys = self.phys + (idx as u64) * 32;
-        unsafe { Some((&mut *ptr, phys)) }
+        let q = unsafe { &mut *ptr };
+        unsafe {
+            ptr::write_volatile(&mut q.buf0, 0);
+            ptr::write_volatile(&mut q.buf1, 0);
+            ptr::write_volatile(&mut q.buf2, 0);
+            ptr::write_volatile(&mut q.buf3, 0);
+            ptr::write_volatile(&mut q.buf4, 0);
+        }
+        Some((q, phys))
     }
 
     /// Free a QTD.
