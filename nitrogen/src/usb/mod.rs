@@ -32,6 +32,7 @@ pub mod xhci_context;
 pub mod hub;
 pub mod msd;
 pub mod scsi;
+pub mod usb_bus;
 
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
