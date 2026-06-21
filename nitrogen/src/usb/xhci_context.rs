@@ -921,6 +921,20 @@ impl Drop for XhciContext {
         self.disable_all_slots();
         self.rings.command.ring.free(self.driver_ctx);
         self.rings.event.free(self.driver_ctx);
+
+        // Free DCBAA page
+        let _ = self.driver_ctx.free_contiguous_frames(self.device.dcbaa.phys, 1);
+
+        // Free Scratchpad array and buffer pages
+        if let Some(ref sp) = self.device.scratchpad {
+            let array_virt = self.driver_ctx.phys_to_virt(sp.phys) as *const u64;
+            for i in 0..sp.count as usize {
+                let buf_phys = unsafe { ptr::read_volatile(array_virt.add(i)) };
+                let _ = self.driver_ctx.free_contiguous_frames(buf_phys, 1);
+            }
+            let array_pages = ((sp.count as usize * 8) + 4095) / 4096;
+            let _ = self.driver_ctx.free_contiguous_frames(sp.phys, array_pages);
+        }
     }
 }
 

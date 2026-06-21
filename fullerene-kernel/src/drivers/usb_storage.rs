@@ -150,13 +150,11 @@ pub fn poll_usb_all() -> bool {
         for ehci in bus.ehci.iter_mut() {
             ehci.reset_pools();
             ehci.clear_devices();
-            ehci.poll_ports();
         }
         for xhci in bus.xhci.iter_mut() {
             xhci.clear_hse_and_recover();
             xhci.disable_all_slots();
             xhci.clear_devices();
-            xhci.poll_ports();
         }
     });
 

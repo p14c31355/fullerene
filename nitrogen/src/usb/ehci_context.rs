@@ -487,6 +487,7 @@ impl EhciContext {
 
         // Free resources
         self.transfer.schedule.remove(qh_phys, self.driver_ctx);
+        self.wait_async_advance(&self.registers.op);
         self.transfer.qtd_pool.free(qtd_setup);
         if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
         self.transfer.qtd_pool.free(qtd_status);
@@ -571,6 +572,7 @@ impl EhciContext {
         let r = self.transfer.wait_qtd(qtd, 5_000_000);
         if r.is_err() {
             self.transfer.schedule.remove(qh_phys, self.driver_ctx);
+            self.wait_async_advance(&self.registers.op);
             self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
             self.transfer.qtd_pool.free(qtd);
             self.transfer.qh_pool.free(qh);
@@ -582,6 +584,7 @@ impl EhciContext {
         }
 
         self.transfer.schedule.remove(qh_phys, self.driver_ctx);
+        self.wait_async_advance(&self.registers.op);
         self.transfer.qtd_pool.free(qtd);
         self.transfer.qh_pool.free(qh);
         self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);

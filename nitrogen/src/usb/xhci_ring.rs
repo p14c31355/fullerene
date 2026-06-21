@@ -171,14 +171,20 @@ impl Ring {
     /// wraps to 0 and the cycle bit toggles.
     pub fn enqueue(&mut self, mut trb: Trb) {
         trb.flags = (trb.flags & !trb_flag::CYCLE) | self.cycle;
-        self.entries[self.enq] = trb;
+        unsafe {
+            ptr::write_volatile(&mut self.entries[self.enq], trb);
+        }
         self.enq += 1;
 
         if self.enq >= self.len - 1 {
             // Wrap: update Link TRB's cycle, then loop back
             let link_idx = self.len - 1;
-            self.entries[link_idx].flags =
-                (self.entries[link_idx].flags & !trb_flag::CYCLE) | self.cycle;
+            unsafe {
+                ptr::write_volatile(
+                    &mut self.entries[link_idx].flags,
+                    (self.entries[link_idx].flags & !trb_flag::CYCLE) | self.cycle,
+                );
+            }
             self.enq = 0;
             self.cycle ^= 1;
         }
