@@ -1,5 +1,6 @@
 extern crate alloc;
 
+use alloc::vec::Vec;
 use crate::cursor::Cursor;
 use crate::menu::PopupMenu;
 use crate::scene::{DirtyRect, Scene};
@@ -362,6 +363,26 @@ impl Desktop {
     /// Show the cursor.
     pub fn show_cursor(&mut self) {
         self.cursor.visible = true;
+    }
+
+    /// Re-layout all maximized windows using current work area and panel offset.
+    ///
+    /// Called after the top panel setting changes to ensure maximized windows
+    /// are repositioned to match the new panel state.
+    pub fn relayout_maximized_windows(&mut self, fb_width: u32, fb_height: u32) {
+        let (ww, wh) = self.work_area(fb_width, fb_height);
+        let wy = self.top_panel_offset() as i32;
+        let mut dirty_rects = Vec::new();
+        for w in self.wm.windows_mut().iter_mut() {
+            if w.maximized {
+                w.x = 0;
+                w.y = wy;
+                w.width = ww;
+                w.height = wh;
+                dirty_rects.push(crate::wm::window_dirty_rect(w));
+            }
+        }
+        self.wm.dirty_rects.extend(dirty_rects);
     }
 
     /// Update the taskbar entries from the current window list.

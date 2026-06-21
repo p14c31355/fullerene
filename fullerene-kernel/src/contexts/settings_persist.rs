@@ -36,13 +36,16 @@ fn parse_f32(s: &str) -> Option<f32> {
     let mut result = 0.0f32;
     let mut decimal = false;
     let mut div = 1.0f32;
+    let mut has_digit = false;
     for (i, ch) in s.bytes().enumerate() {
         match ch {
             b'-' if i == 0 => continue,
             b'0'..=b'9' if !decimal => {
+                has_digit = true;
                 result = result * 10.0 + (ch - b'0') as f32;
             }
             b'0'..=b'9' if decimal => {
+                has_digit = true;
                 div *= 10.0;
                 result += (ch - b'0') as f32 / div;
             }
@@ -51,6 +54,9 @@ fn parse_f32(s: &str) -> Option<f32> {
             }
             _ => return None,
         }
+    }
+    if !has_digit {
+        return None;
     }
     if s.starts_with('-') {
         result = -result;

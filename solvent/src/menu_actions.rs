@@ -195,13 +195,9 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     // If already open, just focus it and refresh sidebar
     if let Some(ref mut explorer) = rt.explorer {
         if let Some(id) = explorer.window_id {
-            // Only poll USB if no drives are currently visible (poll is
-            // expensive — it includes HSE recovery + WPR on xHCI).
+            // Defer USB poll to avoid blocking the event loop
             if crate::get_usb_drives().is_empty() {
-                let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-                if let Some(f) = poll_fn {
-                    let _ = f();
-                }
+                rt.usb_poll_pending = true;
             }
             explorer.refresh_sidebar();
             rt.desktop.wm.raise_to_top(id);
@@ -224,13 +220,9 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     let mut explorer = crate::explorer::ExplorerContext::new();
     explorer.window_id = Some(id);
 
-    // Poll USB only if no drives are currently known (avoids blocking the UI
-    // thread with HSE recovery + WPR when drives are already mounted).
+    // Defer USB poll to avoid blocking before window is shown
     if crate::get_usb_drives().is_empty() {
-        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-        if let Some(f) = poll_fn {
-            let _ = f();
-        }
+        rt.usb_poll_pending = true;
     }
     explorer.refresh_sidebar();
     explorer.navigate_to("/");

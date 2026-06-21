@@ -222,8 +222,8 @@ pub struct XhciController {
     ev_ring: EventRing,
     #[allow(dead_code)]
     erst_phys: u64,
-    ports_done: u32,
-    wpr_done: u32,  // bitmask — ports that have already had WPR attempted
+    ports_done: Vec<bool>,
+    wpr_done: Vec<bool>,  // ports that have already had WPR attempted
     devices: Vec<UsbDevice>,
     ctx: *const dyn DriverContext,
     n_slots_used: u32,
@@ -403,6 +403,7 @@ impl XhciController {
         // Clear any pending Host System Error (HSE bit 4) so the
         // controller starts with a clean status.
         unsafe { core::ptr::write_volatile((op.add(USBSTS as usize)) as *mut u32, 1 << 4); }
+        Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
 
         // ── Clear RW1C status bits on all ports ──────────────
         // After HCRST, RW1C bits like CSC, WRC, PEC may be set,
@@ -513,12 +514,18 @@ impl XhciController {
         // Unmask interrupt
         unsafe { core::ptr::write_volatile((rt_base.add(IMAN_OFF as usize)) as *mut u32, 1 << 1); }
 
+        let mut ports_done_vec = Vec::new();
+        let mut wpr_done_vec = Vec::new();
+        for _ in 0..n_ports {
+            ports_done_vec.push(false);
+            wpr_done_vec.push(false);
+        }
         Some(Self {
             mmio: mmio_base, op_off, rt_off, db_off, n_ports, max_slots, ppc,
             dcbaa_phys: dcbaa_p, dcbaa,
             slots: Vec::new(),
             cmd_ring: cmd, ev_ring: ev, erst_phys: erst_p,
-            ports_done: 0, wpr_done: 0, devices: Vec::new(),
+            ports_done: ports_done_vec, wpr_done: wpr_done_vec, devices: Vec::new(),
             ctx: ctx as *const dyn DriverContext,
             n_slots_used: 0,
             legacy_handoff_done: legacy_handoff_ok,
@@ -717,7 +724,7 @@ impl XhciController {
         const WPR: u32 = 1 << 31;  // Warm Port Reset
 
         for port in 0..self.n_ports {
-            if self.ports_done & (1 << port) != 0 {
+            if (port as usize) < self.ports_done.len() && self.ports_done[port as usize] {
                 if port < 4 { log::info!("xHCI: poll_ports port {} — already done, skip", port); }
                 continue;
             }
@@ -760,11 +767,14 @@ impl XhciController {
             // where the PHY might be stuck and not detecting a
             // connected device.
             let pls = (portsc >> 5) & 0xF;
+            let wpr_already_done = (port as usize) < self.wpr_done.len() && self.wpr_done[port as usize];
             let wpr_needed = (portsc & PORTSC_CCS) == 0
                 && (portsc & PORTSC_PP) != 0
-                && (self.wpr_done & (1 << port)) == 0;
+                && !wpr_already_done;
             if wpr_needed {
-                self.wpr_done |= 1 << port;
+                if (port as usize) < self.wpr_done.len() {
+                    self.wpr_done[port as usize] = true;
+                }
                 log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
                 let v = self.op_read(PORTSC_BASE + port * 0x10);
                 self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) | WPR);
@@ -823,14 +833,18 @@ impl XhciController {
                         // Fall through to step 6 below (port reset for newly detected device)
                     } else {
                         log::info!("xHCI: poll_ports port {} — CCS still 0 after HSE recovery, giving up", port);
-                        self.ports_done |= 1 << port;
+                        if (port as usize) < self.ports_done.len() {
+                            self.ports_done[port as usize] = true;
+                        }
                         continue;
                     }
                 } else {
                     log::info!("xHCI: poll_ports port {} — CCS still 0 after all attempts, giving up", port);
                     // Mark as done to avoid infinite retries; a hotplug event
                     // (USBSTS.PCD) will clear the bit and re-trigger detection.
-                    self.ports_done |= 1 << port;
+                    if (port as usize) < self.ports_done.len() {
+                        self.ports_done[port as usize] = true;
+                    }
                     continue;
                 }
             }
@@ -868,15 +882,32 @@ impl XhciController {
                 device_subclass: 0, device_protocol: 0, configurations: 0,
                 endpoints: Vec::new(),
             });
-            self.ports_done |= 1 << port;
+            if (port as usize) < self.ports_done.len() {
+                self.ports_done[port as usize] = true;
+            }
         }
     }
 
     pub fn devices(&self) -> &[UsbDevice] { &self.devices }
     pub fn devices_mut(&mut self) -> &mut [UsbDevice] { &mut self.devices }
     pub fn n_ports(&self) -> u32 { self.n_ports }
-    pub fn ports_done_mask(&self) -> u32 { self.ports_done }
-    pub fn clear_ports_done(&mut self) { self.ports_done = 0; self.wpr_done = 0; }
+    pub fn ports_done_mask(&self) -> u32 {
+        let mut mask = 0u32;
+        for (i, &done) in self.ports_done.iter().enumerate() {
+            if done && i < 32 {
+                mask |= 1 << i;
+            }
+        }
+        mask
+    }
+    pub fn clear_ports_done(&mut self) {
+        for i in 0..self.ports_done.len() {
+            self.ports_done[i] = false;
+            if i < self.wpr_done.len() {
+                self.wpr_done[i] = false;
+            }
+        }
+    }
     pub fn clear_devices(&mut self) { self.devices.clear(); }
 
     /// Disable all active slots and free their resources.
@@ -934,8 +965,12 @@ impl XhciController {
             }
 
             // Clear done flags so ports get re-evaluated
-            self.ports_done = 0;
-            self.wpr_done = 0;
+            for i in 0..self.ports_done.len() {
+                self.ports_done[i] = false;
+                if i < self.wpr_done.len() {
+                    self.wpr_done[i] = false;
+                }
+            }
 
             // Give the PHY time to detect the device after RxDetect kick
             for _ in 0..1_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
@@ -948,7 +983,9 @@ impl XhciController {
                 ) };
                 if (ps & PORTSC_CCS) == 0 && (ps & PORTSC_PP) != 0 {
                     log::info!("xHCI: HSE recovery port {} — CCS=0, issuing WPR", port);
-                    self.wpr_done |= 1 << port;
+                    if (port as usize) < self.wpr_done.len() {
+                        self.wpr_done[port as usize] = true;
+                    }
                     let v = ps;
                     unsafe { core::ptr::write_volatile(
                         op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,

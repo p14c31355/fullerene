@@ -63,6 +63,8 @@ pub struct SolventCallbacks {
     pub usb_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
     /// Poll USB controllers for newly connected devices. Returns true if new drive mounted.
     pub usb_poll: Option<fn() -> bool>,
+    /// Persist current settings to storage (called when settings change).
+    pub settings_save: Option<fn()>,
 }
 
 impl SolventCallbacks {
@@ -82,6 +84,7 @@ impl SolventCallbacks {
             device_list: None,
             usb_drive_list: None,
             usb_poll: None,
+            settings_save: None,
         }
     }
     pub fn install(self) {
@@ -245,6 +248,8 @@ pub struct RuntimeState {
     /// Settings interactive state
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
+    /// Deferred USB poll flag (set when explorer needs USB enumeration)
+    pub usb_poll_pending: bool,
 }
 
 pub fn init() {
@@ -304,6 +309,7 @@ pub fn init() {
         explorer_dirty: false,
         settings_window: None,
         settings_dirty: false,
+        usb_poll_pending: false,
     });
 }
 
@@ -852,6 +858,34 @@ where
             };
             let scene = rt.desktop.scene();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
+            // Apply brightness to newly composited content in back buffer
+            let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
+            if brightness < 100 && (bw > 0 && bh > 0) {
+                let back_w = fb_width as usize;
+                if was_transition {
+                    // Full redraw: apply brightness to entire back buffer
+                    for row in 0..fb_height as usize {
+                        let row_off = row * back_w;
+                        for col in 0..fb_width as usize {
+                            let idx = row_off + col;
+                            if idx < back_len {
+                                back[idx] = lattice::compositor::apply_brightness(back[idx], brightness);
+                            }
+                        }
+                    }
+                } else {
+                    // Dirty rect: apply brightness only to updated region
+                    for row in 0..bh {
+                        let row_off = ((by + row) as usize) * back_w;
+                        for col in 0..bw {
+                            let idx = row_off + (bx + col) as usize;
+                            if idx < back_len {
+                                back[idx] = lattice::compositor::apply_brightness(back[idx], brightness);
+                            }
+                        }
+                    }
+                }
+            }
             if was_transition || (bw > 0 && bh > 0) {
                 let back_w = fb_width as usize;
                 if was_transition {
@@ -969,19 +1003,23 @@ where
                 &rt.desktop.cursor,
             );
         }
+    }
 
-        // ── Post‑processing: apply software brightness ─────
-        let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
-        if brightness < 100 {
-            let fb_stride_u = fb_stride_pixels as usize;
-            for row in 0..fb_height as usize {
-                let row_off = row * fb_stride_u;
-                for col in 0..fb_width as usize {
-                    let idx = row_off + col;
-                    if idx < fb_len {
-                        fb_pixels[idx] = lattice::compositor::apply_brightness(fb_pixels[idx], brightness);
-                    }
-                }
+    // Execute deferred USB poll after rendering is complete
+    if rt.usb_poll_pending {
+        rt.usb_poll_pending = false;
+        // Drop runtime lock before polling to avoid deadlock
+        drop(rt_lock);
+        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
+        if let Some(f) = poll_fn {
+            let _ = f();
+        }
+        // Re-acquire lock to refresh explorer sidebar
+        if let Some(ref mut rt) = *RUNTIME.lock() {
+            if let Some(ref mut explorer) = rt.explorer {
+                explorer.refresh_sidebar();
+                rt.explorer_dirty = true;
+                rt.frame_due = true;
             }
         }
     }
@@ -1478,9 +1516,16 @@ fn render_editor(rt: &mut RuntimeState) {
             let additional = needed
                 .saturating_sub(reserve)
                 .next_multiple_of(4096);
-            if let Some(extend_fn) = SOLVENT_CALLBACKS.lock().heap_extend {
-                if extend_fn(additional).is_ok() {
+            let extend_fn = SOLVENT_CALLBACKS.lock().heap_extend;
+            if extend_fn.is_none() {
+                return;
+            }
+            match extend_fn.unwrap()(additional) {
+                Ok(_) => {
                     HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
+                }
+                Err(_) => {
+                    return;
                 }
             }
         }
@@ -1593,6 +1638,10 @@ fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8, pressed: bool)
                     };
                     let new_i16 = (new_val * 6.0) as i16;
                     crate::MOUSE_SENSITIVITY.store(new_i16, core::sync::atomic::Ordering::Relaxed);
+                    // Persist setting to storage
+                    if let Some(save_fn) = crate::SOLVENT_CALLBACKS.lock().settings_save {
+                        save_fn();
+                    }
                 }
                 1 => {
                     // Brightness: step by 5 (out of 100)
@@ -1606,12 +1655,22 @@ fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8, pressed: bool)
                     crate::DISPLAY_BRIGHTNESS_X100
                         .store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
                     rt.desktop.force_full_redraw();
+                    // Persist setting to storage
+                    if let Some(save_fn) = crate::SOLVENT_CALLBACKS.lock().settings_save {
+                        save_fn();
+                    }
                 }
                 2 => {
                     // Top panel toggle
                     if key == KeyCode::Right || key == KeyCode::Left {
                         lattice::top_panel::toggle_top_panel();
+                        let (fw, fh, _) = *crate::FB_DIMS.lock();
+                        rt.desktop.relayout_maximized_windows(fw, fh);
                         rt.desktop.force_full_redraw();
+                        // Persist setting to storage
+                        if let Some(save_fn) = crate::SOLVENT_CALLBACKS.lock().settings_save {
+                            save_fn();
+                        }
                     }
                 }
                 _ => {}

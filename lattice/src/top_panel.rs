@@ -26,10 +26,8 @@ pub fn is_top_panel_enabled() -> bool {
 
 /// Toggle the top panel on/off. Returns the new state.
 pub fn toggle_top_panel() -> bool {
-    let prev = TOP_PANEL_ENABLED.load(Ordering::Relaxed);
-    let next = if prev != 0 { 0 } else { 1 };
-    TOP_PANEL_ENABLED.store(next, Ordering::Relaxed);
-    next != 0
+    let prev = TOP_PANEL_ENABLED.fetch_xor(1, Ordering::Relaxed);
+    prev == 0
 }
 
 /// Set the top panel enabled state explicitly.

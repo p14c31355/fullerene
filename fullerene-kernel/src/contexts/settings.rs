@@ -65,13 +65,13 @@ impl MouseSettings {
     pub fn sensitivity_raw(&self) -> i16 {
         let v = self.sensitivity();
         if v >= 1.0 {
-            v as i16
+            (v * 6.0) as i16
         } else {
             // Below 1.0: use fixed-point scaling in the driver.
             // The driver currently does `dx.wrapping_mul(self.sensitivity)`,
             // so for values < 1 we return 1 and handle fine scaling elsewhere.
             // For now return 1 and let the f32 path in solvent handle it.
-            1
+            (v * 6.0) as i16
         }
     }
 
@@ -125,9 +125,8 @@ impl DisplaySettings {
     }
 
     pub fn toggle_top_panel(&self) -> bool {
-        let prev = self.top_panel_enabled();
-        self.set_top_panel_enabled(!prev);
-        !prev
+        let prev = self.top_panel_enabled.fetch_xor(1, Ordering::Relaxed);
+        prev == 0
     }
 }
 
