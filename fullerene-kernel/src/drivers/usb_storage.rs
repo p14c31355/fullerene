@@ -241,7 +241,7 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
     mount_fat("xHCI", slot_id, ep_out, ep_in, "xHCI", ctrl_index);
 }
 
-fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8, ctrl_type: &str, ctrl_idx: usize) {
+fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8, ctrl_type: &'static str, ctrl_idx: usize) {
     struct BotBlockDev {
         dev_id: u32,
         ep_out: u8,
@@ -290,7 +290,7 @@ fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8, ctrl_type: &str, c
         block_size: 512,
         total_blocks: 0,
         tag: 1,
-        ctrl_type: if label == "xHCI" { "xHCI" } else { "EHCI" },
+        ctrl_type,
         ctrl_idx,
     };
 
