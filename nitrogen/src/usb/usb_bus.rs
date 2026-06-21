@@ -156,15 +156,14 @@ pub fn bot_read_sectors(
     tag: &mut u32,
 ) -> Result<(), &'static str> {
     let dlen = count as u32 * block_size;
+    if buf.len() < dlen as usize {
+        return Err("buffer too small");
+    }
     let mut cdb = [0u8; 10];
     cdb[0] = 0x28; // READ_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
-    let mut data = alloc::vec![0u8; dlen as usize];
-    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(BotBuffer::In(&mut data)), tag)?;
-    let n = dlen.min(buf.len() as u32) as usize;
-    buf[..n].copy_from_slice(&data[..n]);
-    Ok(())
+    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(BotBuffer::In(&mut buf[..dlen as usize])), tag)
 }
 
 /// Write sectors to a mass-storage device via BOT.

@@ -126,6 +126,13 @@ pub struct Ring {
 }
 
 impl Ring {
+    /// Free the ring's physical memory.
+    pub fn free(&self, ctx: &dyn DriverContext) {
+        let size = self.len * TRB_SIZE;
+        let pages = (size + 4095) / 4096;
+        let _ = ctx.free_contiguous_frames(self.phys, pages);
+    }
+
     /// Allocate a ring with `n` TRB slots.
     ///
     /// The ring is backed by contiguous physical memory and includes
@@ -259,6 +266,13 @@ impl EventRing {
         }
 
         Some(Self { entries, phys: p, deq: 0, cycle: 1, len: n })
+    }
+
+    /// Free the event ring's physical memory.
+    pub fn free(&self, ctx: &dyn DriverContext) {
+        let size = self.len * TRB_SIZE;
+        let pages = (size + 4095) / 4096;
+        let _ = ctx.free_contiguous_frames(self.phys, pages);
     }
 
     /// Check if the next TRB is pending (cycle bit matches our expected cycle).

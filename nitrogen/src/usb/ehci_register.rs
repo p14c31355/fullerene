@@ -34,10 +34,12 @@ pub const OP_PORTSC_BASE: usize = 0x44;
 pub const USBCMD_RS: u32 = 1 << 0;       // Run/Stop
 pub const USBCMD_HCRESET: u32 = 1 << 1;  // Host Controller Reset
 pub const USBCMD_ASSE: u32 = 1 << 5;     // Async Schedule Enable
+pub const USBCMD_IAAD: u32 = 1 << 6;     // Interrupt on Async Advance Doorbell
 
 // ── USBSTS ───────────────────────────────────────────────────
 pub const USBSTS_HCH: u32 = 1 << 0;      // Host Controller Halted
 pub const USBSTS_PCD: u32 = 1 << 2;      // Port Change Detect
+pub const USBSTS_AAINT: u32 = 1 << 5;    // Async Advance Interrupt
 
 // ── PORTSC ───────────────────────────────────────────────────
 pub const PORTSC_CCS: u32 = 1 << 0;      // Current Connect Status

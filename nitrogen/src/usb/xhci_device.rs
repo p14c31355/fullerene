@@ -77,12 +77,12 @@ pub struct DeviceContext {
 }
 
 impl DeviceContext {
-    /// Allocate a zeroed device context page.
+    /// Allocate a zeroed device context page (4096 bytes).
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut Self;
-        unsafe { ptr::write_bytes(virt, 0, 1); }
-        Some((virt, phys))
+        let virt = ctx.phys_to_virt(phys) as *mut u8;
+        unsafe { ptr::write_bytes(virt, 0, 4096); }
+        Some((virt as *mut Self, phys))
     }
 }
 
@@ -122,12 +122,12 @@ pub struct InputContext {
 }
 
 impl InputContext {
-    /// Allocate a zeroed input context page.
+    /// Allocate a zeroed input context page (4096 bytes).
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut Self;
-        unsafe { ptr::write_bytes(virt, 0, 1); }
-        Some((virt, phys))
+        let virt = ctx.phys_to_virt(phys) as *mut u8;
+        unsafe { ptr::write_bytes(virt, 0, 4096); }
+        Some((virt as *mut Self, phys))
     }
 
     /// Get a mutable reference to an endpoint context by its context index.
@@ -242,8 +242,20 @@ impl Scratchpad {
 
         // Allocate individual scratchpad buffer pages and write pointers
         for i in 0..count as usize {
-            let buf_phys = ctx.allocate_contiguous_frames(1).ok()?;
-            unsafe { ptr::write_volatile(array_virt.add(i), buf_phys); }
+            match ctx.allocate_contiguous_frames(1) {
+                Ok(buf_phys) => {
+                    unsafe { ptr::write_volatile(array_virt.add(i), buf_phys); }
+                }
+                Err(_) => {
+                    // Free previously allocated buffers and array
+                    for j in 0..i {
+                        let prev_phys = unsafe { ptr::read_volatile(array_virt.add(j)) };
+                        let _ = ctx.free_contiguous_frames(prev_phys, 1);
+                    }
+                    let _ = ctx.free_contiguous_frames(array_phys, array_pages);
+                    return None;
+                }
+            }
         }
 
         Some(Self { phys: array_phys, count })
@@ -315,6 +327,13 @@ impl SlotManager {
         for slot in self.slots.drain(..) {
             ctx.free_contiguous_frames(slot.dev_ctx_phys, 1);
             ctx.free_contiguous_frames(slot.in_ctx_phys, 1);
+            slot.ep0_ring.free(ctx);
+            if let Some(ref ring) = slot.bulk_out_ring {
+                ring.free(ctx);
+            }
+            if let Some(ref ring) = slot.bulk_in_ring {
+                ring.free(ctx);
+            }
         }
         self.n_used = 0;
     }

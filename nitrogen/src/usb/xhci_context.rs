@@ -919,6 +919,8 @@ impl HostController for XhciContext {
 impl Drop for XhciContext {
     fn drop(&mut self) {
         self.disable_all_slots();
+        self.rings.command.ring.free(self.driver_ctx);
+        self.rings.event.free(self.driver_ctx);
     }
 }
 

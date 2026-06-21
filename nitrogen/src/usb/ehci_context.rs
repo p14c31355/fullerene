@@ -290,6 +290,24 @@ impl EhciContext {
         self.transfer.reset_pools();
     }
 
+    /// Wait for an Async Advance interrupt (AAINT) after unlinking a qH.
+    ///
+    /// After removing a qH from the async schedule, the controller may still
+    /// have it cached.  Issuing IAAD (Interrupt on Async Advance Doorbell)
+    /// and waiting for AAINT ensures the controller has flushed its cache
+    /// and will no longer access the freed qH, qTDs, or staging buffers.
+    fn wait_async_advance(&self, op: &EhciOperationalRegisters) {
+        op.set_usbcmd_bits(USBCMD_IAAD);
+        for _ in 0..1_000_000 {
+            let sts = op.usbsts();
+            if sts & USBSTS_AAINT != 0 {
+                op.write_usbsts(USBSTS_AAINT);
+                return;
+            }
+            crate::port::PortWriter::new(0x80).write_safe(0u8);
+        }
+    }
+
     // ── Control transfer ───────────────────────────────────────
 
     /// Perform a USB control transfer.
