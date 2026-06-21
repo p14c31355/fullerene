@@ -147,9 +147,11 @@ impl InputContext {
         self.drop_flags = 0;
         self.slot_ctx[0] = 0; // route string = 0 (root port)
         self.slot_ctx[1] = (dev_addr as u32) << 24; // slot state: addressed
-        self.ep0_ctx[0] = (64 << 16) | (4 << 3); // MPS=64, type=Control(4)
-        self.ep0_ctx[1] = ep0_ring_phys as u32;
-        self.ep0_ctx[2] = (ep0_ring_phys >> 32) as u32;
+        // EP0 context: dword 1 contains MPS and EP Type
+        self.ep0_ctx[1] = (64 << 16) | (4 << 3); // MPS=64, type=Control(4)
+        // TR Dequeue Pointer: dwords 2-3, with DCS bit in low bit of dword 2
+        self.ep0_ctx[2] = (ep0_ring_phys as u32) | 1; // TR Dequeue Pointer Low + DCS
+        self.ep0_ctx[3] = (ep0_ring_phys >> 32) as u32; // TR Dequeue Pointer High
     }
 }
 
@@ -263,15 +265,18 @@ impl SlotManager {
         self.slots.iter_mut().find(|s| s.slot_id == slot_id)
     }
 
-    /// Allocate a new slot, returning the slot ID (1-based).
+    /// Allocate a new slot, using the controller-assigned slot ID.
     pub fn alloc_slot(
         &mut self,
         ctx: &dyn DriverContext,
+        slot_id: u32,
     ) -> Result<(u32, &mut Slot), &'static str> {
+        if slot_id == 0 || slot_id > self.max_slots {
+            return Err("invalid slot ID");
+        }
         if self.n_used >= self.max_slots {
             return Err("no free slots");
         }
-        let slot_id = self.n_used + 1;
         self.n_used += 1;
 
         // Allocate device and input context pages

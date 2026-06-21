@@ -368,7 +368,9 @@ impl UsbBus {
     }
 
     /// Force re-poll of all xHCI controllers (clears done flags, re-enumerates).
-    pub fn poll_all(&mut self) -> Vec<(usize, usize)> {
+    /// Note: This method currently only polls xHCI controllers. EHCI controllers
+    /// are not re-enumerated by this method.
+    pub fn poll_all_xhci(&mut self) -> Vec<(usize, usize)> {
         let mut pending: Vec<(usize, usize)> = Vec::new();
         for (ctrl_idx, xhci) in self.xhci.iter_mut().enumerate() {
             xhci.clear_hse_and_recover();
@@ -380,5 +382,10 @@ impl UsbBus {
             }
         }
         pending
+    }
+
+    /// Deprecated alias for poll_all_xhci().
+    pub fn poll_all(&mut self) -> Vec<(usize, usize)> {
+        self.poll_all_xhci()
     }
 }

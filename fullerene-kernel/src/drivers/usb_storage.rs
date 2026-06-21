@@ -195,7 +195,7 @@ fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
         return;
     }
 
-    mount_fat("EHCI", dev.address as u32, bulk_out, bulk_in);
+    mount_fat("EHCI", dev.address as u32, bulk_out, bulk_in, "EHCI", ctrl_index);
 }
 
 fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
@@ -238,10 +238,10 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
         }
     }
 
-    mount_fat("xHCI", slot_id, ep_out, ep_in);
+    mount_fat("xHCI", slot_id, ep_out, ep_in, "xHCI", ctrl_index);
 }
 
-fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8) {
+fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8, ctrl_type: &str, ctrl_idx: usize) {
     struct BotBlockDev {
         dev_id: u32,
         ep_out: u8,
@@ -249,6 +249,8 @@ fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8) {
         block_size: u32,
         total_blocks: u64,
         tag: u32,
+        ctrl_type: &'static str,
+        ctrl_idx: usize,
     }
     unsafe impl Send for BotBlockDev {}
 
@@ -256,15 +258,25 @@ fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8) {
         fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
             let mut guard = USB_BUS.lock();
             let bus = guard.as_mut().unwrap();
-            bot_read_sectors(&mut *bus.xhci[0], self.dev_id as u8, self.ep_out, self.ep_in,
-                lba, count, self.block_size, buf, &mut self.tag)
+            if self.ctrl_type == "xHCI" {
+                bot_read_sectors(&mut *bus.xhci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
+                    lba, count, self.block_size, buf, &mut self.tag)
+            } else {
+                bot_read_sectors(&mut *bus.ehci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
+                    lba, count, self.block_size, buf, &mut self.tag)
+            }
         }
 
         fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
             let mut guard = USB_BUS.lock();
             let bus = guard.as_mut().unwrap();
-            bot_write_sectors(&mut *bus.xhci[0], self.dev_id as u8, self.ep_out, self.ep_in,
-                lba, count, self.block_size, buf, &mut self.tag)
+            if self.ctrl_type == "xHCI" {
+                bot_write_sectors(&mut *bus.xhci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
+                    lba, count, self.block_size, buf, &mut self.tag)
+            } else {
+                bot_write_sectors(&mut *bus.ehci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
+                    lba, count, self.block_size, buf, &mut self.tag)
+            }
         }
 
         fn sector_size(&self) -> u32 { self.block_size }
@@ -278,6 +290,8 @@ fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8) {
         block_size: 512,
         total_blocks: 0,
         tag: 1,
+        ctrl_type: if label == "xHCI" { "xHCI" } else { "EHCI" },
+        ctrl_idx,
     };
 
     let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);

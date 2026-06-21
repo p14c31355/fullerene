@@ -256,8 +256,8 @@ impl CapabilityRegisters {
             max_slots: self.hcs_params1 & 0xFF,
             max_interrupters: (self.hcs_params1 >> 8) & 0x7FF,
             n_ports: (self.hcs_params1 >> 24) & 0xFF,
-            ppc: (self.hcs_params1 >> 4) & 1 != 0,
-            csz: (self.hcs_params1 >> 2) & 1 != 0,
+            ppc: (self.hcc_params1 >> 3) & 1 != 0,
+            csz: (self.hcc_params1 >> 2) & 1 != 0,
             max_scratchpad_bufs: (self.hcs_params2 >> 27) & 0x1F
                                    | ((self.hcs_params2 >> 21) & 0x1F) << 5,
         }
@@ -359,12 +359,11 @@ impl OperationalRegisters {
     pub fn write_portsc(&self, port: u32, val: u32) {
         self.write(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE, val);
     }
-    /// Update PORTSC while preserving RW1C bits (write '1' to
-    /// clear only the bits that are explicitly set).
+    /// Update PORTSC while preserving RW1C bits (write '0' to preserve them).
     pub fn update_portsc(&self, port: u32, set: u32, clear: u32) {
         let cur = self.read(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE);
         let rw1c = cur & PORTSC_RW1C_MASK;
-        let val = (cur & !clear) | set | rw1c;
+        let val = (cur & !clear) | set & !rw1c;
         self.write(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE, val);
     }
 
@@ -496,7 +495,15 @@ pub fn port_speed_to_usb(speed: u32) -> crate::usb::UsbSpeed {
         3 => crate::usb::UsbSpeed::High,
         2 => crate::usb::UsbSpeed::Low,
         1 => crate::usb::UsbSpeed::Full,
-        _ => crate::usb::UsbSpeed::High,
+        4 => {
+            // SuperSpeed (USB 3.0) - map to High for now since UsbSpeed enum may not support it
+            log::warn!("xHCI: SuperSpeed device detected (speed=4), treating as High-speed");
+            crate::usb::UsbSpeed::High
+        }
+        _ => {
+            log::warn!("xHCI: unknown port speed {}, defaulting to High", speed);
+            crate::usb::UsbSpeed::High
+        }
     }
 }
 

@@ -29,8 +29,15 @@ use crate::usb::{UsbDevice, UsbSetupPacket, UsbDirection};
 pub trait HostController {
     /// Initialise the controller: reset hardware, configure rings, start.
     /// Returns `Ok(())` on success.
+    ///
+    /// For xHCI controllers, this calls reset(), then configure_registers()
+    /// (via the init() method if available), then start(). EHCI controllers
+    /// only need reset() and start().
     fn initialize(&mut self) -> Result<(), &'static str> {
         self.reset()?;
+        // Note: xHCI requires register and ring configuration between reset and start.
+        // This is handled in XhciContext::init(), which is called by the concrete type.
+        // EHCI can proceed directly to start().
         self.start()
     }
 

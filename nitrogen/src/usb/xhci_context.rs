@@ -489,10 +489,13 @@ impl XhciContext {
     /// Allocate a device slot.
     pub fn enable_slot(&mut self) -> Result<u32, &'static str> {
         let trb = Trb::new(trb_type::ENABLE_SLOT, self.rings.command.cycle());
-        self.send_cmd(trb)?;
+        let flags = self.send_cmd(trb)?;
+
+        // Extract slot ID from completion event (bits 24-31 of flags)
+        let slot_id = ((flags >> 24) & 0xFF) as u32;
 
         let ctx = self.driver_ctx;
-        let (slot_id, slot) = self.device.slots.alloc_slot(ctx)?;
+        let (slot_id, slot) = self.device.slots.alloc_slot(ctx, slot_id)?;
 
         // Set DCBAA entry
         self.device.dcbaa.set_slot(slot_id, slot.dev_ctx_phys);
@@ -521,8 +524,7 @@ impl XhciContext {
 
         let mut trb = Trb::new(trb_type::ADDRESS_DEVICE, self.rings.command.cycle());
         trb.set_data_ptr(in_ctx_phys);
-        trb.params[6] = slot_id as u8;
-        trb.flags |= trb_flag::IOC;
+        trb.flags |= (slot_id << 24) | trb_flag::IOC;
         self.send_cmd(trb)?;
 
         // Update slot state
@@ -590,8 +592,7 @@ impl XhciContext {
         // Build Configure Endpoint TRB
         let mut trb = Trb::new(trb_type::CONFIGURE_ENDPOINT, self.rings.command.cycle());
         trb.set_data_ptr(in_ctx_phys);
-        trb.params[6] = slot_id as u8;
-        trb.flags |= trb_flag::IOC;
+        trb.flags |= (slot_id << 24) | trb_flag::IOC;
         self.send_cmd(trb)?;
 
         Ok(())
@@ -773,12 +774,14 @@ impl XhciContext {
         self.registers.doorbell.ring(slot_id, db_stream);
         let res = self.wait_event(5_000_000);
 
-        // Copy IN data back
-        if res.is_ok() && dir == UsbDirection::In {
-            unsafe { ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
+        // Copy IN data back and free staging buffer only on success
+        if res.is_ok() {
+            if dir == UsbDirection::In {
+                unsafe { ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
+            }
+            self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
         }
 
-        self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
         res.map(|_| len)
     }
 

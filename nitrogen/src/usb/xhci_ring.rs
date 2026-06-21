@@ -286,9 +286,12 @@ impl EventRing {
     /// Format (xHCI spec §5.5.2.3.3):
     /// - Bits 63:4 → physical address of next dequeue slot
     /// - Bit 3     → Event Handler Busy (EHB), always 0 here
-    /// - Bits 2:0  → consumer cycle state (CCS)
+    /// - Bits 2:0  → DESI (Dequeue ERST Segment Index), 0 for single-segment ring
+    ///
+    /// Note: The cycle state is maintained in software only and should NOT be
+    /// written to the ERDP register.
     pub fn dequeue_ptr(&self) -> u64 {
-        self.phys + (self.deq as u64 * TRB_SIZE as u64) | (self.cycle as u64 & 1)
+        self.phys + (self.deq as u64 * TRB_SIZE as u64)
     }
 
     /// Current dequeue index.

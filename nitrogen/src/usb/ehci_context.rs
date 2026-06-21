@@ -311,7 +311,7 @@ impl EhciContext {
         let speed = UsbSpeed::High;
 
         unsafe {
-            ptr::write_volatile(&mut qh.ep_chars, qh_ep_chars(dev_addr, endpoint, speed));
+            ptr::write_volatile(&mut qh.ep_chars, qh_ep_chars(dev_addr, endpoint, speed, 64));
             ptr::write_volatile(&mut qh.ep_caps, qh_ep_caps(64));
             ptr::write_volatile(&mut qh.current_qtd, QTD_TERMINATE);
         }
@@ -322,13 +322,29 @@ impl EhciContext {
             if data_len > 0 { Some(self.transfer.qtd_pool.allocate().ok_or("no qTD")?) } else { None };
         let (qtd_status, qtd_status_phys) = self.transfer.qtd_pool.allocate().ok_or("no qTD")?;
 
-        // Setup data staging area
-        let setup_page_phys = self.transfer.qtd_pool.staging_phys();
+        // Allocate staging buffer for SETUP (8 bytes)
+        let setup_page_phys = self.driver_ctx.allocate_contiguous_frames(1)
+            .map_err(|_| "no setup staging memory")?;
         let setup_page_virt = self.driver_ctx.phys_to_virt(setup_page_phys) as *mut u8;
         let setup_bytes = unsafe {
             core::slice::from_raw_parts(setup as *const UsbSetupPacket as *const u8, 8)
         };
         unsafe { ptr::copy_nonoverlapping(setup_bytes.as_ptr(), setup_page_virt, 8); }
+
+        // Allocate staging buffer for DATA phase (if needed)
+        let (data_staging_phys, data_staging_pages) = if data_len > 0 {
+            let pages = (data_len + 4095) / 4096;
+            let phys = self.driver_ctx.allocate_contiguous_frames(pages)
+                .map_err(|_| "no data staging memory")?;
+            (phys, pages)
+        } else {
+            (0, 0)
+        };
+        let data_staging_virt = if data_len > 0 {
+            self.driver_ctx.phys_to_virt(data_staging_phys) as *mut u8
+        } else {
+            core::ptr::null_mut()
+        };
 
         // Build SETUP qTD
         let next_after_setup = qtd_data.as_ref().map(|d| d.1 as u32).unwrap_or(qtd_status_phys as u32);
@@ -344,7 +360,7 @@ impl EhciContext {
         if data_len > 0 {
             let (data_qh_ptr, _) = qtd_data.as_mut().unwrap();
             if !is_in {
-                unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), setup_page_virt, data_len.min(4096)); }
+                unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), data_staging_virt, data_len); }
             }
             let pid = if is_in { QTD_PID_IN } else { QTD_PID_OUT };
             unsafe {
@@ -352,7 +368,7 @@ impl EhciContext {
                 ptr::write_volatile(&mut data_qh_ptr.alt_next_qtd, QTD_TERMINATE);
                 ptr::write_volatile(&mut data_qh_ptr.token,
                     QTD_ACTIVE | pid | QTD_CERR | qtd_total_bytes(data_len as u32));
-                ptr::write_volatile(&mut data_qh_ptr.buf0, setup_page_phys as u32);
+                ptr::write_volatile(&mut data_qh_ptr.buf0, data_staging_phys as u32);
             }
         }
 
@@ -390,8 +406,7 @@ impl EhciContext {
             } else {
                 if is_in {
                     unsafe {
-                        let n = data_len.min(4096);
-                        ptr::copy_nonoverlapping(setup_page_virt, buf.as_mut_ptr(), n);
+                        ptr::copy_nonoverlapping(data_staging_virt, buf.as_mut_ptr(), data_len);
                     }
                 }
                 let r3 = self.transfer.wait_qtd(&qtd_status, timeout);
@@ -416,6 +431,12 @@ impl EhciContext {
         self.transfer.qtd_pool.free(qtd_status);
         self.transfer.qh_pool.free(qh);
 
+        // Free staging buffers
+        self.driver_ctx.free_contiguous_frames(setup_page_phys, 1);
+        if data_staging_pages > 0 {
+            self.driver_ctx.free_contiguous_frames(data_staging_phys, data_staging_pages);
+        }
+
         result
     }
 
@@ -436,7 +457,7 @@ impl EhciContext {
         let (qh, qh_phys) = self.transfer.qh_pool.allocate().ok_or("no qH")?;
         unsafe {
             ptr::write_volatile(&mut qh.ep_chars,
-                qh_ep_chars(dev_addr, endpoint & 0x0F, UsbSpeed::High));
+                qh_ep_chars(dev_addr, endpoint & 0x0F, UsbSpeed::High, max_packet));
             ptr::write_volatile(&mut qh.ep_caps, qh_ep_caps(max_packet));
             ptr::write_volatile(&mut qh.current_qtd, QTD_TERMINATE);
         }

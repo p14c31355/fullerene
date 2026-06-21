@@ -59,7 +59,7 @@ pub struct Qtd {
 pub const QH_HORZ_TYPE_QH: u32 = 0x02; // bit 1 = 1 → qH
 
 /// Build qH endpoint characteristics.
-pub const fn qh_ep_chars(addr: u8, endpoint: u8, speed: UsbSpeed) -> u32 {
+pub const fn qh_ep_chars(addr: u8, endpoint: u8, speed: UsbSpeed, mps: u16) -> u32 {
     let speed_bits = match speed {
         UsbSpeed::Full => 0u32,
         UsbSpeed::Low => 1u32,
@@ -69,12 +69,14 @@ pub const fn qh_ep_chars(addr: u8, endpoint: u8, speed: UsbSpeed) -> u32 {
         | ((endpoint as u32) << 8)
         | (speed_bits << 12)
         | (1 << 14)  // DTC (Data Toggle Control)
-        | (8 << 23)  // RL (NAK reload count)
+        | ((mps as u32) << 16)  // MaxPacketLength (bits 16-26)
+        | (8 << 28)  // RL (NAK reload count, bits 28-31)
 }
 
 /// Build qH endpoint capabilities (max packet size).
+/// This function is now redundant; mps is set in qh_ep_chars.
 pub const fn qh_ep_caps(mps: u16) -> u32 {
-    mps as u32
+    0 // Capabilities field, reserved for future use
 }
 
 // ── qTD token fields ─────────────────────────────────────────
@@ -99,7 +101,7 @@ pub const fn qtd_total_bytes(n: u32) -> u32 {
 //  QueueHeadPool — manages a page of QueueHeads
 // ============================================================================
 
-/// Pre-allocated pool of QueueHeads (one 4KB page ≈ 85 entries).
+/// Pre-allocated pool of QueueHeads (one 4KB page = 64 entries).
 pub struct QueueHeadPool {
     entries: &'static mut [QueueHead],
     phys: u64,

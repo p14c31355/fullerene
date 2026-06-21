@@ -17,7 +17,7 @@
 
 use super::xhci_register::RuntimeRegisters;
 use super::xhci_ring::{EventRing, Trb};
-use super::xhci_register::IMAN_IE;
+use super::xhci_register::{IMAN_IE, IMAN_IP};
 
 // ============================================================================
 //  Interrupter — per-interrupter state
@@ -82,7 +82,7 @@ impl InterruptContext {
 
     /// Check if any interrupter has a pending event.
     pub fn has_pending(&self, rt: &RuntimeRegisters) -> bool {
-        rt.iman() & IMAN_IE != 0
+        rt.iman() & IMAN_IP != 0
     }
 
     /// Acknowledge an event by updating the Event Ring Dequeue Pointer.
