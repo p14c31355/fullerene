@@ -400,6 +400,10 @@ impl XhciController {
             return None;
         }
 
+        // Clear any pending Host System Error (HSE bit 4) so the
+        // controller starts with a clean status.
+        unsafe { core::ptr::write_volatile((op.add(USBSTS as usize)) as *mut u32, 1 << 4); }
+
         // ── Clear RW1C status bits on all ports ──────────────
         // After HCRST, RW1C bits like CSC, WRC, PEC may be set,
         // which prevents the port from reporting new connection events.
@@ -457,6 +461,28 @@ impl XhciController {
         }
         // Wait for warm resets + link training (≈3 seconds)
         for _ in 0..3_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+
+        // Force PLS=RxDetect+LWS on all powered ports after WPR.
+        // Some xHCI controllers (e.g. Intel Wildcat Point-LP) do not
+        // automatically enter link training after a warm reset and
+        // need explicit PLS programming to kick the PHY.
+        const PLS_RXDETECT: u32 = 5 << 5;
+        const LWS: u32 = 1 << 16;
+        for port in 0..n_ports {
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            let cur = unsafe { core::ptr::read_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+            ) };
+            if cur & PORTSC_PP != 0 {
+                unsafe { core::ptr::write_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                    (cur & !0x00FE0000 & !(0xF << 5)) | PLS_RXDETECT | LWS
+                ); }
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+            }
+        }
+        // Brief delay for the PHY to react to the PLS change
+        for _ in 0..100_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
 
         // After the global delay, do one quick check of all ports
         for port in 0..n_ports.min(8) {
@@ -738,13 +764,13 @@ impl XhciController {
 
             // ── Step 4: If still CCS=0, try warm port reset ────
             // WPR is expensive (~3 seconds), so only do it once per
-            // port per `clear_ports_done()` cycle, and only when the
-            // port is stuck in Inactive (PLS=6) or Compliance (PLS=10)
-            // mode — not for normally empty/disconnected ports.
+            // port per `clear_ports_done()` cycle.  Try WPR whenever
+            // CCS=0 on a powered port including Rx.Detect (PLS=5)
+            // where the PHY might be stuck and not detecting a
+            // connected device.
             let pls = (portsc >> 5) & 0xF;
             let wpr_needed = (portsc & PORTSC_CCS) == 0
                 && (portsc & PORTSC_PP) != 0
-                && (pls == 6 || pls == 10)
                 && (self.wpr_done & (1 << port)) == 0;
             if wpr_needed {
                 self.wpr_done |= 1 << port;
