@@ -117,28 +117,34 @@ pub fn init() {
     // that were ready right after controller reset.
     poll_usb();
 
-    // Phase 2: Delayed re-poll for xHCI devices.
-    // After HCRST (controller reset) the xHCI ports need time to
-    // re-negotiate SuperSpeed / HighSpeed links (typically 1-2 s).
-    // A second poll after a spin delay catches devices that weren't
-    // ready during the first poll.
-    for _ in 0..1_500_000 {
+    // Phase 2: Short delay then re-poll for xHCI devices that need
+    // additional time after HCRST to re-negotiate SuperSpeed/HighSpeed.
+    // HSE recovery + WPR in clear_hse_and_recover() within poll_usb()
+    // handles stuck PHYs, so a shorter delay is sufficient.
+    for _ in 0..300_000 {
         nitrogen::port::PortWriter::<u8>::new(0x80).write_safe(0u8);
     }
     if poll_usb() {
+        debug_usb();
         return;
     }
 
-    // Phase 3: One more attempt for stubborn controllers/firmware.
-    for _ in 0..3_000_000 {
-        core::hint::spin_loop();
+    // Phase 3: Longer delay for stubborn controllers, then re-poll.
+    // Previous Phase 3 used spin_loop which is much faster than IO-port
+    // delay on real hardware; use IO-port writes for accurate timing.
+    for _ in 0..500_000 {
+        nitrogen::port::PortWriter::<u8>::new(0x80).write_safe(0u8);
     }
-    poll_usb();
+    if poll_usb() {
+        debug_usb();
+        return;
+    }
 
     // Phase 4: Force re-poll with fresh ports_done — catches devices
-    // that were connected during boot (same USB drive) but missed due to
-    // timing or already-done filtering.
-    for _ in 0..500_000 { core::hint::spin_loop(); }
+    // that were connected during boot but missed due to timing.
+    for _ in 0..200_000 {
+        nitrogen::port::PortWriter::<u8>::new(0x80).write_safe(0u8);
+    }
     poll_usb_all();
 
     debug_usb();

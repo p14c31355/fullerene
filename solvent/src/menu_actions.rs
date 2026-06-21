@@ -195,10 +195,13 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     // If already open, just focus it and refresh sidebar
     if let Some(ref mut explorer) = rt.explorer {
         if let Some(id) = explorer.window_id {
-            // Poll USB to pick up newly inserted drives since last open
-            let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-            if let Some(f) = poll_fn {
-                let _ = f();
+            // Only poll USB if no drives are currently visible (poll is
+            // expensive — it includes HSE recovery + WPR on xHCI).
+            if crate::get_usb_drives().is_empty() {
+                let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
+                if let Some(f) = poll_fn {
+                    let _ = f();
+                }
             }
             explorer.refresh_sidebar();
             rt.desktop.wm.raise_to_top(id);
@@ -207,23 +210,28 @@ fn open_explorer_window(rt: &mut RuntimeState) {
         }
         return;
     }
-    // Poll USB before creating the explorer so that USB drives
-    // detected after boot (e.g. slow xHCI re-enumeration) are
-    // visible in the sidebar immediately.
-    let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-    if let Some(f) = poll_fn {
-        let _ = f();
-    }
-    let win_w = 640;
-    let win_h = 400;
+
+    // Create the explorer window first so the user sees immediate feedback,
+    // then conditionally poll USB in the background.  The sidebar is populated
+    // from refresh_sidebar() which calls get_usb_drives() — if drives are
+    // already available from boot, no poll is needed.
+    let win_w: u32 = 640;
+    let win_h: u32 = 400;
     let id = rt.desktop.wm.create_titled_window(
         100, 60, win_w, win_h,
         0x1E1E2E, "File Manager",
     );
     let mut explorer = crate::explorer::ExplorerContext::new();
     explorer.window_id = Some(id);
-    // sidebar is populated from get_usb_drives() inside ExplorerContext::new(),
-    // but we refresh after the explicit poll so the latest USB discovery is captured.
+
+    // Poll USB only if no drives are currently known (avoids blocking the UI
+    // thread with HSE recovery + WPR when drives are already mounted).
+    if crate::get_usb_drives().is_empty() {
+        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
+        if let Some(f) = poll_fn {
+            let _ = f();
+        }
+    }
     explorer.refresh_sidebar();
     explorer.navigate_to("/");
     {

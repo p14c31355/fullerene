@@ -801,11 +801,38 @@ impl XhciController {
             }
 
             if portsc & PORTSC_CCS == 0 {
-                log::info!("xHCI: poll_ports port {} — CCS still 0 after all attempts, giving up", port);
-                // Mark as done to avoid infinite retries; a hotplug event
-                // (USBSTS.PCD) will clear the bit and re-trigger detection.
-                self.ports_done |= 1 << port;
-                continue;
+                // Check for HSE before giving up.  If HSE is set, the PHY
+                // may be stuck and a recovery+retry cycle could still detect
+                // the device.
+                let op = unsafe { self.mmio.add(self.op_off as usize) };
+                Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+                let sts = unsafe { core::ptr::read_volatile(op.add(USBSTS as usize) as *const u32) };
+                if sts & (1 << 4) != 0 {
+                    log::info!("xHCI: poll_ports port {} — HSE detected, attempting recovery instead of giving up", port);
+                    // Clear HSE and re-kick this port's link training
+                    unsafe { core::ptr::write_volatile(op.add(USBSTS as usize) as *mut u32, 1 << 4); }
+                    Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
+                    const PLS_MASK_HSE: u32 = 0x0F << 5;
+                    let v_recover = self.op_read(PORTSC_BASE + port * 0x10);
+                    self.op_write(PORTSC_BASE + port * 0x10,
+                        ((v_recover & PORTSC_PP) & !PLS_MASK_HSE) | (5 << 5) | LWS);
+                    for _ in 0..1_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+                    let ps_after = self.op_read(PORTSC_BASE + port * 0x10);
+                    if ps_after & PORTSC_CCS != 0 {
+                        log::info!("xHCI: poll_ports port {} — CCS=1 after HSE recovery, continuing", port);
+                        // Fall through to step 6 below (port reset for newly detected device)
+                    } else {
+                        log::info!("xHCI: poll_ports port {} — CCS still 0 after HSE recovery, giving up", port);
+                        self.ports_done |= 1 << port;
+                        continue;
+                    }
+                } else {
+                    log::info!("xHCI: poll_ports port {} — CCS still 0 after all attempts, giving up", port);
+                    // Mark as done to avoid infinite retries; a hotplug event
+                    // (USBSTS.PCD) will clear the bit and re-trigger detection.
+                    self.ports_done |= 1 << port;
+                    continue;
+                }
             }
 
             // ── Step 6: Port reset for newly detected device ───
@@ -883,9 +910,16 @@ impl XhciController {
             // RW1C: write 1 to clear HSE
             unsafe { core::ptr::write_volatile(op.add(USBSTS as usize) as *mut u32, 1 << 4); }
             Self::clflush(unsafe { op.add(USBSTS as usize) } as *const u8);
-            // Re-kick link training on all ports: force PLS=RxDetect+LWS
+
+            // Re-kick link training on all ports: force PLS=RxDetect+LWS,
+            // then issue WPR on ports that remain CCS=0 after the PHY
+            // stabilisation delay.  HSE can leave the PHY in a state where
+            // RxDetect alone won't re-acquire the link; WPR is needed.
             const PLS_RXDETECT: u32 = 5 << 5;
             const LWS: u32 = 1 << 16;
+            const WPR: u32 = 1 << 31;
+            const RW1C_BITS: u32 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23);
+
             for port in 0..self.n_ports {
                 Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
                 let ps = unsafe { core::ptr::read_volatile(
@@ -898,11 +932,53 @@ impl XhciController {
                 ); }
                 Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
             }
+
             // Clear done flags so ports get re-evaluated
             self.ports_done = 0;
             self.wpr_done = 0;
-            // Give the PHY time to detect the device
-            for _ in 0..3_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+
+            // Give the PHY time to detect the device after RxDetect kick
+            for _ in 0..1_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+
+            // After PHY stabilisation, issue WPR on any CCS=0 powered ports
+            for port in 0..self.n_ports {
+                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                let ps = unsafe { core::ptr::read_volatile(
+                    op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                ) };
+                if (ps & PORTSC_CCS) == 0 && (ps & PORTSC_PP) != 0 {
+                    log::info!("xHCI: HSE recovery port {} — CCS=0, issuing WPR", port);
+                    self.wpr_done |= 1 << port;
+                    let v = ps;
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        (v & !RW1C_BITS) | WPR
+                    ); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                    for _ in 0..1_000_000 {
+                        Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                        let p = unsafe { core::ptr::read_volatile(
+                            op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                        ) };
+                        if p & WPR == 0 { break; }
+                        crate::port::PortWriter::new(0x80).write_safe(0u8);
+                    }
+                    // Force RxDetect + LWS after WPR completes
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                    let v2 = unsafe { core::ptr::read_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
+                    ) };
+                    const PLS_MASK2: u32 = 0x0F << 5;
+                    unsafe { core::ptr::write_volatile(
+                        op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                        ((v2 & PORTSC_PP) & !PLS_MASK2) | (5 << 5) | LWS
+                    ); }
+                    Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
+                }
+            }
+
+            // Final PHY stabilisation
+            for _ in 0..2_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
         }
     }
 
