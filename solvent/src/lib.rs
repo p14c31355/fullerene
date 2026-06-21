@@ -1605,11 +1605,13 @@ fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8, pressed: bool)
                     };
                     crate::DISPLAY_BRIGHTNESS_X100
                         .store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
+                    rt.desktop.force_full_redraw();
                 }
                 2 => {
                     // Top panel toggle
                     if key == KeyCode::Right || key == KeyCode::Left {
                         lattice::top_panel::toggle_top_panel();
+                        rt.desktop.force_full_redraw();
                     }
                 }
                 _ => {}
@@ -1621,6 +1623,7 @@ fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8, pressed: bool)
                 rt.desktop.wm.close_window(id);
             }
             rt.settings_dirty = false;
+            rt.frame_due = true;
             return;
         }
         _ => {}
