@@ -73,12 +73,6 @@ pub const fn qh_ep_chars(addr: u8, endpoint: u8, speed: UsbSpeed, mps: u16) -> u
         | (8 << 28)  // RL (NAK reload count, bits 28-31)
 }
 
-/// Build qH endpoint capabilities (max packet size).
-/// This function is now redundant; mps is set in qh_ep_chars.
-pub const fn qh_ep_caps(mps: u16) -> u32 {
-    0 // Capabilities field, reserved for future use
-}
-
 // ── qTD token fields ─────────────────────────────────────────
 pub const QTD_ACTIVE: u32 = 1 << 7;
 pub const QTD_HALTED: u32 = 1 << 6;
@@ -398,7 +392,7 @@ mod tests {
 
     #[test]
     fn test_qh_ep_chars_high_speed() {
-        let v = qh_ep_chars(1, 0, UsbSpeed::High);
+        let v = qh_ep_chars(1, 0, UsbSpeed::High, 64);
         assert!(v & (1 << 14) != 0); // DTC
         assert_eq!((v >> 12) & 3, 2); // High speed
     }

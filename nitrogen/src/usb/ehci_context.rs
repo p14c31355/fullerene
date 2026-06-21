@@ -312,7 +312,7 @@ impl EhciContext {
 
         unsafe {
             ptr::write_volatile(&mut qh.ep_chars, qh_ep_chars(dev_addr, endpoint, speed, 64));
-            ptr::write_volatile(&mut qh.ep_caps, qh_ep_caps(64));
+            ptr::write_volatile(&mut qh.ep_caps, 0);
             ptr::write_volatile(&mut qh.current_qtd, QTD_TERMINATE);
         }
 
@@ -458,17 +458,29 @@ impl EhciContext {
         unsafe {
             ptr::write_volatile(&mut qh.ep_chars,
                 qh_ep_chars(dev_addr, endpoint & 0x0F, UsbSpeed::High, max_packet));
-            ptr::write_volatile(&mut qh.ep_caps, qh_ep_caps(max_packet));
+            ptr::write_volatile(&mut qh.ep_caps, 0);
             ptr::write_volatile(&mut qh.current_qtd, QTD_TERMINATE);
         }
 
         // Allocate qTD
-        let (qtd, qtd_phys) = self.transfer.qtd_pool.allocate().ok_or("no qTD")?;
+        let (qtd, qtd_phys) = match self.transfer.qtd_pool.allocate() {
+            Some(val) => val,
+            None => {
+                self.transfer.qh_pool.free(qh);
+                return Err("no qTD");
+            }
+        };
 
         // Allocate staging buffer
         let staging_pages = (len + 4095) / 4096;
-        let staging_phys = self.driver_ctx.allocate_contiguous_frames(staging_pages)
-            .map_err(|_| "no staging memory")?;
+        let staging_phys = match self.driver_ctx.allocate_contiguous_frames(staging_pages) {
+            Ok(phys) => phys,
+            Err(_) => {
+                self.transfer.qtd_pool.free(qtd);
+                self.transfer.qh_pool.free(qh);
+                return Err("no staging memory");
+            }
+        };
         let staging_virt = self.driver_ctx.phys_to_virt(staging_phys) as *mut u8;
 
         if dir == UsbDirection::Out {

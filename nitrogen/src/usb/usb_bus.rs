@@ -149,9 +149,10 @@ pub fn bot_write_sectors(
     cdb[0] = 0x2A; // WRITE_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
-    let mut data = alloc::vec![0u8; buf.len()];
-    data.copy_from_slice(buf);
-    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(&mut data), false, tag)
+    // SAFETY: bulk_transfer for OUT direction only reads from the buffer;
+    // creating a mutable slice from an immutable one is sound here.
+    let data = unsafe { core::slice::from_raw_parts_mut(buf.as_ptr() as *mut u8, buf.len()) };
+    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(data), false, tag)
 }
 
 // ============================================================================
