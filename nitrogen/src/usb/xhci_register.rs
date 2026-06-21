@@ -362,8 +362,7 @@ impl OperationalRegisters {
     /// Update PORTSC while preserving RW1C bits (write '0' to preserve them).
     pub fn update_portsc(&self, port: u32, set: u32, clear: u32) {
         let cur = self.read(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE);
-        let rw1c = cur & PORTSC_RW1C_MASK;
-        let val = (cur & !clear) | set & !rw1c;
+        let val = ((cur & !clear) | set) & !PORTSC_RW1C_MASK;
         self.write(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE, val);
     }
 

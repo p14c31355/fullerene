@@ -101,13 +101,24 @@ impl DeviceContext {
 ///
 /// Each endpoint context is 8 dwords (32 bytes).  Context indices follow
 /// §6.2.3: EP<N> Out = 2*N, EP<N> In = 2*N + 1.
+/// Input Context structure (1 page, 64-byte aligned).
+///
+/// Layout (xHCI §6.2.3):
+/// - Dwords 0-1:   Drop/Add flags
+/// - Dwords 2-7:   Reserved
+/// - Dwords 8-15:  Slot Context (8 dwords)
+/// - Dwords 16+:   Endpoint Contexts (EP1 Out at index 0, EP1 In at index 1, ...)
+///
+/// Each endpoint context is 8 dwords (32 bytes).  Context indices follow
+/// §6.2.3: EP<N> Out = 2*N, EP<N> In = 2*N + 1.
+/// We store 31 endpoint contexts (EP1..EP31) plus EP0 is at array index 0.
 #[repr(C, align(64))]
 pub struct InputContext {
     pub drop_flags: u32,
     pub add_flags: u32,
     _rsvd: [u32; 6],         // 6 dwords reserved = 24 bytes
     pub slot_ctx: [u32; 8],  // Slot context (8 dwords = 32 bytes)
-    pub ep0_ctx: [u32; 8],   // EP0 context (8 dwords = 32 bytes)
+    pub ep_ctx: [[u32; 8]; 31], // EP1 Out (=ctx_idx 2 → index 0) through EP31 In (=ctx_idx 63 → index 30)
 }
 
 impl InputContext {
@@ -127,15 +138,22 @@ impl InputContext {
     /// - Index 2*N: EP<N> Out
     /// - Index 2*N+1: EP<N> In
     pub fn ep_ctx_mut(&mut self, ctx_idx: u32) -> Option<&mut [u32; 8]> {
-        let base = self as *mut Self as *mut u32;
-        let offset = 8 + ctx_idx as usize * 8; // 8 dwords = slot, then 8 per EP
-        if offset > 1024 / 4 {
-            return None; // beyond one page
+        if ctx_idx == 0 {
+            return None; // Slot context, not an endpoint
         }
-        unsafe {
-            let ptr = base.add(offset) as *mut [u32; 8];
-            Some(&mut *ptr)
-        }
+        // ctx_idx 1 (EP0) → ep_ctx[0], ctx_idx 2 → ep_ctx[1], etc.
+        let ep_idx = (ctx_idx - 1) as usize;
+        self.ep_ctx.get_mut(ep_idx)
+    }
+
+    /// Get a reference to the EP0 context (ctx_idx=1).
+    pub fn ep0_ctx(&self) -> &[u32; 8] {
+        &self.ep_ctx[0]
+    }
+
+    /// Get a mutable reference to the EP0 context (ctx_idx=1).
+    pub fn ep0_ctx_mut(&mut self) -> &mut [u32; 8] {
+        &mut self.ep_ctx[0]
     }
 
     /// Set up minimal Input Context for Address Device:
@@ -148,10 +166,10 @@ impl InputContext {
         self.slot_ctx[0] = 0; // route string = 0 (root port)
         self.slot_ctx[1] = (dev_addr as u32) << 24; // slot state: addressed
         // EP0 context: dword 1 contains MPS and EP Type
-        self.ep0_ctx[1] = (64 << 16) | (4 << 3); // MPS=64, type=Control(4)
+        self.ep_ctx[0][1] = (64 << 16) | (4 << 3); // MPS=64, type=Control(4)
         // TR Dequeue Pointer: dwords 2-3, with DCS bit in low bit of dword 2
-        self.ep0_ctx[2] = (ep0_ring_phys as u32) | 1; // TR Dequeue Pointer Low + DCS
-        self.ep0_ctx[3] = (ep0_ring_phys >> 32) as u32; // TR Dequeue Pointer High
+        self.ep_ctx[0][2] = (ep0_ring_phys as u32) | 1; // TR Dequeue Pointer Low + DCS
+        self.ep_ctx[0][3] = (ep0_ring_phys >> 32) as u32; // TR Dequeue Pointer High
     }
 }
 
@@ -359,10 +377,10 @@ mod tests {
             add_flags: 0,
             _rsvd: [0; 6],
             slot_ctx: [0; 8],
-            ep0_ctx: [0; 8],
+            ep_ctx: [[0; 8]; 31],
         };
-        // Endpoint context is 8 dwords = 32 bytes
-        assert_eq!(core::mem::size_of_val(&layout.ep0_ctx), 32);
+        // EP0 context (index 0) is 8 dwords = 32 bytes
+        assert_eq!(core::mem::size_of_val(&layout.ep_ctx[0]), 32);
     }
 
     #[test]

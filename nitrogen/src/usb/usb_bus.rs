@@ -53,6 +53,28 @@ const CSW_SIGNATURE: u32 = 0x53425355;
 //  BOT transfer (generic over HostController)
 // ============================================================================
 
+/// Borrowed buffer for BOT data phase, distinguishing IN vs OUT direction.
+///
+/// This enum avoids undefined behavior: an `&[u8]` buffer for OUT transfers
+/// is never cast to `&mut [u8]`.  `In` accepts `&mut [u8]` and `Out` accepts `&[u8]`.
+pub enum BotBuffer<'a> {
+    In(&'a mut [u8]),
+    Out(&'a [u8]),
+}
+
+impl<'a> BotBuffer<'a> {
+    pub fn len(&self) -> usize {
+        match self {
+            BotBuffer::In(buf) => buf.len(),
+            BotBuffer::Out(buf) => buf.len(),
+        }
+    }
+
+    pub fn is_in(&self) -> bool {
+        matches!(self, BotBuffer::In(_))
+    }
+}
+
 /// Execute a single BOT command (CBW → Data → CSW).
 ///
 /// `host` is any host controller implementing [`HostController`].
@@ -63,14 +85,14 @@ pub fn bot_exec_command(
     ep_out: u8,
     ep_in: u8,
     cdb: &[u8],
-    data: Option<&mut [u8]>,
-    dir_in: bool,
+    data: Option<BotBuffer<'_>>,
     tag: &mut u32,
 ) -> Result<(), &'static str> {
     let t = *tag;
     *tag = tag.wrapping_add(1);
 
     let dlen = data.as_ref().map(|d| d.len() as u32).unwrap_or(0);
+    let dir_in = data.as_ref().map(|d| d.is_in()).unwrap_or(false);
 
     // ── Phase 1: Send CBW ─────────────────────────────────
     let mut cbw_raw = [0u8; 31];
@@ -87,8 +109,20 @@ pub fn bot_exec_command(
     // ── Phase 2: Data (optional) ──────────────────────────
     if let Some(buf) = data {
         let ep = if dir_in { ep_in } else { ep_out };
-        let dir = if dir_in { UsbDirection::In } else { UsbDirection::Out };
-        host.bulk_transfer(dev_addr, ep, buf, dir, 512)?;
+        match buf {
+            BotBuffer::In(buf) => {
+                host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, 512)?;
+            }
+            BotBuffer::Out(buf) => {
+                // SAFETY: bulk_transfer for OUT only reads the buffer, so creating a
+                // temporary mutable slice from an immutable one is sound.  The enum
+                // wrapper guarantees this path only runs for OUT transfers.
+                let len = buf.len();
+                let mut tmp = alloc::vec![0u8; len];
+                tmp.copy_from_slice(buf);
+                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, 512)?;
+            }
+        }
     }
 
     // ── Phase 3: Receive CSW ──────────────────────────────
@@ -127,7 +161,7 @@ pub fn bot_read_sectors(
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
     let mut data = alloc::vec![0u8; dlen as usize];
-    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(&mut data), true, tag)?;
+    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(BotBuffer::In(&mut data)), tag)?;
     let n = dlen.min(buf.len() as u32) as usize;
     buf[..n].copy_from_slice(&data[..n]);
     Ok(())
@@ -149,10 +183,7 @@ pub fn bot_write_sectors(
     cdb[0] = 0x2A; // WRITE_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
-    // SAFETY: bulk_transfer for OUT direction only reads from the buffer;
-    // creating a mutable slice from an immutable one is sound here.
-    let data = unsafe { core::slice::from_raw_parts_mut(buf.as_ptr() as *mut u8, buf.len()) };
-    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(data), false, tag)
+    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(BotBuffer::Out(buf)), tag)
 }
 
 // ============================================================================

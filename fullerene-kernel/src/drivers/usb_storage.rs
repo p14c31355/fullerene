@@ -141,9 +141,28 @@ pub fn poll_usb_all() -> bool {
     USB_DRIVES.lock().clear();
     USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
 
-    let pending = with_bus(|bus| bus.poll_all());
+    // Re-poll all controllers: reset EHCI pools + clear devices,
+    // disable all xHCI slots + clear devices, then poll both.
+    with_bus(|bus| {
+        for ehci in bus.ehci.iter_mut() {
+            ehci.reset_pools();
+            ehci.clear_devices();
+            ehci.poll_ports();
+        }
+        for xhci in bus.xhci.iter_mut() {
+            xhci.clear_hse_and_recover();
+            xhci.disable_all_slots();
+            xhci.clear_devices();
+            xhci.poll_ports();
+        }
+    });
 
-    for (ctrl_idx, dev_idx) in pending {
+    let (ehci_pending, xhci_pending) = with_bus(|bus| bus.poll());
+
+    for (ctrl_idx, dev_idx) in ehci_pending {
+        mount_ehci_device(ctrl_idx, dev_idx);
+    }
+    for (ctrl_idx, dev_idx) in xhci_pending {
         mount_xhci_device(ctrl_idx, dev_idx);
     }
 

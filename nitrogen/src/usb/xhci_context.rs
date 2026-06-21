@@ -738,6 +738,15 @@ impl XhciContext {
         }
         let len = buf.len();
 
+        // Validate slot and ring existence BEFORE allocating staging buffer
+        {
+            let slot = self.device.slots.get(slot_id).ok_or("bad slot")?;
+            match dir {
+                UsbDirection::In => { let _ = slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?; }
+                UsbDirection::Out => { let _ = slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?; }
+            }
+        }
+
         // Allocate staging buffer
         let staging_pages = (len + 4095) / 4096;
         let staging_phys = self.driver_ctx.allocate_contiguous_frames(staging_pages)
@@ -751,10 +760,10 @@ impl XhciContext {
 
         // Enqueue TRB
         let db_stream = {
-            let slot = self.device.slots.get_mut(slot_id).ok_or("bad slot")?;
+            let slot = self.device.slots.get_mut(slot_id).unwrap();
             let ring = match dir {
-                UsbDirection::In => slot.bulk_in_ring.as_mut().ok_or("no bulk in ring")?,
-                UsbDirection::Out => slot.bulk_out_ring.as_mut().ok_or("no bulk out ring")?,
+                UsbDirection::In => slot.bulk_in_ring.as_mut().unwrap(),
+                UsbDirection::Out => slot.bulk_out_ring.as_mut().unwrap(),
             };
 
             let mut trb = Trb::new(trb_type::NORMAL, ring.cycle);

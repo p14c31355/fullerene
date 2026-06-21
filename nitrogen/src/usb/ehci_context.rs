@@ -316,15 +316,50 @@ impl EhciContext {
             ptr::write_volatile(&mut qh.current_qtd, QTD_TERMINATE);
         }
 
-        // Allocate qTDs
-        let (qtd_setup, qtd_setup_phys) = self.transfer.qtd_pool.allocate().ok_or("no qTD")?;
-        let mut qtd_data: Option<(&mut Qtd, u64)> =
-            if data_len > 0 { Some(self.transfer.qtd_pool.allocate().ok_or("no qTD")?) } else { None };
-        let (qtd_status, qtd_status_phys) = self.transfer.qtd_pool.allocate().ok_or("no qTD")?;
+        // Allocate qTDs (with cleanup on failure)
+        let (qtd_setup, qtd_setup_phys) = match self.transfer.qtd_pool.allocate() {
+            Some(val) => val,
+            None => {
+                self.transfer.qh_pool.free(qh);
+                return Err("no setup qTD");
+            }
+        };
+
+        let has_data = data_len > 0;
+        let mut qtd_data: Option<(&mut Qtd, u64)> = if has_data {
+            match self.transfer.qtd_pool.allocate() {
+                Some(val) => Some(val),
+                None => {
+                    self.transfer.qtd_pool.free(qtd_setup);
+                    self.transfer.qh_pool.free(qh);
+                    return Err("no data qTD");
+                }
+            }
+        } else {
+            None
+        };
+
+        let (qtd_status, qtd_status_phys) = match self.transfer.qtd_pool.allocate() {
+            Some(val) => val,
+            None => {
+                self.transfer.qtd_pool.free(qtd_setup);
+                if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
+                self.transfer.qh_pool.free(qh);
+                return Err("no status qTD");
+            }
+        };
 
         // Allocate staging buffer for SETUP (8 bytes)
-        let setup_page_phys = self.driver_ctx.allocate_contiguous_frames(1)
-            .map_err(|_| "no setup staging memory")?;
+        let setup_page_phys = match self.driver_ctx.allocate_contiguous_frames(1) {
+            Ok(phys) => phys,
+            Err(_) => {
+                self.transfer.qtd_pool.free(qtd_setup);
+                if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
+                self.transfer.qtd_pool.free(qtd_status);
+                self.transfer.qh_pool.free(qh);
+                return Err("no setup staging memory");
+            }
+        };
         let setup_page_virt = self.driver_ctx.phys_to_virt(setup_page_phys) as *mut u8;
         let setup_bytes = unsafe {
             core::slice::from_raw_parts(setup as *const UsbSetupPacket as *const u8, 8)
@@ -332,11 +367,19 @@ impl EhciContext {
         unsafe { ptr::copy_nonoverlapping(setup_bytes.as_ptr(), setup_page_virt, 8); }
 
         // Allocate staging buffer for DATA phase (if needed)
-        let (data_staging_phys, data_staging_pages) = if data_len > 0 {
+        let (data_staging_phys, data_staging_pages) = if has_data {
             let pages = (data_len + 4095) / 4096;
-            let phys = self.driver_ctx.allocate_contiguous_frames(pages)
-                .map_err(|_| "no data staging memory")?;
-            (phys, pages)
+            match self.driver_ctx.allocate_contiguous_frames(pages) {
+                Ok(phys) => (phys, pages),
+                Err(_) => {
+                    self.driver_ctx.free_contiguous_frames(setup_page_phys, 1);
+                    self.transfer.qtd_pool.free(qtd_setup);
+                    if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
+                    self.transfer.qtd_pool.free(qtd_status);
+                    self.transfer.qh_pool.free(qh);
+                    return Err("no data staging memory");
+                }
+            }
         } else {
             (0, 0)
         };
