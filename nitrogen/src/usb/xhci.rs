@@ -440,49 +440,40 @@ impl XhciController {
             }
         }
 
-        // ── Warm Port Reset on all ports + global delay ──────
-        // After HCRST, the xHCI controller and all connected devices
-        // are reset.  The ports need to re-establish the USB 3.0 link
-        // (RxDetect → Polling → U0), which can take 3-5 seconds.
-        // We issue WPR (Warm Port Reset) on every powered port to kick
-        // the PHY, then wait globally for link training to complete.
+        // ── Port init: force RxDetect+LWS on all ports ─────────
+        // After HCRST, ports should be in Rx.Detect (PLS=5) but some
+        // controllers (especially Intel LP) need an explicit PLS+LWS
+        // write to kick-start the PHY link training.  We also try to
+        // power-cycle the port (writing PP=0 even with PPC=0 — some
+        // controllers honour it despite the read-only bit).
+        // Do NOT issue WPR; it is unnecessary after HCRST and some
+        // controllers get stuck if WPR completes before the PHY
+        // has had time to stabilise after the chip-level reset.
         for port in 0..n_ports {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            let cur = unsafe { core::ptr::read_volatile(
-                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
-            ) };
-            if cur & PORTSC_PP != 0 {
-                unsafe { core::ptr::write_volatile(
-                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                    (cur & !0x00FE0000) | (1u32 << 31)
-                ); }
-                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            }
+            // Write 0: attempt PP=0 (power off), clear PLS (←U0),
+            // clear PR (no reset), clear RW1C status bits.
+            unsafe { core::ptr::write_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                0u32
+            ); }
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
         }
-        // Wait for warm resets + link training (≈3 seconds)
-        for _ in 0..3_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+        for _ in 0..200_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
 
-        // Force PLS=RxDetect+LWS on all powered ports after WPR.
-        // Some xHCI controllers (e.g. Intel Wildcat Point-LP) do not
-        // automatically enter link training after a warm reset and
-        // need explicit PLS programming to kick the PHY.
         const PLS_RXDETECT: u32 = 5 << 5;
         const LWS: u32 = 1 << 16;
         for port in 0..n_ports {
             Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            let cur = unsafe { core::ptr::read_volatile(
-                op.add((PORTSC_BASE + port * 0x10) as usize) as *const u32
-            ) };
-            if cur & PORTSC_PP != 0 {
-                unsafe { core::ptr::write_volatile(
-                    op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
-                    (cur & !0x00FE0000 & !(0xF << 5)) | PLS_RXDETECT | LWS
-                ); }
-                Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
-            }
+            unsafe { core::ptr::write_volatile(
+                op.add((PORTSC_BASE + port * 0x10) as usize) as *mut u32,
+                PORTSC_PP | PLS_RXDETECT | LWS
+            ); }
+            Self::clflush(unsafe { op.add((PORTSC_BASE + port * 0x10) as usize) } as *const u8);
         }
-        // Brief delay for the PHY to react to the PLS change
-        for _ in 0..100_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
+        // Wait for link training — USB 3.0 can take several seconds
+        // to negotiate the link after a cold reset.
+        for _ in 0..5_000_000 { crate::port::PortWriter::new(0x80).write_safe(0u8); }
 
         // After the global delay, do one quick check of all ports
         for port in 0..n_ports.min(8) {
@@ -777,12 +768,16 @@ impl XhciController {
                 log::info!("xHCI: poll_ports port {} — CCS=0, warm reset (PLS={})", port, pls);
                 let v = self.op_read(PORTSC_BASE + port * 0x10);
                 self.op_write(PORTSC_BASE + port * 0x10, (v & !RW1C_BITS) | WPR);
-                for _ in 0..200_000 {
+                // Poll WPR with IO-port delay — WPR takes 100–500ms on
+                // real hardware; the delay prevents a tight-loop timeout.
+                for _ in 0..1_000_000 {
                     let p = self.op_read(PORTSC_BASE + port * 0x10);
                     if p & WPR == 0 { break; }
+                    crate::port::PortWriter::new(0x80).write_safe(0u8);
                 }
                 let v2 = self.op_read(PORTSC_BASE + port * 0x10);
-                // Clear PLS field (bits 5-8) before setting new value
+                // After WPR completes, force PLS=RxDetect+LWS to
+                // re-start link training.
                 const PLS_MASK: u32 = 0x0F << 5;
                 self.op_write(PORTSC_BASE + port * 0x10,
                     ((v2 & !RW1C_BITS) & !PLS_MASK) | RW1C_BITS | (5 << 5) | LWS);
