@@ -94,8 +94,12 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
 }
 
 fn persist_settings() {
-    if let Some(save_fn) = SOLVENT_CALLBACKS.lock().settings_save {
-        save_fn();
+    let save_fn = {
+        let cb_guard = SOLVENT_CALLBACKS.lock();
+        cb_guard.settings_save
+    };
+    if let Some(f) = save_fn {
+        f();
     }
 }
 
@@ -114,6 +118,7 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         Some(w) => w,
         None => {
             rt.settings_window = None;
+            rt.settings_dirty = false;
             return;
         }
     };

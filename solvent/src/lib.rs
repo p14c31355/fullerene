@@ -946,7 +946,11 @@ where
     if rt.usb_poll_pending {
         rt.usb_poll_pending = false;
         drop(rt_lock);
-        if let Some(f) = SOLVENT_CALLBACKS.lock().usb_poll {
+        let poll_fn = {
+            let cb_guard = SOLVENT_CALLBACKS.lock();
+            cb_guard.usb_poll
+        };
+        if let Some(f) = poll_fn {
             let _ = f();
         }
         if let Some(ref mut rt) = *RUNTIME.lock() {
@@ -1221,7 +1225,11 @@ where
     let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
     if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
         LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
-        if let Some(f) = SOLVENT_CALLBACKS.lock().usb_poll {
+        let poll_fn = {
+            let cb_guard = SOLVENT_CALLBACKS.lock();
+            cb_guard.usb_poll
+        };
+        if let Some(f) = poll_fn {
             if f() {
                 if let Some(ref mut r) = *RUNTIME.lock() {
                     if let Some(ref mut e) = r.explorer {
@@ -1393,8 +1401,9 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = explorer::extension_of(name);
     let app = explorer::lookup_association(ext);
+    let ext_lower = ext.to_lowercase();
     let is_text = matches!(
-        ext,
+        ext_lower.as_str(),
         "txt"
             | "md"
             | "log"
@@ -1451,7 +1460,7 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
         return;
     }
 
-    match ext {
+    match ext_lower.as_str() {
         "bmp" => {
             crate::viewers::open_bmp(rt, path, name);
             return;

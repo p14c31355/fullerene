@@ -76,7 +76,8 @@ pub fn init() {
 fn delay_ms(ms: u64) {
     let start = unsafe { core::arch::x86_64::_rdtsc() };
     // 1 GHz → 1000 ticks/µs → 1 000 000 ticks/ms
-    let target = ms * 1_000_000;
+    let tsc_per_ms = solvent::get_tsc_per_ms();
+    let target = ms * if tsc_per_ms > 0 { tsc_per_ms } else { 1_000_000 };
     while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
         core::hint::spin_loop();
     }

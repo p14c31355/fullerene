@@ -49,7 +49,7 @@ where
     match crate::contexts::kernel::with_kernel_mut(f) {
         Some(Ok(v)) => Ok(v),
         Some(Err(e)) => Err(e),
-        None => Err(SyscallError::OutOfMemory),
+        None => Err(SyscallError::NotSupported),
     }
 }
 

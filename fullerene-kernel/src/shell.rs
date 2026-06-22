@@ -20,14 +20,22 @@ macro_rules! tstr {
 }
 
 /// Read the entire contents of a file at `path`. Returns the raw bytes.
+/// Limited to MAX_FILE_SIZE to prevent unbounded memory growth.
 fn read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB limit
     let fd = crate::vfs::open(path, 0).map_err(|_| "cannot open file")?;
     let mut buf = [0u8; 1024];
     let mut data = alloc::vec::Vec::new();
     loop {
         match crate::vfs::read(fd.fd, &mut buf) {
             Ok(0) => break,
-            Ok(n) => data.extend_from_slice(&buf[..n]),
+            Ok(n) => {
+                if data.len() + n > MAX_FILE_SIZE {
+                    let _ = crate::vfs::close(fd.fd);
+                    return Err("file too large");
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
             Err(e) => {
                 let _ = crate::vfs::close(fd.fd);
                 return Err(e);
@@ -499,7 +507,7 @@ fn register_nozzle_hooks() {
             for &path in &ctx.args[2..] {
                 match read_entire_file(path) {
                     Ok(data) => {
-                        let text = core::str::from_utf8(&data).unwrap_or("");
+                        let text = alloc::string::String::from_utf8_lossy(&data);
                         for line in text.lines().filter(|l| l.contains(pattern)) {
                             if show_filename { ctx.terminal.write_str(&alloc::format!("{}:", path)); }
                             tline!(ctx.terminal, "{}", line);
@@ -530,7 +538,7 @@ fn register_nozzle_hooks() {
             if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: wc <file>"); }
             match read_entire_file(ctx.args[1]) {
                 Ok(data) => {
-                    let text = core::str::from_utf8(&data).unwrap_or("");
+                    let text = alloc::string::String::from_utf8_lossy(&data);
                     let lines = data.iter().filter(|&&b| b == b'\n').count();
                     let words = text.split_whitespace().count();
                     tline!(ctx.terminal, "{} {} {} {}", lines, words, data.len(), ctx.args[1]);

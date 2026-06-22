@@ -422,13 +422,16 @@ impl XhciContext {
                             continue;
                         }
                     } else {
-                        // Still no device — don't mark done so PCD can re-trigger
+                        // Still no device — mark done to avoid re-polling
                         log::debug!(
                             "xHCI: port {} no device (ccs=0, pls={}, pp={})",
                             port_idx,
                             op.portsc(port_idx).pls(),
                             if op.portsc(port_idx).pp() { 1 } else { 0 }
                         );
+                        if let Some(p) = self.ports.get_mut(port_idx) {
+                            p.done = true;
+                        }
                         continue;
                     }
                 }

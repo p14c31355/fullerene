@@ -26,6 +26,7 @@ pub(crate) fn render_editor(rt: &mut crate::RuntimeState) {
         Some(w) => w,
         None => {
             rt.editor_window = None;
+            rt.editor_dirty = false;
             return;
         }
     };
