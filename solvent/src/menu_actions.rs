@@ -213,10 +213,10 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     // already available from boot, no poll is needed.
     let win_w: u32 = 640;
     let win_h: u32 = 400;
-    let id = rt.desktop.wm.create_titled_window(
-        100, 60, win_w, win_h,
-        0x1E1E2E, "File Manager",
-    );
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(100, 60, win_w, win_h, 0x1E1E2E, "File Manager");
     let mut explorer = crate::explorer::ExplorerContext::new();
     explorer.window_id = Some(id);
 
@@ -281,8 +281,12 @@ pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
     let cols = 38u32;
     let rows = 9u32;
     let id = rt.desktop.wm.create_titled_window(
-        150, 80, cols * GLYPH_W, rows * GLYPH_H,
-        0x0d1a1a, "Settings",
+        150,
+        80,
+        cols * GLYPH_W,
+        rows * GLYPH_H,
+        0x0d1a1a,
+        "Settings",
     );
     rt.desktop.wm.raise_to_top(id);
     rt.settings_window = Some(id);

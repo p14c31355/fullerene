@@ -26,17 +26,17 @@
 //!                    (VFS, process, memory)
 //! ```
 
-pub mod numbers;
-pub mod types;
-pub mod runtime;
 pub mod fs;
-pub mod memory;
-pub mod process;
-pub mod signal;
-pub mod time;
-pub mod misc;
 pub mod launch;
+pub mod memory;
+pub mod misc;
+pub mod numbers;
+pub mod process;
+pub mod runtime;
+pub mod signal;
 pub mod test_binary;
+pub mod time;
+pub mod types;
 
-pub use runtime::{Runtime, LinuxRuntime, DispatchMode, KernelRequest, KernelResponse, errno_code};
 pub use numbers::*;
+pub use runtime::{DispatchMode, KernelRequest, KernelResponse, LinuxRuntime, Runtime, errno_code};

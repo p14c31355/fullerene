@@ -24,12 +24,12 @@ pub use console::Console;
 pub use nitrogen::port::{HardwarePorts, PortWriter, VgaPortOps};
 pub use renderer::Renderer;
 // VGA graphics modes
+pub use framebuffer::UefiFramebufferWriter;
+pub use framebuffer::*;
 pub use setup::{
     detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
     setup_cirrus_vga_mode,
 };
-pub use framebuffer::UefiFramebufferWriter;
-pub use framebuffer::*;
 pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
 
 /// Result of the graphics drawing test

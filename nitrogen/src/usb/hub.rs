@@ -8,10 +8,9 @@
 //! 5. Retrieves the full configuration
 
 use crate::usb::{
-    UsbDevice, UsbDeviceDescriptor, UsbSetupPacket, UsbEndpointDesc,
-    DESC_DEVICE, DESC_CONFIGURATION, DESC_ENDPOINT,
-    REQ_GET_DESCRIPTOR, REQ_SET_ADDRESS, REQ_SET_CONFIGURATION,
-    UsbConfigDescriptor,
+    DESC_CONFIGURATION, DESC_DEVICE, DESC_ENDPOINT, REQ_GET_DESCRIPTOR, REQ_SET_ADDRESS,
+    REQ_SET_CONFIGURATION, UsbConfigDescriptor, UsbDevice, UsbDeviceDescriptor, UsbEndpointDesc,
+    UsbSetupPacket,
 };
 use alloc::vec::Vec;
 
@@ -41,7 +40,8 @@ pub fn enumerate_device(
     // SAFETY: UsbDeviceDescriptor is #[repr(C, packed)]. desc_buf was filled by a
     // control-IN transfer of 64 bytes, and the first 8 bytes match the USB device
     // descriptor layout per USB spec §9.6.1.
-    let dev_desc: &UsbDeviceDescriptor = unsafe { &*(desc_buf.as_ptr() as *const UsbDeviceDescriptor) };
+    let dev_desc: &UsbDeviceDescriptor =
+        unsafe { &*(desc_buf.as_ptr() as *const UsbDeviceDescriptor) };
     let max_pkt = dev_desc.b_max_packet_size_0;
 
     // Step 2: Assign address
@@ -60,7 +60,9 @@ pub fn enumerate_device(
         // SAFETY: Reading a dummy volatile u8 to introduce a small delay
         // after SET_ADDRESS, allowing the device to settle before subsequent
         // control transfers (USB2 spec §9.2.6.3 recommends 2ms).
-        unsafe { core::ptr::read_volatile(&0u8); }
+        unsafe {
+            core::ptr::read_volatile(&0u8);
+        }
     }
 
     // Step 3: Get full device descriptor (18 bytes) at new address
@@ -72,10 +74,12 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: 18,
     };
-    control_fn(assigned_addr, 0, &setup, &mut dev_desc_full).map_err(|_| "GET_DESCRIPTOR full failed")?;
+    control_fn(assigned_addr, 0, &setup, &mut dev_desc_full)
+        .map_err(|_| "GET_DESCRIPTOR full failed")?;
     // SAFETY: Same layout guarantee as above; dev_desc_full is exactly 18 bytes
     // (the full USB device descriptor per USB spec §9.6.1).
-    let dev_desc: &UsbDeviceDescriptor = unsafe { &*(dev_desc_full.as_ptr() as *const UsbDeviceDescriptor) };
+    let dev_desc: &UsbDeviceDescriptor =
+        unsafe { &*(dev_desc_full.as_ptr() as *const UsbDeviceDescriptor) };
 
     // Step 4: Get configuration descriptor to learn total length
     let mut cfg_hdr_buf = [0u8; 9];
@@ -86,10 +90,12 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: 9,
     };
-    control_fn(assigned_addr, 0, &setup, &mut cfg_hdr_buf).map_err(|_| "GET_CONFIG_DESC hdr failed")?;
+    control_fn(assigned_addr, 0, &setup, &mut cfg_hdr_buf)
+        .map_err(|_| "GET_CONFIG_DESC hdr failed")?;
     // SAFETY: UsbConfigDescriptor is #[repr(C, packed)], the first 9 bytes of
     // every configuration descriptor match this layout per USB spec §9.6.3.
-    let cfg_desc: &UsbConfigDescriptor = unsafe { &*(cfg_hdr_buf.as_ptr() as *const UsbConfigDescriptor) };
+    let cfg_desc: &UsbConfigDescriptor =
+        unsafe { &*(cfg_hdr_buf.as_ptr() as *const UsbConfigDescriptor) };
     let total_len = cfg_desc.w_total_length as usize;
 
     // Step 5: Get full configuration descriptor
@@ -101,14 +107,17 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: total_len as u16,
     };
-    control_fn(assigned_addr, 0, &setup, &mut cfg_buf).map_err(|_| "GET_CONFIG_DESC full failed")?;
+    control_fn(assigned_addr, 0, &setup, &mut cfg_buf)
+        .map_err(|_| "GET_CONFIG_DESC full failed")?;
 
     // Step 6: Parse endpoints from the configuration descriptor
     let mut endpoints = Vec::new();
     let mut offset = cfg_desc.b_length as usize;
     while offset < total_len {
         let desc_len = cfg_buf[offset] as usize;
-        if desc_len == 0 { break; }
+        if desc_len == 0 {
+            break;
+        }
         let desc_type = cfg_buf[offset + 1];
         if desc_type == DESC_ENDPOINT && desc_len >= 7 {
             endpoints.push(UsbEndpointDesc {

@@ -16,18 +16,18 @@
 pub mod host_controller;
 
 // EHCI sub-context modules
-pub mod ehci_register;
 pub mod ehci_async;
-pub mod ehci_port;
 pub mod ehci_context;
+pub mod ehci_port;
+pub mod ehci_register;
 
 // xHCI sub-context modules
+pub mod xhci_context;
+pub mod xhci_device;
+pub mod xhci_interrupt;
+pub mod xhci_port;
 pub mod xhci_register;
 pub mod xhci_ring;
-pub mod xhci_device;
-pub mod xhci_port;
-pub mod xhci_interrupt;
-pub mod xhci_context;
 
 pub mod hub;
 pub mod msd;
@@ -37,9 +37,9 @@ pub mod usb_bus;
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbSpeed {
-    Low,    // 1.5 Mbps
-    Full,   // 12 Mbps
-    High,   // 480 Mbps (EHCI only)
+    Low,  // 1.5 Mbps
+    Full, // 12 Mbps
+    High, // 480 Mbps (EHCI only)
 }
 
 impl UsbSpeed {
@@ -103,9 +103,15 @@ pub struct UsbEndpointDesc {
 
 impl UsbEndpointDesc {
     pub fn direction(&self) -> UsbDirection {
-        if self.b_endpoint_address & 0x80 != 0 { UsbDirection::In } else { UsbDirection::Out }
+        if self.b_endpoint_address & 0x80 != 0 {
+            UsbDirection::In
+        } else {
+            UsbDirection::Out
+        }
     }
-    pub fn number(&self) -> u8 { self.b_endpoint_address & 0x0F }
+    pub fn number(&self) -> u8 {
+        self.b_endpoint_address & 0x0F
+    }
     pub fn xfer_type(&self) -> UsbXferType {
         match self.bm_attributes & 3 {
             0 => UsbXferType::Control,
@@ -172,7 +178,7 @@ pub const MSC_PROTOCOL_BOT: u8 = 0x50;
 
 /// Common endpoint addresses for mass storage (bulk-only).
 pub const EP_BULK_OUT: u8 = 0x02; // typical
-pub const EP_BULK_IN: u8 = 0x82;  // typical (bit 7 = IN)
+pub const EP_BULK_IN: u8 = 0x82; // typical (bit 7 = IN)
 
 /// A USB device discovered on the bus.
 #[derive(Debug, Clone)]

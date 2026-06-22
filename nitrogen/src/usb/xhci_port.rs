@@ -17,9 +17,8 @@
 //! implemented.
 
 use super::xhci_register::{
-    OperationalRegisters, PortSc,
-    PORTSC_CCS, PORTSC_PED, PORTSC_PR, PORTSC_PP, PORTSC_WPR,
-    PORTSC_LWS, PORTSC_PLS_MASK, PORTSC_RW1C_MASK,
+    OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLS_MASK, PORTSC_PP,
+    PORTSC_PR, PORTSC_RW1C_MASK, PORTSC_WPR, PortSc,
 };
 use crate::usb::UsbSpeed;
 
@@ -107,7 +106,11 @@ impl PortContext {
         for i in 0..n_ports {
             ports.push(Port::new(i));
         }
-        Self { ports, n_ports, ppc }
+        Self {
+            ports,
+            n_ports,
+            ppc,
+        }
     }
 
     /// Refresh all ports from hardware.

@@ -16,8 +16,8 @@
 //! ```
 
 use super::xhci_register::RuntimeRegisters;
-use super::xhci_ring::{EventRing, Trb};
 use super::xhci_register::{IMAN_IE, IMAN_IP};
+use super::xhci_ring::{EventRing, Trb};
 
 // ============================================================================
 //  Interrupter — per-interrupter state
@@ -33,7 +33,10 @@ pub struct Interrupter {
 
 impl Interrupter {
     pub fn new(index: u32) -> Self {
-        Self { index, enabled: false }
+        Self {
+            index,
+            enabled: false,
+        }
     }
 
     /// Enable this interrupter (write IMAN.IE bit).

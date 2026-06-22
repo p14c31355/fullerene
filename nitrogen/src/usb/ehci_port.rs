@@ -18,7 +18,10 @@ pub struct EhciPort {
 
 impl EhciPort {
     pub fn new(index: u32) -> Self {
-        Self { index, processed: false }
+        Self {
+            index,
+            processed: false,
+        }
     }
 }
 
@@ -40,7 +43,11 @@ impl EhciPortContext {
         for i in 0..n_ports {
             ports.push(EhciPort::new(i));
         }
-        Self { ports, n_ports, processed_mask: 0 }
+        Self {
+            ports,
+            n_ports,
+            processed_mask: 0,
+        }
     }
 
     /// Clear the "processed" flags for all ports (e.g. on PCD hotplug).
@@ -66,7 +73,10 @@ impl EhciPortContext {
         if port < 32 {
             self.processed_mask & (1 << port) != 0
         } else {
-            self.ports.get(port as usize).map(|p| p.processed).unwrap_or(true)
+            self.ports
+                .get(port as usize)
+                .map(|p| p.processed)
+                .unwrap_or(true)
         }
     }
 }

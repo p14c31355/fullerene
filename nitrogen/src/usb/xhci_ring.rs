@@ -41,13 +41,13 @@ pub mod trb_type {
 
 /// TRB flag bits.
 pub mod trb_flag {
-    pub const CYCLE: u32 = 1 << 0;       // Cycle bit
-    pub const TC: u32 = 1 << 1;          // Toggle Cycle (Link TRB)
-    pub const CHAIN: u32 = 1 << 4;       // Chain bit
-    pub const IOC: u32 = 1 << 5;         // Interrupt On Completion
-    pub const IDT: u32 = 1 << 6;         // Immediate Data
-    pub const ENT: u32 = 1 << 11;        // Evaluate Next TRB
-    pub const DIR_IN: u32 = 1 << 16;     // Direction = IN (Data Stage)
+    pub const CYCLE: u32 = 1 << 0; // Cycle bit
+    pub const TC: u32 = 1 << 1; // Toggle Cycle (Link TRB)
+    pub const CHAIN: u32 = 1 << 4; // Chain bit
+    pub const IOC: u32 = 1 << 5; // Interrupt On Completion
+    pub const IDT: u32 = 1 << 6; // Immediate Data
+    pub const ENT: u32 = 1 << 11; // Evaluate Next TRB
+    pub const DIR_IN: u32 = 1 << 16; // Direction = IN (Data Stage)
     pub const TRB_TYPE_SHIFT: u32 = 10;
     pub const TRB_TYPE_MASK: u32 = 0x3F << TRB_TYPE_SHIFT;
 }
@@ -154,14 +154,19 @@ impl Ring {
         // Set up the Link TRB at the last slot
         if n > 1 {
             let last = &mut entries[n - 1];
-            last.flags =
-                ((trb_type::LINK as u32) << trb_flag::TRB_TYPE_SHIFT)
+            last.flags = ((trb_type::LINK as u32) << trb_flag::TRB_TYPE_SHIFT)
                 | trb_flag::TC   // toggle cycle on wrap
                 | trb_flag::CYCLE; // initially valid
             last.params[..8].copy_from_slice(&p.to_le_bytes());
         }
 
-        Some(Self { entries, phys: p, enq: 0, cycle: 1, len: n })
+        Some(Self {
+            entries,
+            phys: p,
+            enq: 0,
+            cycle: 1,
+            len: n,
+        })
     }
 
     /// Enqueue a TRB.
@@ -271,7 +276,13 @@ impl EventRing {
             e.flags = 0;
         }
 
-        Some(Self { entries, phys: p, deq: 0, cycle: 1, len: n })
+        Some(Self {
+            entries,
+            phys: p,
+            deq: 0,
+            cycle: 1,
+            len: n,
+        })
     }
 
     /// Free the event ring's physical memory.
@@ -386,8 +397,14 @@ mod tests {
         let mut trb = Trb::new(trb_type::NORMAL, 1);
         trb.set_data_ptr(0xDEAD_BEEF_CAFE_BABE);
         let phys = u64::from_le_bytes([
-            trb.params[0], trb.params[1], trb.params[2], trb.params[3],
-            trb.params[4], trb.params[5], trb.params[6], trb.params[7],
+            trb.params[0],
+            trb.params[1],
+            trb.params[2],
+            trb.params[3],
+            trb.params[4],
+            trb.params[5],
+            trb.params[6],
+            trb.params[7],
         ]);
         assert_eq!(phys, 0xDEAD_BEEF_CAFE_BABE);
     }

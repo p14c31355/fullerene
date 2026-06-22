@@ -15,7 +15,7 @@
 //! USB drivers only see [`HostControllerContext`]; they never touch
 //! registers, TRBs, qTDs, or any controller-specific structures.
 
-use crate::usb::{UsbDevice, UsbSetupPacket, UsbDirection};
+use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket};
 
 // ============================================================================
 //  HostController — the trait that all USB host controllers implement

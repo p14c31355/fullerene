@@ -68,10 +68,7 @@ pub trait DriverContext {
     /// Allocate `count` contiguous physical 4 KiB frames.
     ///
     /// Returns the **physical** address of the first frame.
-    fn allocate_contiguous_frames(
-        &self,
-        count: usize,
-    ) -> Result<u64, DriverContextError>;
+    fn allocate_contiguous_frames(&self, count: usize) -> Result<u64, DriverContextError>;
 
     /// Map a physical MMIO region into the kernel's virtual address space.
     ///

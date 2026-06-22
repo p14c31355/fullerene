@@ -4,9 +4,7 @@
 //! The heavy logic (menu dispatch, terminal I/O) lives in dedicated modules.
 
 use crate::cursor_lightweight_update;
-use crate::{
-    FB_DIMS, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS,
-};
+use crate::{FB_DIMS, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS};
 use lattice::shell_overlay::ShellState;
 use lattice::wm::DragState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
@@ -183,7 +181,8 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
             // Check file list click
             let win_w = window.width;
             let win_h = window.height;
-            if let Some(idx) = crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y) {
+            if let Some(idx) = crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y)
+            {
                 // Double-click detection
                 let now = crate::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
                 let is_double = explorer.selected_index == Some(idx)
@@ -222,7 +221,9 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                 explorer.context_menu.x = rel_x as u32;
                 explorer.context_menu.y = rel_y as u32;
                 // Also select the item under cursor
-                if let Some(idx) = crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y) {
+                if let Some(idx) =
+                    crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y)
+                {
                     explorer.selected_index = Some(idx);
                 }
                 rt.explorer_dirty = true;

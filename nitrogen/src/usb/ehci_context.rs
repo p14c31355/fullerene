@@ -20,15 +20,15 @@
 //! ```
 
 use crate::DriverContext;
-use crate::usb::{UsbDevice, UsbSpeed, UsbSetupPacket, UsbDirection};
+use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
 
 use alloc::vec::Vec;
 use core::ptr;
 
 // ── Import sub-contexts from sibling modules ──────────────────
-use super::ehci_register::*;
 use super::ehci_async::*;
 use super::ehci_port::*;
+use super::ehci_register::*;
 use super::host_controller::HostController;
 
 // ============================================================================
@@ -111,14 +111,9 @@ unsafe impl Send for EhciContext {}
 
 impl EhciContext {
     /// Create a new EHCI context from the MMIO base address.
-    pub fn new(
-        mmio_base: *mut u8,
-        ctx: &'static dyn DriverContext,
-    ) -> Option<Self> {
+    pub fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
         let registers = unsafe { EhciRegisterContext::new(mmio_base) };
-        let hcsparams = unsafe {
-            ptr::read_volatile(mmio_base.add(4) as *const u32)
-        };
+        let hcsparams = unsafe { ptr::read_volatile(mmio_base.add(4) as *const u32) };
         let n_ports = (hcsparams & 0x0F).max(1);
 
         let transfer = TransferContext::alloc(ctx)?;
@@ -365,7 +360,9 @@ impl EhciContext {
             Some(val) => val,
             None => {
                 self.transfer.qtd_pool.free(qtd_setup);
-                if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
+                if let Some((d, _)) = qtd_data {
+                    self.transfer.qtd_pool.free(d);
+                }
                 self.transfer.qh_pool.free(qh);
                 return Err("no status qTD");
             }
@@ -376,17 +373,20 @@ impl EhciContext {
             Ok(phys) => phys,
             Err(_) => {
                 self.transfer.qtd_pool.free(qtd_setup);
-                if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
+                if let Some((d, _)) = qtd_data {
+                    self.transfer.qtd_pool.free(d);
+                }
                 self.transfer.qtd_pool.free(qtd_status);
                 self.transfer.qh_pool.free(qh);
                 return Err("no setup staging memory");
             }
         };
         let setup_page_virt = self.driver_ctx.phys_to_virt(setup_page_phys) as *mut u8;
-        let setup_bytes = unsafe {
-            core::slice::from_raw_parts(setup as *const UsbSetupPacket as *const u8, 8)
-        };
-        unsafe { ptr::copy_nonoverlapping(setup_bytes.as_ptr(), setup_page_virt, 8); }
+        let setup_bytes =
+            unsafe { core::slice::from_raw_parts(setup as *const UsbSetupPacket as *const u8, 8) };
+        unsafe {
+            ptr::copy_nonoverlapping(setup_bytes.as_ptr(), setup_page_virt, 8);
+        }
 
         // Allocate staging buffer for DATA phase (if needed)
         let (data_staging_phys, data_staging_pages) = if has_data {
@@ -396,7 +396,9 @@ impl EhciContext {
                 Err(_) => {
                     self.driver_ctx.free_contiguous_frames(setup_page_phys, 1);
                     self.transfer.qtd_pool.free(qtd_setup);
-                    if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
+                    if let Some((d, _)) = qtd_data {
+                        self.transfer.qtd_pool.free(d);
+                    }
                     self.transfer.qtd_pool.free(qtd_status);
                     self.transfer.qh_pool.free(qh);
                     return Err("no data staging memory");
@@ -412,12 +414,17 @@ impl EhciContext {
         };
 
         // Build SETUP qTD
-        let next_after_setup = qtd_data.as_ref().map(|d| d.1 as u32).unwrap_or(qtd_status_phys as u32);
+        let next_after_setup = qtd_data
+            .as_ref()
+            .map(|d| d.1 as u32)
+            .unwrap_or(qtd_status_phys as u32);
         unsafe {
             ptr::write_volatile(&mut qtd_setup.next_qtd, next_after_setup);
             ptr::write_volatile(&mut qtd_setup.alt_next_qtd, QTD_TERMINATE);
-            ptr::write_volatile(&mut qtd_setup.token,
-                QTD_ACTIVE | QTD_PID_SETUP | QTD_CERR | qtd_total_bytes(8));
+            ptr::write_volatile(
+                &mut qtd_setup.token,
+                QTD_ACTIVE | QTD_PID_SETUP | QTD_CERR | qtd_total_bytes(8),
+            );
             ptr::write_volatile(&mut qtd_setup.buf0, setup_page_phys as u32);
         }
 
@@ -425,25 +432,35 @@ impl EhciContext {
         if data_len > 0 {
             let (data_qh_ptr, _) = qtd_data.as_mut().unwrap();
             if !is_in {
-                unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), data_staging_virt, data_len); }
+                unsafe {
+                    ptr::copy_nonoverlapping(buf.as_ptr(), data_staging_virt, data_len);
+                }
             }
             let pid = if is_in { QTD_PID_IN } else { QTD_PID_OUT };
             unsafe {
                 ptr::write_volatile(&mut data_qh_ptr.next_qtd, qtd_status_phys as u32);
                 ptr::write_volatile(&mut data_qh_ptr.alt_next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut data_qh_ptr.token,
-                    QTD_ACTIVE | pid | QTD_CERR | qtd_total_bytes(data_len as u32));
+                ptr::write_volatile(
+                    &mut data_qh_ptr.token,
+                    QTD_ACTIVE | pid | QTD_CERR | qtd_total_bytes(data_len as u32),
+                );
                 ptr::write_volatile(&mut data_qh_ptr.buf0, data_staging_phys as u32);
             }
         }
 
         // Build STATUS qTD
-        let status_pid = if is_in || data_len == 0 { QTD_PID_OUT } else { QTD_PID_IN };
+        let status_pid = if is_in || data_len == 0 {
+            QTD_PID_OUT
+        } else {
+            QTD_PID_IN
+        };
         unsafe {
             ptr::write_volatile(&mut qtd_status.next_qtd, QTD_TERMINATE);
             ptr::write_volatile(&mut qtd_status.alt_next_qtd, QTD_TERMINATE);
-            ptr::write_volatile(&mut qtd_status.token,
-                QTD_ACTIVE | status_pid | QTD_CERR | qtd_total_bytes(0));
+            ptr::write_volatile(
+                &mut qtd_status.token,
+                QTD_ACTIVE | status_pid | QTD_CERR | qtd_total_bytes(0),
+            );
         }
 
         // Link qH → qTD_SETUP
@@ -493,14 +510,17 @@ impl EhciContext {
         self.transfer.schedule.remove(qh_phys, self.driver_ctx);
         self.wait_async_advance(&self.registers.op);
         self.transfer.qtd_pool.free(qtd_setup);
-        if let Some((d, _)) = qtd_data { self.transfer.qtd_pool.free(d); }
+        if let Some((d, _)) = qtd_data {
+            self.transfer.qtd_pool.free(d);
+        }
         self.transfer.qtd_pool.free(qtd_status);
         self.transfer.qh_pool.free(qh);
 
         // Free staging buffers
         self.driver_ctx.free_contiguous_frames(setup_page_phys, 1);
         if data_staging_pages > 0 {
-            self.driver_ctx.free_contiguous_frames(data_staging_phys, data_staging_pages);
+            self.driver_ctx
+                .free_contiguous_frames(data_staging_phys, data_staging_pages);
         }
 
         result
@@ -522,8 +542,10 @@ impl EhciContext {
         // Allocate qH
         let (qh, qh_phys) = self.transfer.qh_pool.allocate().ok_or("no qH")?;
         unsafe {
-            ptr::write_volatile(&mut qh.ep_chars,
-                qh_ep_chars(dev_addr, endpoint & 0x0F, UsbSpeed::High, max_packet));
+            ptr::write_volatile(
+                &mut qh.ep_chars,
+                qh_ep_chars(dev_addr, endpoint & 0x0F, UsbSpeed::High, max_packet),
+            );
             ptr::write_volatile(&mut qh.ep_caps, 0);
             ptr::write_volatile(&mut qh.current_qtd, QTD_TERMINATE);
         }
@@ -550,7 +572,9 @@ impl EhciContext {
         let staging_virt = self.driver_ctx.phys_to_virt(staging_phys) as *mut u8;
 
         if dir == UsbDirection::Out {
-            unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len); }
+            unsafe {
+                ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len);
+            }
         }
 
         let pid = match dir {
@@ -561,15 +585,28 @@ impl EhciContext {
         unsafe {
             ptr::write_volatile(&mut qtd.next_qtd, QTD_TERMINATE);
             ptr::write_volatile(&mut qtd.alt_next_qtd, QTD_TERMINATE);
-            ptr::write_volatile(&mut qtd.token,
-                QTD_ACTIVE | pid | QTD_CERR | qtd_total_bytes(len as u32));
+            ptr::write_volatile(
+                &mut qtd.token,
+                QTD_ACTIVE | pid | QTD_CERR | qtd_total_bytes(len as u32),
+            );
             ptr::write_volatile(&mut qtd.buf0, staging_phys as u32);
             // Populate subsequent buffer pointers for multi-page transfers (up to 20KB)
             let mut p = (staging_phys & !0xFFF) + 0x1000;
-            if len > 4096 { ptr::write_volatile(&mut qtd.buf1, p as u32); p += 0x1000; }
-            if len > 8192 { ptr::write_volatile(&mut qtd.buf2, p as u32); p += 0x1000; }
-            if len > 12288 { ptr::write_volatile(&mut qtd.buf3, p as u32); p += 0x1000; }
-            if len > 16384 { ptr::write_volatile(&mut qtd.buf4, p as u32); }
+            if len > 4096 {
+                ptr::write_volatile(&mut qtd.buf1, p as u32);
+                p += 0x1000;
+            }
+            if len > 8192 {
+                ptr::write_volatile(&mut qtd.buf2, p as u32);
+                p += 0x1000;
+            }
+            if len > 12288 {
+                ptr::write_volatile(&mut qtd.buf3, p as u32);
+                p += 0x1000;
+            }
+            if len > 16384 {
+                ptr::write_volatile(&mut qtd.buf4, p as u32);
+            }
         }
 
         unsafe {
@@ -583,28 +620,35 @@ impl EhciContext {
         if r.is_err() {
             self.transfer.schedule.remove(qh_phys, self.driver_ctx);
             self.wait_async_advance(&self.registers.op);
-            self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
+            self.driver_ctx
+                .free_contiguous_frames(staging_phys, staging_pages);
             self.transfer.qtd_pool.free(qtd);
             self.transfer.qh_pool.free(qh);
             return r.map(|_| 0);
         }
 
         if dir == UsbDirection::In {
-            unsafe { ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
+            unsafe {
+                ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len);
+            }
         }
 
         self.transfer.schedule.remove(qh_phys, self.driver_ctx);
         self.wait_async_advance(&self.registers.op);
         self.transfer.qtd_pool.free(qtd);
         self.transfer.qh_pool.free(qh);
-        self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
+        self.driver_ctx
+            .free_contiguous_frames(staging_phys, staging_pages);
         Ok(len)
     }
 
     // ── PCI creation ───────────────────────────────────────────
 
     /// Create from a PCI device configuration.
-    pub fn from_pci(device: &crate::pci::PciDevice, ctx: &'static dyn DriverContext) -> Option<Self> {
+    pub fn from_pci(
+        device: &crate::pci::PciDevice,
+        ctx: &'static dyn DriverContext,
+    ) -> Option<Self> {
         let mmio_phys = device.read_bar(0)?;
         if mmio_phys == 0 {
             return None;

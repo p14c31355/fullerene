@@ -1,11 +1,11 @@
 extern crate alloc;
 
-use alloc::vec::Vec;
 use crate::cursor::Cursor;
 use crate::menu::PopupMenu;
 use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
 use crate::wm::WindowManager;
+use alloc::vec::Vec;
 
 /// Actions that can be dispatched from desktop menus (context menu, system menu, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]

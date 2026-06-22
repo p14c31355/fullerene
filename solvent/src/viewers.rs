@@ -3,7 +3,7 @@
 //! Each viewer reads file data via `vfs_read`, parses the format, and
 //! creates a window with the content rendered into the surface.
 
-use crate::{RuntimeState, SOLVENT_CALLBACKS, GLYPH_H};
+use crate::{GLYPH_H, RuntimeState, SOLVENT_CALLBACKS};
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -19,7 +19,10 @@ fn read_file(path: &str) -> Result<Vec<u8>, &'static str> {
 
 fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg: u32, fg: u32) {
     let rows = (msg.lines().count() as u32).min(40) + 3;
-    let id = rt.desktop.wm.create_titled_window(100, 60, cols * GLYPH_SIZE, rows * GLYPH_H, bg, title);
+    let id =
+        rt.desktop
+            .wm
+            .create_titled_window(100, 60, cols * GLYPH_SIZE, rows * GLYPH_H, bg, title);
     if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let _ = crate::menu_actions::render_text_into_surface(&mut w.surface, msg, cols, fg, bg);
     }
@@ -37,13 +40,22 @@ fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
 pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
-        Err(e) => { show_error(rt, "BMP Error", &format!("Cannot read: {}", e)); return; }
+        Err(e) => {
+            show_error(rt, "BMP Error", &format!("Cannot read: {}", e));
+            return;
+        }
     };
     let bmp = match tinybmp::RawBmp::from_slice(&data) {
         Ok(b) => b,
-        Err(_) => { show_error(rt, "BMP Error", "Parse failed"); return; }
+        Err(_) => {
+            show_error(rt, "BMP Error", "Parse failed");
+            return;
+        }
     };
-    if !matches!(bmp.header().bpp, tinybmp::Bpp::Bits24 | tinybmp::Bpp::Bits32) {
+    if !matches!(
+        bmp.header().bpp,
+        tinybmp::Bpp::Bits24 | tinybmp::Bpp::Bits32
+    ) {
         show_error(rt, "BMP Error", "Only 24-bit and 32-bit BMPs are supported");
         return;
     }
@@ -55,7 +67,10 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
     }
     let win_w = w.min(800).max(160);
     let win_h = h.min(600).max(120);
-    let id = rt.desktop.wm.create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
     if let Some(win) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         for pixel in bmp.pixels() {
             let x = pixel.position.x;
@@ -76,10 +91,14 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
 
 #[cfg(not(feature = "tinybmp"))]
 pub fn open_bmp(rt: &mut RuntimeState, _path: &str, name: &str) {
-    show_error(rt, "BMP Error", &format!(
-        "File: {}\n\nBMP support not compiled in.\nRebuild with --features tinybmp to enable.",
-        name
-    ));
+    show_error(
+        rt,
+        "BMP Error",
+        &format!(
+            "File: {}\n\nBMP support not compiled in.\nRebuild with --features tinybmp to enable.",
+            name
+        ),
+    );
 }
 
 // ── PNG viewer ───────────────────────────────────────────────
@@ -88,13 +107,19 @@ pub fn open_bmp(rt: &mut RuntimeState, _path: &str, name: &str) {
 pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
-        Err(e) => { show_error(rt, "PNG Error", &format!("Cannot read:\n{}", e)); return; }
+        Err(e) => {
+            show_error(rt, "PNG Error", &format!("Cannot read:\n{}", e));
+            return;
+        }
     };
 
     // Use minipng: decode PNG header to get dimensions
     let header = match minipng::decode_png_header(&data) {
         Ok(h) => h,
-        Err(e) => { show_error(rt, "PNG Error", &format!("Bad header:\n{:?}", e)); return; }
+        Err(e) => {
+            show_error(rt, "PNG Error", &format!("Bad header:\n{:?}", e));
+            return;
+        }
     };
     let w = header.width() as u32;
     let h = header.height() as u32;
@@ -107,12 +132,18 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
     let mut buf = vec![0u8; (w as usize) * (h as usize) * 4];
     let img = match minipng::decode_png(&data, &mut buf) {
         Ok(img) => img,
-        Err(e) => { show_error(rt, "PNG Error", &format!("Decode failed:\n{:?}", e)); return; }
+        Err(e) => {
+            show_error(rt, "PNG Error", &format!("Decode failed:\n{:?}", e));
+            return;
+        }
     };
 
     let win_w = w.min(800).max(160);
     let win_h = h.min(600).max(120);
-    let id = rt.desktop.wm.create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
     if let Some(win) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let pixels = img.pixels();
         for y in 0..h.min(win_h) {
@@ -137,7 +168,10 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
 pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
-        Err(e) => { show_error(rt, "WAV Error", &format!("Cannot read:\n{}", e)); return; }
+        Err(e) => {
+            show_error(rt, "WAV Error", &format!("Cannot read:\n{}", e));
+            return;
+        }
     };
 
     // Manual WAV parsing (pure_wav crate API is streaming-oriented)
@@ -153,7 +187,8 @@ pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
     let mut data_size = 0u32;
     let mut off = 36;
     while off + 8 <= data.len() {
-        let chunk_len = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
+        let chunk_len =
+            u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
         if &data[off..off + 4] == b"data" {
             data_size = chunk_len;
             break;
@@ -163,7 +198,9 @@ pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
 
     let duration = if sample_rate > 0 && bits_per_sample > 0 {
         (data_size as f64) / (channels as f64 * (bits_per_sample as f64 / 8.0) * sample_rate as f64)
-    } else { 0.0 };
+    } else {
+        0.0
+    };
 
     let msg = format!(
         "File: {}\n\nFormat: WAV\nChannels: {}\nSample Rate: {} Hz\nBits: {}-bit\nData size: {} bytes\nDuration: {:.1} s\n\nPlayback not yet implemented.",
@@ -178,7 +215,10 @@ pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
 pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
-        Err(e) => { show_error(rt, "MP3 Error", &format!("Cannot read:\n{}", e)); return; }
+        Err(e) => {
+            show_error(rt, "MP3 Error", &format!("Cannot read:\n{}", e));
+            return;
+        }
     };
 
     // Use rmp3: Decoder::new(&data), iterate frames
@@ -198,7 +238,9 @@ pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
 
     let duration_sec = if sample_rate > 0 {
         (frames as f64 * 1152.0) / sample_rate as f64
-    } else { 0.0 };
+    } else {
+        0.0
+    };
     let msg = format!(
         "File: {}\n\nFormat: MP3\nChannels: {}\nSample Rate: {} Hz\nFrames: {}\nDuration: {:.1} s\n\nPlayback not yet implemented.",
         name, channels, sample_rate, frames, duration_sec,
@@ -211,24 +253,37 @@ pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
 pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
-        Err(e) => { show_error(rt, "Tar Error", &format!("Cannot read:\n{}", e)); return; }
+        Err(e) => {
+            show_error(rt, "Tar Error", &format!("Cannot read:\n{}", e));
+            return;
+        }
     };
 
     let mut entries = Vec::new();
     let mut off = 0usize;
     while off + 512 <= data.len() {
         let block = &data[off..off + 512];
-        if block[0] == 0 { break; }
+        if block[0] == 0 {
+            break;
+        }
 
         let name_end = block[..100].iter().position(|&b| b == 0).unwrap_or(100);
         let entry_name = core::str::from_utf8(&block[..name_end]).unwrap_or("(invalid)");
         let size_str = core::str::from_utf8(&block[124..136]).unwrap_or("0");
         let size = u64::from_str_radix(size_str.trim(), 8).unwrap_or(0);
         let type_flag = block[156];
-        let kind = match type_flag { b'5' => "dir", b'2' => "link", _ => "file" };
+        let kind = match type_flag {
+            b'5' => "dir",
+            b'2' => "link",
+            _ => "file",
+        };
         entries.push(format!("{} {:>8}  {}", kind, size, entry_name));
-        let Some(blocks) = size.checked_add(511).map(|s| s / 512 * 512) else { break; };
-        let Some(total) = (512 as usize).checked_add(blocks as usize) else { break; };
+        let Some(blocks) = size.checked_add(511).map(|s| s / 512 * 512) else {
+            break;
+        };
+        let Some(total) = (512 as usize).checked_add(blocks as usize) else {
+            break;
+        };
         off = match off.checked_add(total) {
             Some(o) => o,
             None => break,
@@ -237,9 +292,14 @@ pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
 
     let mut msg = format!("Archive: {}\n{} entries\n\n", name, entries.len());
     for e in &entries {
-        if msg.len() < 2000 { msg.push_str(e); msg.push('\n'); }
+        if msg.len() < 2000 {
+            msg.push_str(e);
+            msg.push('\n');
+        }
     }
-    if entries.is_empty() { msg.push_str("(empty archive)\n"); }
+    if entries.is_empty() {
+        msg.push_str("(empty archive)\n");
+    }
     show_text_window(rt, "Archive Manager", &msg, 60, 0x0d1a0d, 0xCCFFCC);
 }
 
@@ -260,13 +320,13 @@ fn yuv420_to_rgb888(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
 }
 
 #[cfg(feature = "shiguredo_mp4")]
-fn render_frame_to_surface(
-    rt: &mut RuntimeState,
-    frame: &rust_h264::decoder::Frame,
-) {
+fn render_frame_to_surface(rt: &mut RuntimeState, frame: &rust_h264::decoder::Frame) {
     let w = frame.width.min(800);
     let h = frame.height.min(600);
-    let id = rt.desktop.wm.create_titled_window(120, 60, w, h, 0x000000, "Movie Player");
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(120, 60, w, h, 0x000000, "Movie Player");
     if let Some(win) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         // Convert YUV420 to RGB and render
         for y in 0..h {
@@ -279,7 +339,8 @@ fn render_frame_to_surface(
                 } else {
                     (0, 0, 0)
                 };
-                win.surface.set_pixel(x, y, (r as u32) << 16 | (g as u32) << 8 | b as u32);
+                win.surface
+                    .set_pixel(x, y, (r as u32) << 16 | (g as u32) << 8 | b as u32);
             }
         }
         rt.desktop.invalidate_window(id);
@@ -292,21 +353,32 @@ fn render_frame_to_surface(
 pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
-        Err(e) => { show_error(rt, "MP4 Error", &format!("Cannot read:\n{}", e)); return; }
+        Err(e) => {
+            show_error(rt, "MP4 Error", &format!("Cannot read:\n{}", e));
+            return;
+        }
     };
 
     // Demux MP4
     let mut demuxer = shiguredo_mp4::demux::Mp4FileDemuxer::new();
-    let input = shiguredo_mp4::demux::Input { position: 0, data: &data };
+    let input = shiguredo_mp4::demux::Input {
+        position: 0,
+        data: &data,
+    };
     demuxer.handle_input(input);
 
     // `demuxer.tracks()` borrows demuxer, extract into owned vec before sample iteration
     let tracks_with_kind: Vec<(u32, shiguredo_mp4::TrackKind, u64, u32)> = {
         let t = match demuxer.tracks() {
             Ok(t) => t,
-            Err(e) => { show_error(rt, "MP4 Error", &format!("No tracks: {:?}", e)); return; }
+            Err(e) => {
+                show_error(rt, "MP4 Error", &format!("No tracks: {:?}", e));
+                return;
+            }
         };
-        t.iter().map(|tr| (tr.track_id, tr.kind, tr.duration, tr.timescale.get())).collect()
+        t.iter()
+            .map(|tr| (tr.track_id, tr.kind, tr.duration, tr.timescale.get()))
+            .collect()
     };
 
     let mut video_track_id = None;
@@ -320,7 +392,9 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
         let dur_sec = dur as f64 / ts as f64;
         total_duration_ms = total_duration_ms.max(dur_sec * 1000.0);
         match kind {
-            TrackKind::Video => { video_track_id = Some(tid); }
+            TrackKind::Video => {
+                video_track_id = Some(tid);
+            }
             TrackKind::Audio => {
                 audio_info.push(format!("  Audio track {}: {} s", tid, dur_sec as u32));
             }
@@ -331,10 +405,19 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     let video_track_id = match video_track_id {
         Some(id) => id,
         None => {
-            show_text_window(rt, "Movie Player", &format!(
-                "File: {}\nFormat: MP4\n{} audio track(s)\nDuration: {:.0} s\n\nNo video track found.",
-                name, audio_info.len(), total_duration_ms / 1000.0,
-            ), 50, 0x0d0d1a, 0xCCCCFF);
+            show_text_window(
+                rt,
+                "Movie Player",
+                &format!(
+                    "File: {}\nFormat: MP4\n{} audio track(s)\nDuration: {:.0} s\n\nNo video track found.",
+                    name,
+                    audio_info.len(),
+                    total_duration_ms / 1000.0,
+                ),
+                50,
+                0x0d0d1a,
+                0xCCCCFF,
+            );
             return;
         }
     };
@@ -386,15 +469,21 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
 
                     // Parse the keyframe sample data (MP4 format → Annex B for decoder)
                     let start = sample.data_offset as usize;
-                    let end = start.checked_add(sample.data_size as usize).unwrap_or(usize::MAX);
+                    let end = start
+                        .checked_add(sample.data_size as usize)
+                        .unwrap_or(usize::MAX);
                     if end <= data.len() {
                         let sample_data = &data[start..end];
                         // Use parse_avcc with length_size=4 (MP4 standard)
                         let nals = rust_h264::nal::parse_avcc(sample_data, 4);
                         for nal in &nals {
                             if let Ok(Some(frame)) = decoder.decode_nal(nal) {
-                                if video_width == 0 { video_width = frame.width as u16; }
-                                if video_height == 0 { video_height = frame.height as u16; }
+                                if video_width == 0 {
+                                    video_width = frame.width as u16;
+                                }
+                                if video_height == 0 {
+                                    video_height = frame.height as u16;
+                                }
                                 render_frame_to_surface(rt, &frame);
                                 return;
                             }
@@ -417,8 +506,15 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     // Fallback: show info
     let msg = format!(
         "File: {}\nFormat: MP4\nVideo: {}x{} {}\n{} audio\nDuration: {:.0} s\n\nDecoding not yet available.",
-        name, video_width, video_height, video_codec,
-        if audio_info.is_empty() { "No audio".into() } else { format!("{} track(s)", audio_info.len()) },
+        name,
+        video_width,
+        video_height,
+        video_codec,
+        if audio_info.is_empty() {
+            "No audio".into()
+        } else {
+            format!("{} track(s)", audio_info.len())
+        },
         total_duration_ms / 1000.0,
     );
     show_text_window(rt, "Movie Player", &msg, 50, 0x0d0d1a, 0xCCCCFF);

@@ -31,20 +31,20 @@ pub const OP_PORTSC_BASE: usize = 0x44;
 // ============================================================================
 
 // ── USBCMD ───────────────────────────────────────────────────
-pub const USBCMD_RS: u32 = 1 << 0;       // Run/Stop
-pub const USBCMD_HCRESET: u32 = 1 << 1;  // Host Controller Reset
-pub const USBCMD_ASSE: u32 = 1 << 5;     // Async Schedule Enable
-pub const USBCMD_IAAD: u32 = 1 << 6;     // Interrupt on Async Advance Doorbell
+pub const USBCMD_RS: u32 = 1 << 0; // Run/Stop
+pub const USBCMD_HCRESET: u32 = 1 << 1; // Host Controller Reset
+pub const USBCMD_ASSE: u32 = 1 << 5; // Async Schedule Enable
+pub const USBCMD_IAAD: u32 = 1 << 6; // Interrupt on Async Advance Doorbell
 
 // ── USBSTS ───────────────────────────────────────────────────
-pub const USBSTS_HCH: u32 = 1 << 0;      // Host Controller Halted
-pub const USBSTS_PCD: u32 = 1 << 2;      // Port Change Detect
-pub const USBSTS_AAINT: u32 = 1 << 5;    // Async Advance Interrupt
+pub const USBSTS_HCH: u32 = 1 << 0; // Host Controller Halted
+pub const USBSTS_PCD: u32 = 1 << 2; // Port Change Detect
+pub const USBSTS_AAINT: u32 = 1 << 5; // Async Advance Interrupt
 
 // ── PORTSC ───────────────────────────────────────────────────
-pub const PORTSC_CCS: u32 = 1 << 0;      // Current Connect Status
-pub const PORTSC_PE: u32 = 1 << 2;       // Port Enabled
-pub const PORTSC_RESET: u32 = 1 << 8;    // Port Reset
+pub const PORTSC_CCS: u32 = 1 << 0; // Current Connect Status
+pub const PORTSC_PE: u32 = 1 << 2; // Port Enabled
+pub const PORTSC_RESET: u32 = 1 << 8; // Port Reset
 
 // ============================================================================
 //  EhciOperationalRegisters
@@ -74,16 +74,24 @@ impl EhciOperationalRegisters {
     }
 
     // ── USBCMD ────────────────────────────────────────────────
-    pub fn usbcmd(&self) -> u32 { self.read(OP_USBCMD) }
-    pub fn set_usbcmd(&self, val: u32) { self.write(OP_USBCMD, val); }
+    pub fn usbcmd(&self) -> u32 {
+        self.read(OP_USBCMD)
+    }
+    pub fn set_usbcmd(&self, val: u32) {
+        self.write(OP_USBCMD, val);
+    }
     pub fn set_usbcmd_bits(&self, bits: u32) {
         let cur = self.read(OP_USBCMD);
         self.write(OP_USBCMD, cur | bits);
     }
 
     // ── USBSTS ────────────────────────────────────────────────
-    pub fn usbsts(&self) -> u32 { self.read(OP_USBSTS) }
-    pub fn write_usbsts(&self, val: u32) { self.write(OP_USBSTS, val); }
+    pub fn usbsts(&self) -> u32 {
+        self.read(OP_USBSTS)
+    }
+    pub fn write_usbsts(&self, val: u32) {
+        self.write(OP_USBSTS, val);
+    }
 
     // ── ASYNCLISTADDR ─────────────────────────────────────────
     pub fn set_async_list_addr(&self, val: u32) {

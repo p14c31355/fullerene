@@ -8,6 +8,17 @@ use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
 
+/// Helper: write a formatted line to the terminal.
+macro_rules! tline {
+    ($t:expr, $($arg:tt)*) => { $t.write_str(&alloc::format!("{}{}", alloc::format!($($arg)*), '\n')); };
+}
+/// Helper: write a static string + newline to the terminal.
+macro_rules! tstr {
+    ($t:expr, $s:expr) => {
+        $t.write_str(concat!($s, '\n'));
+    };
+}
+
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
     nitrogen::ps2::keyboard::init_keyboard();
@@ -32,21 +43,22 @@ fn register_nozzle_hooks() {
                 Ok(entries) => {
                     for ent in entries {
                         if long_format {
-                            let kind = if ent.is_dir { "d" } else { "-" };
-                            let line = format!("{}  {:>8}  {}\n", kind, ent.size, ent.name);
-                            ctx.terminal.write_str(&line);
+                            tline!(
+                                ctx.terminal,
+                                "{}  {:>8}  {}",
+                                if ent.is_dir { "d" } else { "-" },
+                                ent.size,
+                                ent.name
+                            );
                         } else if ent.is_dir {
-                            let line = format!("  {}/\n", ent.name);
-                            ctx.terminal.write_str(&line);
+                            tline!(ctx.terminal, "  {}/", ent.name);
                         } else {
-                            let line = format!("  {}\n", ent.name);
-                            ctx.terminal.write_str(&line);
+                            tline!(ctx.terminal, "  {}", ent.name);
                         }
                     }
                 }
                 Err(e) => {
-                    let msg = format!("ls: {}: {}\n", path, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "ls: {}: {}", path, e);
                 }
             }
         }),
@@ -56,13 +68,11 @@ fn register_nozzle_hooks() {
                 loop {
                     match crate::vfs::read(fd.fd, &mut buf) {
                         Ok(0) => break,
-                        Ok(n) => {
-                            ctx.terminal
-                                .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
-                        }
+                        Ok(n) => ctx
+                            .terminal
+                            .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)")),
                         Err(e) => {
-                            let msg = format!("cat: {}\n", e);
-                            ctx.terminal.write_str(&msg);
+                            tline!(ctx.terminal, "cat: {}", e);
                             break;
                         }
                     }
@@ -71,8 +81,7 @@ fn register_nozzle_hooks() {
                 ctx.terminal.write_str("\n");
             }
             Err(e) => {
-                let msg = format!("cat: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "cat: {}: {}", path, e);
             }
         }),
         pwd: Some(|ctx| match crate::vfs::working_directory() {
@@ -81,15 +90,13 @@ fn register_nozzle_hooks() {
                 ctx.terminal.write_str("\n");
             }
             Err(e) => {
-                let msg = format!("pwd: {}\n", e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "pwd: {}", e);
             }
         }),
         cd: Some(|ctx, path| match crate::vfs::change_directory(path) {
             Ok(()) => {}
             Err(e) => {
-                let msg = format!("cd: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "cd: {}: {}", path, e);
             }
         }),
         tree: Some(|ctx, path| {
@@ -104,22 +111,17 @@ fn register_nozzle_hooks() {
             match crate::fs::walk_dir(&resolved) {
                 Ok(entries) => {
                     for entry in &entries {
-                        ctx.terminal.write_str(entry);
-                        ctx.terminal.write_str("\n");
+                        tline!(ctx.terminal, "{}", entry);
                     }
                 }
                 Err(e) => {
-                    let msg = format!("tree: {}: {}\n", resolved, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "tree: {}: {}", resolved, e);
                 }
             }
         }),
         find: Some(|ctx, path, pattern| {
             let resolved = if path == "." {
-                match crate::vfs::working_directory() {
-                    Ok(wd) => wd,
-                    Err(_) => String::from("/"),
-                }
+                crate::vfs::working_directory().unwrap_or("/".into())
             } else {
                 String::from(path)
             };
@@ -128,8 +130,7 @@ fn register_nozzle_hooks() {
                     let mut found = false;
                     for entry in &entries {
                         if entry.contains(pattern) {
-                            ctx.terminal.write_str(entry);
-                            ctx.terminal.write_str("\n");
+                            tline!(ctx.terminal, "{}", entry);
                             found = true;
                         }
                     }
@@ -138,78 +139,64 @@ fn register_nozzle_hooks() {
                     }
                 }
                 Err(e) => {
-                    let msg = format!("find: {}: {}\n", resolved, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "find: {}: {}", resolved, e);
                 }
             }
         }),
         cp: Some(|ctx, src, dst| match crate::fs::copy_file(src, dst) {
             Ok(()) => {
-                let msg = format!("Copied {} -> {}\n", src, dst);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Copied {} -> {}", src, dst);
             }
             Err(e) => {
-                let msg = format!("cp: {} -> {}: {}\n", src, dst, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "cp: {} -> {}: {}", src, dst, e);
             }
         }),
         mv: Some(|ctx, src, dst| match crate::fs::move_file(src, dst) {
             Ok(()) => {
-                let msg = format!("Moved {} -> {}\n", src, dst);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Moved {} -> {}", src, dst);
             }
             Err(e) => {
-                let msg = format!("mv: {} -> {}: {}\n", src, dst, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "mv: {} -> {}: {}", src, dst, e);
             }
         }),
         write: Some(|ctx, path, content| {
             match crate::fs::write_entire_file(path, content.as_bytes()) {
                 Ok(()) => {
-                    let msg = format!("Wrote {} bytes to {}\n", content.len(), path);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "Wrote {} bytes to {}", content.len(), path);
                 }
                 Err(e) => {
-                    let msg = format!("write: {}: {}\n", path, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "write: {}: {}", path, e);
                 }
             }
         }),
         rm: Some(|ctx, path| match crate::fs::remove(path) {
             Ok(()) => {
-                let msg = format!("Removed {}\n", path);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Removed {}", path);
             }
             Err(e) => {
-                let msg = format!("rm: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "rm: {}: {}", path, e);
             }
         }),
         mkdir: Some(|ctx, path| match crate::vfs::mkdir(path) {
             Ok(()) => {
-                let msg = format!("Created directory {}\n", path);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Created directory {}", path);
             }
             Err(e) => {
-                let msg = format!("mkdir: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "mkdir: {}: {}", path, e);
             }
         }),
         touch: Some(|ctx, path| match crate::vfs::open(path, 0) {
             Ok(fd) => {
                 let _ = crate::vfs::close(fd.fd);
-                let msg = format!("Touched {}\n", path);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Touched {}", path);
             }
             Err(_) => match crate::vfs::create(path) {
                 Ok(fd) => {
                     let _ = crate::vfs::close(fd.fd);
-                    let msg = format!("Touched {}\n", path);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "Touched {}", path);
                 }
                 Err(e) => {
-                    let msg = format!("touch: {}: {}\n", path, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "touch: {}: {}", path, e);
                 }
             },
         }),

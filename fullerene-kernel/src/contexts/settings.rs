@@ -80,7 +80,8 @@ impl MouseSettings {
     }
 
     pub fn set_acceleration(&self, on: bool) {
-        self.acceleration.store(if on { 1 } else { 0 }, Ordering::Relaxed);
+        self.acceleration
+            .store(if on { 1 } else { 0 }, Ordering::Relaxed);
     }
 }
 

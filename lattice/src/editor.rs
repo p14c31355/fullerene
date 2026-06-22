@@ -293,11 +293,16 @@ impl EditorBuffer {
         if viewport_rows == 0 {
             return;
         }
-        let last_visible = self.scroll_row.saturating_add(viewport_rows).saturating_sub(1);
+        let last_visible = self
+            .scroll_row
+            .saturating_add(viewport_rows)
+            .saturating_sub(1);
         if self.cursor_row < self.scroll_row {
             self.scroll_row = self.cursor_row;
         } else if self.cursor_row > last_visible {
-            self.scroll_row = self.cursor_row.saturating_sub(viewport_rows.saturating_sub(1));
+            self.scroll_row = self
+                .cursor_row
+                .saturating_sub(viewport_rows.saturating_sub(1));
         }
         // Prevent overscroll past the end
         if self.scroll_row.saturating_add(viewport_rows) > self.rows.len() {

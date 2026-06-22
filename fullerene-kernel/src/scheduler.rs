@@ -76,7 +76,8 @@ pub fn scheduler_loop() -> ! {
         gui::runtime_tick(tick_counter);
 
         // Check if the user requested a shell launch (via AppGrid / menu).
-        if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false) {
+        if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)
+        {
             petroleum::serial::_print(format_args!("Launching shell on demand\n"));
             crate::shell::shell_main();
             // After shell exits, re‑render the desktop and keep idling.

@@ -133,12 +133,8 @@ impl AhciController {
         let hba_phys = bar5.address;
         let hba_virt = ctx.phys_to_virt(hba_phys) as *mut u32;
 
-        ctx.map_mmio_region(
-            hba_phys as usize,
-            hba_virt as usize,
-            bar5.size as usize,
-        )
-        .ok()?;
+        ctx.map_mmio_region(hba_phys as usize, hba_virt as usize, bar5.size as usize)
+            .ok()?;
 
         let mut ctrl = Self {
             device,
@@ -208,7 +204,11 @@ impl AhciController {
         let cmd_list_phys = match ctx.allocate_frame() {
             Ok(phys) => phys,
             Err(e) => {
-                log::error!("AHCI port {}: failed to allocate cmd_list frame: {}", port, e);
+                log::error!(
+                    "AHCI port {}: failed to allocate cmd_list frame: {}",
+                    port,
+                    e
+                );
                 return;
             }
         };
@@ -225,7 +225,11 @@ impl AhciController {
         let cmd_table_phys = match ctx.allocate_frame() {
             Ok(phys) => phys,
             Err(e) => {
-                log::error!("AHCI port {}: failed to allocate cmd_table frame: {}", port, e);
+                log::error!(
+                    "AHCI port {}: failed to allocate cmd_table frame: {}",
+                    port,
+                    e
+                );
                 ctx.free_frame(cmd_list_phys);
                 ctx.free_frame(fis_phys);
                 return;

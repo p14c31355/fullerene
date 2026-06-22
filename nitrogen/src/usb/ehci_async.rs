@@ -70,7 +70,7 @@ pub const fn qh_ep_chars(addr: u8, endpoint: u8, speed: UsbSpeed, mps: u16) -> u
         | (speed_bits << 12)
         | (1 << 14)  // DTC (Data Toggle Control)
         | ((mps as u32) << 16)  // MaxPacketLength (bits 16-26)
-        | (8 << 28)  // RL (NAK reload count, bits 28-31)
+        | (8 << 28) // RL (NAK reload count, bits 28-31)
 }
 
 // ── qTD token fields ─────────────────────────────────────────
@@ -127,7 +127,12 @@ impl QueueHeadPool {
             free[i] = 63 - i;
         }
 
-        Some(Self { entries, phys, free, free_len: 64 })
+        Some(Self {
+            entries,
+            phys,
+            free,
+            free_len: 64,
+        })
     }
 
     /// Allocate a QueueHead. Returns (mutable ref, physical address).
@@ -212,7 +217,12 @@ impl QtdPool {
             free[count] = 119 - i;
             count += 1;
         }
-        Some(Self { entries, phys, free, free_len: count })
+        Some(Self {
+            entries,
+            phys,
+            free,
+            free_len: count,
+        })
     }
 
     /// Allocate a QTD. Returns (mutable ref, physical address).
@@ -298,7 +308,10 @@ impl AsyncSchedule {
             ptr::write_volatile(&mut head.token, 0);
         }
 
-        Some(Self { head, head_phys: phys })
+        Some(Self {
+            head,
+            head_phys: phys,
+        })
     }
 
     /// Insert a qH into the async list (after the head).
@@ -308,10 +321,7 @@ impl AsyncSchedule {
     pub fn insert(&mut self, qh_phys: u64, ctx: &dyn DriverContext) {
         let head_next = unsafe { ptr::read_volatile(&self.head.horz_link) };
         unsafe {
-            ptr::write_volatile(
-                &mut self.head.horz_link,
-                (qh_phys as u32) | QH_HORZ_TYPE_QH,
-            );
+            ptr::write_volatile(&mut self.head.horz_link, (qh_phys as u32) | QH_HORZ_TYPE_QH);
         }
         let qh_virt = ctx.phys_to_virt(qh_phys) as *mut QueueHead;
         unsafe {
@@ -369,7 +379,11 @@ impl TransferContext {
         let schedule = AsyncSchedule::alloc(ctx)?;
         let qh_pool = QueueHeadPool::alloc(ctx)?;
         let qtd_pool = QtdPool::alloc(ctx)?;
-        Some(Self { schedule, qh_pool, qtd_pool })
+        Some(Self {
+            schedule,
+            qh_pool,
+            qtd_pool,
+        })
     }
 
     /// Wait for a qTD to complete (active bit cleared).

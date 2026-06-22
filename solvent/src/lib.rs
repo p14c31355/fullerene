@@ -17,10 +17,12 @@
 
 extern crate alloc;
 
-// ── Modules (god-module decomposition per AGENTS.md §10) ────
+// ── Modules ──────────────────────────────────────────────────
+mod editor_bridge;
+mod explorer;
 mod handlers;
 mod menu_actions;
-mod explorer;
+mod settings_bridge;
 mod viewers;
 
 use alloc::boxed::Box;
@@ -30,13 +32,13 @@ use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::Desktop;
+use lattice::editor::EditorBuffer;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
-use resonance::{Dispatcher, Event, EventQueue, InputEvent, KeyCode, MouseButton};
+use resonance::{Dispatcher, Event, EventQueue, InputEvent, MouseButton};
 use spin::Mutex;
-use lattice::editor::EditorBuffer;
 
 // ── Aggregated kernel callbacks ──────────────────────────────
 
@@ -46,24 +48,15 @@ pub struct SolventCallbacks {
     pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
     pub wall_clock: Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>,
     pub vfs_readdir: Option<fn(&str) -> Result<Vec<VfsEntry>, &'static str>>,
-    /// Read a file's entire content into a byte vector.
-    /// Opens, reads all bytes, closes.
     pub vfs_read: Option<fn(&str) -> Result<Vec<u8>, &'static str>>,
-    /// Write bytes to a file (creates or overwrites).
     pub vfs_write: Option<fn(&str, &[u8]) -> Result<(), &'static str>>,
-    /// Create a new empty file.
     pub vfs_create: Option<fn(&str) -> Result<(), &'static str>>,
-    /// Create a directory.
     pub vfs_mkdir: Option<fn(&str) -> Result<(), &'static str>>,
-    /// Delete a file or empty directory.
     pub vfs_unlink: Option<fn(&str) -> Result<(), &'static str>>,
     pub process_list: Option<fn() -> Vec<ProcessEntry>>,
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
-    /// List mounted USB drives (name strings).
     pub usb_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
-    /// Poll USB controllers for newly connected devices. Returns true if new drive mounted.
     pub usb_poll: Option<fn() -> bool>,
-    /// Persist current settings to storage (called when settings change).
     pub settings_save: Option<fn()>,
 }
 
@@ -128,24 +121,18 @@ const TERM_WIN_H: u32 = DEFAULT_ROWS * GLYPH_H;
 const BG_COLOR: u32 = 0x1a1a2e;
 const CURSOR_BLINK_INTERVAL: u64 = 100;
 const CURSOR_TIMER_ID: TimerId = TimerId(1);
-/// Mouse sensitivity multiplier (set by kernel from SettingsContext).
-/// Default = 6 (legacy default).  The kernel updates this whenever the
-/// user changes the mouse sensitivity setting.
-pub static MOUSE_SENSITIVITY: core::sync::atomic::AtomicI16 =
-    core::sync::atomic::AtomicI16::new(6);
+pub static MOUSE_SENSITIVITY: core::sync::atomic::AtomicI16 = core::sync::atomic::AtomicI16::new(6);
 
-/// Apply settings from the kernel (called at boot and when settings change).
 pub fn apply_settings(sensitivity: f32, brightness_x100: u32, top_panel_enabled: bool) {
-    let sens_i16 = (sensitivity * 6.0) as i16; // scale to legacy multiplier
-    MOUSE_SENSITIVITY.store(sens_i16, core::sync::atomic::Ordering::Relaxed);
+    MOUSE_SENSITIVITY.store(
+        (sensitivity * 6.0) as i16,
+        core::sync::atomic::Ordering::Relaxed,
+    );
     DISPLAY_BRIGHTNESS_X100.store(brightness_x100, core::sync::atomic::Ordering::Relaxed);
     lattice::top_panel::set_top_panel_enabled(top_panel_enabled);
     force_desktop_redraw();
 }
 
-/// Software display brightness × 100 (set by kernel from SettingsContext).
-/// Default = 100 (1.0×).  Range: 10..100.
-/// Applied in the compositor as a post‑processing step.
 pub static DISPLAY_BRIGHTNESS_X100: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(100);
 const FRAME_INTERVAL_TICKS: u64 = 8;
@@ -155,8 +142,10 @@ pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
 const MAX_FB_PIXELS: usize = 3840 * 2160;
 
-pub fn get_usb_drives() -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)> {
-    SOLVENT_CALLBACKS.lock().usb_drive_list
+pub fn get_usb_drives() -> Vec<(String, String)> {
+    SOLVENT_CALLBACKS
+        .lock()
+        .usb_drive_list
         .map(|f| f())
         .unwrap_or_default()
 }
@@ -206,7 +195,7 @@ pub fn clock_string() -> String {
 }
 pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-// ── Static back‑buffer (BSS) ─────────────────────────────────
+// ── Static back‑buffer ───────────────────────────────────────
 static BACK_BUFFER: Mutex<[u32; MAX_FB_PIXELS]> = Mutex::new([0u32; MAX_FB_PIXELS]);
 
 // ── Runtime state ────────────────────────────────────────────
@@ -235,26 +224,20 @@ pub struct RuntimeState {
     pub cursor_save_x: i32,
     pub cursor_save_y: i32,
     pub cursor_save_valid: bool,
-    /// Editor state
     pub editor_window: Option<WindowId>,
     pub editor_buf: EditorBuffer,
     pub editor_launch_pending: bool,
     pub editor_dirty: bool,
-    /// Path of the file currently open in the editor (for save).
-    pub editor_file_path: Option<alloc::string::String>,
-    /// File explorer state
+    pub editor_file_path: Option<String>,
     pub explorer: Option<explorer::ExplorerContext>,
     pub explorer_dirty: bool,
-    /// Settings interactive state
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
-    /// Deferred USB poll flag (set when explorer needs USB enumeration)
     pub usb_poll_pending: bool,
 }
 
 pub fn init() {
     let desktop = Desktop::new(BG_COLOR);
-    // Terminal window is created lazily when the user clicks the Shell icon.
     let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();
@@ -412,42 +395,38 @@ macro_rules! mouse_edge {
 }
 
 pub fn poll_mouse_state() {
-    {
-        let ps2_state = nitrogen::ps2::mouse::consume_state();
-        let dx = ps2_state.get_x();
-        let dy = ps2_state.get_y();
-        let btn = nitrogen::ps2::mouse::mouse_buttons();
-        let mut mouse = MOUSE_STATE.lock();
-        let old_x = mouse.x;
-        let old_y = mouse.y;
-        let sens = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
-        mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(sens));
-        mouse.y = mouse
-            .y
-            .wrapping_add(dy.wrapping_mul(sens).wrapping_neg());
-        mouse.buttons = btn;
-        let cx = mouse.x as i32;
-        let cy = mouse.y as i32;
-        let buttons = mouse.buttons;
-        let moved = old_x != mouse.x || old_y != mouse.y;
-        drop(mouse);
-        if moved {
-            if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
-                queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
-            }
+    let ps2_state = nitrogen::ps2::mouse::consume_state();
+    let dx = ps2_state.get_x();
+    let dy = ps2_state.get_y();
+    let btn = nitrogen::ps2::mouse::mouse_buttons();
+    let mut mouse = MOUSE_STATE.lock();
+    let old_x = mouse.x;
+    let old_y = mouse.y;
+    let sens = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
+    mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(sens));
+    mouse.y = mouse.y.wrapping_add(dy.wrapping_mul(sens).wrapping_neg());
+    mouse.buttons = btn;
+    let cx = mouse.x as i32;
+    let cy = mouse.y as i32;
+    let buttons = mouse.buttons;
+    let moved = old_x != mouse.x || old_y != mouse.y;
+    drop(mouse);
+    if moved {
+        if let Some(ref mut queue) = *EVENT_QUEUE.lock() {
+            queue.push(Event::Input(InputEvent::MouseMove { x: cx, y: cy }));
         }
-        let mut prev_btn = PREV_MOUSE_BUTTONS.lock();
-        let prev = *prev_btn;
-        if buttons != prev {
-            let mut eq_lock = EVENT_QUEUE.lock();
-            if let Some(ref mut queue) = *eq_lock {
-                mouse_edge!(queue, buttons, prev, 0x01, Left);
-                mouse_edge!(queue, buttons, prev, 0x02, Right);
-                mouse_edge!(queue, buttons, prev, 0x04, Middle);
-            }
-        }
-        *prev_btn = buttons;
     }
+    let mut prev_btn = PREV_MOUSE_BUTTONS.lock();
+    let prev = *prev_btn;
+    if buttons != prev {
+        let mut eq_lock = EVENT_QUEUE.lock();
+        if let Some(ref mut queue) = *eq_lock {
+            mouse_edge!(queue, buttons, prev, 0x01, Left);
+            mouse_edge!(queue, buttons, prev, 0x02, Right);
+            mouse_edge!(queue, buttons, prev, 0x04, Middle);
+        }
+    }
+    *prev_btn = buttons;
 }
 
 // ── Keyboard polling ─────────────────────────────────────────
@@ -458,19 +437,12 @@ pub fn poll_keyboard() {
             Some(k) => k,
             None => break,
         };
-
-        // Route key events to the topmost window if it's editor or settings.
-        // Use a single lock acquisition to check and dispatch atomically.
         let mut rt = RUNTIME.lock();
         if let Some(ref mut r) = *rt {
-            let wms = r.desktop.wm.windows();
-            let top_id = wms.last().map(|w| w.id);
-            // Editor routing
-            if top_id.is_some()
-                && r.editor_window == top_id
-            {
+            let top_id = r.desktop.wm.windows().last().map(|w| w.id);
+            if top_id.is_some() && r.editor_window == top_id {
                 drop(rt);
-                editor_handle_key(scancode, pressed);
+                editor_bridge::editor_handle_key(scancode, pressed);
                 let key = scancode_to_resonance_keycode(scancode);
                 let event = if pressed {
                     Event::Input(InputEvent::KeyDown(key))
@@ -482,16 +454,12 @@ pub fn poll_keyboard() {
                 }
                 continue;
             }
-            // Settings routing
-            if top_id.is_some()
-                && r.settings_window == top_id
-            {
-                settings_handle_key_inner(r, scancode, pressed);
+            if top_id.is_some() && r.settings_window == top_id {
+                settings_bridge::settings_handle_key_inner(r, scancode, pressed);
                 continue;
             }
         }
         drop(rt);
-
         let key = scancode_to_resonance_keycode(scancode);
         let event = if pressed {
             Event::Input(InputEvent::KeyDown(key))
@@ -504,17 +472,17 @@ pub fn poll_keyboard() {
     }
 }
 
-fn scancode_to_resonance_keycode(scancode: u8) -> KeyCode {
-    const EXT: [Option<KeyCode>; 128] = {
+fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
+    use resonance::KeyCode::*;
+    const EXT: [Option<resonance::KeyCode>; 128] = {
         let mut t = [None; 128];
-        t[0x1D] = Some(KeyCode::Ctrl);
-        t[0x38] = Some(KeyCode::Alt);
-        t[0x5B] = Some(KeyCode::SuperLeft);
-        t[0x5C] = Some(KeyCode::SuperRight);
+        t[0x1D] = Some(Ctrl);
+        t[0x38] = Some(Alt);
+        t[0x5B] = Some(SuperLeft);
+        t[0x5C] = Some(SuperRight);
         t
     };
-    const BASE: [KeyCode; 128] = {
-        use KeyCode::*;
+    const BASE: [resonance::KeyCode; 128] = {
         let mut t = [Unknown(0); 128];
         let mut i = 0;
         while i < 128 {
@@ -644,18 +612,14 @@ pub fn process_events() {
 pub(crate) static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
     core::sync::atomic::AtomicI8::new(9);
 
+const DAYS_IN_MONTH: [i16; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 fn days_in_month(month: i16, year: i16) -> i16 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) {
-                29
-            } else {
-                28
-            }
-        }
-        _ => 31,
+    if month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) {
+        29
+    } else if (1..=12).contains(&month) {
+        DAYS_IN_MONTH[month as usize]
+    } else {
+        31
     }
 }
 
@@ -702,8 +666,7 @@ pub fn update_clock() {
     };
     let mut rt = RUNTIME.lock();
     if let Some(ref mut r) = *rt {
-        let old = &r.desktop.clock_text;
-        if *old != time_str {
+        if r.desktop.clock_text != time_str {
             r.clock_changed = true;
             r.desktop.clock_text = time_str.clone();
             r.desktop.top_panel.clock_text = time_str.clone();
@@ -732,14 +695,9 @@ pub fn render<F>(framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    // Prevent re-entrancy: if a timer IRQ fires while we hold RUNTIME.lock(),
-    // the inner runtime_tick() → process_events() would spin forever trying to
-    // acquire the same lock.  Setting RENDERING_SUSPENDED tells runtime_tick()
-    // to bail out immediately.
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
-
     struct SuspendGuard;
     impl Drop for SuspendGuard {
         fn drop(&mut self) {
@@ -767,18 +725,12 @@ where
 
     render_terminal(rt, rt.term_window);
 
-    // Detect editor surface-size mismatch (e.g. after maximize) and
-    // force a re-render even when `editor_dirty` is false.  The window
-    // manager resizes the window but not the surface, so the compositor
-    // would fill the extra area with the surface's bg_fallback colour
-    // instead of editor text cells.
+    // Detect editor surface-size mismatch (e.g. after maximize)
     if !rt.editor_dirty {
         if let Some(editor_id) = rt.editor_window {
             if let Some(w) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_id) {
-                let new_cols = (w.width / GLYPH_W).max(1);
-                let new_rows = (w.height / GLYPH_H).max(1);
-                if w.surface.width() != new_cols * GLYPH_W
-                    || w.surface.height() != new_rows * GLYPH_H
+                if w.surface.width() != (w.width / GLYPH_W).max(1) * GLYPH_W
+                    || w.surface.height() != (w.height / GLYPH_H).max(1) * GLYPH_H
                 {
                     rt.editor_dirty = true;
                 }
@@ -787,14 +739,15 @@ where
     }
 
     if rt.editor_dirty {
-        render_editor(rt);
+        editor_bridge::render_editor(rt);
     }
     if rt.explorer_dirty {
         render_explorer(rt);
     }
     if rt.settings_dirty {
-        render_settings(rt);
+        settings_bridge::render_settings(rt);
     }
+
     let tb_changed = rt.desktop.update_taskbar();
     let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
         Some(t) => t,
@@ -817,16 +770,14 @@ where
             bar_h,
         ));
     }
-    // Top panel dirty rect (when clock changes or enabled)
     if rt.clock_changed {
-        let panel_h = if lattice::top_panel::is_top_panel_enabled() {
-            lattice::top_panel::TOP_PANEL_HEIGHT
-        } else {
-            0
-        };
-        if panel_h > 0 {
-            rt.desktop
-                .push_dirty_rect(lattice::scene::DirtyRect::new(0, 0, fb_width, panel_h));
+        if lattice::top_panel::is_top_panel_enabled() {
+            rt.desktop.push_dirty_rect(lattice::scene::DirtyRect::new(
+                0,
+                0,
+                fb_width,
+                lattice::top_panel::TOP_PANEL_HEIGHT,
+            ));
         }
     }
     rt.clock_changed = false;
@@ -843,11 +794,8 @@ where
     let has_dirty = rt.desktop.has_pending_dirty_rects();
     if has_dirty {
         let was_transition = {
-            let prev = *PREV_TRANSITION.lock();
-            if prev {
-                *PREV_TRANSITION.lock() = false;
-            }
-            prev
+            let mut prev = PREV_TRANSITION.lock();
+            core::mem::replace(&mut *prev, false)
         };
         {
             let mut back = BACK_BUFFER.lock();
@@ -858,30 +806,25 @@ where
             };
             let scene = rt.desktop.scene();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
-            // Apply brightness to newly composited content in back buffer
             let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
-            if brightness < 100 && (bw > 0 && bh > 0) {
+            if brightness < 100 && bw > 0 && bh > 0 {
                 let back_w = fb_width as usize;
-                if was_transition {
-                    // Full redraw: apply brightness to entire back buffer
-                    for row in 0..fb_height as usize {
-                        let row_off = row * back_w;
-                        for col in 0..fb_width as usize {
-                            let idx = row_off + col;
-                            if idx < back_len {
-                                back[idx] = lattice::compositor::apply_brightness(back[idx], brightness);
-                            }
-                        }
-                    }
+                let rows: core::ops::Range<usize> = if was_transition {
+                    0..fb_height as usize
                 } else {
-                    // Dirty rect: apply brightness only to updated region
-                    for row in 0..bh {
-                        let row_off = ((by + row) as usize) * back_w;
-                        for col in 0..bw {
-                            let idx = row_off + (bx + col) as usize;
-                            if idx < back_len {
-                                back[idx] = lattice::compositor::apply_brightness(back[idx], brightness);
-                            }
+                    (by as usize)..((by + bh) as usize)
+                };
+                let cols: core::ops::Range<usize> = if was_transition {
+                    0..fb_width as usize
+                } else {
+                    (bx as usize)..((bx + bw) as usize)
+                };
+                for row in rows {
+                    for col in cols.clone() {
+                        let idx = row * back_w + col;
+                        if idx < back_len {
+                            back[idx] =
+                                lattice::compositor::apply_brightness(back[idx], brightness);
                         }
                     }
                 }
@@ -895,27 +838,26 @@ where
                         let copy_len = back_w.min(back_len.saturating_sub(src_off));
                         if copy_len > 0 {
                             unsafe {
-                                copy_to_fb_volatile(
-                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                core::ptr::copy_nonoverlapping(
                                     back.as_ptr().add(src_off),
+                                    fb_pixels.as_mut_ptr().add(dst_off),
                                     copy_len,
                                 );
                             }
                         }
                     }
                 } else {
-                    let b_w = bw as usize;
                     for row in 0..bh {
                         let src_off = ((by + row) as usize) * back_w + (bx as usize);
                         let dst_off = ((by + row) as usize) * fb_stride + (bx as usize);
-                        let len = b_w
+                        let len = (bw as usize)
                             .min(back_len.saturating_sub(src_off))
                             .min(fb_len.saturating_sub(dst_off));
                         if len > 0 {
                             unsafe {
-                                copy_to_fb_volatile(
-                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                core::ptr::copy_nonoverlapping(
                                     back.as_ptr().add(src_off),
+                                    fb_pixels.as_mut_ptr().add(dst_off),
                                     len,
                                 );
                             }
@@ -949,10 +891,7 @@ where
             ShellState::Desktop => {}
         }
 
-        // Render top panel only when enabled
-        if rt.shell_state == ShellState::Desktop
-            && lattice::top_panel::is_top_panel_enabled()
-        {
+        if rt.shell_state == ShellState::Desktop && lattice::top_panel::is_top_panel_enabled() {
             rt.desktop
                 .top_panel
                 .render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
@@ -994,7 +933,6 @@ where
                 rt.cursor_save_valid = true;
             }
         }
-
         if rt.desktop.cursor.visible {
             Compositor::draw_cursor_direct(
                 fb_pixels,
@@ -1005,16 +943,12 @@ where
         }
     }
 
-    // Execute deferred USB poll after rendering is complete
     if rt.usb_poll_pending {
         rt.usb_poll_pending = false;
-        // Drop runtime lock before polling to avoid deadlock
         drop(rt_lock);
-        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-        if let Some(f) = poll_fn {
+        if let Some(f) = SOLVENT_CALLBACKS.lock().usb_poll {
             let _ = f();
         }
-        // Re-acquire lock to refresh explorer sidebar
         if let Some(ref mut rt) = *RUNTIME.lock() {
             if let Some(ref mut explorer) = rt.explorer {
                 explorer.refresh_sidebar();
@@ -1022,12 +956,6 @@ where
                 rt.frame_due = true;
             }
         }
-    }
-}
-
-unsafe fn copy_to_fb_volatile(dst: *mut u32, src: *const u32, len: usize) {
-    unsafe {
-        core::ptr::copy_nonoverlapping(src, dst, len);
     }
 }
 
@@ -1055,25 +983,19 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
     let cur_rows = rt.term_buf.rows();
 
     if new_cols != cur_cols || new_rows != cur_rows {
-        let new_surface_pixels = (new_cols * new_rows * GLYPH_W * GLYPH_H) as usize;
-        let new_buf_cells = (new_cols * new_rows) as usize * 12;
-        let needed = (new_surface_pixels * 4).saturating_add(new_buf_cells);
-        if needed > HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed) {
-            let additional = needed
-                .saturating_sub(HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed))
-                .next_multiple_of(4096);
-            if let Some(extend_fn) = SOLVENT_CALLBACKS.lock().heap_extend {
-                if extend_fn(additional).is_err() {
-                    return;
-                } else {
+        let needed = ((new_cols * new_rows * GLYPH_W * GLYPH_H) as usize * 4)
+            .saturating_add((new_cols * new_rows) as usize * 12);
+        let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
+        if needed > reserve {
+            let additional = needed.saturating_sub(reserve).next_multiple_of(4096);
+            match SOLVENT_CALLBACKS.lock().heap_extend {
+                Some(f) if f(additional).is_ok() => {
                     HEAP_EXTEND_RESERVE
                         .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
                 }
-            } else {
-                return;
+                _ => return,
             }
         }
-        // Save the old cursor position before replacing the buffer.
         let old_cur_col = rt.term_buf.cursor_col();
         let old_cur_row = rt.term_buf.cursor_row();
         let new_buf = TerminalBuffer::new(new_cols, new_rows);
@@ -1085,24 +1007,22 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
                 for col in 0..(cur_cols as usize).min(new_cols as usize) {
                     let src_idx = row * src_cols + col;
                     if src_idx < src_cells.len() {
-                        let c = src_cells[src_idx];
                         if let Some(dst) = rt.term_buf.cell_mut(col as u32, row as u32) {
                             *dst = nozzle::terminal_buffer::Cell {
-                                ch: c.ch,
-                                fg: c.fg,
-                                bg: c.bg,
+                                ch: src_cells[src_idx].ch,
+                                fg: src_cells[src_idx].fg,
+                                bg: src_cells[src_idx].bg,
                             };
                         }
                     }
                 }
             }
         }
-        // Restore the cursor to its old position, clamped to the new dimensions.
         rt.term_buf.set_cursor(
             old_cur_col.min(new_cols.saturating_sub(1)),
             old_cur_row.min(new_rows.saturating_sub(1)),
         );
-        let _ = old_buf;
+        drop(old_buf);
         window.surface = lattice::surface::Surface::new(
             new_cols * GLYPH_W,
             new_rows * GLYPH_H,
@@ -1119,8 +1039,7 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
         );
     }
 
-    let term_buf = &rt.term_buf;
-    let total = (term_buf.cols() * term_buf.rows()) as usize;
+    let total = (rt.term_buf.cols() * rt.term_buf.rows()) as usize;
     if rt.term_cells.len() != total {
         rt.term_cells.resize(
             total,
@@ -1131,7 +1050,7 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
             },
         );
     }
-    let visible = term_buf.visible_cells();
+    let visible = rt.term_buf.visible_cells();
     rt.term_cells.resize(
         visible.len(),
         LatticeCell {
@@ -1149,7 +1068,6 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
             };
         }
     }
-
     terminal_surface::render(terminal_surface::RenderParams {
         surface: &mut window.surface,
         cells: &rt.term_cells,
@@ -1162,7 +1080,7 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
     rt.term_dirty = false;
 }
 
-// ── LatticeTerminal (nozzle::Terminal impl) ──────────────────
+// ── LatticeTerminal ──────────────────────────────────────────
 
 pub struct LatticeTerminal;
 
@@ -1208,7 +1126,6 @@ impl nozzle::Terminal for LatticeTerminal {
 
 static PIPE_STDIN: Mutex<Option<String>> = Mutex::new(None);
 static PIPE_STDOUT: Mutex<Option<String>> = Mutex::new(None);
-
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 
@@ -1217,7 +1134,6 @@ pub fn set_render_fn(f: fn()) {
 }
 
 fn runtime_tick_no_fb() {
-    // Prevent re‑entrancy from timer IRQs while this tick is in progress.
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -1228,29 +1144,30 @@ fn runtime_tick_no_fb() {
     update_clock();
     chrono_tick(now);
     process_events();
-    // Check for deferred shell launch (set by handlers while RUNTIME lock was held).
-    // Must be done outside the RUNTIME lock to avoid deadlock.
+
+    // Deferred launch checks
     if RUNTIME.lock().as_mut().map_or(false, |r| {
-        let pending = r.shell_launch_pending;
+        let p = r.shell_launch_pending;
         r.shell_launch_pending = false;
-        pending
+        p
     }) {
         ensure_terminal_window();
         launch_shell();
     }
-    // Check for deferred editor launch.
     if RUNTIME.lock().as_mut().map_or(false, |r| {
-        let pending = r.editor_launch_pending;
+        let p = r.editor_launch_pending;
         r.editor_launch_pending = false;
-        pending
+        p
     }) {
         ensure_editor_window();
     }
+
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         if due {
-            let tsc_per_ms = TSC_PER_MS.load(core::sync::atomic::Ordering::Relaxed);
-            let frame_tsc = tsc_per_ms.saturating_mul(FRAME_INTERVAL_MS);
+            let frame_tsc = TSC_PER_MS
+                .load(core::sync::atomic::Ordering::Relaxed)
+                .saturating_mul(FRAME_INTERVAL_MS);
             let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
             let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
             if now_tsc.wrapping_sub(last) < frame_tsc {
@@ -1262,9 +1179,6 @@ fn runtime_tick_no_fb() {
         }
         due
     });
-    // Clear the re‑entrancy flag before calling render(), so render()
-    // can set it again for its own critical section (where it holds
-    // RUNTIME.lock() and touches the framebuffer).
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         if let Some(render_fn) = *RENDER_FN.lock() {
@@ -1277,7 +1191,6 @@ pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
 where
     F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
 {
-    // Prevent re‑entrancy from timer IRQs while this tick is in progress.
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -1287,34 +1200,26 @@ where
     update_clock();
     chrono_tick(now);
     process_events();
-    // Check for deferred shell launch (set by handlers while RUNTIME lock was held).
-    // Must be done outside the RUNTIME lock to avoid deadlock.
-    if RUNTIME.lock().as_mut().map_or(false, |r| {
-        let pending = r.shell_launch_pending;
-        r.shell_launch_pending = false;
-        pending
-    }) {
-        ensure_terminal_window();
-        launch_shell();
+
+    if let Some(ref mut r) = *RUNTIME.lock() {
+        if r.shell_launch_pending {
+            r.shell_launch_pending = false;
+            drop(RUNTIME.lock());
+            ensure_terminal_window();
+            launch_shell();
+        }
+        if r.editor_launch_pending {
+            r.editor_launch_pending = false;
+            drop(RUNTIME.lock());
+            ensure_editor_window();
+        }
     }
-    // Check for deferred editor launch.
-    if RUNTIME.lock().as_mut().map_or(false, |r| {
-        let pending = r.editor_launch_pending;
-        r.editor_launch_pending = false;
-        pending
-    }) {
-        ensure_editor_window();
-    }
-    // Poll USB every ~100 ticks (~2 seconds at 17ms/tick).
-    // Callback pointer is extracted before invocation to avoid holding
-    // SOLVENT_CALLBACKS lock while VFS locks are acquired inside poll_usb().
-    static LAST_USB_POLL: core::sync::atomic::AtomicU64 =
-        core::sync::atomic::AtomicU64::new(0);
+
+    static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
     if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
         LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
-        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
-        if let Some(f) = poll_fn {
+        if let Some(f) = SOLVENT_CALLBACKS.lock().usb_poll {
             if f() {
                 if let Some(ref mut r) = *RUNTIME.lock() {
                     if let Some(ref mut e) = r.explorer {
@@ -1332,8 +1237,6 @@ where
         r.frame_due = false;
         due
     });
-    // Clear the re‑entrancy flag before calling render(), so render()
-    // can set it again for its own critical section.
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         render(framebuffer_fn);
@@ -1358,11 +1261,6 @@ pub fn resume_rendering() {
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
 }
 pub fn force_desktop_redraw() {
-    // Prevent re-entrancy from timer IRQs while we hold RUNTIME.lock().
-    // This is called from sys_control hooks (shell commands like
-    // "wallpaper mountain") which run in a different kernel process
-    // context.  If a timer IRQ fires while we hold the lock, the inner
-    // runtime_tick() would deadlock on the same spin::Mutex.
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -1379,7 +1277,7 @@ pub use lattice::wallpaper::{
     WallpaperMode, WallpaperPreset, find_preset, get_wallpaper, set_wallpaper, wallpaper_presets,
 };
 
-// ── Window API (for external apps like RLE Player) ───────────
+// ── Window API ───────────────────────────────────────────────
 pub fn create_window(
     title: impl Into<String>,
     x: i32,
@@ -1407,8 +1305,7 @@ where
         if w.minimized {
             return None;
         }
-        let ww = w.surface.width();
-        let wh = w.surface.height();
+        let (ww, wh) = (w.surface.width(), w.surface.height());
         Some(f(w.surface.pixels_mut(), ww, wh))
     })
 }
@@ -1430,18 +1327,14 @@ pub fn framebuffer_dims() -> (u32, u32) {
     (w, h)
 }
 
-/// Ensure a terminal window exists for the shell, creating one if necessary.
-/// Returns the WindowId of the terminal window.
 pub fn ensure_terminal_window() -> Option<WindowId> {
     let mut rt = RUNTIME.lock();
     let rt = rt.as_mut()?;
     if let Some(id) = rt.term_window {
-        // Check the window still exists (hasn't been closed)
         if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
             return Some(id);
         }
     }
-    // Create a new terminal window
     let id = rt
         .desktop
         .wm
@@ -1453,324 +1346,19 @@ pub fn ensure_terminal_window() -> Option<WindowId> {
     Some(id)
 }
 
-// ── Editor ───────────────────────────────────────────────────
+// ── Editor / Settings bridge (re-exports from submodules) ────
+pub use editor_bridge::editor_handle_key;
+pub use settings_bridge::settings_handle_key;
 
-/// Ensure an editor window exists, creating one if necessary.
+/// Ensure an editor window exists.
 pub fn ensure_editor_window() -> Option<WindowId> {
-    let mut rt = RUNTIME.lock();
-    let rt = rt.as_mut()?;
-    if let Some(id) = rt.editor_window {
-        if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
-            return Some(id);
-        }
-    }
-    let id = rt.desktop.wm.create_titled_window(
-        100,
-        80,
-        DEFAULT_COLS * GLYPH_W,
-        DEFAULT_ROWS * GLYPH_H,
-        0x0a0a1e,
-        "Text Editor",
-    );
-    rt.editor_window = Some(id);
-    rt.editor_dirty = true;
-    rt.desktop.force_full_redraw();
-    rt.frame_due = true;
-    Some(id)
+    RUNTIME
+        .lock()
+        .as_mut()
+        .and_then(editor_bridge::ensure_editor_window)
 }
 
-/// Render the editor buffer into its window surface.
-fn render_editor(rt: &mut RuntimeState) {
-    let editor_window = match rt.editor_window {
-        Some(id) => id,
-        None => return,
-    };
-    let window = match rt
-        .desktop
-        .wm
-        .windows_mut()
-        .iter_mut()
-        .find(|w| w.id == editor_window)
-    {
-        Some(w) => w,
-        None => {
-            rt.editor_window = None;
-            return;
-        }
-    };
-
-    let new_cols = (window.width / GLYPH_W).max(1);
-    let new_rows = (window.height / GLYPH_H).max(1);
-
-    // Resize the editor surface when the window changes (e.g. maximize).
-    // Extend the global heap if needed, same pattern as render_terminal.
-    let cur_surf_w = window.surface.width();
-    let cur_surf_h = window.surface.height();
-    let new_surf_w = new_cols * GLYPH_W;
-    let new_surf_h = new_rows * GLYPH_H;
-    if cur_surf_w != new_surf_w || cur_surf_h != new_surf_h {
-        let new_pixels = (new_surf_w * new_surf_h) as usize;
-        let needed = new_pixels * 4;
-        let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
-        if needed > reserve {
-            let additional = needed
-                .saturating_sub(reserve)
-                .next_multiple_of(4096);
-            let extend_fn = SOLVENT_CALLBACKS.lock().heap_extend;
-            if extend_fn.is_none() {
-                return;
-            }
-            match extend_fn.unwrap()(additional) {
-                Ok(_) => {
-                    HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
-                }
-                Err(_) => {
-                    return;
-                }
-            }
-        }
-        let bg = window.surface.get_pixel(0, 0).unwrap_or(0x0a0a1e);
-        window.surface = lattice::surface::Surface::new(new_surf_w, new_surf_h, bg);
-    }
-
-    rt.editor_buf.ensure_cursor_visible(new_rows as usize);
-
-    let visible = rt.editor_buf.visible_lines(new_rows as usize);
-    let total = (new_cols * new_rows) as usize;
-    let mut cells: Vec<LatticeCell> = Vec::with_capacity(total);
-    cells.resize(
-        total,
-        LatticeCell {
-            ch: b' ',
-            fg: 0xCCCCCC,
-            bg: 0x0a0a1e,
-        },
-    );
-
-    let scroll = rt.editor_buf.scroll_row;
-    for (row_idx, line) in visible.iter().enumerate() {
-        for (col, ch) in line.chars().enumerate() {
-            if col < new_cols as usize {
-                let cell_idx = row_idx * (new_cols as usize) + col;
-                if cell_idx < total {
-                    cells[cell_idx] = LatticeCell {
-                        ch: if ch.is_ascii() { ch as u8 } else { b'?' },
-                        fg: 0xCCCCCC,
-                        bg: 0x0a0a1e,
-                    };
-                }
-            }
-        }
-    }
-
-    // Draw cursor if it's in the visible range
-    if rt.editor_buf.cursor_row >= scroll
-        && rt.editor_buf.cursor_row < scroll + new_rows as usize
-    {
-        let cursor_display_row = rt.editor_buf.cursor_row - scroll;
-        let cursor_display_col = rt.editor_buf.cursor_col.min((new_cols - 1) as usize);
-        let cursor_idx = cursor_display_row * (new_cols as usize) + cursor_display_col;
-        if cursor_idx < total && rt.cursor_visible {
-            cells[cursor_idx] = LatticeCell {
-                ch: cells[cursor_idx].ch,
-                fg: 0x0a0a1e,
-                bg: 0xCCCCCC,
-            };
-        }
-    }
-
-    terminal_surface::render(terminal_surface::RenderParams {
-        surface: &mut window.surface,
-        cells: &cells,
-        cols: new_cols,
-        cursor_col: None,
-        cursor_row: None,
-        cursor_visible: false,
-    });
-    rt.desktop.invalidate_window(editor_window);
-    rt.editor_dirty = false;
-}
-
-// ── Settings (interactive) ───────────────────────────────────
-
-/// Selected row in the settings UI (0=mouse, 1=brightness, 2=top panel).
-/// Must be at module level so both `settings_handle_key_inner` and
-/// `render_settings` see the same state.
-static SETTINGS_SELECTED: Mutex<u32> = Mutex::new(0);
-
-/// Handle a key event when the settings window is focused.
-/// (Public entry point — acquires the runtime lock internally.)
-pub fn settings_handle_key(scancode: u8, pressed: bool) {
-    let mut rt = RUNTIME.lock();
-    if let Some(ref mut r) = *rt {
-        settings_handle_key_inner(r, scancode, pressed);
-    }
-}
-
-fn settings_handle_key_inner(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
-    let key = crate::scancode_to_resonance_keycode(scancode);
-    if !pressed {
-        return;
-    }
-
-    let mut sel = SETTINGS_SELECTED.lock();
-
-    match key {
-        KeyCode::Up => {
-            *sel = sel.saturating_sub(1).min(2);
-        }
-        KeyCode::Down => {
-            *sel = (*sel + 1).min(2);
-        }
-        KeyCode::Left | KeyCode::Right => {
-            let dec = key == KeyCode::Left;
-            match *sel {
-                0 => {
-                    // Mouse sensitivity: step by 0.25
-                    let cur = (crate::MOUSE_SENSITIVITY
-                        .load(core::sync::atomic::Ordering::Relaxed) as f32)
-                        / 6.0;
-                    let step = 0.25f32;
-                    let new_val = if dec {
-                        (cur - step).max(0.25)
-                    } else {
-                        (cur + step).min(4.0)
-                    };
-                    let new_i16 = (new_val * 6.0) as i16;
-                    crate::MOUSE_SENSITIVITY.store(new_i16, core::sync::atomic::Ordering::Relaxed);
-                    // Persist setting to storage
-                    if let Some(save_fn) = crate::SOLVENT_CALLBACKS.lock().settings_save {
-                        save_fn();
-                    }
-                }
-                1 => {
-                    // Brightness: step by 5 (out of 100)
-                    let cur = crate::DISPLAY_BRIGHTNESS_X100
-                        .load(core::sync::atomic::Ordering::Relaxed) as i32;
-                    let new_val = if dec {
-                        (cur - 5).max(10)
-                    } else {
-                        (cur + 5).min(100)
-                    };
-                    crate::DISPLAY_BRIGHTNESS_X100
-                        .store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
-                    rt.desktop.force_full_redraw();
-                    // Persist setting to storage
-                    if let Some(save_fn) = crate::SOLVENT_CALLBACKS.lock().settings_save {
-                        save_fn();
-                    }
-                }
-                2 => {
-                    // Top panel toggle
-                    if key == KeyCode::Right || key == KeyCode::Left {
-                        lattice::top_panel::toggle_top_panel();
-                        let (fw, fh, _) = *crate::FB_DIMS.lock();
-                        rt.desktop.relayout_maximized_windows(fw, fh);
-                        rt.desktop.force_full_redraw();
-                        // Persist setting to storage
-                        if let Some(save_fn) = crate::SOLVENT_CALLBACKS.lock().settings_save {
-                            save_fn();
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Escape => {
-            // Close settings window
-            if let Some(id) = rt.settings_window.take() {
-                rt.desktop.wm.close_window(id);
-            }
-            rt.settings_dirty = false;
-            rt.frame_due = true;
-            return;
-        }
-        _ => {}
-    }
-    drop(sel);
-    rt.settings_dirty = true;
-    rt.frame_due = true;
-}
-
-fn render_settings(rt: &mut RuntimeState) {
-    let settings_id = match rt.settings_window {
-        Some(id) => id,
-        None => return,
-    };
-    let window = match rt
-        .desktop
-        .wm
-        .windows_mut()
-        .iter_mut()
-        .find(|w| w.id == settings_id)
-    {
-        Some(w) => w,
-        None => {
-            rt.settings_window = None;
-            return;
-        }
-    };
-
-    let sens = (crate::MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
-    let bright = crate::DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
-    let top_panel = lattice::top_panel::is_top_panel_enabled();
-
-    let sel = *SETTINGS_SELECTED.lock();
-
-    // Build the display text
-    let prefix = |row: u32| -> &str {
-        if row == sel { "> " } else { "  " }
-    };
-
-    let info = alloc::format!(
-        "{}Settings\n\
-         \n\
-         {}Mouse Sensitivity: {:.2}\n\
-         {}Display Brightness: {}.{:02}\n\
-         {}Top Panel: {}",
-        prefix(99), // title row (not selectable)
-        prefix(0), sens,
-        prefix(1), bright / 100, bright % 100,
-        prefix(2), if top_panel { "ON " } else { "OFF" },
-    );
-
-    let info_bytes = info.as_bytes();
-    let cols = 38u32;
-    let total = cols as usize * 9usize;
-    let mut cells: Vec<LatticeCell> = Vec::with_capacity(total);
-    cells.resize(
-        total,
-        LatticeCell {
-            ch: b' ',
-            fg: 0xCCFFFF,
-            bg: 0x0d1a1a,
-        },
-    );
-
-    for (row, line) in info.lines().enumerate() {
-        for (col, ch) in line.bytes().enumerate() {
-            if col < cols as usize {
-                let idx = row * (cols as usize) + col;
-                if idx < total {
-                    cells[idx] = LatticeCell { ch, fg: 0xCCFFFF, bg: 0x0d1a1a };
-                }
-            }
-        }
-    }
-
-    terminal_surface::render(terminal_surface::RenderParams {
-        surface: &mut window.surface,
-        cells: &cells,
-        cols,
-        cursor_col: None,
-        cursor_row: None,
-        cursor_visible: false,
-    });
-    rt.desktop.invalidate_window(settings_id);
-    rt.settings_dirty = false;
-}
-
-// ── Explorer ──────────────────────────────────────────────────
+// ── Explorer ─────────────────────────────────────────────────
 
 fn render_explorer(rt: &mut RuntimeState) {
     let explorer = match rt.explorer.as_mut() {
@@ -1799,46 +1387,52 @@ fn render_explorer(rt: &mut RuntimeState) {
     rt.explorer_dirty = false;
 }
 
-/// Launch a file based on its extension association.
-///
-/// Called when the user double-clicks a file in the explorer.
-/// Reads the file content (if applicable) and opens the appropriate app.
 pub fn launch_file(rt: &mut RuntimeState, path: &str) {
-    let name = match path.rsplit('/').next() {
-        Some(n) => n,
-        None => path,
-    };
+    let name = path.rsplit('/').next().unwrap_or(path);
     let ext = explorer::extension_of(name);
     let app = explorer::lookup_association(ext);
-
-    // For text-based files, read content and open in editor
     let is_text = matches!(
         ext,
-        "txt" | "md" | "log" | "toml" | "rs" | "c" | "h" | "py"
-            | "js" | "json" | "xml" | "yml" | "yaml" | "ini"
-            | "cfg" | "sh" | "bat" | "env" | "gitignore" | "lock"
+        "txt"
+            | "md"
+            | "log"
+            | "toml"
+            | "rs"
+            | "c"
+            | "h"
+            | "py"
+            | "js"
+            | "json"
+            | "xml"
+            | "yml"
+            | "yaml"
+            | "ini"
+            | "cfg"
+            | "sh"
+            | "bat"
+            | "env"
+            | "gitignore"
+            | "lock"
     );
 
     if is_text {
-        // Read file content in a separate scope to release SOLVENT_CALLBACKS lock
-        let file_content = {
-            let read_fn = match SOLVENT_CALLBACKS.lock().vfs_read {
-                Some(f) => f,
-                None => return,
-            };
-            match read_fn(path) {
+        let file_content = match SOLVENT_CALLBACKS.lock().vfs_read {
+            Some(f) => match f(path) {
                 Ok(data) => match core::str::from_utf8(&data) {
-                    Ok(s) => alloc::string::String::from(s),
+                    Ok(s) => String::from(s),
                     Err(_) => return,
                 },
                 Err(_) => return,
-            }
+            },
+            None => return,
         };
-        // Open editor with file content
         let id = rt.desktop.wm.create_titled_window(
-            100, 80,
-            DEFAULT_COLS * GLYPH_W, DEFAULT_ROWS * GLYPH_H,
-            0x0a0a1e, "Text Editor",
+            100,
+            80,
+            DEFAULT_COLS * GLYPH_W,
+            DEFAULT_ROWS * GLYPH_H,
+            0x0a0a1e,
+            "Text Editor",
         );
         if let Some(old_id) = rt.editor_window {
             if rt.desktop.wm.windows().iter().any(|w| w.id == old_id) {
@@ -1847,7 +1441,7 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
         }
         rt.editor_window = Some(id);
         rt.editor_buf = lattice::editor::EditorBuffer::from_text(&file_content);
-        rt.editor_file_path = Some(alloc::string::String::from(path));
+        rt.editor_file_path = Some(String::from(path));
         rt.editor_dirty = true;
         rt.desktop.force_full_redraw();
         rt.frame_due = true;
@@ -1855,146 +1449,74 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
         return;
     }
 
-    // Dispatch to format-specific viewers
     match ext {
-        "bmp" => { crate::viewers::open_bmp(rt, path, name); return; }
+        "bmp" => {
+            crate::viewers::open_bmp(rt, path, name);
+            return;
+        }
         #[cfg(feature = "minipng")]
-        "png" => { crate::viewers::open_png(rt, path, name); return; }
-        "wav" => { crate::viewers::open_wav(rt, path, name); return; }
+        "png" => {
+            crate::viewers::open_png(rt, path, name);
+            return;
+        }
+        "wav" => {
+            crate::viewers::open_wav(rt, path, name);
+            return;
+        }
         #[cfg(feature = "rmp3")]
-        "mp3" => { crate::viewers::open_mp3(rt, path, name); return; }
+        "mp3" => {
+            crate::viewers::open_mp3(rt, path, name);
+            return;
+        }
         #[cfg(feature = "shiguredo_mp4")]
-        "mp4" => { crate::viewers::open_mp4(rt, path, name); return; }
-        "tar" | "gz" | "xz" => { crate::viewers::open_tar(rt, path, name); return; }
+        "mp4" => {
+            crate::viewers::open_mp4(rt, path, name);
+            return;
+        }
+        "tar" | "gz" | "xz" => {
+            crate::viewers::open_tar(rt, path, name);
+            return;
+        }
         _ => {}
     }
 
-    // Unknown file type: show info window
     let app_name = app.unwrap_or("Unknown");
     let msg = alloc::format!(
         "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
-        name, ext, app_name, app_name
+        name,
+        ext,
+        app_name,
+        app_name
     );
     let cols = 50;
     let rows = (msg.lines().count() as u32) + 3;
     let id = rt.desktop.wm.create_titled_window(
-        200, 160, cols * GLYPH_W, rows * GLYPH_H,
-        0x1a1a0d, "Open File",
+        200,
+        160,
+        cols * GLYPH_W,
+        rows * GLYPH_H,
+        0x1a1a0d,
+        "Open File",
     );
     if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let _ = crate::menu_actions::render_text_into_surface(
-            &mut w.surface, &msg, cols, 0xFFFFCC, 0x1a1a0d,
+            &mut w.surface,
+            &msg,
+            cols,
+            0xFFFFCC,
+            0x1a1a0d,
         );
     }
     rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
 }
 
-/// Save the current editor buffer to its associated file.
-fn editor_save_current(rt: &mut RuntimeState) {
-    let path = match rt.editor_file_path.as_ref() {
-        Some(p) => p.clone(),
-        None => return,
-    };
-    let content = rt.editor_buf.full_text();
-    // Write via VFS callback
-    let write_fn = match SOLVENT_CALLBACKS.lock().vfs_write {
-        Some(f) => f,
-        None => return,
-    };
-    let result = write_fn(&path, content.as_bytes());
-    if result.is_ok() {
-        rt.editor_buf.dirty = false;
-    }
-    rt.editor_dirty = true;
-    rt.frame_due = true;
-}
-
-/// Handle a key event for the editor.
-pub fn editor_handle_key(scancode: u8, pressed: bool) {
-    let key = crate::scancode_to_resonance_keycode(scancode);
-    let mut rt = RUNTIME.lock();
-    let rt = match rt.as_mut() {
-        Some(r) => r,
-        None => return,
-    };
-
-    static EDITOR_CTRL_HELD: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    if key == KeyCode::Ctrl {
-        EDITOR_CTRL_HELD.store(pressed, core::sync::atomic::Ordering::Relaxed);
-        return;
-    }
-    if key == KeyCode::S && EDITOR_CTRL_HELD.load(core::sync::atomic::Ordering::Relaxed) && pressed {
-        editor_save_current(rt);
-        return;
-    }
-
-    // Ignore key release events for all other keys — only presses produce editor actions
-    if !pressed {
-        return;
-    }
-
-    let viewport = |rt: &RuntimeState| -> usize {
-        rt.editor_window.and_then(|id| {
-            rt.desktop.wm.windows().iter().find(|w| w.id == id)
-                .map(|w| (w.height / GLYPH_H).max(1) as usize)
-        }).unwrap_or(10)
-    };
-
-    let vp = viewport(rt);
-
-    match key {
-        KeyCode::Enter => { rt.editor_buf.insert_char(b'\n'); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Backspace => { rt.editor_buf.backspace(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Left => { rt.editor_buf.cursor_left(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Right => { rt.editor_buf.cursor_right(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Up => { rt.editor_buf.cursor_up(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Down => { rt.editor_buf.cursor_down(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Home => { rt.editor_buf.cursor_home(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::End => { rt.editor_buf.cursor_end(); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::PageUp => { rt.editor_buf.page_up(vp); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::PageDown => { rt.editor_buf.page_down(vp); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Space => { rt.editor_buf.insert_char(b' '); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        KeyCode::Tab => { rt.editor_buf.insert_char(b' '); rt.editor_buf.insert_char(b' '); rt.editor_buf.clamp_scroll_with_viewport(vp); }
-        _ => {
-            if let Some(byte) = key_to_char(key) {
-                rt.editor_buf.insert_char(byte);
-                rt.editor_buf.clamp_scroll_with_viewport(vp);
-            } else { return; }
-        }
-    }
-    rt.editor_dirty = true;
-    rt.frame_due = true;
-}
-
-fn key_to_char(key: KeyCode) -> Option<u8> {
-    match key {
-        KeyCode::A => Some(b'a'), KeyCode::B => Some(b'b'), KeyCode::C => Some(b'c'),
-        KeyCode::D => Some(b'd'), KeyCode::E => Some(b'e'), KeyCode::F => Some(b'f'),
-        KeyCode::G => Some(b'g'), KeyCode::H => Some(b'h'), KeyCode::I => Some(b'i'),
-        KeyCode::J => Some(b'j'), KeyCode::K => Some(b'k'), KeyCode::L => Some(b'l'),
-        KeyCode::M => Some(b'm'), KeyCode::N => Some(b'n'), KeyCode::O => Some(b'o'),
-        KeyCode::P => Some(b'p'), KeyCode::Q => Some(b'q'), KeyCode::R => Some(b'r'),
-        KeyCode::S => Some(b's'), KeyCode::T => Some(b't'), KeyCode::U => Some(b'u'),
-        KeyCode::V => Some(b'v'), KeyCode::W => Some(b'w'), KeyCode::X => Some(b'x'),
-        KeyCode::Y => Some(b'y'), KeyCode::Z => Some(b'z'),
-        KeyCode::Digit1 => Some(b'1'), KeyCode::Digit2 => Some(b'2'), KeyCode::Digit3 => Some(b'3'),
-        KeyCode::Digit4 => Some(b'4'), KeyCode::Digit5 => Some(b'5'), KeyCode::Digit6 => Some(b'6'),
-        KeyCode::Digit7 => Some(b'7'), KeyCode::Digit8 => Some(b'8'), KeyCode::Digit9 => Some(b'9'),
-        KeyCode::Digit0 => Some(b'0'),
-        _ => None,
-    }
-}
-
-// ── Shell bootstrap (kernel→solvent direction per AGENTS.md §3)
+// ── Shell bootstrap ──────────────────────────────────────────
 pub fn run_shell_on(terminal: &mut dyn nozzle::Terminal, prompt: &str) {
-    let commands = nozzle::default_commands();
-    let mut shell = nozzle::Shell::new(terminal, commands);
+    let mut shell = nozzle::Shell::new(terminal, nozzle::default_commands());
     shell.set_prompt(prompt);
     shell.run();
 }
 
-/// Track whether a Super key is held (for shortcuts).
 pub(crate) static SUPER_HELD: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);

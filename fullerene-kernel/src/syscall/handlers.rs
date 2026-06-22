@@ -1,4 +1,4 @@
-use super::interface::{copy_user_string, SyscallError, SyscallResult};
+use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
 use crate::process::{Process, ProcessState};
 use alloc::boxed::Box;
@@ -11,8 +11,8 @@ use petroleum::common::memory::{user_slice, user_slice_mut};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
-use crate::linux::Runtime as LinuxRuntimeTrait;
 use crate::contexts::kernel;
+use crate::linux::Runtime as LinuxRuntimeTrait;
 
 // ── Global tables ──────────────────────────────────────────────
 
@@ -193,21 +193,20 @@ pub unsafe extern "C" fn handle_syscall(
         .unwrap_or(false);
 
     if dispatch_mode {
-        let mut linux_rt = current_pid
-            .and_then(|pid| {
-                crate::process::PROCESS_MANAGER
-                    .with_process(pid, |p| {
-                        p.dispatch_mode.take().and_then(|mode| {
-                            if let crate::linux::DispatchMode::Linux(rt) = mode {
-                                Some(rt)
-                            } else {
-                                p.dispatch_mode = Some(mode);
-                                None
-                            }
-                        })
+        let mut linux_rt = current_pid.and_then(|pid| {
+            crate::process::PROCESS_MANAGER
+                .with_process(pid, |p| {
+                    p.dispatch_mode.take().and_then(|mode| {
+                        if let crate::linux::DispatchMode::Linux(rt) = mode {
+                            Some(rt)
+                        } else {
+                            p.dispatch_mode = Some(mode);
+                            None
+                        }
                     })
-                    .flatten()
-            });
+                })
+                .flatten()
+        });
 
         let ret = if let Some(mut rt) = linux_rt.take() {
             let result = rt.dispatch(syscall_num, &[arg1, arg2, arg3, arg4, arg5, arg6]);
@@ -571,10 +570,7 @@ const MAP_PRIVATE: u64 = 0x02;
 
 /// Helper: unmap+free all pages in `pages` on a partial failure during
 /// [`syscall_map_memory`].
-fn rollback_mapped_pages(
-    memory: &mut crate::contexts::memory::MemoryContext,
-    pages: &[usize],
-) {
+fn rollback_mapped_pages(memory: &mut crate::contexts::memory::MemoryContext, pages: &[usize]) {
     if let Some(mgr) = memory.manager.as_mut() {
         for vaddr in pages {
             let _ = mgr.safe_unmap_page(*vaddr);
@@ -590,7 +586,9 @@ fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> SyscallResult 
     }
 
     if addr_hint != 0 {
-        let end_vaddr = addr_hint.checked_add(length).ok_or(SyscallError::InvalidArgument)?;
+        let end_vaddr = addr_hint
+            .checked_add(length)
+            .ok_or(SyscallError::InvalidArgument)?;
         let start_addr = VirtAddr::new(addr_hint);
         let end_addr = VirtAddr::new(end_vaddr - 1);
         if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
@@ -640,21 +638,17 @@ fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> SyscallResult 
         // unmap+free them on a partial failure.
         let mut mapped_pages: Vec<usize> = Vec::with_capacity(num_pages);
         for i in 0..num_pages {
-            let frame = memory
-                .allocate_frame()
-                .map_err(|_| {
-                    rollback_mapped_pages(memory, &mapped_pages);
-                    SyscallError::OutOfMemory
-                })?;
+            let frame = memory.allocate_frame().map_err(|_| {
+                rollback_mapped_pages(memory, &mapped_pages);
+                SyscallError::OutOfMemory
+            })?;
             let vaddr = virt_base + i * 4096;
-            memory
-                .map_page(vaddr, frame, pt_flags)
-                .map_err(|_| {
-                    // Free the frame we just allocated (not yet tracked).
-                    let _ = memory.free_frame(frame);
-                    rollback_mapped_pages(memory, &mapped_pages);
-                    SyscallError::OutOfMemory
-                })?;
+            memory.map_page(vaddr, frame, pt_flags).map_err(|_| {
+                // Free the frame we just allocated (not yet tracked).
+                let _ = memory.free_frame(frame);
+                rollback_mapped_pages(memory, &mapped_pages);
+                SyscallError::OutOfMemory
+            })?;
             mapped_pages.push(vaddr);
         }
 
@@ -671,7 +665,9 @@ fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
     if len == 0 || (addr % 4096) != 0 {
         return Err(SyscallError::InvalidArgument);
     }
-    let end_vaddr = addr.checked_add(length).ok_or(SyscallError::InvalidArgument)?;
+    let end_vaddr = addr
+        .checked_add(length)
+        .ok_or(SyscallError::InvalidArgument)?;
     // Validate that the entire range is in user space.
     let start_addr = VirtAddr::new(addr);
     let end_addr = VirtAddr::new(end_vaddr - 1);
@@ -715,10 +711,8 @@ fn syscall_query_memory(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
     // Stub: return a single info structure with zero fields.
     // A real implementation would fill a MemoryInfo struct with
     // { base, size, protection, type } for the queried address.
-    let data =
-        unsafe { user_slice_mut(info_buf, buf_size, false) }.map_err(|_| {
-            SyscallError::InvalidArgument
-        })?;
+    let data = unsafe { user_slice_mut(info_buf, buf_size, false) }
+        .map_err(|_| SyscallError::InvalidArgument)?;
     data.fill(0);
     Ok(0)
 }
@@ -876,9 +870,7 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
 
     let (parent_pt_phys, parent_context) = {
         crate::process::PROCESS_MANAGER
-            .with_process(current_pid, |p| {
-                (p.page_table_phys_addr, p.context.clone())
-            })
+            .with_process(current_pid, |p| (p.page_table_phys_addr, p.context.clone()))
             .ok_or(SyscallError::NoSuchProcess)?
     };
 
@@ -963,7 +955,10 @@ fn syscall_join_thread(handle: u64) -> SyscallResult {
                     _ => return Err(SyscallError::BadHandle),
                 };
                 let inner = thread.inner.lock();
-                inner.exit_code.map(|ec| ec as u64).ok_or(SyscallError::NoSuchProcess)
+                inner
+                    .exit_code
+                    .map(|ec| ec as u64)
+                    .ok_or(SyscallError::NoSuchProcess)
             })
         }
     }
@@ -1018,13 +1013,7 @@ const WINDOW_BORDERED: u64 = 1;
 const WINDOW_FRAMELESS: u64 = 2;
 const WINDOW_NO_TASKBAR: u64 = 4;
 
-fn syscall_create_window(
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    flags: u64,
-) -> SyscallResult {
+fn syscall_create_window(x: i32, y: i32, width: u32, height: u32, flags: u64) -> SyscallResult {
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return Err(SyscallError::InvalidArgument);
     }
@@ -1033,14 +1022,7 @@ fn syscall_create_window(
 
     let win_id: crate::contexts::window::WindowId = match kernel::with_kernel_mut(|k| {
         let win_id = k.window.next_window_id();
-        let win = crate::contexts::window::Window::new(
-            win_id,
-            "New Window",
-            x,
-            y,
-            width,
-            height,
-        );
+        let win = crate::contexts::window::Window::new(win_id, "New Window", x, y, width, height);
         k.window.add_window(win);
         win_id
     }) {
@@ -1146,11 +1128,7 @@ fn syscall_get_window_event(handle: u64, buf: *mut u8, buf_size: usize) -> Sysca
 //  Device syscalls (70–79)
 // ===================================================================
 
-fn syscall_enumerate_devices(
-    class: u64,
-    buf: *mut u8,
-    buf_size: usize,
-) -> SyscallResult {
+fn syscall_enumerate_devices(class: u64, buf: *mut u8, buf_size: usize) -> SyscallResult {
     if buf.is_null() || buf_size == 0 {
         return Err(SyscallError::InvalidArgument);
     }
@@ -1236,8 +1214,8 @@ fn syscall_channel_send(handle: u64, data_ptr: *const u8, data_size: u64) -> Sys
     }
 
     petroleum::validate_user_buffer(data_ptr as usize, size, false)?;
-    let data = unsafe { user_slice(data_ptr, size, false) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let data =
+        unsafe { user_slice(data_ptr, size, false) }.map_err(|_| SyscallError::InvalidArgument)?;
 
     // Allocate the message vector outside the lock to reduce contention.
     let msg_vec = Vec::from(data);
@@ -1506,8 +1484,8 @@ fn syscall_uptime(buf: *mut u8) -> SyscallResult {
     }
     petroleum::validate_user_buffer(buf as usize, 8, false)?;
     let us = uptime_us();
-    let data = unsafe { user_slice_mut(buf, 8, false) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let data =
+        unsafe { user_slice_mut(buf, 8, false) }.map_err(|_| SyscallError::InvalidArgument)?;
     data[0..8].copy_from_slice(&us.to_ne_bytes());
     Ok(0)
 }

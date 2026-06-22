@@ -22,23 +22,16 @@ impl DriverContext for KernelDriverContext {
 
     fn allocate_frame(&self) -> Result<u64, DriverContextError> {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
-        let m = mgr
-            .as_mut()
-            .ok_or(DriverContextError::OutOfMemory)?;
+        let m = mgr.as_mut().ok_or(DriverContextError::OutOfMemory)?;
         let phys = m
             .allocate_frame()
             .map_err(|_| DriverContextError::OutOfMemory)?;
         Ok(phys as u64)
     }
 
-    fn allocate_contiguous_frames(
-        &self,
-        count: usize,
-    ) -> Result<u64, DriverContextError> {
+    fn allocate_contiguous_frames(&self, count: usize) -> Result<u64, DriverContextError> {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
-        let m = mgr
-            .as_mut()
-            .ok_or(DriverContextError::OutOfMemory)?;
+        let m = mgr.as_mut().ok_or(DriverContextError::OutOfMemory)?;
         let phys = m
             .allocate_contiguous_frames(count)
             .map_err(|_| DriverContextError::OutOfMemory)?;
@@ -52,9 +45,7 @@ impl DriverContext for KernelDriverContext {
         size: usize,
     ) -> Result<(), DriverContextError> {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
-        let m = mgr
-            .as_mut()
-            .ok_or(DriverContextError::MmioMappingFailed)?;
+        let m = mgr.as_mut().ok_or(DriverContextError::MmioMappingFailed)?;
         m.map_mmio_region(phys, virt, size)
             .map_err(|_| DriverContextError::MmioMappingFailed)
     }
@@ -66,9 +57,7 @@ impl DriverContext for KernelDriverContext {
         flags: PageFlags,
     ) -> Result<(), DriverContextError> {
         let mut mgr = crate::memory_management::get_memory_manager().lock();
-        let m = mgr
-            .as_mut()
-            .ok_or(DriverContextError::MmioMappingFailed)?;
+        let m = mgr.as_mut().ok_or(DriverContextError::MmioMappingFailed)?;
 
         let mut pte_flags = PageTableFlags::PRESENT;
         if !flags.executable {

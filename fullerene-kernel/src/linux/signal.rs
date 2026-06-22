@@ -1,6 +1,6 @@
 // Linux signal syscall implementations
-use super::runtime::{LinuxRuntime, copy_from_user, copy_val_to_user, errno_code};
 use super::numbers::*;
+use super::runtime::{LinuxRuntime, copy_from_user, copy_val_to_user, errno_code};
 use super::types::*;
 
 pub fn sys_rt_sigaction(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -56,9 +56,9 @@ pub fn sys_rt_sigprocmask(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if _set != 0 {
         let new_mask = unsafe { core::ptr::read_volatile(_set as *const u64) };
         match _how {
-            0 => rt.signal_pending |= new_mask,   // SIG_BLOCK
-            1 => rt.signal_pending &= !new_mask,   // SIG_UNBLOCK
-            2 => rt.signal_pending = new_mask,     // SIG_SETMASK
+            0 => rt.signal_pending |= new_mask,  // SIG_BLOCK
+            1 => rt.signal_pending &= !new_mask, // SIG_UNBLOCK
+            2 => rt.signal_pending = new_mask,   // SIG_SETMASK
             _ => return errno_code(EINVAL),
         }
     }
