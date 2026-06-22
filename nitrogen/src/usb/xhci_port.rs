@@ -25,6 +25,9 @@ use crate::usb::UsbSpeed;
 /// Maximum consecutive port detection failures before marking the port as done.
 pub const MAX_PORT_RETRIES: u32 = 3;
 
+/// Default TSC ticks per millisecond (1 GHz minimum).
+const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
+
 // ============================================================================
 //  Port — data for a single port
 // ============================================================================
@@ -196,7 +199,7 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
             pr_cleared = true;
             break;
         }
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+        delay_us(100);
     }
     if !pr_cleared {
         return Err("port reset timeout");
@@ -207,7 +210,7 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         if op.portsc(port).0 & PORTSC_PED != 0 {
             break;
         }
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+        delay_us(100);
     }
 
     // Check CCS survived
@@ -231,7 +234,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
         if op.portsc(port).0 & PORTSC_WPR == 0 {
             break;
         }
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+        delay_us(100);
     }
 
     let v2 = op.portsc(port);
@@ -254,27 +257,43 @@ pub fn power_cycle(op: &OperationalRegisters, port: u32) {
     let ps_raw = op.portsc(port).0;
     // Power off
     op.write_portsc(port, ps_raw & !(PORTSC_PP | PORTSC_RW1C_MASK));
-    for _ in 0..600_000 {
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
-    }
+    delay_ms(20);
     // Power on
     let v2 = op.portsc(port).0;
     op.write_portsc(port, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
-    for _ in 0..1_200_000 {
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
-    }
+    delay_ms(50);
 }
 
 // ============================================================================
 //  Utility: delay function
 // ============================================================================
 
-/// Spin-loop delay for the given number of iterations.
-/// Each iteration writes to port 0x80 to pace the delay.
-pub fn delay(iterations: u32) {
-    for _ in 0..iterations {
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+/// Busy-wait for approximately `us` microseconds using RDTSC.
+///
+/// Assumes TSC ≥ 1 GHz (≈1000 ticks/µs). On faster CPUs the wait is
+/// proportionally longer, which is harmless for USB timeouts.
+pub fn delay_us(us: u64) {
+    if us == 0 {
+        return;
     }
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    // 1 GHz → 1000 ticks/µs (conservative lower bound)
+    let target = us * 1000;
+    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
+        core::hint::spin_loop();
+    }
+}
+
+/// Convenience wrapper: busy-wait for `ms` milliseconds.
+pub fn delay_ms(ms: u64) {
+    delay_us(ms * 1000);
+}
+
+/// Legacy delay kept for ABI compatibility — delegates to `delay_us`.
+pub fn delay(iterations: u32) {
+    // Each port‑0x80 iteration took roughly 1–2 µs on real hardware.
+    // Map to microseconds conservatively.
+    delay_us(iterations as u64 * 2);
 }
 
 // ============================================================================

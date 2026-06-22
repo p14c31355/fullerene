@@ -213,6 +213,7 @@ impl XhciContext {
             if !op.usbcmd().reset() {
                 break;
             }
+            super::xhci_port::delay_us(100);
         }
 
         // Wait for HCHalted
@@ -220,6 +221,7 @@ impl XhciContext {
             if op.usbsts().hchalted() {
                 break;
             }
+            super::xhci_port::delay_us(100);
         }
 
         let sts_after = op.usbsts();
@@ -281,7 +283,7 @@ impl XhciContext {
             if !op.usbsts().hchalted() {
                 break;
             }
-            crate::port::PortWriter::new(0x80).write_safe(0u8);
+            super::xhci_port::delay_us(100);
         }
 
         if op.usbsts().hchalted() {
@@ -316,7 +318,7 @@ impl XhciContext {
         self.ports.clear_done_flags();
 
         // Wait for PHY stabilisation
-        super::xhci_port::delay(1_000_000);
+        super::xhci_port::delay_ms(200);
 
         // WPR on any CCS=0 powered USB 3.0 ports, then wait for CCS
         for port_idx in 0..self.ports.n_ports {
@@ -329,7 +331,7 @@ impl XhciContext {
                         let _ = warm_port_reset(op, port_idx);
                         // Wait for link training to complete after WPR
                         for _ in 0..200 {
-                            super::xhci_port::delay(50_000);
+                            super::xhci_port::delay_ms(10);
                             if op.portsc(port_idx).ccs() {
                                 log::info!("xHCI: port {} CCS=1 after HSE recovery WPR", port_idx);
                                 break;
@@ -397,7 +399,7 @@ impl XhciContext {
                     let _ = warm_port_reset(op, port_idx);
                     // Wait for link training to complete after WPR
                     for _ in 0..120 {
-                        super::xhci_port::delay(50_000);
+                        super::xhci_port::delay_ms(10);
                         if op.portsc(port_idx).ccs() {
                             break;
                         }
@@ -411,7 +413,7 @@ impl XhciContext {
             if !ps.ccs() {
                 // ── Force RxDetect to restart link training ─
                 force_rx_detect(op, port_idx);
-                super::xhci_port::delay(600_000);
+                super::xhci_port::delay_ms(100);
                 if op.portsc(port_idx).ccs() {
                     // Link training succeeded — continue to port reset below
                 } else {
@@ -419,7 +421,7 @@ impl XhciContext {
                     if op.usbsts().hse() {
                         op.clear_usbsts_bits(USBSTS_HSE);
                         force_rx_detect(op, port_idx);
-                        super::xhci_port::delay(1_000_000);
+                        super::xhci_port::delay_ms(200);
                         if op.portsc(port_idx).ccs() {
                             // Continue processing below
                         } else {
@@ -429,24 +431,57 @@ impl XhciContext {
                             continue;
                         }
                     } else {
-                        // No device — increment retry, mark done after max attempts
-                        if let Some(p) = self.ports.get_mut(port_idx) {
-                            p.retry_count += 1;
-                            if p.retry_count >= MAX_PORT_RETRIES {
-                                p.done = true;
+                        // ── PP toggle fallback ─────────────
+                        // Even when PPC=false, some controllers accept PP writes
+                        // to force PHY re-initialisation.
+                        let ps_raw = op.portsc(port_idx).0;
+                        op.write_portsc(port_idx, (ps_raw & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                        super::xhci_port::delay_ms(20);
+                        let v2 = op.portsc(port_idx).0;
+                        op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                        super::xhci_port::delay_ms(50);
+                        if op.portsc(port_idx).ccs() {
+                            // Continue to port reset below
+                        } else {
+                            // ── PR pulse fallback ──────────
+                            // Pulse Port Reset (PR=1 → wait → PR=0) to force the
+                            // port to re-initialise even when CCS is 0.  Some
+                            // controllers need this kick after HCRST.
+                            let ps = op.portsc(port_idx).0;
+                            op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PR);
+                            for _ in 0..200_000 {
+                                if op.portsc(port_idx).0 & PORTSC_PR == 0 {
+                                    break;
+                                }
+                                super::xhci_port::delay_us(100);
+                            }
+                            // Ensure PR is clear
+                            let ps2 = op.portsc(port_idx).0;
+                            op.write_portsc(port_idx, (ps2 & !PORTSC_RW1C_MASK) & !PORTSC_PR);
+                            super::xhci_port::delay_ms(50);
+                            if op.portsc(port_idx).ccs() {
+                                // Continue to port reset below
+                            } else {
+                                // Still no device — increment retry, mark done after max attempts
+                                if let Some(p) = self.ports.get_mut(port_idx) {
+                                    p.retry_count += 1;
+                                    if p.retry_count >= MAX_PORT_RETRIES {
+                                        p.done = true;
+                                    }
+                                }
+                                log::debug!(
+                                    "xHCI: port {} no device (ccs=0, pls={}, pp={}, retry={})",
+                                    port_idx,
+                                    op.portsc(port_idx).pls(),
+                                    if op.portsc(port_idx).pp() { 1 } else { 0 },
+                                    self.ports
+                                        .get(port_idx)
+                                        .map(|p| p.retry_count)
+                                        .unwrap_or(0)
+                                );
+                                continue;
                             }
                         }
-                        log::debug!(
-                            "xHCI: port {} no device (ccs=0, pls={}, pp={}, retry={})",
-                            port_idx,
-                            op.portsc(port_idx).pls(),
-                            if op.portsc(port_idx).pp() { 1 } else { 0 },
-                            self.ports
-                                .get(port_idx)
-                                .map(|p| p.retry_count)
-                                .unwrap_or(0)
-                        );
-                        continue;
                     }
                 }
             }
