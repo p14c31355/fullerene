@@ -314,7 +314,7 @@ impl XhciContext {
         // Wait for PHY stabilisation
         super::xhci_port::delay(1_000_000);
 
-        // WPR on any CCS=0 powered ports
+        // WPR on any CCS=0 powered ports, then wait for CCS
         for port_idx in 0..self.ports.n_ports {
             let ps = op.portsc(port_idx);
             if !ps.ccs() && ps.pp() {
@@ -322,6 +322,14 @@ impl XhciContext {
                     if !p.wpr_attempted {
                         p.wpr_attempted = true;
                         let _ = warm_port_reset(op, port_idx);
+                        // Wait for link training to complete after WPR
+                        for _ in 0..200 {
+                            super::xhci_port::delay(50_000);
+                            if op.portsc(port_idx).ccs() {
+                                log::info!("xHCI: port {} CCS=1 after HSE recovery WPR", port_idx);
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -337,6 +345,15 @@ impl XhciContext {
     pub fn poll_ports(&mut self) -> usize {
         let op = &self.registers.op;
         let initial_count = self.devices.len();
+
+        // ── Check PCD (Port Change Detect) ─────────────────
+        // Clear done flags on all ports when a port change is detected,
+        // so that newly plugged-in devices can be enumerated.
+        if op.usbsts().pcd() {
+            op.clear_usbsts_bits(USBSTS_PCD);
+            self.ports.clear_done_flags();
+            log::info!("xHCI: PCD detected, re-evaluating all ports");
+        }
 
         for port_idx in 0..self.ports.n_ports {
             // Skip already-processed ports
@@ -364,7 +381,8 @@ impl XhciContext {
                         p.wpr_attempted = true;
                     }
                     let _ = warm_port_reset(op, port_idx);
-                    for _ in 0..60 {
+                    // Wait longer for link training to complete after WPR
+                    for _ in 0..120 {
                         super::xhci_port::delay(50_000);
                         if op.portsc(port_idx).ccs() {
                             break;
@@ -375,24 +393,34 @@ impl XhciContext {
 
             let ps = op.portsc(port_idx);
             if !ps.ccs() {
-                // Check for HSE
-                if op.usbsts().hse() {
-                    op.clear_usbsts_bits(USBSTS_HSE);
-                    force_rx_detect(op, port_idx);
-                    super::xhci_port::delay(1_000_000);
-                    if op.portsc(port_idx).ccs() {
-                        // Continue processing below
-                    } else {
-                        if let Some(p) = self.ports.get_mut(port_idx) {
-                            p.done = true;
+                // ── Force RxDetect to restart link training ─
+                // Even without HSE, try to kick the port into link training
+                // before giving up.  Some controllers need an extra nudge.
+                force_rx_detect(op, port_idx);
+                super::xhci_port::delay(600_000);
+                if op.portsc(port_idx).ccs() {
+                    // Link training succeeded — continue to port reset below
+                } else {
+                    // Check for HSE
+                    if op.usbsts().hse() {
+                        op.clear_usbsts_bits(USBSTS_HSE);
+                        force_rx_detect(op, port_idx);
+                        super::xhci_port::delay(1_000_000);
+                        if op.portsc(port_idx).ccs() {
+                            // Continue processing below
+                        } else {
+                            if let Some(p) = self.ports.get_mut(port_idx) {
+                                p.done = true;
+                            }
+                            continue;
                         }
+                    } else {
+                        // Still no device — don't mark done so PCD can re-trigger
+                        log::debug!("xHCI: port {} no device (ccs=0, pls={}, pp={})",
+                            port_idx, op.portsc(port_idx).pls(),
+                            if op.portsc(port_idx).pp() { 1 } else { 0 });
                         continue;
                     }
-                } else {
-                    if let Some(p) = self.ports.get_mut(port_idx) {
-                        p.done = true;
-                    }
-                    continue;
                 }
             }
 
@@ -407,6 +435,8 @@ impl XhciContext {
             // ── Device detected ───────────────────────────
             let ps = op.portsc(port_idx);
             let speed = port_speed_to_usb(ps.speed());
+
+            log::info!("xHCI: port {} device detected, speed={:?}", port_idx, speed);
 
             self.devices.push(UsbDevice {
                 address: 0,
