@@ -3,36 +3,36 @@
 //! # Architecture
 //!
 //! ```text
-//! UsbHostController  (EHCI register interface, port management, async schedule)
+//! USB Core (msd, hub, ...)
 //!         │
-//!         ├── UsbHub     (port status, device enumeration, address assignment)
-//!         │
-//!         └── UsbDevice  (interface discovery, driver binding)
-//!                 │
-//!                 └── UsbMassStorage  (BOT transport, SCSI commands)
-//!                         │
-//!                         └── BlockDevice  (sector read/write)
-//! ```
-//!
-//! # Usage
-//!
-//! ```ignore
-//! let mut ehci = EhciController::new(mmio_base);
-//! ehci.reset();
-//! ehci.start();
-//! ehci.poll_ports();       // detect connected devices
-//! if let Some(dev) = ehci.devices().first() {
-//!     let blk = UsbMassStorage::new(dev);
-//!     let mut buf = [0u8; 512];
-//!     blk.read_sectors(0, &mut buf);   // read LBA 0
-//! }
+//! HostController (trait)
+//!    ├── XhciContext   (xhci_register + xhci_ring + xhci_device + xhci_port + xhci_interrupt)
+//!    ├── EhciContext   (ehci_register + ehci_async + ehci_port)
+//!    ├── (future: OhciContext, UhciContext)
+//!    └── (future: DummyHostController for testing)
 //! ```
 
-pub mod ehci;
+// Common host-controller abstraction
+pub mod host_controller;
+
+// EHCI sub-context modules
+pub mod ehci_register;
+pub mod ehci_async;
+pub mod ehci_port;
+pub mod ehci_context;
+
+// xHCI sub-context modules
+pub mod xhci_register;
+pub mod xhci_ring;
+pub mod xhci_device;
+pub mod xhci_port;
+pub mod xhci_interrupt;
+pub mod xhci_context;
+
 pub mod hub;
 pub mod msd;
 pub mod scsi;
-pub mod xhci;
+pub mod usb_bus;
 
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
