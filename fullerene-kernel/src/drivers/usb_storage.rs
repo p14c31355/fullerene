@@ -233,6 +233,7 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
             Err(_) => return,
         };
         if xhci.address_device(slot_id).is_err() {
+            xhci.disable_slot(slot_id);
             return;
         }
 

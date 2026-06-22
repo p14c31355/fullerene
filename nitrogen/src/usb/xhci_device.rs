@@ -322,6 +322,23 @@ impl SlotManager {
         Ok((slot_id, self.slots.last_mut().unwrap()))
     }
 
+    /// Release a single slot and free its resources.
+    pub fn release_slot(&mut self, slot_id: u32, ctx: &dyn DriverContext) {
+        if let Some(pos) = self.slots.iter().position(|s| s.slot_id == slot_id) {
+            let slot = self.slots.remove(pos);
+            ctx.free_contiguous_frames(slot.dev_ctx_phys, 1);
+            ctx.free_contiguous_frames(slot.in_ctx_phys, 1);
+            slot.ep0_ring.free(ctx);
+            if let Some(ref ring) = slot.bulk_out_ring {
+                ring.free(ctx);
+            }
+            if let Some(ref ring) = slot.bulk_in_ring {
+                ring.free(ctx);
+            }
+            self.n_used = self.n_used.saturating_sub(1);
+        }
+    }
+
     /// Release all slots and free their resources.
     pub fn release_all(&mut self, ctx: &dyn DriverContext) {
         for slot in self.slots.drain(..) {

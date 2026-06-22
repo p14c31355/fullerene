@@ -601,6 +601,13 @@ impl XhciContext {
         Ok(())
     }
 
+    /// Release a single device slot and free its resources.
+    pub fn disable_slot(&mut self, slot_id: u32) {
+        let ctx = self.driver_ctx;
+        self.device.dcbaa.clear_slot(slot_id);
+        self.device.slots.release_slot(slot_id, ctx);
+    }
+
     /// Release all device slots and free resources.
     pub fn disable_all_slots(&mut self) {
         let ctx = self.driver_ctx;
@@ -786,13 +793,11 @@ impl XhciContext {
         self.registers.doorbell.ring(slot_id, db_stream);
         let res = self.wait_event(5_000_000);
 
-        // Copy IN data back and free staging buffer only on success
-        if res.is_ok() {
-            if dir == UsbDirection::In {
-                unsafe { ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
-            }
-            self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
+        // Copy IN data back on success; free staging buffer unconditionally
+        if res.is_ok() && dir == UsbDirection::In {
+            unsafe { ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
         }
+        self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
 
         res.map(|_| len)
     }
