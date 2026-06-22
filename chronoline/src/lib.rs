@@ -57,6 +57,7 @@ impl Ord for Timer {
     }
 }
 
+#[derive(Default)]
 pub struct ChronoLine {
     timers: Vec<Timer>,
     now: u64,
@@ -64,10 +65,7 @@ pub struct ChronoLine {
 
 impl ChronoLine {
     pub fn new() -> Self {
-        Self {
-            timers: Vec::new(),
-            now: 0,
-        }
+        Self::default()
     }
 
     pub fn register(&mut self, deadline: Deadline, id: TimerId) {
