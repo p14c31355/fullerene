@@ -126,7 +126,8 @@ impl XhciContext {
 
         let rings = RingContext::alloc(ctx, 256, 256)?;
         let device = DeviceContextSet::new(ctx, max_slots, scratchpad_bufs)?;
-        let ports = PortContext::new(n_ports, ppc);
+        let port_protocols = parse_port_protocols(mmio_base, hcc1.ext_cap_ptr, n_ports);
+        let ports = PortContext::new(n_ports, ppc, Some(&port_protocols));
         let interrupts = InterruptContext::new();
 
         Some(Self {
@@ -317,10 +318,11 @@ impl XhciContext {
         // Wait for PHY stabilisation
         super::xhci_port::delay(1_000_000);
 
-        // WPR on any CCS=0 powered ports, then wait for CCS
+        // WPR on any CCS=0 powered USB 3.0 ports, then wait for CCS
         for port_idx in 0..self.ports.n_ports {
             let ps = op.portsc(port_idx);
-            if !ps.ccs() && ps.pp() {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !ps.ccs() && ps.pp() && is_usb3 {
                 if let Some(p) = self.ports.get_mut(port_idx) {
                     if !p.wpr_attempted {
                         p.wpr_attempted = true;
@@ -377,32 +379,37 @@ impl XhciContext {
 
             let ps = op.portsc(port_idx);
             if !ps.ccs() {
-                // ── Try WPR once ─────────────────────────
+                // ── Warm Port Reset (USB 3.0 only) ───────
+                let is_usb3 = self
+                    .ports
+                    .get(port_idx)
+                    .map(|p| p.is_usb3)
+                    .unwrap_or(true);
                 let wpr_already = self
                     .ports
                     .get(port_idx)
                     .map(|p| p.wpr_attempted)
                     .unwrap_or(true);
-                if !wpr_already && ps.pp() {
+                if is_usb3 && !wpr_already && ps.pp() {
                     if let Some(p) = self.ports.get_mut(port_idx) {
                         p.wpr_attempted = true;
                     }
                     let _ = warm_port_reset(op, port_idx);
-                    // Wait longer for link training to complete after WPR
+                    // Wait for link training to complete after WPR
                     for _ in 0..120 {
                         super::xhci_port::delay(50_000);
                         if op.portsc(port_idx).ccs() {
                             break;
                         }
                     }
+                } else if !is_usb3 {
+                    log::debug!("xHCI: port {} USB 2.0, skipping WPR", port_idx);
                 }
             }
 
             let ps = op.portsc(port_idx);
             if !ps.ccs() {
                 // ── Force RxDetect to restart link training ─
-                // Even without HSE, try to kick the port into link training
-                // before giving up.  Some controllers need an extra nudge.
                 force_rx_detect(op, port_idx);
                 super::xhci_port::delay(600_000);
                 if op.portsc(port_idx).ccs() {
@@ -422,16 +429,23 @@ impl XhciContext {
                             continue;
                         }
                     } else {
-                        // Still no device — mark done to avoid re-polling
+                        // No device — increment retry, mark done after max attempts
+                        if let Some(p) = self.ports.get_mut(port_idx) {
+                            p.retry_count += 1;
+                            if p.retry_count >= MAX_PORT_RETRIES {
+                                p.done = true;
+                            }
+                        }
                         log::debug!(
-                            "xHCI: port {} no device (ccs=0, pls={}, pp={})",
+                            "xHCI: port {} no device (ccs=0, pls={}, pp={}, retry={})",
                             port_idx,
                             op.portsc(port_idx).pls(),
-                            if op.portsc(port_idx).pp() { 1 } else { 0 }
+                            if op.portsc(port_idx).pp() { 1 } else { 0 },
+                            self.ports
+                                .get(port_idx)
+                                .map(|p| p.retry_count)
+                                .unwrap_or(0)
                         );
-                        if let Some(p) = self.ports.get_mut(port_idx) {
-                            p.done = true;
-                        }
                         continue;
                     }
                 }

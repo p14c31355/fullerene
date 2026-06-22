@@ -16,6 +16,7 @@
 //! └── ExtendedCapabilities   (optional)
 //! ```
 
+use alloc::vec::Vec;
 use core::ptr;
 
 // ============================================================================
@@ -515,6 +516,68 @@ impl RegisterContext {
 ///
 /// Returns `Ok(true)` if the OS already owns the controller,
 /// `Ok(false)` if the handoff succeeded, or `Err` if it failed.
+/// Parse the Supported Protocol capability (ECID = 2) for each port.
+///
+/// Returns a bitmask per 32-port group: bit N set means port N is USB 3.0.
+/// Ports not covered by any Supported Protocol entry default to USB 3.0 (bit=1).
+/// The caller is responsible for allocating enough words: `(n_ports + 31) / 32`.
+pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) -> alloc::vec::Vec<u32> {
+    let n_words = ((n_ports + 31) / 32).max(1) as usize;
+    let mut bitmap = alloc::vec![0xFFFFFFFFu32; n_words];
+    let mut ec_off = ext_cap_ptr as usize;
+    let mut iterations = 0;
+
+    while ec_off != 0 && ec_off < 0x1000 {
+        iterations += 1;
+        if iterations > 64 {
+            log::warn!("xHCI: parse_port_protocols exceeded max iterations");
+            break;
+        }
+
+        let ec_id = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u8) };
+        if ec_id == 2 {
+            // Supported Protocol capability
+            let dw2 = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u32) };
+            let port_offset = (dw2 & 0xFF) as u32;        // 1-based
+            let port_count  = ((dw2 >> 8) & 0xFF) as u32;
+            let major_rev   = unsafe {
+                ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u32) >> 24
+            };
+
+            let is_usb3 = major_rev >= 3;
+            log::info!(
+                "xHCI: protocol cap: ports {}-{} {}",
+                port_offset,
+                port_offset + port_count - 1,
+                if is_usb3 { "USB 3.x" } else { "USB 2.0" }
+            );
+
+            for p in 0..port_count {
+                let port_idx = port_offset + p - 1; // 0-based
+                if port_idx < n_ports {
+                    let word = (port_idx / 32) as usize;
+                    let bit  = port_idx % 32;
+                    if word < bitmap.len() {
+                        if is_usb3 {
+                            bitmap[word] |= 1 << bit;
+                        } else {
+                            bitmap[word] &= !(1 << bit);
+                        }
+                    }
+                }
+            }
+        }
+
+        let ec_next = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 1) as *const u8) };
+        if ec_next == 0 {
+            break;
+        }
+        ec_off += ec_next as usize;
+    }
+
+    bitmap
+}
+
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
@@ -613,7 +676,7 @@ mod tests {
     fn test_hcs_params1_parsing() {
         let cap = CapabilityRegisters {
             caplength: 0x20,
-            hcs_params1: 0x010800FF, // max_slots=255, n_ports=8, ppc=0
+            hcs_params1: 0x080000FF, // max_slots=255, n_ports=8
             hcs_params2: 0,
             hcs_params3: 0,
             hcc_params1: 0,
