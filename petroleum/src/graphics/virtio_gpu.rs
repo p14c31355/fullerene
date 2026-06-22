@@ -1,4 +1,4 @@
-use crate::graphics::backend::FramebufferBackend;
+use crate::graphics::FramebufferBackend;
 use alloc::boxed::Box;
 use nitrogen::virtio::gpu::VirtioGpu;
 

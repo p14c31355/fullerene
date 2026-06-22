@@ -202,8 +202,8 @@ pub fn drain_into_event_context() {
         for ev in events {
             let res_ev = match ev {
                 InputEvent::MouseMove { x, y } => ResInput::MouseMove { x, y },
-                InputEvent::MouseDown(b) => ResInput::MouseDown(convert_btn(b)),
-                InputEvent::MouseUp(b) => ResInput::MouseUp(convert_btn(b)),
+                InputEvent::MouseDown(b) => ResInput::MouseDown(b.into()),
+                InputEvent::MouseUp(b) => ResInput::MouseUp(b.into()),
                 InputEvent::KeyDown(k) => ResInput::KeyDown(k.into()),
                 InputEvent::KeyUp(k) => ResInput::KeyUp(k.into()),
             };
@@ -212,12 +212,14 @@ pub fn drain_into_event_context() {
     });
 }
 
-fn convert_btn(b: MouseButton) -> resonance::MouseButton {
-    match b {
-        MouseButton::Left => resonance::MouseButton::Left,
-        MouseButton::Middle => resonance::MouseButton::Middle,
-        MouseButton::Right => resonance::MouseButton::Right,
-        MouseButton::Other(v) => resonance::MouseButton::Other(v),
+impl From<MouseButton> for resonance::MouseButton {
+    fn from(b: MouseButton) -> Self {
+        match b {
+            MouseButton::Left => Self::Left,
+            MouseButton::Middle => Self::Middle,
+            MouseButton::Right => Self::Right,
+            MouseButton::Other(v) => Self::Other(v),
+        }
     }
 }
 impl From<KeyCode> for resonance::KeyCode {

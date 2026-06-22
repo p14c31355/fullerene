@@ -599,7 +599,7 @@ impl XhciContext {
         let b_phys = bulk_ring.phys;
 
         // Context index: EP<N> Out = 2*N, EP<N> In = 2*N+1
-        let ctx_idx = 2 * ep_num + if is_in { 1 } else { 0 };
+        let ctx_idx = 2 * ep_num + usize::from(is_in);
 
         // Set up input context
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
@@ -840,7 +840,7 @@ impl XhciContext {
 
             let ep_num = (endpoint & 0x0F) as u32;
             let is_in = (endpoint & 0x80) != 0;
-            ep_num * 2 + if is_in { 1 } else { 0 }
+            ep_num * 2 + u32::from(is_in)
         };
 
         self.registers.doorbell.ring(slot_id, db_stream);

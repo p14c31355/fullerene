@@ -395,7 +395,7 @@ impl Button {
     }
 
     /// Draw the button using the generic Renderer trait.
-    pub fn draw(&self, renderer: &mut dyn crate::graphics::renderer::Renderer) {
+    pub fn draw(&self, renderer: &mut dyn crate::graphics::Renderer) {
         renderer.draw_rect(
             self.x as i32,
             self.y as i32,
