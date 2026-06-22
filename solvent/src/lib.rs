@@ -1201,18 +1201,20 @@ where
     chrono_tick(now);
     process_events();
 
-    if let Some(ref mut r) = *RUNTIME.lock() {
-        if r.shell_launch_pending {
-            r.shell_launch_pending = false;
-            drop(RUNTIME.lock());
-            ensure_terminal_window();
-            launch_shell();
-        }
-        if r.editor_launch_pending {
-            r.editor_launch_pending = false;
-            drop(RUNTIME.lock());
-            ensure_editor_window();
-        }
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let p = r.shell_launch_pending;
+        r.shell_launch_pending = false;
+        p
+    }) {
+        ensure_terminal_window();
+        launch_shell();
+    }
+    if RUNTIME.lock().as_mut().map_or(false, |r| {
+        let p = r.editor_launch_pending;
+        r.editor_launch_pending = false;
+        p
+    }) {
+        ensure_editor_window();
     }
 
     static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
