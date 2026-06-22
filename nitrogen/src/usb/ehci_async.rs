@@ -329,6 +329,9 @@ impl AsyncSchedule {
             let prev_qh = unsafe { &*prev_virt };
             let next_link = unsafe { ptr::read_volatile(&prev_qh.horz_link) };
             let next_phys = (next_link & !0x1F) as u64;
+            if next_phys == 0 {
+                break;
+            }
 
             if next_phys == qh_phys {
                 // Found it. Point prev to qh's next.

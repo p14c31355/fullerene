@@ -324,6 +324,9 @@ impl EhciContext {
     ) -> Result<usize, &'static str> {
         let is_in = (setup.bm_request_type & 0x80) != 0;
         let data_len = setup.w_length as usize;
+        if data_len > 4096 {
+            return Err("control transfer data phase too large (> 4096 bytes)");
+        }
 
         // Allocate qH
         let (qh, qh_phys) = self.transfer.qh_pool.allocate().ok_or("no qH")?;
