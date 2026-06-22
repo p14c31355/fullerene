@@ -44,36 +44,41 @@ pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
 
-    // Phase 1: Immediate poll
+    // Phase 1: Immediate poll — catches QEMU and fast hardware.
     if poll_usb() {
         debug_usb();
         return;
     }
 
-    // Phase 2: Short delay → re-poll for xHCI devices needing
-    // additional time after HCRST.
-    delay(300_000);
-    if poll_usb() {
-        debug_usb();
-        return;
+    // Phase 2–4: Progressive delays for real xHCI hardware that
+    // needs time after HCRST (up to 100 ms per the spec).
+    for (label, ms, force_all) in [("short", 50u64, false), ("longer", 100, false), ("full", 200, true)]
+    {
+        delay_ms(ms);
+        let found = if force_all { poll_usb_all() } else { poll_usb() };
+        klog_fmt!("USB init phase {} ({} ms): found={}\n", label, ms, found);
+        if found {
+            debug_usb();
+            return;
+        }
     }
 
-    // Phase 3: Longer delay → re-poll
-    delay(500_000);
-    if poll_usb() {
-        debug_usb();
-        return;
-    }
-
-    // Phase 4: Force re-poll with fresh ports_done
-    delay(200_000);
-    poll_usb_all();
     debug_usb();
 }
 
-fn delay(iterations: u32) {
-    for _ in 0..iterations {
-        nitrogen::port::PortWriter::<u8>::new(0x80).write_safe(0u8);
+/// Busy-wait for approximately `ms` milliseconds using RDTSC.
+///
+/// Assumes a minimum 1 GHz TSC frequency.  On faster CPUs the delay
+/// is proportionally longer, which is harmless for USB polling.
+/// The previous implementation wrote to port 0x80 in a loop, which
+/// was extremely slow under QEMU (each port I/O traps to the
+/// hypervisor, adding ~10 µs per iteration → 10 s total delay).
+fn delay_ms(ms: u64) {
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    // 1 GHz → 1000 ticks/µs → 1 000 000 ticks/ms
+    let target = ms * 1_000_000;
+    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
+        core::hint::spin_loop();
     }
 }
 

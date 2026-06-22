@@ -382,6 +382,7 @@ fn register_nozzle_hooks() {
             if events.is_empty() {
                 ctx.terminal.write_str("(no trace events recorded)\n");
             } else {
+                let mut buf = alloc::string::String::with_capacity(events.len() * 48);
                 for ev in events {
                     let cat = core::str::from_utf8(&ev.category)
                         .unwrap_or("?")
@@ -389,9 +390,10 @@ fn register_nozzle_hooks() {
                     let msg = core::str::from_utf8(&ev.message)
                         .unwrap_or("?")
                         .trim_end_matches('\0');
-                    let line = format!("[{}] {}: {}\n", ev.tick, cat, msg);
-                    ctx.terminal.write_str(&line);
+                    use core::fmt::Write;
+                    let _ = write!(buf, "[{}] {}: {}\n", ev.tick, cat, msg);
                 }
+                ctx.terminal.write_str(&buf);
             }
         }
         "run" => {
