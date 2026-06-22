@@ -38,14 +38,60 @@ pub struct FileAssociation {
 }
 
 pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
-    FileAssociation { extensions: &["txt", "md", "log", "toml", "rs", "c", "h", "py", "js", "json", "xml", "yml", "yaml", "ini", "cfg", "conf", "sh", "bat", "env", "gitignore", "lock"], app_name: "Text Editor" },
-    FileAssociation { extensions: &["bmp"], app_name: "Image Viewer" },
-    FileAssociation { extensions: &["png"], app_name: "Image Viewer" },
-    FileAssociation { extensions: &["wav"], app_name: "Music Player" },
-    FileAssociation { extensions: &["mp3"], app_name: "Music Player" },
-    FileAssociation { extensions: &["tar", "gz", "xz", "zip"], app_name: "Archive Manager" },
-    FileAssociation { extensions: &["mp4"], app_name: "Movie Player" },
-    FileAssociation { extensions: &["rle"], app_name: "RLE Player" },
+    FileAssociation {
+        extensions: &[
+            "txt",
+            "md",
+            "log",
+            "toml",
+            "rs",
+            "c",
+            "h",
+            "py",
+            "js",
+            "json",
+            "xml",
+            "yml",
+            "yaml",
+            "ini",
+            "cfg",
+            "conf",
+            "sh",
+            "bat",
+            "env",
+            "gitignore",
+            "lock",
+        ],
+        app_name: "Text Editor",
+    },
+    FileAssociation {
+        extensions: &["bmp"],
+        app_name: "Image Viewer",
+    },
+    FileAssociation {
+        extensions: &["png"],
+        app_name: "Image Viewer",
+    },
+    FileAssociation {
+        extensions: &["wav"],
+        app_name: "Music Player",
+    },
+    FileAssociation {
+        extensions: &["mp3"],
+        app_name: "Music Player",
+    },
+    FileAssociation {
+        extensions: &["tar", "gz", "xz", "zip"],
+        app_name: "Archive Manager",
+    },
+    FileAssociation {
+        extensions: &["mp4"],
+        app_name: "Movie Player",
+    },
+    FileAssociation {
+        extensions: &["rle"],
+        app_name: "RLE Player",
+    },
 ];
 
 /// Extract the extension from a filename (case-preserved).
@@ -181,7 +227,12 @@ pub struct ContextMenuState {
 
 impl ContextMenuState {
     pub const fn closed() -> Self {
-        Self { open: false, x: 0, y: 0, hovered_item: None }
+        Self {
+            open: false,
+            x: 0,
+            y: 0,
+            hovered_item: None,
+        }
     }
 }
 
@@ -212,12 +263,36 @@ impl ExplorerContext {
     /// USB drives are added later by `refresh_sidebar()` when the window opens.
     fn default_sidebar() -> Vec<SidebarItem> {
         vec![
-            SidebarItem { label: String::from("Home"), path: String::from("/"), is_usb: false },
-            SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop"), is_usb: false },
-            SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads"), is_usb: false },
-            SidebarItem { label: String::from("Documents"), path: String::from("/Documents"), is_usb: false },
-            SidebarItem { label: String::from("Music"), path: String::from("/Music"), is_usb: false },
-            SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures"), is_usb: false },
+            SidebarItem {
+                label: String::from("Home"),
+                path: String::from("/"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Desktop"),
+                path: String::from("/Desktop"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Downloads"),
+                path: String::from("/Downloads"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Documents"),
+                path: String::from("/Documents"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Music"),
+                path: String::from("/Music"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Pictures"),
+                path: String::from("/Pictures"),
+                is_usb: false,
+            },
         ]
     }
 
@@ -232,18 +307,21 @@ impl ExplorerContext {
                 self.current_dir = path_str.clone();
                 self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
                 self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries.iter().map(|e| {
-                    let size_str = if e.is_dir {
-                        String::from("<DIR>")
-                    } else {
-                        format_size(e.size)
-                    };
-                    FileEntryDisplay {
-                        name: e.name.clone(),
-                        size_str,
-                        is_dir: e.is_dir,
-                    }
-                }).collect();
+                self.entries = entries
+                    .iter()
+                    .map(|e| {
+                        let size_str = if e.is_dir {
+                            String::from("<DIR>")
+                        } else {
+                            format_size(e.size)
+                        };
+                        FileEntryDisplay {
+                            name: e.name.clone(),
+                            size_str,
+                            is_dir: e.is_dir,
+                        }
+                    })
+                    .collect();
                 self.sort_entries();
                 self.selected_index = None;
                 self.scroll_offset = 0;
@@ -267,15 +345,43 @@ impl ExplorerContext {
     /// Refresh sidebar items (re-detect USB drives etc.).
     pub fn refresh_sidebar(&mut self) {
         let mut items = vec![
-            SidebarItem { label: String::from("Home"), path: String::from("/"), is_usb: false },
-            SidebarItem { label: String::from("Desktop"), path: String::from("/Desktop"), is_usb: false },
-            SidebarItem { label: String::from("Downloads"), path: String::from("/Downloads"), is_usb: false },
-            SidebarItem { label: String::from("Documents"), path: String::from("/Documents"), is_usb: false },
-            SidebarItem { label: String::from("Music"), path: String::from("/Music"), is_usb: false },
-            SidebarItem { label: String::from("Pictures"), path: String::from("/Pictures"), is_usb: false },
+            SidebarItem {
+                label: String::from("Home"),
+                path: String::from("/"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Desktop"),
+                path: String::from("/Desktop"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Downloads"),
+                path: String::from("/Downloads"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Documents"),
+                path: String::from("/Documents"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Music"),
+                path: String::from("/Music"),
+                is_usb: false,
+            },
+            SidebarItem {
+                label: String::from("Pictures"),
+                path: String::from("/Pictures"),
+                is_usb: false,
+            },
         ];
         for (name, mount_path) in crate::get_usb_drives() {
-            items.push(SidebarItem { label: name, path: mount_path, is_usb: true });
+            items.push(SidebarItem {
+                label: name,
+                path: mount_path,
+                is_usb: true,
+            });
         }
         self.sidebar_items = items;
     }
@@ -303,7 +409,8 @@ impl ExplorerContext {
         });
         let sorted_entries: Vec<FileEntryDisplay> =
             indices.iter().map(|&i| self.entries[i].clone()).collect();
-        let sorted_names: Vec<String> = indices.iter().map(|&i| self.raw_names[i].clone()).collect();
+        let sorted_names: Vec<String> =
+            indices.iter().map(|&i| self.raw_names[i].clone()).collect();
         let sorted_is_dir: Vec<bool> = indices.iter().map(|&i| self.raw_is_dir[i]).collect();
         self.entries = sorted_entries;
         self.raw_names = sorted_names;
@@ -322,10 +429,21 @@ impl ExplorerContext {
                 self.current_dir = path;
                 self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
                 self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries.iter().map(|e| {
-                    let size_str = if e.is_dir { String::from("<DIR>") } else { format_size(e.size) };
-                    FileEntryDisplay { name: e.name.clone(), size_str, is_dir: e.is_dir }
-                }).collect();
+                self.entries = entries
+                    .iter()
+                    .map(|e| {
+                        let size_str = if e.is_dir {
+                            String::from("<DIR>")
+                        } else {
+                            format_size(e.size)
+                        };
+                        FileEntryDisplay {
+                            name: e.name.clone(),
+                            size_str,
+                            is_dir: e.is_dir,
+                        }
+                    })
+                    .collect();
                 self.sort_entries();
                 self.selected_index = None;
                 self.scroll_offset = 0;
@@ -345,10 +463,21 @@ impl ExplorerContext {
                 self.current_dir = path;
                 self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
                 self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries.iter().map(|e| {
-                    let size_str = if e.is_dir { String::from("<DIR>") } else { format_size(e.size) };
-                    FileEntryDisplay { name: e.name.clone(), size_str, is_dir: e.is_dir }
-                }).collect();
+                self.entries = entries
+                    .iter()
+                    .map(|e| {
+                        let size_str = if e.is_dir {
+                            String::from("<DIR>")
+                        } else {
+                            format_size(e.size)
+                        };
+                        FileEntryDisplay {
+                            name: e.name.clone(),
+                            size_str,
+                            is_dir: e.is_dir,
+                        }
+                    })
+                    .collect();
                 self.sort_entries();
                 self.selected_index = None;
                 self.scroll_offset = 0;
@@ -382,10 +511,16 @@ impl ExplorerContext {
 // ── Path helpers ───────────────────────────────────────────────
 
 fn parent_path(path: &str) -> String {
-    if path == "/" { return String::from("/"); }
+    if path == "/" {
+        return String::from("/");
+    }
     let trimmed = path.trim_end_matches('/');
     if let Some(pos) = trimmed.rfind('/') {
-        if pos == 0 { String::from("/") } else { String::from(&trimmed[..pos]) }
+        if pos == 0 {
+            String::from("/")
+        } else {
+            String::from(&trimmed[..pos])
+        }
     } else {
         String::from("/")
     }
@@ -401,7 +536,11 @@ fn join_path(base: &str, name: &str) -> String {
 
 fn format_size(size: u64) -> String {
     if size >= 1048576 {
-        format!("{}.{} MB", size / 1048576, ((size % 1048576) * 10) / 1048576)
+        format!(
+            "{}.{} MB",
+            size / 1048576,
+            ((size % 1048576) * 10) / 1048576
+        )
     } else if size >= 1024 {
         format!("{}.{} KB", size / 1024, (size % 1024) * 10 / 1024)
     } else {
@@ -410,16 +549,22 @@ fn format_size(size: u64) -> String {
 }
 
 fn parse_size_for_sort(s: &str) -> u64 {
-    if s == "<DIR>" { return 0; }
+    if s == "<DIR>" {
+        return 0;
+    }
     let mut num = 0u64;
     for c in s.bytes() {
         if c >= b'0' && c <= b'9' {
             num = num * 10 + (c - b'0') as u64;
         }
     }
-    if s.ends_with("KB") { num * 1024 }
-    else if s.ends_with("MB") { num * 1048576 }
-    else { num }
+    if s.ends_with("KB") {
+        num * 1024
+    } else if s.ends_with("MB") {
+        num * 1048576
+    } else {
+        num
+    }
 }
 
 // ── Hit testing ───────────────────────────────────────────────
@@ -440,37 +585,65 @@ pub fn hit_file_list(
     }
     // Skip header row
     let content_y = ly + ROW_HEIGHT as i32;
-    if ry < content_y { return None; }
+    if ry < content_y {
+        return None;
+    }
     let row = ((ry - content_y) as u32) / ROW_HEIGHT;
     let idx = ctx.scroll_offset + row as usize;
-    if idx < ctx.entries.len() { Some(idx) } else { None }
+    if idx < ctx.entries.len() {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 pub fn hit_sidebar(ctx: &ExplorerContext, rx: i32, ry: i32) -> Option<usize> {
-    if rx < 0 || rx >= SIDEBAR_WIDTH as i32 || ry < TOOLBAR_HEIGHT as i32 { return None; }
+    if rx < 0 || rx >= SIDEBAR_WIDTH as i32 || ry < TOOLBAR_HEIGHT as i32 {
+        return None;
+    }
     let rel = (ry - TOOLBAR_HEIGHT as i32) as u32;
     let idx = rel / ROW_HEIGHT;
-    if idx < ctx.sidebar_items.len() as u32 { Some(idx as usize) } else { None }
+    if idx < ctx.sidebar_items.len() as u32 {
+        Some(idx as usize)
+    } else {
+        None
+    }
 }
 
 pub fn hit_toolbar_button(rx: i32, ry: i32) -> Option<u8> {
-    if ry < 0 || ry >= TOOLBAR_HEIGHT as i32 { return None; }
-    if rx >= 0 && rx < 28 { Some(b'b') }   // back
-    else if rx >= 28 && rx < 56 { Some(b'f') }  // forward
-    else if rx >= 56 && rx < 84 { Some(b'u') }  // up
-    else if rx >= 84 && rx < SIDEBAR_WIDTH as i32 { Some(b'r') } // refresh
-    else { None }
+    if ry < 0 || ry >= TOOLBAR_HEIGHT as i32 {
+        return None;
+    }
+    if rx >= 0 && rx < 28 {
+        Some(b'b')
+    }
+    // back
+    else if rx >= 28 && rx < 56 {
+        Some(b'f')
+    }
+    // forward
+    else if rx >= 56 && rx < 84 {
+        Some(b'u')
+    }
+    // up
+    else if rx >= 84 && rx < SIDEBAR_WIDTH as i32 {
+        Some(b'r')
+    }
+    // refresh
+    else {
+        None
+    }
 }
 
 /// Returns true if the click hit the context menu (was consumed).
 pub fn handle_context_menu_click(ctx: &mut ExplorerContext, rx: i32, ry: i32) -> bool {
-    if !ctx.context_menu.open { return false; }
+    if !ctx.context_menu.open {
+        return false;
+    }
     let mx = ctx.context_menu.x as i32;
     let my = ctx.context_menu.y as i32;
     let mh = (CONTEXT_MENU_ITEMS.len() as u32) * ROW_HEIGHT;
-    if rx >= mx && rx < mx + CONTEXT_MENU_W as i32
-        && ry >= my && ry < my + mh as i32
-    {
+    if rx >= mx && rx < mx + CONTEXT_MENU_W as i32 && ry >= my && ry < my + mh as i32 {
         let idx = ((ry - my) as u32) / ROW_HEIGHT;
         if idx < CONTEXT_MENU_ITEMS.len() as u32 {
             let action = context_menu_action(idx as usize);
@@ -508,7 +681,9 @@ fn dispatch_context_action(ctx: &mut ExplorerContext, action: ExplorerAction) {
 pub fn render_explorer(ctx: &ExplorerContext, surface: &mut Surface) {
     let w = surface.width();
     let h = surface.height();
-    if w == 0 || h == 0 { return; }
+    if w == 0 || h == 0 {
+        return;
+    }
 
     // Full background
     surface.fill_rect(0, 0, w, h, EXPLORER_BG);
@@ -516,7 +691,13 @@ pub fn render_explorer(ctx: &ExplorerContext, surface: &mut Surface) {
     // Toolbar / breadcrumb area
     surface.fill_rect(0, 0, w, TOOLBAR_HEIGHT, TOOLBAR_BG);
     // Sidebar background
-    surface.fill_rect(0, TOOLBAR_HEIGHT, SIDEBAR_WIDTH, h - TOOLBAR_HEIGHT - STATUSBAR_HEIGHT, SIDEBAR_BG);
+    surface.fill_rect(
+        0,
+        TOOLBAR_HEIGHT,
+        SIDEBAR_WIDTH,
+        h - TOOLBAR_HEIGHT - STATUSBAR_HEIGHT,
+        SIDEBAR_BG,
+    );
     // Status bar
     surface.fill_rect(0, h - STATUSBAR_HEIGHT, w, STATUSBAR_HEIGHT, STATUSBAR_BG);
 
@@ -555,13 +736,25 @@ fn draw_sidebar(ctx: &ExplorerContext, surface: &mut Surface) {
     let mut row = 0u32;
     // Favorites first
     for item in ctx.sidebar_items.iter() {
-        if item.is_usb { break; } // stop at first USB entry
+        if item.is_usb {
+            break;
+        } // stop at first USB entry
         let y = TOOLBAR_HEIGHT + row * ROW_HEIGHT;
-        if y + ROW_HEIGHT > surface.height() - STATUSBAR_HEIGHT { break; }
+        if y + ROW_HEIGHT > surface.height() - STATUSBAR_HEIGHT {
+            break;
+        }
 
-        let bg = if ctx.sidebar_items.iter().position(|x| x.label == item.label && x.path == item.path)
-            .map(|idx| ctx.selected_sidebar == Some(idx)).unwrap_or(false)
-        { SIDEBAR_ACTIVE } else { SIDEBAR_BG };
+        let bg = if ctx
+            .sidebar_items
+            .iter()
+            .position(|x| x.label == item.label && x.path == item.path)
+            .map(|idx| ctx.selected_sidebar == Some(idx))
+            .unwrap_or(false)
+        {
+            SIDEBAR_ACTIVE
+        } else {
+            SIDEBAR_BG
+        };
         surface.fill_rect(0, y, SIDEBAR_WIDTH, ROW_HEIGHT, bg);
         draw_glyph(surface, b'+', 6, y + 2, FOLDER_COLOR, bg);
         draw_text(surface, &item.label, 18, y + 2, TEXT_COLOR, bg);
@@ -581,13 +774,25 @@ fn draw_sidebar(ctx: &ExplorerContext, surface: &mut Surface) {
 
     // USB drives
     for item in ctx.sidebar_items.iter() {
-        if !item.is_usb { continue; }
+        if !item.is_usb {
+            continue;
+        }
         let y = TOOLBAR_HEIGHT + row * ROW_HEIGHT;
-        if y + ROW_HEIGHT > surface.height() - STATUSBAR_HEIGHT { break; }
+        if y + ROW_HEIGHT > surface.height() - STATUSBAR_HEIGHT {
+            break;
+        }
 
-        let bg = if ctx.sidebar_items.iter().position(|x| x.label == item.label && x.path == item.path)
-            .map(|idx| ctx.selected_sidebar == Some(idx)).unwrap_or(false)
-        { SIDEBAR_ACTIVE } else { SIDEBAR_BG };
+        let bg = if ctx
+            .sidebar_items
+            .iter()
+            .position(|x| x.label == item.label && x.path == item.path)
+            .map(|idx| ctx.selected_sidebar == Some(idx))
+            .unwrap_or(false)
+        {
+            SIDEBAR_ACTIVE
+        } else {
+            SIDEBAR_BG
+        };
         surface.fill_rect(0, y, SIDEBAR_WIDTH, ROW_HEIGHT, bg);
         // USB drive icon
         draw_glyph(surface, b'U', 6, y + 2, USB_DRIVE_COLOR, bg);
@@ -618,7 +823,9 @@ fn draw_file_list(ctx: &ExplorerContext, surface: &mut Surface, win_w: u32, win_
 
     for row in 0..visible_rows {
         let idx = ctx.scroll_offset + row as usize;
-        if idx >= ctx.entries.len() { break; }
+        if idx >= ctx.entries.len() {
+            break;
+        }
 
         let entry = &ctx.entries[idx];
         let ey = content_y + row * ROW_HEIGHT;
@@ -637,12 +844,23 @@ fn draw_file_list(ctx: &ExplorerContext, surface: &mut Surface, win_w: u32, win_
 
         // Icon + Name
         let icon = if entry.is_dir { b'+' } else { b' ' };
-        let ic = if entry.is_dir { FOLDER_COLOR } else { FILE_COLOR };
+        let ic = if entry.is_dir {
+            FOLDER_COLOR
+        } else {
+            FILE_COLOR
+        };
         draw_glyph(surface, icon, lx + 4, ey + 2, ic, row_bg);
         draw_text(surface, &entry.name, lx + 16, ey + 2, TEXT_COLOR, row_bg);
 
         // Size
-        draw_text(surface, &entry.size_str, col2_x, ey + 2, MUTED_COLOR, row_bg);
+        draw_text(
+            surface,
+            &entry.size_str,
+            col2_x,
+            ey + 2,
+            MUTED_COLOR,
+            row_bg,
+        );
     }
 }
 
@@ -665,7 +883,9 @@ fn draw_statusbar(ctx: &ExplorerContext, surface: &mut Surface, _win_w: u32, win
 }
 
 fn draw_context_menu(ctx: &ExplorerContext, surface: &mut Surface) {
-    if !ctx.context_menu.open { return; }
+    if !ctx.context_menu.open {
+        return;
+    }
 
     let mx = ctx.context_menu.x;
     let my = ctx.context_menu.y;
@@ -699,10 +919,14 @@ fn draw_text(surface: &mut Surface, text: &str, x: u32, y: u32, fg: u32, bg: u32
     let pixels = surface.pixels_mut();
 
     for (ci, ch) in text.bytes().enumerate() {
-        if ch < 32 || ch > 126 { continue; }
+        if ch < 32 || ch > 126 {
+            continue;
+        }
         let dx = (x + ci as u32 * GLYPH_W) as usize;
         let dy = y as usize;
-        if dx + GLYPH_W as usize > surf_w || dy + GLYPH_H as usize > surf_h { continue; }
+        if dx + GLYPH_W as usize > surf_w || dy + GLYPH_H as usize > surf_h {
+            continue;
+        }
 
         for gy in 0..GLYPH_H as usize {
             let row_base = (dy + gy) * surf_w;
@@ -728,7 +952,9 @@ fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
     let pixels = surface.pixels_mut();
     let dx = x as usize;
     let dy = y as usize;
-    if dx + GLYPH_W as usize > surf_w || dy + GLYPH_H as usize > surf_h { return; }
+    if dx + GLYPH_W as usize > surf_w || dy + GLYPH_H as usize > surf_h {
+        return;
+    }
 
     for gy in 0..GLYPH_H as usize {
         let row_base = (dy + gy) * surf_w;

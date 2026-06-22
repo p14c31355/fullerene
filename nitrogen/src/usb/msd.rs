@@ -17,22 +17,20 @@
 //! Device → Host:  CSW (13 bytes, bulk IN endpoint)
 //! ```
 
+use crate::usb::scsi::{ScsiCdb10, ScsiReadCapacity10Cdb, ScsiReadCapacity10Data};
 use crate::usb::{UsbDevice, UsbDirection, UsbXferType};
-use crate::usb::scsi::{
-    ScsiCdb10, ScsiReadCapacity10Cdb, ScsiReadCapacity10Data,
-};
 
 // ── CBW (Command Block Wrapper) — 31 bytes ────────────────────
 #[repr(C, packed)]
 #[allow(non_snake_case)]
 pub struct Cbw {
-    pub dCBWSignature: u32,     // 0x43425355 ("USBC")
-    pub dCBWTag: u32,           // command tag
+    pub dCBWSignature: u32,          // 0x43425355 ("USBC")
+    pub dCBWTag: u32,                // command tag
     pub dCBWDataTransferLength: u32, // bytes to transfer
-    pub bmCBWFlags: u8,         // 0x80 = IN, 0x00 = OUT
-    pub bCBWLUN: u8,            // LUN (usually 0)
-    pub bCBWCBLength: u8,       // CB length (6-16)
-    pub CBWCB: [u8; 16],        // command block
+    pub bmCBWFlags: u8,              // 0x80 = IN, 0x00 = OUT
+    pub bCBWLUN: u8,                 // LUN (usually 0)
+    pub bCBWCBLength: u8,            // CB length (6-16)
+    pub CBWCB: [u8; 16],             // command block
 }
 
 impl Cbw {
@@ -58,10 +56,10 @@ impl Cbw {
 #[repr(C, packed)]
 #[allow(non_snake_case)]
 pub struct Csw {
-    pub dCSWSignature: u32,     // 0x53425355 ("USBS")
+    pub dCSWSignature: u32, // 0x53425355 ("USBS")
     pub dCSWTag: u32,
     pub dCSWDataResidue: u32,
-    pub bCSWStatus: u8,         // 0 = success, 1 = failure, 2 = phase error
+    pub bCSWStatus: u8, // 0 = success, 1 = failure, 2 = phase error
 }
 
 impl Csw {
@@ -73,7 +71,8 @@ impl Csw {
 
 // ── Bulk callback type ────────────────────────────────────────
 // The caller provides a function that does a bulk transfer.
-pub type BulkXferFn = dyn FnMut(u8, u8, &mut [u8], UsbDirection, u16) -> Result<usize, &'static str>;
+pub type BulkXferFn =
+    dyn FnMut(u8, u8, &mut [u8], UsbDirection, u16) -> Result<usize, &'static str>;
 
 // ── Mass Storage Device ───────────────────────────────────────
 
@@ -167,9 +166,21 @@ impl UsbMassStorage {
 
         // Step 2: Data phase (if any)
         if let Some(buf) = data {
-            let dir = if dir_in { UsbDirection::In } else { UsbDirection::Out };
-            let ep = if dir_in { self.bulk_in_ep } else { self.bulk_out_ep };
-            let mps = if dir_in { self.max_packet_in } else { self.max_packet_out };
+            let dir = if dir_in {
+                UsbDirection::In
+            } else {
+                UsbDirection::Out
+            };
+            let ep = if dir_in {
+                self.bulk_in_ep
+            } else {
+                self.bulk_out_ep
+            };
+            let mps = if dir_in {
+                self.max_packet_in
+            } else {
+                self.max_packet_out
+            };
             xfer(self.device.address, ep, buf, dir, mps)?;
         }
 
@@ -201,10 +212,7 @@ impl UsbMassStorage {
         // SAFETY: ScsiReadCapacity10Cdb is #[repr(C, packed)]. The CDB is exactly
         // 10 bytes per the SCSI READ_CAPACITY_10 spec.
         let cdb_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &cdb as *const ScsiReadCapacity10Cdb as *const u8,
-                10,
-            )
+            core::slice::from_raw_parts(&cdb as *const ScsiReadCapacity10Cdb as *const u8, 10)
         };
         let mut data = [0u8; 8];
         self.exec_command(xfer, cdb_bytes, Some(&mut data), true)?;
@@ -229,12 +237,8 @@ impl UsbMassStorage {
         }
         let cdb = ScsiCdb10::read10(lba, blocks);
         // SAFETY: ScsiCdb10 is #[repr(C, packed)], exactly 10 bytes per SCSI READ_10 spec.
-        let cdb_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &cdb as *const ScsiCdb10 as *const u8,
-                10,
-            )
-        };
+        let cdb_bytes =
+            unsafe { core::slice::from_raw_parts(&cdb as *const ScsiCdb10 as *const u8, 10) };
         self.exec_command(xfer, cdb_bytes, Some(buf), true)
     }
 
@@ -252,12 +256,8 @@ impl UsbMassStorage {
         }
         let cdb = ScsiCdb10::write10(lba, blocks);
         // SAFETY: ScsiCdb10 is #[repr(C, packed)], exactly 10 bytes per SCSI WRITE_10 spec.
-        let cdb_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &cdb as *const ScsiCdb10 as *const u8,
-                10,
-            )
-        };
+        let cdb_bytes =
+            unsafe { core::slice::from_raw_parts(&cdb as *const ScsiCdb10 as *const u8, 10) };
         let mut buf_mut = alloc::vec![0u8; buf.len()];
         buf_mut.copy_from_slice(buf);
         self.exec_command(xfer, cdb_bytes, Some(&mut buf_mut), false)

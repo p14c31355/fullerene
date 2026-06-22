@@ -74,15 +74,9 @@ pub fn init() {
             let _ = crate::vfs::close(fd.fd);
             Ok(())
         }),
-        vfs_create: Some(|path| {
-            crate::vfs::create(path).map(|_| ())
-        }),
-        vfs_mkdir: Some(|path| {
-            crate::vfs::mkdir(path)
-        }),
-        vfs_unlink: Some(|path| {
-            crate::vfs::unlink(path)
-        }),
+        vfs_create: Some(|path| crate::vfs::create(path).map(|_| ())),
+        vfs_mkdir: Some(|path| crate::vfs::mkdir(path)),
+        vfs_unlink: Some(|path| crate::vfs::unlink(path)),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
             crate::process::PROCESS_MANAGER.with_list(|list| {
@@ -122,7 +116,10 @@ pub fn init() {
         }),
         usb_drive_list: Some(|| {
             let drives = crate::drivers::usb_storage::USB_DRIVES.lock();
-            drives.iter().map(|d| (d.name.clone(), d.mount_point.clone())).collect()
+            drives
+                .iter()
+                .map(|d| (d.name.clone(), d.mount_point.clone()))
+                .collect()
         }),
         usb_poll: Some(|| crate::drivers::usb_storage::poll_usb()),
         shell_cmd: None,

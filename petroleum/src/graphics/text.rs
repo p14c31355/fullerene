@@ -144,53 +144,36 @@ impl core::fmt::Write for VgaBuffer {
     }
 }
 
-impl crate::graphics::console::Console for VgaBuffer {
+fn u32_to_vga_color(color: u32) -> Color {
+    match color & 0x0F {
+        0 => Color::Black,
+        1 => Color::Blue,
+        2 => Color::Green,
+        3 => Color::Cyan,
+        4 => Color::Red,
+        5 => Color::Magenta,
+        6 => Color::Brown,
+        7 => Color::LightGray,
+        8 => Color::DarkGray,
+        9 => Color::LightBlue,
+        10 => Color::LightGreen,
+        11 => Color::LightCyan,
+        12 => Color::LightRed,
+        13 => Color::Pink,
+        14 => Color::Yellow,
+        15 => Color::White,
+        _ => Color::LightGray,
+    }
+}
+
+impl crate::graphics::Console for VgaBuffer {
     fn write_char(&mut self, c: char, color: u32) {
-        // Safely convert u32 color to VGA Color (valid range 0..=15)
-        let fg = match color & 0x0F {
-            0 => Color::Black,
-            1 => Color::Blue,
-            2 => Color::Green,
-            3 => Color::Cyan,
-            4 => Color::Red,
-            5 => Color::Magenta,
-            6 => Color::Brown,
-            7 => Color::LightGray,
-            8 => Color::DarkGray,
-            9 => Color::LightBlue,
-            10 => Color::LightGreen,
-            11 => Color::LightCyan,
-            12 => Color::LightRed,
-            13 => Color::Pink,
-            14 => Color::Yellow,
-            15 => Color::White,
-            _ => Color::LightGray, // fallback for out-of-range
-        };
-        self.set_color(fg, Color::Black);
+        self.set_color(u32_to_vga_color(color), Color::Black);
         self.write_byte(c as u8);
     }
 
     fn set_color(&mut self, color: u32) {
-        let fg = match color & 0x0F {
-            0 => Color::Black,
-            1 => Color::Blue,
-            2 => Color::Green,
-            3 => Color::Cyan,
-            4 => Color::Red,
-            5 => Color::Magenta,
-            6 => Color::Brown,
-            7 => Color::LightGray,
-            8 => Color::DarkGray,
-            9 => Color::LightBlue,
-            10 => Color::LightGreen,
-            11 => Color::LightCyan,
-            12 => Color::LightRed,
-            13 => Color::Pink,
-            14 => Color::Yellow,
-            15 => Color::White,
-            _ => Color::LightGray,
-        };
-        self.set_color(fg, Color::Black);
+        self.set_color(u32_to_vga_color(color), Color::Black);
     }
 
     fn clear(&mut self) {

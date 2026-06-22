@@ -8,17 +8,16 @@
 //!
 //! All controller-specific details are hidden behind [`super::host_controller::HostController`].
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
+use super::ehci_context::EhciContext;
+use super::host_controller::HostController;
+use super::xhci_context::XhciContext;
 use crate::DriverContext;
 use crate::usb::{
-    UsbDevice, UsbDirection, UsbSetupPacket, UsbXferType,
-    REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION,
-    DESC_DEVICE, DESC_CONFIGURATION,
+    DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDevice,
+    UsbDirection, UsbSetupPacket, UsbXferType,
 };
-use super::host_controller::HostController;
-use super::ehci_context::EhciContext;
-use super::xhci_context::XhciContext;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 // ============================================================================
 //  CBW / CSW (Bulk-Only Transport)
@@ -27,10 +26,10 @@ use super::xhci_context::XhciContext;
 /// Command Block Wrapper (31 bytes, BOT spec §5.1).
 #[repr(C, packed)]
 struct Cbw {
-    signature: u32,     // 0x43425355 ("USBC")
+    signature: u32, // 0x43425355 ("USBC")
     tag: u32,
     data_len: u32,
-    flags: u8,          // 0x80 = IN, 0x00 = OUT
+    flags: u8, // 0x80 = IN, 0x00 = OUT
     lun: u8,
     cb_len: u8,
     cb: [u8; 16],
@@ -41,10 +40,10 @@ const CBW_SIGNATURE: u32 = 0x43425355;
 /// Command Status Wrapper (13 bytes, BOT spec §5.2).
 #[repr(C, packed)]
 struct Csw {
-    signature: u32,     // 0x53425355 ("USBS")
+    signature: u32, // 0x53425355 ("USBS")
     tag: u32,
     residue: u32,
-    status: u8,         // 0 = success
+    status: u8, // 0 = success
 }
 
 const CSW_SIGNATURE: u32 = 0x53425355;
@@ -163,7 +162,15 @@ pub fn bot_read_sectors(
     cdb[0] = 0x28; // READ_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
-    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(BotBuffer::In(&mut buf[..dlen as usize])), tag)
+    bot_exec_command(
+        host,
+        dev_addr,
+        ep_out,
+        ep_in,
+        &cdb,
+        Some(BotBuffer::In(&mut buf[..dlen as usize])),
+        tag,
+    )
 }
 
 /// Write sectors to a mass-storage device via BOT.
@@ -182,7 +189,15 @@ pub fn bot_write_sectors(
     cdb[0] = 0x2A; // WRITE_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
-    bot_exec_command(host, dev_addr, ep_out, ep_in, &cdb, Some(BotBuffer::Out(buf)), tag)
+    bot_exec_command(
+        host,
+        dev_addr,
+        ep_out,
+        ep_in,
+        &cdb,
+        Some(BotBuffer::Out(buf)),
+        tag,
+    )
 }
 
 // ============================================================================
@@ -345,7 +360,10 @@ impl UsbBus {
             dev.enable_memory_access();
 
             let prog_if = crate::pci::PciConfigSpace::read_config_byte(
-                dev.bus, dev.device, dev.function, 0x09,
+                dev.bus,
+                dev.device,
+                dev.function,
+                0x09,
             );
             match prog_if {
                 0x20 => {

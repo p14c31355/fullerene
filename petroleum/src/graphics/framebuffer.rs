@@ -72,7 +72,7 @@ impl core::fmt::Write for UefiFramebufferWriter {
     }
 }
 
-impl crate::graphics::console::Console for UefiFramebufferWriter {
+impl crate::graphics::Console for UefiFramebufferWriter {
     fn write_char(&mut self, c: char, color: u32) {
         use embedded_graphics::{
             mono_font::{MonoTextStyle, ascii::FONT_6X10},
@@ -145,7 +145,7 @@ impl UefiFramebufferWriter {
     }
 }
 
-impl crate::graphics::renderer::Renderer for UefiFramebufferWriter {
+impl crate::graphics::Renderer for UefiFramebufferWriter {
     fn draw_pixel(&mut self, x: i32, y: i32, color: u32) {
         match self {
             UefiFramebufferWriter::Uefi32(w) => w.put_pixel(x as u32, y as u32, color),

@@ -60,10 +60,22 @@ pub fn init_initramfs() {
 
     // Create standard Linux directories
     let dirs = [
-        "/bin", "/sbin", "/usr", "/usr/bin", "/usr/sbin",
-        "/etc", "/dev", "/proc", "/sys", "/tmp",
-        "/var", "/var/log", "/root", "/home",
-        "/lib", "/lib64",
+        "/bin",
+        "/sbin",
+        "/usr",
+        "/usr/bin",
+        "/usr/sbin",
+        "/etc",
+        "/dev",
+        "/proc",
+        "/sys",
+        "/tmp",
+        "/var",
+        "/var/log",
+        "/root",
+        "/home",
+        "/lib",
+        "/lib64",
     ];
 
     for dir in &dirs {

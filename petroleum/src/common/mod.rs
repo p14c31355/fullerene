@@ -1,6 +1,24 @@
 //! Common utilities shared across petroleum submodules.
 
-pub mod error;
+/// A custom error type for the bootloader (UEFI/BIOS).
+#[derive(Debug, Clone, Copy)]
+pub enum BellowsError {
+    Efi { status: uefi::EfiStatus },
+    FileIo(&'static str),
+    PeParse(&'static str),
+    AllocationFailed(&'static str),
+    InvalidState(&'static str),
+    ProtocolNotFound(&'static str),
+}
+
+impl From<uefi::EfiStatus> for BellowsError {
+    fn from(status: uefi::EfiStatus) -> Self {
+        Self::Efi { status }
+    }
+}
+
+pub type Result<T> = core::result::Result<T, BellowsError>;
+
 pub mod logging;
 #[macro_use]
 pub mod macros;
@@ -56,7 +74,6 @@ pub fn set_memory_initialized(initialized: bool) {
 }
 
 pub use crate::initializer::InitSequence;
-pub use error::*;
 pub use macros::*;
 pub use memory::*;
 pub use syscall::*;

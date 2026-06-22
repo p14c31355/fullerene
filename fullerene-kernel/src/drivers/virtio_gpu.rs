@@ -7,8 +7,8 @@
 //! types and creates the `UefiFramebufferWriter`.
 
 use alloc::boxed::Box;
-use nitrogen::virtio::gpu::VirtioGpu;
 use nitrogen::DriverContext;
+use nitrogen::virtio::gpu::VirtioGpu;
 use petroleum::graphics::UefiFramebufferWriter;
 
 use crate::driver_context_impl::KernelDriverContext;

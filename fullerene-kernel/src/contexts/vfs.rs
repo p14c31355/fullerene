@@ -105,11 +105,7 @@ impl VfsContext {
 
     // ── Mount management ────────────────────────────────────────
 
-    pub fn mount(
-        &self,
-        mount_point: &str,
-        fs: Box<dyn FileSystem>,
-    ) -> Result<(), &'static str> {
+    pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), &'static str> {
         self.inner.lock().mount(mount_point, fs)
     }
 
@@ -130,7 +126,9 @@ impl VfsContext {
         };
         let removed = vfs.unmount(mount_point)?;
         if removed {
-            handle_table.entries.retain(|entry| entry.mount_index != target_idx);
+            handle_table
+                .entries
+                .retain(|entry| entry.mount_index != target_idx);
             for entry in &mut handle_table.entries {
                 if entry.mount_index > target_idx {
                     entry.mount_index -= 1;
@@ -162,41 +160,25 @@ impl VfsContext {
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
-        let mount_idx = self
-            .handle_table
-            .lock()
-            .find(fd)
-            .ok_or("bad fd")?;
+        let mount_idx = self.handle_table.lock().find(fd).ok_or("bad fd")?;
         vfs.read_at(mount_idx, fd, buf)
     }
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
         let mut vfs = self.inner.lock();
-        let mount_idx = self
-            .handle_table
-            .lock()
-            .find(fd)
-            .ok_or("bad fd")?;
+        let mount_idx = self.handle_table.lock().find(fd).ok_or("bad fd")?;
         vfs.write_at(mount_idx, fd, data)
     }
 
     pub fn close(&self, fd: u32) -> Result<(), &'static str> {
         let mut vfs = self.inner.lock();
-        let mount_idx = self
-            .handle_table
-            .lock()
-            .take(fd)
-            .ok_or("bad fd")?;
+        let mount_idx = self.handle_table.lock().take(fd).ok_or("bad fd")?;
         vfs.close_at(mount_idx, fd)
     }
 
     pub fn seek(&self, fd: u32, pos: usize) -> Result<(), &'static str> {
         let mut vfs = self.inner.lock();
-        let mount_idx = self
-            .handle_table
-            .lock()
-            .find(fd)
-            .ok_or("bad fd")?;
+        let mount_idx = self.handle_table.lock().find(fd).ok_or("bad fd")?;
         vfs.seek_at(mount_idx, fd, pos)
     }
 
@@ -204,14 +186,10 @@ impl VfsContext {
         // Acquire inner first, do all FS work, drop inner…
         let (mount_index, fd) = {
             let mut vfs = self.inner.lock();
-            let mount_index = vfs
-                .find_fs_index(path)
-                .ok_or("not found")?;
+            let mount_index = vfs.find_fs_index(path).ok_or("not found")?;
             let resolved = vfs.resolve_path(path);
             {
-                let (fs, remaining) = vfs
-                    .find_fs(&resolved)
-                    .ok_or("not found")?;
+                let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
                 if !fs.exists(&remaining) {
                     fs.create(&remaining, InodeType::File)
                         .ok_or("create failed")?;

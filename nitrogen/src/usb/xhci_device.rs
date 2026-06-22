@@ -14,8 +14,8 @@
 //! | Scratchpad       | Scratchpad buffer array for controller use           |
 //! | SlotManager      | Manages all 1..MaxSlots-1 slots                     |
 
-use crate::DriverContext;
 use super::xhci_ring::Ring;
+use crate::DriverContext;
 
 use alloc::vec::Vec;
 use core::ptr;
@@ -81,7 +81,9 @@ impl DeviceContext {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let phys = ctx.allocate_contiguous_frames(1).ok()?;
         let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe { ptr::write_bytes(virt, 0, 4096); }
+        unsafe {
+            ptr::write_bytes(virt, 0, 4096);
+        }
         Some((virt as *mut Self, phys))
     }
 }
@@ -116,8 +118,8 @@ impl DeviceContext {
 pub struct InputContext {
     pub drop_flags: u32,
     pub add_flags: u32,
-    _rsvd: [u32; 6],         // 6 dwords reserved = 24 bytes
-    pub slot_ctx: [u32; 8],  // Slot context (8 dwords = 32 bytes)
+    _rsvd: [u32; 6],            // 6 dwords reserved = 24 bytes
+    pub slot_ctx: [u32; 8],     // Slot context (8 dwords = 32 bytes)
     pub ep_ctx: [[u32; 8]; 31], // EP1 Out (=ctx_idx 2 → index 0) through EP31 In (=ctx_idx 63 → index 30)
 }
 
@@ -126,7 +128,9 @@ impl InputContext {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
         let phys = ctx.allocate_contiguous_frames(1).ok()?;
         let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe { ptr::write_bytes(virt, 0, 4096); }
+        unsafe {
+            ptr::write_bytes(virt, 0, 4096);
+        }
         Some((virt as *mut Self, phys))
     }
 
@@ -223,7 +227,7 @@ impl Slot {
 /// If HCSPARAMS2 reports max_scratchpad_bufs > 0, a scratchpad buffer
 /// array must be allocated and its pointer stored in DCBAA[0].
 pub struct Scratchpad {
-    pub phys: u64,    // physical address of the scratchpad array
+    pub phys: u64, // physical address of the scratchpad array
     pub count: u32,
 }
 
@@ -243,9 +247,9 @@ impl Scratchpad {
         // Allocate individual scratchpad buffer pages and write pointers
         for i in 0..count as usize {
             match ctx.allocate_contiguous_frames(1) {
-                Ok(buf_phys) => {
-                    unsafe { ptr::write_volatile(array_virt.add(i), buf_phys); }
-                }
+                Ok(buf_phys) => unsafe {
+                    ptr::write_volatile(array_virt.add(i), buf_phys);
+                },
                 Err(_) => {
                     // Free previously allocated buffers and array
                     for j in 0..i {
@@ -258,7 +262,10 @@ impl Scratchpad {
             }
         }
 
-        Some(Self { phys: array_phys, count })
+        Some(Self {
+            phys: array_phys,
+            count,
+        })
     }
 }
 
@@ -312,11 +319,9 @@ impl SlotManager {
         // Allocate device and input context pages
         let (_dev_ctx_virt, dev_ctx_phys) =
             DeviceContext::alloc(ctx).ok_or("no device ctx page")?;
-        let (_in_ctx_virt, in_ctx_phys) =
-            InputContext::alloc(ctx).ok_or("no input ctx page")?;
+        let (_in_ctx_virt, in_ctx_phys) = InputContext::alloc(ctx).ok_or("no input ctx page")?;
 
-        let slot = Slot::new(ctx, slot_id, dev_ctx_phys, in_ctx_phys)
-            .ok_or("no slot resources")?;
+        let slot = Slot::new(ctx, slot_id, dev_ctx_phys, in_ctx_phys).ok_or("no slot resources")?;
         self.slots.push(slot);
 
         Ok((slot_id, self.slots.last_mut().unwrap()))
@@ -356,7 +361,11 @@ impl SlotManager {
     }
 
     /// Get the input context for a slot (by converting phys→virt).
-    pub fn input_ctx_mut(&self, ctx: &dyn DriverContext, slot_id: u32) -> Option<&mut InputContext> {
+    pub fn input_ctx_mut(
+        &self,
+        ctx: &dyn DriverContext,
+        slot_id: u32,
+    ) -> Option<&mut InputContext> {
         let slot = self.get(slot_id)?;
         let virt = ctx.phys_to_virt(slot.in_ctx_phys) as *mut InputContext;
         unsafe { Some(&mut *virt) }
@@ -379,11 +388,7 @@ pub struct DeviceContextSet {
 
 impl DeviceContextSet {
     /// Create a new device context set with DCBAA, optional scratchpad, and slot manager.
-    pub fn new(
-        ctx: &dyn DriverContext,
-        max_slots: u32,
-        scratchpad_count: u32,
-    ) -> Option<Self> {
+    pub fn new(ctx: &dyn DriverContext, max_slots: u32, scratchpad_count: u32) -> Option<Self> {
         let mut dcbaa = Dcbaa::alloc(ctx)?;
         let scratchpad = Scratchpad::alloc(ctx, scratchpad_count);
 
@@ -394,7 +399,11 @@ impl DeviceContextSet {
 
         let slots = SlotManager::new(max_slots);
 
-        Some(Self { dcbaa, scratchpad, slots })
+        Some(Self {
+            dcbaa,
+            scratchpad,
+            slots,
+        })
     }
 }
 

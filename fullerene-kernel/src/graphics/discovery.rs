@@ -182,8 +182,9 @@ impl FramebufferDiscovery {
                     nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x10);
                 let fb_phys = if (bar0 & 0x6) == 0x4 {
                     // 64-bit BAR: read BAR1 for upper 32 bits
-                    let bar1 =
-                        nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x14);
+                    let bar1 = nitrogen::pci::PciConfigSpace::read_config_dword(
+                        dev.bus, dev.device, 0, 0x14,
+                    );
                     ((bar1 as u64) << 32) | ((bar0 & 0xFFFFFFF0) as u64)
                 } else {
                     (bar0 & 0xFFFFFFF0) as u64

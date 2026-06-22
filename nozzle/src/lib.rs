@@ -179,8 +179,20 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("grep", "Search for a pattern", builtins::cmd_grep),
         ("sort", "Sort lines of text", builtins::cmd_sort),
         ("wc", "Count lines, words, and bytes", builtins::cmd_wc),
-        ("hello_linux", "Launch the built-in Linux test binary", builtins::cmd_hello_linux),
-        ("linux_run", "Launch a Linux ELF binary from the filesystem", builtins::cmd_linux_run),
-        ("run_busybox", "Launch BusyBox shell from the filesystem", builtins::cmd_run_busybox),
+        (
+            "hello_linux",
+            "Launch the built-in Linux test binary",
+            builtins::cmd_hello_linux
+        ),
+        (
+            "linux_run",
+            "Launch a Linux ELF binary from the filesystem",
+            builtins::cmd_linux_run
+        ),
+        (
+            "run_busybox",
+            "Launch BusyBox shell from the filesystem",
+            builtins::cmd_run_busybox
+        ),
     )
 }

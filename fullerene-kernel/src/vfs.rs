@@ -537,7 +537,10 @@ impl Vfs {
     /// Find the filesystem responsible for `absolute_path`.
     ///
     /// Returns `(filesystem, remaining_path_relative_to_mount_point)`.
-    pub(crate) fn find_fs(&mut self, absolute_path: &str) -> Option<(&mut Box<dyn FileSystem>, String)> {
+    pub(crate) fn find_fs(
+        &mut self,
+        absolute_path: &str,
+    ) -> Option<(&mut Box<dyn FileSystem>, String)> {
         // Ensure path starts with /
         let path = if absolute_path.starts_with('/') {
             absolute_path
@@ -617,7 +620,12 @@ impl Vfs {
 
     // ── Indexed operations (for VfsContext handle routing) ─────
 
-    pub fn read_at(&mut self, mount_idx: usize, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+    pub fn read_at(
+        &mut self,
+        mount_idx: usize,
+        fd: u32,
+        buf: &mut [u8],
+    ) -> Result<usize, &'static str> {
         self.mounts
             .get_mut(mount_idx)
             .ok_or("bad mount index")?
@@ -625,7 +633,12 @@ impl Vfs {
             .read(fd, buf)
     }
 
-    pub fn write_at(&mut self, mount_idx: usize, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
+    pub fn write_at(
+        &mut self,
+        mount_idx: usize,
+        fd: u32,
+        data: &[u8],
+    ) -> Result<usize, &'static str> {
         self.mounts
             .get_mut(mount_idx)
             .ok_or("bad mount index")?

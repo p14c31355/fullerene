@@ -8,6 +8,44 @@ use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
 
+/// Helper: write a formatted line to the terminal.
+macro_rules! tline {
+    ($t:expr, $($arg:tt)*) => { $t.write_str(&alloc::format!("{}{}", alloc::format!($($arg)*), '\n')) };
+}
+/// Helper: write a static string + newline to the terminal.
+macro_rules! tstr {
+    ($t:expr, $s:expr) => {
+        $t.write_str(concat!($s, '\n'))
+    };
+}
+
+/// Read the entire contents of a file at `path`. Returns the raw bytes.
+/// Limited to MAX_FILE_SIZE to prevent unbounded memory growth.
+fn read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB limit
+    let fd = crate::vfs::open(path, 0).map_err(|_| "cannot open file")?;
+    let mut buf = [0u8; 1024];
+    let mut data = alloc::vec::Vec::new();
+    loop {
+        match crate::vfs::read(fd.fd, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if data.len() + n > MAX_FILE_SIZE {
+                    let _ = crate::vfs::close(fd.fd);
+                    return Err("file too large");
+                }
+                data.extend_from_slice(&buf[..n]);
+            }
+            Err(e) => {
+                let _ = crate::vfs::close(fd.fd);
+                return Err(e);
+            }
+        }
+    }
+    let _ = crate::vfs::close(fd.fd);
+    Ok(data)
+}
+
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
     nitrogen::ps2::keyboard::init_keyboard();
@@ -32,48 +70,34 @@ fn register_nozzle_hooks() {
                 Ok(entries) => {
                     for ent in entries {
                         if long_format {
-                            let kind = if ent.is_dir { "d" } else { "-" };
-                            let line = format!("{}  {:>8}  {}\n", kind, ent.size, ent.name);
-                            ctx.terminal.write_str(&line);
+                            tline!(
+                                ctx.terminal,
+                                "{}  {:>8}  {}",
+                                if ent.is_dir { "d" } else { "-" },
+                                ent.size,
+                                ent.name
+                            );
                         } else if ent.is_dir {
-                            let line = format!("  {}/\n", ent.name);
-                            ctx.terminal.write_str(&line);
+                            tline!(ctx.terminal, "  {}/", ent.name);
                         } else {
-                            let line = format!("  {}\n", ent.name);
-                            ctx.terminal.write_str(&line);
+                            tline!(ctx.terminal, "  {}", ent.name);
                         }
                     }
                 }
                 Err(e) => {
-                    let msg = format!("ls: {}: {}\n", path, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "ls: {}: {}", path, e);
                 }
             }
         }),
-        read: Some(|ctx, path| match crate::vfs::open(path, 0) {
-            Ok(fd) => {
-                let mut buf = [0u8; 512];
-                loop {
-                    match crate::vfs::read(fd.fd, &mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            ctx.terminal
-                                .write_str(core::str::from_utf8(&buf[..n]).unwrap_or("(binary)"));
-                        }
-                        Err(e) => {
-                            let msg = format!("cat: {}\n", e);
-                            ctx.terminal.write_str(&msg);
-                            break;
-                        }
-                    }
+        read: Some(|ctx, path| match read_entire_file(path) {
+            Ok(data) => {
+                ctx.terminal
+                    .write_str(core::str::from_utf8(&data).unwrap_or("(binary)"));
+                if !data.is_empty() && data.last() != Some(&b'\n') {
+                    ctx.terminal.write_str("\n");
                 }
-                let _ = crate::vfs::close(fd.fd);
-                ctx.terminal.write_str("\n");
             }
-            Err(e) => {
-                let msg = format!("cat: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
-            }
+            Err(e) => tline!(ctx.terminal, "cat: {}: {}", path, e),
         }),
         pwd: Some(|ctx| match crate::vfs::working_directory() {
             Ok(wd) => {
@@ -81,15 +105,13 @@ fn register_nozzle_hooks() {
                 ctx.terminal.write_str("\n");
             }
             Err(e) => {
-                let msg = format!("pwd: {}\n", e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "pwd: {}", e);
             }
         }),
         cd: Some(|ctx, path| match crate::vfs::change_directory(path) {
             Ok(()) => {}
             Err(e) => {
-                let msg = format!("cd: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "cd: {}: {}", path, e);
             }
         }),
         tree: Some(|ctx, path| {
@@ -104,22 +126,17 @@ fn register_nozzle_hooks() {
             match crate::fs::walk_dir(&resolved) {
                 Ok(entries) => {
                     for entry in &entries {
-                        ctx.terminal.write_str(entry);
-                        ctx.terminal.write_str("\n");
+                        tline!(ctx.terminal, "{}", entry);
                     }
                 }
                 Err(e) => {
-                    let msg = format!("tree: {}: {}\n", resolved, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "tree: {}: {}", resolved, e);
                 }
             }
         }),
         find: Some(|ctx, path, pattern| {
             let resolved = if path == "." {
-                match crate::vfs::working_directory() {
-                    Ok(wd) => wd,
-                    Err(_) => String::from("/"),
-                }
+                crate::vfs::working_directory().unwrap_or("/".into())
             } else {
                 String::from(path)
             };
@@ -128,8 +145,7 @@ fn register_nozzle_hooks() {
                     let mut found = false;
                     for entry in &entries {
                         if entry.contains(pattern) {
-                            ctx.terminal.write_str(entry);
-                            ctx.terminal.write_str("\n");
+                            tline!(ctx.terminal, "{}", entry);
                             found = true;
                         }
                     }
@@ -138,78 +154,64 @@ fn register_nozzle_hooks() {
                     }
                 }
                 Err(e) => {
-                    let msg = format!("find: {}: {}\n", resolved, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "find: {}: {}", resolved, e);
                 }
             }
         }),
         cp: Some(|ctx, src, dst| match crate::fs::copy_file(src, dst) {
             Ok(()) => {
-                let msg = format!("Copied {} -> {}\n", src, dst);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Copied {} -> {}", src, dst);
             }
             Err(e) => {
-                let msg = format!("cp: {} -> {}: {}\n", src, dst, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "cp: {} -> {}: {}", src, dst, e);
             }
         }),
         mv: Some(|ctx, src, dst| match crate::fs::move_file(src, dst) {
             Ok(()) => {
-                let msg = format!("Moved {} -> {}\n", src, dst);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Moved {} -> {}", src, dst);
             }
             Err(e) => {
-                let msg = format!("mv: {} -> {}: {}\n", src, dst, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "mv: {} -> {}: {}", src, dst, e);
             }
         }),
         write: Some(|ctx, path, content| {
             match crate::fs::write_entire_file(path, content.as_bytes()) {
                 Ok(()) => {
-                    let msg = format!("Wrote {} bytes to {}\n", content.len(), path);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "Wrote {} bytes to {}", content.len(), path);
                 }
                 Err(e) => {
-                    let msg = format!("write: {}: {}\n", path, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "write: {}: {}", path, e);
                 }
             }
         }),
         rm: Some(|ctx, path| match crate::fs::remove(path) {
             Ok(()) => {
-                let msg = format!("Removed {}\n", path);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Removed {}", path);
             }
             Err(e) => {
-                let msg = format!("rm: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "rm: {}: {}", path, e);
             }
         }),
         mkdir: Some(|ctx, path| match crate::vfs::mkdir(path) {
             Ok(()) => {
-                let msg = format!("Created directory {}\n", path);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Created directory {}", path);
             }
             Err(e) => {
-                let msg = format!("mkdir: {}: {}\n", path, e);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "mkdir: {}: {}", path, e);
             }
         }),
         touch: Some(|ctx, path| match crate::vfs::open(path, 0) {
             Ok(fd) => {
                 let _ = crate::vfs::close(fd.fd);
-                let msg = format!("Touched {}\n", path);
-                ctx.terminal.write_str(&msg);
+                tline!(ctx.terminal, "Touched {}", path);
             }
             Err(_) => match crate::vfs::create(path) {
                 Ok(fd) => {
                     let _ = crate::vfs::close(fd.fd);
-                    let msg = format!("Touched {}\n", path);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "Touched {}", path);
                 }
                 Err(e) => {
-                    let msg = format!("touch: {}: {}\n", path, e);
-                    ctx.terminal.write_str(&msg);
+                    tline!(ctx.terminal, "touch: {}: {}", path, e);
                 }
             },
         }),
@@ -388,6 +390,7 @@ fn register_nozzle_hooks() {
             if events.is_empty() {
                 ctx.terminal.write_str("(no trace events recorded)\n");
             } else {
+                let mut buf = alloc::string::String::with_capacity(events.len() * 48);
                 for ev in events {
                     let cat = core::str::from_utf8(&ev.category)
                         .unwrap_or("?")
@@ -395,9 +398,10 @@ fn register_nozzle_hooks() {
                     let msg = core::str::from_utf8(&ev.message)
                         .unwrap_or("?")
                         .trim_end_matches('\0');
-                    let line = format!("[{}] {}: {}\n", ev.tick, cat, msg);
-                    ctx.terminal.write_str(&line);
+                    use core::fmt::Write;
+                    let _ = write!(buf, "[{}] {}: {}\n", ev.tick, cat, msg);
                 }
+                ctx.terminal.write_str(&buf);
             }
         }
         "run" => {
@@ -405,48 +409,21 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str("Available: toluene, hello\n");
         }
         "linux_run" => {
-            if ctx.args.len() > 1 {
-                let path = ctx.args[1];
-                let msg = alloc::format!("Loading Linux binary: {}\n", path);
-                ctx.terminal.write_str(&msg);
-                match crate::linux::launch::launch_linux_binary(path) {
-                    Ok(pid) => {
-                        let msg = alloc::format!("Linux process started (PID: {})\n", pid.0);
-                        ctx.terminal.write_str(&msg);
-                    }
-                    Err(e) => {
-                        let msg = alloc::format!("Failed to launch: {:?}\n", e);
-                        ctx.terminal.write_str(&msg);
-                    }
-                }
-            } else {
-                ctx.terminal.write_str("Usage: linux_run <path>\n");
+            if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: linux_run <path>"); }
+            tline!(ctx.terminal, "Loading Linux binary: {}", ctx.args[1]);
+            match crate::linux::launch::launch_linux_binary(ctx.args[1]) {
+                Ok(pid) => tline!(ctx.terminal, "Linux process started (PID: {})", pid.0),
+                Err(e) => tline!(ctx.terminal, "Failed to launch: {:?}", e),
             }
         }
-        "run_busybox" => {
-            match crate::linux::launch::launch_busybox() {
-                Ok(pid) => {
-                    let msg = alloc::format!("BusyBox shell started (PID: {})\n", pid.0);
-                    ctx.terminal.write_str(&msg);
-                }
-                Err(e) => {
-                    let msg = alloc::format!("Failed to launch BusyBox: {:?}\n", e);
-                    ctx.terminal.write_str(&msg);
-                }
-            }
-        }
-        "hello_linux" => {
-            match crate::linux::launch::launch_test_binary() {
-                Ok(pid) => {
-                    let msg = alloc::format!("Test Linux binary started (PID: {})\n", pid.0);
-                    ctx.terminal.write_str(&msg);
-                }
-                Err(e) => {
-                    let msg = alloc::format!("Failed to launch test binary: {:?}\n", e);
-                    ctx.terminal.write_str(&msg);
-                }
-            }
-        }
+        "run_busybox" => match crate::linux::launch::launch_busybox() {
+            Ok(pid) => tline!(ctx.terminal, "BusyBox shell started (PID: {})", pid.0),
+            Err(e) => tline!(ctx.terminal, "Failed to launch BusyBox: {:?}", e),
+        },
+        "hello_linux" => match crate::linux::launch::launch_test_binary() {
+            Ok(pid) => tline!(ctx.terminal, "Test Linux binary started (PID: {})", pid.0),
+            Err(e) => tline!(ctx.terminal, "Failed to launch test binary: {:?}", e),
+        },
         "pci" => {
             use alloc::format;
             use nitrogen::pci::PciScanner;
@@ -482,38 +459,20 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str("Bad Apple finished.\n");
         }
         "date" => {
-            if let Some(get_time) = solvent::SOLVENT_CALLBACKS.lock().wall_clock {
-                if let Some((year, month, day, hour, minute, second)) = get_time() {
-                    let msg = format!(
-                        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}\n",
-                        year, month, day, hour, minute, second
-                    );
-                    ctx.terminal.write_str(&msg);
-                } else {
-                    ctx.terminal.write_str("date: RTC not available\n");
-                }
-            } else {
-                ctx.terminal.write_str("date: no wall clock callback\n");
+            let cb = solvent::SOLVENT_CALLBACKS.lock().wall_clock;
+            match cb.and_then(|f| f()) {
+                Some((y, mo, d, h, mi, s)) => tline!(ctx.terminal, "{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s),
+                None => tstr!(ctx.terminal, "date: RTC not available"),
             }
         }
         "uptime" => {
-            let ticks = core::sync::atomic::AtomicU64::load(
-                &solvent::GLOBAL_TICK,
-                core::sync::atomic::Ordering::Relaxed,
-            );
-            // Assume ~1000 ticks per second (adjustable)
-            let seconds = ticks / 1000;
+            let seconds = solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed) / 1000;
             let days = seconds / 86400;
-            let hours = (seconds % 86400) / 3600;
+            let hms = (seconds % 86400) / 3600;
             let mins = (seconds % 3600) / 60;
             let secs = seconds % 60;
-            if days > 0 {
-                let msg = format!("up {} days {:02}:{:02}:{:02}\n", days, hours, mins, secs);
-                ctx.terminal.write_str(&msg);
-            } else {
-                let msg = format!("up {:02}:{:02}:{:02}\n", hours, mins, secs);
-                ctx.terminal.write_str(&msg);
-            }
+            if days > 0 { tline!(ctx.terminal, "up {} days {:02}:{:02}:{:02}", days, hms, mins, secs); }
+            else { tline!(ctx.terminal, "up {:02}:{:02}:{:02}", hms, mins, secs); }
         }
         "sleep" => {
             if ctx.args.len() > 1 {
@@ -542,154 +501,49 @@ fn register_nozzle_hooks() {
             }
         }
         "grep" => {
-            // File-based grep: read file and search for pattern in args[1]
-            if ctx.args.len() < 3 {
-                ctx.terminal.write_str("grep: pattern and file required\n");
-            } else {
-                let pattern = ctx.args[1];
-                for &path in &ctx.args[2..] {
-                    match crate::vfs::open(path, 0) {
-                        Ok(fd) => {
-                            let mut buf = [0u8; 1024];
-                            let mut remainder = alloc::vec::Vec::new();
-                            loop {
-                                match crate::vfs::read(fd.fd, &mut buf) {
-                                    Ok(0) => break,
-                                    Ok(n) => {
-                                        remainder.extend_from_slice(&buf[..n]);
-                                        // Process complete lines by scanning for b'\n'
-                                        // directly in the byte buffer to avoid UTF-8
-                                        // split issues across read boundaries.
-                                        let mut last_newline = 0;
-                                        for (i, &byte) in remainder.iter().enumerate() {
-                                            if byte == b'\n' {
-                                                if let Ok(line) = core::str::from_utf8(
-                                                    &remainder[last_newline..i],
-                                                ) {
-                                                    if line.contains(pattern) {
-                                                        if ctx.args.len() > 3 {
-                                                            let prefix =
-                                                                alloc::format!("{}:", path);
-                                                            ctx.terminal.write_str(&prefix);
-                                                        }
-                                                        ctx.terminal.write_str(line);
-                                                        ctx.terminal.write_str("\n");
-                                                    }
-                                                }
-                                                last_newline = i + 1;
-                                            }
-                                        }
-                                        // Drain processed bytes; keep unprocessed tail.
-                                        remainder.drain(..last_newline);
-                                    }
-                                    Err(e) => {
-                                        let msg = format!("grep: {}\n", e);
-                                        ctx.terminal.write_str(&msg);
-                                        break;
-                                    }
-                                }
-                            }
-                            // Process final partial line
-                            if !remainder.is_empty() {
-                                if let Ok(s) = core::str::from_utf8(&remainder) {
-                                    if s.contains(pattern) {
-                                        if ctx.args.len() > 3 {
-                                            let prefix = alloc::format!("{}:", path);
-                                            ctx.terminal.write_str(&prefix);
-                                        }
-                                        ctx.terminal.write_str(s);
-                                        ctx.terminal.write_str("\n");
-                                    }
-                                }
-                            }
-                            let _ = crate::vfs::close(fd.fd);
-                        }
-                        Err(e) => {
-                            let msg = format!("grep: {}: {}\n", path, e);
-                            ctx.terminal.write_str(&msg);
+            if ctx.args.len() < 3 { return tstr!(ctx.terminal, "grep: pattern and file required"); }
+            let pattern = ctx.args[1];
+            let show_filename = ctx.args.len() > 3;
+            for &path in &ctx.args[2..] {
+                match read_entire_file(path) {
+                    Ok(data) => {
+                        let text = alloc::string::String::from_utf8_lossy(&data);
+                        for line in text.lines().filter(|l| l.contains(pattern)) {
+                            if show_filename { ctx.terminal.write_str(&alloc::format!("{}:", path)); }
+                            tline!(ctx.terminal, "{}", line);
                         }
                     }
+                    Err(e) => tline!(ctx.terminal, "grep: {}: {}", path, e),
                 }
             }
         }
         "sort" => {
             let reverse = ctx.args.iter().any(|a| *a == "-r");
-            let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" {
-                2
-            } else {
-                1
-            };
-            if path_idx < ctx.args.len() {
-                let path = ctx.args[path_idx];
-                match crate::vfs::open(path, 0) {
-                    Ok(fd) => {
-                        let mut buf = [0u8; 1024];
-                        let mut data = alloc::vec::Vec::new();
-                        loop {
-                            match crate::vfs::read(fd.fd, &mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => data.extend_from_slice(&buf[..n]),
-                                Err(e) => {
-                                    let msg = format!("sort: {}\n", e);
-                                    ctx.terminal.write_str(&msg);
-                                    break;
-                                }
-                            }
-                        }
-                        let _ = crate::vfs::close(fd.fd);
-                        let text = alloc::string::String::from_utf8_lossy(&data);
-                        let mut lines: alloc::vec::Vec<&str> = text.lines().collect();
-                        lines.sort();
-                        if reverse {
-                            lines.reverse();
-                        }
-                        for line in lines {
-                            ctx.terminal.write_str(line);
-                            ctx.terminal.write_str("\n");
-                        }
-                    }
-                    Err(e) => {
-                        let msg = format!("sort: {}: {}\n", path, e);
-                        ctx.terminal.write_str(&msg);
-                    }
+            let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" { 2 } else { 1 };
+            if path_idx >= ctx.args.len() {
+                return tstr!(ctx.terminal, "Usage: sort [-r] <file>");
+            }
+            match read_entire_file(ctx.args[path_idx]) {
+                Ok(data) => {
+                    let text = alloc::string::String::from_utf8_lossy(&data);
+                    let mut lines: alloc::vec::Vec<&str> = text.lines().collect();
+                    lines.sort();
+                    if reverse { lines.reverse(); }
+                    for line in lines { tline!(ctx.terminal, "{}", line); }
                 }
-            } else {
-                ctx.terminal.write_str("Usage: sort [-r] <file>\n");
+                Err(e) => tline!(ctx.terminal, "sort: {}: {}", ctx.args[path_idx], e),
             }
         }
         "wc" => {
-            if ctx.args.len() > 1 {
-                let path = ctx.args[1];
-                match crate::vfs::open(path, 0) {
-                    Ok(fd) => {
-                        let mut buf = [0u8; 1024];
-                        let mut data = alloc::vec::Vec::new();
-                        loop {
-                            match crate::vfs::read(fd.fd, &mut buf) {
-                                Ok(0) => break,
-                                Ok(n) => data.extend_from_slice(&buf[..n]),
-                                Err(e) => {
-                                    let msg = format!("wc: {}\n", e);
-                                    ctx.terminal.write_str(&msg);
-                                    break;
-                                }
-                            }
-                        }
-                        let _ = crate::vfs::close(fd.fd);
-                        let text = alloc::string::String::from_utf8_lossy(&data);
-                        let lines = data.iter().filter(|&&b| b == b'\n').count();
-                        let words = text.split_whitespace().count();
-                        let bytes = data.len();
-                        let msg = format!("{} {} {} {}\n", lines, words, bytes, path);
-                        ctx.terminal.write_str(&msg);
-                    }
-                    Err(e) => {
-                        let msg = format!("wc: {}: {}\n", path, e);
-                        ctx.terminal.write_str(&msg);
-                    }
+            if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: wc <file>"); }
+            match read_entire_file(ctx.args[1]) {
+                Ok(data) => {
+                    let text = alloc::string::String::from_utf8_lossy(&data);
+                    let lines = data.iter().filter(|&&b| b == b'\n').count();
+                    let words = text.split_whitespace().count();
+                    tline!(ctx.terminal, "{} {} {} {}", lines, words, data.len(), ctx.args[1]);
                 }
-            } else {
-                ctx.terminal.write_str("Usage: wc <file>\n");
+                Err(e) => tline!(ctx.terminal, "wc: {}: {}", ctx.args[1], e),
             }
         }
         "app_list" => match crate::fs::list_packages() {

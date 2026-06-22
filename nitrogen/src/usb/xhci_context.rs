@@ -23,20 +23,18 @@
 //! ```
 
 use crate::DriverContext;
-use crate::usb::{
-    UsbDevice, UsbSetupPacket, UsbDirection,
-};
+use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket};
 
 use alloc::vec::Vec;
 use core::ptr;
 
 // ── Import sub-contexts from sibling modules ──────────────────
+use super::host_controller::HostController;
+use super::xhci_device::*;
+use super::xhci_interrupt::*;
+use super::xhci_port::*;
 use super::xhci_register::*;
 use super::xhci_ring::*;
-use super::xhci_device::*;
-use super::xhci_port::*;
-use super::xhci_interrupt::*;
-use super::host_controller::HostController;
 
 // ============================================================================
 //  XhciContext — top-level xHCI state container
@@ -73,10 +71,7 @@ impl XhciContext {
     ///
     /// This reads capability registers, performs legacy handoff,
     /// and allocates all required data structures (rings, DCBAA, ports).
-    pub fn new(
-        mmio_base: *mut u8,
-        ctx: &'static dyn DriverContext,
-    ) -> Option<Self> {
+    pub fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
         // ── Step 1: Read capability registers ─────────────────
         let cap_regs = unsafe { CapabilityRegisters::read(mmio_base) };
         let caplength = cap_regs.caplength;
@@ -94,7 +89,10 @@ impl XhciContext {
 
         log::info!(
             "xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={} ppc={}",
-            cap_regs.hcs_params1, n_ports, max_slots, ppc
+            cap_regs.hcs_params1,
+            n_ports,
+            max_slots,
+            ppc
         );
         log::info!(
             "xHCI: HCCPARAMS1=0x{:08X} 64bit={} xECP=0x{:x}",
@@ -105,8 +103,8 @@ impl XhciContext {
 
         // ── Step 2: Legacy handoff ────────────────────────────
         let legacy_ok = match try_legacy_handoff(mmio_base, hcc1.ext_cap_ptr) {
-            Ok(true) => true,   // OS already owns
-            Ok(false) => true,  // handoff succeeded
+            Ok(true) => true,  // OS already owns
+            Ok(false) => true, // handoff succeeded
             Err(_) => {
                 log::info!("xHCI: legacy handoff failed");
                 return None;
@@ -200,7 +198,10 @@ impl XhciContext {
         let already_running = !sts.hchalted();
         log::info!(
             "xHCI: USBCMD=0x{:08X} USBSTS=0x{:08X} HCHalted={} already_running={}",
-            usbcmd.0, sts.0, sts.hchalted(), already_running
+            usbcmd.0,
+            sts.0,
+            sts.hchalted(),
+            already_running
         );
 
         log::info!("xHCI: performing HCRST");
@@ -221,7 +222,11 @@ impl XhciContext {
         }
 
         let sts_after = op.usbsts();
-        log::info!("xHCI: after HCRST, USBSTS=0x{:08X} HCHalted={}", sts_after.0, sts_after.hchalted());
+        log::info!(
+            "xHCI: after HCRST, USBSTS=0x{:08X} HCHalted={}",
+            sts_after.0,
+            sts_after.hchalted()
+        );
 
         Ok(())
     }
@@ -243,14 +248,12 @@ impl XhciContext {
 
         // Allocate ERST page
         let ctx = self.driver_ctx;
-        let erst_phys = ctx.allocate_contiguous_frames(1)
+        let erst_phys = ctx
+            .allocate_contiguous_frames(1)
             .map_err(|_| "no ERST page")?;
         let erst_virt = ctx.phys_to_virt(erst_phys) as *mut ErstEntry;
         unsafe {
-            ptr::write_volatile(
-                erst_virt,
-                ErstEntry::new(self.rings.event.phys, 256),
-            );
+            ptr::write_volatile(erst_virt, ErstEntry::new(self.rings.event.phys, 256));
         }
 
         // Set ERST in runtime registers
@@ -314,7 +317,7 @@ impl XhciContext {
         // Wait for PHY stabilisation
         super::xhci_port::delay(1_000_000);
 
-        // WPR on any CCS=0 powered ports
+        // WPR on any CCS=0 powered ports, then wait for CCS
         for port_idx in 0..self.ports.n_ports {
             let ps = op.portsc(port_idx);
             if !ps.ccs() && ps.pp() {
@@ -322,6 +325,14 @@ impl XhciContext {
                     if !p.wpr_attempted {
                         p.wpr_attempted = true;
                         let _ = warm_port_reset(op, port_idx);
+                        // Wait for link training to complete after WPR
+                        for _ in 0..200 {
+                            super::xhci_port::delay(50_000);
+                            if op.portsc(port_idx).ccs() {
+                                log::info!("xHCI: port {} CCS=1 after HSE recovery WPR", port_idx);
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -337,6 +348,15 @@ impl XhciContext {
     pub fn poll_ports(&mut self) -> usize {
         let op = &self.registers.op;
         let initial_count = self.devices.len();
+
+        // ── Check PCD (Port Change Detect) ─────────────────
+        // Clear done flags on all ports when a port change is detected,
+        // so that newly plugged-in devices can be enumerated.
+        if op.usbsts().pcd() {
+            op.clear_usbsts_bits(USBSTS_PCD);
+            self.ports.clear_done_flags();
+            log::info!("xHCI: PCD detected, re-evaluating all ports");
+        }
 
         for port_idx in 0..self.ports.n_ports {
             // Skip already-processed ports
@@ -358,13 +378,18 @@ impl XhciContext {
             let ps = op.portsc(port_idx);
             if !ps.ccs() {
                 // ── Try WPR once ─────────────────────────
-                let wpr_already = self.ports.get(port_idx).map(|p| p.wpr_attempted).unwrap_or(true);
+                let wpr_already = self
+                    .ports
+                    .get(port_idx)
+                    .map(|p| p.wpr_attempted)
+                    .unwrap_or(true);
                 if !wpr_already && ps.pp() {
                     if let Some(p) = self.ports.get_mut(port_idx) {
                         p.wpr_attempted = true;
                     }
                     let _ = warm_port_reset(op, port_idx);
-                    for _ in 0..60 {
+                    // Wait longer for link training to complete after WPR
+                    for _ in 0..120 {
                         super::xhci_port::delay(50_000);
                         if op.portsc(port_idx).ccs() {
                             break;
@@ -375,24 +400,40 @@ impl XhciContext {
 
             let ps = op.portsc(port_idx);
             if !ps.ccs() {
-                // Check for HSE
-                if op.usbsts().hse() {
-                    op.clear_usbsts_bits(USBSTS_HSE);
-                    force_rx_detect(op, port_idx);
-                    super::xhci_port::delay(1_000_000);
-                    if op.portsc(port_idx).ccs() {
-                        // Continue processing below
+                // ── Force RxDetect to restart link training ─
+                // Even without HSE, try to kick the port into link training
+                // before giving up.  Some controllers need an extra nudge.
+                force_rx_detect(op, port_idx);
+                super::xhci_port::delay(600_000);
+                if op.portsc(port_idx).ccs() {
+                    // Link training succeeded — continue to port reset below
+                } else {
+                    // Check for HSE
+                    if op.usbsts().hse() {
+                        op.clear_usbsts_bits(USBSTS_HSE);
+                        force_rx_detect(op, port_idx);
+                        super::xhci_port::delay(1_000_000);
+                        if op.portsc(port_idx).ccs() {
+                            // Continue processing below
+                        } else {
+                            if let Some(p) = self.ports.get_mut(port_idx) {
+                                p.done = true;
+                            }
+                            continue;
+                        }
                     } else {
+                        // Still no device — mark done to avoid re-polling
+                        log::debug!(
+                            "xHCI: port {} no device (ccs=0, pls={}, pp={})",
+                            port_idx,
+                            op.portsc(port_idx).pls(),
+                            if op.portsc(port_idx).pp() { 1 } else { 0 }
+                        );
                         if let Some(p) = self.ports.get_mut(port_idx) {
                             p.done = true;
                         }
                         continue;
                     }
-                } else {
-                    if let Some(p) = self.ports.get_mut(port_idx) {
-                        p.done = true;
-                    }
-                    continue;
                 }
             }
 
@@ -407,6 +448,8 @@ impl XhciContext {
             // ── Device detected ───────────────────────────
             let ps = op.portsc(port_idx);
             let speed = port_speed_to_usb(ps.speed());
+
+            log::info!("xHCI: port {} device detected, speed={:?}", port_idx, speed);
 
             self.devices.push(UsbDevice {
                 address: 0,
@@ -559,7 +602,7 @@ impl XhciContext {
         let b_phys = bulk_ring.phys;
 
         // Context index: EP<N> Out = 2*N, EP<N> In = 2*N+1
-        let ctx_idx = 2 * ep_num + if is_in { 1 } else { 0 };
+        let ctx_idx = 2 * ep_num + usize::from(is_in);
 
         // Set up input context
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
@@ -623,11 +666,7 @@ impl XhciContext {
     fn send_cmd(&mut self, trb: Trb) -> Result<u32, &'static str> {
         self.rings.command.enqueue(trb);
         self.registers.doorbell.ring(0, 0);
-        let ev = wait_event(
-            &mut self.rings.event,
-            &self.registers.runtime,
-            5_000_000,
-        )?;
+        let ev = wait_event(&mut self.rings.event, &self.registers.runtime, 5_000_000)?;
         Ok(ev.flags)
     }
 
@@ -659,7 +698,8 @@ impl XhciContext {
 
         // Allocate staging buffer
         let staging_phys = if data_len > 0 {
-            self.driver_ctx.allocate_contiguous_frames((data_len + 4095) / 4096)
+            self.driver_ctx
+                .allocate_contiguous_frames((data_len + 4095) / 4096)
                 .map_err(|_| "no staging memory")?
         } else {
             0
@@ -672,21 +712,26 @@ impl XhciContext {
 
         // Copy OUT data
         if data_len > 0 && !is_in {
-            unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, data_len); }
+            unsafe {
+                ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, data_len);
+            }
         }
 
         // Build TRB chain on EP0 ring
-        let setup_bytes = unsafe {
-            core::slice::from_raw_parts(
-                setup as *const UsbSetupPacket as *const u8, 8,
-            )
-        };
+        let setup_bytes =
+            unsafe { core::slice::from_raw_parts(setup as *const UsbSetupPacket as *const u8, 8) };
 
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
             // SETUP TRB
             let mut s_trb = Trb::new(trb_type::SETUP_STAGE, slot.ep0_ring.cycle);
             s_trb.params[..8].copy_from_slice(setup_bytes);
-            let trt = if data_len == 0 { 0u32 } else if is_in { 2 << 16 } else { 3 << 16 };
+            let trt = if data_len == 0 {
+                0u32
+            } else if is_in {
+                2 << 16
+            } else {
+                3 << 16
+            };
             s_trb.flags |= trb_flag::CHAIN | trt;
             slot.ep0_ring.enqueue(s_trb);
 
@@ -718,12 +763,15 @@ impl XhciContext {
 
         // Copy IN data back
         if res.is_ok() && is_in && data_len > 0 {
-            unsafe { ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), data_len); }
+            unsafe {
+                ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), data_len);
+            }
         }
 
         // Free staging buffer (only on success, HC may still own it on timeout)
         if res.is_ok() && staging_phys != 0 {
-            self.driver_ctx.free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
+            self.driver_ctx
+                .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
         }
 
         res.map(|_| data_len)
@@ -752,20 +800,28 @@ impl XhciContext {
         {
             let slot = self.device.slots.get(slot_id).ok_or("bad slot")?;
             match dir {
-                UsbDirection::In => { let _ = slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?; }
-                UsbDirection::Out => { let _ = slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?; }
+                UsbDirection::In => {
+                    let _ = slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?;
+                }
+                UsbDirection::Out => {
+                    let _ = slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?;
+                }
             }
         }
 
         // Allocate staging buffer
         let staging_pages = (len + 4095) / 4096;
-        let staging_phys = self.driver_ctx.allocate_contiguous_frames(staging_pages)
+        let staging_phys = self
+            .driver_ctx
+            .allocate_contiguous_frames(staging_pages)
             .map_err(|_| "no staging memory")?;
         let staging_virt = self.driver_ctx.phys_to_virt(staging_phys) as *mut u8;
 
         // Copy OUT data
         if dir == UsbDirection::Out {
-            unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len); }
+            unsafe {
+                ptr::copy_nonoverlapping(buf.as_ptr(), staging_virt, len);
+            }
         }
 
         // Enqueue TRB
@@ -787,7 +843,7 @@ impl XhciContext {
 
             let ep_num = (endpoint & 0x0F) as u32;
             let is_in = (endpoint & 0x80) != 0;
-            ep_num * 2 + if is_in { 1 } else { 0 }
+            ep_num * 2 + u32::from(is_in)
         };
 
         self.registers.doorbell.ring(slot_id, db_stream);
@@ -795,9 +851,12 @@ impl XhciContext {
 
         // Copy IN data back on success; free staging buffer unconditionally
         if res.is_ok() && dir == UsbDirection::In {
-            unsafe { ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len); }
+            unsafe {
+                ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len);
+            }
         }
-        self.driver_ctx.free_contiguous_frames(staging_phys, staging_pages);
+        self.driver_ctx
+            .free_contiguous_frames(staging_phys, staging_pages);
 
         res.map(|_| len)
     }
@@ -818,9 +877,8 @@ impl XhciContext {
             w_length: 18,
         };
         self.control_transfer(slot_id, &setup, &mut buf)?;
-        let desc = unsafe {
-            ptr::read_unaligned(buf.as_ptr() as *const crate::usb::UsbDeviceDescriptor)
-        };
+        let desc =
+            unsafe { ptr::read_unaligned(buf.as_ptr() as *const crate::usb::UsbDeviceDescriptor) };
         Ok(desc)
     }
 
@@ -857,7 +915,10 @@ impl XhciContext {
     // ── PCI creation ───────────────────────────────────────────
 
     /// Create from a PCI device configuration.
-    pub fn from_pci(device: &crate::pci::PciDevice, ctx: &'static dyn DriverContext) -> Option<Self> {
+    pub fn from_pci(
+        device: &crate::pci::PciDevice,
+        ctx: &'static dyn DriverContext,
+    ) -> Option<Self> {
         let mmio_phys = device.read_bar(0)?;
         if mmio_phys == 0 {
             return None;
@@ -875,42 +936,32 @@ impl HostController for XhciContext {
     fn reset(&mut self) -> Result<(), &'static str> {
         self.controller_reset()
     }
-
     fn start(&mut self) -> Result<(), &'static str> {
         self.start_controller()
     }
-
     fn poll_ports(&mut self) -> usize {
         self.poll_ports()
     }
-
     fn clear_devices(&mut self) {
         self.clear_devices()
     }
-
     fn n_ports(&self) -> u32 {
         self.n_ports()
     }
-
     fn devices(&self) -> &[UsbDevice] {
         self.devices()
     }
-
     fn devices_mut(&mut self) -> &mut [UsbDevice] {
         self.devices_mut()
     }
-
     fn control_transfer(
         &mut self,
         dev_addr: u8,
         setup: &UsbSetupPacket,
         buf: &mut [u8],
     ) -> Result<usize, &'static str> {
-        // For xHCI, dev_addr == slot_id after address_device
-        let slot_id = dev_addr as u32;
-        self.control_transfer(slot_id, setup, buf)
+        self.control_transfer(dev_addr as u32, setup, buf)
     }
-
     fn bulk_transfer(
         &mut self,
         dev_addr: u8,
@@ -919,8 +970,7 @@ impl HostController for XhciContext {
         dir: UsbDirection,
         mps: u16,
     ) -> Result<usize, &'static str> {
-        let slot_id = dev_addr as u32;
-        self.bulk_transfer(slot_id, endpoint, buf, dir, mps)
+        self.bulk_transfer(dev_addr as u32, endpoint, buf, dir, mps)
     }
 }
 
@@ -931,7 +981,9 @@ impl Drop for XhciContext {
         self.rings.event.free(self.driver_ctx);
 
         // Free DCBAA page
-        let _ = self.driver_ctx.free_contiguous_frames(self.device.dcbaa.phys, 1);
+        let _ = self
+            .driver_ctx
+            .free_contiguous_frames(self.device.dcbaa.phys, 1);
 
         // Free Scratchpad array and buffer pages
         if let Some(ref sp) = self.device.scratchpad {

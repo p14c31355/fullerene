@@ -96,12 +96,8 @@ impl NvmeController {
         let bar0_phys = bar0.address;
         let bar0_virt = ctx.phys_to_virt(bar0_phys) as *mut u32;
 
-        ctx.map_mmio_region(
-            bar0_phys as usize,
-            bar0_virt as usize,
-            bar0.size as usize,
-        )
-        .ok()?;
+        ctx.map_mmio_region(bar0_phys as usize, bar0_virt as usize, bar0.size as usize)
+            .ok()?;
 
         let mut ctrl = Self {
             device,

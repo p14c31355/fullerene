@@ -1,8 +1,8 @@
 // Linux process syscall implementations
 extern crate alloc;
-use super::runtime::{LinuxRuntime, copy_user_string, copy_val_to_user, errno_code};
 use super::numbers::*;
-use crate::process::{self, ProcessId, ProcessContext};
+use super::runtime::{LinuxRuntime, copy_user_string, copy_val_to_user, errno_code};
+use crate::process::{self, ProcessContext, ProcessId};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use petroleum::page_table::types::PageTableHelper;
@@ -18,7 +18,9 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if let Some(pid) = process::current_pid() {
         process::terminate_process(pid, code);
     }
-    loop { x86_64::instructions::hlt() }
+    loop {
+        x86_64::instructions::hlt()
+    }
 }
 
 pub fn sys_exit_group(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -56,9 +58,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     // Get parent info
     let (parent_pt, parent_ctx) = process::PROCESS_MANAGER
-        .with_process(current_pid, |p| {
-            (p.page_table_phys_addr, p.context.clone())
-        })
+        .with_process(current_pid, |p| (p.page_table_phys_addr, p.context.clone()))
         .unwrap_or((PhysAddr::new(0), Box::new(ProcessContext::default())));
 
     // Clone page table
@@ -69,10 +69,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             None => return errno_code(ENOMEM),
         };
         let alloc = petroleum::page_table::constants::get_frame_allocator_mut();
-        match mgr.clone_page_table(
-            parent_pt.as_u64() as usize,
-            alloc,
-        ) {
+        match mgr.clone_page_table(parent_pt.as_u64() as usize, alloc) {
             Ok(addr) => addr,
             Err(_) => return errno_code(ENOMEM),
         }
@@ -82,12 +79,14 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         x86_64::PhysAddr::new(cloned_table as u64),
     );
 
-    let mut child_pt = petroleum::page_table::process::ProcessPageTable::new_with_frame(cloned_frame);
+    let mut child_pt =
+        petroleum::page_table::process::ProcessPageTable::new_with_frame(cloned_frame);
     let _ = petroleum::initializer::Initializable::init(&mut child_pt);
 
     // Allocate kernel stack
     let stack_layout = core::alloc::Layout::from_size_align(4096, 16).unwrap();
-    let stack_ptr = petroleum::common::memory::allocate_layout(stack_layout).unwrap_or(core::ptr::null_mut());
+    let stack_ptr =
+        petroleum::common::memory::allocate_layout(stack_layout).unwrap_or(core::ptr::null_mut());
     if stack_ptr.is_null() {
         return errno_code(ENOMEM);
     }
@@ -163,7 +162,9 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 
     let entry = elf.header.e_entry as u64;
-    let segments: Vec<(u64, usize, usize, usize, u32)> = elf.program_headers.iter()
+    let segments: Vec<(u64, usize, usize, usize, u32)> = elf
+        .program_headers
+        .iter()
         .filter(|ph| ph.p_type == goblin::elf::program_header::PT_LOAD)
         .map(|ph| {
             let file_off = ph.p_offset as usize;
@@ -179,10 +180,17 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // Clear the brk region
     if rt.program_break > rt.initial_break {
         let num_pages = ((rt.program_break - rt.initial_break + 4095) / 4096) as usize;
-        if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+        if let Some(mgr) = crate::memory_management::get_memory_manager()
+            .lock()
+            .as_mut()
+        {
             for i in 0..num_pages {
                 let page_vaddr = (rt.initial_break + (i as u64) * 4096) as usize;
-                if mgr.page_table_manager().translate_address(page_vaddr).is_ok() {
+                if mgr
+                    .page_table_manager()
+                    .translate_address(page_vaddr)
+                    .is_ok()
+                {
                     let _ = mgr.safe_unmap_page(page_vaddr);
                 }
             }
@@ -191,7 +199,10 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     // ── Load and map new segments ─────────────────────────
     let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
-    if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+    if let Some(mgr) = crate::memory_management::get_memory_manager()
+        .lock()
+        .as_mut()
+    {
         for &(vaddr, file_off, file_sz, mem_sz, flags) in &segments {
             let num_pages = ((mem_sz + 4095) / 4096) as usize;
             for page_idx in 0..num_pages {
@@ -211,7 +222,9 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                     );
 
                     // Copy segment data to the newly allocated frame
-                    let frame_vaddr = petroleum::common::memory::physical_to_virtual(frame.start_address().as_u64() as usize);
+                    let frame_vaddr = petroleum::common::memory::physical_to_virtual(
+                        frame.start_address().as_u64() as usize,
+                    );
                     let page_offset = page_idx * 4096;
                     if page_offset < file_sz {
                         let copy_len = (file_sz - page_offset).min(4096);
@@ -252,7 +265,10 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let stack_base = stack_top_vaddr_default - stack_size - stack_guard;
 
     let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
-    if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+    if let Some(mgr) = crate::memory_management::get_memory_manager()
+        .lock()
+        .as_mut()
+    {
         for i in 0..(stack_size / 4096) as usize {
             let page_vaddr = (stack_base + stack_guard + (i as u64) * 4096) as usize;
             if let Some(frame) = X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
@@ -317,7 +333,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         // the initial stack frame (argc, argv, envp) directly.
         unsafe {
             let stack_ptr = rsp as *mut u64;
-            core::ptr::write_volatile(stack_ptr, 1);      // argc = 1
+            core::ptr::write_volatile(stack_ptr, 1); // argc = 1
             core::ptr::write_volatile(stack_ptr.add(1), 0); // argv[0] = NULL
             core::ptr::write_volatile(stack_ptr.add(2), 0); // argv[1] = NULL (terminator)
             core::ptr::write_volatile(stack_ptr.add(3), 0); // envp[0] = NULL (terminator)
@@ -328,7 +344,12 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         rt.tls_ptr = 0;
         rt.signal_pending = 0;
 
-        log::info!("execve: loaded {} entry=0x{:x} stack=0x{:x}", path, entry, stack_top_vaddr_default);
+        log::info!(
+            "execve: loaded {} entry=0x{:x} stack=0x{:x}",
+            path,
+            entry,
+            stack_top_vaddr_default
+        );
     });
 
     0
@@ -346,7 +367,8 @@ pub fn sys_wait4(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         let mut found = None;
         process::PROCESS_MANAGER.with_list(|list| {
             for (id, p) in list.iter() {
-                if p.parent_id == Some(current_pid) && p.state == process::ProcessState::Terminated {
+                if p.parent_id == Some(current_pid) && p.state == process::ProcessState::Terminated
+                {
                     found = Some(*id);
                     break;
                 }

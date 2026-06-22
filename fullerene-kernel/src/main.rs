@@ -68,6 +68,6 @@ pub mod slab;
 pub mod syscall;
 pub mod task;
 // tracing.rs is now a thin re-export of resonance::tracing
+pub mod linux;
 pub mod tracing;
 pub mod vfs;
-pub mod linux;

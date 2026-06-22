@@ -108,10 +108,7 @@ pub fn toggle_theme() -> ThemeVariant {
 
 /// Set the theme explicitly.
 pub fn set_theme(variant: ThemeVariant) {
-    CURRENT_THEME.store(
-        matches!(variant, ThemeVariant::Light),
-        Ordering::SeqCst,
-    );
+    CURRENT_THEME.store(matches!(variant, ThemeVariant::Light), Ordering::SeqCst);
 }
 
 /// Get a single colour value by name (for shell / settings app).

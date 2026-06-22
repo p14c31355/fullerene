@@ -32,7 +32,7 @@ pub fn toggle_top_panel() -> bool {
 
 /// Set the top panel enabled state explicitly.
 pub fn set_top_panel_enabled(on: bool) {
-    TOP_PANEL_ENABLED.store(if on { 1 } else { 0 }, Ordering::Relaxed);
+    TOP_PANEL_ENABLED.store(u32::from(on), Ordering::Relaxed);
 }
 
 /// Get a reference to the underlying atomic for kernel sync.

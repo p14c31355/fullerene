@@ -333,7 +333,7 @@ impl VirtioGpu {
     }
     fn set_queue_enable(&self, en: bool) {
         log::info!("[VirtIO-GPU] set_queue_enable: {}", en);
-        self.write_common_cfg(0x1c, if en { 1u16 } else { 0u16 } as u32, 2)
+        self.write_common_cfg(0x1c, u32::from(en), 2)
             .expect("Direct write failed");
     }
 

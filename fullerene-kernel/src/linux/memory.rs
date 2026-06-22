@@ -1,10 +1,10 @@
 // Linux memory syscall implementations
-use super::runtime::{LinuxRuntime, errno_code};
 use super::numbers::*;
+use super::runtime::{LinuxRuntime, errno_code};
 
 use petroleum::page_table::types::PageTableHelper;
-use x86_64::structures::paging::{PageTableFlags, FrameAllocator as X86FrameAllocator};
 use x86_64::structures::paging::Size4KiB;
+use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableFlags};
 
 /// Per-process virtual memory region tracked for mmap/munmap.
 #[derive(Clone, Copy)]
@@ -40,7 +40,12 @@ fn find_free_anon_region(rt: &mut LinuxRuntime, size: u64) -> u64 {
 }
 
 fn track_region(rt: &mut LinuxRuntime, addr: u64, size: u64, prot: i32, flags: i32) -> bool {
-    rt.mmap_regions.push(LinuxMmapRegion { addr, size, prot, flags });
+    rt.mmap_regions.push(LinuxMmapRegion {
+        addr,
+        size,
+        prot,
+        flags,
+    });
     true
 }
 
@@ -91,10 +96,17 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 Some(f) => f,
                 None => {
                     // Unmap pages we've already mapped in this call
-                    if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+                    if let Some(mgr) = crate::memory_management::get_memory_manager()
+                        .lock()
+                        .as_mut()
+                    {
                         for j in 0..i {
                             let unmap_vaddr = (addr + (j as u64) * 4096) as usize;
-                            if mgr.page_table_manager().translate_address(unmap_vaddr).is_ok() {
+                            if mgr
+                                .page_table_manager()
+                                .translate_address(unmap_vaddr)
+                                .is_ok()
+                            {
                                 let _ = mgr.safe_unmap_page(unmap_vaddr);
                             }
                         }
@@ -103,14 +115,16 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 }
             };
 
-            let mut page_flags = PageTableFlags::PRESENT
-                | PageTableFlags::USER_ACCESSIBLE;
+            let mut page_flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
 
             if (prot & PROT_WRITE) != 0 {
                 page_flags |= PageTableFlags::WRITABLE;
             }
 
-            if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+            if let Some(mgr) = crate::memory_management::get_memory_manager()
+                .lock()
+                .as_mut()
+            {
                 let ptm = mgr.page_table_manager_mut() as *mut _;
                 let ptm = unsafe { &mut *ptm };
                 let _ = PageTableHelper::map_page(
@@ -141,7 +155,10 @@ pub fn sys_munmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let aligned_len = (length + 4095) & !4095;
     let num_pages = (aligned_len / 4096) as usize;
 
-    if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+    if let Some(mgr) = crate::memory_management::get_memory_manager()
+        .lock()
+        .as_mut()
+    {
         for i in 0..num_pages {
             let page_vaddr = (addr + (i as u64) * 4096) as usize;
             if let Ok(_phys) = mgr.page_table_manager().translate_address(page_vaddr) {
@@ -167,7 +184,10 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let aligned_len = (length + 4095) & !4095;
     let num_pages = (aligned_len / 4096) as usize;
 
-    if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+    if let Some(mgr) = crate::memory_management::get_memory_manager()
+        .lock()
+        .as_mut()
+    {
         let ptm = mgr.page_table_manager_mut() as *mut _;
         let ptm = unsafe { &mut *ptm };
 
@@ -205,7 +225,10 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             let num_pages = ((end_page - start_page) / align) as usize;
             let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
 
-            if let Some(mgr) = crate::memory_management::get_memory_manager().lock().as_mut() {
+            if let Some(mgr) = crate::memory_management::get_memory_manager()
+                .lock()
+                .as_mut()
+            {
                 let ptm = mgr.page_table_manager_mut() as *mut _;
                 let ptm = unsafe { &mut *ptm };
 
@@ -217,7 +240,11 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                             // Rollback previously mapped pages on OOM
                             for j in 0..i {
                                 let unmap_vaddr = (start_page + (j as u64) * align) as usize;
-                                if mgr.page_table_manager().translate_address(unmap_vaddr).is_ok() {
+                                if mgr
+                                    .page_table_manager()
+                                    .translate_address(unmap_vaddr)
+                                    .is_ok()
+                                {
                                     let _ = mgr.safe_unmap_page(unmap_vaddr);
                                 }
                             }

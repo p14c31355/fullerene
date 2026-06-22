@@ -1,35 +1,52 @@
-pub mod backend;
-pub use backend::FramebufferBackend;
+pub trait FramebufferBackend {
+    fn width(&self) -> usize;
+    fn height(&self) -> usize;
+    fn pitch(&self) -> usize;
+    fn buffer_mut(&mut self) -> &mut [u8];
+    fn flush(&mut self);
+}
+
+/// Renderer trait provides a generic interface for 2D graphics operations.
+pub trait Renderer {
+    fn draw_pixel(&mut self, x: i32, y: i32, color: u32);
+    fn draw_rect(&mut self, x: i32, y: i32, width: u32, height: u32, color: u32);
+    fn draw_text(&mut self, x: i32, y: i32, text: &str, color: u32);
+    fn clear(&mut self, color: u32);
+    fn get_resolution(&self) -> (u32, u32);
+    fn present(&mut self) {}
+}
+
+/// Text console trait.
+pub trait Console: core::fmt::Write {
+    fn write_char(&mut self, c: char, color: u32);
+    fn set_color(&mut self, color: u32);
+    fn clear(&mut self);
+    fn set_cursor(&mut self, x: usize, y: usize);
+    fn scroll(&mut self);
+}
 
 pub mod virtio_gpu;
 pub use virtio_gpu::VirtioGpuFramebuffer;
 
 pub mod color;
-pub mod console;
 pub mod constants;
 pub mod framebuffer;
 pub mod framebuffer_mapper;
 pub mod registers;
-pub mod renderer;
 pub mod setup;
 pub mod text;
 pub mod uefi;
 
-// VGA constants
 pub use constants::*;
-
-// Re-exports for public API
 pub use color::*;
-pub use console::Console;
 pub use nitrogen::port::{HardwarePorts, PortWriter, VgaPortOps};
-pub use renderer::Renderer;
 // VGA graphics modes
+pub use framebuffer::UefiFramebufferWriter;
+pub use framebuffer::*;
 pub use setup::{
     detect_and_init_vga_graphics, detect_cirrus_vga, init_vga_graphics, init_vga_text_mode,
     setup_cirrus_vga_mode,
 };
-pub use framebuffer::UefiFramebufferWriter;
-pub use framebuffer::*;
 pub use text::{Color, ColorCode, ScreenChar, TextBufferOperations};
 
 /// Result of the graphics drawing test

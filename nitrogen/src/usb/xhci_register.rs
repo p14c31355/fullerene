@@ -36,8 +36,8 @@ pub const OP_USBCMD: usize = 0x00;
 pub const OP_USBSTS: usize = 0x04;
 pub const OP_PAGESIZE: usize = 0x08;
 pub const OP_DNCTRL: usize = 0x14;
-pub const OP_CRCR: usize = 0x18;     // 64-bit (CRCR low = 0x18, high = 0x1C)
-pub const OP_DCBAAP: usize = 0x30;   // 64-bit (DCBAAP low = 0x30, high = 0x34)
+pub const OP_CRCR: usize = 0x18; // 64-bit (CRCR low = 0x18, high = 0x1C)
+pub const OP_DCBAAP: usize = 0x30; // 64-bit (DCBAAP low = 0x30, high = 0x34)
 pub const OP_CONFIG: usize = 0x38;
 
 /// First port status register offset (each port is 16 bytes).
@@ -45,11 +45,11 @@ pub const OP_PORTSC_BASE: usize = 0x400;
 pub const OP_PORTSC_STRIDE: usize = 0x10;
 
 // ── Runtime Registers (offset from RTSOFF) ──────────────────
-pub const RT_IMAN: usize = 0x00;     // Interrupter Management
-pub const RT_IMOD: usize = 0x04;     // Interrupter Moderation
-pub const RT_ERSTSZ: usize = 0x08;   // Event Ring Segment Table Size
-pub const RT_ERSTBA: usize = 0x10;   // Event Ring Segment Table Base Address (64-bit)
-pub const RT_ERDP: usize = 0x18;     // Event Ring Dequeue Pointer (64-bit)
+pub const RT_IMAN: usize = 0x00; // Interrupter Management
+pub const RT_IMOD: usize = 0x04; // Interrupter Moderation
+pub const RT_ERSTSZ: usize = 0x08; // Event Ring Segment Table Size
+pub const RT_ERSTBA: usize = 0x10; // Event Ring Segment Table Base Address (64-bit)
+pub const RT_ERDP: usize = 0x18; // Event Ring Dequeue Pointer (64-bit)
 pub const RT_INTERRUPTER_STRIDE: usize = 0x20;
 
 // ============================================================================
@@ -57,55 +57,54 @@ pub const RT_INTERRUPTER_STRIDE: usize = 0x20;
 // ============================================================================
 
 // ── USBCMD ───────────────────────────────────────────────────
-pub const USBCMD_RS: u32 = 1 << 0;       // Run/Stop
-pub const USBCMD_HCRST: u32 = 1 << 1;    // Host Controller Reset
-pub const USBCMD_INTE: u32 = 1 << 2;     // Interrupter Enable
-pub const USBCMD_HSEE: u32 = 1 << 3;     // Host System Error Enable
+pub const USBCMD_RS: u32 = 1 << 0; // Run/Stop
+pub const USBCMD_HCRST: u32 = 1 << 1; // Host Controller Reset
+pub const USBCMD_INTE: u32 = 1 << 2; // Interrupter Enable
+pub const USBCMD_HSEE: u32 = 1 << 3; // Host System Error Enable
 
 // ── USBSTS ───────────────────────────────────────────────────
-pub const USBSTS_HCH: u32 = 1 << 0;      // Host Controller Halted
-pub const USBSTS_HSE: u32 = 1 << 2;      // Host System Error
-pub const USBSTS_EINT: u32 = 1 << 3;     // Event Interrupt
-pub const USBSTS_PCD: u32 = 1 << 4;      // Port Change Detect
-pub const USBSTS_SSS: u32 = 1 << 8;      // Save State Status
-pub const USBSTS_RSS: u32 = 1 << 9;      // Restore State Status
-pub const USBSTS_SRE: u32 = 1 << 10;     // Save/Restore Error
-pub const USBSTS_CNR: u32 = 1 << 11;     // Controller Not Ready
-pub const USBSTS_HCE: u32 = 1 << 12;     // Host Controller Error
+pub const USBSTS_HCH: u32 = 1 << 0; // Host Controller Halted
+pub const USBSTS_HSE: u32 = 1 << 2; // Host System Error
+pub const USBSTS_EINT: u32 = 1 << 3; // Event Interrupt
+pub const USBSTS_PCD: u32 = 1 << 4; // Port Change Detect
+pub const USBSTS_SSS: u32 = 1 << 8; // Save State Status
+pub const USBSTS_RSS: u32 = 1 << 9; // Restore State Status
+pub const USBSTS_SRE: u32 = 1 << 10; // Save/Restore Error
+pub const USBSTS_CNR: u32 = 1 << 11; // Controller Not Ready
+pub const USBSTS_HCE: u32 = 1 << 12; // Host Controller Error
 
 // ── PORTSC ───────────────────────────────────────────────────
-pub const PORTSC_CCS: u32 = 1 << 0;      // Current Connect Status
-pub const PORTSC_PED: u32 = 1 << 1;      // Port Enabled/Disabled
-pub const PORTSC_OCA: u32 = 1 << 3;      // Over-current Active
-pub const PORTSC_PR: u32 = 1 << 4;       // Port Reset
-pub const PORTSC_PLS_MASK: u32 = 0xF << 5;  // Port Link State
-pub const PORTSC_PP: u32 = 1 << 9;       // Port Power
+pub const PORTSC_CCS: u32 = 1 << 0; // Current Connect Status
+pub const PORTSC_PED: u32 = 1 << 1; // Port Enabled/Disabled
+pub const PORTSC_OCA: u32 = 1 << 3; // Over-current Active
+pub const PORTSC_PR: u32 = 1 << 4; // Port Reset
+pub const PORTSC_PLS_MASK: u32 = 0xF << 5; // Port Link State
+pub const PORTSC_PP: u32 = 1 << 9; // Port Power
 pub const PORTSC_SPEED_MASK: u32 = 0xF << 10; // Port Speed
-pub const PORTSC_PIC_MASK: u32 = 0x3 << 14;   // Port Indicator Control
-pub const PORTSC_LWS: u32 = 1 << 16;     // Port Link State Write Strobe
-pub const PORTSC_CSC: u32 = 1 << 17;     // Connect Status Change
-pub const PORTSC_PEC: u32 = 1 << 18;     // Port Enabled/Disabled Change
-pub const PORTSC_WRC: u32 = 1 << 19;     // Warm Port Reset Change
-pub const PORTSC_OCC: u32 = 1 << 20;     // Over-current Change
-pub const PORTSC_PRC: u32 = 1 << 21;     // Port Reset Change
-pub const PORTSC_PLC: u32 = 1 << 22;     // Port Link State Change
-pub const PORTSC_CEC: u32 = 1 << 23;     // Config Error Change
-pub const PORTSC_WPR: u32 = 1 << 31;     // Warm Port Reset
+pub const PORTSC_PIC_MASK: u32 = 0x3 << 14; // Port Indicator Control
+pub const PORTSC_LWS: u32 = 1 << 16; // Port Link State Write Strobe
+pub const PORTSC_CSC: u32 = 1 << 17; // Connect Status Change
+pub const PORTSC_PEC: u32 = 1 << 18; // Port Enabled/Disabled Change
+pub const PORTSC_WRC: u32 = 1 << 19; // Warm Port Reset Change
+pub const PORTSC_OCC: u32 = 1 << 20; // Over-current Change
+pub const PORTSC_PRC: u32 = 1 << 21; // Port Reset Change
+pub const PORTSC_PLC: u32 = 1 << 22; // Port Link State Change
+pub const PORTSC_CEC: u32 = 1 << 23; // Config Error Change
+pub const PORTSC_WPR: u32 = 1 << 31; // Warm Port Reset
 
 /// All RW1C status bits (bits 17–23).
 pub const PORTSC_RW1C_MASK: u32 =
-    PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC
-    | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC;
+    PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC;
 
 // ── IMAN ─────────────────────────────────────────────────────
-pub const IMAN_IP: u32 = 1 << 0;         // Interrupt Pending
-pub const IMAN_IE: u32 = 1 << 1;         // Interrupt Enable
+pub const IMAN_IP: u32 = 1 << 0; // Interrupt Pending
+pub const IMAN_IE: u32 = 1 << 1; // Interrupt Enable
 
 // ── CRCR ─────────────────────────────────────────────────────
-pub const CRCR_RCS: u32 = 1 << 0;        // Ring Cycle State
-pub const CRCR_CS: u32 = 1 << 1;         // Command Stop
-pub const CRCR_CA: u32 = 1 << 2;         // Command Abort
-pub const CRCR_CRR: u32 = 1 << 3;        // Command Ring Running
+pub const CRCR_RCS: u32 = 1 << 0; // Ring Cycle State
+pub const CRCR_CS: u32 = 1 << 1; // Command Stop
+pub const CRCR_CA: u32 = 1 << 2; // Command Abort
+pub const CRCR_CRR: u32 = 1 << 3; // Command Ring Running
 
 // ============================================================================
 //  CapabilityRegisters
@@ -129,25 +128,25 @@ pub struct HcsParams1 {
     pub max_slots: u32,
     pub max_interrupters: u32,
     pub n_ports: u32,
-    pub ppc: bool,  // Port Power Control
-    pub csz: bool,  // Context Size (0=32byte, 1=64byte)
+    pub ppc: bool, // Port Power Control
+    pub csz: bool, // Context Size (0=32byte, 1=64byte)
     pub max_scratchpad_bufs: u32,
 }
 
 // ── Derived fields from HCCPARAMS1 ──────────────────────────
 #[derive(Debug, Clone, Copy)]
 pub struct HccParams1 {
-    pub ac64: bool,         // 64-bit addressing capable
-    pub bnc: bool,          // BW Negotiation Capable
-    pub csz: bool,          // Context Size (different from CSZ in HCSPARAMS1)
-    pub ppc: bool,          // PPC indicator
-    pub pind: bool,         // Port Indicators
-    pub lhrc: bool,         // Light HC Reset Capable
-    pub ltc: bool,          // Latency Tolerance Messaging
-    pub nss: bool,          // No Secondary SID
-    pub psc: bool,          // Parse All Event Data
-    pub ext_cap_ptr: u16,   // extended capabilities pointer
-    pub max_psa_size: u32,  // Maximum Primary Stream Array Size
+    pub ac64: bool,        // 64-bit addressing capable
+    pub bnc: bool,         // BW Negotiation Capable
+    pub csz: bool,         // Context Size (different from CSZ in HCSPARAMS1)
+    pub ppc: bool,         // PPC indicator
+    pub pind: bool,        // Port Indicators
+    pub lhrc: bool,        // Light HC Reset Capable
+    pub ltc: bool,         // Latency Tolerance Messaging
+    pub nss: bool,         // No Secondary SID
+    pub psc: bool,         // Parse All Event Data
+    pub ext_cap_ptr: u16,  // extended capabilities pointer
+    pub max_psa_size: u32, // Maximum Primary Stream Array Size
 }
 
 // ============================================================================
@@ -165,32 +164,68 @@ pub struct OperationalRegisters {
 
 pub struct UsbCmd(pub u32);
 impl UsbCmd {
-    pub fn run_stop(&self) -> bool     { self.0 & USBCMD_RS != 0 }
-    pub fn reset(&self) -> bool       { self.0 & USBCMD_HCRST != 0 }
-    pub fn inte(&self) -> bool        { self.0 & USBCMD_INTE != 0 }
+    pub fn run_stop(&self) -> bool {
+        self.0 & USBCMD_RS != 0
+    }
+    pub fn reset(&self) -> bool {
+        self.0 & USBCMD_HCRST != 0
+    }
+    pub fn inte(&self) -> bool {
+        self.0 & USBCMD_INTE != 0
+    }
 }
 
 pub struct UsbSts(pub u32);
 impl UsbSts {
-    pub fn hchalted(&self) -> bool    { self.0 & USBSTS_HCH != 0 }
-    pub fn hse(&self) -> bool         { self.0 & USBSTS_HSE != 0 }
-    pub fn eint(&self) -> bool        { self.0 & USBSTS_EINT != 0 }
-    pub fn pcd(&self) -> bool         { self.0 & USBSTS_PCD != 0 }
-    pub fn cnr(&self) -> bool         { self.0 & USBSTS_CNR != 0 }
-    pub fn hce(&self) -> bool         { self.0 & USBSTS_HCE != 0 }
+    pub fn hchalted(&self) -> bool {
+        self.0 & USBSTS_HCH != 0
+    }
+    pub fn hse(&self) -> bool {
+        self.0 & USBSTS_HSE != 0
+    }
+    pub fn eint(&self) -> bool {
+        self.0 & USBSTS_EINT != 0
+    }
+    pub fn pcd(&self) -> bool {
+        self.0 & USBSTS_PCD != 0
+    }
+    pub fn cnr(&self) -> bool {
+        self.0 & USBSTS_CNR != 0
+    }
+    pub fn hce(&self) -> bool {
+        self.0 & USBSTS_HCE != 0
+    }
 }
 
 pub struct PortSc(pub u32);
 impl PortSc {
-    pub fn ccs(&self) -> bool         { self.0 & PORTSC_CCS != 0 }
-    pub fn ped(&self) -> bool         { self.0 & PORTSC_PED != 0 }
-    pub fn pr(&self) -> bool          { self.0 & PORTSC_PR != 0 }
-    pub fn pp(&self) -> bool          { self.0 & PORTSC_PP != 0 }
-    pub fn pls(&self) -> u32          { (self.0 & PORTSC_PLS_MASK) >> 5 }
-    pub fn speed(&self) -> u32        { (self.0 & PORTSC_SPEED_MASK) >> 10 }
-    pub fn wpr(&self) -> bool         { self.0 & PORTSC_WPR != 0 }
-    pub fn csc(&self) -> bool         { self.0 & PORTSC_CSC != 0 }
-    pub fn pec(&self) -> bool         { self.0 & PORTSC_PEC != 0 }
+    pub fn ccs(&self) -> bool {
+        self.0 & PORTSC_CCS != 0
+    }
+    pub fn ped(&self) -> bool {
+        self.0 & PORTSC_PED != 0
+    }
+    pub fn pr(&self) -> bool {
+        self.0 & PORTSC_PR != 0
+    }
+    pub fn pp(&self) -> bool {
+        self.0 & PORTSC_PP != 0
+    }
+    pub fn pls(&self) -> u32 {
+        (self.0 & PORTSC_PLS_MASK) >> 5
+    }
+    pub fn speed(&self) -> u32 {
+        (self.0 & PORTSC_SPEED_MASK) >> 10
+    }
+    pub fn wpr(&self) -> bool {
+        self.0 & PORTSC_WPR != 0
+    }
+    pub fn csc(&self) -> bool {
+        self.0 & PORTSC_CSC != 0
+    }
+    pub fn pec(&self) -> bool {
+        self.0 & PORTSC_PEC != 0
+    }
 }
 
 // ============================================================================
@@ -259,7 +294,7 @@ impl CapabilityRegisters {
             ppc: (self.hcc_params1 >> 3) & 1 != 0,
             csz: (self.hcc_params1 >> 2) & 1 != 0,
             max_scratchpad_bufs: (self.hcs_params2 >> 27) & 0x1F
-                                   | ((self.hcs_params2 >> 21) & 0x1F) << 5,
+                | ((self.hcs_params2 >> 21) & 0x1F) << 5,
         }
     }
 
@@ -341,16 +376,28 @@ impl OperationalRegisters {
     }
 
     // ── CRCR ──────────────────────────────────────────────────
-    pub fn crcr(&self) -> u64 { self.read64(OP_CRCR) }
-    pub fn set_crcr(&self, val: u64) { self.write64(OP_CRCR, val); }
+    pub fn crcr(&self) -> u64 {
+        self.read64(OP_CRCR)
+    }
+    pub fn set_crcr(&self, val: u64) {
+        self.write64(OP_CRCR, val);
+    }
 
     // ── DCBAAP ────────────────────────────────────────────────
-    pub fn dcbaap(&self) -> u64 { self.read64(OP_DCBAAP) }
-    pub fn set_dcbaap(&self, val: u64) { self.write64(OP_DCBAAP, val); }
+    pub fn dcbaap(&self) -> u64 {
+        self.read64(OP_DCBAAP)
+    }
+    pub fn set_dcbaap(&self, val: u64) {
+        self.write64(OP_DCBAAP, val);
+    }
 
     // ── CONFIG ────────────────────────────────────────────────
-    pub fn config(&self) -> u32 { self.read(OP_CONFIG) }
-    pub fn set_config(&self, val: u32) { self.write(OP_CONFIG, val); }
+    pub fn config(&self) -> u32 {
+        self.read(OP_CONFIG)
+    }
+    pub fn set_config(&self, val: u32) {
+        self.write(OP_CONFIG, val);
+    }
 
     // ── PORTSC ────────────────────────────────────────────────
     pub fn portsc(&self, port: u32) -> PortSc {
@@ -365,7 +412,6 @@ impl OperationalRegisters {
         let val = ((cur & !clear) | set) & !PORTSC_RW1C_MASK;
         self.write(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE, val);
     }
-
 }
 
 impl RuntimeRegisters {
@@ -397,18 +443,34 @@ impl RuntimeRegisters {
     }
 
     // ── Interrupter 0 ─────────────────────────────────────────
-    pub fn iman(&self) -> u32 { self.read(RT_IMAN) }
-    pub fn set_iman(&self, val: u32) { self.write(RT_IMAN, val); }
+    pub fn iman(&self) -> u32 {
+        self.read(RT_IMAN)
+    }
+    pub fn set_iman(&self, val: u32) {
+        self.write(RT_IMAN, val);
+    }
 
     // ── Event Ring Segment Table ──────────────────────────────
-    pub fn erstsz(&self) -> u32 { self.read(RT_ERSTSZ) }
-    pub fn set_erstsz(&self, val: u32) { self.write(RT_ERSTSZ, val); }
-    pub fn erstba(&self) -> u64 { self.read64(RT_ERSTBA) }
-    pub fn set_erstba(&self, val: u64) { self.write64(RT_ERSTBA, val); }
+    pub fn erstsz(&self) -> u32 {
+        self.read(RT_ERSTSZ)
+    }
+    pub fn set_erstsz(&self, val: u32) {
+        self.write(RT_ERSTSZ, val);
+    }
+    pub fn erstba(&self) -> u64 {
+        self.read64(RT_ERSTBA)
+    }
+    pub fn set_erstba(&self, val: u64) {
+        self.write64(RT_ERSTBA, val);
+    }
 
     // ── Event Ring Dequeue Pointer ────────────────────────────
-    pub fn erdp(&self) -> u64 { self.read64(RT_ERDP) }
-    pub fn set_erdp(&self, val: u64) { self.write64(RT_ERDP, val); }
+    pub fn erdp(&self) -> u64 {
+        self.read64(RT_ERDP)
+    }
+    pub fn set_erdp(&self, val: u64) {
+        self.write64(RT_ERDP, val);
+    }
 }
 
 impl DoorbellRegisters {
@@ -417,10 +479,12 @@ impl DoorbellRegisters {
     }
 
     pub fn ring(&self, slot: u32, stream: u32) {
-        let off = slot as usize * 4;  // each doorbell is 4 bytes per xHCI spec §5.6
+        let off = slot as usize * 4; // each doorbell is 4 bytes per xHCI spec §5.6
         let val = (stream & 0xFF) | ((stream >> 8) & 0xFF) << 16;
         let ptr = unsafe { self.base.add(off) as *mut u32 };
-        unsafe { ptr::write_volatile(ptr, val); }
+        unsafe {
+            ptr::write_volatile(ptr, val);
+        }
         OperationalRegisters::clflush_offset(ptr as *const u8);
     }
 }
@@ -462,29 +526,37 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
         }
         let ec_id = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u8) };
         if ec_id == 1 {
-           let bios_sem = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
-           let os_sem = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 3) as *const u8) };
-           log::info!("USB Legacy Support: BIOS={}, OS={}", bios_sem, os_sem);
-           if bios_sem & 1 == 0 {
-              log::info!("xHCI: OS already owns controller");
-              return Ok(true);
-           }
-           log::info!("xHCI: BIOS owns controller — requesting handoff");
-           unsafe { ptr::write_volatile(mmio_base.add(ec_off * 4 + 3) as *mut u8, 1); }
-           for _ in 0..1_000_000 {
-              let b = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
-              if b & 1 == 0 { break; }
-           }
-           let final_bios = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
-           if final_bios & 1 != 0 {
-              log::info!("xHCI: legacy handoff failed");
-              return Err("legacy handoff failed");
-           }
-           log::info!("xHCI: legacy handoff done, BIOS_SEM={}", final_bios);
-           return Ok(false);
+            let bios_sem =
+                unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
+            let os_sem = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 3) as *const u8) };
+            log::info!("USB Legacy Support: BIOS={}, OS={}", bios_sem, os_sem);
+            if bios_sem & 1 == 0 {
+                log::info!("xHCI: OS already owns controller");
+                return Ok(true);
+            }
+            log::info!("xHCI: BIOS owns controller — requesting handoff");
+            unsafe {
+                ptr::write_volatile(mmio_base.add(ec_off * 4 + 3) as *mut u8, 1);
+            }
+            for _ in 0..1_000_000 {
+                let b = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
+                if b & 1 == 0 {
+                    break;
+                }
+            }
+            let final_bios =
+                unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
+            if final_bios & 1 != 0 {
+                log::info!("xHCI: legacy handoff failed");
+                return Err("legacy handoff failed");
+            }
+            log::info!("xHCI: legacy handoff done, BIOS_SEM={}", final_bios);
+            return Ok(false);
         }
         let ec_next = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 1) as *const u8) };
-        if ec_next == 0 { break; }
+        if ec_next == 0 {
+            break;
+        }
         ec_off += ec_next as usize;
     }
     Ok(true)

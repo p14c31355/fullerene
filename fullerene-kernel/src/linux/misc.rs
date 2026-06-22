@@ -1,6 +1,6 @@
 // Miscellaneous Linux syscall implementations
-use super::runtime::{LinuxRuntime, copy_val_to_user, copy_to_user, errno_code};
 use super::numbers::*;
+use super::runtime::{LinuxRuntime, copy_to_user, copy_val_to_user, errno_code};
 use super::types::*;
 
 pub fn sys_uname(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -31,7 +31,8 @@ pub fn sys_arch_prctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
         ARCH_GET_FS => {
             if addr != 0 {
-                let val = unsafe { x86_64::registers::model_specific::Msr::new(MSR_FS_BASE).read() };
+                let val =
+                    unsafe { x86_64::registers::model_specific::Msr::new(MSR_FS_BASE).read() };
                 unsafe { core::ptr::write_volatile(addr as *mut u64, val) };
             }
             0
@@ -44,7 +45,8 @@ pub fn sys_arch_prctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
         ARCH_GET_GS => {
             if addr != 0 {
-                let val = unsafe { x86_64::registers::model_specific::Msr::new(MSR_GS_BASE).read() };
+                let val =
+                    unsafe { x86_64::registers::model_specific::Msr::new(MSR_GS_BASE).read() };
                 unsafe { core::ptr::write_volatile(addr as *mut u64, val) };
             }
             0
@@ -97,7 +99,9 @@ pub fn sys_getrandom(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
         let mut next = current;
         loop {
-            next = next.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            next = next
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             match SEED.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
                 Ok(_) => break,
                 Err(actual) => current = actual,
@@ -120,11 +124,26 @@ pub fn sys_prlimit64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     if old_rlim != 0 {
         let rlim = match resource {
-            RLIMIT_NOFILE => LinuxRLimit { rlim_cur: 256, rlim_max: 1024 },
-            RLIMIT_STACK => LinuxRLimit { rlim_cur: 8 * 1024 * 1024, rlim_max: 8 * 1024 * 1024 },
-            RLIMIT_NPROC => LinuxRLimit { rlim_cur: 64, rlim_max: 64 },
-            RLIMIT_AS => LinuxRLimit { rlim_cur: u64::MAX, rlim_max: u64::MAX },
-            _ => LinuxRLimit { rlim_cur: u64::MAX, rlim_max: u64::MAX },
+            RLIMIT_NOFILE => LinuxRLimit {
+                rlim_cur: 256,
+                rlim_max: 1024,
+            },
+            RLIMIT_STACK => LinuxRLimit {
+                rlim_cur: 8 * 1024 * 1024,
+                rlim_max: 8 * 1024 * 1024,
+            },
+            RLIMIT_NPROC => LinuxRLimit {
+                rlim_cur: 64,
+                rlim_max: 64,
+            },
+            RLIMIT_AS => LinuxRLimit {
+                rlim_cur: u64::MAX,
+                rlim_max: u64::MAX,
+            },
+            _ => LinuxRLimit {
+                rlim_cur: u64::MAX,
+                rlim_max: u64::MAX,
+            },
         };
         unsafe { copy_val_to_user(old_rlim, &rlim) }.ok();
     }
@@ -140,11 +159,26 @@ pub fn sys_getrlimit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 
     let limit = match resource {
-        RLIMIT_NOFILE => LinuxRLimit { rlim_cur: 256, rlim_max: 1024 },
-        RLIMIT_STACK => LinuxRLimit { rlim_cur: 8 * 1024 * 1024, rlim_max: 8 * 1024 * 1024 },
-        RLIMIT_NPROC => LinuxRLimit { rlim_cur: 64, rlim_max: 64 },
-        RLIMIT_AS => LinuxRLimit { rlim_cur: u64::MAX, rlim_max: u64::MAX },
-        _ => LinuxRLimit { rlim_cur: u64::MAX, rlim_max: u64::MAX },
+        RLIMIT_NOFILE => LinuxRLimit {
+            rlim_cur: 256,
+            rlim_max: 1024,
+        },
+        RLIMIT_STACK => LinuxRLimit {
+            rlim_cur: 8 * 1024 * 1024,
+            rlim_max: 8 * 1024 * 1024,
+        },
+        RLIMIT_NPROC => LinuxRLimit {
+            rlim_cur: 64,
+            rlim_max: 64,
+        },
+        RLIMIT_AS => LinuxRLimit {
+            rlim_cur: u64::MAX,
+            rlim_max: u64::MAX,
+        },
+        _ => LinuxRLimit {
+            rlim_cur: u64::MAX,
+            rlim_max: u64::MAX,
+        },
     };
 
     unsafe { copy_val_to_user(rlim, &limit) }.ok();
@@ -191,7 +225,9 @@ pub fn sys_capget(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
 pub fn sys_sysinfo(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let info = args[0];
-    if info == 0 { return errno_code(EFAULT); }
+    if info == 0 {
+        return errno_code(EFAULT);
+    }
     let si = LinuxSysinfo::new();
     unsafe { copy_val_to_user(info, &si) }.ok();
     0
@@ -255,7 +291,12 @@ pub fn sys_sched_getaffinity(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // Return a mask indicating CPU 0 is available
     let cpusetsize = cpusetsize.min(8); // at most 8 bytes
     for i in 0..cpusetsize {
-        unsafe { core::ptr::write_volatile((mask as *mut u8).add(i as usize), if i == 0 { 1 } else { 0 }) };
+        unsafe {
+            core::ptr::write_volatile(
+                (mask as *mut u8).add(i as usize),
+                if i == 0 { 1 } else { 0 },
+            )
+        };
     }
     0
 }

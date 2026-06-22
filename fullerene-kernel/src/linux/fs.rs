@@ -1,7 +1,10 @@
 // Linux file system syscall implementations
-use super::runtime::{LinuxRuntime, Runtime, LinuxFileDesc, copy_user_string, copy_from_user, copy_to_user, copy_val_to_user, errno_code, errno_result};
-use super::types::*;
 use super::numbers::*;
+use super::runtime::{
+    LinuxFileDesc, LinuxRuntime, Runtime, copy_from_user, copy_to_user, copy_user_string,
+    copy_val_to_user, errno_code, errno_result,
+};
+use super::types::*;
 
 pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
@@ -198,7 +201,9 @@ pub fn sys_creat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match crate::contexts::vfs::create(&path) {
         Ok(vfs_fd) => {
-            let fd = rt.fd_table.alloc(vfs_fd.fd, 0, O_WRONLY | O_CREAT | O_TRUNC);
+            let fd = rt
+                .fd_table
+                .alloc(vfs_fd.fd, 0, O_WRONLY | O_CREAT | O_TRUNC);
             fd as u64
         }
         Err(e) => errno_result(e),
@@ -225,7 +230,9 @@ fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), &'static str> {
 
     // Check if path is a directory by trying to readdir
     let is_dir = crate::contexts::vfs::readdir(path).is_ok();
-    let size = if is_dir { 0 } else {
+    let size = if is_dir {
+        0
+    } else {
         let mut buf = [0u8; 512];
         let mut total = 0usize;
         loop {
@@ -299,7 +306,10 @@ struct StatInfo {
 }
 
 fn fill_stat_from_fd(vfs_fd: u32) -> StatInfo {
-    StatInfo { ino: vfs_fd as u64, is_dir: false }
+    StatInfo {
+        ino: vfs_fd as u64,
+        is_dir: false,
+    }
 }
 
 pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -376,9 +386,9 @@ pub fn sys_lseek(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         None => return errno_code(EBADF),
     };
     let new_offset = match whence {
-        0 => offset,           // SEEK_SET
+        0 => offset,                      // SEEK_SET
         1 => desc.offset as i64 + offset, // SEEK_CUR
-        2 => -(EINVAL as i64), // SEEK_END (not fully supported)
+        2 => -(EINVAL as i64),            // SEEK_END (not fully supported)
         _ => return errno_code(EINVAL),
     };
     if new_offset < 0 {
@@ -395,7 +405,9 @@ pub fn sys_pread64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let buf = args[1];
     let count = args[2] as usize;
     let offset = args[3] as i64;
-    if offset < 0 { return errno_code(EINVAL); }
+    if offset < 0 {
+        return errno_code(EINVAL);
+    }
     // Temporarily seek, read, restore
     let desc = match rt.fd_table.get(fd) {
         Some(d) => d.clone(),
@@ -417,7 +429,9 @@ pub fn sys_pwrite64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let buf = args[1];
     let count = args[2] as usize;
     let offset = args[3] as i64;
-    if offset < 0 { return errno_code(EINVAL); }
+    if offset < 0 {
+        return errno_code(EINVAL);
+    }
     let desc = match rt.fd_table.get(fd) {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
@@ -440,21 +454,27 @@ pub fn sys_readv(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mut total = 0u64;
     for i in 0..iovcnt {
         let base_ptr = iov + (i * core::mem::size_of::<LinuxIovec>()) as u64;
-        let iovec_data = match unsafe { copy_from_user(base_ptr, core::mem::size_of::<LinuxIovec>()) } {
-            Ok(d) => d,
-            Err(_) => return if total > 0 { total } else { errno_code(EFAULT) },
-        };
-        let iovec: LinuxIovec = unsafe { core::ptr::read_unaligned(iovec_data.as_ptr() as *const LinuxIovec) };
+        let iovec_data =
+            match unsafe { copy_from_user(base_ptr, core::mem::size_of::<LinuxIovec>()) } {
+                Ok(d) => d,
+                Err(_) => return if total > 0 { total } else { errno_code(EFAULT) },
+            };
+        let iovec: LinuxIovec =
+            unsafe { core::ptr::read_unaligned(iovec_data.as_ptr() as *const LinuxIovec) };
         if iovec.iov_base == 0 {
             continue;
         }
         let n = sys_read(rt, &[fd as u64, iovec.iov_base, iovec.iov_len, 0, 0, 0]);
         if (n as i64) < 0 {
-            if total > 0 { break; }
+            if total > 0 {
+                break;
+            }
             return n;
         }
         total += n;
-        if n < iovec.iov_len { break; }
+        if n < iovec.iov_len {
+            break;
+        }
     }
     total
 }
@@ -466,17 +486,21 @@ pub fn sys_writev(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let mut total = 0u64;
     for i in 0..iovcnt {
         let base_ptr = iov + (i * core::mem::size_of::<LinuxIovec>()) as u64;
-        let iovec_data = match unsafe { copy_from_user(base_ptr, core::mem::size_of::<LinuxIovec>()) } {
-            Ok(d) => d,
-            Err(_) => return if total > 0 { total } else { errno_code(EFAULT) },
-        };
-        let iovec: LinuxIovec = unsafe { core::ptr::read_unaligned(iovec_data.as_ptr() as *const LinuxIovec) };
+        let iovec_data =
+            match unsafe { copy_from_user(base_ptr, core::mem::size_of::<LinuxIovec>()) } {
+                Ok(d) => d,
+                Err(_) => return if total > 0 { total } else { errno_code(EFAULT) },
+            };
+        let iovec: LinuxIovec =
+            unsafe { core::ptr::read_unaligned(iovec_data.as_ptr() as *const LinuxIovec) };
         if iovec.iov_base == 0 {
             continue;
         }
         let n = sys_write(rt, &[fd as u64, iovec.iov_base, iovec.iov_len, 0, 0, 0]);
         if (n as i64) < 0 {
-            if total > 0 { break; }
+            if total > 0 {
+                break;
+            }
             return n;
         }
         total += n;
@@ -517,7 +541,9 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
     let buf = args[1];
     let count = args[2] as u32;
-    if LinuxRuntime::is_std_fd(fd) { return errno_code(ENOTDIR); }
+    if LinuxRuntime::is_std_fd(fd) {
+        return errno_code(ENOTDIR);
+    }
     let desc = match rt.fd_table.get(fd) {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
@@ -702,7 +728,9 @@ pub fn sys_umount2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
 pub fn sys_dup(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let oldfd = args[0] as i32;
-    if LinuxRuntime::is_std_fd(oldfd) { return oldfd as u64; }
+    if LinuxRuntime::is_std_fd(oldfd) {
+        return oldfd as u64;
+    }
     let desc = match rt.fd_table.get(oldfd) {
         Some(d) => d.clone(),
         None => return errno_code(EBADF),
@@ -753,12 +781,14 @@ pub fn sys_fcntl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     match cmd {
         F_DUPFD => sys_dup(rt, &[fd as u64, 0, 0, 0, 0, 0]),
         F_GETFD => {
-            if rt.fd_table.contains(fd) || LinuxRuntime::is_std_fd(fd) { 0 } else { errno_code(EBADF) }
+            if rt.fd_table.contains(fd) || LinuxRuntime::is_std_fd(fd) {
+                0
+            } else {
+                errno_code(EBADF)
+            }
         }
         F_SETFD => 0,
-        F_GETFL => {
-            rt.fd_table.get(fd).map(|d| d.flags as u64).unwrap_or(0)
-        }
+        F_GETFL => rt.fd_table.get(fd).map(|d| d.flags as u64).unwrap_or(0),
         F_SETFL => {
             if let Some(d) = rt.fd_table.get_mut(fd) {
                 d.flags = arg as i32;

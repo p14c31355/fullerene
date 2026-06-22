@@ -80,7 +80,7 @@ impl MouseSettings {
     }
 
     pub fn set_acceleration(&self, on: bool) {
-        self.acceleration.store(if on { 1 } else { 0 }, Ordering::Relaxed);
+        self.acceleration.store(u32::from(on), Ordering::Relaxed);
     }
 }
 
@@ -120,8 +120,7 @@ impl DisplaySettings {
     }
 
     pub fn set_top_panel_enabled(&self, on: bool) {
-        self.top_panel_enabled
-            .store(if on { 1 } else { 0 }, Ordering::Relaxed);
+        self.top_panel_enabled.store(u32::from(on), Ordering::Relaxed);
     }
 
     pub fn toggle_top_panel(&self) -> bool {

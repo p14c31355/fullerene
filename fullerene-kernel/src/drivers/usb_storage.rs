@@ -10,9 +10,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use nitrogen::usb::usb_bus::{UsbBus, bot_read_sectors, bot_write_sectors, enumerate_mass_storage};
-use nitrogen::usb::{UsbDirection, UsbXferType, UsbDevice};
 use nitrogen::usb::host_controller::HostController;
+use nitrogen::usb::usb_bus::{UsbBus, bot_read_sectors, bot_write_sectors, enumerate_mass_storage};
+use nitrogen::usb::{UsbDevice, UsbDirection, UsbXferType};
 use spin::Mutex;
 
 use crate::drivers::fat::{BlockDevice, FatFileSystem};
@@ -44,36 +44,42 @@ pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
 
-    // Phase 1: Immediate poll
+    // Phase 1: Immediate poll — catches QEMU and fast hardware.
     if poll_usb() {
         debug_usb();
         return;
     }
 
-    // Phase 2: Short delay → re-poll for xHCI devices needing
-    // additional time after HCRST.
-    delay(300_000);
-    if poll_usb() {
-        debug_usb();
-        return;
+    // Phase 2–4: Progressive delays for real xHCI hardware that
+    // needs time after HCRST (up to 100 ms per the spec).
+    for (label, ms, force_all) in [("short", 50u64, false), ("longer", 100, false), ("full", 200, true)]
+    {
+        delay_ms(ms);
+        let found = if force_all { poll_usb_all() } else { poll_usb() };
+        klog_fmt!("USB init phase {} ({} ms): found={}\n", label, ms, found);
+        if found {
+            debug_usb();
+            return;
+        }
     }
 
-    // Phase 3: Longer delay → re-poll
-    delay(500_000);
-    if poll_usb() {
-        debug_usb();
-        return;
-    }
-
-    // Phase 4: Force re-poll with fresh ports_done
-    delay(200_000);
-    poll_usb_all();
     debug_usb();
 }
 
-fn delay(iterations: u32) {
-    for _ in 0..iterations {
-        nitrogen::port::PortWriter::<u8>::new(0x80).write_safe(0u8);
+/// Busy-wait for approximately `ms` milliseconds using RDTSC.
+///
+/// Assumes a minimum 1 GHz TSC frequency.  On faster CPUs the delay
+/// is proportionally longer, which is harmless for USB polling.
+/// The previous implementation wrote to port 0x80 in a loop, which
+/// was extremely slow under QEMU (each port I/O traps to the
+/// hypervisor, adding ~10 µs per iteration → 10 s total delay).
+fn delay_ms(ms: u64) {
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    // 1 GHz → 1000 ticks/µs → 1 000 000 ticks/ms
+    let tsc_per_ms = solvent::get_tsc_per_ms();
+    let target = ms * if tsc_per_ms > 0 { tsc_per_ms } else { 1_000_000 };
+    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
+        core::hint::spin_loop();
     }
 }
 
@@ -92,26 +98,48 @@ fn init_controllers() {
 pub fn debug_usb() {
     klog_fmt!("=== USB DEBUG ===\n");
     with_bus(|bus| {
-    for (i, ehci) in bus.ehci.iter().enumerate() {
-        klog_fmt!("EHCI[{}]: {} ports\n", i, ehci.n_ports());
-        for p in 0..(ehci.n_ports().min(4)) {
-            let ps = ehci.read_portsc(p);
-            klog_fmt!("  PORTSC[{}]=0x{:08X} CCS={} PE={}\n", p, ps, ps & 1, (ps >> 2) & 1);
+        for (i, ehci) in bus.ehci.iter().enumerate() {
+            klog_fmt!("EHCI[{}]: {} ports\n", i, ehci.n_ports());
+            for p in 0..(ehci.n_ports().min(4)) {
+                let ps = ehci.read_portsc(p);
+                klog_fmt!(
+                    "  PORTSC[{}]=0x{:08X} CCS={} PE={}\n",
+                    p,
+                    ps,
+                    ps & 1,
+                    (ps >> 2) & 1
+                );
+            }
         }
-    }
 
-    for (i, xhci) in bus.xhci.iter().enumerate() {
-        klog_fmt!("xHCI[{}] ppc={} n_ports={} max_slots={} ports_done={:#x} legacy={}\n",
-            i, xhci.ppc_enabled(), xhci.n_ports(), xhci.max_slots(),
-            xhci.ports_done_mask(), xhci.legacy_handoff_done());
-        for p in 0..xhci.n_ports() {
-            let ps = xhci.read_portsc(p);
-            if ps == 0xFFFF { continue; }
-            klog_fmt!("xHCI PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={} speed={}\n",
-                p, ps, ps & 1, (ps >> 1) & 1, (ps >> 5) & 0xF,
-                (ps >> 9) & 1, (ps >> 4) & 1, (ps >> 10) & 0xF);
+        for (i, xhci) in bus.xhci.iter().enumerate() {
+            klog_fmt!(
+                "xHCI[{}] ppc={} n_ports={} max_slots={} ports_done={:#x} legacy={}\n",
+                i,
+                xhci.ppc_enabled(),
+                xhci.n_ports(),
+                xhci.max_slots(),
+                xhci.ports_done_mask(),
+                xhci.legacy_handoff_done()
+            );
+            for p in 0..xhci.n_ports() {
+                let ps = xhci.read_portsc(p);
+                if ps == 0xFFFF {
+                    continue;
+                }
+                klog_fmt!(
+                    "xHCI PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={} speed={}\n",
+                    p,
+                    ps,
+                    ps & 1,
+                    (ps >> 1) & 1,
+                    (ps >> 5) & 0xF,
+                    (ps >> 9) & 1,
+                    (ps >> 4) & 1,
+                    (ps >> 10) & 0xF
+                );
+            }
         }
-    }
     });
     klog_fmt!("=== USB END ===\n");
 }
@@ -137,7 +165,11 @@ pub fn poll_usb_all() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
 
     // Unmount existing drives
-    let mps: Vec<String> = USB_DRIVES.lock().iter().map(|d| d.mount_point.clone()).collect();
+    let mps: Vec<String> = USB_DRIVES
+        .lock()
+        .iter()
+        .map(|d| d.mount_point.clone())
+        .collect();
     for mp in &mps {
         let _ = crate::vfs::unmount(mp);
     }
@@ -215,7 +247,14 @@ fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
         return;
     }
 
-    mount_fat("EHCI", dev.address as u32, bulk_out, bulk_in, "EHCI", ctrl_index);
+    mount_fat(
+        "EHCI",
+        dev.address as u32,
+        bulk_out,
+        bulk_in,
+        "EHCI",
+        ctrl_index,
+    );
 }
 
 fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
@@ -262,7 +301,14 @@ fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
     mount_fat("xHCI", slot_id, ep_out, ep_in, "xHCI", ctrl_index);
 }
 
-fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8, ctrl_type: &'static str, ctrl_idx: usize) {
+fn mount_fat(
+    label: &str,
+    dev_id: u32,
+    ep_out: u8,
+    ep_in: u8,
+    ctrl_type: &'static str,
+    ctrl_idx: usize,
+) {
     struct BotBlockDev {
         dev_id: u32,
         ep_out: u8,
@@ -276,15 +322,38 @@ fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8, ctrl_type: &'stati
     unsafe impl Send for BotBlockDev {}
 
     impl BlockDevice for BotBlockDev {
-        fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        fn read_sectors(
+            &mut self,
+            lba: u32,
+            count: u16,
+            buf: &mut [u8],
+        ) -> Result<(), &'static str> {
             let mut guard = USB_BUS.lock();
             let bus = guard.as_mut().unwrap();
             if self.ctrl_type == "xHCI" {
-                bot_read_sectors(&mut *bus.xhci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
-                    lba, count, self.block_size, buf, &mut self.tag)
+                bot_read_sectors(
+                    &mut *bus.xhci[self.ctrl_idx],
+                    self.dev_id as u8,
+                    self.ep_out,
+                    self.ep_in,
+                    lba,
+                    count,
+                    self.block_size,
+                    buf,
+                    &mut self.tag,
+                )
             } else {
-                bot_read_sectors(&mut *bus.ehci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
-                    lba, count, self.block_size, buf, &mut self.tag)
+                bot_read_sectors(
+                    &mut *bus.ehci[self.ctrl_idx],
+                    self.dev_id as u8,
+                    self.ep_out,
+                    self.ep_in,
+                    lba,
+                    count,
+                    self.block_size,
+                    buf,
+                    &mut self.tag,
+                )
             }
         }
 
@@ -292,16 +361,38 @@ fn mount_fat(label: &str, dev_id: u32, ep_out: u8, ep_in: u8, ctrl_type: &'stati
             let mut guard = USB_BUS.lock();
             let bus = guard.as_mut().unwrap();
             if self.ctrl_type == "xHCI" {
-                bot_write_sectors(&mut *bus.xhci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
-                    lba, count, self.block_size, buf, &mut self.tag)
+                bot_write_sectors(
+                    &mut *bus.xhci[self.ctrl_idx],
+                    self.dev_id as u8,
+                    self.ep_out,
+                    self.ep_in,
+                    lba,
+                    count,
+                    self.block_size,
+                    buf,
+                    &mut self.tag,
+                )
             } else {
-                bot_write_sectors(&mut *bus.ehci[self.ctrl_idx], self.dev_id as u8, self.ep_out, self.ep_in,
-                    lba, count, self.block_size, buf, &mut self.tag)
+                bot_write_sectors(
+                    &mut *bus.ehci[self.ctrl_idx],
+                    self.dev_id as u8,
+                    self.ep_out,
+                    self.ep_in,
+                    lba,
+                    count,
+                    self.block_size,
+                    buf,
+                    &mut self.tag,
+                )
             }
         }
 
-        fn sector_size(&self) -> u32 { self.block_size }
-        fn total_sectors(&self) -> u64 { self.total_blocks }
+        fn sector_size(&self) -> u32 {
+            self.block_size
+        }
+        fn total_sectors(&self) -> u64 {
+            self.total_blocks
+        }
     }
 
     let bdev = BotBlockDev {

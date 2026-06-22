@@ -1,6 +1,6 @@
 // Linux time syscall implementations
-use super::runtime::{LinuxRuntime, copy_from_user, copy_val_to_user, errno_code};
 use super::numbers::*;
+use super::runtime::{LinuxRuntime, copy_from_user, copy_val_to_user, errno_code};
 use super::types::*;
 
 pub fn sys_nanosleep(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -11,7 +11,10 @@ pub fn sys_nanosleep(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
 
-    let ts: LinuxTimespec = LinuxTimespec { tv_sec: 0, tv_nsec: 0 };
+    let ts: LinuxTimespec = LinuxTimespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     unsafe { copy_val_to_user(req, &ts) }.ok();
 
     // Read the timespec from user space
@@ -67,7 +70,10 @@ pub fn sys_clock_gettime(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let sec = (ticks / 1000) as i64;
     let nsec = ((ticks % 1000) * 1_000_000) as i64;
 
-    let ts = LinuxTimespec { tv_sec: sec, tv_nsec: nsec };
+    let ts = LinuxTimespec {
+        tv_sec: sec,
+        tv_nsec: nsec,
+    };
     unsafe { copy_val_to_user(tp, &ts) }.ok();
     0
 }
@@ -88,7 +94,10 @@ pub fn sys_gettimeofday(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let sec = (ticks / 1000) as i64;
     let usec = ((ticks % 1000) * 1000) as i64;
 
-    let timeval = LinuxTimeval { tv_sec: sec, tv_usec: usec };
+    let timeval = LinuxTimeval {
+        tv_sec: sec,
+        tv_usec: usec,
+    };
     unsafe { copy_val_to_user(tv, &timeval) }.ok();
     0
 }
