@@ -70,7 +70,7 @@ impl StorageManager {
         let name = alloc::format!("USB Drive {}", disk_num);
         let mount_point = alloc::format!("/mnt/usb-{}", disk_num);
 
-        let disk = Disk {
+        let mut disk = Disk {
             name,
             mount_point,
             dev_addr,
@@ -82,7 +82,7 @@ impl StorageManager {
             ctrl_idx,
         };
 
-        let ok = platform_mount_fat(&disk);
+        let ok = platform_mount_fat(&mut disk);
         if ok {
             self.disks.push(disk);
         }
@@ -100,18 +100,23 @@ impl StorageManager {
 /// override or by calling [`set_mount_fn`] during early init.
 /// Platform callback: the kernel crate registers this to mount a
 /// FAT filesystem from the given disk's parameters.  The callback
-/// is responsible for all VFS interactions.
-static MOUNT_FN: spin::Mutex<Option<fn(&Disk) -> bool>> =
+/// is responsible for all VFS interactions and should update the
+/// disk's block_size and total_blocks fields based on the actual
+/// device geometry.
+static MOUNT_FN: spin::Mutex<Option<fn(&mut Disk) -> bool>> =
     spin::Mutex::new(None);
 
 /// Register the platform's FAT-mount callback.
-pub fn set_mount_fn(f: fn(&Disk) -> bool) {
+pub fn set_mount_fn(f: fn(&mut Disk) -> bool) {
     *MOUNT_FN.lock() = Some(f);
 }
 
-fn platform_mount_fat(disk: &Disk) -> bool {
-    let f = MOUNT_FN.lock();
-    match f.as_ref() {
+fn platform_mount_fat(disk: &mut Disk) -> bool {
+    let callback = {
+        let guard = MOUNT_FN.lock();
+        *guard
+    };
+    match callback {
         Some(f) => f(disk),
         None => {
             log::warn!("USB: no mount callback registered; disk not mounted");

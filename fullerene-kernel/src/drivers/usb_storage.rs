@@ -66,9 +66,9 @@ pub fn init() {
     // Create and initialise the USB context.
     {
         use crate::driver_context_impl::KernelDriverContext;
-        let mut guard = USB_CTX.lock();
         let mut ctx = USBContext::new(&KernelDriverContext);
         let _ = ctx.enable();
+        let mut guard = USB_CTX.lock();
         *guard = Some(ctx);
     }
 
@@ -82,7 +82,12 @@ pub fn init() {
 
 pub fn poll_usb() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
-    with_ctx(|ctx| ctx.poll());
+    {
+        let mut guard = USB_CTX.lock();
+        if let Some(ctx) = guard.as_mut() {
+            ctx.poll();
+        }
+    }
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
 }
 
@@ -102,10 +107,12 @@ pub fn poll_usb_all() -> bool {
 
     // Re-create the USB context (full re-scan)
     use crate::driver_context_impl::KernelDriverContext;
-    let mut guard = USB_CTX.lock();
     let mut ctx = USBContext::new(&KernelDriverContext);
     let _ = ctx.enable();
-    *guard = Some(ctx);
+    {
+        let mut guard = USB_CTX.lock();
+        *guard = Some(ctx);
+    }
 
     USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0
 }
@@ -116,8 +123,9 @@ pub fn poll_usb_all() -> bool {
 /// has been detected and its BOT endpoints are known.
 ///
 /// Reads the boot sector, tries to mount a FAT filesystem, and registers
-/// the mount point in [`USB_DRIVES`].
-fn platform_mount_fat(disk: &Disk) -> bool {
+/// the mount point in [`USB_DRIVES`]. Updates the disk's block_size and
+/// total_blocks fields with actual values from the BPB.
+fn platform_mount_fat(disk: &mut Disk) -> bool {
     // Copy disk parameters into the block device so the closure
     // doesn't borrow `disk` across the `with_ctx` call.
     let ctrl_type = disk.ctrl_type;
@@ -203,6 +211,10 @@ fn platform_mount_fat(disk: &Disk) -> bool {
     let total_sectors_16 = u16::from_le_bytes([boot[13], boot[14]]) as u64;
     let total_sectors_32 = u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]) as u64;
     let total_blocks = if total_sectors_32 > 0 { total_sectors_32 } else { total_sectors_16 };
+
+    // Update disk geometry with actual values from BPB
+    disk.block_size = block_size;
+    disk.total_blocks = total_blocks;
 
     let bdev = BotBlockDev {
         ctrl_type,

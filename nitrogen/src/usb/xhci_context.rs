@@ -202,7 +202,8 @@ impl XhciContext {
         }
         self.controller_reset()?;
         self.configure_registers()?;
-        self.start_controller()?;
+        self.start_controller_no_inte()?;
+        self.enable_interrupts();
         self.clear_hse_and_recover();
         self.init_ports();
         Ok(())
@@ -233,7 +234,7 @@ impl XhciContext {
         // configuration gives the internal state machine time to stabilise.
         if self.registers.op.usbsts().hchalted() {
             log::info!("xHCI: controller is halted, starting it FIRST");
-            self.start_controller()?;
+            self.start_controller_no_inte()?;
             // Allow PHY to stabilise before writing context/ring registers
             log::info!("xHCI: waiting 500ms after RS=1 for PHY stabilisation");
             super::xhci_port::delay_ms(500);
@@ -245,6 +246,7 @@ impl XhciContext {
         // Step 2: Now configure registers (DCBAAP, CRCR, CONFIG, ERST).
         log::info!("xHCI: configuring registers after RS=1");
         self.configure_registers()?;
+        self.enable_interrupts();
         super::xhci_port::delay_ms(200);
 
         // Step 3: Reflect current firmware-detected ports.
@@ -561,9 +563,15 @@ impl XhciContext {
 
     /// Internal RS=1 logic.
     fn start_controller(&mut self) -> Result<(), &'static str> {
+        self.start_controller_no_inte()
+    }
+
+    /// Start the controller without enabling interrupts (RS | HSEE only).
+    /// Used by init_no_reset() to start the controller before configure_registers().
+    fn start_controller_no_inte(&mut self) -> Result<(), &'static str> {
         let op = &self.registers.op;
 
-        op.set_usbcmd(USBCMD_RS | USBCMD_INTE | USBCMD_HSEE);
+        op.set_usbcmd(USBCMD_RS | USBCMD_HSEE);
         for _ in 0..200_000 {
             if !op.usbsts().hchalted() {
                 break;
@@ -578,6 +586,11 @@ impl XhciContext {
 
         log::info!("xHCI: controller started");
         Ok(())
+    }
+
+    /// Enable interrupts after the event ring is configured.
+    fn enable_interrupts(&mut self) {
+        self.registers.op.set_usbcmd_bits(USBCMD_INTE);
     }
 
     /// Clear HSE and re-kick link training on all ports.

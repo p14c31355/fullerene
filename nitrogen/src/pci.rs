@@ -236,7 +236,15 @@ impl PciDevice {
             return;
         }
         let mut off = cap_ptr;
+        let mut visited = [false; 256];
         loop {
+            // Check for cycles
+            if visited[off as usize] {
+                log::warn!("PCI: capability list cycle detected at offset {:#x}", off);
+                break;
+            }
+            visited[off as usize] = true;
+
             let cap_id = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
             if cap_id == 0x01 {
                 let pmcsr = PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 4);

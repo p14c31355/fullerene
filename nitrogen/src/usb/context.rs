@@ -141,7 +141,7 @@ impl ControllerManager {
             );
             for p in 0..xhci.n_ports() {
                 let ps = xhci.read_portsc(p);
-                if ps == 0xFFFF {
+                if ps == 0xFFFF_FFFF {
                     continue;
                 }
                 log::info!(
@@ -198,11 +198,11 @@ impl USBContext {
     pub fn poll(&mut self) {
         let ev = self.controllers.poll();
 
-        for (_idx, ctrl_idx) in &ev.ehci_devices {
-            self.mount_ehci_device(*ctrl_idx, *ctrl_idx);
+        for (ctrl_idx, dev_idx) in &ev.ehci_devices {
+            self.mount_ehci_device(*ctrl_idx, *dev_idx);
         }
-        for (_idx, ctrl_idx) in &ev.xhci_devices {
-            self.mount_xhci_device(*ctrl_idx, *ctrl_idx);
+        for (ctrl_idx, dev_idx) in &ev.xhci_devices {
+            self.mount_xhci_device(*ctrl_idx, *dev_idx);
         }
     }
 
