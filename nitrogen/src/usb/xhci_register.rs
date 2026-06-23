@@ -289,9 +289,9 @@ impl CapabilityRegisters {
 
     pub fn hcs_params1(&self) -> HcsParams1 {
         HcsParams1 {
-            max_slots: self.hcs_params1 & 0xFF,
+            max_slots: (self.hcs_params1 >> 24) & 0xFF,
             max_interrupters: (self.hcs_params1 >> 8) & 0x7FF,
-            n_ports: (self.hcs_params1 >> 24) & 0xFF,
+            n_ports: self.hcs_params1 & 0xFF,
             ppc: (self.hcc_params1 >> 3) & 1 != 0,
             csz: (self.hcc_params1 >> 2) & 1 != 0,
             max_scratchpad_bufs: (self.hcs_params2 >> 27) & 0x1F
@@ -712,15 +712,21 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
 // ============================================================================
 
 /// Convert xHCI port speed to generic USB speed.
+///
+/// xHCI PORTSC bits [13:10] encoding (xHCI 1.2 §5.4.8):
+///   1 → Full (12 Mbps)
+///   2 → Low  (1.5 Mbps)
+///   3 → High (480 Mbps)
+///   4 → SuperSpeed (5 Gbps, USB 3.0/3.1 Gen1)
+///   5 → SuperSpeedPlus (10 Gbps, USB 3.1 Gen2)
 pub fn port_speed_to_usb(speed: u32) -> crate::usb::UsbSpeed {
     match speed {
         3 => crate::usb::UsbSpeed::High,
         2 => crate::usb::UsbSpeed::Low,
         1 => crate::usb::UsbSpeed::Full,
-        4 => {
-            // SuperSpeed (USB 3.0) - map to High for now since UsbSpeed enum may not support it
-            log::warn!("xHCI: SuperSpeed device detected (speed=4), treating as High-speed");
-            crate::usb::UsbSpeed::High
+        4 | 5 => {
+            log::info!("xHCI: SuperSpeed device detected (speed={})", speed);
+            crate::usb::UsbSpeed::SuperSpeed
         }
         _ => {
             log::warn!("xHCI: unknown port speed {}, defaulting to High", speed);
@@ -758,7 +764,7 @@ mod tests {
     fn test_hcs_params1_parsing() {
         let cap = CapabilityRegisters {
             caplength: 0x20,
-            hcs_params1: 0x080000FF, // max_slots=255, n_ports=8
+            hcs_params1: 0xFF000008, // bits[31:24]=max_slots=255, bits[7:0]=n_ports=8
             hcs_params2: 0,
             hcs_params3: 0,
             hcc_params1: 0,

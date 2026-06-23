@@ -64,6 +64,7 @@ pub const fn qh_ep_chars(addr: u8, endpoint: u8, speed: UsbSpeed, mps: u16) -> u
         UsbSpeed::Full => 0u32,
         UsbSpeed::Low => 1u32,
         UsbSpeed::High => 2u32,
+        UsbSpeed::SuperSpeed => 2u32, // EHCI doesn't support SS; treat as High
     };
     (addr as u32)
         | ((endpoint as u32) << 8)

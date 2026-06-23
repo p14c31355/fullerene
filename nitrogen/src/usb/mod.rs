@@ -37,9 +37,10 @@ pub mod usb_bus;
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbSpeed {
-    Low,  // 1.5 Mbps
-    Full, // 12 Mbps
-    High, // 480 Mbps (EHCI only)
+    Low,         // 1.5 Mbps
+    Full,        // 12 Mbps
+    High,        // 480 Mbps
+    SuperSpeed,  // 5 Gbps (USB 3.x)
 }
 
 impl UsbSpeed {

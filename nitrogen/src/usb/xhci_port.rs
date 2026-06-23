@@ -325,6 +325,8 @@ mod tests {
         assert_eq!(port_speed_to_usb(3), UsbSpeed::High);
         assert_eq!(port_speed_to_usb(2), UsbSpeed::Low);
         assert_eq!(port_speed_to_usb(1), UsbSpeed::Full);
+        assert_eq!(port_speed_to_usb(4), UsbSpeed::SuperSpeed);
+        assert_eq!(port_speed_to_usb(5), UsbSpeed::SuperSpeed);
     }
 
     #[test]
