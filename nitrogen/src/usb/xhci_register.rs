@@ -515,7 +515,51 @@ impl RegisterContext {
 /// Attempt legacy handoff (BIOS → OS) for the xHCI controller.
 ///
 /// Returns `Ok(true)` if the OS already owns the controller,
-/// `Ok(false)` if the handoff succeeded, or `Err` if it failed.
+/// Walk all extended capabilities and log them.
+/// Useful for diagnosing BIOS handoff, protocol routing, and other EC issues.
+pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
+    let mut ec_off = ext_cap_ptr as usize;
+    let mut iterations = 0;
+    while ec_off != 0 && ec_off < 0x1000 {
+        iterations += 1;
+        if iterations > 64 {
+            log::warn!("xHCI: EC list exceeded max iterations");
+            break;
+        }
+        let ec_id = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u8) };
+        let ec_next = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 1) as *const u8) };
+        let ec_dw1 = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 4) as *const u32) };
+        log::info!(
+            "xHCI EC: id={} next={} DWORD1=0x{:08X} (offset 0x{:04x})",
+            ec_id, ec_next, ec_dw1, ec_off * 4
+        );
+        if ec_id == 1 {
+            let legsup = ec_dw1;
+            log::info!(
+                "  → USB Legacy Support: BIOS_SEM={} OS_SEM={} SMIBUSY={} SMI_en=0x{:03x}",
+                (legsup >> 0) & 1,
+                (legsup >> 1) & 1,
+                (legsup >> 16) & 1,
+                (legsup >> 19) & 0x1F,
+            );
+        } else if ec_id == 2 {
+            let dw2 = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 8) as *const u32) };
+            let port_offset = (dw2 & 0xFF) as u32;
+            let port_count  = ((dw2 >> 8) & 0xFF) as u32;
+            let major_rev   = unsafe {
+                ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u32) >> 24
+            };
+            log::info!(
+                "  → Supported Protocol: ports {}-{} rev={}.0 {}",
+                port_offset, port_offset + port_count - 1, major_rev,
+                if major_rev >= 3 { "USB 3.x" } else { "USB 2.0" }
+            );
+        }
+        if ec_next == 0 { break; }
+        ec_off += ec_next as usize;
+    }
+}
+
 /// Parse the Supported Protocol capability (ECID = 2) for each port.
 ///
 /// Returns a bitmask per 32-port group: bit N set means port N is USB 3.0.

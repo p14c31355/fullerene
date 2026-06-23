@@ -101,7 +101,12 @@ impl XhciContext {
             hcc1.ext_cap_ptr
         );
 
-        // ── Step 2: Legacy handoff ────────────────────────────
+        // ── Step 2: Dump extended capabilities ────────────────
+        if hcc1.ext_cap_ptr != 0 {
+            dump_extended_capabilities(mmio_base, hcc1.ext_cap_ptr);
+        }
+
+        // ── Step 3: Legacy handoff ────────────────────────────
         let legacy_ok = match try_legacy_handoff(mmio_base, hcc1.ext_cap_ptr) {
             Ok(true) => true,  // OS already owns
             Ok(false) => true, // handoff succeeded
@@ -111,7 +116,7 @@ impl XhciContext {
             }
         };
 
-        // ── Step 3: Create sub-contexts ───────────────────────
+        // ── Step 4: Create sub-contexts ───────────────────────
         let op_base = unsafe { mmio_base.add(op_off as usize) };
         let rt_base = unsafe { mmio_base.add(rt_off as usize) };
         let db_base = unsafe { mmio_base.add(db_off as usize) };
