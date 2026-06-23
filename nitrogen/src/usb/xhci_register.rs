@@ -520,7 +520,7 @@ impl RegisterContext {
 pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
-    while ec_off != 0 && ec_off < 0x1000 {
+    while ec_off != 0 && ec_off < 0x100000 {
         iterations += 1;
         if iterations > 64 {
             log::warn!("xHCI: EC list exceeded max iterations");
@@ -573,7 +573,7 @@ pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) 
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
 
-    while ec_off != 0 && ec_off < 0x1000 {
+    while ec_off != 0 && ec_off < 0x100000 {
         iterations += 1;
         if iterations > 64 {
             log::warn!("xHCI: parse_port_protocols exceeded max iterations");
@@ -630,7 +630,7 @@ pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) 
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
-    while ec_off != 0 && ec_off < 0x1000 {
+    while ec_off != 0 && ec_off < 0x100000 {
         iterations += 1;
         if iterations > 64 {
             log::warn!("xHCI: try_legacy_handoff exceeded max iterations, possible circular list");
