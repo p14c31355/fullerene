@@ -44,11 +44,14 @@ pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
 
+    // Always dump HCI diagnostics to dmesg / bootlog.txt.
+    debug_usb();
+
     // Quick check: if a device is already detected, mount immediately.
     // Otherwise, the background poll timer (usb_poll in gui.rs) will
     // retry asynchronously — no need to block boot with phased delays.
     if poll_usb() {
-        debug_usb();
+        klog_fmt!("USB init: device detected and mounted\n");
     } else {
         klog_fmt!("USB init: no device detected, continuing in background\n");
     }

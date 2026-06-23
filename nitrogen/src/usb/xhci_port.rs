@@ -17,8 +17,8 @@
 //! implemented.
 
 use super::xhci_register::{
-    OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLS_MASK, PORTSC_PP,
-    PORTSC_PR, PORTSC_RW1C_MASK, PORTSC_WPR, PortSc,
+    OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK,
+    PORTSC_PP, PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
 };
 use crate::usb::UsbSpeed;
 
@@ -229,19 +229,44 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     let v = ps_raw & !PORTSC_RW1C_MASK;
     op.write_portsc(port, v | PORTSC_WPR);
 
-    // Poll for WPR completion
+    // Poll for WPR completion (WPR bit cleared by hardware)
+    let mut wpr_cleared = false;
     for _ in 0..1_000_000 {
         if op.portsc(port).0 & PORTSC_WPR == 0 {
+            wpr_cleared = true;
             break;
         }
         delay_us(100);
     }
+    if !wpr_cleared {
+        return Err("warm port reset timeout: WPR not cleared");
+    }
 
-    let v2 = op.portsc(port);
+    // Wait for PR (Port Reset) to clear — the xHC signals reset
+    // completion by clearing both WPR and PR (xHCI 1.2 §5.4.8).
+    let mut pr_cleared = false;
+    for _ in 0..1_000_000 {
+        if op.portsc(port).0 & PORTSC_PR == 0 {
+            pr_cleared = true;
+            break;
+        }
+        delay_us(100);
+    }
+    if !pr_cleared {
+        return Err("warm port reset timeout: PR not cleared");
+    }
+
+    // Clear RW1C change bits (WRC, PRC, PLC) that the hardware set
+    // during the reset.  Failing to acknowledge them may prevent the
+    // xHC from reporting subsequent port status changes (e.g. CCS=1).
+    let v2 = op.portsc(port).0;
+    op.write_portsc(port, (v2 & !PORTSC_RW1C_MASK) | (PORTSC_WRC | PORTSC_PRC | PORTSC_PLC));
+    delay_us(50);
+
     // Force PLS=RxDetect+LWS to restart link training
     const PLS_RXDETECT: u32 = 5 << 5;
     op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
-    Ok(v2)
+    Ok(PortSc(v2))
 }
 
 /// Force a port into RxDetect link state with LWS to kick-start link training.
@@ -325,6 +350,8 @@ mod tests {
         assert_eq!(port_speed_to_usb(3), UsbSpeed::High);
         assert_eq!(port_speed_to_usb(2), UsbSpeed::Low);
         assert_eq!(port_speed_to_usb(1), UsbSpeed::Full);
+        assert_eq!(port_speed_to_usb(4), UsbSpeed::SuperSpeed);
+        assert_eq!(port_speed_to_usb(5), UsbSpeed::SuperSpeed);
     }
 
     #[test]

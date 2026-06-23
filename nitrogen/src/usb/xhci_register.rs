@@ -520,7 +520,7 @@ impl RegisterContext {
 pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
-    while ec_off != 0 && ec_off < 0x1000 {
+    while ec_off != 0 && ec_off < 0x100000 {
         iterations += 1;
         if iterations > 64 {
             log::warn!("xHCI: EC list exceeded max iterations");
@@ -573,7 +573,7 @@ pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) 
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
 
-    while ec_off != 0 && ec_off < 0x1000 {
+    while ec_off != 0 && ec_off < 0x100000 {
         iterations += 1;
         if iterations > 64 {
             log::warn!("xHCI: parse_port_protocols exceeded max iterations");
@@ -630,7 +630,7 @@ pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) 
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
-    while ec_off != 0 && ec_off < 0x1000 {
+    while ec_off != 0 && ec_off < 0x100000 {
         iterations += 1;
         if iterations > 64 {
             log::warn!("xHCI: try_legacy_handoff exceeded max iterations, possible circular list");
@@ -712,15 +712,21 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
 // ============================================================================
 
 /// Convert xHCI port speed to generic USB speed.
+///
+/// xHCI PORTSC bits [13:10] encoding (xHCI 1.2 §5.4.8):
+///   1 → Full (12 Mbps)
+///   2 → Low  (1.5 Mbps)
+///   3 → High (480 Mbps)
+///   4 → SuperSpeed (5 Gbps, USB 3.0/3.1 Gen1)
+///   5 → SuperSpeedPlus (10 Gbps, USB 3.1 Gen2)
 pub fn port_speed_to_usb(speed: u32) -> crate::usb::UsbSpeed {
     match speed {
         3 => crate::usb::UsbSpeed::High,
         2 => crate::usb::UsbSpeed::Low,
         1 => crate::usb::UsbSpeed::Full,
-        4 => {
-            // SuperSpeed (USB 3.0) - map to High for now since UsbSpeed enum may not support it
-            log::warn!("xHCI: SuperSpeed device detected (speed=4), treating as High-speed");
-            crate::usb::UsbSpeed::High
+        4 | 5 => {
+            log::info!("xHCI: SuperSpeed device detected (speed={})", speed);
+            crate::usb::UsbSpeed::SuperSpeed
         }
         _ => {
             log::warn!("xHCI: unknown port speed {}, defaulting to High", speed);
@@ -758,7 +764,7 @@ mod tests {
     fn test_hcs_params1_parsing() {
         let cap = CapabilityRegisters {
             caplength: 0x20,
-            hcs_params1: 0x080000FF, // max_slots=255, n_ports=8
+            hcs_params1: 0x080000FF, // bits[31:24]=n_ports=8, bits[7:0]=max_slots=255
             hcs_params2: 0,
             hcs_params3: 0,
             hcc_params1: 0,
