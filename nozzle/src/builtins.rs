@@ -3,7 +3,7 @@
 //! Each command receives a `CommandContext` with the terminal and arguments.
 //! Return `true` to continue the shell, `false` to exit.
 
-use crate::exec::CommandContext;
+use carrier::exec::CommandContext;
 use alloc::format;
 
 /// `clear` — clear the terminal screen

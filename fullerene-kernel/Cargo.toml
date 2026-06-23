@@ -18,6 +18,7 @@ spin = { version = "0.10.0", default-features = false, features = [
   "mutex",
   "spin_mutex",
 ] }
+genome = { path = "../genome" }
 petroleum = { path = "../petroleum" }
 nitrogen = { path = "../nitrogen" }
 nozzle = { path = "../nozzle" }

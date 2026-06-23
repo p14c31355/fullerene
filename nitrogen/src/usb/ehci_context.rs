@@ -162,9 +162,15 @@ impl EhciContext {
         // Wait for HCHalted to clear
         for _ in 0..100_000 {
             if op.usbsts() & USBSTS_HCH == 0 {
-                return Ok(());
+                break;
             }
         }
+        if op.usbsts() & USBSTS_HCH != 0 {
+            return Err("EHCI start timeout (HCH still set)");
+        }
+
+        // Clear stale port-change status bits
+        op.write_usbsts(USBSTS_PCD);
         Ok(())
     }
 
@@ -184,6 +190,9 @@ impl EhciContext {
         let initial_count = self.devices.len();
         let sts = op.usbsts();
         let pcd = sts & USBSTS_PCD != 0;
+
+        // Clear PCD so we get fresh port changes next time
+        op.write_usbsts(USBSTS_PCD);
 
         for port_idx in 0..self.ports.n_ports {
             let portsc = op.portsc(port_idx);
@@ -209,9 +218,7 @@ impl EhciContext {
 
             // Port reset
             op.write_portsc(port_idx, portsc | PORTSC_RESET);
-            for _ in 0..50_000 {
-                op.portsc(port_idx); // delay
-            }
+            super::xhci_port::delay_ms(50);
             let cur_portsc = op.portsc(port_idx);
             op.write_portsc(port_idx, cur_portsc & !PORTSC_RESET);
 
@@ -220,6 +227,7 @@ impl EhciContext {
                 if op.portsc(port_idx) & PORTSC_PE != 0 {
                     break;
                 }
+                core::hint::spin_loop();
             }
 
             // Check CCS survived
@@ -300,7 +308,7 @@ impl EhciContext {
                 op.write_usbsts(USBSTS_AAINT);
                 return;
             }
-            crate::port::PortWriter::new(0x80).write_safe(0u8);
+            core::hint::spin_loop();
         }
     }
 

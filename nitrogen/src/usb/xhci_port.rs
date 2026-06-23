@@ -22,6 +22,12 @@ use super::xhci_register::{
 };
 use crate::usb::UsbSpeed;
 
+/// Maximum consecutive port detection failures before marking the port as done.
+pub const MAX_PORT_RETRIES: u32 = 3;
+
+/// Default TSC ticks per millisecond (1 GHz minimum).
+const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
+
 // ============================================================================
 //  Port — data for a single port
 // ============================================================================
@@ -37,17 +43,24 @@ pub struct Port {
     pub done: bool,
     /// Whether WPR has already been attempted on this port in this cycle.
     pub wpr_attempted: bool,
+    /// Consecutive detection failures since last PCD or port change.
+    pub retry_count: u32,
+    /// Whether the port is USB 3.0 (SuperSpeed) or USB 2.0.
+    /// Used to choose between WPR (USB 3.0) and port reset (USB 2.0).
+    pub is_usb3: bool,
     /// Last known USB speed.
     pub speed: UsbSpeed,
 }
 
 impl Port {
-    pub fn new(index: u32) -> Self {
+    pub fn new(index: u32, is_usb3: bool) -> Self {
         Self {
             index,
             portsc: 0,
             done: false,
             wpr_attempted: false,
+            retry_count: 0,
+            is_usb3,
             speed: UsbSpeed::High,
         }
     }
@@ -101,10 +114,21 @@ pub struct PortContext {
 }
 
 impl PortContext {
-    pub fn new(n_ports: u32, ppc: bool) -> Self {
+    /// Create a new PortContext.
+    ///
+    /// `port_is_usb3` is an optional bitmask: bit N set means port N is USB 3.0.
+    /// When `None`, all ports are treated as USB 3.0 (legacy fallback).
+    pub fn new(n_ports: u32, ppc: bool, port_is_usb3: Option<&[u32]>) -> Self {
         let mut ports = alloc::vec::Vec::new();
         for i in 0..n_ports {
-            ports.push(Port::new(i));
+            let is_usb3 = port_is_usb3
+                .and_then(|bitmap| {
+                    let word = i as usize / 32;
+                    let bit = i as usize % 32;
+                    bitmap.get(word).map(|w| (w >> bit) & 1 != 0)
+                })
+                .unwrap_or(true);
+            ports.push(Port::new(i, is_usb3));
         }
         Self {
             ports,
@@ -130,11 +154,12 @@ impl PortContext {
         self.ports.get(index as usize)
     }
 
-    /// Clear the "done" flag on all ports (e.g. when PCD is detected).
+    /// Clear the "done" and retry state on all ports (e.g. when PCD is detected).
     pub fn clear_done_flags(&mut self) {
         for port in &mut self.ports {
             port.done = false;
             port.wpr_attempted = false;
+            port.retry_count = 0;
         }
     }
 
@@ -174,7 +199,7 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
             pr_cleared = true;
             break;
         }
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+        delay_us(100);
     }
     if !pr_cleared {
         return Err("port reset timeout");
@@ -185,7 +210,7 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         if op.portsc(port).0 & PORTSC_PED != 0 {
             break;
         }
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+        delay_us(100);
     }
 
     // Check CCS survived
@@ -209,7 +234,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
         if op.portsc(port).0 & PORTSC_WPR == 0 {
             break;
         }
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+        delay_us(100);
     }
 
     let v2 = op.portsc(port);
@@ -220,14 +245,11 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
 }
 
 /// Force a port into RxDetect link state with LWS to kick-start link training.
+///
+/// Uses `update_portsc` to preserve all non-PLS register bits.
 pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
-    let ps_raw = op.portsc(port).0;
-    let val = if ps_raw & PORTSC_PP != 0 {
-        (ps_raw & PORTSC_PP) | (5 << 5) | PORTSC_LWS
-    } else {
-        (5 << 5) | PORTSC_LWS
-    };
-    op.write_portsc(port, val);
+    const PLS_RXDETECT: u32 = 5 << 5;
+    op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
 }
 
 /// Power-cycle a port (only valid when PPC is supported).
@@ -235,27 +257,43 @@ pub fn power_cycle(op: &OperationalRegisters, port: u32) {
     let ps_raw = op.portsc(port).0;
     // Power off
     op.write_portsc(port, ps_raw & !(PORTSC_PP | PORTSC_RW1C_MASK));
-    for _ in 0..600_000 {
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
-    }
+    delay_ms(20);
     // Power on
     let v2 = op.portsc(port).0;
     op.write_portsc(port, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
-    for _ in 0..1_200_000 {
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
-    }
+    delay_ms(50);
 }
 
 // ============================================================================
 //  Utility: delay function
 // ============================================================================
 
-/// Spin-loop delay for the given number of iterations.
-/// Each iteration writes to port 0x80 to pace the delay.
-pub fn delay(iterations: u32) {
-    for _ in 0..iterations {
-        crate::port::PortWriter::new(0x80).write_safe(0u8);
+/// Busy-wait for approximately `us` microseconds using RDTSC.
+///
+/// Assumes TSC ≥ 1 GHz (≈1000 ticks/µs). On faster CPUs the wait is
+/// proportionally longer, which is harmless for USB timeouts.
+pub fn delay_us(us: u64) {
+    if us == 0 {
+        return;
     }
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
+    // 1 GHz → 1000 ticks/µs (conservative lower bound)
+    let target = us * 1000;
+    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
+        core::hint::spin_loop();
+    }
+}
+
+/// Convenience wrapper: busy-wait for `ms` milliseconds.
+pub fn delay_ms(ms: u64) {
+    delay_us(ms * 1000);
+}
+
+/// Legacy delay kept for ABI compatibility — delegates to `delay_us`.
+pub fn delay(iterations: u32) {
+    // Each port‑0x80 iteration took roughly 1–2 µs on real hardware.
+    // Map to microseconds conservatively.
+    delay_us(iterations as u64 * 2);
 }
 
 // ============================================================================
@@ -275,10 +313,11 @@ mod tests {
 
     #[test]
     fn test_port_creation() {
-        let port = Port::new(3);
+        let port = Port::new(3, true);
         assert_eq!(port.index, 3);
         assert!(!port.done);
         assert!(!port.ccs());
+        assert!(port.is_usb3);
     }
 
     #[test]
@@ -290,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_port_context_done_mask() {
-        let mut ctx = PortContext::new(4, false);
+        let mut ctx = PortContext::new(4, false, None);
         ctx.ports[0].done = true;
         ctx.ports[2].done = true;
         assert_eq!(ctx.done_mask(), (1 << 0) | (1 << 2));

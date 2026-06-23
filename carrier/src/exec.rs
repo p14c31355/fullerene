@@ -1,22 +1,15 @@
-//! Command execution framework for Nozzle
-//!
-//! Defines the `Command` trait and the dispatch/listing functions.
-
-use crate::parser::Pipeline;
+use crate::pipeline::Pipeline;
 use crate::terminal::Terminal;
 use alloc::collections::VecDeque;
 use spin::Mutex;
 
-/// Shared command history used across LineEditor instances.
 static SHARED_HISTORY: Mutex<VecDeque<alloc::string::String>> = Mutex::new(VecDeque::new());
 
-/// Return a snapshot of the shared command history (newest first).
 pub fn get_history_snapshot() -> alloc::vec::Vec<alloc::string::String> {
     let guard = SHARED_HISTORY.lock();
     guard.iter().cloned().collect()
 }
 
-/// Push a line into the shared history (called by LineEditor).
 pub fn push_history(line: &str) {
     if line.is_empty() {
         return;
@@ -31,29 +24,17 @@ pub fn push_history(line: &str) {
     guard.push_front(alloc::string::String::from(line));
 }
 
-/// Context provided to every command execution
 pub struct CommandContext<'a> {
-    /// Terminal for I/O
     pub terminal: &'a mut dyn Terminal,
-    /// Raw arguments (args[0] is the command name)
     pub args: &'a [&'a str],
 }
 
-/// Trait for a single shell command.
-// Dyn-compatible: no generics on `execute`.
 pub trait Command {
-    /// Display name (used for matching against the first token).
     fn name(&self) -> &'static str;
-
-    /// One-line description shown in `help`.
     fn description(&self) -> &'static str;
-
-    /// Execute the command.
-    /// Return `true` to continue the shell loop, `false` to exit.
     fn execute(&self, ctx: &mut CommandContext) -> bool;
 }
 
-/// A concrete command backed by a static function pointer.
 pub struct NamedCommand {
     pub name: &'static str,
     pub description: &'static str,
@@ -74,7 +55,6 @@ impl Command for NamedCommand {
     }
 }
 
-/// Build a `&[&dyn Command]` from named entries.
 #[macro_export]
 macro_rules! define_commands {
     ($(($name:expr, $desc:expr, $func:path)),* $(,)?) => {
@@ -90,11 +70,15 @@ macro_rules! define_commands {
     };
 }
 
-/// Dispatch a command line against a command list.
+/// Dispatch a command line, streaming the last stage's output directly
+/// to the terminal without intermediate buffering.
 ///
-/// Supports pipe (`|`) chaining: outputs from earlier commands are
-/// collected and fed as input to the next command via `set_stdin`.
-/// Returns `true` to continue, `false` to exit.
+/// For multi-stage pipelines (e.g. `ls | grep foo`), intermediate stages
+/// still capture output into the pipe buffer (via `arm_pipe_stdout` /
+/// `take_stdout`) so the next stage can consume it as input.  The *last*
+/// stage writes directly through to the terminal, avoiding the cost of
+/// buffering a potentially large result (e.g. `dmesg`) in a String only
+/// to flush it in one shot.
 pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -106,37 +90,36 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
         return true;
     }
 
-    // Built-in `help` command uses the dynamic command list.
     if pipeline.commands.len() == 1 && pipeline.commands[0].name == "help" {
         list_commands(commands, terminal);
         return true;
     }
 
-    // Execute commands in the pipeline, feeding stdout of one
-    // as stdin of the next.
     let mut pipe_buffer: Option<alloc::string::String> = None;
 
-    for cmd in &pipeline.commands {
+    for (i, cmd) in pipeline.commands.iter().enumerate() {
         let cmd_name = cmd.name.as_str();
+        let is_last = i == pipeline.commands.len() - 1;
 
         let found = commands.iter().find(|c| c.name() == cmd_name);
 
         match found {
             Some(&matched) => {
-                // Build argument list (name + args).
                 let mut args: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
                 args.push(cmd_name);
                 for a in &cmd.args {
                     args.push(a.as_str());
                 }
 
-                // Set stdin if we have piped data from the previous command.
-                if let Some(ref input) = pipe_buffer.take() {
-                    terminal.set_stdin(alloc::string::String::from(input.as_str()));
+                if let Some(input) = pipe_buffer.take() {
+                    terminal.set_stdin(input);
                 }
 
-                // Arm the stdout buffer to capture output for this stage.
-                terminal.arm_pipe_stdout();
+                // Only buffer stdout for non-last stages.
+                // The last stage streams directly to the terminal.
+                if !is_last {
+                    terminal.arm_pipe_stdout();
+                }
 
                 let mut ctx = CommandContext {
                     terminal,
@@ -144,10 +127,11 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
                 };
                 let continue_shell = matched.execute(&mut ctx);
 
-                // Collect stdout for the next pipe stage.
-                pipe_buffer = terminal.take_stdout();
-
-                // Clear any residual stdin to prevent leakage to the next stage.
+                if !is_last {
+                    pipe_buffer = terminal.take_stdout();
+                }
+                // Always clear pipe stdin after each stage to prevent
+                // stale data leaking into the next command line.
                 terminal.clear_pipe_stdin();
 
                 if !continue_shell {
@@ -163,24 +147,14 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
         }
     }
 
-    // Flush the final output to the terminal.
-    if let Some(output) = pipe_buffer {
-        if !output.is_empty() {
-            terminal.write_str(&output);
-            terminal.write_str("\n");
-        }
-    }
-
     true
 }
 
-/// List all command names and descriptions.
 pub fn list_commands(commands: &[&dyn Command], terminal: &mut dyn Terminal) {
     terminal.write_str("Available commands:\n");
     for &cmd in commands {
         terminal.write_str("  ");
         terminal.write_str(cmd.name());
-        // Pad to 12 columns
         let pad = if cmd.name().len() < 12 {
             12 - cmd.name().len()
         } else {
@@ -195,15 +169,13 @@ pub fn list_commands(commands: &[&dyn Command], terminal: &mut dyn Terminal) {
     }
 }
 
-/// Get TAB completion candidates for a partial command line.
-pub fn get_completions(prefix: &str) -> alloc::vec::Vec<alloc::string::String> {
+pub fn get_completions_for(prefix: &str, cmds: &[&dyn Command]) -> alloc::vec::Vec<alloc::string::String> {
     if prefix.contains(' ') {
         return alloc::vec::Vec::new();
     }
     let word = prefix.trim();
     let lower = word.to_lowercase();
     let mut matches = alloc::vec::Vec::new();
-    let cmds = crate::default_commands();
     for cmd in cmds.iter() {
         if cmd.name().starts_with(&lower) {
             matches.push(alloc::string::String::from(cmd.name()));

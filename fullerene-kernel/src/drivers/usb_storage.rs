@@ -44,26 +44,14 @@ pub fn init() {
     let _ = crate::vfs::mkdir("/mnt");
     init_controllers();
 
-    // Phase 1: Immediate poll — catches QEMU and fast hardware.
+    // Quick check: if a device is already detected, mount immediately.
+    // Otherwise, the background poll timer (usb_poll in gui.rs) will
+    // retry asynchronously — no need to block boot with phased delays.
     if poll_usb() {
         debug_usb();
-        return;
+    } else {
+        klog_fmt!("USB init: no device detected, continuing in background\n");
     }
-
-    // Phase 2–4: Progressive delays for real xHCI hardware that
-    // needs time after HCRST (up to 100 ms per the spec).
-    for (label, ms, force_all) in [("short", 50u64, false), ("longer", 100, false), ("full", 200, true)]
-    {
-        delay_ms(ms);
-        let found = if force_all { poll_usb_all() } else { poll_usb() };
-        klog_fmt!("USB init phase {} ({} ms): found={}\n", label, ms, found);
-        if found {
-            debug_usb();
-            return;
-        }
-    }
-
-    debug_usb();
 }
 
 /// Busy-wait for approximately `ms` milliseconds using RDTSC.

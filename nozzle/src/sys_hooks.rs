@@ -6,7 +6,7 @@
 //!
 //! Both hooks are bundled into a single [`SysHooks`] struct.
 
-use crate::exec::CommandContext;
+use carrier::exec::CommandContext;
 use spin::Mutex;
 
 /// Aggregated system hooks.

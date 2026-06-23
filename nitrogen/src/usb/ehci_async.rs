@@ -396,7 +396,7 @@ impl TransferContext {
                 }
                 return Ok(());
             }
-            crate::port::PortWriter::new(0x80).write_safe(0u8);
+            core::hint::spin_loop();
         }
         Err("qTD timeout")
     }

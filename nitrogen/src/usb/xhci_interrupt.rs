@@ -118,7 +118,7 @@ pub fn wait_event(
             return Ok(ev);
         }
         if timeout_us > 1000 {
-            crate::port::PortWriter::new(0x80).write_safe(0u8);
+            core::hint::spin_loop();
         }
     }
     Err("event timeout")

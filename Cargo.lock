@@ -167,6 +167,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "carrier"
+version = "0.1.0"
+dependencies = [
+ "spin 0.10.0",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -379,6 +386,7 @@ dependencies = [
  "bitfield",
  "bitflags 2.11.1",
  "embedded-graphics",
+ "genome",
  "goblin",
  "heapless",
  "linked_list_allocator",
@@ -397,6 +405,10 @@ dependencies = [
  "volatile 0.6.1",
  "x86_64 0.15.4",
 ]
+
+[[package]]
+name = "genome"
+version = "0.1.0"
 
 [[package]]
 name = "getrandom"
@@ -626,7 +638,8 @@ dependencies = [
 name = "nozzle"
 version = "0.1.0"
 dependencies = [
- "spin 0.9.8",
+ "carrier",
+ "spin 0.10.0",
 ]
 
 [[package]]
@@ -950,6 +963,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 name = "solvent"
 version = "0.1.0"
 dependencies = [
+ "carrier",
  "chronoline",
  "lattice",
  "log",
@@ -965,15 +979,6 @@ dependencies = [
  "spin 0.10.0",
  "tinybmp",
  "x86_64 0.15.4",
-]
-
-[[package]]
-name = "spin"
-version = "0.9.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-dependencies = [
- "lock_api",
 ]
 
 [[package]]

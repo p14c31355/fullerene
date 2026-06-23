@@ -1,6 +1,6 @@
 //! Line editor for Nozzle shell — with TAB completion support.
 
-use crate::terminal::Terminal;
+use carrier::terminal::Terminal;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::string::ToString;
@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 /// This returns the most recent entries (newest first) so that
 /// commands like `history` can display them.
 pub fn get_history() -> Vec<String> {
-    crate::exec::get_history_snapshot()
+    carrier::exec::get_history_snapshot()
 }
 
 const HISTORY_MAX: usize = 128;
@@ -93,7 +93,7 @@ impl LineEditor {
         // last space, so completions are scoped to the current argument.
         let word_start = line[..self.cursor].rfind(' ').map(|i| i + 1).unwrap_or(0);
         let prefix = &line[word_start..self.cursor];
-        let completions = crate::exec::get_completions(prefix);
+        let completions = crate::get_completions(prefix);
         if completions.is_empty() {
             return;
         }
@@ -290,7 +290,7 @@ impl LineEditor {
         }
         self.history.push_front(line.into());
         // Also push to the shared history for the `history` command.
-        crate::exec::push_history(line);
+        carrier::exec::push_history(line);
     }
 
     // ── escape sequences ────────────────────────────────────────────

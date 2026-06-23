@@ -16,6 +16,7 @@
 //! └── ExtendedCapabilities   (optional)
 //! ```
 
+use alloc::vec::Vec;
 use core::ptr;
 
 // ============================================================================
@@ -514,7 +515,118 @@ impl RegisterContext {
 /// Attempt legacy handoff (BIOS → OS) for the xHCI controller.
 ///
 /// Returns `Ok(true)` if the OS already owns the controller,
-/// `Ok(false)` if the handoff succeeded, or `Err` if it failed.
+/// Walk all extended capabilities and log them.
+/// Useful for diagnosing BIOS handoff, protocol routing, and other EC issues.
+pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
+    let mut ec_off = ext_cap_ptr as usize;
+    let mut iterations = 0;
+    while ec_off != 0 && ec_off < 0x1000 {
+        iterations += 1;
+        if iterations > 64 {
+            log::warn!("xHCI: EC list exceeded max iterations");
+            break;
+        }
+        let ec_id = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u8) };
+        let ec_next = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 1) as *const u8) };
+        let ec_dw1 = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 4) as *const u32) };
+        log::info!(
+            "xHCI EC: id={} next={} DWORD1=0x{:08X} (offset 0x{:04x})",
+            ec_id, ec_next, ec_dw1, ec_off * 4
+        );
+        if ec_id == 1 {
+            // USBLEGSUP (offset 0): BIOS_SEM=bit16, OS_SEM=bit24
+            let legsup = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u32) };
+            // USBLEGCTLSTS (offset 4): SMI enables in bits [4:0] and [23:19]
+            let legctl = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 4) as *const u32) };
+            log::info!(
+                "  → USB Legacy Support: BIOS_SEM={} OS_SEM={} SMI_en=0x{:03x}",
+                (legsup >> 16) & 1,
+                (legsup >> 24) & 1,
+                legctl & 0x1F,
+            );
+        } else if ec_id == 2 {
+            let dw2 = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 8) as *const u32) };
+            let port_offset = (dw2 & 0xFF) as u32;
+            let port_count  = ((dw2 >> 8) & 0xFF) as u32;
+            let major_rev   = unsafe {
+                ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u32) >> 24
+            };
+            log::info!(
+                "  → Supported Protocol: ports {}-{} rev={}.0 {}",
+                port_offset, port_offset + port_count - 1, major_rev,
+                if major_rev >= 3 { "USB 3.x" } else { "USB 2.0" }
+            );
+        }
+        if ec_next == 0 { break; }
+        ec_off += ec_next as usize;
+    }
+}
+
+/// Parse the Supported Protocol capability (ECID = 2) for each port.
+///
+/// Returns a bitmask per 32-port group: bit N set means port N is USB 3.0.
+/// Ports not covered by any Supported Protocol entry default to USB 3.0 (bit=1).
+/// The caller is responsible for allocating enough words: `(n_ports + 31) / 32`.
+pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) -> alloc::vec::Vec<u32> {
+    let n_words = ((n_ports + 31) / 32).max(1) as usize;
+    let mut bitmap = alloc::vec![0xFFFFFFFFu32; n_words];
+    let mut ec_off = ext_cap_ptr as usize;
+    let mut iterations = 0;
+
+    while ec_off != 0 && ec_off < 0x1000 {
+        iterations += 1;
+        if iterations > 64 {
+            log::warn!("xHCI: parse_port_protocols exceeded max iterations");
+            break;
+        }
+
+        let ec_id = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u8) };
+        if ec_id == 2 {
+            // Supported Protocol capability — DWORD2 is at offset 8
+            let dw2 = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 8) as *const u32) };
+            let port_offset = (dw2 & 0xFF) as u32;        // 1-based
+            if port_offset == 0 {
+                continue;
+            }
+            let port_count  = ((dw2 >> 8) & 0xFF) as u32;
+            let major_rev   = unsafe {
+                ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u32) >> 24
+            };
+
+            let is_usb3 = major_rev >= 3;
+            log::info!(
+                "xHCI: protocol cap: ports {}-{} {}",
+                port_offset,
+                port_offset + port_count - 1,
+                if is_usb3 { "USB 3.x" } else { "USB 2.0" }
+            );
+
+            for p in 0..port_count {
+                let port_idx = port_offset + p - 1; // 0-based
+                if port_idx < n_ports {
+                    let word = (port_idx / 32) as usize;
+                    let bit  = port_idx % 32;
+                    if word < bitmap.len() {
+                        if is_usb3 {
+                            bitmap[word] |= 1 << bit;
+                        } else {
+                            bitmap[word] &= !(1 << bit);
+                        }
+                    }
+                }
+            }
+        }
+
+        let ec_next = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 1) as *const u8) };
+        if ec_next == 0 {
+            break;
+        }
+        ec_off += ec_next as usize;
+    }
+
+    bitmap
+}
+
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
     let mut ec_off = ext_cap_ptr as usize;
     let mut iterations = 0;
@@ -526,31 +638,64 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
         }
         let ec_id = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u8) };
         if ec_id == 1 {
-            let bios_sem =
-                unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
-            let os_sem = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 3) as *const u8) };
-            log::info!("USB Legacy Support: BIOS={}, OS={}", bios_sem, os_sem);
-            if bios_sem & 1 == 0 {
+            let cap_base = ec_off * 4; // byte offset of this capability
+
+            // ── USBLEGSUP (offset 0): semaphore register ──
+            //   bit 16 = HC BIOS Owned Semaphore
+            //   bit 24 = HC OS Owned Semaphore
+            let legsup = unsafe { ptr::read_volatile(mmio_base.add(cap_base) as *const u32) };
+            let bios_sem = (legsup >> 16) & 1;
+            let os_sem   = (legsup >> 24) & 1;
+            log::info!(
+                "USB Legacy Support: USBLEGSUP=0x{:08X} BIOS_SEM={} OS_SEM={}",
+                legsup, bios_sem, os_sem
+            );
+
+            if bios_sem == 0 {
                 log::info!("xHCI: OS already owns controller");
+                // Even when OS already owns, clear SMI enables in USBLEGCTLSTS (offset 4)
+                // bits [4:0] = SMI enables, bits [23:19] = additional SMI enables
+                let legctl = unsafe { ptr::read_volatile(mmio_base.add(cap_base + 4) as *const u32) };
+                let cleared = legctl & !0x00F8001F;
+                unsafe {
+                    ptr::write_volatile(mmio_base.add(cap_base + 4) as *mut u32, cleared);
+                }
                 return Ok(true);
             }
+
             log::info!("xHCI: BIOS owns controller — requesting handoff");
+            // Request ownership: set OS_SEM bit (bit 24 of USBLEGSUP)
+            let req = legsup | (1 << 24);
             unsafe {
-                ptr::write_volatile(mmio_base.add(ec_off * 4 + 3) as *mut u8, 1);
+                ptr::write_volatile(mmio_base.add(cap_base) as *mut u32, req);
             }
-            for _ in 0..1_000_000 {
-                let b = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
-                if b & 1 == 0 {
+
+            // Wait for BIOS to clear BIOS_SEM (bit 16 of USBLEGSUP)
+            let mut bios_cleared = false;
+            for _ in 0..5_000_000 {
+                let cur = unsafe { ptr::read_volatile(mmio_base.add(cap_base) as *const u32) };
+                if (cur & (1 << 16)) == 0 {
+                    bios_cleared = true;
                     break;
                 }
+                core::hint::spin_loop();
             }
-            let final_bios =
-                unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 2) as *const u8) };
-            if final_bios & 1 != 0 {
-                log::info!("xHCI: legacy handoff failed");
-                return Err("legacy handoff failed");
+            if !bios_cleared {
+                log::info!("xHCI: legacy handoff timed out");
+                return Err("legacy handoff timed out");
             }
-            log::info!("xHCI: legacy handoff done, BIOS_SEM={}", final_bios);
+
+            // Disable SMI enables in USBLEGCTLSTS (offset 4)
+            // bits [4:0] and [23:19] control SMI generation on USB events
+            let legctl = unsafe { ptr::read_volatile(mmio_base.add(cap_base + 4) as *const u32) };
+            let final_ctl = legctl & !0x00F8001F;
+            unsafe {
+                ptr::write_volatile(mmio_base.add(cap_base + 4) as *mut u32, final_ctl);
+            }
+
+            let final_legsup =
+                unsafe { ptr::read_volatile(mmio_base.add(cap_base) as *const u32) };
+            log::info!("xHCI: legacy handoff done, USBLEGSUP=0x{:08X}", final_legsup);
             return Ok(false);
         }
         let ec_next = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 1) as *const u8) };
@@ -613,7 +758,7 @@ mod tests {
     fn test_hcs_params1_parsing() {
         let cap = CapabilityRegisters {
             caplength: 0x20,
-            hcs_params1: 0x010800FF, // max_slots=255, n_ports=8, ppc=0
+            hcs_params1: 0x080000FF, // max_slots=255, n_ports=8
             hcs_params2: 0,
             hcs_params3: 0,
             hcc_params1: 0,
