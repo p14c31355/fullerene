@@ -3,14 +3,17 @@
 //! # Architecture
 //!
 //! ```text
-//! USB Core (msd, hub, ...)
-//!         │
-//! HostController (trait)
-//!    ├── XhciContext   (xhci_register + xhci_ring + xhci_device + xhci_port + xhci_interrupt)
-//!    ├── EhciContext   (ehci_register + ehci_async + ehci_port)
-//!    ├── (future: OhciContext, UhciContext)
-//!    └── (future: DummyHostController for testing)
+//! USBContext
+//!  ├── ControllerManager   (PCI scan, init, polling)
+//!  ├── StorageManager      (disk list, mount)
+//!  ├── HostController (trait)
+//!  │    ├── XhciContext
+//!  │    └── EhciContext
+//!  └── DriverManager       (class-based driver attach)
 //! ```
+
+// Top‑level API
+pub mod context;
 
 // Common host-controller abstraction
 pub mod host_controller;
@@ -29,10 +32,12 @@ pub mod xhci_port;
 pub mod xhci_register;
 pub mod xhci_ring;
 
+// USB class drivers
 pub mod hub;
 pub mod msd;
 pub mod scsi;
 pub mod usb_bus;
+pub mod disk;
 
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

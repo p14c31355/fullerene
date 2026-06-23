@@ -1,19 +1,26 @@
 //! USB mass-storage integration — FAT mount + hotplug poll.
 //!
-//! USB controller discovery, enumeration, and BOT protocol are in
-//! [`nitrogen::usb::usb_bus`].  This module only handles VFS/FAT
-//! integration and platform-specific polling delays.
+//! The kernel owns a single [`USBContext`] that handles controller
+//! discovery, port polling, device enumeration, and driver matching.
+//! This module only handles VFS/FAT integration and platform-specific
+//! delay functions.
+//!
+//! # Usage
+//!
+//! ```ignore
+//! usb_storage::init();   // at boot
+//! usb_storage::poll_usb();  // from background timer
+//! ```
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-
-use nitrogen::usb::host_controller::HostController;
-use nitrogen::usb::usb_bus::{UsbBus, bot_read_sectors, bot_write_sectors, enumerate_mass_storage};
-use nitrogen::usb::{UsbDevice, UsbDirection, UsbXferType};
 use spin::Mutex;
+
+use nitrogen::usb::context::USBContext;
+use nitrogen::usb::disk::{Disk, set_mount_fn};
 
 use crate::drivers::fat::{BlockDevice, FatFileSystem};
 use crate::klog_fmt;
@@ -26,47 +33,14 @@ pub struct UsbDrive {
     pub mount_point: String,
 }
 
-// ── Controller storage ──────────────────────────────────────
+// ── Global USB context ────────────────────────────────────
 
-static USB_BUS: spin::Mutex<Option<UsbBus>> = spin::Mutex::new(None);
+static USB_CTX: spin::Mutex<Option<USBContext>> = spin::Mutex::new(None);
 static CTRL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-fn with_bus<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut UsbBus) -> R,
-{
-    let mut guard = USB_BUS.lock();
-    let bus = guard.as_mut().expect("USB bus not initialized");
-    f(bus)
-}
-
-pub fn init() {
-    let _ = crate::vfs::mkdir("/mnt");
-    init_controllers();
-
-    // Always dump HCI diagnostics to dmesg / bootlog.txt.
-    debug_usb();
-
-    // Quick check: if a device is already detected, mount immediately.
-    // Otherwise, the background poll timer (usb_poll in gui.rs) will
-    // retry asynchronously — no need to block boot with phased delays.
-    if poll_usb() {
-        klog_fmt!("USB init: device detected and mounted\n");
-    } else {
-        klog_fmt!("USB init: no device detected, continuing in background\n");
-    }
-}
-
 /// Busy-wait for approximately `ms` milliseconds using RDTSC.
-///
-/// Assumes a minimum 1 GHz TSC frequency.  On faster CPUs the delay
-/// is proportionally longer, which is harmless for USB polling.
-/// The previous implementation wrote to port 0x80 in a loop, which
-/// was extremely slow under QEMU (each port I/O traps to the
-/// hypervisor, adding ~10 µs per iteration → 10 s total delay).
 fn delay_ms(ms: u64) {
     let start = unsafe { core::arch::x86_64::_rdtsc() };
-    // 1 GHz → 1000 ticks/µs → 1 000 000 ticks/ms
     let tsc_per_ms = solvent::get_tsc_per_ms();
     let target = ms * if tsc_per_ms > 0 { tsc_per_ms } else { 1_000_000 };
     while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
@@ -74,87 +48,46 @@ fn delay_ms(ms: u64) {
     }
 }
 
-fn init_controllers() {
-    if CTRL_INITIALIZED.swap(true, Ordering::SeqCst) {
-        return;
+fn with_ctx<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut USBContext) -> R,
+{
+    let mut guard = USB_CTX.lock();
+    let ctx = guard.as_mut().expect("USB context not initialized");
+    f(ctx)
+}
+
+pub fn init() {
+    let _ = crate::vfs::mkdir("/mnt");
+
+    // Register the platform's FAT-mount callback.
+    set_mount_fn(platform_mount_fat);
+
+    // Create and initialise the USB context.
+    {
+        use crate::driver_context_impl::KernelDriverContext;
+        let mut guard = USB_CTX.lock();
+        let mut ctx = USBContext::new(&KernelDriverContext);
+        let _ = ctx.enable();
+        *guard = Some(ctx);
     }
-    use crate::driver_context_impl::KernelDriverContext;
-    let mut guard = USB_BUS.lock();
-    let mut bus = UsbBus::new();
-    bus.init_controllers(&KernelDriverContext);
-    *guard = Some(bus);
+
+    // Quick check: if a device was already mounted, log it.
+    if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
+        klog_fmt!("USB init: device detected and mounted\n");
+    } else {
+        klog_fmt!("USB init: no device detected, continuing in background\n");
+    }
 }
-
-/// Debug dump USB controller state
-pub fn debug_usb() {
-    klog_fmt!("=== USB DEBUG ===\n");
-    with_bus(|bus| {
-        for (i, ehci) in bus.ehci.iter().enumerate() {
-            klog_fmt!("EHCI[{}]: {} ports\n", i, ehci.n_ports());
-            for p in 0..(ehci.n_ports().min(4)) {
-                let ps = ehci.read_portsc(p);
-                klog_fmt!(
-                    "  PORTSC[{}]=0x{:08X} CCS={} PE={}\n",
-                    p,
-                    ps,
-                    ps & 1,
-                    (ps >> 2) & 1
-                );
-            }
-        }
-
-        for (i, xhci) in bus.xhci.iter().enumerate() {
-            klog_fmt!(
-                "xHCI[{}] ppc={} n_ports={} max_slots={} ports_done={:#x} legacy={}\n",
-                i,
-                xhci.ppc_enabled(),
-                xhci.n_ports(),
-                xhci.max_slots(),
-                xhci.ports_done_mask(),
-                xhci.legacy_handoff_done()
-            );
-            for p in 0..xhci.n_ports() {
-                let ps = xhci.read_portsc(p);
-                if ps == 0xFFFF {
-                    continue;
-                }
-                klog_fmt!(
-                    "xHCI PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={} speed={}\n",
-                    p,
-                    ps,
-                    ps & 1,
-                    (ps >> 1) & 1,
-                    (ps >> 5) & 0xF,
-                    (ps >> 9) & 1,
-                    (ps >> 4) & 1,
-                    (ps >> 10) & 0xF
-                );
-            }
-        }
-    });
-    klog_fmt!("=== USB END ===\n");
-}
-
-// ── Polling ────────────────────────────────────────────────
 
 pub fn poll_usb() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
-    let (ehci_pending, xhci_pending) = with_bus(|bus| bus.poll());
-
-    // Mount new devices without holding the bus lock
-    for (ctrl_idx, idx) in ehci_pending {
-        mount_ehci_device(ctrl_idx, idx);
-    }
-    for (ctrl_idx, idx) in xhci_pending {
-        mount_xhci_device(ctrl_idx, idx);
-    }
-
+    with_ctx(|ctx| ctx.poll());
     USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
 }
 
+/// Re-poll all controllers: clear state and re-enumerate from scratch.
 pub fn poll_usb_all() -> bool {
-    let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
-
     // Unmount existing drives
     let mps: Vec<String> = USB_DRIVES
         .lock()
@@ -167,148 +100,41 @@ pub fn poll_usb_all() -> bool {
     USB_DRIVES.lock().clear();
     USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
 
-    // Re-poll all controllers: reset EHCI pools + clear devices,
-    // disable all xHCI slots + clear devices, then poll both.
-    with_bus(|bus| {
-        for ehci in bus.ehci.iter_mut() {
-            ehci.reset_pools();
-            ehci.clear_devices();
-        }
-        for xhci in bus.xhci.iter_mut() {
-            xhci.clear_hse_and_recover();
-            xhci.disable_all_slots();
-            xhci.clear_devices();
-        }
-    });
+    // Re-create the USB context (full re-scan)
+    use crate::driver_context_impl::KernelDriverContext;
+    let mut guard = USB_CTX.lock();
+    let mut ctx = USBContext::new(&KernelDriverContext);
+    let _ = ctx.enable();
+    *guard = Some(ctx);
 
-    let (ehci_pending, xhci_pending) = with_bus(|bus| bus.poll());
-
-    for (ctrl_idx, dev_idx) in ehci_pending {
-        mount_ehci_device(ctrl_idx, dev_idx);
-    }
-    for (ctrl_idx, dev_idx) in xhci_pending {
-        mount_xhci_device(ctrl_idx, dev_idx);
-    }
-
-    USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
+    USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0
 }
 
-// ── Mount helpers ──────────────────────────────────────────
+// ── Platform FAT-mount callback ───────────────────────────
 
-fn mount_ehci_device(ctrl_index: usize, dev_idx: usize) {
-    let dev;
-    let mut bulk_out = 0u8;
-    let mut bulk_in = 0u8;
-    {
-        let mut guard = USB_BUS.lock();
-        let bus = guard.as_mut().unwrap();
-        let ehci = &mut bus.ehci[ctrl_index];
-        ehci.reset_pools();
+/// Called by [`StorageManager::try_mount`] when a mass-storage device
+/// has been detected and its BOT endpoints are known.
+///
+/// Reads the boot sector, tries to mount a FAT filesystem, and registers
+/// the mount point in [`USB_DRIVES`].
+fn platform_mount_fat(disk: &Disk) -> bool {
+    // Copy disk parameters into the block device so the closure
+    // doesn't borrow `disk` across the `with_ctx` call.
+    let ctrl_type = disk.ctrl_type;
+    let ctrl_idx = disk.ctrl_idx;
+    let dev_addr = disk.dev_addr;
+    let ep_out = disk.ep_out;
+    let ep_in = disk.ep_in;
 
-        let result = {
-            let mut ctrl_fn = |addr, ep, setup: &nitrogen::usb::UsbSetupPacket, buf: &mut [u8]| {
-                ehci.control_transfer(addr, ep, setup, buf)
-            };
-            nitrogen::usb::hub::enumerate_device(&mut ctrl_fn)
-        };
-        dev = match result {
-            Ok(d) => d,
-            Err(_) => return,
-        };
-        if !dev.is_mass_storage() {
-            return;
-        }
-
-        if let Some(slot) = ehci.devices_mut().get_mut(dev_idx) {
-            *slot = dev.clone();
-        }
-
-        for ep in &dev.endpoints {
-            if ep.xfer_type() != UsbXferType::Bulk {
-                continue;
-            }
-            match ep.direction() {
-                UsbDirection::Out => bulk_out = ep.b_endpoint_address,
-                UsbDirection::In => bulk_in = ep.b_endpoint_address,
-            }
-        }
-    }
-
-    if bulk_out == 0 || bulk_in == 0 {
-        return;
-    }
-
-    mount_fat(
-        "EHCI",
-        dev.address as u32,
-        bulk_out,
-        bulk_in,
-        "EHCI",
-        ctrl_index,
-    );
-}
-
-fn mount_xhci_device(ctrl_index: usize, dev_idx: usize) {
-    let slot_id: u32;
-    let ep_out: u8;
-    let ep_in: u8;
-    {
-        let mut guard = USB_BUS.lock();
-        let bus = guard.as_mut().unwrap();
-        let xhci = &mut bus.xhci[ctrl_index];
-
-        // Enable slot + address device
-        slot_id = match xhci.enable_slot() {
-            Ok(id) => id,
-            Err(_) => return,
-        };
-        if xhci.address_device(slot_id).is_err() {
-            xhci.disable_slot(slot_id);
-            return;
-        }
-
-        // Enumerate using the generic helper
-        let dev_addr = slot_id as u8;
-        let result = enumerate_mass_storage(&mut **xhci, dev_addr, dev_idx);
-        let (out_ep, in_ep, _blk) = match result {
-            Ok(v) => v,
-            Err(e) => {
-                klog_fmt!("USB xHCI enum err: {}\n", e);
-                return;
-            }
-        };
-        ep_out = out_ep;
-        ep_in = in_ep;
-
-        // Configure bulk endpoints
-        if xhci.configure_endpoint_bulk(slot_id, ep_out, 512).is_err() {
-            return;
-        }
-        if xhci.configure_endpoint_bulk(slot_id, ep_in, 512).is_err() {
-            return;
-        }
-    }
-
-    mount_fat("xHCI", slot_id, ep_out, ep_in, "xHCI", ctrl_index);
-}
-
-fn mount_fat(
-    label: &str,
-    dev_id: u32,
-    ep_out: u8,
-    ep_in: u8,
-    ctrl_type: &'static str,
-    ctrl_idx: usize,
-) {
     struct BotBlockDev {
-        dev_id: u32,
+        ctrl_type: &'static str,
+        ctrl_idx: usize,
+        dev_addr: u8,
         ep_out: u8,
         ep_in: u8,
         block_size: u32,
         total_blocks: u64,
         tag: u32,
-        ctrl_type: &'static str,
-        ctrl_idx: usize,
     }
     unsafe impl Send for BotBlockDev {}
 
@@ -319,12 +145,11 @@ fn mount_fat(
             count: u16,
             buf: &mut [u8],
         ) -> Result<(), &'static str> {
-            let mut guard = USB_BUS.lock();
-            let bus = guard.as_mut().unwrap();
-            if self.ctrl_type == "xHCI" {
-                bot_read_sectors(
-                    &mut *bus.xhci[self.ctrl_idx],
-                    self.dev_id as u8,
+            with_ctx(|ctx| {
+                ctx.bot_read(
+                    self.ctrl_type,
+                    self.ctrl_idx,
+                    self.dev_addr,
                     self.ep_out,
                     self.ep_in,
                     lba,
@@ -333,28 +158,15 @@ fn mount_fat(
                     buf,
                     &mut self.tag,
                 )
-            } else {
-                bot_read_sectors(
-                    &mut *bus.ehci[self.ctrl_idx],
-                    self.dev_id as u8,
-                    self.ep_out,
-                    self.ep_in,
-                    lba,
-                    count,
-                    self.block_size,
-                    buf,
-                    &mut self.tag,
-                )
-            }
+            })
         }
 
         fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-            let mut guard = USB_BUS.lock();
-            let bus = guard.as_mut().unwrap();
-            if self.ctrl_type == "xHCI" {
-                bot_write_sectors(
-                    &mut *bus.xhci[self.ctrl_idx],
-                    self.dev_id as u8,
+            with_ctx(|ctx| {
+                ctx.bot_write(
+                    self.ctrl_type,
+                    self.ctrl_idx,
+                    self.dev_addr,
                     self.ep_out,
                     self.ep_in,
                     lba,
@@ -363,19 +175,7 @@ fn mount_fat(
                     buf,
                     &mut self.tag,
                 )
-            } else {
-                bot_write_sectors(
-                    &mut *bus.ehci[self.ctrl_idx],
-                    self.dev_id as u8,
-                    self.ep_out,
-                    self.ep_in,
-                    lba,
-                    count,
-                    self.block_size,
-                    buf,
-                    &mut self.tag,
-                )
-            }
+            })
         }
 
         fn sector_size(&self) -> u32 {
@@ -386,15 +186,33 @@ fn mount_fat(
         }
     }
 
+    // Read the boot sector to determine actual block size / total blocks
+    // before creating the filesystem.
+    let mut boot = [0u8; 512];
+    let ok = with_ctx(|ctx| {
+        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_in, 0, 1, 512, &mut boot, &mut 1)
+    });
+    if ok.is_err() {
+        return false;
+    }
+
+    let block_size = u16::from_le_bytes([boot[11], boot[12]]) as u32;
+    if block_size == 0 {
+        return false;
+    }
+    let total_sectors_16 = u16::from_le_bytes([boot[13], boot[14]]) as u64;
+    let total_sectors_32 = u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]) as u64;
+    let total_blocks = if total_sectors_32 > 0 { total_sectors_32 } else { total_sectors_16 };
+
     let bdev = BotBlockDev {
-        dev_id,
-        ep_out,
-        ep_in,
-        block_size: 512,
-        total_blocks: 0,
-        tag: 1,
         ctrl_type,
         ctrl_idx,
+        dev_addr,
+        ep_out,
+        ep_in,
+        block_size,
+        total_blocks,
+        tag: 1,
     };
 
     let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
@@ -410,10 +228,14 @@ fn mount_fat(
                     mount_point: mp,
                 });
                 USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
+                true
+            } else {
+                false
             }
         }
         Err(e) => {
-            klog_fmt!("USB {} mount: {}\n", label, e);
+            klog_fmt!("USB mount: {}\n", e);
+            false
         }
     }
 }
