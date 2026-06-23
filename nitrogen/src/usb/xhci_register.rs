@@ -585,6 +585,9 @@ pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) 
             // Supported Protocol capability — DWORD2 is at offset 8
             let dw2 = unsafe { ptr::read_volatile(mmio_base.add(ec_off * 4 + 8) as *const u32) };
             let port_offset = (dw2 & 0xFF) as u32;        // 1-based
+            if port_offset == 0 {
+                continue;
+            }
             let port_count  = ((dw2 >> 8) & 0xFF) as u32;
             let major_rev   = unsafe {
                 ptr::read_volatile(mmio_base.add(ec_off * 4) as *const u32) >> 24
