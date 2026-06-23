@@ -8,7 +8,7 @@
 //! All 13 function pointers are bundled into a single [`FsHooks`] struct
 //! stored under one `Mutex`, eliminating repetitive per‑hook statics.
 
-use crate::exec::CommandContext;
+use carrier::exec::CommandContext;
 use spin::Mutex;
 
 /// Aggregated filesystem hooks for shell built‑in commands.

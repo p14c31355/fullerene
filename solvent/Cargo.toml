@@ -15,6 +15,7 @@ spin = { version = "0.10.0", default-features = false, features = [
 ] }
 petroleum = { path = "../petroleum" }
 nitrogen = { path = "../nitrogen" }
+carrier = { path = "../carrier" }
 nozzle = { path = "../nozzle" }
 lattice = { path = "../lattice" }
 resonance = { path = "../resonance" }

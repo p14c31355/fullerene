@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "bonder", "chronoline", "flasks", "fullerene-kernel", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene", "toluene/rle_player"]
+members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "fullerene-kernel", "genome", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene", "toluene/rle_player"]
 default-members = ["bonder", "chronoline", "flasks", "fullerene-kernel", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene", "toluene/rle_player"]
 
 [profile.dev]

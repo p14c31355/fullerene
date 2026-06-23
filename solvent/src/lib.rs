@@ -1088,7 +1088,7 @@ fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
 
 pub struct LatticeTerminal;
 
-impl nozzle::Terminal for LatticeTerminal {
+impl carrier::terminal::Terminal for LatticeTerminal {
     fn write_str(&mut self, s: &str) {
         if let Some(ref mut out) = *PIPE_STDOUT.lock() {
             out.push_str(s);
@@ -1523,7 +1523,7 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
 }
 
 // ── Shell bootstrap ──────────────────────────────────────────
-pub fn run_shell_on(terminal: &mut dyn nozzle::Terminal, prompt: &str) {
+pub fn run_shell_on(terminal: &mut dyn carrier::terminal::Terminal, prompt: &str) {
     let mut shell = nozzle::Shell::new(terminal, nozzle::default_commands());
     shell.set_prompt(prompt);
     shell.run();

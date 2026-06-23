@@ -1,13 +1,11 @@
 [package]
-name = "nozzle"
+name = "carrier"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-carrier = { path = "../carrier" }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [lib]
-name = "nozzle"
+name = "carrier"
 path = "src/lib.rs"
-crate-type = ["lib"]
