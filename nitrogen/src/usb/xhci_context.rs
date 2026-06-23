@@ -271,6 +271,11 @@ impl XhciContext {
         // Set initial ERDP
         rt.set_erdp(self.rings.event.dequeue_ptr());
 
+        // Enable primary interrupter (IMAN.IE) so the xHC activates
+        // its event ring and port change machinery.  Some controllers
+        // require this even when the driver polls USBSTS.PCD.
+        self.interrupts.enable(rt);
+
         Ok(())
     }
 
@@ -283,7 +288,7 @@ impl XhciContext {
     fn start_controller(&mut self) -> Result<(), &'static str> {
         let op = &self.registers.op;
 
-        op.set_usbcmd(USBCMD_RS);
+        op.set_usbcmd(USBCMD_RS | USBCMD_INTE);
         for _ in 0..200_000 {
             if !op.usbsts().hchalted() {
                 break;

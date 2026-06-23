@@ -17,8 +17,8 @@
 //! implemented.
 
 use super::xhci_register::{
-    OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLS_MASK, PORTSC_PP,
-    PORTSC_PR, PORTSC_RW1C_MASK, PORTSC_WPR, PortSc,
+    OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK,
+    PORTSC_PP, PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
 };
 use crate::usb::UsbSpeed;
 
@@ -246,11 +246,17 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
         delay_us(100);
     }
 
-    let v2 = op.portsc(port);
+    // Clear RW1C change bits (WRC, PRC, PLC) that the hardware set
+    // during the reset.  Failing to acknowledge them may prevent the
+    // xHC from reporting subsequent port status changes (e.g. CCS=1).
+    let v2 = op.portsc(port).0;
+    op.write_portsc(port, v2 | (PORTSC_WRC | PORTSC_PRC | PORTSC_PLC));
+    delay_us(50);
+
     // Force PLS=RxDetect+LWS to restart link training
     const PLS_RXDETECT: u32 = 5 << 5;
     op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
-    Ok(v2)
+    Ok(PortSc(v2))
 }
 
 /// Force a port into RxDetect link state with LWS to kick-start link training.
