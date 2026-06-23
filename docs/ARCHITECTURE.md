@@ -47,7 +47,7 @@ Duplication is acceptable when:
 The workspace should roughly follow this dependency direction:
 
 ```text
-Fullerene Kernel
+Fullerene Kernel  ──── Genome (VFS / filesystem)
     ↓
 Nitrogen (drivers)
     ↓
@@ -55,8 +55,12 @@ Solvent (runtime/orchestration)
     ↓
 Resonance / ChronoLine
     ↓
-Lattice / Nozzle
+Carrier (I/O abstraction) ──── Lattice / Nozzle
 ```
+
+New in this revision:
+- **Genome** provides the filesystem framework (`FileSystem` trait, `Vfs` dispatcher, `MemFileSystem`) as a standalone leaf crate. The kernel re-exports Genome types and adds the singleton `VfsContext`.
+- **Carrier** provides the I/O abstraction (`Terminal` trait, pipeline, streaming `dispatch()`) as another leaf crate. Nozzle and Solvent depend on Carrier for terminal I/O and command dispatch.
 
 Lower layers must never depend on higher-level policy layers.
 
@@ -249,6 +253,33 @@ Prefer:
 
 ---
 
+## Carrier (I/O Abstraction)
+
+Carrier is the I/O abstraction layer that decouples data transport from data processing.
+
+Carrier owns:
+- `Terminal` trait — abstract I/O interface for shell/console interaction
+- pipe mechanism — `arm_pipe_stdout` / `take_stdout` for shell pipeline chaining
+- command dispatch — `dispatch()` with streaming support (last pipeline stage writes directly to terminal, avoiding intermediate buffering)
+- `Command` / `CommandContext` — trait and context for shell command execution
+- pipeline parsing — `Pipeline` / `ParsedCommand` for `|`-separated command chains
+
+Carrier should NOT own:
+- filesystem logic
+- GUI rendering
+- scheduler policy
+- kernel memory management
+
+Carrier focuses on one question:
+
+```text
+how data flows between producers and consumers
+```
+
+The streaming fix: `dispatch()` no longer buffers the last pipeline stage's output into a `String` only to flush it at the end. Instead, the last stage writes directly through to the terminal. This eliminates the O(n) memory spike for commands like `dmesg` that produce large output.
+
+---
+
 ## Nozzle (Shell)
 
 Nozzle is the interactive shell subsystem.
@@ -275,6 +306,34 @@ Preferred direction:
 Nozzle produces text interaction.
 Terminal systems decide how it is rendered.
 ```
+
+---
+
+## Genome (File System)
+
+Genome is the file system / VFS abstraction layer.
+
+Genome owns:
+- `FileSystem` trait — abstract interface for any filesystem implementation
+- `MemFileSystem` — in-memory tmpfs backed by a B-tree of inodes
+- `Vfs` dispatcher — mount-table routing (longest-prefix match) for path-based operations
+- path normalization (`.`, `..`, symlink resolution)
+- `InodeType`, `VNode`, `FileDescriptor` — core filesystem types
+- `FsError` — typed error enum for filesystem operations
+
+Genome should NOT own:
+- kernel memory management
+- device drivers (block devices, USB)
+- GUI logic
+- shell or runtime state
+
+Genome focuses on one question:
+
+```text
+how persistent data is organised, stored, and retrieved
+```
+
+The kernel crate re-exports Genome types and adds the singleton `VfsContext` (wrapping `Vfs` with `spin::Mutex` + handle table) through the kernel's `vfs` and `fs` modules, keeping the core logic framework-agnostic.
 
 ---
 
