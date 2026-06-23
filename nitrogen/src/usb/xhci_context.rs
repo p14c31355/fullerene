@@ -199,19 +199,44 @@ impl XhciContext {
 
         log::info!("xHCI: initialising {} ports", self.ports.n_ports);
 
-        // ── Step 1: ensure PP=1 on every port ──────────────────
-        // After HCRST the xHC should power all ports, but some
-        // controllers leave PP=0 on USB 3.0 ports until explicitly
-        // written.  We unconditionally set PP=1, which is a no‑op
-        // if already set (per xHCI spec §5.4.8: writing 1 to PP has
-        // no effect when PP is already 1).
+        // ── Step 1: power-cycle USB 3.0 ports ───────────────────
+        // Some controllers leave USB 3.0 PHYs in an inconsistent
+        // state after HCRST.  A brief PP=0→PP=1 cycle forces the
+        // PHY to re-initialise from scratch.  This is analogous to
+        // what Linux's xhci-hub-control does for USB 3.0 ports and
+        // is especially important for high-capacity storage devices
+        // (USB 3.2 Gen1) that may need the PHY to complete its full
+        // training sequence before they become visible.
+        for port_idx in 0..self.ports.n_ports {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !is_usb3 {
+                continue;
+            }
+            let ps = op.portsc(port_idx).0;
+            // Only power-cycle if port is already powered (PP=1).
+            // If PP is 0, just turn it on in Step 2 below.
+            if ps & PORTSC_PP != 0 {
+                op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                super::xhci_port::delay_ms(20);
+                let v2 = op.portsc(port_idx).0;
+                op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                // Allow VBUS to stabilise before link training
+                // (USB spec §7.2.1: TATTDB ≤ 100 ms after power-on)
+                super::xhci_port::delay_ms(100);
+            }
+        }
+
+        // ── Step 2: ensure PP=1 on every port ──────────────────
+        // After the power-cycle above USB 2.0 ports (and any USB 3.0
+        // ports that were PP=0) still need their PP set.  This is a
+        // no‑op for ports where PP is already 1.
         for port_idx in 0..self.ports.n_ports {
             let ps = op.portsc(port_idx).0;
             op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
         }
         super::xhci_port::delay_ms(20);
 
-        // ── Step 2: kick RxDetect on every USB 3.0 port ─────────
+        // ── Step 3: kick RxDetect on every USB 3.0 port ─────────
         // xHCI spec §4.3.1: after power‑on, the port transitions
         // RxDetect → Polling → U0 automatically.  An explicit
         // RxDetect+LWS ensures the PHY re‑starts the sequence in
@@ -223,8 +248,17 @@ impl XhciContext {
                 op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
             }
         }
+        // After the RxDetect kick, acknowledge any RW1C change bits
+        // that the hardware may have set so they don't mask future
+        // port status change events (CSC, PLC, etc.).
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            if ps & PORTSC_RW1C_MASK != 0 {
+                op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | (ps & PORTSC_RW1C_MASK));
+            }
+        }
 
-        // ── Step 3: wait for link training to complete ──────────
+        // ── Step 4: wait for link training to complete ──────────
         // USB 3.0 link training can take 100–500ms.  We poll CCS
         // for up to ~2 s.
         for port_idx in 0..self.ports.n_ports {
@@ -247,9 +281,9 @@ impl XhciContext {
                     "xHCI: port {} no CCS after init_ports (portsc=0x{:08X} pls={}), attempting WPR",
                     port_idx, ps.0, ps.pls()
                 );
-                if let Some(p) = self.ports.get_mut(port_idx) {
-                    p.wpr_attempted = true;
-                }
+                // wpr_attempted is NOT set here intentionally:
+                // If WPR fails to bring up CCS during init, poll_ports
+                // will get its own chance to issue WPR on the next cycle.
                 match warm_port_reset(op, port_idx) {
                     Ok(_) => {
                         log::info!(
@@ -451,6 +485,12 @@ impl XhciContext {
             log::info!("xHCI: PCD detected, re-evaluating all ports");
         }
 
+        // ── Refresh all ports once before the loop ─────────
+        // Previously refresh_all was called inside the per-port loop,
+        // which caused N full PORTSC scans (one per port) and could
+        // overwrite the local state of the port currently being processed.
+        self.ports.refresh_all(op);
+
         for port_idx in 0..self.ports.n_ports {
             // Skip already-processed ports
             let skip = self.ports.get(port_idx).map(|p| p.done).unwrap_or(true);
@@ -458,13 +498,13 @@ impl XhciContext {
                 continue;
             }
 
-            self.ports.refresh_all(op);
-
-            // Get current port state
-            let port = self.ports.get(port_idx).unwrap();
-
             // ── Power-cycle if PPC supported ──────────────
-            if self.ports.ppc && (!port.pp_on() || port.pls() == 5) {
+            let needs_power_cycle = self
+                .ports
+                .get(port_idx)
+                .map(|p| self.ports.ppc && (!p.pp_on() || p.pls() == 5))
+                .unwrap_or(false);
+            if needs_power_cycle {
                 power_cycle(op, port_idx);
             }
 
@@ -490,7 +530,7 @@ impl XhciContext {
                         p.wpr_attempted = true;
                     }
                     let wpr_result = warm_port_reset(op, port_idx);
-                    let ps_after = op.portsc(port_idx);
+                    let _ps_after = op.portsc(port_idx);
                     // Wait for link training to complete after WPR
                     for _ in 0..120 {
                         super::xhci_port::delay_ms(10);
@@ -539,8 +579,13 @@ impl XhciContext {
                         if op.portsc(port_idx).ccs() {
                             // Continue processing below
                         } else {
+                            // HSE recovery didn't bring up CCS — increment retry
+                            // count, mark done only after MAX_PORT_RETRIES.
                             if let Some(p) = self.ports.get_mut(port_idx) {
-                                p.done = true;
+                                p.retry_count += 1;
+                                if p.retry_count >= MAX_PORT_RETRIES {
+                                    p.done = true;
+                                }
                             }
                             continue;
                         }

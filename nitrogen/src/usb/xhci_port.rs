@@ -302,7 +302,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     } else {
         log::warn!("xHCI: port {} WPR link training did not complete (CCS still 0)", port);
     }
-    Ok(PortSc(v2))
+    Ok(op.portsc(port))
 }
 
 /// Force a port into RxDetect link state with LWS to kick-start link training.
