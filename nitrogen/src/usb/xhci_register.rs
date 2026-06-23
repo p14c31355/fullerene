@@ -289,9 +289,9 @@ impl CapabilityRegisters {
 
     pub fn hcs_params1(&self) -> HcsParams1 {
         HcsParams1 {
-            max_slots: (self.hcs_params1 >> 24) & 0xFF,
+            max_slots: self.hcs_params1 & 0xFF,
             max_interrupters: (self.hcs_params1 >> 8) & 0x7FF,
-            n_ports: self.hcs_params1 & 0xFF,
+            n_ports: (self.hcs_params1 >> 24) & 0xFF,
             ppc: (self.hcc_params1 >> 3) & 1 != 0,
             csz: (self.hcc_params1 >> 2) & 1 != 0,
             max_scratchpad_bufs: (self.hcs_params2 >> 27) & 0x1F
@@ -764,7 +764,7 @@ mod tests {
     fn test_hcs_params1_parsing() {
         let cap = CapabilityRegisters {
             caplength: 0x20,
-            hcs_params1: 0xFF000008, // bits[31:24]=max_slots=255, bits[7:0]=n_ports=8
+            hcs_params1: 0x080000FF, // bits[31:24]=n_ports=8, bits[7:0]=max_slots=255
             hcs_params2: 0,
             hcs_params3: 0,
             hcc_params1: 0,

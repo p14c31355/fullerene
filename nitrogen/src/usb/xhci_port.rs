@@ -230,27 +230,37 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     op.write_portsc(port, v | PORTSC_WPR);
 
     // Poll for WPR completion (WPR bit cleared by hardware)
+    let mut wpr_cleared = false;
     for _ in 0..1_000_000 {
         if op.portsc(port).0 & PORTSC_WPR == 0 {
+            wpr_cleared = true;
             break;
         }
         delay_us(100);
     }
+    if !wpr_cleared {
+        return Err("warm port reset timeout: WPR not cleared");
+    }
 
     // Wait for PR (Port Reset) to clear — the xHC signals reset
     // completion by clearing both WPR and PR (xHCI 1.2 §5.4.8).
+    let mut pr_cleared = false;
     for _ in 0..1_000_000 {
         if op.portsc(port).0 & PORTSC_PR == 0 {
+            pr_cleared = true;
             break;
         }
         delay_us(100);
+    }
+    if !pr_cleared {
+        return Err("warm port reset timeout: PR not cleared");
     }
 
     // Clear RW1C change bits (WRC, PRC, PLC) that the hardware set
     // during the reset.  Failing to acknowledge them may prevent the
     // xHC from reporting subsequent port status changes (e.g. CCS=1).
     let v2 = op.portsc(port).0;
-    op.write_portsc(port, v2 | (PORTSC_WRC | PORTSC_PRC | PORTSC_PLC));
+    op.write_portsc(port, (v2 & !PORTSC_RW1C_MASK) | (PORTSC_WRC | PORTSC_PRC | PORTSC_PLC));
     delay_us(50);
 
     // Force PLS=RxDetect+LWS to restart link training
