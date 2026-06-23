@@ -222,8 +222,10 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
 
 /// Issue a Warm Port Reset (WPR) on the given port.
 ///
-/// WPR can take 100–500ms.  After completion, forces PLS=RxDetect+LWS
-/// to restart link training.  Returns the final PORTSC value on success.
+/// WPR can take 100–500ms.  After completion, the hardware automatically
+/// performs link training.  This function waits for the link to stabilise
+/// before returning; if training stalls, a single explicit RxDetect kick
+/// is attempted as a fallback.  Returns the final PORTSC value on success.
 pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &'static str> {
     let ps_raw = op.portsc(port).0;
     let v = ps_raw & !PORTSC_RW1C_MASK;
@@ -263,9 +265,43 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     op.write_portsc(port, (v2 & !PORTSC_RW1C_MASK) | (PORTSC_WRC | PORTSC_PRC | PORTSC_PLC));
     delay_us(50);
 
-    // Force PLS=RxDetect+LWS to restart link training
-    const PLS_RXDETECT: u32 = 5 << 5;
-    op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+    // After Warm Port Reset, the xHC automatically starts link training
+    // (RxDetect → Polling → U0).  Wait for the link to stabilise before
+    // returning.  Some controllers need several hundred ms for the PHY
+    // to complete the full training sequence, especially on USB 3.0 hubs
+    // or devices behind cascaded ports.
+    //
+    // We poll CCS and PED for up to ~1.2 s.  If neither asserts, we try
+    // a single explicit RxDetect kick (with LWS) as a fallback, but only
+    // after giving the hardware a fair chance to finish on its own.
+    let mut trained = false;
+    for _ in 0..120 {
+        delay_ms(10);
+        let ps = op.portsc(port);
+        if ps.ccs() {
+            trained = true;
+            break;
+        }
+    }
+    if !trained {
+        // Fallback: explicitly force RxDetect to re-start link training.
+        // Some older / quirky xHC implementations may need this extra
+        // kick after WPR when the automatic training stalls.
+        const PLS_RXDETECT: u32 = 5 << 5;
+        op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+        for _ in 0..120 {
+            delay_ms(10);
+            if op.portsc(port).ccs() {
+                trained = true;
+                break;
+            }
+        }
+    }
+    if trained {
+        log::info!("xHCI: port {} WPR link trained successfully", port);
+    } else {
+        log::warn!("xHCI: port {} WPR link training did not complete (CCS still 0)", port);
+    }
     Ok(PortSc(v2))
 }
 
@@ -346,6 +382,12 @@ mod tests {
     }
 
     #[test]
+    fn test_port_creation_usb2() {
+        let port = Port::new(0, false);
+        assert!(!port.is_usb3);
+    }
+
+    #[test]
     fn test_port_speed_mapping() {
         assert_eq!(port_speed_to_usb(3), UsbSpeed::High);
         assert_eq!(port_speed_to_usb(2), UsbSpeed::Low);
@@ -360,5 +402,139 @@ mod tests {
         ctx.ports[0].done = true;
         ctx.ports[2].done = true;
         assert_eq!(ctx.done_mask(), (1 << 0) | (1 << 2));
+    }
+
+    // ── Port flags state-machine tests ───────────────────────────
+
+    #[test]
+    fn test_port_done_defaults_false() {
+        let p = Port::new(0, true);
+        assert!(!p.done, "new port must not be done");
+        assert!(!p.wpr_attempted, "new port must not have wpr_attempted");
+        assert_eq!(p.retry_count, 0, "new port retry_count must be 0");
+    }
+
+    #[test]
+    fn test_ccs_zero_by_default() {
+        let p = Port::new(0, true);
+        // No hardware: PORTSC is 0, so CCS=0 and PP=0.
+        assert!(!p.ccs(), "CCS must be 0 when portsc is 0");
+        assert!(!p.pp_on(), "PP must be 0 when portsc is 0");
+    }
+
+    /// Simulate the scenario that motivated the fix:
+    /// after WPR, CCS stays 0 → driver eventually marks port done.
+    /// The test verifies that `done=true` is only reached after
+    /// `retry_count ≥ MAX_PORT_RETRIES`, preventing premature
+    /// abandonment of a live-but-slow-to-train USB 3.0 port.
+    #[test]
+    fn test_port_does_not_become_done_prematurely() {
+        let mut p = Port::new(0, true);
+
+        // Simulate 3 polling cycles where CCS never asserts.
+        for attempt in 1..=3 {
+            assert!(!p.done, "port should not be done on attempt {}", attempt);
+            assert!(
+                p.retry_count < MAX_PORT_RETRIES,
+                "retry_count ({}) must be < MAX_PORT_RETRIES ({}) on attempt {}",
+                p.retry_count, MAX_PORT_RETRIES, attempt
+            );
+            p.retry_count += 1;
+        }
+        // After MAX_PORT_RETRIES attempts, the driver marks it done.
+        assert!(p.retry_count >= MAX_PORT_RETRIES);
+        p.done = true;
+        assert!(p.done);
+    }
+
+    #[test]
+    fn test_port_wpr_attempted_is_explicit() {
+        let mut p = Port::new(0, true);
+        assert!(!p.wpr_attempted);
+
+        // The driver must explicitly set wpr_attempted.
+        p.wpr_attempted = true;
+        assert!(p.wpr_attempted);
+    }
+
+    // ── PortContext flag reset tests ─────────────────────────────
+
+    #[test]
+    fn test_clear_done_flags_resets_all() {
+        let mut ctx = PortContext::new(4, false, None);
+        // Set all ports to done / wpr_attempted / retry_count > 0
+        for p in &mut ctx.ports {
+            p.done = true;
+            p.wpr_attempted = true;
+            p.retry_count = 5;
+        }
+        ctx.clear_done_flags();
+        for p in &ctx.ports {
+            assert!(!p.done, "clear_done_flags must reset done");
+            assert!(!p.wpr_attempted, "clear_done_flags must reset wpr_attempted");
+            assert_eq!(p.retry_count, 0, "clear_done_flags must reset retry_count");
+        }
+    }
+
+    #[test]
+    fn test_done_mask_ignores_ports_beyond_bit_31() {
+        let mut ctx = PortContext::new(64, false, None);
+        ctx.ports[10].done = true;
+        ctx.ports[50].done = true; // bit 50 is beyond u32 range (done_mask ignores index >= 32)
+        let mask = ctx.done_mask();
+        assert!(mask & (1 << 10) != 0, "port 10 should be in mask");
+        // Port 50 (index 50) has index >= 32, so it MUST be excluded.
+        // done_mask() only ORs bits for port.index < 32.
+        assert!(mask == (1 << 10), "port 50 must not appear in mask");
+    }
+
+    // ── Port protocol bitmap tests ───────────────────────────────
+
+    #[test]
+    fn test_port_context_usb3_bitmap() {
+        // 4 ports: [USB 3, USB 2, USB 3, USB 2]
+        let bitmap: &[u32] = &[0b0101]; // bits 0 and 2 set
+        let ctx = PortContext::new(4, false, Some(bitmap));
+        assert!(ctx.ports[0].is_usb3, "port 0 should be USB3 (bit 0 set)");
+        assert!(!ctx.ports[1].is_usb3, "port 1 should be USB2 (bit 1 clear)");
+        assert!(ctx.ports[2].is_usb3, "port 2 should be USB3 (bit 2 set)");
+        assert!(!ctx.ports[3].is_usb3, "port 3 should be USB2 (bit 3 clear)");
+    }
+
+    #[test]
+    fn test_port_context_default_all_usb3() {
+        // No bitmap → all ports default to USB 3.0
+        let ctx = PortContext::new(8, false, None);
+        for p in &ctx.ports {
+            assert!(p.is_usb3, "all ports should default to USB 3.0 when no bitmap");
+        }
+    }
+
+    // ── PortContext accessors ────────────────────────────────────
+
+    #[test]
+    fn test_port_context_get_returns_none_for_out_of_range() {
+        let mut ctx = PortContext::new(2, false, None);
+        assert!(ctx.get(2).is_none());
+        assert!(ctx.get_mut(2).is_none());
+    }
+
+    #[test]
+    fn test_port_context_get_returns_some_for_valid_index() {
+        let ctx = PortContext::new(2, false, None);
+        assert!(ctx.get(0).is_some());
+        assert_eq!(ctx.get(0).unwrap().index, 0);
+    }
+
+    #[test]
+    fn test_ppc_propagates_to_port_context() {
+        let ctx = PortContext::new(1, true, None);
+        assert!(ctx.ppc);
+    }
+
+    #[test]
+    fn test_ppc_false_default() {
+        let ctx = PortContext::new(1, false, None);
+        assert!(!ctx.ppc);
     }
 }

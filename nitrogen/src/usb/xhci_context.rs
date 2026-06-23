@@ -187,7 +187,86 @@ impl XhciContext {
         self.configure_registers()?;
         self.start_controller()?;
         self.clear_hse_and_recover();
+        self.init_ports();
         Ok(())
+    }
+
+    /// Initialise all root-hub ports: ensure port power is on, kick
+    /// link training via RxDetect, and wait for devices to appear
+    /// (CCS=1).  This is called once after the controller starts.
+    fn init_ports(&mut self) {
+        let op = &self.registers.op;
+
+        log::info!("xHCI: initialising {} ports", self.ports.n_ports);
+
+        // ── Step 1: ensure PP=1 on every port ──────────────────
+        // After HCRST the xHC should power all ports, but some
+        // controllers leave PP=0 on USB 3.0 ports until explicitly
+        // written.  We unconditionally set PP=1, which is a no‑op
+        // if already set (per xHCI spec §5.4.8: writing 1 to PP has
+        // no effect when PP is already 1).
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
+        }
+        super::xhci_port::delay_ms(20);
+
+        // ── Step 2: kick RxDetect on every USB 3.0 port ─────────
+        // xHCI spec §4.3.1: after power‑on, the port transitions
+        // RxDetect → Polling → U0 automatically.  An explicit
+        // RxDetect+LWS ensures the PHY re‑starts the sequence in
+        // case the automatic transition stalled.
+        const PLS_RXDETECT: u32 = 5 << 5;
+        for port_idx in 0..self.ports.n_ports {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if is_usb3 {
+                op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+            }
+        }
+
+        // ── Step 3: wait for link training to complete ──────────
+        // USB 3.0 link training can take 100–500ms.  We poll CCS
+        // for up to ~2 s.
+        for port_idx in 0..self.ports.n_ports {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !is_usb3 {
+                continue;
+            }
+            for _ in 0..200 {
+                super::xhci_port::delay_ms(10);
+                let ps = op.portsc(port_idx);
+                if ps.ccs() {
+                    log::info!("xHCI: port {} CCS=1 after init_ports", port_idx);
+                    break;
+                }
+            }
+            let ps = op.portsc(port_idx);
+            if !ps.ccs() {
+                // If still no CCS, try WPR as last resort
+                log::info!(
+                    "xHCI: port {} no CCS after init_ports (portsc=0x{:08X} pls={}), attempting WPR",
+                    port_idx, ps.0, ps.pls()
+                );
+                if let Some(p) = self.ports.get_mut(port_idx) {
+                    p.wpr_attempted = true;
+                }
+                match warm_port_reset(op, port_idx) {
+                    Ok(_) => {
+                        log::info!(
+                            "xHCI: port {} WPR in init_ports completed, portsc=0x{:08X} ccs={}",
+                            port_idx,
+                            op.portsc(port_idx).0,
+                            op.portsc(port_idx).ccs()
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("xHCI: port {} WPR in init_ports failed: {}", port_idx, e);
+                    }
+                }
+            }
+        }
+
+        log::info!("xHCI: port initialisation complete");
     }
 
     /// Reset the controller (HCRST) — public for `HostController` trait.
