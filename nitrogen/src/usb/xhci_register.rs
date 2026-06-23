@@ -115,6 +115,7 @@ pub const CRCR_CRR: u32 = 1 << 3; // Command Ring Running
 #[derive(Debug)]
 pub struct CapabilityRegisters {
     pub caplength: u8,
+    pub hci_version: u16,
     pub hcs_params1: u32,
     pub hcs_params2: u32,
     pub hcs_params3: u32,
@@ -276,8 +277,10 @@ impl CapabilityRegisters {
     /// Read all capability registers from the capability region.
     pub unsafe fn read(mmio: *mut u8) -> Self {
         let caplength = ptr::read_volatile(mmio as *const u8);
+        let hci_version = ptr::read_volatile(mmio.add(0x02) as *const u16);
         Self {
             caplength,
+            hci_version,
             hcs_params1: ptr::read_volatile(mmio.add(CAP_HCSPARAMS1) as *const u32),
             hcs_params2: ptr::read_volatile(mmio.add(CAP_HCSPARAMS2) as *const u32),
             hcs_params3: ptr::read_volatile(mmio.add(CAP_HCSPARAMS3) as *const u32),
@@ -330,6 +333,11 @@ impl OperationalRegisters {
         unsafe { core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags)) }
     }
 
+    /// Read a 32-bit MMIO register.
+    ///
+    /// clflush before read works around UEFI firmware that maps xHCI MMIO
+    /// as WB (Write-Back) instead of UC (Uncacheable).  On WB mappings,
+    /// read_volatile can return stale cached data.
     pub fn read(&self, offset: usize) -> u32 {
         let ptr = unsafe { self.base.add(offset) as *const u32 };
         Self::clflush_offset(ptr as *const u8);

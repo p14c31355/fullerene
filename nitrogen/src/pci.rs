@@ -224,6 +224,44 @@ impl PciDevice {
         })
     }
 
+    /// Ensure the PCI Power Management capability is set to D0.
+    ///
+    /// Some BIOS/firmware leave the xHCI controller in D3hot,
+    /// which disables the USB PHY and prevents CCS from being set.
+    /// This method finds the PM capability (cap ID = 0x01) and
+    /// writes 0 to the PMCSR power state field (bits 1:0).
+    pub fn ensure_d0(&self) {
+        let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
+        if cap_ptr == 0 {
+            return;
+        }
+        let mut off = cap_ptr;
+        loop {
+            let cap_id = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
+            if cap_id == 0x01 {
+                let pmcsr = PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 4);
+                let pstate = pmcsr & 0x3;
+                if pstate != 0 {
+                    log::info!("PCI: device {:02x}:{:02x}.{} in D{} → requesting D0",
+                        self.bus, self.device, self.function, pstate);
+                    PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, off + 4, pmcsr & !0x3);
+                    for _ in 0..10000 {
+                        let cur = PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 4);
+                        if cur & 0x3 == 0 {
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
+            let next = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
+            if next == 0 || next as usize == off as usize {
+                break;
+            }
+            off = next;
+        }
+    }
+
     pub fn detect_bar_size(&self, bar_index: u8) -> u32 {
         let offset = 0x10 + (bar_index * 4);
         let original_value =

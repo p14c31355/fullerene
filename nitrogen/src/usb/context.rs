@@ -59,6 +59,7 @@ impl ControllerManager {
                 continue;
             }
             dev.enable_memory_access();
+            dev.ensure_d0();
 
             let prog_if = crate::pci::PciConfigSpace::read_config_byte(
                 dev.bus, dev.device, dev.function, 0x09,

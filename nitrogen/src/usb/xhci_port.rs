@@ -179,17 +179,20 @@ impl PortContext {
 //  Port operations (using OperationalRegisters)
 // ============================================================================
 
-/// Assert port reset on a port, wait for PED, then clear PR.
+/// Assert port reset on a port, wait for PR completion.
 ///
-/// Returns `Ok(())` if the device survived reset (CCS still 1),
-/// or `Err` if the device disconnected.
+/// Unlike the xHCI spec literal reading (which says PR is only valid
+/// when CCS=1), Linux's xhci-hub-control writes PR regardless of CCS.
+/// Some controllers accept PR even on disconnected ports to re-kick
+/// the PHY state machine.
+///
+/// If CCS becomes 1 during or after PR (device connected), we also
+/// wait for PED.  The full wait is bounded to ~20 s per phase.
 pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static str> {
     let ps_raw = op.portsc(port).0;
-    if ps_raw & PORTSC_CCS == 0 {
-        return Err("no device");
-    }
+    let had_ccs = ps_raw & PORTSC_CCS != 0;
 
-    // Assert PR
+    // Assert PR (Linux does this even when CCS=0)
     op.write_portsc(port, (ps_raw & !PORTSC_RW1C_MASK) | PORTSC_PR);
 
     // Poll PR until cleared by hardware (xHCI spec §5.4.8)
@@ -205,7 +208,24 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         return Err("port reset timeout");
     }
 
-    // Wait for PED
+    // If the port had CCS=0 before PR, wait briefly for CCS to appear.
+    // If CCS never appears, the port returned to RxDetect — not an error,
+    // because PR on a disconnected port is a valid re-kick.
+    if !had_ccs {
+        for _ in 0..10_000 {
+            if op.portsc(port).0 & PORTSC_CCS != 0 {
+                break;
+            }
+            delay_us(100);
+        }
+        let ccs_after = op.portsc(port).0 & PORTSC_CCS != 0;
+        if !ccs_after {
+            return Err("disconnected");
+        }
+        // CCS appeared — fall through to PED wait
+    }
+
+    // Wait for PED (only meaningful when CCS=1)
     for _ in 0..200_000 {
         if op.portsc(port).0 & PORTSC_PED != 0 {
             break;
@@ -213,7 +233,7 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         delay_us(100);
     }
 
-    // Check CCS survived
+    // If CCS=1 but PED never set, the reset did not complete normally
     if op.portsc(port).0 & PORTSC_CCS == 0 {
         return Err("disconnected");
     }
@@ -311,6 +331,31 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
 pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
     const PLS_RXDETECT: u32 = 5 << 5;
     op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+}
+
+/// Exit Compliance (PLS=15) mode by transitioning to a non-compliance link state.
+///
+/// Some xHCI controllers enter Compliance mode instead of RxDetect after
+/// HCRST, and will never set CCS until explicitly told to leave.
+/// The procedure (per xHCI spec §5.4.8) is:
+///   1. Write PLS=U0 (0) + LWS=1
+///   2. If the port stays in Compliance, fall back to Port Reset
+pub fn exit_compliance(op: &OperationalRegisters, port: u32) -> bool {
+    let ps = op.portsc(port);
+    if ps.pls() != 15 {
+        return false;
+    }
+    log::info!("xHCI: port {} in Compliance mode (PLS=15), attempting exit", port);
+    const PLS_U0: u32 = 0 << 5;
+    op.update_portsc(port, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK);
+    delay_ms(50);
+    let ps2 = op.portsc(port);
+    if ps2.pls() != 15 {
+        log::info!("xHCI: port {} exited Compliance → PLS={}", port, ps2.pls());
+        return true;
+    }
+    log::info!("xHCI: port {} still in Compliance after U0 write, trying Port Reset", port);
+    port_reset(op, port).is_ok()
 }
 
 /// Power-cycle a port (only valid when PPC is supported).
