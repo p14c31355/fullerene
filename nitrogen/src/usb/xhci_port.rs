@@ -229,9 +229,18 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     let v = ps_raw & !PORTSC_RW1C_MASK;
     op.write_portsc(port, v | PORTSC_WPR);
 
-    // Poll for WPR completion
+    // Poll for WPR completion (WPR bit cleared by hardware)
     for _ in 0..1_000_000 {
         if op.portsc(port).0 & PORTSC_WPR == 0 {
+            break;
+        }
+        delay_us(100);
+    }
+
+    // Wait for PR (Port Reset) to clear — the xHC signals reset
+    // completion by clearing both WPR and PR (xHCI 1.2 §5.4.8).
+    for _ in 0..1_000_000 {
+        if op.portsc(port).0 & PORTSC_PR == 0 {
             break;
         }
         delay_us(100);

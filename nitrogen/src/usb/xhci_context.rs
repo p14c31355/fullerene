@@ -398,17 +398,29 @@ impl XhciContext {
                     .map(|p| p.wpr_attempted)
                     .unwrap_or(true);
                 if is_usb3 && !wpr_already && ps.pp() {
+                    log::info!(
+                        "xHCI: port {} WPR start (portsc=0x{:08X} pls={})",
+                        port_idx, ps.0, ps.pls()
+                    );
                     if let Some(p) = self.ports.get_mut(port_idx) {
                         p.wpr_attempted = true;
                     }
-                    let _ = warm_port_reset(op, port_idx);
+                    let wpr_result = warm_port_reset(op, port_idx);
+                    let ps_after = op.portsc(port_idx);
                     // Wait for link training to complete after WPR
                     for _ in 0..120 {
                         super::xhci_port::delay_ms(10);
                         if op.portsc(port_idx).ccs() {
+                            log::info!("xHCI: port {} CCS=1 after WPR", port_idx);
                             break;
                         }
                     }
+                    let wpr_val = wpr_result.map(|ps| ps.0).unwrap_or(0);
+                    let ps_wpr = op.portsc(port_idx);
+                    log::info!(
+                        "xHCI: port {} WPR done wpr_val=0x{:08X} portsc=0x{:08X} ccs={} pls={}",
+                        port_idx, wpr_val, ps_wpr.0, ps_wpr.ccs(), ps_wpr.pls()
+                    );
                 } else if !is_usb3 {
                     log::debug!("xHCI: port {} USB 2.0, skipping WPR", port_idx);
                 }
@@ -416,9 +428,22 @@ impl XhciContext {
 
             let ps = op.portsc(port_idx);
             if !ps.ccs() {
+                let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+                let wpr_already = self.ports.get(port_idx).map(|p| p.wpr_attempted).unwrap_or(true);
+                let retry_cnt = self.ports.get(port_idx).map(|p| p.retry_count).unwrap_or(0);
+                log::info!(
+                    "xHCI: port {} CCS=0 → pls={} pp={} speed={} is_usb3={} wpr={} retry={}",
+                    port_idx, ps.pls(), ps.pp() as u32, ps.speed(),
+                    is_usb3, wpr_already, retry_cnt
+                );
                 // ── Force RxDetect to restart link training ─
                 force_rx_detect(op, port_idx);
                 super::xhci_port::delay_ms(100);
+                let ps_rx = op.portsc(port_idx);
+                log::info!(
+                    "xHCI: port {} after RxDetect: portsc=0x{:08X} ccs={} pls={}",
+                    port_idx, ps_rx.0, ps_rx.ccs(), ps_rx.pls()
+                );
                 if op.portsc(port_idx).ccs() {
                     // Link training succeeded — continue to port reset below
                 } else {
