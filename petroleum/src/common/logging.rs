@@ -20,7 +20,7 @@ pub struct FullereneLogger {
 impl FullereneLogger {
     pub const fn new() -> Self {
         Self {
-            level: log::LevelFilter::Warn,
+            level: log::LevelFilter::Info,
         }
     }
 }

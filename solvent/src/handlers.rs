@@ -187,7 +187,7 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                 let now = crate::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
                 let is_double = explorer.selected_index == Some(idx)
                     && explorer.last_click_entry == Some(idx)
-                    && now.wrapping_sub(explorer.last_click_tick) < 30; // ~30 ticks for double-click
+                    && now.wrapping_sub(explorer.last_click_tick) < 60;
 
                 explorer.selected_index = Some(idx);
 
