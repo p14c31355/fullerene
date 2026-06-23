@@ -115,13 +115,20 @@ impl MemFileSystem {
         let mut current = effective_start;
         for (idx, comp) in components.iter().enumerate() {
             let parent_ino = current;
-            let ino = self.inodes.get(&current)?;
-            let child = ino.children.iter().find(|&&c| {
-                self.inodes
-                    .get(&c)
-                    .map_or(false, |i| i.name.as_str() == *comp)
-            })?;
-            current = *child;
+            if *comp == "." {
+                // current stays the same
+            } else if *comp == ".." {
+                let ino = self.inodes.get(&current)?;
+                current = if ino.parent == 0 { 1 } else { ino.parent };
+            } else {
+                let ino = self.inodes.get(&current)?;
+                let child = ino.children.iter().find(|&&c| {
+                    self.inodes
+                        .get(&c)
+                        .map_or(false, |i| i.name.as_str() == *comp)
+                })?;
+                current = *child;
+            }
             if let Some(ref target) = self.inodes.get(&current)?.target {
                 let mut new_path = target.clone();
                 for trailing in &components[idx + 1..] {
@@ -285,6 +292,9 @@ impl FileSystem for MemFileSystem {
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
         let ino = self.lookup(path).ok_or("not found")?;
         let inode = self.inodes.get(&ino).ok_or("not found")?;
+        if inode.kind != InodeType::Directory {
+            return Err("not a directory");
+        }
         let mut entries = Vec::new();
         for &c in &inode.children {
             if let Some(child) = self.inodes.get(&c) {
@@ -444,42 +454,6 @@ impl Vfs {
         let resolved = self.resolve_path(path);
         let (fs, remaining) = self.find_fs(&resolved)?;
         fs.open(&remaining, flags)
-    }
-
-    pub fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-        for entry in &mut self.mounts {
-            if let Ok(n) = entry.fs.read(fd, buf) {
-                return Ok(n);
-            }
-        }
-        Err("bad fd")
-    }
-
-    pub fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
-        for entry in &mut self.mounts {
-            if let Ok(n) = entry.fs.write(fd, data) {
-                return Ok(n);
-            }
-        }
-        Err("bad fd")
-    }
-
-    pub fn close(&mut self, fd: u32) -> Result<(), &'static str> {
-        for entry in &mut self.mounts {
-            if entry.fs.close(fd).is_ok() {
-                return Ok(());
-            }
-        }
-        Err("bad fd")
-    }
-
-    pub fn seek(&mut self, fd: u32, pos: usize) -> Result<(), &'static str> {
-        for entry in &mut self.mounts {
-            if entry.fs.seek(fd, pos).is_ok() {
-                return Ok(());
-            }
-        }
-        Err("bad fd")
     }
 
     pub fn read_at(

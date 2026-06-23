@@ -165,6 +165,9 @@ impl EhciContext {
                 break;
             }
         }
+        if op.usbsts() & USBSTS_HCH != 0 {
+            return Err("EHCI start timeout (HCH still set)");
+        }
 
         // Clear stale port-change status bits
         op.write_usbsts(USBSTS_PCD);

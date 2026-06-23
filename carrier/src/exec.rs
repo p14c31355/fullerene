@@ -111,8 +111,8 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
                     args.push(a.as_str());
                 }
 
-                if let Some(ref input) = pipe_buffer.take() {
-                    terminal.set_stdin(alloc::string::String::from(input.as_str()));
+                if let Some(input) = pipe_buffer.take() {
+                    terminal.set_stdin(input);
                 }
 
                 // Only buffer stdout for non-last stages.
@@ -129,8 +129,10 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
 
                 if !is_last {
                     pipe_buffer = terminal.take_stdout();
-                    terminal.clear_pipe_stdin();
                 }
+                // Always clear pipe stdin after each stage to prevent
+                // stale data leaking into the next command line.
+                terminal.clear_pipe_stdin();
 
                 if !continue_shell {
                     return false;

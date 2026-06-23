@@ -452,9 +452,11 @@ impl XhciContext {
                             // Pulse Port Reset (PR=1 → wait → PR=0) to force the
                             // port to re-initialise even when CCS is 0.  Some
                             // controllers need this kick after HCRST.
+                            // Bound the loop to ~50 ms (xHCI clears PR within
+                            // tens of ms in practice).
                             let ps = op.portsc(port_idx).0;
                             op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PR);
-                            for _ in 0..200_000 {
+                            for _ in 0..500 {
                                 if op.portsc(port_idx).0 & PORTSC_PR == 0 {
                                     break;
                                 }
