@@ -226,8 +226,9 @@ impl FileSystem for MemFileSystem {
             return Err("not a file");
         }
         let off = desc.offset;
-        if off + data.len() > ino.data.len() {
-            ino.data.resize(off + data.len(), 0);
+        let new_len = off.checked_add(data.len()).ok_or("integer overflow")?;
+        if new_len > ino.data.len() {
+            ino.data.resize(new_len, 0);
         }
         ino.data[off..off + data.len()].copy_from_slice(data);
         ino.size = ino.data.len();
