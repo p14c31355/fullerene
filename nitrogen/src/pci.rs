@@ -238,6 +238,9 @@ impl PciDevice {
         let mut off = cap_ptr;
         let mut visited = [false; 256];
         loop {
+            if off < 0x40 || off > 0xF8 {
+                break;
+            }
             // Check for cycles
             if visited[off as usize] {
                 log::warn!("PCI: capability list cycle detected at offset {:#x}", off);

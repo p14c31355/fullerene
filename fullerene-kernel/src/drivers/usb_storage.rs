@@ -204,13 +204,26 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
         return false;
     }
 
-    let block_size = u16::from_le_bytes([boot[11], boot[12]]) as u32;
+    let is_exfat = &boot[3..11] == b"EXFAT   ";
+    let (block_size, total_blocks) = if is_exfat {
+        let bps_shift = boot[108];
+        let bps = 1u32 << bps_shift;
+        let total_blocks = u64::from_le_bytes([
+            boot[72], boot[73], boot[74], boot[75],
+            boot[76], boot[77], boot[78], boot[79],
+        ]);
+        (bps, total_blocks)
+    } else {
+        let block_size = u16::from_le_bytes([boot[11], boot[12]]) as u32;
+        let total_sectors_16 = u16::from_le_bytes([boot[19], boot[20]]) as u64;
+        let total_sectors_32 = u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]) as u64;
+        let total_blocks = if total_sectors_32 > 0 { total_sectors_32 } else { total_sectors_16 };
+        (block_size, total_blocks)
+    };
+
     if block_size == 0 {
         return false;
     }
-    let total_sectors_16 = u16::from_le_bytes([boot[13], boot[14]]) as u64;
-    let total_sectors_32 = u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]) as u64;
-    let total_blocks = if total_sectors_32 > 0 { total_sectors_32 } else { total_sectors_16 };
 
     // Update disk geometry with actual values from BPB
     disk.block_size = block_size;

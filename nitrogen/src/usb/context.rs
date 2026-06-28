@@ -226,8 +226,18 @@ impl USBContext {
         tag: &mut u32,
     ) -> Result<(), &'static str> {
         let host: &mut dyn HostController = match ctrl_type {
-            "xHCI" => &mut *self.controllers.xhci[ctrl_idx],
-            _ => &mut *self.controllers.ehci[ctrl_idx],
+            "xHCI" => {
+                if ctrl_idx >= self.controllers.xhci.len() {
+                    return Err("xHCI controller index out of bounds");
+                }
+                &mut *self.controllers.xhci[ctrl_idx]
+            }
+            _ => {
+                if ctrl_idx >= self.controllers.ehci.len() {
+                    return Err("EHCI controller index out of bounds");
+                }
+                &mut *self.controllers.ehci[ctrl_idx]
+            }
         };
         super::usb_bus::bot_read_sectors(host, dev_addr, ep_out, ep_in, lba, count, block_size, buf, tag)
     }
@@ -247,8 +257,18 @@ impl USBContext {
         tag: &mut u32,
     ) -> Result<(), &'static str> {
         let host: &mut dyn HostController = match ctrl_type {
-            "xHCI" => &mut *self.controllers.xhci[ctrl_idx],
-            _ => &mut *self.controllers.ehci[ctrl_idx],
+            "xHCI" => {
+                if ctrl_idx >= self.controllers.xhci.len() {
+                    return Err("xHCI controller index out of bounds");
+                }
+                &mut *self.controllers.xhci[ctrl_idx]
+            }
+            _ => {
+                if ctrl_idx >= self.controllers.ehci.len() {
+                    return Err("EHCI controller index out of bounds");
+                }
+                &mut *self.controllers.ehci[ctrl_idx]
+            }
         };
         super::usb_bus::bot_write_sectors(host, dev_addr, ep_out, ep_in, lba, count, block_size, buf, tag)
     }

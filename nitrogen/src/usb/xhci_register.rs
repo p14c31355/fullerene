@@ -772,6 +772,7 @@ mod tests {
     fn test_hcs_params1_parsing() {
         let cap = CapabilityRegisters {
             caplength: 0x20,
+            hci_version: 0x0100,
             hcs_params1: 0x080000FF, // bits[31:24]=n_ports=8, bits[7:0]=max_slots=255
             hcs_params2: 0,
             hcs_params3: 0,
