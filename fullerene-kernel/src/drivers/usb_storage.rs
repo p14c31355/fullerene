@@ -68,6 +68,18 @@ pub fn init() {
         use crate::driver_context_impl::KernelDriverContext;
         let mut ctx = USBContext::new(&KernelDriverContext);
         let _ = ctx.enable();
+
+        // Retry polling multiple times — real xHCI hardware may need
+        // extra time for port power-up, link training, and device enumeration.
+        for i in 0..8 {
+            if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
+                klog_fmt!("USB init: device detected after {} retries\n", i + 1);
+                break;
+            }
+            delay_ms(250);
+            ctx.poll();
+        }
+
         let mut guard = USB_CTX.lock();
         *guard = Some(ctx);
     }
