@@ -424,6 +424,25 @@ fn register_nozzle_hooks() {
             Ok(pid) => tline!(ctx.terminal, "Test Linux binary started (PID: {})", pid.0),
             Err(e) => tline!(ctx.terminal, "Failed to launch test binary: {:?}", e),
         },
+        "usb_info" => {
+            use crate::drivers::usb_storage;
+            let count = usb_storage::USB_DRIVE_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+            tline!(ctx.terminal, "USB drives (global): {}", count);
+            {
+                let drives = usb_storage::USB_DRIVES.lock();
+                for d in drives.iter() {
+                    tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
+                }
+            }
+            // Also show full USB context status
+            usb_storage::with_ctx(|ctx_usb| {
+                tline!(ctx.terminal, "USBContext: {} disk(s) registered", ctx_usb.disks().len());
+                for disk in ctx_usb.disks() {
+                    tline!(ctx.terminal, "  ctrl={} dev_addr={} ep_out=0x{:02x} ep_in=0x{:02x} blk_size={} total_blocks={}",
+                        disk.ctrl_type, disk.dev_addr, disk.ep_out, disk.ep_in, disk.block_size, disk.total_blocks);
+                }
+            });
+        }
         "pci" => {
             use alloc::format;
             use nitrogen::pci::PciScanner;
