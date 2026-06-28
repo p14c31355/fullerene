@@ -194,11 +194,44 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
         }
     }
 
-    // Read the boot sector to determine actual block size / total blocks
-    // before creating the filesystem.
+    // Determine partition offset by scanning for FAT partition (MBR or raw BPB).
+    // This logic mirrors `find_fat_partition` to discover the correct boot sector LBA.
+    let mut mbr = [0u8; 512];
+    let ok = with_ctx(|ctx| {
+        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_in, 0, 1, 512, &mut mbr, &mut 1)
+    });
+    if ok.is_err() {
+        return false;
+    }
+
+    // Check if LBA 0 is exFAT or FAT BPB (no MBR)
+    let mut partition_lba = 0u32;
+    let is_exfat_at_0 = &mbr[3..11] == b"EXFAT   ";
+    let bps_at_0 = u16::from_le_bytes([mbr[11], mbr[12]]);
+    let is_fat_bpb_at_0 = bps_at_0 == 512 || bps_at_0 == 1024 || bps_at_0 == 2048 || bps_at_0 == 4096;
+
+    if !is_exfat_at_0 && !is_fat_bpb_at_0 {
+        // Check MBR signature
+        let sig = u16::from_le_bytes([mbr[0x1FE], mbr[0x1FF]]);
+        if sig == 0xAA55 {
+            // Scan partition table for FAT partition
+            for i in 0..4 {
+                let off = 0x1BE + i * 16;
+                let ptype = mbr[off + 4];
+                let lba_start = u32::from_le_bytes([mbr[off + 8], mbr[off + 9], mbr[off + 10], mbr[off + 11]]);
+                // FAT32, FAT16, exFAT partition types
+                if ptype == 0x0B || ptype == 0x0C || ptype == 0x06 || ptype == 0x0E || ptype == 0x07 {
+                    partition_lba = lba_start;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Read the actual boot sector (at partition start if partitioned)
     let mut boot = [0u8; 512];
     let ok = with_ctx(|ctx| {
-        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_in, 0, 1, 512, &mut boot, &mut 1)
+        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_in, partition_lba, 1, 512, &mut boot, &mut 1)
     });
     if ok.is_err() {
         return false;
@@ -207,6 +240,10 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
     let is_exfat = &boot[3..11] == b"EXFAT   ";
     let (block_size, total_blocks) = if is_exfat {
         let bps_shift = boot[108];
+        // Validate shift value before using it (exFAT spec: 9-12 for 512-4096 bytes/sector)
+        if bps_shift < 9 || bps_shift > 12 {
+            return false;
+        }
         let bps = 1u32 << bps_shift;
         let total_blocks = u64::from_le_bytes([
             boot[72], boot[73], boot[74], boot[75],
@@ -225,7 +262,7 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
         return false;
     }
 
-    // Update disk geometry with actual values from BPB
+    // Update disk geometry with actual values from partition boot sector
     disk.block_size = block_size;
     disk.total_blocks = total_blocks;
 
