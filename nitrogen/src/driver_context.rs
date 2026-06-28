@@ -54,7 +54,7 @@ impl fmt::Display for DriverContextError {
 ///
 /// All methods are fallible — drivers must handle allocation or mapping
 /// failures gracefully, typically by returning `None` from their `init()`.
-pub trait DriverContext {
+pub trait DriverContext: Send + Sync {
     /// Convert a physical address to a kernel-accessible virtual address.
     ///
     /// In a higher-half kernel this is typically `phys + offset`.

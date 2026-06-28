@@ -88,17 +88,24 @@ impl XhciContext {
         let scratchpad_bufs = hcs1.max_scratchpad_bufs;
 
         log::info!(
-            "xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={} ppc={}",
+            "xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={} ppc={} scratchpad={}",
             cap_regs.hcs_params1,
             n_ports,
             max_slots,
-            ppc
+            ppc,
+            scratchpad_bufs,
         );
         log::info!(
-            "xHCI: HCCPARAMS1=0x{:08X} 64bit={} xECP=0x{:x}",
+            "xHCI: HCCPARAMS1=0x{:08X} 64bit={} xECP=0x{:x} CSZ={} PPC={}",
             cap_regs.hcc_params1,
             hcc1.ac64,
-            hcc1.ext_cap_ptr
+            hcc1.ext_cap_ptr,
+            hcc1.csz,
+            hcc1.ppc,
+        );
+        log::info!(
+            "xHCI: HCIVERSION=0x{:04X}",
+            cap_regs.hci_version,
         );
 
         // ── Step 2: Dump extended capabilities ────────────────
@@ -182,12 +189,261 @@ impl XhciContext {
     // ── Initialisation ─────────────────────────────────────────
 
     /// Initialise the controller: reset, configure registers, start.
+    ///
+    /// For xHCI 1.0 controllers (HCIVERSION < 0x0110) we skip HCRST
+    /// and preserve the firmware port state, because they lack WPR
+    /// and may reject PR with CCS=0, making it impossible to recover
+    /// from RxDetect after a full reset.
     pub fn init(&mut self) -> Result<(), &'static str> {
+        let ver = self.registers.cap.hci_version;
+        if ver < 0x0110 {
+            log::info!("xHCI: HCIVERSION={:#06x} (< 1.1), using no-reset init", ver);
+            return self.init_no_reset();
+        }
         self.controller_reset()?;
         self.configure_registers()?;
-        self.start_controller()?;
+        self.start_controller_no_inte()?;
+        self.enable_interrupts();
         self.clear_hse_and_recover();
+        self.init_ports();
         Ok(())
+    }
+
+    /// Lightweight init without HCRST — preserves firmware port state.
+    ///
+    /// Some xHCI 1.0 controllers cannot recover from RxDetect after HCRST
+    /// because they lack WPR support and reject PR when CCS=0.
+    /// This path skips the reset and uses the firmware's already-detected
+    /// device state.  Ports that already have CCS=1 will be usable.
+    pub fn init_no_reset(&mut self) -> Result<(), &'static str> {
+        log::info!("xHCI: init_no_reset — skipping HCRST, preserving firmware state");
+
+        // ── Diagnostic: controller status (separate block) ────
+        {
+            let sts = self.registers.op.usbsts();
+            log::info!(
+                "xHCI: USBSTS={:#010X} HCHalted={} HSE={} EINT={} PCD={} CNR={} HCE={}",
+                sts.0, sts.hchalted() as u32, sts.hse() as u32, sts.eint() as u32,
+                sts.pcd() as u32, sts.cnr() as u32, sts.hce() as u32,
+            );
+        }
+
+        // Step 1: Start controller FIRST, before configuring registers.
+        // On Intel Wildcat Point xHCI 1.0, RS=1 must be set before the
+        // PHY begins link training.  Waiting between RS=1 and register
+        // configuration gives the internal state machine time to stabilise.
+        if self.registers.op.usbsts().hchalted() {
+            log::info!("xHCI: controller is halted, starting it FIRST");
+            self.start_controller_no_inte()?;
+            // Allow PHY to stabilise before writing context/ring registers
+            log::info!("xHCI: waiting 500ms after RS=1 for PHY stabilisation");
+            super::xhci_port::delay_ms(500);
+        } else {
+            log::info!("xHCI: controller already running");
+            self.registers.op.set_usbcmd_bits(USBCMD_HSEE);
+        }
+
+        // Step 2: Now configure registers (DCBAAP, CRCR, CONFIG, ERST).
+        log::info!("xHCI: configuring registers after RS=1");
+        self.configure_registers()?;
+        self.enable_interrupts();
+        super::xhci_port::delay_ms(200);
+
+        // Step 3: Reflect current firmware-detected ports.
+        let n_ports = self.ports.n_ports;
+        {
+            let op = &self.registers.op;
+            for port in &mut self.ports.ports {
+                port.refresh(op);
+            }
+        }
+        let mut found = 0;
+        for port_idx in 0..n_ports {
+            self.log_portsc(port_idx);
+            if self.registers.op.portsc(port_idx).ccs() {
+                found += 1;
+                log::info!("xHCI: port {} already has CCS=1 (firmware detected)", port_idx);
+            }
+        }
+        if found == 0 {
+            log::warn!("xHCI: no ports with CCS=1 after RS-first init, trying init_ports fallback");
+            self.init_ports();
+        }
+        Ok(())
+    }
+
+    /// Log PORTSC value for a single port with all relevant fields.
+    fn log_portsc(&self, port_idx: u32) {
+        let ps = self.registers.op.portsc(port_idx);
+        log::info!(
+            "xHCI:   PORTSC[{}]={:#010X} CCS={} PED={} PLS={} PP={} PR={} WPR={} speed={} \
+             CSC={} PEC={} WRC={} PRC={} PLC={} OCC={} CEC={}",
+            port_idx, ps.0,
+            ps.ccs() as u32, ps.ped() as u32, ps.pls(), ps.pp() as u32,
+            ps.pr() as u32, ps.wpr() as u32, ps.speed(),
+            (ps.0 >> 17) & 1, (ps.0 >> 18) & 1, (ps.0 >> 19) & 1,
+            (ps.0 >> 21) & 1, (ps.0 >> 22) & 1, (ps.0 >> 20) & 1,
+            (ps.0 >> 23) & 1,
+        );
+    }
+
+    /// Initialise all root-hub ports: ensure port power is on, kick
+    /// link training via RxDetect, and wait for devices to appear
+    /// (CCS=1).  This is called once after the controller starts.
+    fn init_ports(&mut self) {
+        let op = &self.registers.op;
+
+        log::info!("xHCI: initialising {} ports", self.ports.n_ports);
+
+        // ── Diagnostic: dump initial port states ──────────────
+        for port_idx in 0..self.ports.n_ports {
+            self.log_portsc(port_idx);
+        }
+
+        // ── Step 1: power-cycle USB 3.0 ports ───────────────────
+        // Some controllers leave USB 3.0 PHYs in an inconsistent
+        // state after HCRST.  A brief PP=0→PP=1 cycle forces the
+        // PHY to re-initialise from scratch.  This is analogous to
+        // what Linux's xhci-hub-control does for USB 3.0 ports and
+        // is especially important for high-capacity storage devices
+        // (USB 3.2 Gen1) that may need the PHY to complete its full
+        // training sequence before they become visible.
+        for port_idx in 0..self.ports.n_ports {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !is_usb3 {
+                continue;
+            }
+            let ps = op.portsc(port_idx).0;
+            // Only power-cycle if port is already powered (PP=1).
+            // If PP is 0, just turn it on in Step 2 below.
+            if ps & PORTSC_PP != 0 {
+                op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                super::xhci_port::delay_ms(20);
+                let v2 = op.portsc(port_idx).0;
+                op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                // Allow VBUS to stabilise before link training
+                // (USB spec §7.2.1: TATTDB ≤ 100 ms after power-on)
+                super::xhci_port::delay_ms(100);
+            }
+        }
+
+        // ── Step 2: ensure PP=1 on every port ──────────────────
+        // After the power-cycle above USB 2.0 ports (and any USB 3.0
+        // ports that were PP=0) still need their PP set.  This is a
+        // no‑op for ports where PP is already 1.
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
+        }
+        super::xhci_port::delay_ms(20);
+
+        // ── Step 2b: double-PP write (Linux workaround) ─────────
+        // Some xHCI controllers ignore the first PP write after HCRST
+        // due to internal PHY state machines not being ready.  A second
+        // write with a read-back barrier ensures the port is powered.
+        // This mimics Linux's xhci-hub-control behaviour for PPC ports.
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            if ps & PORTSC_PP == 0 {
+                log::info!("xHCI: port {} PP=0 after first write, retrying", port_idx);
+            }
+            op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
+            // Read back to flush any posted write buffer
+            let _ = op.portsc(port_idx);
+        }
+        super::xhci_port::delay_ms(50);
+
+        // ── Diagnostic: dump after power setup ──────────────────
+        for port_idx in 0..self.ports.n_ports {
+            self.log_portsc(port_idx);
+        }
+
+        // ── Step 3: exit Compliance (PLS=15) on any port ────────
+        // Some controllers boot ports in Compliance mode instead of
+        // the expected RxDetect.  Until the port leaves Compliance,
+        // link training never starts and CCS stays 0.
+        for port_idx in 0..self.ports.n_ports {
+            super::xhci_port::exit_compliance(op, port_idx);
+        }
+
+        // ── Step 4: kick RxDetect on every USB 3.0 port ─────────
+        // xHCI spec §4.3.1: after power‑on, the port transitions
+        // RxDetect → Polling → U0 automatically.  An explicit
+        // RxDetect+LWS ensures the PHY re‑starts the sequence in
+        // case the automatic transition stalled.
+        const PLS_RXDETECT: u32 = 5 << 5;
+        for port_idx in 0..self.ports.n_ports {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if is_usb3 {
+                op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+            }
+        }
+        // After the RxDetect kick, acknowledge any RW1C change bits
+        // that the hardware may have set so they don't mask future
+        // port status change events (CSC, PLC, etc.).
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            if ps & PORTSC_RW1C_MASK != 0 {
+                op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | (ps & PORTSC_RW1C_MASK));
+            }
+        }
+
+        // ── Step 5: wait for link training to complete ──────────
+        // USB 3.0 link training can take 100–500ms.  We poll CCS
+        // for up to ~2 s.
+        for port_idx in 0..self.ports.n_ports {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !is_usb3 {
+                continue;
+            }
+            for _ in 0..500 {
+                super::xhci_port::delay_ms(10);
+                if op.portsc(port_idx).ccs() {
+                    log::info!("xHCI: port {} CCS=1 after init_ports", port_idx);
+                    break;
+                }
+            }
+            if !op.portsc(port_idx).ccs() {
+                // ── WPR → PR → U0-direct fallback chain ──────────
+                log::info!(
+                    "xHCI: port {} no CCS after init_ports (portsc=0x{:08X} pls={}), WPR",
+                    port_idx, op.portsc(port_idx).0, op.portsc(port_idx).pls()
+                );
+                // 1) Warm Port Reset
+                let _ = warm_port_reset(op, port_idx);
+                if op.portsc(port_idx).ccs() {
+                    log::info!("xHCI: port {} CCS=1 after WPR", port_idx);
+                } else {
+                    log::info!("xHCI: port {} WPR no CCS, PR", port_idx);
+                    // 2) Standard Port Reset (works on some controllers even with CCS=0)
+                    let _ = port_reset(op, port_idx);
+                    if op.portsc(port_idx).ccs() {
+                        log::info!("xHCI: port {} CCS=1 after PR", port_idx);
+                    } else {
+                        log::info!("xHCI: port {} PR no CCS, U0 direct write", port_idx);
+                        // 3) Desperate: force U0 link state directly from RxDetect.
+                        //    This is not strictly spec-compliant, but some xHC
+                        //    implementations accept PLS=U0+LWS to skip RxDetect
+                        //    and go directly to Polling/U0 if a device is present.
+                        const PLS_U0: u32 = 0 << 5;
+                        op.update_portsc(port_idx, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK);
+                        super::xhci_port::delay_ms(200);
+                        if op.portsc(port_idx).ccs() {
+                            log::info!("xHCI: port {} CCS=1 after U0 write", port_idx);
+                        } else {
+                            log::warn!("xHCI: port {} all recovery attempts failed", port_idx);
+                        }
+                    }
+                }
+                self.log_portsc(port_idx);
+            }
+        }
+
+        // ── Diagnostic: dump final port states ──────────────────
+        log::info!("xHCI: port initialisation complete, final states:");
+        for port_idx in 0..self.ports.n_ports {
+            self.log_portsc(port_idx);
+        }
     }
 
     /// Reset the controller (HCRST) — public for `HostController` trait.
@@ -231,10 +487,25 @@ impl XhciContext {
 
         let sts_after = op.usbsts();
         log::info!(
-            "xHCI: after HCRST, USBSTS=0x{:08X} HCHalted={}",
+            "xHCI: after HCRST, USBSTS=0x{:08X} HCHalted={} CNR={}",
             sts_after.0,
-            sts_after.hchalted()
+            sts_after.hchalted(),
+            sts_after.cnr()
         );
+
+        // Wait for CNR (Controller Not Ready) to clear after HCRST.
+        // The xHC may need time to initialise its internal state
+        // before accepting register writes (xHCI spec §5.4.2).
+        for _ in 0..200_000 {
+            if !op.usbsts().cnr() {
+                break;
+            }
+            super::xhci_port::delay_us(100);
+        }
+        if op.usbsts().cnr() {
+            log::warn!("xHCI: CNR did not clear after HCRST");
+            return Err("CNR timeout");
+        }
 
         Ok(())
     }
@@ -276,6 +547,12 @@ impl XhciContext {
         // require this even when the driver polls USBSTS.PCD.
         self.interrupts.enable(rt);
 
+        // Enable HSE (Host System Error) detection before RS=1.
+        // The xHCI spec (§4.1) recommends HSEE=1 before starting
+        // the controller.  Some implementations require this for
+        // proper PHY operation.
+        op.set_usbcmd_bits(USBCMD_HSEE);
+
         Ok(())
     }
 
@@ -286,9 +563,15 @@ impl XhciContext {
 
     /// Internal RS=1 logic.
     fn start_controller(&mut self) -> Result<(), &'static str> {
+        self.start_controller_no_inte()
+    }
+
+    /// Start the controller without enabling interrupts (RS | HSEE only).
+    /// Used by init_no_reset() to start the controller before configure_registers().
+    fn start_controller_no_inte(&mut self) -> Result<(), &'static str> {
         let op = &self.registers.op;
 
-        op.set_usbcmd(USBCMD_RS | USBCMD_INTE);
+        op.set_usbcmd(USBCMD_RS | USBCMD_HSEE);
         for _ in 0..200_000 {
             if !op.usbsts().hchalted() {
                 break;
@@ -301,11 +584,13 @@ impl XhciContext {
             return Err("controller failed to start");
         }
 
-        // Clear HSE
-        op.clear_usbsts_bits(USBSTS_HSE);
-
         log::info!("xHCI: controller started");
         Ok(())
+    }
+
+    /// Enable interrupts after the event ring is configured.
+    fn enable_interrupts(&mut self) {
+        self.registers.op.set_usbcmd_bits(USBCMD_INTE);
     }
 
     /// Clear HSE and re-kick link training on all ports.
@@ -372,6 +657,12 @@ impl XhciContext {
             log::info!("xHCI: PCD detected, re-evaluating all ports");
         }
 
+        // ── Refresh all ports once before the loop ─────────
+        // Previously refresh_all was called inside the per-port loop,
+        // which caused N full PORTSC scans (one per port) and could
+        // overwrite the local state of the port currently being processed.
+        self.ports.refresh_all(op);
+
         for port_idx in 0..self.ports.n_ports {
             // Skip already-processed ports
             let skip = self.ports.get(port_idx).map(|p| p.done).unwrap_or(true);
@@ -379,18 +670,21 @@ impl XhciContext {
                 continue;
             }
 
-            self.ports.refresh_all(op);
-
-            // Get current port state
-            let port = self.ports.get(port_idx).unwrap();
-
             // ── Power-cycle if PPC supported ──────────────
-            if self.ports.ppc && (!port.pp_on() || port.pls() == 5) {
+            let needs_power_cycle = self
+                .ports
+                .get(port_idx)
+                .map(|p| self.ports.ppc && (!p.pp_on() || p.pls() == 5))
+                .unwrap_or(false);
+            if needs_power_cycle {
                 power_cycle(op, port_idx);
             }
 
             let ps = op.portsc(port_idx);
             if !ps.ccs() {
+                // ── Exit Compliance (PLS=15) if stuck ────
+                exit_compliance(op, port_idx);
+
                 // ── Warm Port Reset (USB 3.0 only) ───────
                 let is_usb3 = self
                     .ports
@@ -411,7 +705,7 @@ impl XhciContext {
                         p.wpr_attempted = true;
                     }
                     let wpr_result = warm_port_reset(op, port_idx);
-                    let ps_after = op.portsc(port_idx);
+                    let _ps_after = op.portsc(port_idx);
                     // Wait for link training to complete after WPR
                     for _ in 0..120 {
                         super::xhci_port::delay_ms(10);
@@ -460,8 +754,13 @@ impl XhciContext {
                         if op.portsc(port_idx).ccs() {
                             // Continue processing below
                         } else {
+                            // HSE recovery didn't bring up CCS — increment retry
+                            // count, mark done only after MAX_PORT_RETRIES.
                             if let Some(p) = self.ports.get_mut(port_idx) {
-                                p.done = true;
+                                p.retry_count += 1;
+                                if p.retry_count >= MAX_PORT_RETRIES {
+                                    p.done = true;
+                                }
                             }
                             continue;
                         }
