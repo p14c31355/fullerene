@@ -186,7 +186,7 @@ impl XhciContext {
 
     /// Check if the controller is running (HCHalted = 0).
     pub fn is_running(&self) -> bool {
-        !self.registers.op.usbsts() & USBSTS_HCH != 0
+        self.registers.op.usbsts() & USBSTS_HCH == 0
     }
 
     // ── Initialisation ─────────────────────────────────────────
@@ -483,7 +483,7 @@ impl XhciContext {
         // Wait for CNR (Controller Not Ready) to clear
         // The xHC needs time to initialize internal state after HCRST.
         for _ in 0..200_000 {
-            if !op.usbsts() & USBSTS_CNR != 0 {
+            if op.usbsts() & USBSTS_CNR == 0 {
                 break;
             }
             super::port::delay_us(100);
@@ -499,7 +499,7 @@ impl XhciContext {
         // The xHC may need time to initialise its internal state
         // before accepting register writes (xHCI spec §5.4.2).
         for _ in 0..200_000 {
-            if !op.usbsts() & USBSTS_CNR != 0 {
+            if op.usbsts() & USBSTS_CNR == 0 {
                 break;
             }
             super::port::delay_us(100);
@@ -583,7 +583,7 @@ impl XhciContext {
 
         op.set_usbcmd(USBCMD_RS | USBCMD_HSEE);
         for _ in 0..200_000 {
-            if !op.usbsts() & USBSTS_HCH != 0 {
+            if op.usbsts() & USBSTS_HCH == 0 {
                 break;
             }
             super::port::delay_us(100);
@@ -608,7 +608,7 @@ impl XhciContext {
         let op = &self.registers.op;
         let sts = op.usbsts();
 
-        if !sts & USBSTS_HSE != 0 {
+        if sts & USBSTS_HSE == 0 {
             return;
         }
 
@@ -1034,17 +1034,29 @@ impl XhciContext {
     }
 
     /// Release a single device slot and free its resources.
+    /// Sends a DISABLE_SLOT command per xHCI spec §4.6.5 before freeing.
     pub fn disable_slot(&mut self, slot_id: u32) {
+        // Send DISABLE_SLOT command TRB (xHCI spec §6.4.3.8)
+        let _ = self.send_cmd(
+            Trb::new(trb_type::DISABLE_SLOT, self.rings.command.cycle)
+                .with_flags(slot_id << 24)
+        );
         let ctx = self.driver_ctx;
         self.device.dcbaa.clear_slot(slot_id);
         self.device.slots.release_slot(slot_id, ctx);
     }
 
     /// Release all device slots and free resources.
+    /// Sends DISABLE_SLOT commands for each slot before freeing.
     pub fn disable_all_slots(&mut self) {
         let ctx = self.driver_ctx;
-        for slot in &self.device.slots.slots {
-            self.device.dcbaa.clear_slot(slot.slot_id);
+        let ids: Vec<u32> = self.device.slots.slots.iter().map(|s| s.slot_id).collect();
+        for slot_id in &ids {
+            let _ = self.send_cmd(
+                Trb::new(trb_type::DISABLE_SLOT, self.rings.command.cycle)
+                    .with_flags(*slot_id << 24)
+            );
+            self.device.dcbaa.clear_slot(*slot_id);
         }
         self.device.slots.release_all(ctx);
     }
@@ -1052,10 +1064,15 @@ impl XhciContext {
     // ── Command submission ─────────────────────────────────────
 
     /// Enqueue a command TRB and wait for completion.
+    /// Returns the event TRB flags on success, or an error if the
+    /// event's completion code is not Success (xHCI spec §6.4.2.1).
     fn send_cmd(&mut self, trb: Trb) -> Result<u32, &'static str> {
         self.rings.command.enqueue(trb);
         self.registers.doorbell.ring(0, 0);
         let ev = wait_event(&mut self.rings.event, &self.registers.runtime, 5_000_000)?;
+        if ev.completion_code() != COMP_SUCCESS {
+            return Err("command completion code not success");
+        }
         Ok(ev.flags)
     }
 
@@ -1147,8 +1164,9 @@ impl XhciContext {
             }
         }
 
-        // Free staging buffer (only on success, HC may still own it on timeout)
-        if res.is_ok() && staging_phys != 0 {
+        // Free staging buffer (on both success and timeout — HC DMA may have
+        // completed by the time we time out, and stale pages waste memory).
+        if staging_phys != 0 {
             self.driver_ctx
                 .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
         }

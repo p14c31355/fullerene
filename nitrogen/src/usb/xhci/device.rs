@@ -348,7 +348,7 @@ pub struct DeviceContextSet {
 impl DeviceContextSet {
     /// Create a new device context set with DCBAA, optional scratchpad, and slot manager.
     pub fn new(ctx: &dyn DriverContext, max_slots: u32, scratchpad_count: u32) -> Option<Self> {
-        let mut dcbaa = Dcbaa::alloc(ctx)?;
+        let dcbaa = Dcbaa::alloc(ctx)?;
         let scratchpad = Scratchpad::alloc(ctx, scratchpad_count);
 
         // DCBAA[0] = scratchpad array pointer (or 0 if none)

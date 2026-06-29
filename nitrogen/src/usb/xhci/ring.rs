@@ -20,12 +20,16 @@ pub mod trb_type {
     pub const ADDRESS_DEVICE: u8 = 10;
     pub const CONFIGURE_ENDPOINT: u8 = 11;
     pub const EVALUATE_CONTEXT: u8 = 12;
+    pub const DISABLE_SLOT: u8 = 13;
     pub const RESET_ENDPOINT: u8 = 14;
     pub const STOP_ENDPOINT: u8 = 15;
     pub const SET_TR_DEQUEUE: u8 = 16;
     pub const RESET_DEVICE: u8 = 17;
     pub const NO_OP: u8 = 23;
 }
+
+/// Command completion code for Success (xHCI spec §6.4.2.1, Table 6-93).
+pub const COMP_SUCCESS: u8 = 1;
 
 pub mod trb_flag {
     pub const CYCLE: u32 = 1 << 0;

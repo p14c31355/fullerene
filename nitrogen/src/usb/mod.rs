@@ -198,6 +198,6 @@ pub struct UsbDevice {
 
 impl UsbDevice {
     pub fn is_mass_storage(&self) -> bool {
-        self.device_class == MSC_CLASS || self.configurations > 0
+        self.device_class == MSC_CLASS
     }
 }

@@ -4,7 +4,6 @@
 //! [`Mmio`], [`OperationalRegisters`], [`RuntimeRegisters`],
 //! and [`DoorbellRegisters`].
 
-use alloc::vec::Vec;
 use core::ptr;
 
 // ══════════════════════════════════════════════════════════════
@@ -310,9 +309,10 @@ impl DoorbellRegisters {
         Self(Mmio(base))
     }
 
-    pub fn ring(&self, slot: u32, stream: u32) {
+    pub fn ring(&self, slot: u32, target: u32) {
         let off = slot as usize * 4;
-        let val = (stream & 0xFF) | ((stream >> 8) & 0xFF) << 16;
+        // xHCI spec §5.5.7.2.1: DB Target (DCI) in bits [15:8], Stream ID in bits [7:0]
+        let val = (target & 0xFF) | ((target << 8) & 0xFF00);
         self.0.write32(off, val);
     }
 }
@@ -715,9 +715,10 @@ mod tests {
         let val = unsafe { ptr::read_volatile(sim.base().add(db_base) as *const u32) };
         assert_eq!(val, 0);
 
+        // Ring doorbell for slot 5, DCI=1 (EP0): DB Target in bits [15:8] per xHCI spec §5.5.7.2.1
         db.ring(5, 1);
         let val = unsafe { ptr::read_volatile(sim.base().add(db_base + 5 * 4) as *const u32) };
-        assert_eq!(val, 1);
+        assert_eq!(val, (1 << 8) | 1); // Stream ID=1, DB Target=1
     }
 
     #[test]

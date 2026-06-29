@@ -322,10 +322,15 @@ impl USBContext {
             ehci.reset_pools();
 
             let dev = {
-                let mut ctrl_fn = |addr, ep, setup: &super::UsbSetupPacket, buf: &mut [u8]| {
-                    ehci.control_transfer(addr, ep, setup, buf)
+                let mut addr_slot = ehci.next_address;
+                let result = {
+                    let mut ctrl_fn = |addr, ep, setup: &super::UsbSetupPacket, buf: &mut [u8]| {
+                        ehci.control_transfer(addr, ep, setup, buf)
+                    };
+                    super::hub::enumerate_device(&mut ctrl_fn, &mut addr_slot)
                 };
-                super::hub::enumerate_device(&mut ctrl_fn)
+                ehci.next_address = addr_slot;
+                result
             };
             let dev = match dev {
                 Ok(d) if d.is_mass_storage() => d,

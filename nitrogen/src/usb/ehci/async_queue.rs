@@ -187,14 +187,17 @@ impl AsyncSchedule {
     ///
     /// The list is circular: head → ... → qHx → ... → head.
     /// This inserts the new qH immediately after the head.
+    /// Per EHCI spec §4.8.2: the new qH's horz_link must be set BEFORE
+    /// modifying the predecessor's link, to prevent the HC from following
+    /// a broken link during async schedule traversal.
     pub fn insert(&mut self, qh_phys: u64, ctx: &dyn DriverContext) {
         let head_next = unsafe { ptr::read_volatile(&self.head.horz_link) };
-        unsafe {
-            ptr::write_volatile(&mut self.head.horz_link, (qh_phys as u32) | QH_HORZ_TYPE_QH);
-        }
         let qh_virt = ctx.phys_to_virt(qh_phys) as *mut QueueHead;
         unsafe {
             ptr::write_volatile(&mut (*qh_virt).horz_link, head_next);
+        }
+        unsafe {
+            ptr::write_volatile(&mut self.head.horz_link, (qh_phys as u32) | QH_HORZ_TYPE_QH);
         }
     }
 

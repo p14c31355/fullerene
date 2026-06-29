@@ -13,8 +13,8 @@ use super::host_controller::HostController;
 use super::xhci::context::XhciContext;
 use crate::DriverContext;
 use crate::usb::{
-    DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDevice,
-    UsbDirection, UsbSetupPacket, UsbXferType,
+    DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION,
+    UsbDirection, UsbSetupPacket,
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -139,6 +139,12 @@ pub fn bot_exec_command(
     if csw_raw[12] != 0 {
         return Err("CSW reported error");
     }
+    // Check residue: if the device transferred fewer bytes than requested,
+    // the command did not complete as expected (BOT spec §5.2).
+    let residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
+    if residue != 0 {
+        return Err("CSW non-zero residue");
+    }
     Ok(())
 }
 
@@ -185,6 +191,10 @@ pub fn bot_write_sectors(
     buf: &[u8],
     tag: &mut u32,
 ) -> Result<(), &'static str> {
+    let dlen = count as u32 * block_size;
+    if buf.len() < dlen as usize {
+        return Err("buffer too small");
+    }
     let mut cdb = [0u8; 10];
     cdb[0] = 0x2A; // WRITE_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
