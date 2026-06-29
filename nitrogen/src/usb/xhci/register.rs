@@ -758,7 +758,7 @@ mod tests {
         // Step 2: Simulate RxDetect kick via update_portsc
         const PLS_RXDETECT: u32 = 5 << 5;
         for p in 0..2 {
-            op.update_portsc(p, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+            op.update_portsc(p, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
         }
 
         // Verify the link state was set to RxDetect while preserving CCS

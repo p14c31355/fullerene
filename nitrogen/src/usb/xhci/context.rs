@@ -347,7 +347,7 @@ impl XhciContext {
         }
         const PLS_RXDETECT: u32 = 5 << 5;
         for port_idx in 0..self.ports.n_ports {
-            op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+            op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
         }
         for port_idx in 0..self.ports.n_ports {
             let ps = op.portsc(port_idx).0;
@@ -391,15 +391,20 @@ impl XhciContext {
                     self.log_portsc(port_idx);
                     continue;
                 }
-                log::info!("xHCI: port {} PR no CCS, U0 direct write", port_idx);
-                // 3) Force U0 link state
-                const PLS_U0: u32 = 0 << 5;
-                op.update_portsc(port_idx, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK);
-                super::port::delay_ms(200);
-                if op.portsc(port_idx).ccs() {
-                    log::info!("xHCI: port {} CCS=1 after U0 write", port_idx);
+                let pls = op.portsc(port_idx).pls();
+                if pls == 5 {
+                    log::info!("xHCI: port {} in RxDetect (PLS=5) after PR — idle, waiting for connection", port_idx);
                 } else {
-                    log::warn!("xHCI: port {} all recovery attempts failed", port_idx);
+                    log::info!("xHCI: port {} PR no CCS, U0 direct write (pls={})", port_idx, pls);
+                    // 3) Force U0 link state (valid for Polling/U3/Compliance, NOT RxDetect)
+                    const PLS_U0: u32 = 0 << 5;
+                    op.update_portsc(port_idx, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
+                    super::port::delay_ms(200);
+                    if op.portsc(port_idx).ccs() {
+                        log::info!("xHCI: port {} CCS=1 after U0 write", port_idx);
+                    } else {
+                        log::warn!("xHCI: port {} all recovery attempts failed", port_idx);
+                    }
                 }
                 self.log_portsc(port_idx);
             }

@@ -311,7 +311,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
         // Some older / quirky xHC implementations may need this extra
         // kick after WPR when the automatic training stalls.
         const PLS_RXDETECT: u32 = 5 << 5;
-        op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+        op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
         for _ in 0..120 {
             delay_ms(10);
             if op.portsc(port).ccs() {
@@ -333,7 +333,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
 /// Uses `update_portsc` to preserve all non-PLS register bits.
 pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
     const PLS_RXDETECT: u32 = 5 << 5;
-    op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+    op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
 }
 
 /// Exit Compliance (PLS=15) mode by transitioning to a non-compliance link state.
@@ -350,7 +350,7 @@ pub fn exit_compliance(op: &OperationalRegisters, port: u32) -> bool {
     }
     log::info!("xHCI: port {} in Compliance mode (PLS=15), attempting exit", port);
     const PLS_U0: u32 = 0 << 5;
-    op.update_portsc(port, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK);
+    op.update_portsc(port, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
     delay_ms(50);
     let ps2 = op.portsc(port);
     if ps2.pls() != 15 {
