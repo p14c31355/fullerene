@@ -5,6 +5,7 @@
 //! for command submission, transfer scheduling, and event reporting.
 
 use crate::DriverContext;
+use crate::usb::dma;
 use core::ptr;
 
 pub const TRB_SIZE: usize = 16;
@@ -96,16 +97,7 @@ impl Trb {
 // ══════════════════════════════════════════════════════════════
 
 fn alloc_ring_slice(ctx: &dyn DriverContext, n: usize) -> Option<(&'static mut [Trb], u64)> {
-    let pages = (n * TRB_SIZE + 4095) / 4096;
-    let p = ctx.allocate_contiguous_frames(pages).ok()?;
-    let v = unsafe { core::slice::from_raw_parts_mut(ctx.phys_to_virt(p) as *mut Trb, n) };
-    for e in v.iter_mut() { *e = Trb::new(0, 0); }
-    Some((v, p))
-}
-
-fn free_ring_slice(ctx: &dyn DriverContext, phys: u64, len: usize) {
-    let pages = (len * TRB_SIZE + 4095) / 4096;
-    let _ = ctx.free_contiguous_frames(phys, pages);
+    dma::alloc_dma::<Trb>(ctx, n)
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -132,7 +124,7 @@ impl Ring {
     }
 
     pub fn free(&self, ctx: &dyn DriverContext) {
-        free_ring_slice(ctx, self.phys, self.len);
+        dma::free_dma(ctx, self.phys, (self.len * TRB_SIZE + 4095) / 4096);
     }
 
     pub fn enqueue(&mut self, mut trb: Trb) {
@@ -180,7 +172,7 @@ impl EventRing {
     }
 
     pub fn free(&self, ctx: &dyn DriverContext) {
-        free_ring_slice(ctx, self.phys, self.len);
+        dma::free_dma(ctx, self.phys, (self.len * TRB_SIZE + 4095) / 4096);
     }
 
     pub fn has_pending(&self) -> bool {

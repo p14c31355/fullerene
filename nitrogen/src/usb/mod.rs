@@ -18,6 +18,9 @@ pub mod context;
 // Common host-controller abstraction
 pub mod host_controller;
 
+// DMA allocation helpers
+mod dma;
+
 // EHCI sub-context modules
 pub mod ehci;
 

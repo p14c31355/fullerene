@@ -319,115 +319,40 @@ impl XhciContext {
         log::info!("xHCI: initialising {} ports", self.ports.n_ports);
 
         // ── Diagnostic: dump initial port states ──────────────
-        for port_idx in 0..self.ports.n_ports {
-            self.log_portsc(port_idx);
-        }
+        (0..self.ports.n_ports).for_each(|p| self.log_portsc(p));
 
-        // ── Step 1: power-cycle USB 3.0 ports ───────────────────
-        // Some controllers leave USB 3.0 PHYs in an inconsistent
-        // state after HCRST.  A brief PP=0→PP=1 cycle forces the
-        // PHY to re-initialise from scratch.  This is analogous to
-        // what Linux's xhci-hub-control does for USB 3.0 ports and
-        // is especially important for high-capacity storage devices
-        // (USB 3.2 Gen1) that may need the PHY to complete its full
-        // training sequence before they become visible.
+        // ── Power up: USB 3.0 power-cycle, then PP=1 x2 on all ──
         for port_idx in 0..self.ports.n_ports {
-            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-            if !is_usb3 {
-                continue;
-            }
             let ps = op.portsc(port_idx).0;
-            // Only power-cycle if port is already powered (PP=1).
-            // If PP is 0, just turn it on in Step 2 below.
-            if ps & PORTSC_PP != 0 {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if is_usb3 && (ps & PORTSC_PP) != 0 {
                 op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
                 super::port::delay_ms(20);
-                let v2 = op.portsc(port_idx).0;
-                op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
-                // Allow VBUS to stabilise before link training
-                // (USB spec §7.2.1: TATTDB ≤ 100 ms after power-on)
+                op.write_portsc(port_idx, (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP);
                 super::port::delay_ms(100);
             }
         }
-
-        // ── Step 2: ensure PP=1 on every port ──────────────────
-        // After the power-cycle above USB 2.0 ports (and any USB 3.0
-        // ports that were PP=0) still need their PP set.  This is a
-        // no‑op for ports where PP is already 1.
-        for port_idx in 0..self.ports.n_ports {
-            let ps = op.portsc(port_idx).0;
-            op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
-        }
-        super::port::delay_ms(20);
-
-        // ── Step 2b: double-PP write (Linux workaround) ─────────
-        // Some xHCI controllers ignore the first PP write after HCRST
-        // due to internal PHY state machines not being ready.  A second
-        // write with a read-back barrier ensures the port is powered.
-        // This mimics Linux's xhci-hub-control behaviour for PPC ports.
-        for port_idx in 0..self.ports.n_ports {
-            let ps = op.portsc(port_idx).0;
-            if ps & PORTSC_PP == 0 {
-                log::info!("xHCI: port {} PP=0 after first write, retrying", port_idx);
+        for _ in 0..2 {
+            for p in 0..self.ports.n_ports {
+                op.write_portsc(p, (op.portsc(p).0 & !PORTSC_RW1C_MASK) | PORTSC_PP);
             }
-            op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
-            // Read back to flush any posted write buffer
-            let _ = op.portsc(port_idx);
+            super::port::delay_ms(20);
         }
         super::port::delay_ms(50);
+        (0..self.ports.n_ports).for_each(|p| self.log_portsc(p));
 
-        // ── Diagnostic: dump after power setup ──────────────────
-        for port_idx in 0..self.ports.n_ports {
-            self.log_portsc(port_idx);
-        }
-
-        // ── Step 3: exit Compliance (PLS=15) on any port ────────
-        // Some controllers boot ports in Compliance mode instead of
-        // the expected RxDetect.  Until the port leaves Compliance,
-        // link training never starts and CCS stays 0.
+        // ── Exit Compliance + kick RxDetect on all ports ──────
         for port_idx in 0..self.ports.n_ports {
             super::port::exit_compliance(op, port_idx);
         }
-
-        // ── Step 4: kick RxDetect on every USB 3.0 port ─────────
-        // xHCI spec §4.3.1: after power‑on, the port transitions
-        // RxDetect → Polling → U0 automatically.  An explicit
-        // RxDetect+LWS ensures the PHY re‑starts the sequence in
-        // case the automatic transition stalled.
         const PLS_RXDETECT: u32 = 5 << 5;
         for port_idx in 0..self.ports.n_ports {
-            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-            if is_usb3 {
-                op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
-            }
+            op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
         }
-        // After the RxDetect kick, acknowledge any RW1C change bits
-        // that the hardware may have set so they don't mask future
-        // port status change events (CSC, PLC, etc.).
         for port_idx in 0..self.ports.n_ports {
             let ps = op.portsc(port_idx).0;
             if ps & PORTSC_RW1C_MASK != 0 {
                 op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | (ps & PORTSC_RW1C_MASK));
-            }
-        }
-
-        // ── Step 4b: also kick RxDetect on USB 2.0 ports ────────
-        // Some Intel xHCI controllers need the RxDetect kick on
-        // USB 2.0 ports too, not just USB 3.0.
-        for port_idx in 0..self.ports.n_ports {
-            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-            if !is_usb3 {
-                op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
-            }
-        }
-        // Acknowledge RW1C change bits on USB 2.0 ports after RxDetect kick
-        for port_idx in 0..self.ports.n_ports {
-            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-            if !is_usb3 {
-                let ps = op.portsc(port_idx).0;
-                if ps & PORTSC_RW1C_MASK != 0 {
-                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | (ps & PORTSC_RW1C_MASK));
-                }
             }
         }
         super::port::delay_ms(200);

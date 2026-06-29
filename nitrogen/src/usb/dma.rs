@@ -1,0 +1,41 @@
+//! DMA memory allocation helpers — reduce the boilerplate of:
+//!   allocate_contiguous_frames → phys_to_virt → zero → use
+//!
+//! # Example
+//!
+//! ```ignore
+//! let (entries, phys) = alloc_dma::<Trb>(ctx, 256)?;
+//! let (page_virt, page_phys) = alloc_dma_page(ctx)?;
+//! ```
+
+use crate::DriverContext;
+
+/// Allocate `n` elements of type `T` in contiguous physical memory.
+/// Memory is zeroed. Returns (mutable slice, physical address).
+pub(crate) fn alloc_dma<T>(ctx: &dyn DriverContext, n: usize) -> Option<(&'static mut [T], u64)> {
+    let size = n * core::mem::size_of::<T>();
+    let pages = (size + 4095) / 4096;
+    let phys = ctx.allocate_contiguous_frames(pages).ok()?;
+    let virt = ctx.phys_to_virt(phys) as *mut u8;
+    unsafe { core::ptr::write_bytes(virt, 0, pages * 4096); }
+    let slice = unsafe { core::slice::from_raw_parts_mut(virt as *mut T, n) };
+    Some((slice, phys))
+}
+
+/// Allocate a single zeroed 4KB page. Returns (virtual address, physical address).
+pub(crate) fn alloc_dma_page(ctx: &dyn DriverContext) -> Option<(*mut u8, u64)> {
+    let phys = ctx.allocate_contiguous_frames(1).ok()?;
+    let virt = ctx.phys_to_virt(phys) as *mut u8;
+    unsafe { core::ptr::write_bytes(virt, 0, 4096); }
+    Some((virt, phys))
+}
+
+/// Free `pages` contiguous frames at `phys`.
+pub(crate) fn free_dma(ctx: &dyn DriverContext, phys: u64, pages: usize) {
+    let _ = ctx.free_contiguous_frames(phys, pages);
+}
+
+/// Free a single allocated page.
+pub(crate) fn free_dma_page(ctx: &dyn DriverContext, phys: u64) {
+    let _ = ctx.free_contiguous_frames(phys, 1);
+}

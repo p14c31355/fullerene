@@ -16,6 +16,7 @@
 
 use super::ring::Ring;
 use crate::DriverContext;
+use crate::usb::dma;
 
 use alloc::vec::Vec;
 use core::ptr;
@@ -35,15 +36,9 @@ pub struct Dcbaa {
 }
 
 impl Dcbaa {
-    /// Allocate and zero a DCBAA page (4096 bytes, 64-byte aligned).
     pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-        let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut u64;
-        let entries = unsafe { &mut *virt.cast::<[u64; 256]>() };
-        for e in entries.iter_mut() {
-            *e = 0;
-        }
-        Some(Self { entries, phys })
+        let (virt, phys) = dma::alloc_dma_page(ctx)?;
+        Some(Self { entries: unsafe { &mut *virt.cast::<[u64; 256]>() }, phys })
     }
 
     /// Write the device context pointer for a given slot.
@@ -77,13 +72,8 @@ pub struct DeviceContext {
 }
 
 impl DeviceContext {
-    /// Allocate a zeroed device context page (4096 bytes).
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
-        let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe {
-            ptr::write_bytes(virt, 0, 4096);
-        }
+        let (virt, phys) = dma::alloc_dma_page(ctx)?;
         Some((virt as *mut Self, phys))
     }
 }
@@ -124,13 +114,8 @@ pub struct InputContext {
 }
 
 impl InputContext {
-    /// Allocate a zeroed input context page (4096 bytes).
     pub fn alloc(ctx: &dyn DriverContext) -> Option<(*mut Self, u64)> {
-        let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe {
-            ptr::write_bytes(virt, 0, 4096);
-        }
+        let (virt, phys) = dma::alloc_dma_page(ctx)?;
         Some((virt as *mut Self, phys))
     }
 
@@ -232,40 +217,14 @@ pub struct Scratchpad {
 }
 
 impl Scratchpad {
-    /// Allocate scratchpad buffers and their array.
-    ///
-    /// Returns None if `count == 0` (scratchpad not required).
     pub fn alloc(ctx: &dyn DriverContext, count: u32) -> Option<Self> {
-        if count == 0 {
-            return None;
-        }
-        // Allocate array of 64-bit pointers: count * 8 bytes
-        let array_pages = ((count as usize * 8) + 4095) / 4096;
-        let array_phys = ctx.allocate_contiguous_frames(array_pages).ok()?;
-        let array_virt = ctx.phys_to_virt(array_phys) as *mut u64;
-
-        // Allocate individual scratchpad buffer pages and write pointers
+        if count == 0 { return None; }
+        let (array, array_phys) = dma::alloc_dma::<u64>(ctx, count as usize)?;
         for i in 0..count as usize {
-            match ctx.allocate_contiguous_frames(1) {
-                Ok(buf_phys) => unsafe {
-                    ptr::write_volatile(array_virt.add(i), buf_phys);
-                },
-                Err(_) => {
-                    // Free previously allocated buffers and array
-                    for j in 0..i {
-                        let prev_phys = unsafe { ptr::read_volatile(array_virt.add(j)) };
-                        let _ = ctx.free_contiguous_frames(prev_phys, 1);
-                    }
-                    let _ = ctx.free_contiguous_frames(array_phys, array_pages);
-                    return None;
-                }
-            }
+            let (_, buf_phys) = dma::alloc_dma_page(ctx)?;
+            unsafe { ptr::write_volatile(&mut array[i], buf_phys); }
         }
-
-        Some(Self {
-            phys: array_phys,
-            count,
-        })
+        Some(Self { phys: array_phys, count })
     }
 }
 
