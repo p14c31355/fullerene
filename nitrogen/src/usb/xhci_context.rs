@@ -777,26 +777,13 @@ impl XhciContext {
                         if op.portsc(port_idx).ccs() {
                             // Continue to port reset below
                         } else {
-                            // ── PR pulse fallback ──────────
-                            // Pulse Port Reset (PR=1 → wait → PR=0) to force the
-                            // port to re-initialise even when CCS is 0.  Some
-                            // controllers need this kick after HCRST.
-                            // Bound the loop to ~50 ms (xHCI clears PR within
-                            // tens of ms in practice).
-                            let ps = op.portsc(port_idx).0;
-                            op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PR);
-                            for _ in 0..500 {
-                                if op.portsc(port_idx).0 & PORTSC_PR == 0 {
-                                    break;
-                                }
-                                super::xhci_port::delay_us(100);
-                            }
-                            // Ensure PR is clear
-                            let ps2 = op.portsc(port_idx).0;
-                            op.write_portsc(port_idx, (ps2 & !PORTSC_RW1C_MASK) & !PORTSC_PR);
-                            super::xhci_port::delay_ms(50);
+                            // ── Port Reset fallback ─────────
+                            // Call the full port_reset() which handles CCS=0 ports,
+                            // asserts PR with proper timing (up to 20s wait), and
+                            // waits for CCS to appear after PR clears.
+                            port_reset(op, port_idx).ok();
                             if op.portsc(port_idx).ccs() {
-                                // Continue to port reset below
+                                // Device appeared after reset — continue to enable
                             } else {
                                 // Still no device — increment retry, mark done after max attempts
                                 if let Some(p) = self.ports.get_mut(port_idx) {
