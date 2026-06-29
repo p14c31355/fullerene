@@ -948,6 +948,7 @@ impl FatFileSystem {
         let name_len = name_utf16.len() as u8;
         buf_c0[3] = name_len;
         buf_c0[4..6].copy_from_slice(&0u16.to_le_bytes()); // name hash (optional)
+        buf_c0[8..16].copy_from_slice(&file_size.to_le_bytes());
         buf_c0[20..24].copy_from_slice(&first_cluster.to_le_bytes());
         buf_c0[24..32].copy_from_slice(&file_size.to_le_bytes());
 
