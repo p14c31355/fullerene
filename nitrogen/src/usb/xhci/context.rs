@@ -374,36 +374,56 @@ impl XhciContext {
                     "xHCI: port {} no CCS after init_ports (portsc=0x{:08X} pls={}, usb3={})",
                     port_idx, op.portsc(port_idx).0, op.portsc(port_idx).pls(), is_usb3
                 );
+                // 1) Warm Port Reset (USB 3.0 only)
+                // WPR re-initialises the USB 3.0 PHY and restarts link training.
+                // Unlike PR, WPR is valid on ports in RxDetect with CCS=0.
                 if is_usb3 {
-                    // 1) Warm Port Reset (USB 3.0 only)
                     let _ = warm_port_reset(op, port_idx);
                     if op.portsc(port_idx).ccs() {
                         log::info!("xHCI: port {} CCS=1 after WPR", port_idx);
                         self.log_portsc(port_idx);
                         continue;
                     }
-                    log::info!("xHCI: port {} WPR no CCS, PR", port_idx);
                 }
-                // 2) Standard Port Reset (works on both USB 2.0 and USB 3.0)
-                let _ = port_reset(op, port_idx);
-                if op.portsc(port_idx).ccs() {
-                    log::info!("xHCI: port {} CCS=1 after PR", port_idx);
-                    self.log_portsc(port_idx);
-                    continue;
-                }
-                let pls = op.portsc(port_idx).pls();
-                if pls == 5 {
-                    log::info!("xHCI: port {} in RxDetect (PLS=5) after PR — idle, waiting for connection", port_idx);
-                } else {
-                    log::info!("xHCI: port {} PR no CCS, U0 direct write (pls={})", port_idx, pls);
-                    // 3) Force U0 link state (valid for Polling/U3/Compliance, NOT RxDetect)
-                    const PLS_U0: u32 = 0 << 5;
-                    op.update_portsc(port_idx, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
-                    super::port::delay_ms(200);
-                    if op.portsc(port_idx).ccs() {
-                        log::info!("xHCI: port {} CCS=1 after U0 write", port_idx);
+
+                // 2) Check port state after WPR (or directly for USB 2.0)
+                let ps = op.portsc(port_idx);
+                let in_rxdetect = ps.pls() == 5;
+
+                if in_rxdetect {
+                    // Port is in RxDetect (idle listening) — this is the correct
+                    // state for an empty port.  PR on CCS=0+RxDetect may hang
+                    // some controllers (PR never clears).  Skip it.
+                    if is_usb3 {
+                        log::info!("xHCI: port {} in RxDetect after WPR — idle, awaiting connection", port_idx);
                     } else {
-                        log::warn!("xHCI: port {} all recovery attempts failed", port_idx);
+                        log::info!("xHCI: port {} in RxDetect — idle, awaiting connection", port_idx);
+                    }
+                } else {
+                    // Port is NOT in RxDetect — try Port Reset to recover.
+                    // Linux only sets PR when CCS=1; on CCS=0 we only do PR
+                    // when the port is in a non-idle state (e.g. Compliance,
+                    // Polling stalled, Inactive) where a reset may help.
+                    log::info!("xHCI: port {} CCS=0 in PLS={}, trying PR", port_idx, ps.pls());
+                    let _ = port_reset(op, port_idx);
+                    if op.portsc(port_idx).ccs() {
+                        log::info!("xHCI: port {} CCS=1 after PR", port_idx);
+                        self.log_portsc(port_idx);
+                        continue;
+                    }
+
+                    // 3) Force U0 link state (valid for Polling/U3, NOT RxDetect)
+                    let pls = op.portsc(port_idx).pls();
+                    if pls != 5 {
+                        log::info!("xHCI: port {} PR no CCS, U0 direct write (pls={})", port_idx, pls);
+                        const PLS_U0: u32 = 0 << 5;
+                        op.update_portsc(port_idx, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
+                        super::port::delay_ms(200);
+                        if op.portsc(port_idx).ccs() {
+                            log::info!("xHCI: port {} CCS=1 after U0 write", port_idx);
+                        } else {
+                            log::warn!("xHCI: port {} all recovery attempts failed", port_idx);
+                        }
                     }
                 }
                 self.log_portsc(port_idx);

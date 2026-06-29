@@ -1389,6 +1389,7 @@ fn render_explorer(rt: &mut RuntimeState) {
         Some(w) => w,
         None => {
             rt.explorer = None;
+            rt.explorer_dirty = false;
             return;
         }
     };

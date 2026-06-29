@@ -195,16 +195,19 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     // If already open, just focus it and refresh sidebar
     if let Some(ref mut explorer) = rt.explorer {
         if let Some(id) = explorer.window_id {
-            // Defer USB poll to avoid blocking the event loop
-            if crate::get_usb_drives().is_empty() {
-                rt.usb_poll_pending = true;
+            if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
+                // Defer USB poll to avoid blocking the event loop
+                if crate::get_usb_drives().is_empty() {
+                    rt.usb_poll_pending = true;
+                }
+                explorer.refresh_sidebar();
+                rt.desktop.wm.raise_to_top(id);
+                rt.explorer_dirty = true;
+                rt.frame_due = true;
+                return;
             }
-            explorer.refresh_sidebar();
-            rt.desktop.wm.raise_to_top(id);
-            rt.explorer_dirty = true;
-            rt.frame_due = true;
         }
-        return;
+        // Window was closed; fall through to create a new one
     }
 
     // Create the explorer window first so the user sees immediate feedback,
