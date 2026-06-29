@@ -1373,7 +1373,7 @@ impl FatFileSystem {
         let se_sec = found_sector_base + se_off / self.bps;
         let se_buf_off = (se_off % self.bps) as usize;
         self.device.read_sectors(se_sec, 1, &mut self.sector_buf)?;
-        self.sector_buf[se_buf_off + 16..se_buf_off + 20].copy_from_slice(&(file_size as u32).to_le_bytes());
+        self.sector_buf[se_buf_off + 8..se_buf_off + 16].copy_from_slice(&file_size.to_le_bytes());
         self.sector_buf[se_buf_off + 20..se_buf_off + 24].copy_from_slice(&first_cluster.to_le_bytes());
         self.sector_buf[se_buf_off + 24..se_buf_off + 32].copy_from_slice(&file_size.to_le_bytes());
         self.device.write_sectors(se_sec, 1, &self.sector_buf)?;
