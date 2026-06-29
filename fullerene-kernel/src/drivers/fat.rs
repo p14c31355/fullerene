@@ -332,6 +332,12 @@ impl FatFileSystem {
 
             let bps = bpb.bytes_per_sector as u32;
             let spc = bpb.sectors_per_cluster as u32;
+            if bps < 512 || bps > 4096 || !bps.is_power_of_two() {
+                return Err("invalid bytes_per_sector");
+            }
+            if spc == 0 || !spc.is_power_of_two() {
+                return Err("invalid sectors_per_cluster");
+            }
             let reserved = bpb.reserved_sector_count as u32;
             let num_fats = bpb.num_fats as u32;
             let sectors_per_fat = bpb.sectors_per_fat_32;
@@ -508,6 +514,13 @@ impl FatFileSystem {
                     }
 
                     let attribs = buf[buf_off + 4];
+                    entry_is_dir = (attribs & ATTR_DIRECTORY) != 0;
+                    entry_cluster = 0;
+                    entry_size = 0;
+                    name_buf.clear();
+                    in_entry = true;
+                } else if entry_type == EXFAT_ENTRY_STREAM_EXT && in_entry {
+                    // Stream Extension holds first_cluster at bytes 20-23 and data length at bytes 24-31
                     let cl = u32::from_le_bytes([
                         buf[buf_off + 20],
                         buf[buf_off + 21],
@@ -515,12 +528,6 @@ impl FatFileSystem {
                         buf[buf_off + 23],
                     ]);
                     entry_cluster = cl;
-                    entry_is_dir = (attribs & ATTR_DIRECTORY) != 0;
-                    entry_size = 0; // will be populated by Stream Extension
-                    name_buf.clear();
-                    in_entry = true;
-                } else if entry_type == EXFAT_ENTRY_STREAM_EXT && in_entry {
-                    // Stream Extension holds the data length (file size) at bytes 24-31
                     let sz = u64::from_le_bytes([
                         buf[buf_off + 24],
                         buf[buf_off + 25],
@@ -717,35 +724,61 @@ impl FatFileSystem {
 
     /// Write data to file starting at cluster (0 = unallocated).
     /// Allocates clusters on demand when the chain runs out.
-    /// Returns the actual first cluster used (may differ from input if cluster was 0).
-    fn write_file_data(&mut self, cluster: &mut u32, data: &[u8]) -> Result<(), &'static str> {
+    /// Skips `offset` bytes within the cluster chain before writing,
+    /// mirroring the offset handling already added to `read()`.
+    fn write_file_data(&mut self, cluster: &mut u32, offset: u32, data: &[u8]) -> Result<(), &'static str> {
         let mut remaining = data.len() as u32;
         let mut clus = *cluster;
-        let mut offset = 0usize;
+        let mut data_off = 0usize;
 
         // Allocate first cluster if this is a new file
         if clus == 0 {
+            if offset > 0 {
+                return Err("cannot write at non-zero offset to unallocated file");
+            }
             clus = self.allocate_one_cluster()?;
             *cluster = clus;
         }
 
+        // Skip clusters to reach the starting offset
+        let cluster_bytes = self.spc * self.bps;
+        let mut remaining_offset = offset;
+        while remaining_offset >= cluster_bytes {
+            remaining_offset -= cluster_bytes;
+            match self.read_fat_entry(clus) {
+                Ok(next) if !Self::is_end_of_chain(next) => clus = next,
+                _ => {
+                    let new_clus = self.allocate_one_cluster()?;
+                    if let Err(e) = self.write_fat_entry(clus, new_clus) {
+                        let _ = self.write_fat_entry(new_clus, 0);
+                        return Err(e);
+                    }
+                    clus = new_clus;
+                }
+            }
+        }
+
         loop {
-            let cluster_bytes = self.spc * self.bps;
-            let mut sector = self.cluster_to_sector(clus);
-            for i in 0..self.spc {
+            let sector_base = self.cluster_to_sector(clus);
+            let start_sector_idx = remaining_offset / self.bps;
+            let mut sector_off = (remaining_offset % self.bps) as usize;
+            for i in start_sector_idx..self.spc {
                 if remaining == 0 {
                     break;
                 }
-                let to_write = min(remaining, self.bps);
+                let to_write = min(remaining, self.bps - sector_off as u32);
                 let mut buf = vec![0u8; self.bps as usize];
                 if to_write < self.bps {
-                    self.device.read_sectors(sector + i, 1, &mut buf)?;
+                    self.device.read_sectors(sector_base + i, 1, &mut buf)?;
                 }
-                buf[..to_write as usize].copy_from_slice(&data[offset..offset + to_write as usize]);
-                self.device.write_sectors(sector + i, 1, &buf)?;
-                offset += to_write as usize;
+                buf[sector_off..sector_off + to_write as usize]
+                    .copy_from_slice(&data[data_off..data_off + to_write as usize]);
+                self.device.write_sectors(sector_base + i, 1, &buf)?;
+                data_off += to_write as usize;
                 remaining -= to_write;
+                sector_off = 0;
             }
+            remaining_offset = 0;
             if remaining == 0 {
                 break;
             }
@@ -755,7 +788,10 @@ impl FatFileSystem {
                 }
                 _ => {
                     let new_clus = self.allocate_one_cluster()?;
-                    self.write_fat_entry(clus, new_clus)?;
+                    if let Err(e) = self.write_fat_entry(clus, new_clus) {
+                        let _ = self.write_fat_entry(new_clus, 0);
+                        return Err(e);
+                    }
                     clus = new_clus;
                 }
             }
@@ -1331,21 +1367,44 @@ impl FatFileSystem {
             }
         }
 
-        // Update Stream Extension (at fi_off + 32)
+        // ── Update Stream Extension (at fi_off + 32) ─────────────
         let fi_off = found_fi_off;
         let se_off = fi_off + 32;
         let se_sec = found_sector_base + se_off / self.bps;
         let se_buf_off = (se_off % self.bps) as usize;
         self.device.read_sectors(se_sec, 1, &mut self.sector_buf)?;
+        self.sector_buf[se_buf_off + 16..se_buf_off + 20].copy_from_slice(&(file_size as u32).to_le_bytes());
         self.sector_buf[se_buf_off + 20..se_buf_off + 24].copy_from_slice(&first_cluster.to_le_bytes());
         self.sector_buf[se_buf_off + 24..se_buf_off + 32].copy_from_slice(&file_size.to_le_bytes());
         self.device.write_sectors(se_sec, 1, &self.sector_buf)?;
 
-        // Update File Info entry's first cluster
+        // ── Recompute entry-set checksum ─────────────────────────
+        let se_setting_sec = found_sector_base + fi_off / self.bps;
+        let se_setting_off = (fi_off % self.bps) as usize;
+        self.device.read_sectors(se_setting_sec, 1, &mut self.sector_buf)?;
+        let secondary_count = self.sector_buf[se_setting_off + 1] as usize;
+        let total_entries = 1 + secondary_count;
+
+        let mut checksum: u16 = 0;
+        for entry_idx in 0..total_entries {
+            let byte_off = fi_off + (entry_idx as u32) * 32;
+            let sec = found_sector_base + byte_off / self.bps;
+            let b_off = (byte_off % self.bps) as usize;
+            let mut entry_buf = [0u8; 32];
+            self.device.read_sectors(sec, 1, &mut self.sector_buf)?;
+            entry_buf.copy_from_slice(&self.sector_buf[b_off..b_off + 32]);
+            for j in 0..32 {
+                if entry_idx == 0 && j >= 2 && j < 4 {
+                    continue;
+                }
+                checksum = ((checksum << 15) | (checksum >> 1)).wrapping_add(entry_buf[j] as u16);
+            }
+        }
+
         let fi_sec = found_sector_base + fi_off / self.bps;
         let fi_buf_off = (fi_off % self.bps) as usize;
         self.device.read_sectors(fi_sec, 1, &mut self.sector_buf)?;
-        self.sector_buf[fi_buf_off + 20..fi_buf_off + 24].copy_from_slice(&first_cluster.to_le_bytes());
+        self.sector_buf[fi_buf_off + 2..fi_buf_off + 4].copy_from_slice(&checksum.to_le_bytes());
         self.device.write_sectors(fi_sec, 1, &self.sector_buf)?;
         Ok(())
     }
@@ -1388,9 +1447,10 @@ impl FatFileSystem {
 
             // Write LFN entries in reverse order (last fragment first)
             for i in 0..lfn_entry_count {
-                let seq = (lfn_entry_count - i) as u8;
+                let chunk_idx = lfn_entry_count - 1 - i;
+                let seq = (chunk_idx + 1) as u8;
                 let flags = if i == 0 { seq | 0x40 } else { seq };
-                let start = i * 13;
+                let start = chunk_idx * 13;
                 let end = core::cmp::min(start + 13, lfn_chars.len());
                 let chars_slice: &[u16] = &lfn_chars[start..end];
                 let byte_off = slot_off + i * 32;
@@ -1518,8 +1578,11 @@ impl FileSystem for FatFileSystem {
             .iter()
             .position(|h| h.0 == fd)
             .ok_or("bad fd")?;
-        let cluster_ptr: *mut u32 = &mut self.handles[pos].1;
-        self.write_file_data(unsafe { &mut *cluster_ptr }, data)?;
+        let cluster = self.handles[pos].1;
+        let offset = self.handles[pos].2;
+        let mut new_cluster = cluster;
+        self.write_file_data(&mut new_cluster, offset, data)?;
+        self.handles[pos].1 = new_cluster;
         let len = data.len();
         self.handles[pos].2 += len as u32;
         self.handles[pos].3 = self.handles[pos].2.max(self.handles[pos].3);

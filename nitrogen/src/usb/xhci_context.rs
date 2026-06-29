@@ -436,7 +436,7 @@ impl XhciContext {
         // USB 3.0 link training can take 100–500ms.  We poll CCS
         // for up to ~2 s.  Also try USB 2.0 ports.
         for port_idx in 0..self.ports.n_ports {
-            for _ in 0..500 {
+            for _ in 0..200 {
                 super::xhci_port::delay_ms(10);
                 if op.portsc(port_idx).ccs() {
                     log::info!("xHCI: port {} CCS=1 after init_ports", port_idx);
@@ -827,12 +827,18 @@ impl XhciContext {
                             // Continue to port reset below
                         } else {
                             // ── Port Reset fallback ─────────
-                            // Call the full port_reset() which handles CCS=0 ports,
-                            // asserts PR with proper timing (up to 20s wait), and
-                            // waits for CCS to appear after PR clears.
-                            port_reset(op, port_idx).ok();
+                            // Skip port_reset on ports that appear to be
+                            // stably empty (PLS=RxDetect, no change bits).
+                            let ps = op.portsc(port_idx);
+                            let stable_empty = !ps.ccs() && ps.pls() == 5
+                                && (ps.0 & PORTSC_RW1C_MASK) == 0;
+                            if !stable_empty {
+                                port_reset(op, port_idx).ok();
+                            } else {
+                                log::debug!("xHCI: port {} stably empty, skip reset", port_idx);
+                            }
                             if op.portsc(port_idx).ccs() {
-                                // Device appeared after reset — continue to enable
+                                // Device appeared — continue to enable below
                             } else {
                                 // Still no device — increment retry, mark done after max attempts
                                 if let Some(p) = self.ports.get_mut(port_idx) {
