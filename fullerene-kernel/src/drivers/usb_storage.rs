@@ -48,7 +48,7 @@ fn delay_ms(ms: u64) {
     }
 }
 
-fn with_ctx<F, R>(f: F) -> R
+pub(crate) fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&mut USBContext) -> R,
 {
@@ -67,7 +67,35 @@ pub fn init() {
     {
         use crate::driver_context_impl::KernelDriverContext;
         let mut ctx = USBContext::new(&KernelDriverContext);
-        let _ = ctx.enable();
+
+        let init_ok = ctx.enable();
+        klog_fmt!("USB init: ctx.enable() = {:?}\n", init_ok);
+        // Log controller count from debug dump (already logged via log::info!)
+
+        // Retry polling multiple times — real xHCI hardware may need
+        // extra time for port power-up, link training, and device enumeration.
+        for i in 0..8 {
+            let count_before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
+            let disk_count_before = ctx.disks().len();
+
+            ctx.poll();
+
+            let count_after = USB_DRIVE_COUNT.load(Ordering::Relaxed);
+            let disk_count_after = ctx.disks().len();
+            klog_fmt!("USB init: poll #{}, drives: USB_DRIVE_COUNT {}→{}, ctx.disks {}→{}\n",
+                i + 1, count_before, count_after, disk_count_before, disk_count_after);
+
+            if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
+                klog_fmt!("USB init: device detected after {} retries\n", i + 1);
+                for d in ctx.disks() {
+                    klog_fmt!("  -> ctrl={} dev_addr={} block_size={} total_blocks={}\n",
+                        d.ctrl_type, d.dev_addr, d.block_size, d.total_blocks);
+                }
+                break;
+            }
+            delay_ms(250);
+        }
+
         let mut guard = USB_CTX.lock();
         *guard = Some(ctx);
     }
@@ -76,7 +104,7 @@ pub fn init() {
     if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
         klog_fmt!("USB init: device detected and mounted\n");
     } else {
-        klog_fmt!("USB init: no device detected, continuing in background\n");
+        klog_fmt!("USB init: no device detected after 8 retries\n");
     }
 }
 

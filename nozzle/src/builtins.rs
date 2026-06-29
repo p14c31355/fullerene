@@ -276,6 +276,12 @@ pub fn cmd_write(ctx: &mut CommandContext) -> bool {
     true
 }
 
+/// `usb_info` — display USB device status
+pub fn cmd_usb_info(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "usb_info");
+    true
+}
+
 /// `hello_linux` — launch the built-in Linux test binary
 pub fn cmd_hello_linux(ctx: &mut CommandContext) -> bool {
     crate::sys_hooks::call_sys_info_hook(ctx, "hello_linux");

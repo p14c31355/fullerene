@@ -198,6 +198,31 @@ impl USBContext {
     pub fn poll(&mut self) {
         let ev = self.controllers.poll();
 
+        // Log port states after each poll for diagnostics
+        for (idx, xhci) in self.controllers.xhci.iter().enumerate() {
+            for p in 0..xhci.n_ports() {
+                let ps = xhci.read_portsc(p);
+                if ps == 0xFFFF_FFFF { continue; }
+                log::info!(
+                    "USB: xHCI[{}] PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={}",
+                    idx, p, ps,
+                    (ps >> 0) & 1, (ps >> 1) & 1,
+                    (ps >> 5) & 0xF, (ps >> 9) & 1, (ps >> 4) & 1
+                );
+            }
+        }
+        for (idx, ehci) in self.controllers.ehci.iter().enumerate() {
+            for p in 0..ehci.n_ports().min(4) {
+                let ps = ehci.read_portsc(p);
+                if ps == 0xFFFF_FFFF { continue; }
+                log::info!(
+                    "USB: EHCI[{}] PORTSC[{}]={:#08X} CCS={} PE={}",
+                    idx, p, ps,
+                    ps & 1, (ps >> 2) & 1
+                );
+            }
+        }
+
         for (ctrl_idx, dev_idx) in &ev.ehci_devices {
             self.mount_ehci_device(*ctrl_idx, *dev_idx);
         }
