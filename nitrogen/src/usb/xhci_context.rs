@@ -61,6 +61,8 @@ pub struct XhciContext {
     driver_ctx: &'static dyn DriverContext,
     /// Whether legacy (BIOS→OS) handoff succeeded.
     pub legacy_handoff_done: bool,
+    /// ERST physical address (allocated in configure_registers).
+    erst_phys: Option<u64>,
 }
 
 // SAFETY: xHCI is used only on the main kernel thread (single-threaded kernel).
@@ -151,6 +153,7 @@ impl XhciContext {
             devices: Vec::new(),
             driver_ctx: ctx,
             legacy_handoff_done: legacy_ok,
+            erst_phys: None,
         })
     }
 
@@ -417,6 +420,16 @@ impl XhciContext {
                 op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
             }
         }
+        // Acknowledge RW1C change bits on USB 2.0 ports after RxDetect kick
+        for port_idx in 0..self.ports.n_ports {
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !is_usb3 {
+                let ps = op.portsc(port_idx).0;
+                if ps & PORTSC_RW1C_MASK != 0 {
+                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | (ps & PORTSC_RW1C_MASK));
+                }
+            }
+        }
         super::xhci_port::delay_ms(200);
 
         // ── Step 5: wait for link training to complete ──────────
@@ -553,11 +566,19 @@ impl XhciContext {
         // Configure max slots
         op.set_config(self.device.slots.max_slots);
 
-        // Allocate ERST page
+        // Allocate ERST page if not already allocated
         let ctx = self.driver_ctx;
-        let erst_phys = ctx
-            .allocate_contiguous_frames(1)
-            .map_err(|_| "no ERST page")?;
+        let erst_phys = if let Some(phys) = self.erst_phys {
+            // Reuse existing ERST page
+            phys
+        } else {
+            // Allocate new ERST page
+            let phys = ctx
+                .allocate_contiguous_frames(1)
+                .map_err(|_| "no ERST page")?;
+            self.erst_phys = Some(phys);
+            phys
+        };
         let erst_virt = ctx.phys_to_virt(erst_phys) as *mut ErstEntry;
         unsafe {
             ptr::write_volatile(erst_virt, ErstEntry::new(self.rings.event.phys, 256));
@@ -1384,6 +1405,11 @@ impl Drop for XhciContext {
         let _ = self
             .driver_ctx
             .free_contiguous_frames(self.device.dcbaa.phys, 1);
+
+        // Free ERST page
+        if let Some(erst_phys) = self.erst_phys {
+            let _ = self.driver_ctx.free_contiguous_frames(erst_phys, 1);
+        }
 
         // Free Scratchpad array and buffer pages
         if let Some(ref sp) = self.device.scratchpad {

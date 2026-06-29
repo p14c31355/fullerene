@@ -191,6 +191,7 @@ impl PortContext {
 pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static str> {
     let ps_raw = op.portsc(port).0;
     let had_ccs = ps_raw & PORTSC_CCS != 0;
+    let had_change = (ps_raw & PORTSC_RW1C_MASK) != 0;
 
     // Assert PR (Linux does this even when CCS=0)
     op.write_portsc(port, (ps_raw & !PORTSC_RW1C_MASK) | PORTSC_PR);
@@ -208,12 +209,13 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         return Err("port reset timeout");
     }
 
-    // If the port had CCS=0 before PR, wait for CCS to appear.
-    // Some devices (especially USB 3.0 behind cascaded hubs) can
-    // take several seconds to assert CCS after a full port reset.
+    // If the port had CCS=0 before PR, wait for CCS to appear, but use
+    // a shorter timeout for quiescent empty ports (no recent activity).
+    // Only use the long ~5 s wait when the port was recently connected/changed.
     if !had_ccs {
+        let max_iterations = if had_change { 50_000 } else { 1_000 };
         let mut ccs_appeared = false;
-        for _ in 0..50_000 {
+        for _ in 0..max_iterations {
             if op.portsc(port).0 & PORTSC_CCS != 0 {
                 ccs_appeared = true;
                 break;
