@@ -268,6 +268,26 @@ impl XhciContext {
         if found == 0 {
             log::warn!("xHCI: no ports with CCS=1 after RS-first init, trying init_ports fallback");
             self.init_ports();
+
+            // If init_ports still found nothing, try a full HCRST +
+            // re-init.  Some xHCI 1.0 controllers (Wildcat Point etc.)
+            // lose the port state when the controller is halted during
+            // ExitBootServices.  A full reset + re-init forces the PHY
+            // to go through the full RxDetect→Polling→U0 sequence.
+            let still_empty = (0..n_ports).all(|i| !self.registers.op.portsc(i).ccs());
+            if still_empty {
+                log::warn!("xHCI: init_ports produced no CCS=1, trying full HCRST");
+                self.controller_reset()?;
+                self.configure_registers()?;
+                self.start_controller_no_inte()?;
+                self.enable_interrupts();
+                self.clear_hse_and_recover();
+                self.init_ports();
+                let after_hcrst = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
+                if !after_hcrst {
+                    log::warn!("xHCI: even HCRST did not produce CCS=1");
+                }
+            }
         }
         Ok(())
     }

@@ -23,7 +23,7 @@ use super::xhci_register::{
 use crate::usb::UsbSpeed;
 
 /// Maximum consecutive port detection failures before marking the port as done.
-pub const MAX_PORT_RETRIES: u32 = 3;
+pub const MAX_PORT_RETRIES: u32 = 8;
 
 /// Default TSC ticks per millisecond (1 GHz minimum).
 const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
@@ -208,18 +208,19 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         return Err("port reset timeout");
     }
 
-    // If the port had CCS=0 before PR, wait briefly for CCS to appear.
-    // If CCS never appears, the port returned to RxDetect — not an error,
-    // because PR on a disconnected port is a valid re-kick.
+    // If the port had CCS=0 before PR, wait for CCS to appear.
+    // Some devices (especially USB 3.0 behind cascaded hubs) can
+    // take several seconds to assert CCS after a full port reset.
     if !had_ccs {
-        for _ in 0..10_000 {
+        let mut ccs_appeared = false;
+        for _ in 0..50_000 {
             if op.portsc(port).0 & PORTSC_CCS != 0 {
+                ccs_appeared = true;
                 break;
             }
             delay_us(100);
         }
-        let ccs_after = op.portsc(port).0 & PORTSC_CCS != 0;
-        if !ccs_after {
+        if !ccs_appeared {
             return Err("disconnected");
         }
         // CCS appeared — fall through to PED wait
