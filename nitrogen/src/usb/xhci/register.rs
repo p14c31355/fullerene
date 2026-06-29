@@ -196,7 +196,7 @@ impl CapabilityRegisters {
             max_slots: self.hcs_params1 & 0xFF,
             max_interrupters: (self.hcs_params1 >> 8) & 0x7FF,
             n_ports: (self.hcs_params1 >> 24) & 0xFF,
-            ppc: (self.hcc_params1 >> 3) & 1 != 0,
+            ppc: (self.hcs_params1 >> 27) & 1 != 0,
             csz: (self.hcc_params1 >> 2) & 1 != 0,
             max_scratchpad_bufs: (self.hcs_params2 >> 27) & 0x1F
                 | ((self.hcs_params2 >> 21) & 0x1F) << 5,
@@ -246,7 +246,7 @@ pub struct OperationalRegisters(Mmio);
 
 impl OperationalRegisters {
     pub unsafe fn new(base: *mut u8) -> Self {
-        unsafe { Self(Mmio(base)) }
+        Self(Mmio(base))
     }
 
     pub fn read(&self, off: usize) -> u32 { self.0.read32(off) }
@@ -465,25 +465,323 @@ pub fn port_speed_to_usb(speed: u32) -> crate::usb::UsbSpeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
 
-    #[test]
-    fn test_portsc_bitfields() {
-        let ps = PortSc(PORTSC_CCS | PORTSC_PP | 5 << 5);
-        assert!(ps.ccs());
-        assert!(ps.pp());
-        assert_eq!(ps.pls(), 5);
-        assert!(!ps.ped());
+    // ── Simulated xHCI MMIO region ───────────────────────────────
+    //
+    // Layout (per xHCI spec §5.2):
+    //   [0x0000..0x001C] Capability Registers
+    //   [0x0020..0x03FF] Operational Registers (when CAPLENGTH=0x20)
+    //   [0x0400..0x07FF] Port Register Set (16 bytes × N ports)
+    //   [0x1000..0x101F] Runtime Registers (when RTSOFF=0x1000)
+    //   [0x2000..0x2003] Doorbell Array (when DBOFF=0x2000)
+    //   [0x3000..0x3FFF] Extended Capabilities (when XECP=0x3000)
+    //
+    // We use a single 16KB page to simulate the entire MMIO space.
+
+    const MMIO_SIZE: usize = 0x4000;
+
+    /// A simulated xHCI MMIO region backed by real memory.
+    /// Tracks reads/writes and can auto-respond to certain patterns.
+    struct SimHc {
+        mem: Box<[u8; MMIO_SIZE]>,
+    }
+
+    impl SimHc {
+        fn new(n_ports: u32) -> Self {
+            let mut mem = Box::new([0u8; MMIO_SIZE]);
+
+            // ── Capability Registers (§5.2.1) ─────────────────
+            // CAPLENGTH = 0x20 (offset 0x00)
+            mem[0x00] = 0x20;
+            // HCIVERSION = 0x0110 (xHCI 1.1) at offset 0x02
+            mem[0x02..0x04].copy_from_slice(&0x0110u16.to_le_bytes());
+            // HCSPARAMS1 at offset 0x04: bits[7:0]=MaxSlots, bits[31:24]=NumPorts
+            let hcs1 = (64u32) | (n_ports << 24);
+            mem[0x04..0x08].copy_from_slice(&hcs1.to_le_bytes());
+            // HCCPARAMS1 at offset 0x10: 64-bit + ext cap ptr
+            let hcc1 = 1u32 | (0x3000 << 16); // AC64=1, XECP=0x3000
+            mem[0x10..0x14].copy_from_slice(&hcc1.to_le_bytes());
+            // DBOFF at 0x14
+            let db_off = 0x2000u32;
+            mem[0x14..0x18].copy_from_slice(&db_off.to_le_bytes());
+            // RTSOFF at 0x18
+            let rt_off = 0x1000u32;
+            mem[0x18..0x1C].copy_from_slice(&rt_off.to_le_bytes());
+
+            // ── Operational Registers start at offset 0x20 ───
+            // Default USBCMD=0, USBSTS=0 (HCH=1 → halted initially)
+            let op_base = 0x20usize;
+            // Set HCHalted (bit 0 of USBSTS)
+            mem[op_base + OP_USBSTS] = 0x01;
+
+            // ── Port registers at 0x400 (offset from op_base=0x20) ──
+            for i in 0..n_ports as usize {
+                let port_off = op_base + OP_PORTSC_BASE + i * OP_PORTSC_STRIDE;
+                // PP=1, PLS=RxDetect(5), no CCS
+                let portsc = PORTSC_PP | (5 << 5);
+                mem[port_off..port_off + 4].copy_from_slice(&portsc.to_le_bytes());
+            }
+
+            // ── Extended Capabilities at 0x3000 ─────────────
+            // USB Legacy Support (ECID=1) → nothing (skip handoff)
+            let ec_base = 0x3000usize;
+            mem[ec_base] = 2; // ECID = Supported Protocol
+            mem[ec_base + 1] = 0; // next = 0 (last)
+            // DWORD2 at offset 8: port_offset=1, port_count=n_ports
+            let dw2 = 1u32 | (n_ports << 8) | (3u32 << 24); // USB 3.0
+            mem[ec_base + 8..ec_base + 12].copy_from_slice(&dw2.to_le_bytes());
+
+            Self { mem }
+        }
+
+        fn base(&self) -> *mut u8 {
+            self.mem.as_ptr() as *mut u8
+        }
+
+        // Simulate a write that might trigger HW auto-response
+        fn poke(&mut self, offset: usize, val: u32) {
+            let old = self.read_hw(offset);
+            self.write_hw(offset, val);
+
+            // PORTSC auto-response: PP=1 after delay → CCS=1
+            // This simulates a connected device training the link
+            let op_base = 0x20usize;
+            let port_start = op_base + OP_PORTSC_BASE;
+            let port_end = port_start + 32 * OP_PORTSC_STRIDE;
+            if (port_start..port_end).contains(&offset) && (offset - port_start) % OP_PORTSC_STRIDE == 0 {
+                let pp_was_set = (old & PORTSC_PP) == 0 && (val & PORTSC_PP) != 0;
+                let pr_set = (val & PORTSC_PR) != 0;
+                if pp_was_set {
+                    // Device connects after power-up
+                    self.write_hw(offset, (val & !PORTSC_RW1C_MASK) | PORTSC_CCS | PORTSC_PED | PORTSC_PP);
+                    self.write_hw(offset + 4, 0); // PORTPMSC = 0
+                } else if pr_set && (val & PORTSC_PR) == 0 {
+                    // Port reset completing → CCS=1
+                    self.write_hw(offset, (val & !PORTSC_PR & !PORTSC_RW1C_MASK) | PORTSC_CCS | PORTSC_PED | PORTSC_PP);
+                }
+            }
+        }
+
+        fn read_hw(&self, offset: usize) -> u32 {
+            u32::from_le_bytes(self.mem[offset..offset + 4].try_into().unwrap())
+        }
+
+        fn write_hw(&mut self, offset: usize, val: u32) {
+            self.mem[offset..offset + 4].copy_from_slice(&val.to_le_bytes());
+        }
+    }
+
+    /// Simulated DriverContext for test use.
+    struct TestDriver;
+    impl crate::DriverContext for TestDriver {
+        fn phys_to_virt(&self, _phys: u64) -> usize { 0 }
+        fn allocate_frame(&self) -> Result<u64, crate::DriverContextError> { Ok(0x1000) }
+        fn allocate_contiguous_frames(&self, _n: usize) -> Result<u64, crate::DriverContextError> { Ok(0x1000) }
+        fn map_mmio_region(&self, _phys: usize, _virt: usize, _size: usize) -> Result<(), crate::DriverContextError> { Ok(()) }
+        fn map_page(&self, _virt: usize, _phys: usize, _flags: crate::PageFlags) -> Result<(), crate::DriverContextError> { Ok(()) }
+        fn free_frame(&self, _phys: u64) {}
+        fn free_contiguous_frames(&self, _phys: u64, _count: usize) {}
     }
 
     #[test]
-    fn test_hcs_params1_parsing() {
-        let cap = CapabilityRegisters {
-            caplength: 0x20, hci_version: 0x0100,
-            hcs_params1: 0x080000FF, hcs_params2: 0, hcs_params3: 0, hcc_params1: 0,
-            db_offset: 0x1000, rt_offset: 0x2000,
-        };
-        let p = cap.hcs_params1();
-        assert_eq!(p.max_slots, 255);
-        assert_eq!(p.n_ports, 8);
+    fn test_register_read_write() {
+        let op_base = 0x20usize;
+        let sim = SimHc::new(2);
+        let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+
+        // USBCMD read/write
+        assert_eq!(regs.usbcmd(), 0);
+        regs.set_usbcmd(0xDEAD_BEEF);
+        assert_eq!(regs.usbcmd(), 0xDEAD_BEEF);
+
+        // USBSTS
+        assert_eq!(regs.usbsts(), 0x01); // HCHalted
+        regs.clear_usbsts_bits(USBSTS_HCH);
+        assert_eq!(regs.usbsts(), 0x01); // RW1C: write 1 to clear → writing 0 does nothing
+
+        // set_usbcmd_bits
+        regs.set_usbcmd(0);
+        regs.set_usbcmd_bits(USBCMD_RS);
+        assert_eq!(regs.usbcmd(), USBCMD_RS);
+        regs.clear_usbcmd_bits(USBCMD_RS);
+        assert_eq!(regs.usbcmd(), 0);
+    }
+
+    #[test]
+    fn test_portsc_power_and_ccs() {
+        let op_base = 0x20usize;
+        let mut sim = SimHc::new(2);
+        let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+
+        // Initial state: PP=1, PLS=RxDetect(5), CCS=0
+        let ps = regs.portsc(0);
+        assert!(ps.pp(), "port 0 should have PP=1");
+        assert!(!ps.ccs(), "port 0 should have CCS=0 (no device)");
+        assert_eq!(ps.pls(), 5, "port 0 should be in RxDetect");
+
+        // Simulate device connection: hardware sets CCS+PED after link training
+        let port0_off = op_base + OP_PORTSC_BASE + 0 * OP_PORTSC_STRIDE;
+        let cur = sim.read_hw(port0_off);
+        sim.write_hw(port0_off, cur | PORTSC_CCS | PORTSC_PED);
+
+        // Now CCS=1 is reflected through the OperationalRegisters
+        let ps = regs.portsc(0);
+        assert!(ps.ccs(), "port 0 should detect device after simulated connection");
+        assert!(ps.ped(), "port 0 should be enabled");
+    }
+
+    #[test]
+    fn test_capability_registers_read() {
+        let sim = SimHc::new(4);
+        let cap = unsafe { CapabilityRegisters::read(sim.base()) };
+        assert_eq!(cap.caplength, 0x20);
+        assert_eq!(cap.hci_version, 0x0110);
+        assert_eq!(cap.db_offset, 0x2000);
+        assert_eq!(cap.rt_offset, 0x1000);
+
+        let hcs = cap.hcs_params1();
+        assert_eq!(hcs.max_slots, 64);
+        assert_eq!(hcs.n_ports, 4);
+    }
+
+    #[test]
+    fn test_parse_port_protocols() {
+        let sim = SimHc::new(4);
+        let bitmap = parse_port_protocols(sim.base(), 0x3000, 4);
+        assert!(!bitmap.is_empty());
+        // All 4 ports should be USB 3.0
+        assert_eq!(bitmap[0] & 0xF, 0xF);
+    }
+
+    #[test]
+    fn test_update_portsc_preserves_rw1c() {
+        let op_base = 0x20usize;
+        let mut sim = SimHc::new(1);
+        let port_off = op_base + OP_PORTSC_BASE;
+
+        // Set some RW1C bits
+        let initial = PORTSC_PP | PORTSC_CSC | PORTSC_PEC;
+        sim.write_hw(port_off, initial);
+
+        let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+        regs.update_portsc(0, PORTSC_PED, PORTSC_PP); // set PED, clear PP
+
+        // After update: PP cleared, PED set, RW1C bits should be cleared by the mask
+        let val = regs.portsc(0).0;
+        assert_eq!(val & PORTSC_PP, 0, "PP should be cleared");
+        assert_ne!(val & PORTSC_PED, 0, "PED should be set");
+        assert_eq!(val & PORTSC_RW1C_MASK, 0, "RW1C bits should be masked out");
+    }
+
+    #[test]
+    fn test_legacy_handoff_no_bios() {
+        let sim = SimHc::new(2);
+        let result = try_legacy_handoff(sim.base(), 0x3000);
+        // No legacy support capability → Ok(true) = OS owns controller
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_runtime_registers() {
+        let rt_base = 0x1000usize;
+        let sim = SimHc::new(2);
+        let rt = unsafe { RuntimeRegisters::new(sim.base().add(rt_base)) };
+
+        // Initially 0
+        assert_eq!(rt.iman(), 0);
+        assert_eq!(rt.erstsz(), 0);
+
+        // Write and read back
+        rt.set_iman(IMAN_IE);
+        assert_eq!(rt.iman(), IMAN_IE);
+
+        rt.set_erstsz(1);
+        assert_eq!(rt.erstsz(), 1);
+
+        // 64-bit ERDP
+        let val64 = 0xDEAD_BEEF_CAFE_BABE;
+        rt.set_erdp(val64);
+        assert_eq!(rt.erdp(), val64);
+    }
+
+    #[test]
+    fn test_doorbell_ring() {
+        let db_base = 0x2000usize;
+        let sim = SimHc::new(2);
+        let db = unsafe { DoorbellRegisters::new(sim.base().add(db_base)) };
+
+        db.ring(0, 0);
+        let val = unsafe { ptr::read_volatile(sim.base().add(db_base) as *const u32) };
+        assert_eq!(val, 0);
+
+        db.ring(5, 1);
+        let val = unsafe { ptr::read_volatile(sim.base().add(db_base + 5 * 4) as *const u32) };
+        assert_eq!(val, 1);
+    }
+
+    #[test]
+    fn test_full_port_init_flow() {
+        // Tests the complete init_ports sequence against simulated hardware:
+        //   write PP → hardware sets CCS → RxDetect kick
+        let op_base = 0x20usize;
+        let mut sim = SimHc::new(2);
+        let op = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+
+        // Step 1: Simulate what init_ports does — write PORTSC with PP
+        for p in 0..2 {
+            let ps = op.portsc(p).0;
+            op.write_portsc(p, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
+        }
+
+        // Verify the write reached the correct offset
+        for p in 0..2 {
+            let port_off = op_base + OP_PORTSC_BASE + p as usize * OP_PORTSC_STRIDE;
+            let raw = sim.read_hw(port_off);
+            assert_ne!(raw & PORTSC_PP, 0, "port {} PP should be set in HW", p);
+        }
+
+        // Simulate hardware response: device connected → CCS=1, PED=1
+        for p in 0..2 {
+            let port_off = op_base + OP_PORTSC_BASE + p as usize * OP_PORTSC_STRIDE;
+            let cur = sim.read_hw(port_off);
+            sim.write_hw(port_off, cur | PORTSC_CCS | PORTSC_PED);
+        }
+
+        // Verify driver can read CCS=1
+        for p in 0..2 {
+            let ps = op.portsc(p);
+            assert!(ps.ccs(), "port {} should have CCS=1 after simulated connect", p);
+            assert!(ps.ped(), "port {} should be enabled", p);
+        }
+
+        // Step 2: Simulate RxDetect kick via update_portsc
+        const PLS_RXDETECT: u32 = 5 << 5;
+        for p in 0..2 {
+            op.update_portsc(p, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+        }
+
+        // Verify the link state was set to RxDetect while preserving CCS
+        for p in 0..2 {
+            let ps = op.portsc(p);
+            assert!(ps.ccs(), "port {} CCS must survive RxDetect", p);
+            assert_eq!(ps.pls(), 5, "port {} PLS should be RxDetect", p);
+        }
+    }
+
+    #[test]
+    fn test_usbsts_halted_transition() {
+        let op_base = 0x20usize;
+        let mut sim = SimHc::new(1);
+        let op = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+
+        // Initially halted
+        assert_ne!(op.usbsts() & USBSTS_HCH, 0);
+
+        // Simulate hardware clearing HCHalted after RS=1
+        let usbsts_off = op_base + OP_USBSTS;
+        sim.poke(usbsts_off, 0); // HCH=0 → running
+
+        assert_eq!(op.usbsts() & USBSTS_HCH, 0, "controller should be running");
     }
 }

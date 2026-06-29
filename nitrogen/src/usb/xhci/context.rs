@@ -198,11 +198,11 @@ impl XhciContext {
     /// and may reject PR with CCS=0, making it impossible to recover
     /// from RxDetect after a full reset.
     pub fn init(&mut self) -> Result<(), &'static str> {
-        // Standard init: HCRST + configure + start + init ports.
-        // This matches Linux's xhci_gen_setup behavior.
-        // Note: previously we used init_no_reset for xHCI 1.0 controllers,
-        // but Linux always does HCRST regardless of version, and the
-        // no-reset path caused CCS=0 issues on Intel Wildcat Point LP.
+        let hci_ver = self.registers.cap.hci_version;
+        if hci_ver < 0x0110 {
+            log::info!("xHCI: hci_version=0x{:04X} < 0x0110, using init_no_reset", hci_ver);
+            return self.init_no_reset();
+        }
         self.controller_reset()?;
         self.configure_registers()?;
         self.start_controller_no_inte()?;

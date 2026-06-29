@@ -104,7 +104,7 @@ macro_rules! dma_pool {
             pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
                 let (entries, phys) = dma::alloc_dma::<$ty>(ctx, $count)?;
                 let init_fn = $init;
-                for q in entries.iter_mut() { unsafe { init_fn(q); } }
+                for q in entries.iter_mut() { init_fn(q); }
                 let usable = $count - $reserved;
                 let mut free = [0usize; $count];
                 for i in 0..usable { free[i] = usable - 1 - i; }
@@ -133,7 +133,7 @@ macro_rules! dma_pool {
                 self.free_len = $count - $reserved;
                 for i in 0..self.free_len { self.free[i] = self.free_len - 1 - i; }
                 let init_fn = $init;
-                for q in self.entries.iter_mut() { unsafe { init_fn(q); } }
+                for q in self.entries.iter_mut() { init_fn(q); }
             }
         }
     };
