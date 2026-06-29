@@ -8,9 +8,9 @@
 //!
 //! All controller-specific details are hidden behind [`super::host_controller::HostController`].
 
-use super::ehci_context::EhciContext;
+use super::ehci::context::EhciContext;
 use super::host_controller::HostController;
-use super::xhci_context::XhciContext;
+use super::xhci::context::XhciContext;
 use crate::DriverContext;
 use crate::usb::{
     DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDevice,

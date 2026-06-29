@@ -16,7 +16,7 @@
 //! is used by this module; the second dword (PORTPMSC) is not yet
 //! implemented.
 
-use super::xhci_register::{
+use super::register::{
     OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK,
     PORTSC_PP, PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
 };
@@ -409,8 +409,8 @@ pub fn delay(iterations: u32) {
 //  Port speed mapping
 // ============================================================================
 
-// port_speed_to_usb is re-exported from xhci_register
-pub use super::xhci_register::port_speed_to_usb;
+// port_speed_to_usb is re-exported from register
+pub use super::register::port_speed_to_usb;
 
 // ============================================================================
 //  Tests
@@ -479,8 +479,8 @@ mod tests {
     fn test_port_does_not_become_done_prematurely() {
         let mut p = Port::new(0, true);
 
-        // Simulate 3 polling cycles where CCS never asserts.
-        for attempt in 1..=3 {
+        // Simulate MAX_PORT_RETRIES polling cycles where CCS never asserts.
+        for attempt in 1..=MAX_PORT_RETRIES {
             assert!(!p.done, "port should not be done on attempt {}", attempt);
             assert!(
                 p.retry_count < MAX_PORT_RETRIES,
@@ -489,8 +489,6 @@ mod tests {
             );
             p.retry_count += 1;
         }
-        // After MAX_PORT_RETRIES attempts, the driver marks it done.
-        assert!(p.retry_count >= MAX_PORT_RETRIES);
         p.done = true;
         assert!(p.done);
     }

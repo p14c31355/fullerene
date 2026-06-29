@@ -19,18 +19,10 @@ pub mod context;
 pub mod host_controller;
 
 // EHCI sub-context modules
-pub mod ehci_async;
-pub mod ehci_context;
-pub mod ehci_port;
-pub mod ehci_register;
+pub mod ehci;
 
 // xHCI sub-context modules
-pub mod xhci_context;
-pub mod xhci_device;
-pub mod xhci_interrupt;
-pub mod xhci_port;
-pub mod xhci_register;
-pub mod xhci_ring;
+pub mod xhci;
 
 // USB class drivers
 pub mod hub;

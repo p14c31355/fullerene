@@ -97,5 +97,5 @@ pub trait HostController {
 #[cfg(test)]
 mod tests {
     // Trait-only module; no concrete tests yet.
-    // Tests live in ehci_context and xhci_context modules.
+    // Tests live in ehci::context and xhci::context modules.
 }

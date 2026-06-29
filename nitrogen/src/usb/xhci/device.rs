@@ -14,7 +14,7 @@
 //! | Scratchpad       | Scratchpad buffer array for controller use           |
 //! | SlotManager      | Manages all 1..MaxSlots-1 slots                     |
 
-use super::xhci_ring::Ring;
+use super::ring::Ring;
 use crate::DriverContext;
 
 use alloc::vec::Vec;

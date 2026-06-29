@@ -26,10 +26,10 @@ use alloc::vec::Vec;
 use core::ptr;
 
 // ── Import sub-contexts from sibling modules ──────────────────
-use super::ehci_async::*;
-use super::ehci_port::*;
-use super::ehci_register::*;
-use super::host_controller::HostController;
+use super::async_queue::*;
+use crate::usb::host_controller::HostController;
+use super::port::*;
+use super::register::*;
 
 // ============================================================================
 //  EhciContext — top-level EHCI state container
@@ -218,7 +218,7 @@ impl EhciContext {
 
             // Port reset
             op.write_portsc(port_idx, portsc | PORTSC_RESET);
-            super::xhci_port::delay_ms(50);
+            crate::usb::xhci::port::delay_ms(50);
             let cur_portsc = op.portsc(port_idx);
             op.write_portsc(port_idx, cur_portsc & !PORTSC_RESET);
 
