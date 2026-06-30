@@ -162,6 +162,11 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
             Ok(())
         }),
+        petroleum::init_step!("sd_card", || {
+            crate::drivers::sd_card::init();
+            petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
+            Ok(())
+        }),
         petroleum::init_step!("gui", || {
             crate::gui::init();
             petroleum::serial::serial_log(format_args!("GUI subsystem initialised\n"));
