@@ -178,6 +178,18 @@ impl RtsxController {
     // ── RTSX Hardware Init (MMIO access starts here) ──────────
 
     fn init_hardware(&self) -> bool {
+        // Emergency serial debug before first MMIO
+        let mut serial = crate::port::PortWriter::new(crate::port::HardwarePorts::SERIAL_DATA_PORT);
+        serial.write_safe(b'R' as u32);
+        serial.write_safe(b'T' as u32);
+        serial.write_safe(b'S' as u32);
+        serial.write_safe(b'X' as u32);
+        serial.write_safe(b'\n' as u32);
+
+        log::info!("RTSX: first MMIO read at {:p}+0x00", self.mmio);
+        let test0 = self.r8(0x00);
+        log::info!("RTSX: BAR0[0x00] = {:#04x}", test0);
+
         let cfg = self.r8(RTSX_CFG);
         if cfg == 0xFF {
             log::warn!("RTSX: device not responding (CFG=0xFF)");
