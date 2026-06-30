@@ -1,7 +1,7 @@
 use core::sync::atomic::Ordering;
 
 use petroleum::page_table::types::PageTableHelper;
-use petroleum::vdso::{VdsoPage, VDSO_PENDING, VDSO_USER_BASE};
+use petroleum::vdso::{VdsoPage, VDSO_COMPLETE, VDSO_PENDING, VDSO_USER_BASE};
 use x86_64::structures::paging::{FrameAllocator, PageTableFlags, PhysFrame, Size4KiB};
 use x86_64::VirtAddr;
 
@@ -68,19 +68,21 @@ pub fn poll_vdso_page(vdso: &VdsoPage) {
             vdso.requests[slot].set_result(result);
             vdso.requests[slot]
                 .state
-                .store(result + 2, Ordering::Release);
+                .store(VDSO_COMPLETE, Ordering::Release);
         }
     }
 }
 
 pub fn poll_all_vdso_rings() {
-    PROCESS_MANAGER.with_list(|list| {
-        for (_, proc) in list.iter_mut() {
-            if let Some(ref mut vdso) = proc.vdso_page {
-                poll_vdso_page(&*vdso.kernel_ptr);
-            }
-        }
+    // Collect VDSO page pointers first, then poll without holding the lock.
+    let pages: alloc::vec::Vec<*const VdsoPage> = PROCESS_MANAGER.with_list(|list| {
+        list.iter_mut()
+            .filter_map(|(_, proc)| proc.vdso_page.as_ref().map(|v| &*v.kernel_ptr as *const VdsoPage))
+            .collect()
     });
+    for ptr in pages {
+        unsafe { poll_vdso_page(&*ptr) };
+    }
 }
 
 pub fn update_vdso_metadata(now_us: u64, wall_us: u64) {

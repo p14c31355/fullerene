@@ -94,6 +94,21 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     let child_pid = process::PROCESS_MANAGER.allocate_pid();
 
+    // Create child VDSO page
+    let child_vdso = {
+        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
+        let fa = match fa_lock.as_mut() {
+            Some(f) => f,
+            None => return errno_code(ENOMEM),
+        };
+        let vdso = crate::vdso::create_vdso_page(&mut child_pt, fa, child_pid.0);
+        drop(fa_lock);
+        match vdso {
+            Ok(v) => Some(v),
+            Err(_) => return errno_code(ENOMEM),
+        }
+    };
+
     let mut child_process = process::Process {
         id: child_pid,
         name: "linux-child",
@@ -113,7 +128,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         exit_code: None,
         parent_id: Some(current_pid),
         task_data: 0,
-        vdso_page: None,
+        vdso_page: child_vdso,
         dispatch_mode: {
             let mut child_rt = super::runtime::LinuxRuntime::new(child_pid.0, rt.initial_break);
             child_rt.fd_table.entries = rt.fd_table.entries.clone();

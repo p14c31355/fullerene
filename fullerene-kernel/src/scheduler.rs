@@ -20,6 +20,7 @@
 
 use crate::gui;
 use crate::vdso;
+use solvent;
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {
@@ -78,8 +79,13 @@ pub fn scheduler_loop() -> ! {
         vdso::poll_all_vdso_rings();
 
         // VDSO: update time metadata for all processes
-        let now_us = crate::interrupts::TICK_COUNTER
-            .load(core::sync::atomic::Ordering::Relaxed);
+        let now_us = if solvent::get_tsc_per_ms() > 0 {
+            let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+            (tsc / solvent::get_tsc_per_ms()).saturating_mul(1000)
+        } else {
+            crate::interrupts::TICK_COUNTER
+                .load(core::sync::atomic::Ordering::Relaxed)
+        };
         vdso::update_vdso_metadata(now_us, now_us);
 
         gui::runtime_tick(tick_counter);

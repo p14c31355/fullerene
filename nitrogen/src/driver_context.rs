@@ -106,8 +106,10 @@ pub trait DriverContext: Send + Sync {
     /// was not allocated through this trait or has already been freed.
     fn free_contiguous_frames(&self, phys: u64, count: usize);
 
-    /// Map a physically-contiguous DMA buffer for device access.
+    /// Map a non-empty, page-aligned, physically-contiguous DMA buffer for device access.
     ///
+    /// `phys` must be 4 KiB-aligned and `size` must be non-zero. Implementations
+    /// may round `size` up to a whole number of pages.
     /// `device_id` is the PCI BDF encoded as `((bus as u16) << 8) | (device << 3) | function`.
     /// Returns an IOVA (IO Virtual Address) that the device can use for DMA.
     /// If no IOMMU is available, returns the physical address unchanged

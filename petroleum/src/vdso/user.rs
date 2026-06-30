@@ -22,8 +22,13 @@ pub fn vdso_ptr_initialized() -> bool {
     !unsafe { VDSO_PAGE }.is_null()
 }
 
-fn vdso() -> &'static VdsoPage {
-    unsafe { &*VDSO_PAGE }
+fn vdso() -> Option<&'static VdsoPage> {
+    let ptr = unsafe { VDSO_PAGE };
+    if ptr.is_null() {
+        None
+    } else {
+        Some(unsafe { &*ptr })
+    }
 }
 
 // ── Synchronous (blocking) calls ─────────────────────────────────
@@ -31,7 +36,7 @@ fn vdso() -> &'static VdsoPage {
 /// Blocking VDSO call — spins until completion.
 /// Use only when the async executor is not available.
 pub fn vdso_call_blocking(syscall_num: u64, args: [u64; 6]) -> u64 {
-    let page = vdso();
+    let page = vdso().expect("VDSO not initialized");
     let slot = page.claim_slot_spin();
     page.submit_request(slot, syscall_num, args);
     loop {
@@ -44,10 +49,16 @@ pub fn vdso_call_blocking(syscall_num: u64, args: [u64; 6]) -> u64 {
 
 /// Non-blocking try: submit and check once.
 pub fn vdso_try_call(syscall_num: u64, args: [u64; 6]) -> Option<u64> {
-    let page = vdso();
+    let page = vdso()?;
     let slot = page.try_claim_slot()?;
     page.submit_request(slot, syscall_num, args);
-    page.poll_completion(slot)
+    let result = page.poll_completion(slot);
+    if result.is_none() {
+        // Slot remains claimed but incomplete — caller gets no handle.
+        // Reset to free to avoid leaking the slot.
+        page.requests[slot].state.store(VDSO_FREE, Ordering::Release);
+    }
+    result
 }
 
 // ── Async calls ──────────────────────────────────────────────────
@@ -65,12 +76,25 @@ impl VdsoFuture {
     }
 }
 
+impl Drop for VdsoFuture {
+    fn drop(&mut self) {
+        if let Some(slot) = self.slot {
+            if let Some(page) = vdso() {
+                page.requests[slot].state.store(VDSO_FREE, Ordering::Release);
+            }
+        }
+    }
+}
+
 impl Future for VdsoFuture {
     type Output = u64;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<u64> {
         let this = unsafe { self.get_unchecked_mut() };
-        let page = vdso();
+        let page = match vdso() {
+            Some(p) => p,
+            None => return Poll::Pending,
+        };
 
         // Phase 1: claim a slot
         let slot = match this.slot {
@@ -117,15 +141,15 @@ pub fn vdso_call_async(syscall_num: u64, args: [u64; 6]) -> VdsoFuture {
 
 /// Get monotonic uptime in microseconds — no kernel transition.
 pub fn vdso_uptime_us() -> u64 {
-    vdso().uptime_us.load(Ordering::Relaxed)
+    vdso().map(|p| p.uptime_us.load(Ordering::Relaxed)).unwrap_or(0)
 }
 
 /// Get current wall-clock time in microseconds — no kernel transition.
 pub fn vdso_time_us() -> u64 {
-    vdso().time_us.load(Ordering::Acquire)
+    vdso().map(|p| p.time_us.load(Ordering::Acquire)).unwrap_or(0)
 }
 
 /// Get current PID — no kernel transition.
 pub fn vdso_pid() -> u64 {
-    vdso().pid
+    vdso().map(|p| p.pid).unwrap_or(0)
 }

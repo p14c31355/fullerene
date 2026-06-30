@@ -413,34 +413,49 @@ pub fn create_process(
             })?;
         process.user_stack =
             VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
-    }
 
-    // Create page table for the process
-    let page_table = match crate::memory_management::create_process_page_table() {
-        Ok(pt) => pt,
-        Err(e) => {
-            log::error!("Failed to create process page table: {:?}", e);
-            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            return Err(e);
-        }
-    };
-    let page_table_phys = page_table.current_page_table() as u64;
-    process.page_table_phys_addr = PhysAddr::new(page_table_phys);
-    process.page_table = Some(Box::new(page_table));
+        // Create VDSO page after page table creation
+        let page_table = match crate::memory_management::create_process_page_table() {
+            Ok(pt) => pt,
+            Err(e) => {
+                log::error!("Failed to create process page table: {:?}", e);
+                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                return Err(e);
+            }
+        };
+        let page_table_phys = page_table.current_page_table() as u64;
+        process.page_table_phys_addr = PhysAddr::new(page_table_phys);
+        process.page_table = Some(Box::new(page_table));
 
-    // Create VDSO page for this process (user-space processes only)
-    if is_user {
         let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
         let fa = fa_lock.as_mut().ok_or_else(|| {
+            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
             petroleum::common::logging::SystemError::InternalError
         })?;
         let pt: &mut petroleum::page_table::process::ProcessPageTable =
             process.page_table.as_mut().unwrap();
         let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
+            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
             petroleum::common::logging::SystemError::FrameAllocationFailed
         })?;
         drop(fa_lock);
         process.vdso_page = Some(vdso_ref);
+    } else {
+        // Create page table for the process (kernel process, no user stack)
+        let page_table = match crate::memory_management::create_process_page_table() {
+            Ok(pt) => pt,
+            Err(e) => {
+                log::error!("Failed to create process page table: {:?}", e);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                return Err(e);
+            }
+        };
+        let page_table_phys = page_table.current_page_table() as u64;
+        process.page_table_phys_addr = PhysAddr::new(page_table_phys);
+        process.page_table = Some(Box::new(page_table));
     }
 
     process.init_context(kernel_stack_top);

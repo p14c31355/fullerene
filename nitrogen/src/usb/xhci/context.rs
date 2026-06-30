@@ -259,8 +259,8 @@ impl XhciContext {
             self.configure_before_start();
             self.start_controller()?;
         } else {
-            log::info!("xHCI: controller already running — preserving register state");
-            self.registers.op.set_usbcmd_bits(USBCMD_HSEE);
+            log::info!("xHCI: controller already running — installing driver rings");
+            self.configure_before_start();
         }
 
         // ERST and interrupts can be written regardless of run state.
@@ -525,7 +525,7 @@ impl XhciContext {
     fn start_controller(&mut self) -> Result<(), &'static str> {
         let op = &self.registers.op;
 
-        op.set_usbcmd(USBCMD_RS | USBCMD_HSEE);
+        op.set_usbcmd_bits(USBCMD_RS | USBCMD_HSEE);
         for _ in 0..200_000 {
             if op.usbsts() & USBSTS_HCH == 0 {
                 break;
@@ -596,14 +596,30 @@ impl XhciContext {
     pub fn poll_ports(&mut self) -> usize {
         let initial_count = self.devices.len();
 
-        // PCD (Port Change Detect) → re-evaluate all ports
+        // PCD (Port Change Detect) → re-evaluate changed ports
         if self.registers.op.usbsts() & USBSTS_PCD != 0 {
             self.registers.op.clear_usbsts_bits(USBSTS_PCD);
-            self.ports.clear_done_flags();
-            log::info!("xHCI: PCD detected, re-evaluating all ports");
+            // Save pre-refresh connected state per port
+            let pre_ccs: alloc::vec::Vec<bool> = (0..self.ports.n_ports)
+                .map(|i| self.ports.get(i).map(|p| p.ccs()).unwrap_or(false))
+                .collect();
+            self.ports.refresh_all(&self.registers.op);
+            // Only clear done for ports whose CCS changed
+            for port_idx in 0..self.ports.n_ports {
+                let ccs = self.ports.get(port_idx).map(|p| p.ccs()).unwrap_or(false);
+                let was = pre_ccs.get(port_idx as usize).copied().unwrap_or(false);
+                if ccs != was {
+                    if let Some(p) = self.ports.get_mut(port_idx) {
+                        p.done = false;
+                        p.wpr_attempted = false;
+                        p.retry_count = 0;
+                        log::info!("xHCI: port {} CCS changed ({} → {}), re-evaluating", port_idx, was, ccs);
+                    }
+                }
+            }
+        } else {
+            self.ports.refresh_all(&self.registers.op);
         }
-
-        self.ports.refresh_all(&self.registers.op);
 
         for port_idx in 0..self.ports.n_ports {
             if self.ports.get(port_idx).map(|p| p.done).unwrap_or(true) {
@@ -664,6 +680,10 @@ impl XhciContext {
         // ── Phase 1: Exit Compliance / Warm Port Reset / RxDetect ──
         if !ps.ccs() {
             exit_compliance(op, port_idx);
+            let ps = op.portsc(port_idx);
+            if ps.ccs() && ps.ped() {
+                return true;
+            }
 
             let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
             let wpr_done = self.ports.get(port_idx).map(|p| p.wpr_attempted).unwrap_or(true);

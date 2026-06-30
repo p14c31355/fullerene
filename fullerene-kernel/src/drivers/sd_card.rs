@@ -70,6 +70,11 @@ pub fn init() {
 /// Safe to call at any time — returns an error instead of hanging.
 /// The system continues booting even if this fails.
 pub fn probe_and_mount() -> bool {
+    if SD_PROBED.load(Ordering::Acquire) {
+        klog_fmt!("SD card: already mounted\n");
+        return true;
+    }
+
     if !nitrogen::storage::rtsx::is_present() {
         klog_fmt!("SD card: no controller\n");
         return false;

@@ -4,7 +4,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 pub const VDSO_RING_SIZE: usize = 32;
 
 pub const VDSO_FREE: u64 = 0;
-pub const VDSO_PENDING: u64 = 1;
+pub const VDSO_CLAIMED: u64 = 1;
+pub const VDSO_PENDING: u64 = 2;
+pub const VDSO_COMPLETE: u64 = 3;
 
 pub const VDSO_USER_BASE: u64 = 0x7000_0000_0000;
 
@@ -72,7 +74,7 @@ impl VdsoPage {
             if state == VDSO_FREE {
                 if self.requests[i]
                     .state
-                    .compare_exchange_weak(VDSO_FREE, VDSO_PENDING, Ordering::AcqRel, Ordering::Relaxed)
+                    .compare_exchange_weak(VDSO_FREE, VDSO_CLAIMED, Ordering::AcqRel, Ordering::Relaxed)
                     .is_ok()
                 {
                     return Some(i);
@@ -100,7 +102,7 @@ impl VdsoPage {
 
     pub fn poll_completion(&self, slot: usize) -> Option<u64> {
         let state = self.requests[slot].state.load(Ordering::Acquire);
-        if state >= 2 {
+        if state == VDSO_COMPLETE {
             let result = self.requests[slot].result();
             self.requests[slot].state.store(VDSO_FREE, Ordering::Release);
             Some(result)

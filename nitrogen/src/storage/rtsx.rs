@@ -231,15 +231,20 @@ impl RtsxController {
 
     // ── SD Command Execution ──────────────────────────────────
 
-    fn sd_cmd(&self, cmd: u8, arg: u32, _rsp_type: u8, data_len: u16) -> Result<u32, &'static str> {
+    fn sd_cmd(&self, cmd: u8, arg: u32, rsp_type: u8, data_len: u16) -> Result<u32, &'static str> {
+        let mut ready = false;
         for _ in 0..50_000 {
             if (self.r8(SD_CMD_STATE) & 0x01) != 0 {
+                ready = true;
                 break;
             }
             core::hint::spin_loop();
         }
+        if !ready {
+            return Err("SD cmd busy timeout");
+        }
 
-        self.w8(SD_CMD0, cmd);
+        self.w8(SD_CMD0, cmd | rsp_type);
         self.w8(SD_CMD1, arg as u8);
         self.w8(SD_CMD2, (arg >> 8) as u8);
         self.w8(SD_CMD3, (arg >> 16) as u8);
@@ -368,9 +373,7 @@ impl RtsxController {
 
         self.sd_cmd(CMD2_ALL_SEND_CID, 0, SD_RSP_TYPE_R2, 0)?;
         let mut cid = [0u8; 16];
-        for i in 0..8 {
-            cid[i] = self.r8(SD_CMD5 + i as u8);
-        }
+        self.ppbuf_read(&mut cid);
 
         let r6 = self.sd_cmd(CMD3_SEND_RELATIVE_ADDR, 0, SD_RSP_TYPE_R6, 0)?;
         let rca = ((r6 >> 16) & 0xFFFF) as u16;
@@ -381,9 +384,7 @@ impl RtsxController {
 
         self.sd_cmd(CMD9_SEND_CSD, (rca as u32) << 16, SD_RSP_TYPE_R2, 0)?;
         let mut csd = [0u8; 16];
-        for i in 0..8 {
-            csd[i] = self.r8(SD_CMD5 + i as u8);
-        }
+        self.ppbuf_read(&mut csd);
 
         let (block_size, total_blocks) = Self::parse_csd(&csd, card_type);
 
@@ -509,17 +510,31 @@ impl RtsxController {
     }
 
     pub fn read_sectors(&self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        let required = (count as usize)
+            .checked_mul(512)
+            .ok_or("sector count too large")?;
+        if buf.len() < required {
+            return Err("read buffer too small");
+        }
         for i in 0..count as u32 {
             let off = (i * 512) as usize;
-            self.read_sector(lba + i, &mut buf[off..off + 512])?;
+            let sector = lba.checked_add(i).ok_or("LBA overflow")?;
+            self.read_sector(sector, &mut buf[off..off + 512])?;
         }
         Ok(())
     }
 
     pub fn write_sectors(&self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        let required = (count as usize)
+            .checked_mul(512)
+            .ok_or("sector count too large")?;
+        if buf.len() < required {
+            return Err("write buffer too small");
+        }
         for i in 0..count as u32 {
             let off = (i * 512) as usize;
-            self.write_sector(lba + i, &buf[off..off + 512])?;
+            let sector = lba.checked_add(i).ok_or("LBA overflow")?;
+            self.write_sector(sector, &buf[off..off + 512])?;
         }
         Ok(())
     }
@@ -571,7 +586,13 @@ pub fn init(ctx: &dyn DriverContext) {
                 log::info!("RTSX: BAR0 is I/O, expected memory");
                 return;
             }
-            let bar0_addr = (bar_val & 0xFFFFFFF0) as u64;
+            let bar0_addr = if (bar_val & 0x6) == 0x4 {
+                let bar_hi =
+                    PciConfigSpace::read_config_dword(dev.bus, dev.device, dev.function, 0x14);
+                ((bar_hi as u64) << 32) | ((bar_val as u64) & 0xFFFF_FFF0)
+            } else {
+                (bar_val & 0xFFFF_FFF0) as u64
+            };
             let bar0_size = 0x1000u32; // RTS5249 BAR0 is 4KB
 
             // Configure the upstream bridge's memory window.

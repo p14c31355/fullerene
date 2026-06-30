@@ -7,7 +7,7 @@ use spin::Mutex;
 
 use crate::DriverContext;
 use crate::DriverContextError;
-use crate::pci::PciConfigSpace;
+use crate::pci::PciScanner;
 use vtd::VtdRegisters;
 use table::{IommuPageTable, IommuRootTable};
 
@@ -123,16 +123,6 @@ impl IommuEngine {
         // IOVA allocator
         let iova = IovaAllocator::new(iova_bits);
 
-        // Set up pass-through context entries for bus 0 (32 devices × 8 functions).
-        // Devices that call `dma_map` will be switched to host-translation mode.
-        // Pass-through allows existing (non-IOMMU-aware) drivers to keep working.
-        for dev in 0..32 {
-            for func in 0..8 {
-                let entry = root_table.get_context_entry(ctx, 0, dev, func)?;
-                *entry = table::ContextEntry::new_pass_through();
-            }
-        }
-
         Ok(Self { registers, root_table, page_table, iova })
     }
 
@@ -172,6 +162,18 @@ impl IommuEngine {
         phys: u64,
         size: usize,
     ) -> Result<u64, DriverContextError> {
+        if size == 0 {
+            return Err(DriverContextError::InvalidArgument);
+        }
+        if phys & 0xFFF != 0 {
+            return Err(DriverContextError::InvalidArgument);
+        }
+
+        // Validate before mutating state
+        let iova = self.iova.alloc(size).ok_or(DriverContextError::OutOfMemory)?;
+        let pages = (size + 4095) / 4096;
+        // Pre-validate by checking page table walk doesn't fail early (no-op for now)
+
         // Switch this device's context entry from pass-through to host translation
         let bus = (device_id >> 8) as u8;
         let dev = ((device_id >> 3) & 0x1f) as u8;
@@ -179,28 +181,68 @@ impl IommuEngine {
         let entry = self.root_table.get_context_entry(ctx, bus, dev, func)?;
         *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL);
 
-        // Allocate IOVA and map
-        let iova = self.iova.alloc(size).ok_or(DriverContextError::OutOfMemory)?;
-        let pages = (size + 4095) / 4096;
-        for i in 0..pages {
-            let iova_page = iova + (i as u64) * 4096;
-            let phys_page = phys + (i as u64) * 4096;
-            self.page_table.map_page(ctx, iova_page, phys_page)?;
+        // Map pages with rollback on failure
+        let mut mapped = 0usize;
+        let result = (|| -> Result<(), DriverContextError> {
+            for i in 0..pages {
+                let iova_page = iova + (i as u64) * 4096;
+                let phys_page = phys + (i as u64) * 4096;
+                self.page_table.map_page(ctx, iova_page, phys_page)?;
+                mapped = i + 1;
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            // Rollback: unmap any pages that were already mapped
+            for i in 0..mapped {
+                let iova_page = iova + (i as u64) * 4096;
+                self.page_table.unmap_page(ctx, iova_page);
+            }
+            self.iova.free(iova, size);
+            return Err(result.unwrap_err());
         }
+
         // Flush context cache and IOTLB
         self.registers.context_cache_invalidate_domain(self.page_table.domain_id());
         self.registers.iotlb_domain_invalidate(self.page_table.domain_id());
         Ok(iova)
     }
 
-    pub fn dma_unmap(&mut self, iova: u64, size: usize) {
+    pub fn dma_unmap(&mut self, ctx: &dyn DriverContext, iova: u64, size: usize) {
         let pages = (size + 4095) / 4096;
         for i in 0..pages {
             let iova_page = iova + (i as u64) * 4096;
-            self.page_table.unmap_page(iova_page);
+            self.page_table.unmap_page(ctx, iova_page);
         }
         self.iova.free(iova, size);
         self.registers.iotlb_domain_invalidate(self.page_table.domain_id());
+    }
+
+    /// Set up pass-through context entries for all devices found by a PCI scan.
+    /// This ensures existing (non-IOMMU-aware) drivers can keep working after
+    /// translation is enabled.
+    pub fn setup_pass_through_all(
+        &mut self,
+        ctx: &dyn DriverContext,
+    ) -> Result<(), DriverContextError> {
+        let mut scanner = PciScanner::new();
+        if scanner.scan_all_buses().is_err() {
+            // Fall back to bus 0 only if scan fails
+            for dev in 0..32 {
+                for func in 0..8 {
+                    let entry = self.root_table.get_context_entry(ctx, 0, dev, func)?;
+                    *entry = table::ContextEntry::new_pass_through();
+                }
+            }
+            return Ok(());
+        }
+        for dev_info in scanner.get_devices() {
+            let entry = self.root_table.get_context_entry(
+                ctx, dev_info.bus, dev_info.device, dev_info.function,
+            )?;
+            *entry = table::ContextEntry::new_pass_through();
+        }
+        Ok(())
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -211,6 +253,10 @@ impl IommuEngine {
 // ── Global singleton ────────────────────────────────────────────────
 
 static GLOBAL_IOMMU: Mutex<Option<IommuEngine>> = Mutex::new(None);
+
+/// Physical-to-virtual mapping function set by [`init`] and used by ACPI parsing.
+/// Defaults to the hardcoded offset for backward compatibility.
+pub(crate) static PHYS_TO_VIRT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0xFFFF_8000_0000_0000);
 
 /// Initialize IOMMU from ACPI DMAR table.
 ///
@@ -234,23 +280,11 @@ pub fn init(
     let dmar = acpi::parse_dmar(rsdp).ok_or("DMAR table not found")?;
 
     let drhd = dmar.drhd_units.first().ok_or("No DRHD entries")?;
-    let bus = drhd.dev_scope_bus;
-    let path = &drhd.dev_scope_path;
-    let (dev, func) = path.first().copied().ok_or("Empty device scope")?;
 
-    // Read IOMMU BAR0 from PCI config space
-    let bar0_lo = PciConfigSpace::read_config_dword(bus, dev, func, 0x10);
-    if bar0_lo == 0 || bar0_lo == 0xFFFFFFFF {
-        return Err("Cannot read IOMMU BAR");
+    let bar_phys = drhd.phys_base;
+    if bar_phys == 0 {
+        return Err("Invalid DRHD register base");
     }
-    let bar_is_64bit = bar0_lo & 4 != 0;
-    let bar_phys = if bar_is_64bit {
-        let bar0_hi = PciConfigSpace::read_config_dword(bus, dev, func, 0x14);
-        ((bar0_hi as u64) << 32) | (bar0_lo as u64 & !0xf)
-    } else {
-        (bar0_lo as u64) & !0xf
-    };
-
     let bar_size = (1 << 12) as usize; // VT-d MMIO is typically 4KB
 
     // Map the MMIO region
@@ -258,8 +292,19 @@ pub fn init(
     ctx.map_mmio_region(bar_phys as usize, mmio_virt, bar_size)
         .map_err(|_| "IOMMU BAR MMIO mapping failed")?;
 
+    // Store the physical-to-virtual mapping for ACPI parsing
+    // by encoding it as offset: phys_to_virt(phys) = phys + offset
+    // We compute the offset by evaluating at phys=0: phys_to_virt_fn(0)
+    let mapper_offset = (phys_to_virt_fn)(0) as u64;
+    PHYS_TO_VIRT.store(mapper_offset, core::sync::atomic::Ordering::Relaxed);
+
     let mut engine = IommuEngine::new(mmio_virt as *mut u8, ctx, dmar.host_address_width)
         .map_err(|_| "IOMMU engine init failed")?;
+
+    // Set up pass-through context entries for all enumerated PCI devices
+    // before enabling translation, so non-IOMMU-aware drivers keep working.
+    engine.setup_pass_through_all(ctx)
+        .map_err(|_| "IOMMU pass-through setup failed")?;
 
     // Check if hardware is already enabled by firmware
     if engine.is_enabled() {
@@ -296,9 +341,9 @@ pub fn dma_map_with_ctx(
 }
 
 /// Unmap a previously mapped DMA buffer. No-op if no IOMMU.
-pub fn dma_unmap(iova: u64, size: usize) {
+pub fn dma_unmap(ctx: &dyn DriverContext, iova: u64, size: usize) {
     let mut guard = GLOBAL_IOMMU.lock();
     if let Some(ref mut engine) = *guard {
-        engine.dma_unmap(iova, size);
+        engine.dma_unmap(ctx, iova, size);
     }
 }

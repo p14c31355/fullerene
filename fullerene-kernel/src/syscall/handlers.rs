@@ -352,6 +352,29 @@ fn syscall_fork() -> SyscallResult {
 
     let child_pid = process::PROCESS_MANAGER.allocate_pid().0 as usize;
 
+    // Create child VDSO page (replaces cloned parent mapping at VDSO_USER_BASE)
+    let child_vdso = if parent_context.is_user {
+        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
+        let fa = fa_lock.as_mut().ok_or(SyscallError::OutOfMemory)?;
+        let vdso = crate::vdso::create_vdso_page(
+            &mut child_page_table,
+            fa,
+            child_pid as u64,
+        );
+        drop(fa_lock);
+        match vdso {
+            Ok(v) => Some(v),
+            Err(_) => {
+                let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+                petroleum::common::memory::deallocate_layout(kernel_stack_ptr, layout);
+                crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+                return Err(SyscallError::OutOfMemory);
+            }
+        }
+    } else {
+        None
+    };
+
     let mut child_process = Process {
         id: process::ProcessId(child_pid as u64),
         name: "child",
@@ -367,7 +390,7 @@ fn syscall_fork() -> SyscallResult {
         exit_code: None,
         parent_id: Some(current_pid),
         dispatch_mode: None,
-        vdso_page: None,
+        vdso_page: child_vdso,
     };
 
     child_process.context.regs[0] = 0;

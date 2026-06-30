@@ -263,6 +263,10 @@ fn register_nozzle_hooks() {
         ctx.terminal.write_str("sd_mount: hook called\n");
         if sd_card::probe_and_mount() {
             ctx.terminal.write_str("sd_mount: OK\n");
+            let drives = sd_card::SD_DRIVES.lock();
+            for d in drives.iter() {
+                tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
+            }
         } else {
             ctx.terminal.write_str("sd_mount: FAILED\n");
         }

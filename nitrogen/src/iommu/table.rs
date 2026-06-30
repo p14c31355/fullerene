@@ -25,15 +25,15 @@ fn iopte_is_huge(entry: u64) -> bool {
 // Level 1 (SL1): PDP-like,  maps   1GB (512 × 512 × 4KB)
 // Level 0 (SL0): PT-like,   maps   2MB (512 × 4KB)
 //
-// IOVA bits:   [47:39] → SL2 index
-//              [38:30] → SL1 index
-//              [29:21] → SL0 index
-//              [20:0]  → page offset
+// IOVA bits:   [38:30] → SL2 index
+//              [29:21] → SL1 index
+//              [20:12] → SL0 index
+//              [11:0]  → page offset
 
 const IOVA_BITS: u8 = 48; // 48-bit IOVA space
-const SL2_SHIFT: u8 = 39;
-const SL1_SHIFT: u8 = 30;
-const SL0_SHIFT: u8 = 21;
+const SL2_SHIFT: u8 = 30;
+const SL1_SHIFT: u8 = 21;
+const SL0_SHIFT: u8 = 12;
 const PAGE_SHIFT: u8 = 12;
 
 fn sl2_index(iova: u64) -> usize {
@@ -89,12 +89,12 @@ impl IommuPageTable {
         self.domain_id
     }
 
-    fn alloc_sl_table(&mut self, ctx: &dyn DriverContext) -> Result<*mut u64, DriverContextError> {
+    fn alloc_sl_table(&mut self, ctx: &dyn DriverContext) -> Result<(u64, *mut u64), DriverContextError> {
         let phys = ctx.allocate_frame()?;
         let virt = ctx.phys_to_virt(phys) as *mut u64;
         unsafe { core::ptr::write_bytes(virt, 0, 4096); }
         self.allocated_pages.push(phys);
-        Ok(virt)
+        Ok((phys, virt))
     }
 
     /// Map IOVA → phys (4KB page). Allocates intermediate tables as needed.
@@ -110,21 +110,21 @@ impl IommuPageTable {
         // Walk SL2 entry
         let sl2_entry = unsafe { &mut *sl2_virt.add(sl2_idx) };
         let sl1_virt = if *sl2_entry & IOPTE_R == 0 {
-            let tbl = self.alloc_sl_table(ctx)?;
-            *sl2_entry = (tbl as u64 & IOPTE_ADDR_MASK) | IOPTE_R | IOPTE_W;
-            tbl
+            let (tbl_phys, tbl_virt) = self.alloc_sl_table(ctx)?;
+            *sl2_entry = (tbl_phys & IOPTE_ADDR_MASK) | IOPTE_R | IOPTE_W;
+            tbl_virt
         } else {
-            (iopte_addr(*sl2_entry) + PHYSICAL_MEMORY_OFFSET) as *mut u64
+            ctx.phys_to_virt(iopte_addr(*sl2_entry)) as *mut u64
         };
 
         let sl1_idx = sl1_index(iova);
         let sl1_entry = unsafe { &mut *sl1_virt.add(sl1_idx) };
         let sl0_virt = if *sl1_entry & IOPTE_R == 0 {
-            let tbl = self.alloc_sl_table(ctx)?;
-            *sl1_entry = (tbl as u64 & IOPTE_ADDR_MASK) | IOPTE_R | IOPTE_W;
-            tbl
+            let (tbl_phys, tbl_virt) = self.alloc_sl_table(ctx)?;
+            *sl1_entry = (tbl_phys & IOPTE_ADDR_MASK) | IOPTE_R | IOPTE_W;
+            tbl_virt
         } else {
-            (iopte_addr(*sl1_entry) + PHYSICAL_MEMORY_OFFSET) as *mut u64
+            ctx.phys_to_virt(iopte_addr(*sl1_entry)) as *mut u64
         };
 
         let sl0_idx = sl0_index(iova);
@@ -135,18 +135,18 @@ impl IommuPageTable {
     }
 
     /// Unmap IOVA (4KB page). Zeros the PTE; does NOT free page tables.
-    pub fn unmap_page(&mut self, iova: u64) {
+    pub fn unmap_page(&self, ctx: &dyn DriverContext, iova: u64) {
         let sl2_virt = self.root_virt;
         let sl2_idx = sl2_index(iova);
         let sl2_entry = unsafe { &*sl2_virt.add(sl2_idx) };
         if *sl2_entry & IOPTE_R == 0 { return; }
 
-        let sl1_virt = (iopte_addr(*sl2_entry) + PHYSICAL_MEMORY_OFFSET) as *mut u64;
+        let sl1_virt = ctx.phys_to_virt(iopte_addr(*sl2_entry)) as *mut u64;
         let sl1_idx = sl1_index(iova);
         let sl1_entry = unsafe { &*sl1_virt.add(sl1_idx) };
         if *sl1_entry & IOPTE_R == 0 { return; }
 
-        let sl0_virt = (iopte_addr(*sl1_entry) + PHYSICAL_MEMORY_OFFSET) as *mut u64;
+        let sl0_virt = ctx.phys_to_virt(iopte_addr(*sl1_entry)) as *mut u64;
         let sl0_idx = sl0_index(iova);
         unsafe {
             *sl0_virt.add(sl0_idx) = 0;
@@ -161,8 +161,6 @@ impl IommuPageTable {
         self.allocated_pages.clear();
     }
 }
-
-const PHYSICAL_MEMORY_OFFSET: u64 = 0xFFFF_8000_0000_0000;
 
 // ── Root Entry ──────────────────────────────────────────────────
 // 8 bytes per entry, 512 entries per table = 4KB page
@@ -278,7 +276,7 @@ impl IommuRootTable {
             self.context_table_pages.push(ct_phys);
             ct_virt
         } else {
-            (root_entry.context_table_phys() + PHYSICAL_MEMORY_OFFSET) as *mut ContextEntry
+            ctx.phys_to_virt(root_entry.context_table_phys()) as *mut ContextEntry
         };
 
         let func_idx = (device as usize) * 8 + (function as usize);

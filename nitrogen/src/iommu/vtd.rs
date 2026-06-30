@@ -57,7 +57,7 @@ pub fn cap_psi(cap: u64) -> bool { (cap >> 60) & 1 != 0 }
 
 // ── ECAP extractors ─────────────────────────────────────────────
 pub fn ecap_qi(ecap: u64) -> bool { (ecap >> 1) & 1 != 0 }   // Queued Invalidation
-pub fn ecap_di(ecap: u64) -> bool { (ecap >> 3) & 1 != 0 }   // Device TLB Invalidation
+pub fn ecap_di(ecap: u64) -> bool { (ecap >> 7) & 1 != 0 }   // Device TLB Invalidation
 pub fn ecap_ir(ecap: u64) -> bool { (ecap >> 3) & 1 != 0 }   // Interrupt Remapping (same position as DI? No — IR is bit 3 as well per some specs)
 // Actually: ECAP bits: IR=3, EIM=4, PT=6, DI=7, ...
 
@@ -118,7 +118,7 @@ impl VtdRegisters {
     }
 
     pub fn set_root_table(&self, phys: u64) {
-        unsafe { self.w64(RTADDR, phys | 1) } // bit 0 = RTT (Root Table Type, 0 = 4-level)
+        unsafe { self.w64(RTADDR, phys & 0x000f_ffff_ffff_f000) }
     }
 
     pub fn enable_translation(&self) {
@@ -136,70 +136,93 @@ impl VtdRegisters {
         self.set_gcmd(cmd | GCMD_SRTP);
     }
 
+    const WAIT_TIMEOUT: u32 = 1_000_000;
+
     pub fn wait_for_root_table_ptr(&self) {
-        while self.gsts() & GSTS_RTPS == 0 {}
+        for _ in 0..Self::WAIT_TIMEOUT {
+            if self.gsts() & GSTS_RTPS != 0 { return; }
+            core::hint::spin_loop();
+        }
+        log::warn!("IOMMU: wait_for_root_table_ptr timeout");
     }
 
     pub fn wait_for_translation_enable(&self) {
-        while self.gsts() & GSTS_TES == 0 {}
+        for _ in 0..Self::WAIT_TIMEOUT {
+            if self.gsts() & GSTS_TES != 0 { return; }
+            core::hint::spin_loop();
+        }
+        log::warn!("IOMMU: wait_for_translation_enable timeout");
     }
 
     pub fn wait_for_translation_disable(&self) {
-        while self.gsts() & GSTS_TES != 0 {}
+        for _ in 0..Self::WAIT_TIMEOUT {
+            if self.gsts() & GSTS_TES == 0 { return; }
+            core::hint::spin_loop();
+        }
+        log::warn!("IOMMU: wait_for_translation_disable timeout");
     }
 
     pub fn write_buffer_flush(&self) {
         let cmd = self.gcmd();
         self.set_gcmd(cmd | GCMD_WBF);
-        while self.gsts() & GSTS_WBFS == 0 {}
+        for _ in 0..Self::WAIT_TIMEOUT {
+            if self.gsts() & GSTS_WBFS != 0 { return; }
+            core::hint::spin_loop();
+        }
+        log::warn!("IOMMU: write_buffer_flush timeout");
     }
 
     pub fn iotlb_global_invalidate(&self) {
-        // Write to IOTLB_REG: bits 63:32 = Domain ID, bit 0 = IVT
-        // Global invalidate: Domain = 0 (all domains)
         unsafe { self.w64(IOTLB, 1) }
-        loop {
+        for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(IOTLB) };
-            if val & 1 == 0 { break; }
+            if val & 1 == 0 { return; }
+            core::hint::spin_loop();
         }
+        log::warn!("IOMMU: iotlb_global_invalidate timeout");
     }
 
     pub fn iotlb_domain_invalidate(&self, domain_id: u16) {
         let val = 1 | ((domain_id as u64) << 32);
         unsafe { self.w64(IOTLB, val) }
-        loop {
+        for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(IOTLB) };
-            if val & 1 == 0 { break; }
+            if val & 1 == 0 { return; }
+            core::hint::spin_loop();
         }
+        log::warn!("IOMMU: iotlb_domain_invalidate timeout");
     }
 
     pub fn context_cache_invalidate_all(&self) {
-        // CCMD: CIRG=00 (global), write 1 to bit 61 to invalidate
         unsafe { self.w64(CCMD, 1u64 << 61) }
-        loop {
+        for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(CCMD) };
-            if val & (1u64 << 63) != 0 { break; }
+            if val & (1u64 << 63) != 0 { return; }
+            core::hint::spin_loop();
         }
+        log::warn!("IOMMU: context_cache_invalidate_all timeout");
     }
 
     pub fn context_cache_invalidate_domain(&self, domain_id: u16) {
-        // CCMD: CIRG=01 (domain), write domain, IAW, CAW, then bit 61
         let val = (domain_id as u64) << 32 | (1u64 << 61);
         unsafe { self.w64(CCMD, val) }
-        loop {
+        for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(CCMD) };
-            if val & (1u64 << 63) != 0 { break; }
+            if val & (1u64 << 63) != 0 { return; }
+            core::hint::spin_loop();
         }
+        log::warn!("IOMMU: context_cache_invalidate_domain timeout");
     }
 
     pub fn context_cache_invalidate_device(&self, sid: u16, function_mask: u8) {
-        // CCMD: CIRG=10 (device), sid, function_mask, bit 61
         let val = (sid as u64) << 16 | ((function_mask as u64) << 8) | (1u64 << 61);
         unsafe { self.w64(CCMD, val) }
-        loop {
+        for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(CCMD) };
-            if val & (1u64 << 63) != 0 { break; }
+            if val & (1u64 << 63) != 0 { return; }
+            core::hint::spin_loop();
         }
+        log::warn!("IOMMU: context_cache_invalidate_device timeout");
     }
 
     /// Check if the IOMMU hardware is already enabled (by firmware)

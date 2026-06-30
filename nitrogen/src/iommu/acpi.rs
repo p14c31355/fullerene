@@ -4,15 +4,13 @@ const RSDP_SIG: &[u8; 8] = b"RSD PTR ";
 const DMAR_SIG: &[u8; 4] = b"DMAR";
 
 // Search ranges for RSDP (ACPI spec §5.2.5.1)
-const EBDA_SEG: u64 = 0x0000_0000_0000_0400;
+const EBDA_SEG_PTR: u64 = 0x0000_0000_0000_040E;
 const EBDA_SEG_LEN: u64 = 0x0000_0000_0000_0400;
 const BIOS_ROM_START: u64 = 0x0000_0000_000E_0000;
 const BIOS_ROM_END: u64 = 0x0000_0000_000F_FFFF;
 
-const PHYSICAL_MEMORY_OFFSET: u64 = 0xFFFF_8000_0000_0000;
-
 fn phys_to_virt(phys: u64) -> usize {
-    (phys + PHYSICAL_MEMORY_OFFSET) as usize
+    (phys + crate::iommu::PHYS_TO_VIRT.load(core::sync::atomic::Ordering::Relaxed)) as usize
 }
 
 fn read_u8(addr: usize) -> u8 {
@@ -54,7 +52,7 @@ fn find_rsdp_in_range(start: u64, len: u64) -> Option<u64> {
 
 pub fn find_rsdp() -> Option<u64> {
     // Try EBDA first
-    let ebda_virt = phys_to_virt(EBDA_SEG);
+    let ebda_virt = phys_to_virt(EBDA_SEG_PTR);
     let ebda_ptr = read_u16(ebda_virt) as u64 * 16;
     if ebda_ptr > 0 {
         if let Some(addr) = find_rsdp_in_range(ebda_ptr, EBDA_SEG_LEN) {
@@ -140,24 +138,25 @@ pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
     let mut offset = 48; // header(48) + fixed fields
 
     while offset < length {
+        if offset + 4 > length {
+            return None;
+        }
         let stype = read_u16(dmar_virt + offset);
         let slen = read_u16(dmar_virt + offset + 2) as usize;
+        if slen < 4 || offset + slen > length {
+            return None;
+        }
         if stype == 0 {
+            if slen < 16 {
+                return None;
+            }
             let flags = read_u8(dmar_virt + offset + 4);
             let segment = read_u16(dmar_virt + offset + 6);
-            // bit 0 of flags: INCLUDE_PCI_ALL
-            // Device scope starts at offset + 8
-            let scope_offset = offset + 8;
-            let scope_remaining = slen - 8;
-            // Parse first device scope to find IOMMU PCI location
+            let phys_base = read_u64(dmar_virt + offset + 8);
+            // Device scope starts at offset + 16 (after 16-byte DRHD header)
+            let scope_offset = offset + 16;
+            let scope_remaining = slen - 16;
             let (bus, path) = if scope_remaining >= 6 {
-                // Device scope structure:
-                // 0: type (1=PCI endpoint, 2=PCI sub-hierarchy)
-                // 1: length
-                // 2-3: reserved
-                // 4: enumeration ID
-                // 5: bus
-                // 6+: path[] = {dev, func} pairs
                 let _scope_type = read_u8(dmar_virt + scope_offset);
                 let scope_len = read_u8(dmar_virt + scope_offset + 1) as usize;
                 let bus = read_u8(dmar_virt + scope_offset + 5);
@@ -176,7 +175,7 @@ pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
             drhd_units.push(DmarDrhd {
                 flags,
                 segment,
-                phys_base: 0,
+                phys_base,
                 dev_scope_bus: bus,
                 dev_scope_path: path,
             });

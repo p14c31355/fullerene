@@ -286,10 +286,16 @@ impl PciDevice {
             return;
         }
         let mut off = cap_ptr;
+        let mut visited = [false; 256];
         loop {
             if off < 0x40 || off > 0xF8 {
                 break;
             }
+            if visited[off as usize] {
+                log::warn!("PCI: capability list cycle detected at offset {:#x}", off);
+                break;
+            }
+            visited[off as usize] = true;
             let cap_id = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
             if cap_id == 0x10 {
                 // PCI Express capability found

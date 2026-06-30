@@ -95,6 +95,6 @@ impl DriverContext for KernelDriverContext {
     }
 
     fn dma_unmap(&self, iova: u64, size: usize) {
-        nitrogen::iommu::dma_unmap(iova, size);
+        nitrogen::iommu::dma_unmap(self, iova, size);
     }
 }
