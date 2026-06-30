@@ -191,18 +191,31 @@ impl XhciContext {
 
     // ── Initialisation ─────────────────────────────────────────
 
-    /// Initialise the controller: reset, configure registers, start.
+    /// Initialise the controller: configure registers, start, init ports.
     ///
-    /// For xHCI 1.0 controllers (HCIVERSION < 0x0110) we skip HCRST
-    /// and preserve the firmware port state, because they lack WPR
-    /// and may reject PR with CCS=0, making it impossible to recover
-    /// from RxDetect after a full reset.
+    /// Strategy:
+    /// 1. Always try `init_no_reset()` first — this preserves the firmware's
+    ///    PHY tuning parameters and port state.  Many xHCI controllers (both
+    ///    1.0 and 1.1+) lose USB 3.0 PHY calibration after HCRST, making
+    ///    it impossible to detect connected devices (CCS never sets).
+    /// 2. If no port has CCS=1 after init_no_reset, fall back to a full
+    ///    HCRST (Host Controller Reset) as a recovery attempt.  Some controllers
+    ///    need the clean slate that HCRST provides.
     pub fn init(&mut self) -> Result<(), &'static str> {
         let hci_ver = self.registers.cap.hci_version;
-        if hci_ver < 0x0110 {
-            log::info!("xHCI: hci_version=0x{:04X} < 0x0110, using init_no_reset", hci_ver);
-            return self.init_no_reset();
+        log::info!("xHCI: hci_version=0x{:04X}", hci_ver);
+
+        // Phase 1: lightweight init without HCRST
+        self.init_no_reset()?;
+
+        // Phase 2: if no port has CCS, try full HCRST
+        let n_ports = self.ports.n_ports;
+        let has_ccs = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
+        if has_ccs {
+            return Ok(());
         }
+
+        log::warn!("xHCI: init_no_reset produced no CCS=1, trying full HCRST");
         self.controller_reset()?;
         self.configure_before_start();
         self.start_controller()?;
@@ -211,23 +224,25 @@ impl XhciContext {
         self.registers.op.set_usbcmd_bits(USBCMD_INTE);
         self.clear_hse_and_recover();
         self.init_ports();
+
+        let after_hcrst = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
+        if !after_hcrst {
+            log::warn!("xHCI: even HCRST did not produce CCS=1");
+        }
         Ok(())
     }
 
     /// Lightweight init without HCRST — preserves firmware port state.
     ///
-    /// Some xHCI 1.0 controllers cannot recover from RxDetect after HCRST
-    /// because they lack WPR support and reject PR when CCS=0.
-    /// This path skips the reset and uses the firmware's already-detected
-    /// device state.  Ports that already have CCS=1 will be usable.
-    ///
-    /// Register write ordering (xHCI spec §4.1):
-    ///   DCBAAP + CRCR + CONFIG → HSEE → RS=1 → ERST + IMAN
-    /// Critical registers (DCBAAP, CRCR, CONFIG) must be valid before RS=1.
+    /// On xHCI 1.0 (Wildcat Point etc.), the firmware may leave the
+    /// controller running with devices already detected.  Writing
+    /// DCBAAP/CRCR/CONFIG while running can reset port state, losing
+    /// CCS.  Strategy:
+    ///   - If halted: write pre-RS registers, then RS=1, then ERST.
+    ///   - If running: skip DCBAAP/CRCR/CONFIG, just add ERST + HSEE.
     pub fn init_no_reset(&mut self) -> Result<(), &'static str> {
-        log::info!("xHCI: init_no_reset — skipping HCRST, preserving firmware state");
+        log::info!("xHCI: init_no_reset — preserving firmware state");
 
-        // ── Diagnostic ──────────────────────────────────────────
         let sts = self.registers.op.usbsts();
         log::info!(
             "xHCI: USBSTS={:#010X} HCHalted={} CNR={} HSE={} PCD={}",
@@ -238,25 +253,17 @@ impl XhciContext {
             (sts & USBSTS_PCD != 0) as u32,
         );
 
-        // Step 1: Write pre-RS registers (DCBAAP, CRCR, CONFIG, HSEE).
-        {
-            let op = &self.registers.op;
-            op.set_dcbaap(self.device.dcbaa.phys);
-            op.set_crcr(self.rings.command.phys | 1);
-            op.set_config(self.device.slots.max_slots);
-            op.set_usbcmd_bits(USBCMD_HSEE);
-        }
-
-        // Step 2: Start controller if halted.
-        if self.registers.op.usbsts() & USBSTS_HCH != 0 {
-            log::info!("xHCI: starting controller (RS=1)");
+        let halted = self.registers.op.usbsts() & USBSTS_HCH != 0;
+        if halted {
+            log::info!("xHCI: controller halted — configuring before RS=1");
+            self.configure_before_start();
             self.start_controller()?;
-            super::port::delay_ms(200);
         } else {
-            log::info!("xHCI: controller already running");
+            log::info!("xHCI: controller already running — preserving register state");
+            self.registers.op.set_usbcmd_bits(USBCMD_HSEE);
         }
 
-        // Step 3: Post-RS configuration (ERST, IMAN).
+        // ERST and interrupts can be written regardless of run state.
         self.setup_erst()?;
         self.interrupts.enable(&self.registers.runtime);
         self.registers.op.set_usbcmd_bits(USBCMD_INTE);
@@ -279,30 +286,8 @@ impl XhciContext {
             }
         }
         if found == 0 {
-            log::warn!("xHCI: no ports with CCS=1 after RS-first init, trying init_ports fallback");
+            log::warn!("xHCI: no ports with CCS=1, trying init_ports");
             self.init_ports();
-
-            // If init_ports still found nothing, try a full HCRST +
-            // re-init.  Some xHCI 1.0 controllers (Wildcat Point etc.)
-            // lose the port state when the controller is halted during
-            // ExitBootServices.  A full reset + re-init forces the PHY
-            // to go through the full RxDetect→Polling→U0 sequence.
-            let still_empty = (0..n_ports).all(|i| !self.registers.op.portsc(i).ccs());
-            if still_empty {
-                log::warn!("xHCI: init_ports produced no CCS=1, trying full HCRST");
-                self.controller_reset()?;
-                self.configure_before_start();
-                self.start_controller()?;
-                self.setup_erst()?;
-                self.interrupts.enable(&self.registers.runtime);
-                self.registers.op.set_usbcmd_bits(USBCMD_INTE);
-                self.clear_hse_and_recover();
-                self.init_ports();
-                let after_hcrst = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
-                if !after_hcrst {
-                    log::warn!("xHCI: even HCRST did not produce CCS=1");
-                }
-            }
         }
         Ok(())
     }
@@ -328,6 +313,17 @@ impl XhciContext {
     fn init_ports(&mut self) {
         let op = &self.registers.op;
         log::info!("xHCI: initialising {} ports", self.ports.n_ports);
+
+        // ── Acknowledge any stale change bits (WRC, PRC, etc.) ─
+        // HCRST may leave WRC=1 (Warm Port Reset Change) on some
+        // controllers.  If not acknowledged before other PORTSC writes,
+        // the port may ignore link state transitions, preventing CCS.
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            if ps & PORTSC_RW1C_MASK != 0 {
+                op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | (ps & PORTSC_RW1C_MASK));
+            }
+        }
         (0..self.ports.n_ports).for_each(|p| self.log_portsc(p));
 
         // ── Port power-up ─────────────────────────────────────
@@ -356,12 +352,6 @@ impl XhciContext {
         const PLS_RXDETECT: u32 = 5 << 5;
         for port_idx in 0..self.ports.n_ports {
             op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
-        }
-        for port_idx in 0..self.ports.n_ports {
-            let ps = op.portsc(port_idx).0;
-            if ps & PORTSC_RW1C_MASK != 0 {
-                op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | (ps & PORTSC_RW1C_MASK));
-            }
         }
         super::port::delay_ms(200);
 
