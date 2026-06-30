@@ -282,6 +282,12 @@ pub fn cmd_usb_info(ctx: &mut CommandContext) -> bool {
     true
 }
 
+/// `sd_mount` — probe and mount SD card
+pub fn cmd_sd_mount(ctx: &mut CommandContext) -> bool {
+    crate::sys_hooks::call_sys_info_hook(ctx, "sd_mount");
+    true
+}
+
 /// `hello_linux` — launch the built-in Linux test binary
 pub fn cmd_hello_linux(ctx: &mut CommandContext) -> bool {
     crate::sys_hooks::call_sys_info_hook(ctx, "hello_linux");

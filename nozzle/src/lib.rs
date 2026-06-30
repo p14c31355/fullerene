@@ -128,6 +128,7 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("sort", "Sort lines of text", builtins::cmd_sort),
         ("wc", "Count lines, words, and bytes", builtins::cmd_wc),
         ("usb_info", "Show USB device status", builtins::cmd_usb_info),
+        ("sd_mount", "Probe and mount SD card", builtins::cmd_sd_mount),
         ("hello_linux", "Launch the built-in Linux test binary", builtins::cmd_hello_linux),
         ("linux_run", "Launch a Linux ELF binary from the filesystem", builtins::cmd_linux_run),
         ("run_busybox", "Launch BusyBox shell from the filesystem", builtins::cmd_run_busybox),
