@@ -548,30 +548,29 @@ pub fn init(ctx: &dyn DriverContext) {
                 }
             }
 
-            // Get BAR0 info via PCI config space (safe)
-            let bar0 = match dev.get_bar_info(0) {
-                Some(b) => b,
-                None => {
-                    log::info!("RTSX: no BAR0");
-                    return;
-                }
-            };
-            if bar0.is_io {
+            // Read BAR0 directly — do NOT call get_bar_info() which writes
+            // 0xFFFFFFFF to the BAR (detect_bar_size) and can confuse the device.
+            let bar_val = PciConfigSpace::read_config_dword(dev.bus, dev.device, dev.function, 0x10);
+            if bar_val == 0 || bar_val == 0xFFFFFFFF {
+                log::info!("RTSX: BAR0 invalid ({:#x})", bar_val);
+                return;
+            }
+            if (bar_val & 0x1) != 0 {
                 log::info!("RTSX: BAR0 is I/O, expected memory");
                 return;
             }
+            let bar0_addr = (bar_val & 0xFFFFFFF0) as u64;
+            let bar0_size = 0x1000u32; // RTS5249 BAR0 is 4KB
 
-            // Configure the upstream bridge's memory window if needed.
-            // The bridge at 00:1c.3 must have its Memory Base/Limit set
-            // to cover BAR0 for MMIO forwarding.
+            // Configure the upstream bridge's memory window.
             for bridge in scanner.get_devices() {
                 if bridge.bus == 0 && bridge.device == 0x1c && bridge.function == 3 {
                     let base_reg = PciConfigSpace::read_config_dword(
                         bridge.bus, bridge.device, bridge.function, 0x20);
                     let mem_base = base_reg as u16;
                     let mem_limit = (base_reg >> 16) as u16;
-                    let bar_top = bar0.address + bar0.size as u64 - 1;
-                    let need_base = ((bar0.address >> 16) & 0xFFF0) as u16;
+                    let bar_top = bar0_addr + bar0_size as u64 - 1;
+                    let need_base = ((bar0_addr >> 16) & 0xFFF0) as u16;
                     let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
 
                     if mem_base != need_base || mem_limit != need_limit {
@@ -588,19 +587,19 @@ pub fn init(ctx: &dyn DriverContext) {
                     break;
                 }
             }
-            log::info!("RTSX: BAR0 at {:#x} size {:#x}", bar0.address, bar0.size);
 
-            // Map MMIO but do NOT touch it yet
-            let mmio = ctx.phys_to_virt(bar0.address) as *mut u8;
-            if ctx.map_mmio_region(bar0.address as usize, mmio as usize, bar0.size as usize).is_err() {
+            log::info!("RTSX: BAR0 at {:#x} size {:#x}", bar0_addr, bar0_size);
+
+            let mmio = ctx.phys_to_virt(bar0_addr) as *mut u8;
+            if ctx.map_mmio_region(bar0_addr as usize, mmio as usize, bar0_size as usize).is_err() {
                 log::info!("RTSX: MMIO mapping failed");
                 return;
             }
 
             *CONTROLLER.lock() = Some(RtsxController {
                 device: dev.clone(),
-                bar0_phys: bar0.address,
-                bar0_size: bar0.size,
+                bar0_phys: bar0_addr,
+                bar0_size,
                 mmio,
                 mmio_mapped: true,
                 sd_card: None,
