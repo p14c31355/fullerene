@@ -107,11 +107,10 @@ impl Future for VdsoFuture {
                         s
                     }
                     None => {
-                        // All slots full — register waker and retry
-                        // In the full-VDSO model, the kernel will process slots
-                        // and the scheduler will re-poll us.
-                        // We use cx.waker() to ensure we get polled again.
-                        cx.waker().wake_by_ref();
+                        // All slots full — return Pending without waking.
+                        // The kernel's periodic poll_all_vdso_rings() will
+                        // eventually free a slot, and the executor will
+                        // re-poll us on the next scheduler tick.
                         return Poll::Pending;
                     }
                 }
@@ -122,10 +121,11 @@ impl Future for VdsoFuture {
         match page.poll_completion(slot) {
             Some(result) => Poll::Ready(result),
             None => {
-                // Register waker so kernel can wake us when done
-                // The kernel will call cx.waker().wake() when processing
-                // completes. For now, we use yield_now()-style wake-up.
-                cx.waker().wake_by_ref();
+                // Not yet complete.  The kernel processes VDSO requests
+                // in its idle loop; once completed, the slot state
+                // transitions to VDSO_COMPLETE.  We return Pending and
+                // rely on the executor to re-poll us (e.g. on timer tick).
+                // TODO: wire real waker notification from kernel completion path.
                 Poll::Pending
             }
         }

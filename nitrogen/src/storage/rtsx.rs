@@ -564,15 +564,22 @@ pub fn init(ctx: &dyn DriverContext) {
             dev.disable_pcie_aspm();
             dev.enable_memory_access();
 
-            // Also disable ASPM on the upstream PCIe root port.
-            // Force the PCIe link into L0 before MMIO access.
-            for bridge in scanner.get_devices() {
-                if bridge.bus == 0 && bridge.device == 0x1c && bridge.function == 3 {
-                    log::info!("RTSX: disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
-                        bridge.bus, bridge.device, bridge.function);
-                    bridge.disable_pcie_aspm();
-                    break;
+            // Disable ASPM on the upstream PCIe bridge by walking the
+            // PCI topology to find the bridge whose secondary bus matches
+            // the RTSX device's bus.
+            let upstream_bridge = scanner.get_devices().iter().find(|b| {
+                if b.class_code != 0x06 || b.subclass != 0x04 {
+                    return false;
                 }
+                let sec_bus = PciConfigSpace::read_config_byte(b.bus, b.device, b.function, 0x19);
+                sec_bus == dev.bus
+            });
+            if let Some(bridge) = upstream_bridge {
+                log::info!("RTSX: disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
+                    bridge.bus, bridge.device, bridge.function);
+                bridge.disable_pcie_aspm();
+            } else {
+                log::info!("RTSX: upstream bridge not found for bus {:#x}", dev.bus);
             }
 
             // Read BAR0 directly — do NOT call get_bar_info() which writes
@@ -595,29 +602,26 @@ pub fn init(ctx: &dyn DriverContext) {
             };
             let bar0_size = 0x1000u32; // RTS5249 BAR0 is 4KB
 
-            // Configure the upstream bridge's memory window.
-            for bridge in scanner.get_devices() {
-                if bridge.bus == 0 && bridge.device == 0x1c && bridge.function == 3 {
-                    let base_reg = PciConfigSpace::read_config_dword(
-                        bridge.bus, bridge.device, bridge.function, 0x20);
-                    let mem_base = base_reg as u16;
-                    let mem_limit = (base_reg >> 16) as u16;
-                    let bar_top = bar0_addr + bar0_size as u64 - 1;
-                    let need_base = ((bar0_addr >> 16) & 0xFFF0) as u16;
-                    let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
+            // Configure the upstream bridge's memory window to cover BAR0.
+            if let Some(ref bridge) = upstream_bridge {
+                let base_reg = PciConfigSpace::read_config_dword(
+                    bridge.bus, bridge.device, bridge.function, 0x20);
+                let mem_base = base_reg as u16;
+                let mem_limit = (base_reg >> 16) as u16;
+                let bar_top = bar0_addr + bar0_size as u64 - 1;
+                let need_base = ((bar0_addr >> 16) & 0xFFF0) as u16;
+                let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
 
-                    if mem_base != need_base || mem_limit != need_limit {
-                        log::info!("RTSX: bridge window {:#06x}-{:#06x} needs {:#06x}-{:#06x}",
-                            mem_base, mem_limit, need_base, need_limit);
-                        let new_win = (need_limit as u32) << 16 | need_base as u32;
-                        PciConfigSpace::write_config_dword_raw(
-                            bridge.bus, bridge.device, bridge.function, 0x20, new_win);
-                        log::info!("RTSX: bridge window updated");
-                    } else {
-                        log::info!("RTSX: bridge window OK ({:#06x}-{:#06x})",
-                            mem_base, mem_limit);
-                    }
-                    break;
+                if mem_base != need_base || mem_limit != need_limit {
+                    log::info!("RTSX: bridge window {:#06x}-{:#06x} needs {:#06x}-{:#06x}",
+                        mem_base, mem_limit, need_base, need_limit);
+                    let new_win = (need_limit as u32) << 16 | need_base as u32;
+                    PciConfigSpace::write_config_dword_raw(
+                        bridge.bus, bridge.device, bridge.function, 0x20, new_win);
+                    log::info!("RTSX: bridge window updated");
+                } else {
+                    log::info!("RTSX: bridge window OK ({:#06x}-{:#06x})",
+                        mem_base, mem_limit);
                 }
             }
 

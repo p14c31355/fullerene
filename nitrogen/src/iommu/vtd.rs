@@ -194,32 +194,36 @@ impl VtdRegisters {
     }
 
     pub fn context_cache_invalidate_all(&self) {
-        unsafe { self.w64(CCMD, 1u64 << 61) }
+        // CCMD: IVT=1, CIRG=00 (global)
+        let val = 1u64 << 63;
+        unsafe { self.w64(CCMD, val) }
         for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(CCMD) };
-            if val & (1u64 << 63) != 0 { return; }
+            if val & (1u64 << 63) == 0 { return; }
             core::hint::spin_loop();
         }
         log::warn!("IOMMU: context_cache_invalidate_all timeout");
     }
 
     pub fn context_cache_invalidate_domain(&self, domain_id: u16) {
-        let val = (domain_id as u64) << 32 | (1u64 << 61);
+        // CCMD: IVT=1, CIRG=01 (domain), DID=domain_id
+        let val = (domain_id as u64) << 32 | (1u64 << 61) | (1u64 << 63);
         unsafe { self.w64(CCMD, val) }
         for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(CCMD) };
-            if val & (1u64 << 63) != 0 { return; }
+            if val & (1u64 << 63) == 0 { return; }
             core::hint::spin_loop();
         }
         log::warn!("IOMMU: context_cache_invalidate_domain timeout");
     }
 
     pub fn context_cache_invalidate_device(&self, sid: u16, function_mask: u8) {
-        let val = (sid as u64) << 16 | ((function_mask as u64) << 8) | (1u64 << 61);
+        // CCMD: IVT=1, CIRG=10 (device), SID=sid, FM=function_mask
+        let val = (sid as u64) << 16 | ((function_mask as u64) << 8) | (1u64 << 62) | (1u64 << 63);
         unsafe { self.w64(CCMD, val) }
         for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(CCMD) };
-            if val & (1u64 << 63) != 0 { return; }
+            if val & (1u64 << 63) == 0 { return; }
             core::hint::spin_loop();
         }
         log::warn!("IOMMU: context_cache_invalidate_device timeout");
