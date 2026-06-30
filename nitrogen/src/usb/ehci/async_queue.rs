@@ -101,7 +101,7 @@ macro_rules! dma_pool {
 
         impl $name {
             pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-                let dma = dma::alloc_dma::<$ty>(ctx, $count)?;
+                let mut dma = dma::alloc_dma::<$ty>(ctx, $count)?;
                 let init_fn = $init;
                 for q in dma.as_mut().iter_mut() { init_fn(q); }
                 let usable = $count - $reserved;
@@ -135,6 +135,10 @@ macro_rules! dma_pool {
                 for i in 0..self.free_len { self.free[i] = self.free_len - 1 - i; }
                 let init_fn = $init;
                 for q in self.dma.as_mut().iter_mut() { init_fn(q); }
+            }
+
+            pub fn free_pool(&self, ctx: &dyn DriverContext) {
+                dma::free_dma(ctx, self.dma.phys, self.dma.pages);
             }
         }
     };
@@ -189,6 +193,10 @@ impl AsyncSchedule {
             ptr::write_volatile(&mut head.ep_chars, 1 << 15);
         }
         Some(Self { _dma: dma, head, head_phys: phys })
+    }
+
+    pub fn free(&self, ctx: &dyn DriverContext) {
+        dma::free_dma(ctx, self.head_phys, self._dma.pages);
     }
 
     /// Insert a qH into the async list (after the head).

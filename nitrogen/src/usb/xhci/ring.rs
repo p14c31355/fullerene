@@ -118,7 +118,7 @@ pub struct Ring {
 
 impl Ring {
     pub fn alloc(ctx: &dyn DriverContext, n: usize) -> Option<Self> {
-        let dma = alloc_ring_slice(ctx, n)?;
+        let mut dma = alloc_ring_slice(ctx, n)?;
         let phys = dma.phys;
         let entries = dma.as_mut();
         if n > 1 {
@@ -184,7 +184,8 @@ impl EventRing {
     }
 
     pub fn has_pending(&self) -> bool {
-        let entries = self.dma.as_mut();
+        // SAFETY: single-threaded kernel, read-only raw access
+        let entries = unsafe { core::slice::from_raw_parts_mut(self.dma.as_mut_ptr(), self.len) };
         (unsafe { ptr::read_volatile(&entries[self.deq].flags) } & trb_flag::CYCLE) == self.cycle
     }
 

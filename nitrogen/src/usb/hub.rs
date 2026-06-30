@@ -47,6 +47,7 @@ pub fn enumerate_device(
     let max_pkt = dev_desc.b_max_packet_size_0;
 
     // Step 2: Assign address (USB spec §9.2.6.3)
+    if *next_addr == 0 { *next_addr = 1; }
     let assigned_addr = *next_addr;
     *next_addr = next_addr.wrapping_add(1) % 128;
     if *next_addr == 0 { *next_addr = 1; }

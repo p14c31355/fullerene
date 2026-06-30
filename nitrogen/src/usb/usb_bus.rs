@@ -86,7 +86,7 @@ pub fn bot_exec_command(
     cdb: &[u8],
     data: Option<BotBuffer<'_>>,
     tag: &mut u32,
-) -> Result<(), &'static str> {
+) -> Result<usize, &'static str> {
     let t = *tag;
     *tag = tag.wrapping_add(1);
 
@@ -139,11 +139,11 @@ pub fn bot_exec_command(
     if csw_raw[12] != 0 {
         return Err("CSW reported error");
     }
-    // BOT allows bCSWStatus == 0/1 with a non-zero dCSWDataResidue.
-    // The host should derive the relevant byte count from the residue,
-    // not fail the command solely because residue is non-zero (usb.org).
-    let _residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
-    Ok(())
+    // Compute actual bytes transferred (BOT spec §5.2.3).
+    let requested = dlen as usize;
+    let residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
+    let actual = requested.saturating_sub(residue as usize);
+    Ok(actual)
 }
 
 /// Read sectors from a mass-storage device via BOT.
@@ -166,7 +166,7 @@ pub fn bot_read_sectors(
     cdb[0] = 0x28; // READ_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
-    bot_exec_command(
+    let actual = bot_exec_command(
         host,
         dev_addr,
         ep_out,
@@ -174,7 +174,11 @@ pub fn bot_read_sectors(
         &cdb,
         Some(BotBuffer::In(&mut buf[..dlen as usize])),
         tag,
-    )
+    )?;
+    if actual != dlen as usize {
+        return Err("short read");
+    }
+    Ok(())
 }
 
 /// Write sectors to a mass-storage device via BOT.
@@ -197,7 +201,7 @@ pub fn bot_write_sectors(
     cdb[0] = 0x2A; // WRITE_10
     cdb[2..6].copy_from_slice(&lba.to_be_bytes());
     cdb[7..9].copy_from_slice(&count.to_be_bytes());
-    bot_exec_command(
+    let actual = bot_exec_command(
         host,
         dev_addr,
         ep_out,
@@ -205,7 +209,11 @@ pub fn bot_write_sectors(
         &cdb,
         Some(BotBuffer::Out(buf)),
         tag,
-    )
+    )?;
+    if actual != dlen as usize {
+        return Err("short write");
+    }
+    Ok(())
 }
 
 // ============================================================================

@@ -219,8 +219,9 @@ pub struct Scratchpad {
 impl Scratchpad {
     pub fn alloc(ctx: &dyn DriverContext, count: u32) -> Option<Self> {
         if count == 0 { return None; }
-        let dma = dma::alloc_dma::<u64>(ctx, count as usize)?;
+        let mut dma = dma::alloc_dma::<u64>(ctx, count as usize)?;
         let phys = dma.phys;
+        let pages = dma.pages;
         {
             let array = dma.as_mut();
             for i in 0..count as usize {
@@ -231,10 +232,9 @@ impl Scratchpad {
                             let prev = unsafe { ptr::read_volatile(&array[j]) };
                             dma::free_dma_page(ctx, prev);
                         }
-                        dma::free_dma(ctx, dma.phys, dma.pages);
+                        dma::free_dma(ctx, phys, pages);
                         return None;
                     }
-                };
                 };
                 unsafe { ptr::write_volatile(&mut array[i], buf_phys); }
             }
