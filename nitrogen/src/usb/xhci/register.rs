@@ -195,7 +195,7 @@ impl CapabilityRegisters {
             max_slots: self.hcs_params1 & 0xFF,
             max_interrupters: (self.hcs_params1 >> 8) & 0x7FF,
             n_ports: (self.hcs_params1 >> 24) & 0xFF,
-            ppc: (self.hcs_params1 >> 27) & 1 != 0,
+            ppc: (self.hcc_params1 >> 3) & 1 != 0,
             csz: (self.hcc_params1 >> 2) & 1 != 0,
             max_scratchpad_bufs: (self.hcs_params2 >> 27) & 0x1F
                 | ((self.hcs_params2 >> 21) & 0x1F) << 5,
