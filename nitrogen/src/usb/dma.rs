@@ -13,11 +13,16 @@ use crate::DriverContext;
 /// Allocate `n` elements of type `T` in contiguous physical memory.
 /// Memory is zeroed. Returns (mutable slice, physical address).
 pub(crate) fn alloc_dma<T>(ctx: &dyn DriverContext, n: usize) -> Option<(&'static mut [T], u64)> {
-    let size = n * core::mem::size_of::<T>();
-    let pages = (size + 4095) / 4096;
+    let elem_size = core::mem::size_of::<T>();
+    if n == 0 || elem_size == 0 {
+        return None;
+    }
+    let size = n.checked_mul(elem_size)?;
+    let pages = size.checked_add(4095)? / 4096;
+    let zero_len = pages.checked_mul(4096)?;
     let phys = ctx.allocate_contiguous_frames(pages).ok()?;
     let virt = ctx.phys_to_virt(phys) as *mut u8;
-    unsafe { core::ptr::write_bytes(virt, 0, pages * 4096); }
+    unsafe { core::ptr::write_bytes(virt, 0, zero_len); }
     let slice = unsafe { core::slice::from_raw_parts_mut(virt as *mut T, n) };
     Some((slice, phys))
 }
