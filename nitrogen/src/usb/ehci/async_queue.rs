@@ -12,7 +12,7 @@
 
 use crate::DriverContext;
 use crate::usb::UsbSpeed;
-use alloc::vec::Vec;
+use crate::usb::dma;
 use core::ptr;
 
 // ============================================================================
@@ -91,192 +91,81 @@ pub const fn qtd_total_bytes(n: u32) -> u32 {
         (n << 16) & 0x7FFF_0000
     }
 }
+macro_rules! dma_pool {
+    ($name:ident, $ty:ty, $count:expr, $reserved:expr, $init:expr) => {
+        pub struct $name {
+            dma: dma::DmaSlice<$ty>,
+            free: [usize; $count],
+            free_len: usize,
+        }
 
-// ============================================================================
-//  QueueHeadPool — manages a page of QueueHeads
-// ============================================================================
+        impl $name {
+            pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
+                let mut dma = dma::alloc_dma::<$ty>(ctx, $count)?;
+                let init_fn = $init;
+                for q in dma.as_mut().iter_mut() { init_fn(q); }
+                let usable = $count - $reserved;
+                let mut free = [0usize; $count];
+                for i in 0..usable { free[i] = usable - 1 - i; }
+                Some(Self { dma, free, free_len: usable })
+            }
 
-/// Pre-allocated pool of QueueHeads (one 4KB page = 64 entries).
-pub struct QueueHeadPool {
-    entries: &'static mut [QueueHead],
-    phys: u64,
-    free: [usize; 64],
-    free_len: usize,
-}
+            pub fn allocate(&mut self) -> Option<(&'static mut $ty, u64)> {
+                if self.free_len == 0 { return None; }
+                self.free_len -= 1;
+                let idx = self.free[self.free_len];
+                let ptr = &mut self.dma.as_mut()[idx] as *mut $ty;
+                let phys = self.dma.phys + (idx as u64) * core::mem::size_of::<$ty>() as u64;
+                let init_fn = $init;
+                unsafe { init_fn(&mut *ptr); }
+                unsafe { Some((&mut *ptr, phys)) }
+            }
 
-impl QueueHeadPool {
-    /// Allocate and zero a page for qH pool.
-    pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-        let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut QueueHead;
-        let entries = unsafe { core::slice::from_raw_parts_mut(virt, 64) };
+            pub fn free(&mut self, item: &mut $ty) {
+                let base = self.dma.as_mut().as_ptr() as usize;
+                let idx = ((item as *mut $ty as usize) - base) / core::mem::size_of::<$ty>();
+                if idx < $count && self.free_len < $count {
+                    self.free[self.free_len] = idx;
+                    self.free_len += 1;
+                }
+            }
 
-        for q in entries.iter_mut() {
-            unsafe {
-                ptr::write_volatile(&mut q.horz_link, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.ep_chars, 0);
-                ptr::write_volatile(&mut q.ep_caps, 0);
-                ptr::write_volatile(&mut q.current_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.alt_next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.token, 0);
+            pub fn reset(&mut self) {
+                self.free_len = $count - $reserved;
+                for i in 0..self.free_len { self.free[i] = self.free_len - 1 - i; }
+                let init_fn = $init;
+                for q in self.dma.as_mut().iter_mut() { init_fn(q); }
+            }
+
+            pub fn free_pool(&self, ctx: &dyn DriverContext) {
+                dma::free_dma(ctx, self.dma.phys, self.dma.pages);
             }
         }
-
-        let mut free = [0usize; 64];
-        for i in 0..64 {
-            free[i] = 63 - i;
-        }
-
-        Some(Self {
-            entries,
-            phys,
-            free,
-            free_len: 64,
-        })
-    }
-
-    /// Allocate a QueueHead. Returns (mutable ref, physical address).
-    pub fn allocate(&mut self) -> Option<(&'static mut QueueHead, u64)> {
-        if self.free_len == 0 {
-            return None;
-        }
-        self.free_len -= 1;
-        let idx = self.free[self.free_len];
-        let ptr = &mut self.entries[idx] as *mut QueueHead;
-        let phys = self.phys + (idx as u64) * core::mem::size_of::<QueueHead>() as u64;
-        unsafe { Some((&mut *ptr, phys)) }
-    }
-
-    /// Free a QueueHead.
-    pub fn free(&mut self, qh: &mut QueueHead) {
-        let idx = ((qh as *mut QueueHead as usize) - (self.entries.as_ptr() as usize))
-            / core::mem::size_of::<QueueHead>();
-        if idx < 64 && self.free_len < 64 {
-            self.free[self.free_len] = idx;
-            self.free_len += 1;
-        }
-    }
-
-    /// Reset the free list (clear all entries, zero pool).
-    pub fn reset(&mut self) {
-        self.free_len = 64;
-        for i in 0..64 {
-            self.free[i] = 63 - i;
-        }
-        for q in self.entries.iter_mut() {
-            unsafe {
-                ptr::write_volatile(&mut q.horz_link, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.ep_chars, 0);
-                ptr::write_volatile(&mut q.ep_caps, 0);
-                ptr::write_volatile(&mut q.current_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.alt_next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.token, 0);
-            }
-        }
-    }
+    };
 }
 
-// ============================================================================
-//  QtdPool — manages a page of Qtds
-// ============================================================================
-
-/// Pre-allocated pool of QTDs (one 4KB page = 128 entries).
-pub struct QtdPool {
-    entries: &'static mut [Qtd],
-    phys: u64,
-    free: [usize; 128],
-    free_len: usize,
+const fn qh_init(q: &mut QueueHead) {
+    q.horz_link = QTD_TERMINATE;
+    q.current_qtd = QTD_TERMINATE;
+    q.next_qtd = QTD_TERMINATE;
+    q.alt_next_qtd = QTD_TERMINATE;
 }
+
+const fn qtd_init(q: &mut Qtd) {
+    q.next_qtd = QTD_TERMINATE;
+    q.alt_next_qtd = QTD_TERMINATE;
+    q.buf0 = QTD_TERMINATE;
+    q.buf1 = QTD_TERMINATE;
+    q.buf2 = QTD_TERMINATE;
+    q.buf3 = QTD_TERMINATE;
+    q.buf4 = QTD_TERMINATE;
+}
+
+dma_pool!(QueueHeadPool, QueueHead, 64, 0, qh_init);
+dma_pool!(QtdPool, Qtd, 128, 8, qtd_init);
 
 impl QtdPool {
-    /// Allocate and zero a page for qTD pool.
-    /// Reserves slots 120-127 for control_transfer staging.
-    pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-        let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut Qtd;
-        let entries = unsafe { core::slice::from_raw_parts_mut(virt, 128) };
-
-        for q in entries.iter_mut() {
-            unsafe {
-                ptr::write_volatile(&mut q.next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.alt_next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.token, 0);
-                ptr::write_volatile(&mut q.buf0, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.buf1, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.buf2, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.buf3, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.buf4, QTD_TERMINATE);
-            }
-        }
-
-        let mut free = [0usize; 128];
-        let mut count = 0usize;
-        for i in 0..120 {
-            // Reserve slots 120-127 for control_transfer DMA buffer
-            free[count] = 119 - i;
-            count += 1;
-        }
-        Some(Self {
-            entries,
-            phys,
-            free,
-            free_len: count,
-        })
-    }
-
-    /// Allocate a QTD. Returns (mutable ref, physical address).
-    /// Clears all buffer pointer fields to prevent stale DMA.
-    pub fn allocate(&mut self) -> Option<(&'static mut Qtd, u64)> {
-        if self.free_len == 0 {
-            return None;
-        }
-        self.free_len -= 1;
-        let idx = self.free[self.free_len];
-        let ptr = &mut self.entries[idx] as *mut Qtd;
-        let phys = self.phys + (idx as u64) * 32;
-        let q = unsafe { &mut *ptr };
-        unsafe {
-            ptr::write_volatile(&mut q.buf0, 0);
-            ptr::write_volatile(&mut q.buf1, 0);
-            ptr::write_volatile(&mut q.buf2, 0);
-            ptr::write_volatile(&mut q.buf3, 0);
-            ptr::write_volatile(&mut q.buf4, 0);
-        }
-        Some((q, phys))
-    }
-
-    /// Free a QTD.
-    pub fn free(&mut self, qtd: &mut Qtd) {
-        let idx = ((qtd as *mut Qtd as usize) - (self.entries.as_ptr() as usize))
-            / core::mem::size_of::<Qtd>();
-        if idx < 128 && self.free_len < 128 {
-            self.free[self.free_len] = idx;
-            self.free_len += 1;
-        }
-    }
-
-    /// Get the physical address of reserved staging area (slots 120-127).
-    pub fn staging_phys(&self) -> u64 {
-        self.phys + 120 * 32
-    }
-
-    /// Reset the free list (restore all non-reserved slots).
-    pub fn reset(&mut self) {
-        self.free_len = 0;
-        for i in 0..120 {
-            self.free[self.free_len] = 119 - i;
-            self.free_len += 1;
-        }
-        for q in self.entries.iter_mut() {
-            unsafe {
-                ptr::write_volatile(&mut q.next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.alt_next_qtd, QTD_TERMINATE);
-                ptr::write_volatile(&mut q.token, 0);
-            }
-        }
-    }
+    pub fn staging_phys(&self) -> u64 { self.dma.phys + 120 * core::mem::size_of::<Qtd>() as u64 }
 }
 
 // ============================================================================
@@ -285,6 +174,8 @@ impl QtdPool {
 
 /// Manages the async schedule list (the circular qH list).
 pub struct AsyncSchedule {
+    /// Keeps the DMA allocation alive for the lifetime of the schedule.
+    _dma: dma::DmaSlice<QueueHead>,
     /// Async list head qH (self-loop when idle).
     pub head: &'static mut QueueHead,
     /// Physical address of the async head.
@@ -292,41 +183,37 @@ pub struct AsyncSchedule {
 }
 
 impl AsyncSchedule {
-    /// Allocate the async list head qH.
     pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-        let phys = ctx.allocate_contiguous_frames(1).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut QueueHead;
-        let head = unsafe { &mut *virt };
-
-        // Self-loop: idle → head points to itself
+        let dma = dma::alloc_dma::<QueueHead>(ctx, 1)?;
+        let phys = dma.phys;
+        let head = unsafe { &mut *dma.as_mut_ptr() };
+        qh_init(head);
         unsafe {
             ptr::write_volatile(&mut head.horz_link, (phys as u32) | QH_HORZ_TYPE_QH);
-            ptr::write_volatile(&mut head.ep_chars, 0);
-            ptr::write_volatile(&mut head.ep_caps, 0);
-            ptr::write_volatile(&mut head.current_qtd, QTD_TERMINATE);
-            ptr::write_volatile(&mut head.next_qtd, QTD_TERMINATE);
-            ptr::write_volatile(&mut head.alt_next_qtd, QTD_TERMINATE);
-            ptr::write_volatile(&mut head.token, 0);
+            ptr::write_volatile(&mut head.ep_chars, 1 << 15);
         }
+        Some(Self { _dma: dma, head, head_phys: phys })
+    }
 
-        Some(Self {
-            head,
-            head_phys: phys,
-        })
+    pub fn free(&self, ctx: &dyn DriverContext) {
+        dma::free_dma(ctx, self.head_phys, self._dma.pages);
     }
 
     /// Insert a qH into the async list (after the head).
     ///
     /// The list is circular: head → ... → qHx → ... → head.
     /// This inserts the new qH immediately after the head.
+    /// Per EHCI spec §4.8.2: the new qH's horz_link must be set BEFORE
+    /// modifying the predecessor's link, to prevent the HC from following
+    /// a broken link during async schedule traversal.
     pub fn insert(&mut self, qh_phys: u64, ctx: &dyn DriverContext) {
         let head_next = unsafe { ptr::read_volatile(&self.head.horz_link) };
-        unsafe {
-            ptr::write_volatile(&mut self.head.horz_link, (qh_phys as u32) | QH_HORZ_TYPE_QH);
-        }
         let qh_virt = ctx.phys_to_virt(qh_phys) as *mut QueueHead;
         unsafe {
             ptr::write_volatile(&mut (*qh_virt).horz_link, head_next);
+        }
+        unsafe {
+            ptr::write_volatile(&mut self.head.horz_link, (qh_phys as u32) | QH_HORZ_TYPE_QH);
         }
     }
 

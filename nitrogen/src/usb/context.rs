@@ -19,9 +19,9 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use super::disk::{Disk, StorageManager};
-use super::ehci_context::EhciContext;
+use super::ehci::context::EhciContext;
 use super::host_controller::HostController;
-use super::xhci_context::XhciContext;
+use super::xhci::context::XhciContext;
 
 // ============================================================================
 //  ControllerManager — PCI scan, init, polling
@@ -66,20 +66,35 @@ impl ControllerManager {
             );
             match prog_if {
                 0x20 => {
+                    log::info!("USB: EHCI at {:02x}:{:02x}.{}", dev.bus, dev.device, dev.function);
                     if let Some(mut hc) = EhciContext::new(mmio_virt, ctx) {
                         if hc.initialize().is_ok() {
+                            log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
+                        } else {
+                            log::warn!("USB: EHCI init failed");
                         }
+                    } else {
+                        log::warn!("USB: EHCI new failed");
                     }
                 }
                 0x30 => {
+                    log::info!("USB: xHCI at {:02x}:{:02x}.{}", dev.bus, dev.device, dev.function);
                     if let Some(mut hc) = XhciContext::new(mmio_virt, ctx) {
                         if hc.init().is_ok() {
+                            log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));
+                        } else {
+                            log::warn!("USB: xHCI init failed");
                         }
+                    } else {
+                        log::warn!("USB: xHCI new failed");
                     }
                 }
-                _ => {}
+                _ => {
+                    log::info!("USB: unknown prog_if 0x{:02x} at {:02x}:{:02x}.{}",
+                        prog_if, dev.bus, dev.device, dev.function);
+                }
             }
         }
     }
@@ -307,10 +322,15 @@ impl USBContext {
             ehci.reset_pools();
 
             let dev = {
-                let mut ctrl_fn = |addr, ep, setup: &super::UsbSetupPacket, buf: &mut [u8]| {
-                    ehci.control_transfer(addr, ep, setup, buf)
+                let mut addr_slot = ehci.next_address;
+                let result = {
+                    let mut ctrl_fn = |addr, ep, setup: &super::UsbSetupPacket, buf: &mut [u8]| {
+                        ehci.control_transfer(addr, ep, setup, buf)
+                    };
+                    super::hub::enumerate_device(&mut ctrl_fn, &mut addr_slot)
                 };
-                super::hub::enumerate_device(&mut ctrl_fn)
+                ehci.next_address = addr_slot;
+                result
             };
             let dev = match dev {
                 Ok(d) if d.is_mass_storage() => d,

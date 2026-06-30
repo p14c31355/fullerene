@@ -15,9 +15,9 @@
 //! Offset 0x18: ERDP   — Event Ring Dequeue Pointer (64-bit)
 //! ```
 
-use super::xhci_register::RuntimeRegisters;
-use super::xhci_register::{IMAN_IE, IMAN_IP};
-use super::xhci_ring::{EventRing, Trb};
+use super::register::RuntimeRegisters;
+use super::register::{IMAN_IE, IMAN_IP};
+use super::ring::{EventRing, Trb};
 
 // ============================================================================
 //  Interrupter — per-interrupter state

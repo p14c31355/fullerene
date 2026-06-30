@@ -18,10 +18,12 @@ use alloc::vec::Vec;
 ///
 /// `control_fn` is a callback that performs a control transfer:
 ///   fn(dev_addr, endpoint, setup_packet, buffer) -> Result<usize, &'static str>
+/// `next_addr` is a mutable counter for assigning unique USB device addresses (1-127).
 ///
 /// Returns the fully enumerated UsbDevice, or an error.
 pub fn enumerate_device(
     control_fn: &mut dyn FnMut(u8, u8, &UsbSetupPacket, &mut [u8]) -> Result<usize, &'static str>,
+    next_addr: &mut u8,
 ) -> Result<UsbDevice, &'static str> {
     // Step 1: Get device descriptor (only first 8 bytes for max packet size)
     let mut desc_buf = [0u8; 64];
@@ -44,8 +46,11 @@ pub fn enumerate_device(
         unsafe { &*(desc_buf.as_ptr() as *const UsbDeviceDescriptor) };
     let max_pkt = dev_desc.b_max_packet_size_0;
 
-    // Step 2: Assign address
-    let assigned_addr = 1; // simple: first device gets address 1
+    // Step 2: Assign address (USB spec §9.2.6.3)
+    if *next_addr == 0 { *next_addr = 1; }
+    let assigned_addr = *next_addr;
+    *next_addr = next_addr.wrapping_add(1) % 128;
+    if *next_addr == 0 { *next_addr = 1; }
     let setup = UsbSetupPacket {
         bm_request_type: 0x00, // host-to-device, standard, device
         b_request: REQ_SET_ADDRESS,
@@ -55,15 +60,8 @@ pub fn enumerate_device(
     };
     control_fn(0, 0, &setup, &mut []).map_err(|_| "SET_ADDRESS failed")?;
 
-    // Delay for address to take effect
-    for _ in 0..1000 {
-        // SAFETY: Reading a dummy volatile u8 to introduce a small delay
-        // after SET_ADDRESS, allowing the device to settle before subsequent
-        // control transfers (USB2 spec §9.2.6.3 recommends 2ms).
-        unsafe {
-            core::ptr::read_volatile(&0u8);
-        }
-    }
+    // Delay for address to take effect (USB2 spec §9.2.6.3 recommends 2ms)
+    super::xhci::port::delay_ms(2);
 
     // Step 3: Get full device descriptor (18 bytes) at new address
     let mut dev_desc_full = [0u8; 18];

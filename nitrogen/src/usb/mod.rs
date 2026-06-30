@@ -18,19 +18,14 @@ pub mod context;
 // Common host-controller abstraction
 pub mod host_controller;
 
+// DMA allocation helpers
+mod dma;
+
 // EHCI sub-context modules
-pub mod ehci_async;
-pub mod ehci_context;
-pub mod ehci_port;
-pub mod ehci_register;
+pub mod ehci;
 
 // xHCI sub-context modules
-pub mod xhci_context;
-pub mod xhci_device;
-pub mod xhci_interrupt;
-pub mod xhci_port;
-pub mod xhci_register;
-pub mod xhci_ring;
+pub mod xhci;
 
 // USB class drivers
 pub mod hub;
@@ -203,6 +198,6 @@ pub struct UsbDevice {
 
 impl UsbDevice {
     pub fn is_mass_storage(&self) -> bool {
-        self.device_class == MSC_CLASS || self.configurations > 0
+        self.device_class == MSC_CLASS
     }
 }

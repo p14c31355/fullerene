@@ -16,7 +16,7 @@
 //! is used by this module; the second dword (PORTPMSC) is not yet
 //! implemented.
 
-use super::xhci_register::{
+use super::register::{
     OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK,
     PORTSC_PP, PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
 };
@@ -311,7 +311,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
         // Some older / quirky xHC implementations may need this extra
         // kick after WPR when the automatic training stalls.
         const PLS_RXDETECT: u32 = 5 << 5;
-        op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+        op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
         for _ in 0..120 {
             delay_ms(10);
             if op.portsc(port).ccs() {
@@ -333,7 +333,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
 /// Uses `update_portsc` to preserve all non-PLS register bits.
 pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
     const PLS_RXDETECT: u32 = 5 << 5;
-    op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK);
+    op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
 }
 
 /// Exit Compliance (PLS=15) mode by transitioning to a non-compliance link state.
@@ -350,7 +350,7 @@ pub fn exit_compliance(op: &OperationalRegisters, port: u32) -> bool {
     }
     log::info!("xHCI: port {} in Compliance mode (PLS=15), attempting exit", port);
     const PLS_U0: u32 = 0 << 5;
-    op.update_portsc(port, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK);
+    op.update_portsc(port, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
     delay_ms(50);
     let ps2 = op.portsc(port);
     if ps2.pls() != 15 {
@@ -409,8 +409,8 @@ pub fn delay(iterations: u32) {
 //  Port speed mapping
 // ============================================================================
 
-// port_speed_to_usb is re-exported from xhci_register
-pub use super::xhci_register::port_speed_to_usb;
+// port_speed_to_usb is re-exported from register
+pub use super::register::port_speed_to_usb;
 
 // ============================================================================
 //  Tests
@@ -479,8 +479,8 @@ mod tests {
     fn test_port_does_not_become_done_prematurely() {
         let mut p = Port::new(0, true);
 
-        // Simulate 3 polling cycles where CCS never asserts.
-        for attempt in 1..=3 {
+        // Simulate MAX_PORT_RETRIES polling cycles where CCS never asserts.
+        for attempt in 1..=MAX_PORT_RETRIES {
             assert!(!p.done, "port should not be done on attempt {}", attempt);
             assert!(
                 p.retry_count < MAX_PORT_RETRIES,
@@ -489,8 +489,6 @@ mod tests {
             );
             p.retry_count += 1;
         }
-        // After MAX_PORT_RETRIES attempts, the driver marks it done.
-        assert!(p.retry_count >= MAX_PORT_RETRIES);
         p.done = true;
         assert!(p.done);
     }

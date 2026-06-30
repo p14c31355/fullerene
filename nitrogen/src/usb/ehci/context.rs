@@ -26,10 +26,10 @@ use alloc::vec::Vec;
 use core::ptr;
 
 // ── Import sub-contexts from sibling modules ──────────────────
-use super::ehci_async::*;
-use super::ehci_port::*;
-use super::ehci_register::*;
-use super::host_controller::HostController;
+use super::async_queue::*;
+use crate::usb::host_controller::HostController;
+use super::port::*;
+use super::register::*;
 
 // ============================================================================
 //  EhciContext — top-level EHCI state container
@@ -216,11 +216,20 @@ impl EhciContext {
                 continue;
             }
 
-            // Port reset
+            // Port reset (EHCI spec §4.2.4: PR must be cleared by HC, not by driver)
             op.write_portsc(port_idx, portsc | PORTSC_RESET);
-            super::xhci_port::delay_ms(50);
-            let cur_portsc = op.portsc(port_idx);
-            op.write_portsc(port_idx, cur_portsc & !PORTSC_RESET);
+            let mut pr_cleared = false;
+            for _ in 0..200_000 {
+                if op.portsc(port_idx) & PORTSC_RESET == 0 {
+                    pr_cleared = true;
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+            if !pr_cleared {
+                self.ports.mark_processed(port_idx);
+                continue;
+            }
 
             // Wait for PE
             for _ in 0..10_000 {
@@ -294,22 +303,36 @@ impl EhciContext {
         self.transfer.reset_pools();
     }
 
+    /// Look up a device's speed by its USB address. Falls back to High speed
+    /// if the device is not found (EHCI only handles High speed natively).
+    fn device_speed(&self, dev_addr: u8) -> UsbSpeed {
+        self.devices
+            .iter()
+            .find(|d| d.address == dev_addr)
+            .map(|d| d.speed)
+            .unwrap_or(UsbSpeed::High)
+    }
+
     /// Wait for an Async Advance interrupt (AAINT) after unlinking a qH.
     ///
     /// After removing a qH from the async schedule, the controller may still
     /// have it cached.  Issuing IAAD (Interrupt on Async Advance Doorbell)
     /// and waiting for AAINT ensures the controller has flushed its cache
     /// and will no longer access the freed qH, qTDs, or staging buffers.
-    fn wait_async_advance(&self, op: &EhciOperationalRegisters) {
+    /// Returns an error if AAINT does not arrive within the timeout.
+    fn wait_async_advance(&self, op: &EhciOperationalRegisters) -> Result<(), &'static str> {
+        // Clear any stale AAINT before ringing IAAD
+        op.write_usbsts(USBSTS_AAINT);
         op.set_usbcmd_bits(USBCMD_IAAD);
         for _ in 0..1_000_000 {
             let sts = op.usbsts();
             if sts & USBSTS_AAINT != 0 {
                 op.write_usbsts(USBSTS_AAINT);
-                return;
+                return Ok(());
             }
             core::hint::spin_loop();
         }
+        Err("async advance timeout")
     }
 
     // ── Control transfer ───────────────────────────────────────
@@ -333,7 +356,7 @@ impl EhciContext {
 
         // Allocate qH
         let (qh, qh_phys) = self.transfer.qh_pool.allocate().ok_or("no qH")?;
-        let speed = UsbSpeed::High;
+        let speed = self.device_speed(dev_addr);
 
         unsafe {
             ptr::write_volatile(&mut qh.ep_chars, qh_ep_chars(dev_addr, endpoint, speed, 64));
@@ -516,7 +539,9 @@ impl EhciContext {
 
         // Free resources
         self.transfer.schedule.remove(qh_phys, self.driver_ctx);
-        self.wait_async_advance(&self.registers.op);
+        if self.wait_async_advance(&self.registers.op).is_err() {
+            log::warn!("EHCI: async advance timeout during control transfer cleanup");
+        }
         self.transfer.qtd_pool.free(qtd_setup);
         if let Some((d, _)) = qtd_data {
             self.transfer.qtd_pool.free(d);
@@ -549,10 +574,11 @@ impl EhciContext {
 
         // Allocate qH
         let (qh, qh_phys) = self.transfer.qh_pool.allocate().ok_or("no qH")?;
+        let speed = self.device_speed(dev_addr);
         unsafe {
             ptr::write_volatile(
                 &mut qh.ep_chars,
-                qh_ep_chars(dev_addr, endpoint & 0x0F, UsbSpeed::High, max_packet),
+                qh_ep_chars(dev_addr, endpoint & 0x0F, speed, max_packet),
             );
             ptr::write_volatile(&mut qh.ep_caps, 0);
             ptr::write_volatile(&mut qh.current_qtd, QTD_TERMINATE);
@@ -627,7 +653,9 @@ impl EhciContext {
         let r = self.transfer.wait_qtd(qtd, 5_000_000);
         if r.is_err() {
             self.transfer.schedule.remove(qh_phys, self.driver_ctx);
-            self.wait_async_advance(&self.registers.op);
+        if self.wait_async_advance(&self.registers.op).is_err() {
+            log::warn!("EHCI: async advance timeout during bulk transfer cleanup");
+        }
             self.driver_ctx
                 .free_contiguous_frames(staging_phys, staging_pages);
             self.transfer.qtd_pool.free(qtd);
@@ -642,7 +670,9 @@ impl EhciContext {
         }
 
         self.transfer.schedule.remove(qh_phys, self.driver_ctx);
-        self.wait_async_advance(&self.registers.op);
+        if self.wait_async_advance(&self.registers.op).is_err() {
+            log::warn!("EHCI: async advance timeout during bulk transfer cleanup");
+        }
         self.transfer.qtd_pool.free(qtd);
         self.transfer.qh_pool.free(qh);
         self.driver_ctx
