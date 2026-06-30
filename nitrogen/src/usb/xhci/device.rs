@@ -231,8 +231,10 @@ impl Scratchpad {
                             let prev = unsafe { ptr::read_volatile(&array[j]) };
                             dma::free_dma_page(ctx, prev);
                         }
+                        dma::free_dma(ctx, dma.phys, dma.pages);
                         return None;
                     }
+                };
                 };
                 unsafe { ptr::write_volatile(&mut array[i], buf_phys); }
             }
