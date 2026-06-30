@@ -367,6 +367,7 @@ fn syscall_fork() -> SyscallResult {
         exit_code: None,
         parent_id: Some(current_pid),
         dispatch_mode: None,
+        vdso_page: None,
     };
 
     child_process.context.regs[0] = 0;
@@ -862,6 +863,7 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
         exit_code: None,
         parent_id: Some(current_pid),
         dispatch_mode: None,
+        vdso_page: None, // shares parent's VDSO via shared page table
     };
 
     thread_process.context.regs[0] = 0;

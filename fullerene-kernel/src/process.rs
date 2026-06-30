@@ -373,6 +373,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
             parent_id: None,
             task_data: 0,
             dispatch_mode: None,
+            vdso_page: None,
         });
 
         // Take ownership of static process via Box::from_raw

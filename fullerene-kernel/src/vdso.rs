@@ -3,9 +3,9 @@ use core::sync::atomic::Ordering;
 use petroleum::page_table::types::PageTableHelper;
 use petroleum::vdso::{VdsoPage, VDSO_PENDING, VDSO_USER_BASE};
 use x86_64::structures::paging::{FrameAllocator, PageTableFlags, PhysFrame, Size4KiB};
-use x86_64::{PhysAddr, VirtAddr};
+use x86_64::VirtAddr;
 
-use crate::process::{Process, PROCESS_MANAGER};
+use crate::process::PROCESS_MANAGER;
 use crate::syscall::handlers::handle_syscall;
 
 pub struct VdsoPageRef {
@@ -23,14 +23,12 @@ pub fn create_vdso_page(
         .ok_or("VDSO: out of frames")?;
     let phys_addr = frame.start_address();
 
-    // Initialize via kernel higher-half mapping
-    let phys_offset = petroleum::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed);
+    let phys_offset = petroleum::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed) as u64;
     let kernel_virt = VirtAddr::new(phys_addr.as_u64() + phys_offset);
     let page = unsafe { &mut *kernel_virt.as_mut_ptr::<VdsoPage>() };
     *page = VdsoPage::new();
     page.pid = pid;
 
-    // Map into process address space via the process page table helper
     let flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::USER_ACCESSIBLE;
@@ -56,20 +54,21 @@ pub fn create_vdso_page(
     })
 }
 
-pub fn poll_vdso_page(vdso: &mut VdsoPage) {
+pub fn poll_vdso_page(vdso: &VdsoPage) {
     for slot in 0..petroleum::vdso::VDSO_RING_SIZE {
-        let req = &vdso.requests[slot];
-        let state = req.state.load(Ordering::Acquire);
+        let state = vdso.requests[slot].state.load(Ordering::Acquire);
         if state == VDSO_PENDING {
-            let syscall_num = req.syscall_num;
-            let args = req.args;
+            let syscall_num = vdso.requests[slot].syscall_num();
+            let args = vdso.requests[slot].args();
             let result = unsafe {
                 handle_syscall(
                     syscall_num, args[0], args[1], args[2], args[3], args[4], args[5],
                 )
             };
-            req.args[0] = result;
-            req.state.store(result + 2, Ordering::Release);
+            vdso.requests[slot].set_result(result);
+            vdso.requests[slot]
+                .state
+                .store(result + 2, Ordering::Release);
         }
     }
 }
@@ -78,7 +77,7 @@ pub fn poll_all_vdso_rings() {
     PROCESS_MANAGER.with_list(|list| {
         for (_, proc) in list.iter_mut() {
             if let Some(ref mut vdso) = proc.vdso_page {
-                poll_vdso_page(&mut *vdso.kernel_ptr);
+                poll_vdso_page(&*vdso.kernel_ptr);
             }
         }
     });

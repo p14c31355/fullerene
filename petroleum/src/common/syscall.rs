@@ -105,7 +105,7 @@ pub enum SyscallNumber {
 /// Check if VDSO is available (user-space pointer initialized).
 #[inline]
 fn vdso_available() -> bool {
-    unsafe { crate::vdso::user::vdso_ptr_initialized() }
+    crate::vdso::user::vdso_ptr_initialized()
 }
 
 /// Raw syscall: tries VDSO first (no trap), falls back to `syscall` instruction.

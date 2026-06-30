@@ -1,5 +1,6 @@
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::Ordering;
 use core::task::{Context, Poll};
 
 use crate::vdso::layout::*;
@@ -13,7 +14,7 @@ static mut VDSO_PAGE: *const VdsoPage = core::ptr::null();
 /// Initialize the VDSO pointer.
 /// Must be called once at process start.
 pub unsafe fn init_vdso(page: *const VdsoPage) {
-    VDSO_PAGE = page;
+    unsafe { VDSO_PAGE = page; }
 }
 
 /// Check whether the VDSO pointer has been initialized.
