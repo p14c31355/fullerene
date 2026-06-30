@@ -1164,9 +1164,9 @@ impl XhciContext {
             }
         }
 
-        // Free staging buffer (on both success and timeout — HC DMA may have
-        // completed by the time we time out, and stale pages waste memory).
-        if staging_phys != 0 {
+        // Free only when the transfer completed; timeout recovery must stop or
+        // reset the endpoint before returning these pages to the allocator.
+        if staging_phys != 0 && res.is_ok() {
             self.driver_ctx
                 .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
         }
