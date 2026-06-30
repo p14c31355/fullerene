@@ -198,6 +198,10 @@ pub struct UsbDevice {
 
 impl UsbDevice {
     pub fn is_mass_storage(&self) -> bool {
+        // Many MSC devices report class 0x00 at the device level
+        // and class 0x08 on an interface.  Check endpoints for
+        // bulk transfer endpoints as a fallback heuristic.
         self.device_class == MSC_CLASS
+            || self.endpoints.iter().any(|ep| (ep.bm_attributes & 3) == 2)
     }
 }

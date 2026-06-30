@@ -219,12 +219,25 @@ pub struct Scratchpad {
 impl Scratchpad {
     pub fn alloc(ctx: &dyn DriverContext, count: u32) -> Option<Self> {
         if count == 0 { return None; }
-        let (array, array_phys) = dma::alloc_dma::<u64>(ctx, count as usize)?;
-        for i in 0..count as usize {
-            let (_, buf_phys) = dma::alloc_dma_page(ctx)?;
-            unsafe { ptr::write_volatile(&mut array[i], buf_phys); }
+        let dma = dma::alloc_dma::<u64>(ctx, count as usize)?;
+        let phys = dma.phys;
+        {
+            let array = dma.as_mut();
+            for i in 0..count as usize {
+                let (_, buf_phys) = match dma::alloc_dma_page(ctx) {
+                    Some(v) => v,
+                    None => {
+                        for j in 0..i {
+                            let prev = unsafe { ptr::read_volatile(&array[j]) };
+                            dma::free_dma_page(ctx, prev);
+                        }
+                        return None;
+                    }
+                };
+                unsafe { ptr::write_volatile(&mut array[i], buf_phys); }
+            }
         }
-        Some(Self { phys: array_phys, count })
+        Some(Self { phys, count })
     }
 }
 
@@ -349,7 +362,11 @@ impl DeviceContextSet {
     /// Create a new device context set with DCBAA, optional scratchpad, and slot manager.
     pub fn new(ctx: &dyn DriverContext, max_slots: u32, scratchpad_count: u32) -> Option<Self> {
         let dcbaa = Dcbaa::alloc(ctx)?;
-        let scratchpad = Scratchpad::alloc(ctx, scratchpad_count);
+        let scratchpad = if scratchpad_count == 0 {
+            None
+        } else {
+            Some(Scratchpad::alloc(ctx, scratchpad_count)?)
+        };
 
         // DCBAA[0] = scratchpad array pointer (or 0 if none)
         if let Some(ref sp) = scratchpad {

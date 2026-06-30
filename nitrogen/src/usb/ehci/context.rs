@@ -321,6 +321,8 @@ impl EhciContext {
     /// and will no longer access the freed qH, qTDs, or staging buffers.
     /// Returns an error if AAINT does not arrive within the timeout.
     fn wait_async_advance(&self, op: &EhciOperationalRegisters) -> Result<(), &'static str> {
+        // Clear any stale AAINT before ringing IAAD
+        op.write_usbsts(USBSTS_AAINT);
         op.set_usbcmd_bits(USBCMD_IAAD);
         for _ in 0..1_000_000 {
             let sts = op.usbsts();

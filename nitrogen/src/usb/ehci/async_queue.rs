@@ -94,34 +94,35 @@ pub const fn qtd_total_bytes(n: u32) -> u32 {
 macro_rules! dma_pool {
     ($name:ident, $ty:ty, $count:expr, $reserved:expr, $init:expr) => {
         pub struct $name {
-            entries: &'static mut [$ty],
-            phys: u64,
+            dma: dma::DmaSlice<$ty>,
             free: [usize; $count],
             free_len: usize,
         }
 
         impl $name {
             pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-                let (entries, phys) = dma::alloc_dma::<$ty>(ctx, $count)?;
+                let dma = dma::alloc_dma::<$ty>(ctx, $count)?;
                 let init_fn = $init;
-                for q in entries.iter_mut() { init_fn(q); }
+                for q in dma.as_mut().iter_mut() { init_fn(q); }
                 let usable = $count - $reserved;
                 let mut free = [0usize; $count];
                 for i in 0..usable { free[i] = usable - 1 - i; }
-                Some(Self { entries, phys, free, free_len: usable })
+                Some(Self { dma, free, free_len: usable })
             }
 
             pub fn allocate(&mut self) -> Option<(&'static mut $ty, u64)> {
                 if self.free_len == 0 { return None; }
                 self.free_len -= 1;
                 let idx = self.free[self.free_len];
-                let ptr = &mut self.entries[idx] as *mut $ty;
-                let phys = self.phys + (idx as u64) * core::mem::size_of::<$ty>() as u64;
+                let ptr = &mut self.dma.as_mut()[idx] as *mut $ty;
+                let phys = self.dma.phys + (idx as u64) * core::mem::size_of::<$ty>() as u64;
+                let init_fn = $init;
+                unsafe { init_fn(&mut *ptr); }
                 unsafe { Some((&mut *ptr, phys)) }
             }
 
             pub fn free(&mut self, item: &mut $ty) {
-                let base = self.entries.as_ptr() as usize;
+                let base = self.dma.as_mut().as_ptr() as usize;
                 let idx = ((item as *mut $ty as usize) - base) / core::mem::size_of::<$ty>();
                 if idx < $count && self.free_len < $count {
                     self.free[self.free_len] = idx;
@@ -133,7 +134,7 @@ macro_rules! dma_pool {
                 self.free_len = $count - $reserved;
                 for i in 0..self.free_len { self.free[i] = self.free_len - 1 - i; }
                 let init_fn = $init;
-                for q in self.entries.iter_mut() { init_fn(q); }
+                for q in self.dma.as_mut().iter_mut() { init_fn(q); }
             }
         }
     };
@@ -160,7 +161,7 @@ dma_pool!(QueueHeadPool, QueueHead, 64, 0, qh_init);
 dma_pool!(QtdPool, Qtd, 128, 8, qtd_init);
 
 impl QtdPool {
-    pub fn staging_phys(&self) -> u64 { self.phys + 120 * 32 }
+    pub fn staging_phys(&self) -> u64 { self.dma.phys + 120 * 32 }
 }
 
 // ============================================================================
@@ -169,6 +170,8 @@ impl QtdPool {
 
 /// Manages the async schedule list (the circular qH list).
 pub struct AsyncSchedule {
+    /// Keeps the DMA allocation alive for the lifetime of the schedule.
+    _dma: dma::DmaSlice<QueueHead>,
     /// Async list head qH (self-loop when idle).
     pub head: &'static mut QueueHead,
     /// Physical address of the async head.
@@ -177,20 +180,15 @@ pub struct AsyncSchedule {
 
 impl AsyncSchedule {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-const QH_EPCHAR_H: u32 = 1 << 15;
-
-impl AsyncSchedule {
-    pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
-        let (entries, phys) = dma::alloc_dma::<QueueHead>(ctx, 1)?;
-        let head = &mut entries[0];
+        let dma = dma::alloc_dma::<QueueHead>(ctx, 1)?;
+        let phys = dma.phys;
+        let head = unsafe { &mut *dma.as_mut_ptr() };
         qh_init(head);
         unsafe {
             ptr::write_volatile(&mut head.horz_link, (phys as u32) | QH_HORZ_TYPE_QH);
-            ptr::write_volatile(&mut head.ep_chars, QH_EPCHAR_H);
+            ptr::write_volatile(&mut head.ep_chars, 1 << 15);
         }
-        Some(Self { head, head_phys: phys })
-    }
-}
+        Some(Self { _dma: dma, head, head_phys: phys })
     }
 
     /// Insert a qH into the async list (after the head).

@@ -4,15 +4,42 @@
 //! # Example
 //!
 //! ```ignore
-//! let (entries, phys) = alloc_dma::<Trb>(ctx, 256)?;
+//! let dma = alloc_dma::<Trb>(ctx, 256)?;
+//! let trbs = dma.as_mut();
 //! let (page_virt, page_phys) = alloc_dma_page(ctx)?;
 //! ```
 
 use crate::DriverContext;
 
+/// Owned DMA allocation.
+///
+/// Holds a pointer to contiguous zeroed memory and its physical address.
+/// The lifetime of the returned memory is tied to this value, not `'static`.
+pub(crate) struct DmaSlice<T> {
+    ptr: *mut T,
+    len: usize,
+    pub(crate) phys: u64,
+    pub(crate) pages: usize,
+}
+
+impl<T> DmaSlice<T> {
+    /// Get a mutable slice to the allocated memory.
+    ///
+    /// SAFETY: the caller must ensure there are no aliasing references
+    /// (the kernel is single-threaded so this holds).
+    pub fn as_mut(&self) -> &mut [T] {
+        unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) }
+    }
+
+    /// Return a raw pointer to the start of the allocation.
+    pub fn as_mut_ptr(&self) -> *mut T {
+        self.ptr
+    }
+}
+
 /// Allocate `n` elements of type `T` in contiguous physical memory.
-/// Memory is zeroed. Returns (mutable slice, physical address).
-pub(crate) fn alloc_dma<T>(ctx: &dyn DriverContext, n: usize) -> Option<(&'static mut [T], u64)> {
+/// Memory is zeroed.
+pub(crate) fn alloc_dma<T>(ctx: &dyn DriverContext, n: usize) -> Option<DmaSlice<T>> {
     let elem_size = core::mem::size_of::<T>();
     if n == 0 || elem_size == 0 {
         return None;
@@ -23,8 +50,7 @@ pub(crate) fn alloc_dma<T>(ctx: &dyn DriverContext, n: usize) -> Option<(&'stati
     let phys = ctx.allocate_contiguous_frames(pages).ok()?;
     let virt = ctx.phys_to_virt(phys) as *mut u8;
     unsafe { core::ptr::write_bytes(virt, 0, zero_len); }
-    let slice = unsafe { core::slice::from_raw_parts_mut(virt as *mut T, n) };
-    Some((slice, phys))
+    Some(DmaSlice { ptr: virt as *mut T, len: n, phys, pages })
 }
 
 /// Allocate a single zeroed 4KB page. Returns (virtual address, physical address).
@@ -37,10 +63,10 @@ pub(crate) fn alloc_dma_page(ctx: &dyn DriverContext) -> Option<(*mut u8, u64)> 
 
 /// Free `pages` contiguous frames at `phys`.
 pub(crate) fn free_dma(ctx: &dyn DriverContext, phys: u64, pages: usize) {
-    let _ = ctx.free_contiguous_frames(phys, pages);
+    ctx.free_contiguous_frames(phys, pages);
 }
 
 /// Free a single allocated page.
 pub(crate) fn free_dma_page(ctx: &dyn DriverContext, phys: u64) {
-    let _ = ctx.free_contiguous_frames(phys, 1);
+    ctx.free_contiguous_frames(phys, 1);
 }

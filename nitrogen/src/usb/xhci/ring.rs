@@ -100,7 +100,7 @@ impl Trb {
 //  Common ring buffer allocation helper
 // ══════════════════════════════════════════════════════════════
 
-fn alloc_ring_slice(ctx: &dyn DriverContext, n: usize) -> Option<(&'static mut [Trb], u64)> {
+fn alloc_ring_slice(ctx: &dyn DriverContext, n: usize) -> Option<dma::DmaSlice<Trb>> {
     dma::alloc_dma::<Trb>(ctx, n)
 }
 
@@ -109,7 +109,7 @@ fn alloc_ring_slice(ctx: &dyn DriverContext, n: usize) -> Option<(&'static mut [
 // ══════════════════════════════════════════════════════════════
 
 pub struct Ring {
-    entries: &'static mut [Trb],
+    dma: dma::DmaSlice<Trb>,
     pub phys: u64,
     enq: usize,
     pub cycle: u32,
@@ -118,28 +118,31 @@ pub struct Ring {
 
 impl Ring {
     pub fn alloc(ctx: &dyn DriverContext, n: usize) -> Option<Self> {
-        let (entries, phys) = alloc_ring_slice(ctx, n)?;
+        let dma = alloc_ring_slice(ctx, n)?;
+        let phys = dma.phys;
+        let entries = dma.as_mut();
         if n > 1 {
             let last = &mut entries[n - 1];
             last.flags = ((trb_type::LINK as u32) << trb_flag::TRB_TYPE_SHIFT) | trb_flag::TC | trb_flag::CYCLE;
             last.params[..8].copy_from_slice(&phys.to_le_bytes());
         }
-        Some(Self { entries, phys, enq: 0, cycle: 1, len: n })
+        Some(Self { dma, phys, enq: 0, cycle: 1, len: n })
     }
 
     pub fn free(&self, ctx: &dyn DriverContext) {
-        dma::free_dma(ctx, self.phys, (self.len * TRB_SIZE + 4095) / 4096);
+        dma::free_dma(ctx, self.phys, self.dma.pages);
     }
 
     pub fn enqueue(&mut self, mut trb: Trb) {
         trb.flags = (trb.flags & !trb_flag::CYCLE) | self.cycle;
-        unsafe { ptr::write_volatile(&mut self.entries[self.enq], trb); }
+        let entries = self.dma.as_mut();
+        unsafe { ptr::write_volatile(&mut entries[self.enq], trb); }
         self.enq += 1;
         if self.enq >= self.len - 1 {
             let link = self.len - 1;
             unsafe {
-                ptr::write_volatile(&mut self.entries[link].flags,
-                    (self.entries[link].flags & !trb_flag::CYCLE) | self.cycle);
+                ptr::write_volatile(&mut entries[link].flags,
+                    (entries[link].flags & !trb_flag::CYCLE) | self.cycle);
             }
             self.enq = 0;
             self.cycle ^= 1;
@@ -162,7 +165,7 @@ impl Ring {
 // ══════════════════════════════════════════════════════════════
 
 pub struct EventRing {
-    entries: &'static mut [Trb],
+    dma: dma::DmaSlice<Trb>,
     pub phys: u64,
     deq: usize,
     cycle: u32,
@@ -171,21 +174,24 @@ pub struct EventRing {
 
 impl EventRing {
     pub fn alloc(ctx: &dyn DriverContext, n: usize) -> Option<Self> {
-        let (entries, phys) = alloc_ring_slice(ctx, n)?;
-        Some(Self { entries, phys, deq: 0, cycle: 1, len: n })
+        let dma = alloc_ring_slice(ctx, n)?;
+        let phys = dma.phys;
+        Some(Self { dma, phys, deq: 0, cycle: 1, len: n })
     }
 
     pub fn free(&self, ctx: &dyn DriverContext) {
-        dma::free_dma(ctx, self.phys, (self.len * TRB_SIZE + 4095) / 4096);
+        dma::free_dma(ctx, self.phys, self.dma.pages);
     }
 
     pub fn has_pending(&self) -> bool {
-        (unsafe { ptr::read_volatile(&self.entries[self.deq].flags) } & trb_flag::CYCLE) == self.cycle
+        let entries = self.dma.as_mut();
+        (unsafe { ptr::read_volatile(&entries[self.deq].flags) } & trb_flag::CYCLE) == self.cycle
     }
 
     pub fn pop(&mut self) -> Option<Trb> {
         if !self.has_pending() { return None; }
-        let trb = unsafe { ptr::read_volatile(&self.entries[self.deq]) };
+        let entries = self.dma.as_mut();
+        let trb = unsafe { ptr::read_volatile(&entries[self.deq]) };
         self.deq += 1;
         if self.deq >= self.len { self.deq = 0; self.cycle ^= 1; }
         Some(trb)
@@ -242,7 +248,6 @@ impl RingContext {
         };
         Some(Self { command, event })
     }
-}
 }
 
 // ══════════════════════════════════════════════════════════════

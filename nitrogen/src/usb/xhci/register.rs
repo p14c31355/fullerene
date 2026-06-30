@@ -311,8 +311,8 @@ impl DoorbellRegisters {
 
     pub fn ring(&self, slot: u32, target: u32) {
         let off = slot as usize * 4;
-        // xHCI spec §5.5.7.2.1: DB Target (DCI) in bits [15:8], Stream ID in bits [7:0]
-        let val = (target & 0xFF) | ((target << 8) & 0xFF00);
+        // DB Target (DCI) in bits [7:0]; stream ID is zero for these endpoints.
+        let val = target & 0xFF;
         self.0.write32(off, val);
     }
 }
@@ -500,7 +500,7 @@ mod tests {
             let hcs1 = (64u32) | (n_ports << 24);
             mem[0x04..0x08].copy_from_slice(&hcs1.to_le_bytes());
             // HCCPARAMS1 at offset 0x10: 64-bit + ext cap ptr
-            let hcc1 = 1u32 | (0x3000 << 16); // AC64=1, XECP=0x3000
+            let hcc1 = 1u32 | (0x0C00 << 16); // AC64=1, XECP byte offset 0x3000 / 4 = 0x0C00
             mem[0x10..0x14].copy_from_slice(&hcc1.to_le_bytes());
             // DBOFF at 0x14
             let db_off = 0x2000u32;
@@ -715,10 +715,10 @@ mod tests {
         let val = unsafe { ptr::read_volatile(sim.base().add(db_base) as *const u32) };
         assert_eq!(val, 0);
 
-        // Ring doorbell for slot 5, DCI=1 (EP0): DB Target in bits [15:8] per xHCI spec §5.5.7.2.1
+        // Ring doorbell for slot 5, DCI=1 (EP0): DB Target in bits [7:0]
         db.ring(5, 1);
         let val = unsafe { ptr::read_volatile(sim.base().add(db_base + 5 * 4) as *const u32) };
-        assert_eq!(val, (1 << 8) | 1); // Stream ID=1, DB Target=1
+        assert_eq!(val, 1); // DB Target=1, stream ID=0
     }
 
     #[test]

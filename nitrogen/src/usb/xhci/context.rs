@@ -471,6 +471,10 @@ impl XhciContext {
             }
             super::port::delay_us(100);
         }
+        if op.usbcmd() & USBCMD_HCRST != 0 {
+            log::warn!("xHCI: HCRST did not clear");
+            return Err("HCRST timeout");
+        }
 
         // Wait for HCHalted
         for _ in 0..200_000 {
@@ -479,24 +483,13 @@ impl XhciContext {
             }
             super::port::delay_us(100);
         }
-
-        // Wait for CNR (Controller Not Ready) to clear
-        // The xHC needs time to initialize internal state after HCRST.
-        for _ in 0..200_000 {
-            if op.usbsts() & USBSTS_CNR == 0 {
-                break;
-            }
-            super::port::delay_us(100);
+        if op.usbsts() & USBSTS_HCH == 0 {
+            log::warn!("xHCI: controller did not halt after HCRST");
+            return Err("HCHalted timeout");
         }
 
-        let sts_after = op.usbsts();
-        log::info!(
-            "xHCI: after HCRST, USBSTS=0x{:08X} HCHalted={} CNR={}",
-            sts_after, (sts_after & USBSTS_HCH) != 0, (sts_after & USBSTS_CNR) != 0
-        );
-
-        // Wait for CNR (Controller Not Ready) to clear after HCRST.
-        // The xHC may need time to initialise its internal state
+        // Wait for CNR (Controller Not Ready) to clear
+        // The xHC needs time to initialise its internal state
         // before accepting register writes (xHCI spec §5.4.2).
         for _ in 0..200_000 {
             if op.usbsts() & USBSTS_CNR == 0 {
@@ -508,6 +501,12 @@ impl XhciContext {
             log::warn!("xHCI: CNR did not clear after HCRST");
             return Err("CNR timeout");
         }
+
+        let sts_after = op.usbsts();
+        log::info!(
+            "xHCI: after HCRST, USBSTS=0x{:08X} HCHalted={} CNR={}",
+            sts_after, (sts_after & USBSTS_HCH) != 0, (sts_after & USBSTS_CNR) != 0
+        );
 
         Ok(())
     }
@@ -1015,15 +1014,6 @@ impl XhciContext {
             slot.in_ctx_phys
         };
 
-        // Store the ring
-        if let Some(slot) = self.device.slots.get_mut(slot_id) {
-            if is_in {
-                slot.bulk_in_ring = Some(bulk_ring);
-            } else {
-                slot.bulk_out_ring = Some(bulk_ring);
-            }
-        }
-
         let cmd = self.send_cmd(
             Trb::new(trb_type::CONFIGURE_ENDPOINT, self.rings.command.cycle)
                 .with_data_ptr(in_ctx_phys)
@@ -1041,8 +1031,6 @@ impl XhciContext {
                 slot.bulk_out_ring = Some(bulk_ring);
             }
         }
-
-        Ok(())
 
         Ok(())
     }
@@ -1140,7 +1128,9 @@ impl XhciContext {
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
             // SETUP TRB (8-byte setup packet goes directly into params as Immediate Data)
             let trt = if data_len == 0 { 0 } else if is_in { 2 << 16 } else { 3 << 16 };
-            let mut s_trb = Trb::new(trb_type::SETUP_STAGE, slot.ep0_ring.cycle);
+            let mut s_trb = Trb::new(trb_type::SETUP_STAGE, slot.ep0_ring.cycle)
+                .with_length(8)
+                .with_flags(trb_flag::IDT);
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     setup as *const UsbSetupPacket as *const u8, s_trb.params.as_mut_ptr(), 8);

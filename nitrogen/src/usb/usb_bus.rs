@@ -139,12 +139,10 @@ pub fn bot_exec_command(
     if csw_raw[12] != 0 {
         return Err("CSW reported error");
     }
-    // Check residue: if the device transferred fewer bytes than requested,
-    // the command did not complete as expected (BOT spec §5.2).
-    let residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
-    if residue != 0 {
-        return Err("CSW non-zero residue");
-    }
+    // BOT allows bCSWStatus == 0/1 with a non-zero dCSWDataResidue.
+    // The host should derive the relevant byte count from the residue,
+    // not fail the command solely because residue is non-zero (usb.org).
+    let _residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
     Ok(())
 }
 
