@@ -23,11 +23,13 @@ pub(crate) struct DmaSlice<T> {
 }
 
 impl<T> DmaSlice<T> {
+    /// Get a read-only slice to the allocated memory.
+    pub fn as_ref(&self) -> &[T] {
+        unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
+    }
+
     /// Get a mutable slice to the allocated memory.
-    ///
-    /// SAFETY: the caller must ensure there are no aliasing references
-    /// (the kernel is single-threaded so this holds).
-    pub fn as_mut(&self) -> &mut [T] {
+    pub fn as_mut(&mut self) -> &mut [T] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 
