@@ -1024,11 +1024,25 @@ impl XhciContext {
             }
         }
 
-        self.send_cmd(
+        let cmd = self.send_cmd(
             Trb::new(trb_type::CONFIGURE_ENDPOINT, self.rings.command.cycle)
                 .with_data_ptr(in_ctx_phys)
                 .with_flags((slot_id << 24) | trb_flag::IOC)
-        )?;
+        );
+        if cmd.is_err() {
+            bulk_ring.free(self.driver_ctx);
+            return cmd.map(|_| ());
+        }
+
+        if let Some(slot) = self.device.slots.get_mut(slot_id) {
+            if is_in {
+                slot.bulk_in_ring = Some(bulk_ring);
+            } else {
+                slot.bulk_out_ring = Some(bulk_ring);
+            }
+        }
+
+        Ok(())
 
         Ok(())
     }
