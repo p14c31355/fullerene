@@ -284,6 +284,11 @@ impl RtsxController {
             return Err("MMIO not mapped");
         }
 
+        // Long delay for PCIe link and card power stabilization
+        for _ in 0..2_000_000 {
+            core::hint::spin_loop();
+        }
+
         if !self.init_hardware() {
             return Err("hardware init failed");
         }
@@ -529,7 +534,19 @@ pub fn init(ctx: &dyn DriverContext) {
 
             // Ensure D0 via PCI config space (safe)
             dev.ensure_d0();
+            dev.disable_pcie_aspm();
             dev.enable_memory_access();
+
+            // Also disable ASPM on the upstream PCIe root port.
+            // Force the PCIe link into L0 before MMIO access.
+            for bridge in scanner.get_devices() {
+                if bridge.bus == 0 && bridge.device == 0x1c && bridge.function == 3 {
+                    log::info!("RTSX: disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
+                        bridge.bus, bridge.device, bridge.function);
+                    bridge.disable_pcie_aspm();
+                    break;
+                }
+            }
 
             // Get BAR0 info via PCI config space (safe)
             let bar0 = match dev.get_bar_info(0) {
@@ -544,6 +561,33 @@ pub fn init(ctx: &dyn DriverContext) {
                 return;
             }
 
+            // Configure the upstream bridge's memory window if needed.
+            // The bridge at 00:1c.3 must have its Memory Base/Limit set
+            // to cover BAR0 for MMIO forwarding.
+            for bridge in scanner.get_devices() {
+                if bridge.bus == 0 && bridge.device == 0x1c && bridge.function == 3 {
+                    let base_reg = PciConfigSpace::read_config_dword(
+                        bridge.bus, bridge.device, bridge.function, 0x20);
+                    let mem_base = base_reg as u16;
+                    let mem_limit = (base_reg >> 16) as u16;
+                    let bar_top = bar0.address + bar0.size as u64 - 1;
+                    let need_base = ((bar0.address >> 16) & 0xFFF0) as u16;
+                    let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
+
+                    if mem_base != need_base || mem_limit != need_limit {
+                        log::info!("RTSX: bridge window {:#06x}-{:#06x} needs {:#06x}-{:#06x}",
+                            mem_base, mem_limit, need_base, need_limit);
+                        let new_win = (need_limit as u32) << 16 | need_base as u32;
+                        PciConfigSpace::write_config_dword_raw(
+                            bridge.bus, bridge.device, bridge.function, 0x20, new_win);
+                        log::info!("RTSX: bridge window updated");
+                    } else {
+                        log::info!("RTSX: bridge window OK ({:#06x}-{:#06x})",
+                            mem_base, mem_limit);
+                    }
+                    break;
+                }
+            }
             log::info!("RTSX: BAR0 at {:#x} size {:#x}", bar0.address, bar0.size);
 
             // Map MMIO but do NOT touch it yet
