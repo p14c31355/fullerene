@@ -93,7 +93,13 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("IOMMU", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step start\n");
-            let rsdp = crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0);
+            // Try UEFI Configuration Table RSDP first, then BootContext, then legacy scan
+            let uefi_rsdp = crate::boot::UEFI_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
+            let rsdp = if uefi_rsdp != 0 {
+                uefi_rsdp
+            } else {
+                crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0)
+            };
             let phys_to_virt = |phys: u64| -> usize {
                 (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize
             };
