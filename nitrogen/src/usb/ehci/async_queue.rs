@@ -161,7 +161,7 @@ dma_pool!(QueueHeadPool, QueueHead, 64, 0, qh_init);
 dma_pool!(QtdPool, Qtd, 128, 8, qtd_init);
 
 impl QtdPool {
-    pub fn staging_phys(&self) -> u64 { self.dma.phys + 120 * 32 }
+    pub fn staging_phys(&self) -> u64 { self.dma.phys + 120 * core::mem::size_of::<Qtd>() as u64 }
 }
 
 // ============================================================================
