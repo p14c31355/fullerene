@@ -27,6 +27,7 @@ pub mod driver_context;
 pub mod framebuffer;
 pub mod hda;
 pub mod ioapic;
+pub mod iommu;
 pub mod iwlwifi;
 pub mod pci;
 pub mod pic;

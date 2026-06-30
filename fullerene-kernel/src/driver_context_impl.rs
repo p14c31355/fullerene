@@ -87,4 +87,14 @@ impl DriverContext for KernelDriverContext {
             let _ = m.free_contiguous_frames(phys as usize, count);
         }
     }
+
+    fn dma_map(&self, device_id: u16, phys: u64, size: usize) -> Result<u64, DriverContextError> {
+        // IOMMU is a global singleton; delegate to it.
+        // If no IOMMU is present, returns phys (identity mapping).
+        nitrogen::iommu::dma_map_with_ctx(self, device_id, phys, size)
+    }
+
+    fn dma_unmap(&self, iova: u64, size: usize) {
+        nitrogen::iommu::dma_unmap(iova, size);
+    }
 }
