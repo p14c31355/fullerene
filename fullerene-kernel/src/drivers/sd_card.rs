@@ -1,13 +1,19 @@
 //! SD card block-device integration — RTSX card reader → FAT mount.
 //!
-//! The kernel probes the RTSX PCI card reader, initialises the SD card,
-//! wraps it as a [`BlockDevice`], and mounts any FAT/exFAT filesystem
-//! found at `/mnt/sdcard-1`.
+//! Probing is split into two phases:
+//!
+//! 1. **`init()`** — safe PCI config-space probe, called at boot.
+//!    Only touches port I/O.  Never hangs.
+//! 2. **`probe_and_mount()`** — MMIO access, SD card init, FAT mount.
+//!    Called on demand (from shell or hotplug).  If the hardware is
+//!    unresponsive the failure is logged and the system continues.
+//!
+//! The user triggers probe via the `sd_mount` shell command.
 
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
 use crate::drivers::fat::{BlockDevice, FatFileSystem};
@@ -15,13 +21,13 @@ use crate::klog_fmt;
 
 pub static SD_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static SD_DRIVES: Mutex<Vec<SdDrive>> = Mutex::new(Vec::new());
+pub static SD_PROBED: AtomicBool = AtomicBool::new(false);
 
 pub struct SdDrive {
     pub name: String,
     pub mount_point: String,
 }
 
-/// BlockDevice wrapper around the RTSX SD card reader.
 struct SdBlockDev {
     block_size: u32,
     total_blocks: u64,
@@ -47,46 +53,51 @@ impl BlockDevice for SdBlockDev {
     }
 }
 
-/// Initialise the SD card reader and attempt to mount any filesystem.
+/// Phase 1: safe PCI-config probe (port I/O only).
+/// Called during kernel init.  Never touches MMIO.
 pub fn init() {
-    let _ = crate::vfs::mkdir("/mnt");
-
-    // Initialise RTSX PCI hardware
     use crate::driver_context_impl::KernelDriverContext;
     nitrogen::storage::rtsx::init(&KernelDriverContext);
 
+    if nitrogen::storage::rtsx::is_present() {
+        klog_fmt!("SD card: controller found, card init deferred\n");
+    } else {
+        klog_fmt!("SD card: no controller found\n");
+    }
+}
+
+/// Phase 2: MMIO access, SD card init, and FAT mount.
+/// Safe to call at any time — returns an error instead of hanging.
+/// The system continues booting even if this fails.
+pub fn probe_and_mount() -> bool {
     if !nitrogen::storage::rtsx::is_present() {
-        klog_fmt!("SD card: no RTSX controller found\n");
-        return;
+        klog_fmt!("SD card: no controller\n");
+        return false;
     }
 
-    // Wait a bit for card to be ready
-    for _ in 0..500_000 {
-        core::hint::spin_loop();
-    }
-
-    // Initialise the SD card
+    // Attempt SD card initialisation (first MMIO access).
     match nitrogen::storage::rtsx::init_sd_card() {
         Ok(()) => {
             klog_fmt!("SD card: initialised\n");
         }
         Err(e) => {
             klog_fmt!("SD card: init failed — {}\n", e);
-            return;
+            return false;
         }
     }
 
-    // Get card info
     let info = match nitrogen::storage::rtsx::sd_card_info() {
         Some(i) => i,
         None => {
             klog_fmt!("SD card: no card info\n");
-            return;
+            return false;
         }
     };
 
-    klog_fmt!("SD card: type={:?} sectors={} sector_size={}\n",
+    klog_fmt!("SD card: {:?} {} sectors {} bytes/sector\n",
         info.card_type, info.total_blocks, info.block_size);
+
+    let _ = crate::vfs::mkdir("/mnt");
 
     let bdev = SdBlockDev {
         block_size: info.block_size,
@@ -105,13 +116,17 @@ pub fn init() {
                     mount_point: mp.clone(),
                 });
                 SD_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
+                SD_PROBED.store(true, Ordering::Relaxed);
                 klog_fmt!("SD card: mounted at {}\n", mp);
+                true
             } else {
                 klog_fmt!("SD card: mount failed\n");
+                false
             }
         }
         Err(e) => {
-            klog_fmt!("SD card: FAT mount error — {}\n", e);
+            klog_fmt!("SD card: FAT error — {}\n", e);
+            false
         }
     }
 }

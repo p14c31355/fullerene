@@ -1,13 +1,12 @@
 //! Realtek RTS5249 PCI Express Card Reader driver.
 //!
-//! Implements SD/MMC card access via the RTS5249 PCIe card reader.
-//! Uses direct MMIO register access for SD commands and the PPBUF
-//! (Ping-Pong Buffer at BAR0+0x400) for data transfer.
+//! # Design
 //!
-//! # Safety
-//!
-//! Every hardware access has a bounded timeout.  If the RTSX does not
-//! respond, the probe fails gracefully and the system continues booting.
+//! - `probe()` only touches PCI config space (port I/O) — never MMIO.
+//!   This guarantees the boot path cannot hang even if the device is
+//!   in an unresponsive state.
+//! - All MMIO access is deferred to `init_sd_card()`, which the
+//!   kernel calls after boot is complete enough to tolerate a failure.
 //!
 //! # References
 //! - Linux rtsx_pci driver (drivers/misc/cardreader/rtsx_pci.c)
@@ -17,16 +16,14 @@ use core::ptr;
 use spin::Mutex;
 
 use crate::driver_context::DriverContext;
-use crate::pci::{PciDevice, PciScanner};
+use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
 
 // ── RTSX Host Controller Registers (byte offsets from BAR0) ──
-
 #[allow(dead_code)]
 const RTSX_MSI_EN: u8 = 0x1C;
 const RTSX_CFG: u8 = 0x20;
 
 // ── SD Card Registers ─────────────────────────────────────────
-
 const SD_CMD0: u8 = 0x40;
 const SD_CMD1: u8 = 0x41;
 const SD_CMD2: u8 = 0x42;
@@ -53,7 +50,6 @@ const SD_CFG2: u8 = 0x61;
 const SD_CFG3: u8 = 0x62;
 
 // ── Card Power / Clock Registers ──────────────────────────────
-
 const CARD_PWR_CTL: u8 = 0x70;
 const CARD_CLK_EN: u8 = 0x72;
 const CARD_OE: u8 = 0x74;
@@ -61,8 +57,7 @@ const CARD_CLK_SOURCE: u8 = 0x76;
 const CARD_DRIVE_SEL: u8 = 0x80;
 const CARD_STOP: u8 = 0x82;
 
-// ── PPBUF base offset (data transfer window) ──────────────────
-
+// ── PPBUF base offset ─────────────────────────────────────────
 const PPBUF_BASE: usize = 0x400;
 
 // ── SD_STAT1 bits ─────────────────────────────────────────────
@@ -132,7 +127,10 @@ pub struct SdCardInfo {
 pub struct RtsxController {
     #[allow(dead_code)]
     device: PciDevice,
+    bar0_phys: u64,
+    bar0_size: u32,
     mmio: *mut u8,
+    mmio_mapped: bool,
     sd_card: Option<SdCardInfo>,
 }
 
@@ -177,48 +175,35 @@ impl RtsxController {
         }
     }
 
-    // ── RTSX Hardware Init ────────────────────────────────────
+    // ── RTSX Hardware Init (MMIO access starts here) ──────────
 
-    /// Initialise the card reader hardware.
-    ///
-    /// Returns `false` if the hardware does not respond at all
-    /// (all-1s read-back).
     fn init_hardware(&self) -> bool {
-        // Sanity check: read RTSX_CFG, expect non-0xFFFFFFFF
-        let cfg_check = self.r8(RTSX_CFG);
-        if cfg_check == 0xFF {
-            log::warn!("RTSX: device not responding (CFG=0xFF), skipping");
+        let cfg = self.r8(RTSX_CFG);
+        if cfg == 0xFF {
+            log::warn!("RTSX: device not responding (CFG=0xFF)");
             return false;
         }
-        log::info!("RTSX: CFG={:#04x}", cfg_check);
+        log::info!("RTSX: CFG={:#04x}", cfg);
 
-        // Soft reset
-        self.w8(RTSX_CFG, cfg_check | 0x01);
+        self.w8(RTSX_CFG, cfg | 0x01);
         for _ in 0..100_000 {
             if (self.r8(RTSX_CFG) & 0x01) == 0 {
                 break;
             }
             core::hint::spin_loop();
         }
-        if (self.r8(RTSX_CFG) & 0x01) != 0 {
-            log::warn!("RTSX: soft reset did not complete");
-        }
 
-        // Disable MSI
         self.w16(RTSX_MSI_EN, 0x0000);
-
-        // Card power on
         self.w8(CARD_PWR_CTL, CARD_PWR_ON);
+
         for _ in 0..200_000 {
             core::hint::spin_loop();
         }
 
-        // Enable card clock + output
         self.w8(CARD_CLK_EN, 0x01);
         self.w8(CARD_OE, 0x01);
         self.w8(CARD_CLK_SOURCE, 0x00);
 
-        // Init SD registers
         self.w8(SD_CFG1, SD_CLK_DIVIDE_128 | SD_BUS_WIDTH_1);
         self.w8(SD_CFG2, SD_CALC_CRC_CMD | SD_CALC_CRC_DATA | SD_RSP_TIMEOUT_5S);
         self.w8(SD_CFG3, SD_DATA_TIMEOUT_1S);
@@ -235,7 +220,6 @@ impl RtsxController {
     // ── SD Command Execution ──────────────────────────────────
 
     fn sd_cmd(&self, cmd: u8, arg: u32, _rsp_type: u8, data_len: u16) -> Result<u32, &'static str> {
-        // Wait for cmd state machine idle
         for _ in 0..50_000 {
             if (self.r8(SD_CMD_STATE) & 0x01) != 0 {
                 break;
@@ -243,13 +227,11 @@ impl RtsxController {
             core::hint::spin_loop();
         }
 
-        // Write command + argument
         self.w8(SD_CMD0, cmd);
         self.w8(SD_CMD1, arg as u8);
         self.w8(SD_CMD2, (arg >> 8) as u8);
         self.w8(SD_CMD3, (arg >> 16) as u8);
         self.w8(SD_CMD4, (arg >> 24) as u8);
-
         self.w8(SD_CFG1, SD_CLK_DIVIDE_128 | SD_BUS_WIDTH_1 | SD_CRC_CHECK_EN | SD_CRC_GEN_EN);
 
         if data_len > 0 {
@@ -295,7 +277,21 @@ impl RtsxController {
         self.sd_cmd(acmd, arg, rsp_type, 0)
     }
 
+    // ── SD Card Init (called after boot) ───────────────────────
+
     pub fn init_sd_card(&mut self) -> Result<(), &'static str> {
+        if !self.mmio_mapped {
+            return Err("MMIO not mapped");
+        }
+
+        if !self.init_hardware() {
+            return Err("hardware init failed");
+        }
+
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+
         let bus = self.r8(SD_BUS_STAT);
         if (bus & 0x01) == 0 {
             return Err("no card");
@@ -306,31 +302,19 @@ impl RtsxController {
             core::hint::spin_loop();
         }
 
-        // CMD0
         log::info!("RTSX: CMD0");
         self.sd_cmd(CMD0_GO_IDLE, 0, 0, 0)?;
-
         for _ in 0..10_000 {
             core::hint::spin_loop();
         }
 
-        // CMD8
         log::info!("RTSX: CMD8");
         let sdhc = match self.sd_cmd(CMD8_SEND_IF_COND, 0x1AA, SD_RSP_TYPE_R7, 0) {
-            Ok(rsp) => {
-                let check = (rsp >> 8) as u8;
-                let voltage = rsp as u8;
-                voltage == 0x01 && check == 0xAA
-            }
+            Ok(rsp) => (rsp as u8 == 0x01 && (rsp >> 8) as u8 == 0xAA),
             Err(_) => false,
         };
-        if sdhc {
-            log::info!("RTSX: SDHC/SDXC card");
-        } else {
-            log::info!("RTSX: SDSC card");
-        }
+        log::info!("RTSX: SDHC={}", sdhc);
 
-        // ACMD41
         let mut ocr_arg = 0x00FF_8000u32;
         if sdhc {
             ocr_arg |= 1 << 30;
@@ -356,14 +340,13 @@ impl RtsxController {
         log::info!("RTSX: ACMD41 OK, OCR={:#010x}", ocr);
 
         let card_type = if (ocr & (1 << 30)) != 0 {
-            SdCardType::SDHC
+            if (ocr & (1 << 28)) != 0 {
+                SdCardType::SDXC
+            } else {
+                SdCardType::SDHC
+            }
         } else {
             SdCardType::SDSC
-        };
-        let card_type = if card_type == SdCardType::SDHC && (ocr & (1 << 28)) != 0 {
-            SdCardType::SDXC
-        } else {
-            card_type
         };
 
         self.sd_cmd(CMD2_ALL_SEND_CID, 0, SD_RSP_TYPE_R2, 0)?;
@@ -385,7 +368,7 @@ impl RtsxController {
             csd[i] = self.r8(SD_CMD5 + i as u8);
         }
 
-        let (block_size, total_blocks) = self.parse_csd(&csd, card_type);
+        let (block_size, total_blocks) = Self::parse_csd(&csd, card_type);
 
         self.sd_cmd(CMD7_SELECT_CARD, (rca as u32) << 16, SD_RSP_TYPE_R1B, 0)?;
 
@@ -409,13 +392,11 @@ impl RtsxController {
             total_blocks: tb,
         });
 
-        log::info!("RTSX: SD card {:?} {} blocks of {} bytes", card_type, tb, bs);
+        log::info!("RTSX: SD card {:?}: {} blocks, {} bytes/block", card_type, tb, bs);
         Ok(())
     }
 
-    fn parse_csd(&self, csd: &[u8; 16], card_type: SdCardType) -> (u32, u64) {
-        let _csd_ver = (csd[14] >> 6) & 0x3;
-
+    fn parse_csd(csd: &[u8; 16], card_type: SdCardType) -> (u32, u64) {
         match card_type {
             SdCardType::SDHC | SdCardType::SDXC => {
                 let c_size = ((csd[7] & 0x3F) as u32) << 16
@@ -525,45 +506,13 @@ impl RtsxController {
         }
         Ok(())
     }
-
-    // ── Probe ─────────────────────────────────────────────────
-
-    pub fn probe(ctx: &dyn DriverContext, device: &PciDevice) -> Option<Self> {
-        // CRITICAL: ensure PCI power state D0 before touching MMIO
-        device.ensure_d0();
-
-        let bar0 = device.get_bar_info(0)?;
-        if bar0.is_io {
-            return None;
-        }
-        let mmio = ctx.phys_to_virt(bar0.address) as *mut u8;
-        ctx.map_mmio_region(bar0.address as usize, mmio as usize, bar0.size as usize).ok()?;
-
-        // Verify device responds to MMIO
-        let test = unsafe { ptr::read_volatile(mmio) };
-        if test == 0xFF {
-            log::warn!("RTSX: MMIO reads 0xFF at BAR0, device not responding");
-            return None;
-        }
-
-        let ctrl = Self { device: device.clone(), mmio, sd_card: None };
-        if !ctrl.init_hardware() {
-            return None;
-        }
-
-        // Short delay for card power-up
-        for _ in 0..200_000 {
-            core::hint::spin_loop();
-        }
-
-        Some(ctrl)
-    }
 }
 
 // ── Static controller for kernel access ──────────────────────
 
 static CONTROLLER: Mutex<Option<RtsxController>> = Mutex::new(None);
 
+/// Safe probe: only PCI config space (port I/O), no MMIO.
 pub fn init(ctx: &dyn DriverContext) {
     let mut scanner = PciScanner::new();
     if scanner.scan_all_buses().is_err() {
@@ -577,19 +526,49 @@ pub fn init(ctx: &dyn DriverContext) {
         {
             log::info!("RTSX: found at {:02x}:{:02x}.{} ({:#06x}:{:#06x})",
                 dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id);
+
+            // Ensure D0 via PCI config space (safe)
+            dev.ensure_d0();
             dev.enable_memory_access();
-            if let Some(ctrl) = RtsxController::probe(ctx, dev) {
-                *CONTROLLER.lock() = Some(ctrl);
-                log::info!("RTSX: controller ready");
-            } else {
-                log::info!("RTSX: probe failed (no card or hardware error)");
+
+            // Get BAR0 info via PCI config space (safe)
+            let bar0 = match dev.get_bar_info(0) {
+                Some(b) => b,
+                None => {
+                    log::info!("RTSX: no BAR0");
+                    return;
+                }
+            };
+            if bar0.is_io {
+                log::info!("RTSX: BAR0 is I/O, expected memory");
+                return;
             }
+
+            log::info!("RTSX: BAR0 at {:#x} size {:#x}", bar0.address, bar0.size);
+
+            // Map MMIO but do NOT touch it yet
+            let mmio = ctx.phys_to_virt(bar0.address) as *mut u8;
+            if ctx.map_mmio_region(bar0.address as usize, mmio as usize, bar0.size as usize).is_err() {
+                log::info!("RTSX: MMIO mapping failed");
+                return;
+            }
+
+            *CONTROLLER.lock() = Some(RtsxController {
+                device: dev.clone(),
+                bar0_phys: bar0.address,
+                bar0_size: bar0.size,
+                mmio,
+                mmio_mapped: true,
+                sd_card: None,
+            });
+            log::info!("RTSX: controller registered (MMIO deferred)");
             return;
         }
     }
     log::info!("RTSX: no card reader found");
 }
 
+/// Initialise SD card (first MMIO access happens here).
 pub fn init_sd_card() -> Result<(), &'static str> {
     let mut guard = CONTROLLER.lock();
     if let Some(ref mut ctrl) = *guard {

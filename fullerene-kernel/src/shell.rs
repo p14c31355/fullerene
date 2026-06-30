@@ -443,6 +443,18 @@ fn register_nozzle_hooks() {
                 }
             });
         }
+        "sd_mount" => {
+            tstr!(ctx.terminal, "SD card: attempting probe and mount...");
+            if crate::drivers::sd_card::probe_and_mount() {
+                tstr!(ctx.terminal, "SD card: mounted successfully");
+                let drives = crate::drivers::sd_card::SD_DRIVES.lock();
+                for d in drives.iter() {
+                    tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
+                }
+            } else {
+                tstr!(ctx.terminal, "SD card: probe/mount failed (no card or hardware error)");
+            }
+        }
         "pci" => {
             use alloc::format;
             use nitrogen::pci::PciScanner;
