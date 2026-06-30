@@ -14,6 +14,7 @@ use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
 
 use crate::linux::runtime::DispatchMode;
+use crate::vdso::{VdsoPageRef, create_vdso_page};
 
 /// Maximum number of processes managed by the system
 const MAX_PROCESSES: usize = 64;
@@ -114,6 +115,8 @@ pub struct Process {
     pub task_data: u64,
     /// Runtime dispatch mode (Fullerene native, Linux ABI, etc.)
     pub dispatch_mode: Option<DispatchMode>,
+    /// Per-process VDSO page for no-interrupt syscalls
+    pub vdso_page: Option<VdsoPageRef>,
 }
 
 impl Process {
@@ -136,6 +139,7 @@ impl Process {
             parent_id: None, // Will be set by fork
             task_data: 0,
             dispatch_mode: None,
+            vdso_page: None,
         }
     }
 
@@ -419,8 +423,24 @@ pub fn create_process(
             return Err(e);
         }
     };
-    process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
+    let page_table_phys = page_table.current_page_table() as u64;
+    process.page_table_phys_addr = PhysAddr::new(page_table_phys);
     process.page_table = Some(Box::new(page_table));
+
+    // Create VDSO page for this process (user-space processes only)
+    if is_user {
+        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
+        let fa = fa_lock.as_mut().ok_or_else(|| {
+            petroleum::common::logging::SystemError::InternalError
+        })?;
+        let pt: &mut petroleum::page_table::process::ProcessPageTable =
+            process.page_table.as_mut().unwrap();
+        let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
+            petroleum::common::logging::SystemError::FrameAllocationFailed
+        })?;
+        drop(fa_lock);
+        process.vdso_page = Some(vdso_ref);
+    }
 
     process.init_context(kernel_stack_top);
 

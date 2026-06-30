@@ -100,8 +100,23 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
         core::ptr::copy_nonoverlapping(kernel_entries_src, new_entries_dst, 256);
     }
 
-    // Initialize the new page table manager with the allocated frame
+    // Initialize the new page table manager with the allocated frame.
+    // We set up the OffsetPageTable mapper pointing to the new PML4 (not the
+    // current CR3), so PageTableHelper::map_page modifies the process's page
+    // table, not the kernel's.
     let mut page_table_manager = ProcessPageTable::new_with_frame(pml4_frame);
+    let phys_offset = x86_64::VirtAddr::new(
+        petroleum::common::memory::get_physical_memory_offset() as u64,
+    );
+    {
+        use x86_64::structures::paging::{OffsetPageTable, PageTable};
+        let l4_virt = phys_offset + pml4_frame.start_address().as_u64();
+        let mapper =
+            unsafe { OffsetPageTable::new(&mut *(l4_virt.as_mut_ptr::<PageTable>()), phys_offset) };
+        page_table_manager.mapper = Some(mapper);
+        page_table_manager.initialized = true;
+    }
+    // Ensure init is called for the Initializable contract
     Initializable::init(&mut page_table_manager)?;
 
     mem_debug!("Mem: create_process_page_table done\n");

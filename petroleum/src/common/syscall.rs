@@ -102,7 +102,13 @@ pub enum SyscallNumber {
     Uptime = 103,
 }
 
-/// Raw syscall wrapper for x86-64 syscalls. This is a common helper function.
+/// Check if VDSO is available (user-space pointer initialized).
+#[inline]
+fn vdso_available() -> bool {
+    unsafe { crate::vdso::user::vdso_ptr_initialized() }
+}
+
+/// Raw syscall: tries VDSO first (no trap), falls back to `syscall` instruction.
 #[inline]
 pub unsafe fn syscall(
     syscall_num: u64,
@@ -113,25 +119,29 @@ pub unsafe fn syscall(
     arg5: u64,
     arg6: u64,
 ) -> u64 {
-    let result: u64;
-    // Use syscall instruction with System V ABI (x86-64)
-    // RAX = syscall number, RDI/RSI/RDX/R10/R8/R9 = arguments
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            in("rax") syscall_num,
-            in("rdi") arg1,
-            in("rsi") arg2,
-            in("rdx") arg3,
-            in("r10") arg4,
-            in("r8") arg5,
-            in("r9") arg6,
-            lateout("rax") result,
-            out("rcx") _,
-            out("r11") _,
-        );
+    if vdso_available() {
+        // VDSO path: zero-trap syscall via shared page
+        crate::vdso::user::vdso_call_blocking(syscall_num, [arg1, arg2, arg3, arg4, arg5, arg6])
+    } else {
+        // Fallback: traditional syscall instruction
+        let result: u64;
+        unsafe {
+            core::arch::asm!(
+                "syscall",
+                in("rax") syscall_num,
+                in("rdi") arg1,
+                in("rsi") arg2,
+                in("rdx") arg3,
+                in("r10") arg4,
+                in("r8") arg5,
+                in("r9") arg6,
+                lateout("rax") result,
+                out("rcx") _,
+                out("r11") _,
+            );
+        }
+        result
     }
-    result
 }
 
 /// Simple write syscall wrapper

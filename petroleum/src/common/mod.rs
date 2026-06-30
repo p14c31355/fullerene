@@ -26,6 +26,7 @@ pub mod memory;
 pub mod syscall;
 pub mod uefi;
 pub mod utils;
+pub use crate::vdso::*;
 
 #[repr(C)]
 pub struct VgaFramebufferConfig {

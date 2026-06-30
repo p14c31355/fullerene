@@ -19,6 +19,7 @@
 //! being launched.
 
 use crate::gui;
+use crate::vdso;
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {
@@ -73,6 +74,14 @@ pub fn scheduler_loop() -> ! {
     // Shell and other apps are launched via AppGrid or context menu.
     let mut tick_counter: u64 = 0;
     loop {
+        // VDSO: process pending syscall requests from user processes
+        vdso::poll_all_vdso_rings();
+
+        // VDSO: update time metadata for all processes
+        let now_us = crate::interrupts::TICK_COUNTER
+            .load(core::sync::atomic::Ordering::Relaxed);
+        vdso::update_vdso_metadata(now_us, now_us);
+
         gui::runtime_tick(tick_counter);
 
         // Check if the user requested a shell launch (via AppGrid / menu).
