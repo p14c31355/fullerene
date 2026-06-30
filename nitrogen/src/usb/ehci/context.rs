@@ -651,7 +651,9 @@ impl EhciContext {
         let r = self.transfer.wait_qtd(qtd, 5_000_000);
         if r.is_err() {
             self.transfer.schedule.remove(qh_phys, self.driver_ctx);
-            let _ = self.wait_async_advance(&self.registers.op);
+        if self.wait_async_advance(&self.registers.op).is_err() {
+            log::warn!("EHCI: async advance timeout during bulk transfer cleanup");
+        }
             self.driver_ctx
                 .free_contiguous_frames(staging_phys, staging_pages);
             self.transfer.qtd_pool.free(qtd);
