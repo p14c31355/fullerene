@@ -177,10 +177,20 @@ pub struct AsyncSchedule {
 
 impl AsyncSchedule {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
+const QH_EPCHAR_H: u32 = 1 << 15;
+
+impl AsyncSchedule {
+    pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
         let (entries, phys) = dma::alloc_dma::<QueueHead>(ctx, 1)?;
         let head = &mut entries[0];
-        unsafe { ptr::write_volatile(&mut head.horz_link, (phys as u32) | QH_HORZ_TYPE_QH); }
+        qh_init(head);
+        unsafe {
+            ptr::write_volatile(&mut head.horz_link, (phys as u32) | QH_HORZ_TYPE_QH);
+            ptr::write_volatile(&mut head.ep_chars, QH_EPCHAR_H);
+        }
         Some(Self { head, head_phys: phys })
+    }
+}
     }
 
     /// Insert a qH into the async list (after the head).
