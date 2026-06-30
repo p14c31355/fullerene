@@ -257,6 +257,17 @@ fn register_nozzle_hooks() {
     .install();
 
     // ── Install sys info / control hooks ───────────────────────
+    // Register SD mount hook for direct access (bypasses info hook)
+    nozzle::sys_hooks::SD_MOUNT_HOOK.lock().replace(|ctx: &mut nozzle::CommandContext| {
+        use crate::drivers::sd_card;
+        ctx.terminal.write_str("sd_mount: hook called\n");
+        if sd_card::probe_and_mount() {
+            ctx.terminal.write_str("sd_mount: OK\n");
+        } else {
+            ctx.terminal.write_str("sd_mount: FAILED\n");
+        }
+    });
+
     nozzle::sys_hooks::SysHooks {
         info: Some(|ctx, cmd| match cmd {
         "mem" => {

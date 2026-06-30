@@ -282,11 +282,14 @@ pub fn cmd_usb_info(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `sd_mount` — probe and mount SD card
+/// `sd_mount` — probe SD card
 pub fn cmd_sd_mount(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("sd_mount: entering\n");
-    crate::sys_hooks::call_sys_info_hook(ctx, "sd_mount");
-    ctx.terminal.write_str("sd_mount: done\n");
+    let h = crate::sys_hooks::SD_MOUNT_HOOK.lock().clone();
+    if let Some(f) = h {
+        f(ctx);
+    } else {
+        ctx.terminal.write_str("sd_mount: hook not registered\n");
+    }
     true
 }
 
