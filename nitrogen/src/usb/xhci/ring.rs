@@ -232,8 +232,17 @@ pub struct RingContext {
 
 impl RingContext {
     pub fn alloc(ctx: &dyn DriverContext, cmd_size: usize, evt_size: usize) -> Option<Self> {
-        Some(Self { command: Ring::alloc(ctx, cmd_size)?, event: EventRing::alloc(ctx, evt_size)? })
+        let command = Ring::alloc(ctx, cmd_size)?;
+        let event = match EventRing::alloc(ctx, evt_size) {
+            Some(event) => event,
+            None => {
+                command.free(ctx);
+                return None;
+            }
+        };
+        Some(Self { command, event })
     }
+}
 }
 
 // ══════════════════════════════════════════════════════════════
