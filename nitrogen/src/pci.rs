@@ -288,7 +288,7 @@ impl PciDevice {
         let mut off = cap_ptr;
         let mut visited = [false; 256];
         loop {
-            if off < 0x40 || off > 0xEC {
+            if off < 0x40 || off > 0xFC {
                 break;
             }
             if visited[off as usize] {
