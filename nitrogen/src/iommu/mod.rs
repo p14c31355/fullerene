@@ -169,6 +169,9 @@ impl IommuEngine {
         if phys & 0xFFF != 0 {
             return Err(DriverContextError::InvalidArgument);
         }
+        if phys.checked_add(size as u64).is_none() {
+            return Err(DriverContextError::InvalidArgument);
+        }
 
         // Validate before mutating state
         let iova = self.iova.alloc(size).ok_or(DriverContextError::OutOfMemory)?;
