@@ -1,7 +1,7 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-pub const VDSO_RING_SIZE: usize = 32;
+pub const VDSO_RING_SIZE: usize = 31;
 
 pub const VDSO_FREE: u64 = 0;
 pub const VDSO_CLAIMED: u64 = 1;
