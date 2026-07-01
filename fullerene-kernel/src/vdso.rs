@@ -100,7 +100,7 @@ pub fn poll_all_vdso_rings() {
                 .find(|(id, _)| id.0 == pid)
                 .and_then(|(_, proc)| {
                     if proc.state != crate::process::ProcessState::Terminated {
-                        proc.vdso_page.as_ref().map(|v| v.kernel_ptr as *const VdsoPage)
+                        proc.vdso_page.as_ref().map(|v| v.kernel_ptr)
                     } else {
                         None
                     }
@@ -108,7 +108,7 @@ pub fn poll_all_vdso_rings() {
         });
 
         if let Some(ptr) = page_ptr {
-            unsafe { poll_vdso_page(&*ptr) };
+            poll_vdso_page(ptr);
         }
     }
 }
