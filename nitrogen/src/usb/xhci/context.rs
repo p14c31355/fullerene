@@ -664,7 +664,7 @@ impl XhciContext {
             log::info!("xHCI: port {} device detected, speed={:?}", port_idx, speed);
 
             // Remove any stale device record for this port before adding a new one
-            self.devices.retain(|_| false);
+            self.devices.clear();
 
             self.devices.push(UsbDevice {
                 address: 0,
