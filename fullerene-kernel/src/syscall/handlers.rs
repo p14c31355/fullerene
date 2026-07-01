@@ -8,6 +8,7 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use petroleum::common::memory::{user_slice, user_slice_mut};
+use petroleum::page_table::types::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -352,10 +353,21 @@ fn syscall_fork() -> SyscallResult {
 
     let child_pid = process::PROCESS_MANAGER.allocate_pid().0 as usize;
 
-    // Create child VDSO page (replaces cloned parent mapping at VDSO_USER_BASE)
+    // Remove inherited VDSO mapping (parent may have one at VDSO_USER_BASE)
+    let _ = child_page_table.unmap_page(petroleum::vdso::VDSO_USER_BASE as usize);
+
+    // Create child VDSO page
     let child_vdso = if parent_context.is_user {
         let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
-        let fa = fa_lock.as_mut().ok_or(SyscallError::OutOfMemory)?;
+        let fa = match fa_lock.as_mut() {
+            Some(fa) => fa,
+            None => {
+                drop(fa_lock);
+                petroleum::common::memory::deallocate_layout(kernel_stack_ptr, stack_layout);
+                crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+                return Err(SyscallError::OutOfMemory);
+            }
+        };
         let vdso = crate::vdso::create_vdso_page(
             &mut child_page_table,
             fa,

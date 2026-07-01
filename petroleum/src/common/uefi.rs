@@ -157,12 +157,16 @@ pub const ACPI_20_TABLE_GUID: [u8; 16] = [
 ];
 /// GUID for ACPI 1.0 RSDP in UEFI Configuration Table
 pub const ACPI_10_TABLE_GUID: [u8; 16] = [
-    0xEB, 0x9D, 0x2D, 0x30, 0x88, 0x2D, 0xD3, 0x11,
+    0x30, 0x2D, 0x9D, 0xEB, 0x88, 0x2D, 0xD3, 0x11,
     0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D,
 ];
 
 /// Find the ACPI RSDP physical address from the UEFI Configuration Table.
-pub fn find_rsdp_from_uefi(system_table_virt: usize) -> Option<u64> {
+///
+/// # Safety
+/// `system_table_virt` must point to a valid `EfiSystemTable` structure
+/// at an accessible virtual address.
+pub unsafe fn find_rsdp_from_uefi(system_table_virt: usize) -> Option<u64> {
     let st = unsafe { &*(system_table_virt as *const EfiSystemTable) };
     let n = st.number_of_table_entries;
     let ct = st.configuration_table;

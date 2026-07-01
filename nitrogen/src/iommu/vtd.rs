@@ -183,7 +183,8 @@ impl VtdRegisters {
     }
 
     pub fn iotlb_domain_invalidate(&self, domain_id: u16) {
-        let val = 1 | ((domain_id as u64) << 32);
+        // IIRG=01 (domain granularity), IVT=1, DID=domain_id
+        let val = 1 | ((domain_id as u64) << 32) | (1u64 << 2);
         unsafe { self.w64(IOTLB, val) }
         for _ in 0..Self::WAIT_TIMEOUT {
             let val = unsafe { self.r64(IOTLB) };

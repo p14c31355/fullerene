@@ -30,7 +30,7 @@ fn iopte_is_huge(entry: u64) -> bool {
 //              [20:12] → SL0 index
 //              [11:0]  → page offset
 
-const IOVA_BITS: u8 = 48; // 48-bit IOVA space
+const IOVA_BITS: u8 = 39; // 3-level 4KiB SLPT covers bits [38:0]
 const SL2_SHIFT: u8 = 30;
 const SL1_SHIFT: u8 = 21;
 const SL0_SHIFT: u8 = 12;

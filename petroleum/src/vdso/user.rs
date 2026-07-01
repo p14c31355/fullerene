@@ -52,13 +52,7 @@ pub fn vdso_try_call(syscall_num: u64, args: [u64; 6]) -> Option<u64> {
     let page = vdso()?;
     let slot = page.try_claim_slot()?;
     page.submit_request(slot, syscall_num, args);
-    let result = page.poll_completion(slot);
-    if result.is_none() {
-        // Slot remains claimed but incomplete — caller gets no handle.
-        // Reset to free to avoid leaking the slot.
-        page.requests[slot].state.store(VDSO_FREE, Ordering::Release);
-    }
-    result
+    page.poll_completion(slot)
 }
 
 // ── Async calls ──────────────────────────────────────────────────
@@ -80,7 +74,12 @@ impl Drop for VdsoFuture {
     fn drop(&mut self) {
         if let Some(slot) = self.slot {
             if let Some(page) = vdso() {
-                page.requests[slot].state.store(VDSO_FREE, Ordering::Release);
+                // Only reset to FREE if still VDSO_CLAIMED (not yet submitted).
+                // If CAS fails, the kernel may be processing this slot;
+                // leave it in its current state.
+                let _ = page.requests[slot].state.compare_exchange_weak(
+                    VDSO_CLAIMED, VDSO_FREE, Ordering::AcqRel, Ordering::Relaxed,
+                );
             }
         }
     }
@@ -119,7 +118,10 @@ impl Future for VdsoFuture {
 
         // Phase 2: check completion
         match page.poll_completion(slot) {
-            Some(result) => Poll::Ready(result),
+            Some(result) => {
+                this.slot = None;
+                Poll::Ready(result)
+            }
             None => {
                 // Not yet complete.  The kernel processes VDSO requests
                 // in its idle loop; once completed, the slot state

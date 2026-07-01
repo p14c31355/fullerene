@@ -172,14 +172,6 @@ impl IommuEngine {
         // Validate before mutating state
         let iova = self.iova.alloc(size).ok_or(DriverContextError::OutOfMemory)?;
         let pages = (size + 4095) / 4096;
-        // Pre-validate by checking page table walk doesn't fail early (no-op for now)
-
-        // Switch this device's context entry from pass-through to host translation
-        let bus = (device_id >> 8) as u8;
-        let dev = ((device_id >> 3) & 0x1f) as u8;
-        let func = (device_id & 7) as u8;
-        let entry = self.root_table.get_context_entry(ctx, bus, dev, func)?;
-        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL);
 
         // Map pages with rollback on failure
         let mut mapped = 0usize;
@@ -201,6 +193,15 @@ impl IommuEngine {
             self.iova.free(iova, size);
             return Err(result.unwrap_err());
         }
+
+        // Switch this device's context entry from pass-through to host translation.
+        // Defer until after mapping succeeds so the device never sees an
+        // incomplete page table.
+        let bus = (device_id >> 8) as u8;
+        let dev = ((device_id >> 3) & 0x1f) as u8;
+        let func = (device_id & 7) as u8;
+        let entry = self.root_table.get_context_entry(ctx, bus, dev, func)?;
+        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL);
 
         // Flush context cache and IOTLB
         self.registers.context_cache_invalidate_domain(self.page_table.domain_id());
