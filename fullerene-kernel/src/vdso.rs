@@ -48,7 +48,14 @@ pub fn create_vdso_page(
             flags,
             frame_allocator,
         )
-        .map_err(|_| "VDSO: map_page failed")?;
+        .map_err(|_| {
+            let frame_addr = phys_addr.as_u64() as usize;
+            let mut mgr = crate::memory_management::get_memory_manager().lock();
+            if let Some(m) = mgr.as_mut() {
+                let _ = m.free_frame(frame_addr);
+            }
+            "VDSO: map_page failed"
+        })?;
 
     petroleum::debug_log_no_alloc!(
         "VDSO: created for PID {} at phys={:#x}, user={:#x}",
