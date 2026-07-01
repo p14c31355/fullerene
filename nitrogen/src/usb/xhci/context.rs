@@ -652,7 +652,7 @@ impl XhciContext {
             if !self.try_connect_port(port_idx) {
                 // CCS became 0 → device was disconnected; remove stale entries
                 if !self.registers.op.portsc(port_idx).ccs() {
-                    self.devices.retain(|_| false); // simplified: clear all for now
+                    self.devices.clear(); // simplified: clear all for now
                     log::info!("xHCI: port {} disconnected, clearing devices", port_idx);
                 }
                 continue;
