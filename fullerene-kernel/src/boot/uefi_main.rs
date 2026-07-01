@@ -163,26 +163,6 @@ pub unsafe extern "C" fn efi_main_stage2(
         debug_serial(&buf[..len]);
         debug_serial(b"\n");
     }
-    // ── ACPI RSDP discovery from UEFI Configuration Table ──────────
-    // Before init_common (which initializes IOMMU from ACPI), find the
-    // RSDP via the UEFI Configuration Table so the IOMMU init can use
-    // the proper UEFI-provided address instead of falling back to a
-    // legacy BIOS memory scan.
-    unsafe {
-        let args = &*args_ptr;
-        let st_virt = (args.system_table as u64 + physical_memory_offset.as_u64()) as usize;
-        if let Some(rsdp) = petroleum::common::uefi::find_rsdp_from_uefi(st_virt) {
-            crate::boot::UEFI_RSDP_ADDRESS.store(rsdp, core::sync::atomic::Ordering::Relaxed);
-            debug_serial(b"DEBUG: [uefi_main] RSDP found via UEFI Config Table: 0x");
-            let mut buf = [0u8; 16];
-            let len = petroleum::serial::format_hex_to_buffer(rsdp, &mut buf, 16);
-            debug_serial(&buf[..len]);
-            debug_serial(b"\n");
-        } else {
-            debug_serial(b"DEBUG: [uefi_main] RSDP not found in UEFI Config Table, will use legacy scan\n");
-        }
-    }
-
     debug_serial(b"DEBUG: [uefi_main] Calling init_common now\n");
     crate::init::init_common(physical_memory_offset);
     debug_serial(b"DEBUG: [uefi_main] init_common returned\n");
