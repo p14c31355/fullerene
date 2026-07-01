@@ -89,7 +89,7 @@ pub fn find_rsdp_from_addr(addr: u64) -> bool {
     checksum(data)
 }
 
-pub fn get_xsdt_address(rsdp_phys: u64) -> Option<u64> {
+pub(crate) fn get_xsdt_address(rsdp_phys: u64) -> Option<u64> {
     let virt = phys_to_virt(rsdp_phys);
     if virt == 0 {
         return None;
@@ -104,24 +104,63 @@ pub fn get_xsdt_address(rsdp_phys: u64) -> Option<u64> {
     }
 }
 
-fn find_table(xsdt_phys: u64, signature: &[u8; 4]) -> Option<u64> {
-    let virt = phys_to_virt(xsdt_phys);
+/// Returns `(primary_sdt, optional_rsdt_fallback)`.
+/// On ACPI v2+ the primary is the XSDT; the RSDT (if non-zero) is returned as fallback.
+/// On ACPI v1 the primary is the RSDT and no fallback is returned.
+pub(crate) fn get_sdt_addresses(rsdp_phys: u64) -> Option<(u64, Option<u64>)> {
+    let virt = phys_to_virt(rsdp_phys);
     if virt == 0 {
         return None;
     }
-    let length = read_u32(virt + 4) as usize;
-    // Sanity: XSDT must be at least 44 bytes (36 header + 8 for one entry) and at most 128KB
-    if length < 44 || length > 128 * 1024 {
+    let rev = read_u8(virt + 15);
+    if rev >= 2 {
+        let xsdt = read_u64(virt + 24);
+        let rsdt = read_u32(virt + 16) as u64;
+        if xsdt == 0 { return None; }
+        Some((xsdt, if rsdt != 0 { Some(rsdt) } else { None }))
+    } else {
+        let rsdt = read_u32(virt + 16) as u64;
+        if rsdt != 0 { Some((rsdt, None)) } else { None }
+    }
+}
+
+pub(crate) fn find_table(sdt_phys: u64, signature: &[u8; 4]) -> Option<u64> {
+    let virt = phys_to_virt(sdt_phys);
+    if virt == 0 {
         return None;
     }
-    let entry_count = (length - 36) / 8;
+
+    let length = read_u32(virt + 4) as usize;
+    let sdt_sig = unsafe { *(virt as *const [u8; 4]) };
+
+    // Detect entry size: XSDT uses 8-byte entries, RSDT uses 4-byte entries
+    let entry_size: usize;
+    let min_length: usize;
+    if &sdt_sig == b"XSDT" {
+        entry_size = 8;
+        min_length = 44;
+    } else if &sdt_sig == b"RSDT" {
+        entry_size = 4;
+        min_length = 40;
+    } else {
+        return None;
+    }
+
+    if length < min_length || length > 128 * 1024 {
+        return None;
+    }
+    let entry_count = (length - 36) / entry_size;
     for i in 0..entry_count {
-        let entry_phys = read_u64(virt + 36 + i * 8);
+        let entry_phys = if entry_size == 8 {
+            read_u64(virt + 36 + i * entry_size)
+        } else {
+            read_u32(virt + 36 + i * entry_size) as u64
+        };
         if entry_phys == 0 { continue; }
         let entry_virt = phys_to_virt(entry_phys);
         if entry_virt == 0 { continue; }
-        let sig = unsafe { *(entry_virt as *const [u8; 4]) };
-        if &sig == signature {
+        let tbl_sig = unsafe { *(entry_virt as *const [u8; 4]) };
+        if &tbl_sig == signature {
             return Some(entry_phys);
         }
     }
@@ -153,9 +192,7 @@ pub struct DmarInfo {
     pub drhd_units: Vec<DmarDrhd>,
 }
 
-pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
-    let xsdt_phys = get_xsdt_address(rsdp_phys)?;
-    let dmar_phys = find_table(xsdt_phys, DMAR_SIG)?;
+pub(crate) fn parse_dmar_from_phys(dmar_phys: u64) -> Option<DmarInfo> {
     let dmar_virt = phys_to_virt(dmar_phys);
     if dmar_virt == 0 {
         return None;
@@ -221,4 +258,10 @@ pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
         host_address_width,
         drhd_units,
     })
+}
+
+pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
+    let xsdt_phys = get_xsdt_address(rsdp_phys)?;
+    let dmar_phys = find_table(xsdt_phys, DMAR_SIG)?;
+    parse_dmar_from_phys(dmar_phys)
 }

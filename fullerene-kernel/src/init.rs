@@ -106,7 +106,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             let ctx = super::driver_context_impl::KernelDriverContext;
             match nitrogen::iommu::init(rsdp, phys_to_virt, &ctx) {
                 Ok(()) => log::info!("IOMMU initialized"),
-                Err(e) => log::warn!("IOMMU not available: {}", e),
+                Err(e) => log::warn!("IOMMU not available: {} (enable VT-d in BIOS/UEFI if available)", e),
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");
             Ok(())

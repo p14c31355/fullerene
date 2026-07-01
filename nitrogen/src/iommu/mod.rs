@@ -289,7 +289,19 @@ pub fn init(
         acpi::find_rsdp().ok_or("RSDP not found")?
     };
 
-    let dmar = acpi::parse_dmar(rsdp).ok_or("DMAR table not found")?;
+    // Set PHYS_TO_VIRT before any ACPI parsing so the mapping is consistent.
+    let mapper_offset = (phys_to_virt_fn)(0) as u64;
+    PHYS_TO_VIRT.store(mapper_offset, core::sync::atomic::Ordering::Relaxed);
+
+    let (xsdt_phys, rsdt_phys) = acpi::get_sdt_addresses(rsdp).ok_or("XSDT/RSDT not found")?;
+    let dmar_phys = acpi::find_table(xsdt_phys, b"DMAR")
+        .or_else(|| {
+            // Some UEFI firmware only includes DMAR in the RSDT (32-bit entries).
+            // Fall back to RSDT if DMAR not found in XSDT.
+            rsdt_phys.and_then(|p| acpi::find_table(p, b"DMAR"))
+        })
+        .ok_or("DMAR table not found")?;
+    let dmar = acpi::parse_dmar_from_phys(dmar_phys).ok_or("Failed to parse DMAR table")?;
 
     let drhd = dmar.drhd_units.first().ok_or("No DRHD entries")?;
 
@@ -303,12 +315,6 @@ pub fn init(
     let mmio_virt = (phys_to_virt_fn)(bar_phys);
     ctx.map_mmio_region(bar_phys as usize, mmio_virt, bar_size)
         .map_err(|_| "IOMMU BAR MMIO mapping failed")?;
-
-    // Store the physical-to-virtual mapping for ACPI parsing
-    // by encoding it as offset: phys_to_virt(phys) = phys + offset
-    // We compute the offset by evaluating at phys=0: phys_to_virt_fn(0)
-    let mapper_offset = (phys_to_virt_fn)(0) as u64;
-    PHYS_TO_VIRT.store(mapper_offset, core::sync::atomic::Ordering::Relaxed);
 
     let mut engine = IommuEngine::new(mmio_virt as *mut u8, ctx, dmar.host_address_width)
         .map_err(|_| "IOMMU engine init failed")?;
