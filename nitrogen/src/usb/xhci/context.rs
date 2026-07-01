@@ -666,9 +666,10 @@ impl XhciContext {
 
         // Power-cycle when PPC is supported and the port lacks power
         if self.ports.ppc {
-            let p = self.ports.get(port_idx).unwrap();
-            if !p.pp_on() {
-                power_cycle(op, port_idx);
+            if let Some(p) = self.ports.get(port_idx) {
+                if !p.pp_on() {
+                    power_cycle(op, port_idx);
+                }
             }
         }
 
