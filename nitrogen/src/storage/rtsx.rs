@@ -233,12 +233,19 @@ impl RtsxController {
 
     // ── SD Command Execution ──────────────────────────────────
 
+    fn mmio_alive(&self) -> bool {
+        self.r8(SD_CMD_STATE) != 0xFF
+    }
+
     fn sd_cmd(&self, cmd: u8, arg: u32, rsp_type: u8, data_len: u16) -> Result<u32, &'static str> {
         let mut ready = false;
-        for _ in 0..50_000 {
+        for i in 0..50_000 {
             if (self.r8(SD_CMD_STATE) & 0x01) != 0 {
                 ready = true;
                 break;
+            }
+            if i == 1_000 && !self.mmio_alive() {
+                return Err("SD cmd: controller not responding");
             }
             core::hint::spin_loop();
         }
@@ -346,7 +353,10 @@ impl RtsxController {
         log::info!("RTSX: ACMD41");
         let mut ocr = 0u32;
         let mut ok = false;
-        for _ in 0..2000 {
+        for _ in 0..200 {
+            if !self.mmio_alive() {
+                return Err("ACMD41: controller not responding");
+            }
             if let Ok(rsp) = self.sd_acmd(ACMD41_SEND_OP_COND, ocr_arg, SD_RSP_TYPE_R3) {
                 if (rsp & (1 << 31)) != 0 {
                     ocr = rsp;
@@ -354,7 +364,7 @@ impl RtsxController {
                     break;
                 }
             }
-            for _ in 0..20_000 {
+            for _ in 0..1_000 {
                 core::hint::spin_loop();
             }
         }
