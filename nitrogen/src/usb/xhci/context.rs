@@ -300,9 +300,19 @@ impl XhciContext {
         let mut found = 0;
         for port_idx in 0..n_ports {
             self.log_portsc(port_idx);
-            if self.registers.op.portsc(port_idx).ccs() {
+            let ps = self.registers.op.portsc(port_idx);
+            if ps.ccs() {
                 found += 1;
                 log::info!("xHCI: port {} already has CCS=1 (firmware detected)", port_idx);
+                // If the port is already enabled (PED=1), the device has a
+                // firmware-assigned non-zero address.  After init_no_reset our
+                // driver's DCBAAP/CRCR are fresh, so we must Port Reset to
+                // return the device to Default state (address 0) before
+                // enumeration.
+                if ps.ped() {
+                    log::info!("xHCI: port {} already PED=1, resetting for fresh enumeration", port_idx);
+                    super::port::port_reset(&self.registers.op, port_idx);
+                }
             }
         }
         if found == 0 {

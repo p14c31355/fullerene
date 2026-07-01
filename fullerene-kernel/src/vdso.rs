@@ -15,7 +15,10 @@ pub struct VdsoPageRef {
 
 impl Drop for VdsoPageRef {
     fn drop(&mut self) {
-        crate::memory_management::deallocate_process_page_table(self.phys);
+        let mut mgr = crate::memory_management::get_memory_manager().lock();
+        if let Some(m) = mgr.as_mut() {
+            let _ = m.free_frame(self.phys.start_address().as_u64() as usize);
+        }
     }
 }
 
