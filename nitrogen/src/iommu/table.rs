@@ -169,61 +169,80 @@ impl IommuPageTable {
 
 pub const ROOT_ENTRY_PRESENT: u64 = 1;
 
+// VT-d Root Entry: 128-bit (16-byte) per spec §9.1
 #[derive(Clone, Copy)]
-#[repr(C)]
-pub struct RootEntry(u64);
+#[repr(C, align(16))]
+pub struct RootEntry {
+    pub lo: u64,
+    pub hi: u64,
+}
 
 impl RootEntry {
     pub fn new(context_table_phys: u64) -> Self {
-        Self(context_table_phys | ROOT_ENTRY_PRESENT)
+        Self {
+            lo: (context_table_phys & 0x000f_ffff_ffff_f000) | ROOT_ENTRY_PRESENT,
+            hi: 0,
+        }
     }
 
     pub fn is_present(&self) -> bool {
-        self.0 & ROOT_ENTRY_PRESENT != 0
+        self.lo & ROOT_ENTRY_PRESENT != 0
     }
 
     pub fn context_table_phys(&self) -> u64 {
-        self.0 & 0x000f_ffff_ffff_f000
+        self.lo & 0x000f_ffff_ffff_f000
     }
 }
 
 // ── Context Entry ───────────────────────────────────────────────
-// 8 bytes per entry, 256 entries per context table = 2KB (use 4KB page)
-// Translation Type (bits 0:1):
-//   00: no translation (identity / pass-through)
-//   01: reserved
-//   10: host translation (2nd-level page tables)
-//   11: guest translation (1st-level)
-// Address Width (bits 7:9 for AW in pre-3.0, bits 8:10 for AW in 3.0):
-//   We use bits 8:10 for 3-level (010) or 4-level (011)
-// Second Level Page Table Pointer (bits 12:63)
+// VT-d Context Entry: 128-bit (16-byte) per spec §9.3.
+//
+// Lower 64 bits (lo):
+//   bits 0:     Present (1)
+//   bits 2:1:   Translation Type (00=Host, 10=Pass-through)
+//   bits 3:     Fault Processing Disable
+//   bits 11:4:  Reserved
+//   bits 63:12: Second Level Page Table Pointer
+//
+// Upper 64 bits (hi):
+//   bits 2:0:   Address Width (AW)
+//   bits 7:3:   Reserved
+//   bits 23:8:  Domain ID
 
-pub const CTX_TT_NO_TRANSLATION: u64 = 0;
-pub const CTX_TT_HOST: u64 = 2;
-pub const CTX_TT_GUEST: u64 = 3;
-pub const CTX_AW_3LEVEL: u64 = 2 << 8;  // 010
-pub const CTX_AW_4LEVEL: u64 = 3 << 8;  // 011
-pub const CTX_FPD: u64 = 1 << 3;        // Fault Processing Disable
+pub const CTX_TT_MULTI_LEVEL: u64 = 0;    // 00b: Host translation
+pub const CTX_TT_PASS_THROUGH: u64 = 2;   // 10b: Pass-through
+pub const CTX_AW_3LEVEL: u64 = 2;         // 010b = 39-bit AGAW
+pub const CTX_AW_4LEVEL: u64 = 3;         // 011b = 48-bit AGAW
+pub const CTX_FPD: u64 = 1 << 3;          // Fault Processing Disable
 
 #[derive(Clone, Copy)]
-#[repr(C)]
-pub struct ContextEntry(u64);
+#[repr(C, align(16))]
+pub struct ContextEntry {
+    pub lo: u64,
+    pub hi: u64,
+}
 
 impl ContextEntry {
-    pub fn new_host(sl_pt_phys: u64, aw_bits: u64) -> Self {
-        Self(sl_pt_phys | CTX_TT_HOST | aw_bits)
+    pub fn new_host(sl_pt_phys: u64, aw_bits: u64, domain_id: u16) -> Self {
+        Self {
+            lo: (sl_pt_phys & 0x000f_ffff_ffff_f000) | (CTX_TT_MULTI_LEVEL << 2) | 1,
+            hi: (aw_bits & 7) | ((domain_id as u64) << 8),
+        }
     }
 
     pub fn new_pass_through() -> Self {
-        Self(0) // TT = 00 = no translation
+        Self {
+            lo: (CTX_TT_PASS_THROUGH << 2) | 1,
+            hi: 0,
+        }
     }
 
     pub fn is_present(&self) -> bool {
-        self.0 & 3 != 0 // TT != 0 means translation is present
+        self.lo & 1 != 0
     }
 
     pub fn set_sl_pt_ptr(&mut self, phys: u64) {
-        self.0 = (self.0 & !0x000f_ffff_ffff_f000) | (phys & 0x000f_ffff_ffff_f000);
+        self.lo = (self.lo & !0x000f_ffff_ffff_f000) | (phys & 0x000f_ffff_ffff_f000);
     }
 }
 

@@ -91,21 +91,20 @@ pub fn poll_vdso_page(vdso: &VdsoPage) {
 }
 
 pub fn poll_all_vdso_rings() {
-    // Collect PIDs of processes that have a VDSO page
-    let pids: alloc::vec::Vec<u64> = PROCESS_MANAGER.with_list(|list| {
-        list.iter()
-            .filter_map(|(_, proc)| {
-                if proc.vdso_page.is_some() && proc.state != crate::process::ProcessState::Terminated {
-                    Some(proc.id.0)
-                } else {
-                    None
-                }
-            })
-            .collect()
+    let mut pids = [0u64; 64];
+    let mut count = 0;
+    PROCESS_MANAGER.with_list(|list| {
+        for (_, proc) in list.iter() {
+            if count >= 64 { break; }
+            if proc.vdso_page.is_some() && proc.state != crate::process::ProcessState::Terminated {
+                pids[count] = proc.id.0;
+                count += 1;
+            }
+        }
     });
 
-    for pid in pids {
-        // Re-verify process existence and get the VDSO page pointer under the lock
+    for i in 0..count {
+        let pid = pids[i];
         let page_ptr = PROCESS_MANAGER.with_list(|list| {
             list.iter()
                 .find(|(id, _)| id.0 == pid)

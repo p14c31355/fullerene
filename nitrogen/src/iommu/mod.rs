@@ -136,7 +136,7 @@ impl IommuEngine {
     ) -> Result<(), DriverContextError> {
         let entry = self.root_table.get_context_entry(ctx, bus, device, function)?;
         let aw_bits = table::CTX_AW_3LEVEL;
-        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), aw_bits);
+        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), aw_bits, self.page_table.domain_id());
         Ok(())
     }
 
@@ -222,7 +222,7 @@ impl IommuEngine {
                 return Err(e);
             }
         };
-        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL);
+        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL, self.page_table.domain_id());
 
         // Ensure page table and context entry writes are committed before invalidating caches
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
