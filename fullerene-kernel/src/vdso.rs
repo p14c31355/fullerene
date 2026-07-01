@@ -91,36 +91,15 @@ pub fn poll_vdso_page(vdso: &VdsoPage) {
 }
 
 pub fn poll_all_vdso_rings() {
-    let mut pids = [0u64; 64];
-    let mut count = 0;
     PROCESS_MANAGER.with_list(|list| {
         for (_, proc) in list.iter() {
-            if count >= 64 { break; }
-            if proc.vdso_page.is_some() && proc.state != crate::process::ProcessState::Terminated {
-                pids[count] = proc.id.0;
-                count += 1;
+            if proc.state != crate::process::ProcessState::Terminated {
+                if let Some(ref vdso) = proc.vdso_page {
+                    poll_vdso_page(vdso.kernel_ptr);
+                }
             }
         }
     });
-
-    for i in 0..count {
-        let pid = pids[i];
-        let page_ptr = PROCESS_MANAGER.with_list(|list| {
-            list.iter()
-                .find(|(id, _)| id.0 == pid)
-                .and_then(|(_, proc)| {
-                    if proc.state != crate::process::ProcessState::Terminated {
-                        proc.vdso_page.as_ref().map(|v| v.kernel_ptr)
-                    } else {
-                        None
-                    }
-                })
-        });
-
-        if let Some(ptr) = page_ptr {
-            poll_vdso_page(ptr);
-        }
-    }
 }
 
 pub fn update_vdso_metadata(now_us: u64, wall_us: u64) {

@@ -199,8 +199,8 @@ impl RootEntry {
 //
 // Lower 64 bits (lo):
 //   bits 0:     Present (1)
-//   bits 2:1:   Translation Type (00=Host, 10=Pass-through)
-//   bits 3:     Fault Processing Disable
+//   bits 1:     Fault Processing Disable (FPD)
+//   bits 3:2:   Translation Type (00=Host, 10=Pass-through)
 //   bits 11:4:  Reserved
 //   bits 63:12: Second Level Page Table Pointer
 //
@@ -213,7 +213,7 @@ pub const CTX_TT_MULTI_LEVEL: u64 = 0;    // 00b: Host translation
 pub const CTX_TT_PASS_THROUGH: u64 = 2;   // 10b: Pass-through
 pub const CTX_AW_3LEVEL: u64 = 2;         // 010b = 39-bit AGAW
 pub const CTX_AW_4LEVEL: u64 = 3;         // 011b = 48-bit AGAW
-pub const CTX_FPD: u64 = 1 << 3;          // Fault Processing Disable
+pub const CTX_FPD: u64 = 1 << 1;          // Fault Processing Disable
 
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
