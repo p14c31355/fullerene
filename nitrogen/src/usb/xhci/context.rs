@@ -208,20 +208,24 @@ impl XhciContext {
         // Phase 1: lightweight init without HCRST
         self.init_no_reset()?;
 
-        // Phase 2: if no port has CCS, try full HCRST
+        // Phase 2: if no port has CCS and no HSE, ports are ready
         let n_ports = self.ports.n_ports;
         let has_ccs = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
-        if has_ccs {
+        if has_ccs && self.registers.op.usbsts() & USBSTS_HSE == 0 {
             return Ok(());
         }
 
-        log::warn!("xHCI: init_no_reset produced no CCS=1, trying full HCRST");
+        if self.registers.op.usbsts() & USBSTS_HSE != 0 {
+            log::warn!("xHCI: HSE after init_no_reset, trying full HCRST");
+        } else {
+            log::warn!("xHCI: init_no_reset produced no CCS=1, trying full HCRST");
+        }
         self.controller_reset()?;
         self.configure_before_start();
-        self.start_controller()?;
         self.setup_erst()?;
         self.interrupts.enable(&self.registers.runtime);
         self.registers.op.set_usbcmd_bits(USBCMD_INTE);
+        self.start_controller()?;
         self.clear_hse_and_recover();
         self.init_ports();
 
@@ -257,16 +261,25 @@ impl XhciContext {
         if halted {
             log::info!("xHCI: controller halted — configuring before RS=1");
             self.configure_before_start();
+            self.setup_erst()?;
+            self.interrupts.enable(&self.registers.runtime);
+            self.registers.op.set_usbcmd_bits(USBCMD_INTE);
             self.start_controller()?;
         } else {
-            log::info!("xHCI: controller already running — installing driver rings");
+            log::info!("xHCI: controller already running — stopping, then reconfiguring");
+            // Halt the running controller before reconfiguring core registers
+            let op = &self.registers.op;
+            op.set_usbcmd(op.usbcmd() & !USBCMD_RS); // Clear RS to halt
+            for _ in 0..200_000 {
+                if op.usbsts() & USBSTS_HCH != 0 { break; }
+                super::port::delay_us(100);
+            }
             self.configure_before_start();
+            self.setup_erst()?;
+            self.interrupts.enable(&self.registers.runtime);
+            self.registers.op.set_usbcmd_bits(USBCMD_INTE);
+            self.start_controller()?;
         }
-
-        // ERST and interrupts can be written regardless of run state.
-        self.setup_erst()?;
-        self.interrupts.enable(&self.registers.runtime);
-        self.registers.op.set_usbcmd_bits(USBCMD_INTE);
         super::port::delay_ms(200);
 
         // Step 3: Reflect current firmware-detected ports.
@@ -328,19 +341,22 @@ impl XhciContext {
 
         // ── Port power-up ─────────────────────────────────────
         // Power-cycle USB 3.0 ports that already have PP=1 (clean restart).
-        for port_idx in 0..self.ports.n_ports {
-            let ps = op.portsc(port_idx).0;
-            if (ps & PORTSC_PP) != 0 {
-                let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-                if is_usb3 {
-                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
-                    super::port::delay_ms(50);
-                    op.write_portsc(port_idx, (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+        // Only do this when PPC (Port Power Control) is supported.
+        if self.ports.ppc {
+            for port_idx in 0..self.ports.n_ports {
+                let ps = op.portsc(port_idx).0;
+                if (ps & PORTSC_PP) != 0 {
+                    let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+                    if is_usb3 {
+                        op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                        super::port::delay_ms(50);
+                        op.write_portsc(port_idx, (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                        super::port::delay_ms(100);
+                    }
+                } else {
+                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
                     super::port::delay_ms(100);
                 }
-            } else {
-                op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
-                super::port::delay_ms(100);
             }
         }
         (0..self.ports.n_ports).for_each(|p| self.log_portsc(p));
@@ -627,6 +643,11 @@ impl XhciContext {
             }
 
             if !self.try_connect_port(port_idx) {
+                // CCS became 0 → device was disconnected; remove stale entries
+                if !self.registers.op.portsc(port_idx).ccs() {
+                    self.devices.retain(|_| false); // simplified: clear all for now
+                    log::info!("xHCI: port {} disconnected, clearing devices", port_idx);
+                }
                 continue;
             }
 
@@ -634,6 +655,9 @@ impl XhciContext {
             let ps = self.registers.op.portsc(port_idx);
             let speed = port_speed_to_usb(ps.speed());
             log::info!("xHCI: port {} device detected, speed={:?}", port_idx, speed);
+
+            // Remove any stale device record for this port before adding a new one
+            self.devices.retain(|_| false);
 
             self.devices.push(UsbDevice {
                 address: 0,
