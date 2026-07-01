@@ -74,7 +74,7 @@ impl VdsoPage {
             if state == VDSO_FREE {
                 if self.requests[i]
                     .state
-                    .compare_exchange_weak(VDSO_FREE, VDSO_CLAIMED, Ordering::AcqRel, Ordering::Relaxed)
+                    .compare_exchange(VDSO_FREE, VDSO_CLAIMED, Ordering::AcqRel, Ordering::Relaxed)
                     .is_ok()
                 {
                     return Some(i);
