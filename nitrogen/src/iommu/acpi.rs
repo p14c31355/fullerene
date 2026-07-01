@@ -230,16 +230,20 @@ pub(crate) fn parse_dmar_from_phys(dmar_phys: u64) -> Option<DmarInfo> {
             let (bus, path) = if scope_remaining >= 6 {
                 let _scope_type = read_u8(dmar_virt + scope_offset);
                 let scope_len = read_u8(dmar_virt + scope_offset + 1) as usize;
-                let bus = read_u8(dmar_virt + scope_offset + 5);
-                let mut path = Vec::new();
-                let mut p_off = scope_offset + 6;
-                while p_off < scope_offset + scope_len {
-                    let dev = read_u8(dmar_virt + p_off);
-                    let func = read_u8(dmar_virt + p_off + 1);
-                    path.push((dev, func));
-                    p_off += 2;
+                if scope_len >= 6 && scope_len <= scope_remaining {
+                    let bus = read_u8(dmar_virt + scope_offset + 5);
+                    let mut path = Vec::new();
+                    let mut p_off = scope_offset + 6;
+                    while p_off + 1 < scope_offset + scope_len {
+                        let dev = read_u8(dmar_virt + p_off);
+                        let func = read_u8(dmar_virt + p_off + 1);
+                        path.push((dev, func));
+                        p_off += 2;
+                    }
+                    (bus, path)
+                } else {
+                    (0, Vec::new())
                 }
-                (bus, path)
             } else {
                 (0, Vec::new())
             };

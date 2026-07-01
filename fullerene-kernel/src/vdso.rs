@@ -74,14 +74,36 @@ pub fn poll_vdso_page(vdso: &VdsoPage) {
 }
 
 pub fn poll_all_vdso_rings() {
-    // Collect VDSO page pointers first, then poll without holding the lock.
-    let pages: alloc::vec::Vec<*const VdsoPage> = PROCESS_MANAGER.with_list(|list| {
-        list.iter_mut()
-            .filter_map(|(_, proc)| proc.vdso_page.as_ref().map(|v| &*v.kernel_ptr as *const VdsoPage))
+    // Collect PIDs of processes that have a VDSO page
+    let pids: alloc::vec::Vec<u64> = PROCESS_MANAGER.with_list(|list| {
+        list.iter()
+            .filter_map(|(_, proc)| {
+                if proc.vdso_page.is_some() && proc.state != crate::process::ProcessState::Terminated {
+                    Some(proc.id.0)
+                } else {
+                    None
+                }
+            })
             .collect()
     });
-    for ptr in pages {
-        unsafe { poll_vdso_page(&*ptr) };
+
+    for pid in pids {
+        // Re-verify process existence and get the VDSO page pointer under the lock
+        let page_ptr = PROCESS_MANAGER.with_list(|list| {
+            list.iter()
+                .find(|(id, _)| id.0 == pid)
+                .and_then(|(_, proc)| {
+                    if proc.state != crate::process::ProcessState::Terminated {
+                        proc.vdso_page.as_ref().map(|v| v.kernel_ptr as *const VdsoPage)
+                    } else {
+                        None
+                    }
+                })
+        });
+
+        if let Some(ptr) = page_ptr {
+            unsafe { poll_vdso_page(&*ptr) };
+        }
     }
 }
 

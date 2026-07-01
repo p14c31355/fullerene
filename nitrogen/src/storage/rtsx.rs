@@ -602,6 +602,11 @@ pub fn init(ctx: &dyn DriverContext) {
             };
             let bar0_size = 0x1000u32; // RTS5249 BAR0 is 4KB
 
+            if bar0_addr + bar0_size as u64 > 0x1_0000_0000 {
+                log::info!("RTSX: BAR0 is above 4GB, not supported by 32-bit bridge window");
+                log::info!("RTSX: mapping MMIO at {:#x} size {} anyway", bar0_addr, bar0_size);
+            }
+
             // Configure the upstream bridge's memory window to cover BAR0.
             if let Some(ref bridge) = upstream_bridge {
                 let base_reg = PciConfigSpace::read_config_dword(
