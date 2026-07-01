@@ -9,7 +9,7 @@ use crate::process::PROCESS_MANAGER;
 use crate::syscall::handlers::handle_syscall;
 
 pub struct VdsoPageRef {
-    pub kernel_ptr: &'static mut VdsoPage,
+    pub kernel_ptr: &'static VdsoPage,
     pub phys: PhysFrame<Size4KiB>,
 }
 
