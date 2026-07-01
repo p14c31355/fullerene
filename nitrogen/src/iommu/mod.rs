@@ -201,7 +201,17 @@ impl IommuEngine {
         let bus = (device_id >> 8) as u8;
         let dev = ((device_id >> 3) & 0x1f) as u8;
         let func = (device_id & 7) as u8;
-        let entry = self.root_table.get_context_entry(ctx, bus, dev, func)?;
+        let entry = match self.root_table.get_context_entry(ctx, bus, dev, func) {
+            Ok(e) => e,
+            Err(e) => {
+                for i in 0..mapped {
+                    let iova_page = iova + (i as u64) * 4096;
+                    self.page_table.unmap_page(ctx, iova_page);
+                }
+                self.iova.free(iova, size);
+                return Err(e);
+            }
+        };
         *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL);
 
         // Flush context cache and IOTLB

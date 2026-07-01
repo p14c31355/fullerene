@@ -1,7 +1,7 @@
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::Ordering;
-use core::task::{Context, Poll};
+use core::task::{Context, Poll, Waker};
 
 use crate::vdso::layout::*;
 
@@ -48,6 +48,12 @@ pub fn vdso_call_blocking(syscall_num: u64, args: [u64; 6]) -> u64 {
 }
 
 /// Non-blocking try: submit and check once.
+///
+/// If the kernel has not completed the request by the time we poll, the slot
+/// is **leaked** (left in `VDSO_PENDING`) because there is no safe way to
+/// revoke a request once it is visible to the kernel.  Prefer
+/// [`vdso_call_blocking`] or [`vdso_call_async`] when the result must be
+/// collected.
 pub fn vdso_try_call(syscall_num: u64, args: [u64; 6]) -> Option<u64> {
     let page = vdso()?;
     let slot = page.try_claim_slot()?;
@@ -58,15 +64,23 @@ pub fn vdso_try_call(syscall_num: u64, args: [u64; 6]) -> Option<u64> {
 // ── Async calls ──────────────────────────────────────────────────
 
 /// Future returned by `vdso_call_async`.
+///
+/// **Cancellation safety**: dropping a `VdsoFuture` that has already
+/// submitted a request (`VDSO_PENDING` or `VDSO_COMPLETE`) **leaks** the
+/// request slot — the ring entry is never reclaimed.  This is an inherent
+/// limitation of the VDSO protocol: once a request is visible to the kernel
+/// there is no safe way to revoke it.  Avoid dropping the future after the
+/// first `poll` returns `Pending`.
 pub struct VdsoFuture {
     slot: Option<usize>,
     syscall_num: u64,
     args: [u64; 6],
+    waker: Option<Waker>,
 }
 
 impl VdsoFuture {
     pub fn new(syscall_num: u64, args: [u64; 6]) -> Self {
-        VdsoFuture { slot: None, syscall_num, args }
+        VdsoFuture { slot: None, syscall_num, args, waker: None }
     }
 }
 
@@ -75,8 +89,8 @@ impl Drop for VdsoFuture {
         if let Some(slot) = self.slot {
             if let Some(page) = vdso() {
                 // Only reset to FREE if still VDSO_CLAIMED (not yet submitted).
-                // If CAS fails, the kernel may be processing this slot;
-                // leave it in its current state.
+                // If CAS fails, the slot is VDSO_PENDING or VDSO_COMPLETE and
+                // cannot be safely reclaimed — see struct-level docs.
                 let _ = page.requests[slot].state.compare_exchange_weak(
                     VDSO_CLAIMED, VDSO_FREE, Ordering::AcqRel, Ordering::Relaxed,
                 );
@@ -120,14 +134,14 @@ impl Future for VdsoFuture {
         match page.poll_completion(slot) {
             Some(result) => {
                 this.slot = None;
+                this.waker = None;
                 Poll::Ready(result)
             }
             None => {
-                // Not yet complete.  The kernel processes VDSO requests
-                // in its idle loop; once completed, the slot state
-                // transitions to VDSO_COMPLETE.  We return Pending and
-                // rely on the executor to re-poll us (e.g. on timer tick).
-                // TODO: wire real waker notification from kernel completion path.
+                // Store the waker so a future kernel notification path can
+                // wake the task.  Currently unused — the executor must
+                // re-poll (e.g. on timer tick).
+                this.waker = Some(cx.waker().clone());
                 Poll::Pending
             }
         }
