@@ -10,7 +10,12 @@ const BIOS_ROM_START: u64 = 0x0000_0000_000E_0000;
 const BIOS_ROM_END: u64 = 0x0000_0000_000F_FFFF;
 
 fn phys_to_virt(phys: u64) -> usize {
-    (phys + crate::iommu::PHYS_TO_VIRT.load(core::sync::atomic::Ordering::Relaxed)) as usize
+    let offset = crate::iommu::PHYS_TO_VIRT.load(core::sync::atomic::Ordering::Relaxed);
+    // If the addition would overflow, the physical address is invalid
+    // (>= 128 TB with the standard offset).  Return 0 so the caller
+    // either gets a page fault (preferable) or finds corrupt data and
+    // bails out — cannot hang the bus.
+    phys.checked_add(offset).unwrap_or(0) as usize
 }
 
 fn read_u8(addr: usize) -> u8 {
@@ -37,6 +42,10 @@ fn find_rsdp_in_range(start: u64, len: u64) -> Option<u64> {
     let mut addr = start;
     while addr < start + len {
         let virt = phys_to_virt(addr);
+        if virt == 0 {
+            addr += 16;
+            continue;
+        }
         let sig = unsafe { *(virt as *const [u8; 8]) };
         if &sig == RSDP_SIG {
             let cksum_len = if read_u8(virt + 15) >= 2 { 36 } else { 20 };
@@ -68,6 +77,9 @@ pub fn find_rsdp_from_addr(addr: u64) -> bool {
         return false;
     }
     let virt = phys_to_virt(addr);
+    if virt == 0 {
+        return false;
+    }
     let sig = unsafe { *(virt as *const [u8; 8]) };
     if &sig != RSDP_SIG {
         return false;
@@ -79,6 +91,9 @@ pub fn find_rsdp_from_addr(addr: u64) -> bool {
 
 pub fn get_xsdt_address(rsdp_phys: u64) -> Option<u64> {
     let virt = phys_to_virt(rsdp_phys);
+    if virt == 0 {
+        return None;
+    }
     let rev = read_u8(virt + 15);
     if rev >= 2 {
         let xsdt = read_u64(virt + 24);
@@ -91,12 +106,20 @@ pub fn get_xsdt_address(rsdp_phys: u64) -> Option<u64> {
 
 fn find_table(xsdt_phys: u64, signature: &[u8; 4]) -> Option<u64> {
     let virt = phys_to_virt(xsdt_phys);
+    if virt == 0 {
+        return None;
+    }
     let length = read_u32(virt + 4) as usize;
+    // Sanity: XSDT must be at least 44 bytes (36 header + 8 for one entry) and at most 128KB
+    if length < 44 || length > 128 * 1024 {
+        return None;
+    }
     let entry_count = (length - 36) / 8;
     for i in 0..entry_count {
         let entry_phys = read_u64(virt + 36 + i * 8);
         if entry_phys == 0 { continue; }
         let entry_virt = phys_to_virt(entry_phys);
+        if entry_virt == 0 { continue; }
         let sig = unsafe { *(entry_virt as *const [u8; 4]) };
         if &sig == signature {
             return Some(entry_phys);
@@ -106,7 +129,11 @@ fn find_table(xsdt_phys: u64, signature: &[u8; 4]) -> Option<u64> {
 }
 
 fn read_table_len(phys: u64) -> usize {
-    read_u32(phys_to_virt(phys) + 4) as usize
+    let virt = phys_to_virt(phys);
+    if virt == 0 {
+        return 0;
+    }
+    read_u32(virt + 4) as usize
 }
 
 // ── Public structures exposed for the engine ─────────────────────
@@ -130,7 +157,14 @@ pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
     let xsdt_phys = get_xsdt_address(rsdp_phys)?;
     let dmar_phys = find_table(xsdt_phys, DMAR_SIG)?;
     let dmar_virt = phys_to_virt(dmar_phys);
+    if dmar_virt == 0 {
+        return None;
+    }
     let length = read_table_len(dmar_phys);
+    // Sanity: DMAR table must be at least 48 bytes and at most 1MB
+    if length < 48 || length > 1024 * 1024 {
+        return None;
+    }
 
     let host_address_width = read_u8(dmar_virt + 36);
     // flags at offset 37

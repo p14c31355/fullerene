@@ -11,6 +11,7 @@ use crate::pci::PciScanner;
 use vtd::VtdRegisters;
 use table::{IommuPageTable, IommuRootTable};
 
+
 // ── IOVA Allocator ──────────────────────────────────────────────────
 
 struct IovaInterval {
