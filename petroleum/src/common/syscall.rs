@@ -108,7 +108,47 @@ fn vdso_available() -> bool {
     crate::vdso::user::vdso_ptr_initialized()
 }
 
-/// Raw syscall: tries VDSO first (no trap), falls back to `syscall` instruction.
+/// List of syscalls that are safe for VDSO fast-path (no blocking).
+/// Blocking calls like read/write/sleep must use the real `syscall` instruction
+/// so the kernel can preempt the caller.
+const VDSO_SAFE_SYSCALLS: &[SyscallNumber] = &[
+    SyscallNumber::Uptime,
+    SyscallNumber::GetPid,
+];
+
+fn is_vdso_safe(syscall_num: u64) -> bool {
+    VDSO_SAFE_SYSCALLS.iter().any(|&n| n as u64 == syscall_num)
+}
+
+/// Execute a raw `syscall` instruction (always traps to kernel).
+#[inline]
+unsafe fn syscall_insn(
+    syscall_num: u64,
+    arg1: u64,
+    arg2: u64,
+    arg3: u64,
+    arg4: u64,
+    arg5: u64,
+    arg6: u64,
+) -> u64 {
+    let result: u64;
+    core::arch::asm!(
+        "syscall",
+        in("rax") syscall_num,
+        in("rdi") arg1,
+        in("rsi") arg2,
+        in("rdx") arg3,
+        in("r10") arg4,
+        in("r8") arg5,
+        in("r9") arg6,
+        lateout("rax") result,
+        out("rcx") _,
+        out("r11") _,
+    );
+    result
+}
+
+/// Raw syscall: uses VDSO for non-blocking queries, `syscall` instruction otherwise.
 #[inline]
 pub unsafe fn syscall(
     syscall_num: u64,
@@ -119,28 +159,12 @@ pub unsafe fn syscall(
     arg5: u64,
     arg6: u64,
 ) -> u64 {
-    if vdso_available() {
-        // VDSO path: zero-trap syscall via shared page
+    if vdso_available() && is_vdso_safe(syscall_num) {
+        // VDSO path: zero-trap syscall via shared page (non-blocking only)
         crate::vdso::user::vdso_call_blocking(syscall_num, [arg1, arg2, arg3, arg4, arg5, arg6])
     } else {
-        // Fallback: traditional syscall instruction
-        let result: u64;
-        unsafe {
-            core::arch::asm!(
-                "syscall",
-                in("rax") syscall_num,
-                in("rdi") arg1,
-                in("rsi") arg2,
-                in("rdx") arg3,
-                in("r10") arg4,
-                in("r8") arg5,
-                in("r9") arg6,
-                lateout("rax") result,
-                out("rcx") _,
-                out("r11") _,
-            );
-        }
-        result
+        // Fallback: traditional syscall instruction (traps to kernel)
+        syscall_insn(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
     }
 }
 

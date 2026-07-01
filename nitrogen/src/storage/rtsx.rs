@@ -155,6 +155,7 @@ impl RtsxController {
     // ── PPBUF data transfer ───────────────────────────────────
 
     fn ppbuf_read(&self, buf: &mut [u8]) {
+        assert!(buf.len() <= 512, "RTSX: ppbuf read size exceeds 512 bytes");
         for (i, chunk) in buf.chunks_mut(4).enumerate() {
             let val = unsafe { ptr::read_volatile(self.mmio.add(PPBUF_BASE + i * 4) as *const u32) };
             for (j, b) in chunk.iter_mut().enumerate().take(4) {
@@ -164,6 +165,7 @@ impl RtsxController {
     }
 
     fn ppbuf_write(&self, buf: &[u8]) {
+        assert!(buf.len() <= 512, "RTSX: ppbuf write size exceeds 512 bytes");
         for (i, chunk) in buf.chunks(4).enumerate() {
             let mut val: u32 = 0;
             for (j, &b) in chunk.iter().enumerate().take(4) {

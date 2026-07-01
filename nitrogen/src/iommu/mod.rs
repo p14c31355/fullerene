@@ -217,6 +217,9 @@ impl IommuEngine {
         };
         *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL);
 
+        // Ensure page table and context entry writes are committed before invalidating caches
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
+
         // Flush context cache and IOTLB
         self.registers.context_cache_invalidate_domain(self.page_table.domain_id());
         self.registers.iotlb_domain_invalidate(self.page_table.domain_id());
@@ -283,6 +286,10 @@ pub fn init(
     phys_to_virt_fn: fn(u64) -> usize,
     ctx: &dyn DriverContext,
 ) -> Result<(), &'static str> {
+    // Set PHYS_TO_VIRT before any ACPI parsing so the mapping is consistent.
+    let mapper_offset = (phys_to_virt_fn)(0) as u64;
+    PHYS_TO_VIRT.store(mapper_offset, core::sync::atomic::Ordering::Relaxed);
+
     let rsdp = if rsdp_phys != 0 {
         if !acpi::find_rsdp_from_addr(rsdp_phys) {
             return Err("Invalid RSDP address");
@@ -291,10 +298,6 @@ pub fn init(
     } else {
         acpi::find_rsdp().ok_or("RSDP not found")?
     };
-
-    // Set PHYS_TO_VIRT before any ACPI parsing so the mapping is consistent.
-    let mapper_offset = (phys_to_virt_fn)(0) as u64;
-    PHYS_TO_VIRT.store(mapper_offset, core::sync::atomic::Ordering::Relaxed);
 
     let (xsdt_phys, rsdt_phys) = acpi::get_sdt_addresses(rsdp).ok_or("XSDT/RSDT not found")?;
     let dmar_phys = acpi::find_table(xsdt_phys, b"DMAR")

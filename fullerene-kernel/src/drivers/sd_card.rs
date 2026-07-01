@@ -70,11 +70,22 @@ pub fn init() {
 /// Safe to call at any time — returns an error instead of hanging.
 /// The system continues booting even if this fails.
 pub fn probe_and_mount() -> bool {
-    if SD_PROBED.load(Ordering::Acquire) {
-        klog_fmt!("SD card: already mounted\n");
+    // Atomically mark mount as in-progress to prevent concurrent re-entry.
+    if SD_PROBED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        klog_fmt!("SD card: already mounted or mount in progress\n");
         return true;
     }
 
+    let ok = probe_and_mount_impl();
+
+    if !ok {
+        // Allow future retry on failure.
+        SD_PROBED.store(false, Ordering::Release);
+    }
+    ok
+}
+
+fn probe_and_mount_impl() -> bool {
     if !nitrogen::storage::rtsx::is_present() {
         klog_fmt!("SD card: no controller\n");
         return false;
@@ -121,7 +132,6 @@ pub fn probe_and_mount() -> bool {
                     mount_point: mp.clone(),
                 });
                 SD_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
-                SD_PROBED.store(true, Ordering::Relaxed);
                 klog_fmt!("SD card: mounted at {}\n", mp);
                 true
             } else {

@@ -270,9 +270,16 @@ impl XhciContext {
             // Halt the running controller before reconfiguring core registers
             let op = &self.registers.op;
             op.set_usbcmd(op.usbcmd() & !USBCMD_RS); // Clear RS to halt
+            let mut halted = false;
             for _ in 0..200_000 {
-                if op.usbsts() & USBSTS_HCH != 0 { break; }
+                if op.usbsts() & USBSTS_HCH != 0 {
+                    halted = true;
+                    break;
+                }
                 super::port::delay_us(100);
+            }
+            if !halted {
+                return Err("xHCI: failed to halt running controller before reconfiguration");
             }
             self.configure_before_start();
             self.setup_erst()?;
