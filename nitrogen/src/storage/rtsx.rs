@@ -609,26 +609,29 @@ pub fn init(ctx: &dyn DriverContext) {
                 log::info!("RTSX: mapping MMIO at {:#x} size {} anyway", bar0_addr, bar0_size);
             }
 
-            // Configure the upstream bridge's memory window to cover BAR0.
+            // Configure the upstream bridge's 32-bit memory window to cover BAR0.
+            // The 32-bit window at config offset 0x20 cannot address above 4GB.
             if let Some(ref bridge) = upstream_bridge {
-                let base_reg = PciConfigSpace::read_config_dword(
-                    bridge.bus, bridge.device, bridge.function, 0x20);
-                let mem_base = base_reg as u16;
-                let mem_limit = (base_reg >> 16) as u16;
-                let bar_top = bar0_addr + bar0_size as u64 - 1;
-                let need_base = ((bar0_addr >> 16) & 0xFFF0) as u16;
-                let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
+                if bar0_addr + bar0_size as u64 <= 0x1_0000_0000 {
+                    let base_reg = PciConfigSpace::read_config_dword(
+                        bridge.bus, bridge.device, bridge.function, 0x20);
+                    let mem_base = base_reg as u16;
+                    let mem_limit = (base_reg >> 16) as u16;
+                    let bar_top = bar0_addr + bar0_size as u64 - 1;
+                    let need_base = ((bar0_addr >> 16) & 0xFFF0) as u16;
+                    let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
 
-                if mem_base != need_base || mem_limit != need_limit {
-                    log::info!("RTSX: bridge window {:#06x}-{:#06x} needs {:#06x}-{:#06x}",
-                        mem_base, mem_limit, need_base, need_limit);
-                    let new_win = (need_limit as u32) << 16 | need_base as u32;
-                    PciConfigSpace::write_config_dword_raw(
-                        bridge.bus, bridge.device, bridge.function, 0x20, new_win);
-                    log::info!("RTSX: bridge window updated");
-                } else {
-                    log::info!("RTSX: bridge window OK ({:#06x}-{:#06x})",
-                        mem_base, mem_limit);
+                    if mem_base != need_base || mem_limit != need_limit {
+                        log::info!("RTSX: bridge window {:#06x}-{:#06x} needs {:#06x}-{:#06x}",
+                            mem_base, mem_limit, need_base, need_limit);
+                        let new_win = (need_limit as u32) << 16 | need_base as u32;
+                        PciConfigSpace::write_config_dword_raw(
+                            bridge.bus, bridge.device, bridge.function, 0x20, new_win);
+                        log::info!("RTSX: bridge window updated");
+                    } else {
+                        log::info!("RTSX: bridge window OK ({:#06x}-{:#06x})",
+                            mem_base, mem_limit);
+                    }
                 }
             }
 

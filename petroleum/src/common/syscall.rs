@@ -108,18 +108,6 @@ fn vdso_available() -> bool {
     crate::vdso::user::vdso_ptr_initialized()
 }
 
-/// List of syscalls that are safe for VDSO fast-path (no blocking).
-/// Blocking calls like read/write/sleep must use the real `syscall` instruction
-/// so the kernel can preempt the caller.
-const VDSO_SAFE_SYSCALLS: &[SyscallNumber] = &[
-    SyscallNumber::Uptime,
-    SyscallNumber::GetPid,
-];
-
-fn is_vdso_safe(syscall_num: u64) -> bool {
-    VDSO_SAFE_SYSCALLS.iter().any(|&n| n as u64 == syscall_num)
-}
-
 /// Execute a raw `syscall` instruction (always traps to kernel).
 #[inline]
 unsafe fn syscall_insn(
@@ -159,13 +147,19 @@ pub unsafe fn syscall(
     arg5: u64,
     arg6: u64,
 ) -> u64 {
-    if vdso_available() && is_vdso_safe(syscall_num) {
-        // VDSO path: zero-trap syscall via shared page (non-blocking only)
-        crate::vdso::user::vdso_call_blocking(syscall_num, [arg1, arg2, arg3, arg4, arg5, arg6])
-    } else {
-        // Fallback: traditional syscall instruction (traps to kernel)
-        syscall_insn(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
+    if vdso_available() {
+        // Truly zero-overhead: read directly from VDSO page, no ring submission.
+        if syscall_num == SyscallNumber::Uptime as u64 {
+            if arg1 != 0 {
+                unsafe { *(arg1 as *mut u64) = crate::vdso::user::vdso_uptime_us(); }
+                return 0;
+            }
+        } else if syscall_num == SyscallNumber::GetPid as u64 {
+            return crate::vdso::user::vdso_pid();
+        }
     }
+    // Fallback: traditional syscall instruction (traps to kernel)
+    syscall_insn(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
 }
 
 /// Simple write syscall wrapper
