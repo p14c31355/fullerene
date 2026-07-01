@@ -81,7 +81,7 @@ pub fn scheduler_loop() -> ! {
         // VDSO: update time metadata for all processes
         let now_us = if solvent::get_tsc_per_ms() > 0 {
             let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-            (tsc / solvent::get_tsc_per_ms()).saturating_mul(1000)
+            (tsc as u128 * 1000 / solvent::get_tsc_per_ms() as u128) as u64
         } else {
             crate::interrupts::TICK_COUNTER
                 .load(core::sync::atomic::Ordering::Relaxed)
