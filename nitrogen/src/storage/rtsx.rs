@@ -289,7 +289,7 @@ impl RtsxController {
     }
 
     fn sd_acmd(&self, acmd: u8, arg: u32, rsp_type: u8) -> Result<u32, &'static str> {
-        let r1 = self.sd_cmd(CMD55_APP_CMD, 0, rsp_type, 0)?;
+        let r1 = self.sd_cmd(CMD55_APP_CMD, 0, SD_RSP_TYPE_R1, 0)?;
         if (r1 & (1 << 5)) == 0 {
             return Err("APP_CMD not accepted");
         }
