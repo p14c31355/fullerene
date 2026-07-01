@@ -120,10 +120,7 @@ impl Future for VdsoFuture {
                         s
                     }
                     None => {
-                        // All slots full — return Pending without waking.
-                        // The kernel's periodic poll_all_vdso_rings() will
-                        // eventually free a slot, and the executor will
-                        // re-poll us on the next scheduler tick.
+                        this.waker = Some(cx.waker().clone());
                         return Poll::Pending;
                     }
                 }

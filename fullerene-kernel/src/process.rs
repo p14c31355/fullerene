@@ -439,6 +439,11 @@ pub fn create_process(
         let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
             petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
             petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            if let Some(ref page_table) = process.page_table {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
             petroleum::common::logging::SystemError::FrameAllocationFailed
         })?;
         drop(fa_lock);

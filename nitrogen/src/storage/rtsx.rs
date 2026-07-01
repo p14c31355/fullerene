@@ -610,6 +610,8 @@ pub fn init(ctx: &dyn DriverContext) {
             }
 
             // Configure the upstream bridge's 32-bit memory window to cover BAR0.
+            // Expand the existing window (using min/max) rather than overwriting,
+            // so other devices behind the bridge are not broken.
             // The 32-bit window at config offset 0x20 cannot address above 4GB.
             if let Some(ref bridge) = upstream_bridge {
                 if bar0_addr + bar0_size as u64 <= 0x1_0000_0000 {
@@ -621,16 +623,16 @@ pub fn init(ctx: &dyn DriverContext) {
                     let need_base = ((bar0_addr >> 16) & 0xFFF0) as u16;
                     let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
 
-                    if mem_base != need_base || mem_limit != need_limit {
-                        log::info!("RTSX: bridge window {:#06x}-{:#06x} needs {:#06x}-{:#06x}",
-                            mem_base, mem_limit, need_base, need_limit);
-                        let new_win = (need_limit as u32) << 16 | need_base as u32;
+                    let window_enabled = mem_base <= mem_limit;
+                    let already_covered = window_enabled && mem_base <= need_base && mem_limit >= need_limit;
+                    if !already_covered {
+                        let new_base = if window_enabled { mem_base.min(need_base) } else { need_base };
+                        let new_limit = if window_enabled { mem_limit.max(need_limit) } else { need_limit };
+                        log::info!("RTSX: bridge window {:#06x}-{:#06x} expanded to {:#06x}-{:#06x}",
+                            mem_base, mem_limit, new_base, new_limit);
+                        let new_win = (new_limit as u32) << 16 | new_base as u32;
                         PciConfigSpace::write_config_dword_raw(
                             bridge.bus, bridge.device, bridge.function, 0x20, new_win);
-                        log::info!("RTSX: bridge window updated");
-                    } else {
-                        log::info!("RTSX: bridge window OK ({:#06x}-{:#06x})",
-                            mem_base, mem_limit);
                     }
                 }
             }

@@ -526,8 +526,6 @@ impl XhciContext {
                 .map_err(|_| "no ERST page")?;
             self.erst_phys = Some(phys);
             phys
-            self.erst_phys = Some(phys);
-            phys
         };
         let erst_virt = ctx.phys_to_virt(erst_phys) as *mut ErstEntry;
         unsafe {

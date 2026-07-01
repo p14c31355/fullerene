@@ -13,6 +13,12 @@ pub struct VdsoPageRef {
     pub phys: PhysFrame<Size4KiB>,
 }
 
+impl Drop for VdsoPageRef {
+    fn drop(&mut self) {
+        crate::memory_management::deallocate_process_page_table(self.phys);
+    }
+}
+
 pub fn create_vdso_page(
     process_pt: &mut impl PageTableHelper,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
