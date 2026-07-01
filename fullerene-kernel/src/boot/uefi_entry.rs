@@ -94,6 +94,16 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         b"DEBUG: [uefi_entry] system_table dereferenced successfully\n",
     );
 
+    // ACPI RSDP discovery from UEFI Configuration Table.
+    // Store the physical RSDP address before the world switch so it
+    // survives page-table changes.
+    if let Some(rsdp) = unsafe { petroleum::common::uefi::find_rsdp_from_uefi(system_table_virt as usize) } {
+        crate::boot::UEFI_RSDP_ADDRESS.store(rsdp, core::sync::atomic::Ordering::Relaxed);
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] RSDP found via UEFI Config Table\n");
+    } else {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] RSDP not found in UEFI Config Table\n");
+    }
+
     let mut ctx = UefiInitContext {
         args_ptr: captured_args_ptr,
         system_table: system_table_ref,

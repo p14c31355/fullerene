@@ -582,6 +582,8 @@ mod tests {
         fn map_page(&self, _virt: usize, _phys: usize, _flags: crate::PageFlags) -> Result<(), crate::DriverContextError> { Ok(()) }
         fn free_frame(&self, _phys: u64) {}
         fn free_contiguous_frames(&self, _phys: u64, _count: usize) {}
+        fn dma_map(&self, _device_id: u16, _phys: u64, _size: usize) -> Result<u64, crate::DriverContextError> { Ok(_phys) }
+        fn dma_unmap(&self, _iova: u64, _size: usize) {}
     }
 
     #[test]

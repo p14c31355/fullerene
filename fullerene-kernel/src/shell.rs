@@ -257,6 +257,21 @@ fn register_nozzle_hooks() {
     .install();
 
     // ── Install sys info / control hooks ───────────────────────
+    // Register SD mount hook for direct access (bypasses info hook)
+    nozzle::sys_hooks::SD_MOUNT_HOOK.lock().replace(|ctx: &mut nozzle::CommandContext| {
+        use crate::drivers::sd_card;
+        ctx.terminal.write_str("sd_mount: hook called\n");
+        if sd_card::probe_and_mount() {
+            ctx.terminal.write_str("sd_mount: OK\n");
+            let drives = sd_card::SD_DRIVES.lock();
+            for d in drives.iter() {
+                tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
+            }
+        } else {
+            ctx.terminal.write_str("sd_mount: FAILED\n");
+        }
+    });
+
     nozzle::sys_hooks::SysHooks {
         info: Some(|ctx, cmd| match cmd {
         "mem" => {
@@ -442,6 +457,18 @@ fn register_nozzle_hooks() {
                         disk.ctrl_type, disk.dev_addr, disk.ep_out, disk.ep_in, disk.block_size, disk.total_blocks);
                 }
             });
+        }
+        "sd_mount" => {
+            tstr!(ctx.terminal, "SD card: attempting probe and mount...");
+            if crate::drivers::sd_card::probe_and_mount() {
+                tstr!(ctx.terminal, "SD card: mounted successfully");
+                let drives = crate::drivers::sd_card::SD_DRIVES.lock();
+                for d in drives.iter() {
+                    tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
+                }
+            } else {
+                tstr!(ctx.terminal, "SD card: probe/mount failed (no card or hardware error)");
+            }
         }
         "pci" => {
             use alloc::format;

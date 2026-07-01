@@ -91,6 +91,26 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::PciBarsReady);
             Ok(())
         }),
+        petroleum::init_step!("IOMMU", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step start\n");
+            // Try UEFI Configuration Table RSDP first, then BootContext, then legacy scan
+            let uefi_rsdp = crate::boot::UEFI_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
+            let rsdp = if uefi_rsdp != 0 {
+                uefi_rsdp
+            } else {
+                crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0)
+            };
+            let phys_to_virt = |phys: u64| -> usize {
+                (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize
+            };
+            let ctx = super::driver_context_impl::KernelDriverContext;
+            match nitrogen::iommu::init(rsdp, phys_to_virt, &ctx) {
+                Ok(()) => log::info!("IOMMU initialized"),
+                Err(e) => log::warn!("IOMMU not available: {} (enable VT-d in BIOS/UEFI if available)", e),
+            }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");
+            Ok(())
+        }),
         petroleum::init_step!("Graphics", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Graphics step start\n");
             crate::graphics::init_graphics();
@@ -160,6 +180,11 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("usb_storage", || {
             crate::drivers::usb_storage::init();
             petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
+            Ok(())
+        }),
+        petroleum::init_step!("sd_card", || {
+            crate::drivers::sd_card::init();
+            petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
             Ok(())
         }),
         petroleum::init_step!("gui", || {

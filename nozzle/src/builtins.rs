@@ -282,6 +282,17 @@ pub fn cmd_usb_info(ctx: &mut CommandContext) -> bool {
     true
 }
 
+/// `sd_mount` — probe SD card
+pub fn cmd_sd_mount(ctx: &mut CommandContext) -> bool {
+    let h = crate::sys_hooks::SD_MOUNT_HOOK.lock().clone();
+    if let Some(f) = h {
+        f(ctx);
+    } else {
+        ctx.terminal.write_str("sd_mount: hook not registered\n");
+    }
+    true
+}
+
 /// `hello_linux` — launch the built-in Linux test binary
 pub fn cmd_hello_linux(ctx: &mut CommandContext) -> bool {
     crate::sys_hooks::call_sys_info_hook(ctx, "hello_linux");

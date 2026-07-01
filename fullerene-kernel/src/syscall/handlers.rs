@@ -8,6 +8,7 @@ use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use petroleum::common::memory::{user_slice, user_slice_mut};
+use petroleum::page_table::types::PageTableHelper;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
@@ -352,6 +353,40 @@ fn syscall_fork() -> SyscallResult {
 
     let child_pid = process::PROCESS_MANAGER.allocate_pid().0 as usize;
 
+    // Remove inherited VDSO mapping (parent may have one at VDSO_USER_BASE)
+    let _ = child_page_table.unmap_page(petroleum::vdso::VDSO_USER_BASE as usize);
+
+    // Create child VDSO page
+    let child_vdso = if parent_context.is_user {
+        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
+        let fa = match fa_lock.as_mut() {
+            Some(fa) => fa,
+            None => {
+                drop(fa_lock);
+                petroleum::common::memory::deallocate_layout(kernel_stack_ptr, stack_layout);
+                crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+                return Err(SyscallError::OutOfMemory);
+            }
+        };
+        let vdso = crate::vdso::create_vdso_page(
+            &mut child_page_table,
+            fa,
+            child_pid as u64,
+        );
+        drop(fa_lock);
+        match vdso {
+            Ok(v) => Some(v),
+            Err(_) => {
+                let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+                petroleum::common::memory::deallocate_layout(kernel_stack_ptr, layout);
+                crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+                return Err(SyscallError::OutOfMemory);
+            }
+        }
+    } else {
+        None
+    };
+
     let mut child_process = Process {
         id: process::ProcessId(child_pid as u64),
         name: "child",
@@ -367,6 +402,7 @@ fn syscall_fork() -> SyscallResult {
         exit_code: None,
         parent_id: Some(current_pid),
         dispatch_mode: None,
+        vdso_page: child_vdso,
     };
 
     child_process.context.regs[0] = 0;
@@ -862,6 +898,7 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
         exit_code: None,
         parent_id: Some(current_pid),
         dispatch_mode: None,
+        vdso_page: None, // shares parent's VDSO via shared page table
     };
 
     thread_process.context.regs[0] = 0;

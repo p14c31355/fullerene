@@ -14,6 +14,7 @@ use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
 
 use crate::linux::runtime::DispatchMode;
+use crate::vdso::{VdsoPageRef, create_vdso_page};
 
 /// Maximum number of processes managed by the system
 const MAX_PROCESSES: usize = 64;
@@ -114,6 +115,8 @@ pub struct Process {
     pub task_data: u64,
     /// Runtime dispatch mode (Fullerene native, Linux ABI, etc.)
     pub dispatch_mode: Option<DispatchMode>,
+    /// Per-process VDSO page for no-interrupt syscalls
+    pub vdso_page: Option<VdsoPageRef>,
 }
 
 impl Process {
@@ -136,6 +139,7 @@ impl Process {
             parent_id: None, // Will be set by fork
             task_data: 0,
             dispatch_mode: None,
+            vdso_page: None,
         }
     }
 
@@ -369,6 +373,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
             parent_id: None,
             task_data: 0,
             dispatch_mode: None,
+            vdso_page: None,
         });
 
         // Take ownership of static process via Box::from_raw
@@ -408,19 +413,60 @@ pub fn create_process(
             })?;
         process.user_stack =
             VirtAddr::new(user_stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
-    }
 
-    // Create page table for the process
-    let page_table = match crate::memory_management::create_process_page_table() {
-        Ok(pt) => pt,
-        Err(e) => {
-            log::error!("Failed to create process page table: {:?}", e);
+        // Create VDSO page after page table creation
+        let page_table = match crate::memory_management::create_process_page_table() {
+            Ok(pt) => pt,
+            Err(e) => {
+                log::error!("Failed to create process page table: {:?}", e);
+                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                return Err(e);
+            }
+        };
+        let page_table_phys = page_table.current_page_table() as u64;
+        process.page_table_phys_addr = PhysAddr::new(page_table_phys);
+        process.page_table = Some(Box::new(page_table));
+
+        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
+        let fa = fa_lock.as_mut().ok_or_else(|| {
+            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
             petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            return Err(e);
-        }
-    };
-    process.page_table_phys_addr = PhysAddr::new(page_table.current_page_table() as u64);
-    process.page_table = Some(Box::new(page_table));
+            if let Some(ref page_table) = process.page_table {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
+            petroleum::common::logging::SystemError::InternalError
+        })?;
+        let pt: &mut petroleum::page_table::process::ProcessPageTable =
+            process.page_table.as_mut().unwrap();
+        let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
+            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            if let Some(ref page_table) = process.page_table {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
+            petroleum::common::logging::SystemError::FrameAllocationFailed
+        })?;
+        drop(fa_lock);
+        process.vdso_page = Some(vdso_ref);
+    } else {
+        // Create page table for the process (kernel process, no user stack)
+        let page_table = match crate::memory_management::create_process_page_table() {
+            Ok(pt) => pt,
+            Err(e) => {
+                log::error!("Failed to create process page table: {:?}", e);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                return Err(e);
+            }
+        };
+        let page_table_phys = page_table.current_page_table() as u64;
+        process.page_table_phys_addr = PhysAddr::new(page_table_phys);
+        process.page_table = Some(Box::new(page_table));
+    }
 
     process.init_context(kernel_stack_top);
 

@@ -21,6 +21,7 @@ pub mod page_table;
 pub mod serial;
 pub mod transition;
 pub mod uefi_helpers;
+pub mod vdso;
 pub mod vga_debug;
 pub mod virtio;
 pub use common::logging::{SystemError, SystemResult};

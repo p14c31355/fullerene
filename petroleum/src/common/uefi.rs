@@ -150,6 +150,43 @@ pub enum EfiMemoryType {
     EfiMaxMemoryType = 15,
 }
 
+/// GUID for ACPI 2.0/3.0 RSDP in UEFI Configuration Table
+pub const ACPI_20_TABLE_GUID: [u8; 16] = [
+    0x71, 0xE8, 0x68, 0x88, 0xF1, 0xE4, 0xD3, 0x11,
+    0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81,
+];
+/// GUID for ACPI 1.0 RSDP in UEFI Configuration Table
+pub const ACPI_10_TABLE_GUID: [u8; 16] = [
+    0x30, 0x2D, 0x9D, 0xEB, 0x88, 0x2D, 0xD3, 0x11,
+    0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D,
+];
+
+/// Find the ACPI RSDP physical address from the UEFI Configuration Table.
+///
+/// # Safety
+/// `system_table_virt` must point to a valid `EfiSystemTable` structure
+/// at an accessible virtual address.
+pub unsafe fn find_rsdp_from_uefi(system_table_virt: usize) -> Option<u64> {
+    let st = unsafe { &*(system_table_virt as *const EfiSystemTable) };
+    let n = st.number_of_table_entries;
+    let ct = st.configuration_table;
+    if ct.is_null() {
+        return None;
+    }
+    for i in 0..n {
+        let entry = unsafe { &*ct.add(i) };
+        if entry.vendor_guid == ACPI_20_TABLE_GUID
+            || entry.vendor_guid == ACPI_10_TABLE_GUID
+        {
+            let rsdp = entry.vendor_table as u64;
+            if rsdp != 0 {
+                return Some(rsdp);
+            }
+        }
+    }
+    None
+}
+
 /// GUID for EFI_LOADED_IMAGE_PROTOCOL (UEFI)
 pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: [u8; 16] = [
     0xa1, 0x31, 0x1b, 0x5b, 0x62, 0x95, 0xd2, 0x11, 0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b,

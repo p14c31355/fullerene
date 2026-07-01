@@ -273,6 +273,50 @@ impl PciDevice {
         }
     }
 
+    /// Disable ASPM (Active State Power Management) on the PCIe link.
+    ///
+    /// When ASPM L1 is enabled, the PCIe link may enter a deep sleep
+    /// state.  MMIO access to a device behind a sleeping link can hang
+    /// the CPU if the link does not wake correctly.  This method finds
+    /// the PCI Express capability (cap ID = 0x10) and clears the ASPM
+    /// control bits (bits 1:0) in the Link Control register.
+    pub fn disable_pcie_aspm(&self) {
+        let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
+        if cap_ptr == 0 {
+            return;
+        }
+        let mut off = cap_ptr;
+        let mut visited = [false; 256];
+        loop {
+            if off < 0x40 || off > 0xFC {
+                break;
+            }
+            if visited[off as usize] {
+                log::warn!("PCI: capability list cycle detected at offset {:#x}", off);
+                break;
+            }
+            visited[off as usize] = true;
+            let cap_id = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
+            if cap_id == 0x10 {
+                // PCI Express capability found
+                // Link Control register is at cap_offset + 0x10
+                let lnk_ctrl = PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 0x10);
+                let aspm = lnk_ctrl & 0x3;
+                if aspm != 0 {
+                    log::info!("PCI: disabling ASPM on {:02x}:{:02x}.{} (was {})",
+                        self.bus, self.device, self.function, aspm);
+                    PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, off + 0x10, lnk_ctrl & !0x3);
+                }
+                return;
+            }
+            let next = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
+            if next == 0 || next as usize == off as usize {
+                break;
+            }
+            off = next;
+        }
+    }
+
     pub fn detect_bar_size(&self, bar_index: u8) -> u32 {
         let offset = 0x10 + (bar_index * 4);
         let original_value =

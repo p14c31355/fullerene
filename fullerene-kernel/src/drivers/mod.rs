@@ -1,4 +1,5 @@
 pub mod fat;
+pub mod sd_card;
 pub mod usb_storage;
 pub mod virtio_gpu;
 
