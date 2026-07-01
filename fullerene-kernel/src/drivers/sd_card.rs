@@ -120,7 +120,7 @@ fn probe_and_mount_impl() -> bool {
         total_blocks: info.total_blocks,
     };
 
-    let mp = alloc::format!("/mnt/sdcard-1");
+    let mp = alloc::string::String::from("/mnt/sdcard-1");
     match FatFileSystem::from_device(Box::new(bdev)) {
         Ok(fs) => {
             let _ = crate::vfs::mkdir(&mp);
