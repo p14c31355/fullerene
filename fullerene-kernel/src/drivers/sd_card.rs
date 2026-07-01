@@ -128,7 +128,7 @@ fn probe_and_mount_impl() -> bool {
                 .is_some_and(|r| r.is_ok())
             {
                 SD_DRIVES.lock().push(SdDrive {
-                    name: alloc::format!("SD Card"),
+                    name: alloc::string::String::from("SD Card"),
                     mount_point: mp.clone(),
                 });
                 SD_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);
