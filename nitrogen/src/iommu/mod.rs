@@ -140,20 +140,27 @@ impl IommuEngine {
         Ok(())
     }
 
-    pub fn enable(&self) {
+    pub fn enable(&self) -> Result<(), &'static str> {
         let regs = &self.registers;
 
         // 1. Set root table address
         regs.set_root_table(self.root_table.root_table_phys());
         regs.set_root_table_ptr();
-        regs.wait_for_root_table_ptr();
+        if !regs.wait_for_root_table_ptr() {
+            return Err("IOMMU: root table pointer not set");
+        }
 
         // 2. Flush write buffer
-        regs.write_buffer_flush();
+        if !regs.write_buffer_flush() {
+            return Err("IOMMU: write buffer flush failed");
+        }
 
         // 3. Enable DMA remapping
         regs.enable_translation();
-        regs.wait_for_translation_enable();
+        if !regs.wait_for_translation_enable() {
+            return Err("IOMMU: translation enable failed");
+        }
+        Ok(())
     }
 
     pub fn dma_map(
@@ -336,7 +343,7 @@ pub fn init(
     }
 
     // Enable the IOMMU
-    engine.enable();
+    engine.enable().map_err(|_| "IOMMU enable failed")?;
 
     *GLOBAL_IOMMU.lock() = Some(engine);
 

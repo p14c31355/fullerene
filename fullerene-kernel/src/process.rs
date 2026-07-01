@@ -432,6 +432,11 @@ pub fn create_process(
         let fa = fa_lock.as_mut().ok_or_else(|| {
             petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
             petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            if let Some(ref page_table) = process.page_table {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
             petroleum::common::logging::SystemError::InternalError
         })?;
         let pt: &mut petroleum::page_table::process::ProcessPageTable =

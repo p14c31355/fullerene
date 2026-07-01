@@ -138,38 +138,42 @@ impl VtdRegisters {
 
     const WAIT_TIMEOUT: u32 = 1_000_000;
 
-    pub fn wait_for_root_table_ptr(&self) {
+    pub fn wait_for_root_table_ptr(&self) -> bool {
         for _ in 0..Self::WAIT_TIMEOUT {
-            if self.gsts() & GSTS_RTPS != 0 { return; }
+            if self.gsts() & GSTS_RTPS != 0 { return true; }
             core::hint::spin_loop();
         }
         log::warn!("IOMMU: wait_for_root_table_ptr timeout");
+        false
     }
 
-    pub fn wait_for_translation_enable(&self) {
+    pub fn wait_for_translation_enable(&self) -> bool {
         for _ in 0..Self::WAIT_TIMEOUT {
-            if self.gsts() & GSTS_TES != 0 { return; }
+            if self.gsts() & GSTS_TES != 0 { return true; }
             core::hint::spin_loop();
         }
         log::warn!("IOMMU: wait_for_translation_enable timeout");
+        false
     }
 
-    pub fn wait_for_translation_disable(&self) {
+    pub fn wait_for_translation_disable(&self) -> bool {
         for _ in 0..Self::WAIT_TIMEOUT {
-            if self.gsts() & GSTS_TES == 0 { return; }
+            if self.gsts() & GSTS_TES == 0 { return true; }
             core::hint::spin_loop();
         }
         log::warn!("IOMMU: wait_for_translation_disable timeout");
+        false
     }
 
-    pub fn write_buffer_flush(&self) {
+    pub fn write_buffer_flush(&self) -> bool {
         let cmd = self.gcmd();
         self.set_gcmd(cmd | GCMD_WBF);
         for _ in 0..Self::WAIT_TIMEOUT {
-            if self.gsts() & GSTS_WBFS != 0 { return; }
+            if self.gsts() & GSTS_WBFS != 0 { return true; }
             core::hint::spin_loop();
         }
         log::warn!("IOMMU: write_buffer_flush timeout");
+        false
     }
 
     pub fn iotlb_global_invalidate(&self) {
