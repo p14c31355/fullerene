@@ -91,7 +91,7 @@ impl Drop for VdsoFuture {
                 // Only reset to FREE if still VDSO_CLAIMED (not yet submitted).
                 // If CAS fails, the slot is VDSO_PENDING or VDSO_COMPLETE and
                 // cannot be safely reclaimed — see struct-level docs.
-                let _ = page.requests[slot].state.compare_exchange_weak(
+                let _ = page.requests[slot].state.compare_exchange(
                     VDSO_CLAIMED, VDSO_FREE, Ordering::AcqRel, Ordering::Relaxed,
                 );
             }
