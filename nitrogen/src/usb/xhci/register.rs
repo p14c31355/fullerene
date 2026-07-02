@@ -276,12 +276,14 @@ impl OperationalRegisters {
     }
     pub fn update_portsc(&self, port: u32, set: u32, clear: u32) {
         let off = OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE;
-        // Note: do NOT mask out RW1C bits here — they are write-1-to-clear,
-        // so writing 0 to them (as we do via read-modify-write) is harmless.
-        // Masking them would discard connection-change events (CSC=1) that
-        // arrived between the read and write, preventing the driver from
-        // ever seeing the port as connected.
-        self.0.write32(off, ((self.0.read32(off) & !clear) | set));
+        // CRITICAL: Mask out RW1C bits when reading to prevent accidental
+        // acknowledgment of status change events. RW1C bits (CSC, PEC, WRC,
+        // OCC, PRC, PLC, CEC) are write-1-to-clear, so if we read them as 1
+        // and write them back as 1, we inadvertently clear pending events.
+        // Only the explicitly requested set/clear operations should affect
+        // non-RW1C bits like PLS, PP, etc.
+        let current = self.0.read32(off) & !PORTSC_RW1C_MASK;
+        self.0.write32(off, ((current & !clear) | set));
     }
 }
 
@@ -674,11 +676,13 @@ mod tests {
         let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
         regs.update_portsc(0, PORTSC_PED, PORTSC_PP); // set PED, clear PP
 
-        // After update: PP cleared, PED set, RW1C bits should be cleared by the mask
+        // After update: PP cleared, PED set, RW1C bits should be PRESERVED (not cleared)
+        // because update_portsc masks them out during read to avoid accidental acknowledgment
         let val = regs.portsc(0).0;
         assert_eq!(val & PORTSC_PP, 0, "PP should be cleared");
         assert_ne!(val & PORTSC_PED, 0, "PED should be set");
-        assert_eq!(val & PORTSC_RW1C_MASK, 0, "RW1C bits should be masked out");
+        assert_ne!(val & PORTSC_CSC, 0, "CSC should be preserved (not accidentally cleared)");
+        assert_ne!(val & PORTSC_PEC, 0, "PEC should be preserved (not accidentally cleared)");
     }
 
     #[test]

@@ -353,6 +353,9 @@ impl XhciContext {
     /// Initialise all root-hub ports: ensure port power is on, kick
     /// link training via RxDetect, and wait for devices to appear
     /// (CCS=1).  This is called once after the controller starts.
+    ///
+    /// Recovery/power-cycle/RxDetect logic only runs for ports with CCS=0,
+    /// preserving already-connected devices (CCS=1).
     fn init_ports(&mut self) {
         let op = &self.registers.op;
         log::info!("xHCI: initialising {} ports", self.ports.n_ports);
@@ -372,9 +375,15 @@ impl XhciContext {
         // ── Port power-up ─────────────────────────────────────
         // Power-cycle USB 3.0 ports that already have PP=1 (clean restart).
         // Only do this when PPC (Port Power Control) is supported.
+        // IMPORTANT: Only power-cycle ports with CCS=0 to avoid disturbing
+        // already-connected devices.
         if self.ports.ppc {
             for port_idx in 0..self.ports.n_ports {
                 let ps = op.portsc(port_idx).0;
+                let has_ccs = (ps & PORTSC_CCS) != 0;
+                if has_ccs {
+                    continue;
+                }
                 if (ps & PORTSC_PP) != 0 {
                     let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
                     if is_usb3 {
@@ -392,17 +401,32 @@ impl XhciContext {
         (0..self.ports.n_ports).for_each(|p| self.log_portsc(p));
 
         // ── Exit Compliance mode + kick RxDetect ──────────────
+        // Only perform recovery on ports with CCS=0 to avoid disturbing
+        // already-connected devices.
         for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx);
+            if ps.ccs() {
+                continue;
+            }
             super::port::exit_compliance(op, port_idx);
         }
         const PLS_RXDETECT: u32 = 5 << 5;
         for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx);
+            if ps.ccs() {
+                continue;
+            }
             op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
         }
         super::port::delay_ms(200);
 
         // ── Wait for link training (up to ~2s per port) ───────
+        // Only wait for ports with CCS=0 (those we attempted to recover).
         for port_idx in 0..self.ports.n_ports {
+            if op.portsc(port_idx).ccs() {
+                log::info!("xHCI: port {} already has CCS=1", port_idx);
+                continue;
+            }
             let mut appeared = false;
             for _ in 0..200 {
                 super::port::delay_ms(10);
