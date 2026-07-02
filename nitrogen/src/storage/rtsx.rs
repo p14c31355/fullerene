@@ -232,12 +232,14 @@ impl RtsxController {
     fn sd_cmd(&self, cmd: u8, arg: u32, rsp_type: u8, data_len: u16) -> Result<u32, &'static str> {
         let mut ready = false;
         for i in 0..50_000 {
-            if (self.r8(SD_CMD_STATE) & 0x01) != 0 {
+            let state = self.r8(SD_CMD_STATE);
+            if state == 0xFF {
+                if i >= 1_000 {
+                    return Err("SD cmd: controller not responding");
+                }
+            } else if (state & 0x01) != 0 {
                 ready = true;
                 break;
-            }
-            if i == 1_000 && !self.mmio_alive() {
-                return Err("SD cmd: controller not responding");
             }
             core::hint::spin_loop();
         }
@@ -267,11 +269,12 @@ impl RtsxController {
         self.w8(SD_TRANSFER, SD_TRANSFER_START);
 
         for _ in 0..500_000 {
-            if (self.r8(SD_STAT1) & SD_TRANSFER_DONE) != 0 {
-                break;
-            }
-            if !self.mmio_alive() {
+            let stat1 = self.r8(SD_STAT1);
+            if stat1 == 0xFF && !self.mmio_alive() {
                 return Err("SD cmd: controller vanished during transfer");
+            }
+            if (stat1 & SD_TRANSFER_DONE) != 0 {
+                break;
             }
             core::hint::spin_loop();
         }
