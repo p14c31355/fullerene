@@ -191,31 +191,11 @@ impl RtsxController {
             return false;
         }
 
-        // Check PCIe Link Status to avoid MMIO reads on a down link.
-        // Link Capabilities/Status is at offset 0x6C (PCIe capability).
-        // Read link status register (offset 0x72, bits 13:12 = Negotiated Speed).
-        // On a down link this register reads as 0 or 0xFFFF.
-        let link_sts = crate::pci::PciConfigSpace::read_config_word(
-            self.device.bus, self.device.device, self.device.function, 0x72);
-        if link_sts == 0xFFFF || link_sts == 0x0000 {
-            log::warn!("RTSX: PCIe link appears down (link_sts={:#06x})", link_sts);
-            // Try to re-assert D0 and retry once
-            self.device.ensure_d0();
-            self.device.enable_memory_access();
-            for _ in 0..100_000 {
-                core::hint::spin_loop();
-            }
-            let link_sts2 = crate::pci::PciConfigSpace::read_config_word(
-                self.device.bus, self.device.device, self.device.function, 0x72);
-            if link_sts2 == 0xFFFF || link_sts2 == 0x0000 {
-                log::warn!("RTSX: PCIe link still down after D0 re-assert");
-                return false;
-            }
-            log::info!("RTSX: PCIe link recovered (link_sts={:#06x})", link_sts2);
-        }
-
         // First MMIO access must be a WRITE (posted) — PCIe reads
         // (non-posted) can hang if the link is in an unstable state.
+        // We have already verified the device exists via PCI config space
+        // and re-asserted D0.  Skip any MMIO reads during init_hardware;
+        // register writes are posted and cannot hang the bus.
         log::info!("RTSX: first MMIO write at {:p}+0x1C", self.mmio);
         self.w16(RTSX_MSI_EN, 0x0000);
 
@@ -223,12 +203,6 @@ impl RtsxController {
         for _ in 0..2000 {
             core::hint::spin_loop();
         }
-
-        // --- SKIP the MMIO read of RTSX_CFG ---
-        // An MMIO read on a device whose PCIe link is down will hang the
-        // CPU bus and there is no portable timeout mechanism.  We already
-        // verified the device via PCI config space above.  If the device
-        // is truly dead our subsequent SD commands will time out cleanly.
 
         // Skip soft-reset (RTSX_CFG bit 0). PCI config-space init
         // (ensure_d0, ASPM disable) already puts the device in a known
