@@ -208,18 +208,25 @@ impl XhciContext {
         // Phase 1: lightweight init without HCRST
         self.init_no_reset()?;
 
-        // Phase 2: if no port has CCS and no HSE, ports are ready
+        // Phase 2: always recover CCS=0 ports, even if others have CCS=1.
+        // Stopping a running controller in init_no_reset can lose USB 3.0
+        // PHY calibration; init_ports() handles WPR, PR, PP-toggle recovery.
+        // init_ports() skips ports that already have CCS=1, so it is safe
+        // to call unconditionally.
+        if self.registers.op.usbsts() & USBSTS_HSE != 0 {
+            log::warn!("xHCI: HSE after init_no_reset, clearing and recovering");
+            self.clear_hse_and_recover();
+        }
+        self.init_ports();
+
+        // If still no CCS after init_ports recovery, try full HCRST.
         let n_ports = self.ports.n_ports;
         let has_ccs = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
-        if has_ccs && self.registers.op.usbsts() & USBSTS_HSE == 0 {
+        if has_ccs {
             return Ok(());
         }
 
-        if self.registers.op.usbsts() & USBSTS_HSE != 0 {
-            log::warn!("xHCI: HSE after init_no_reset, trying full HCRST");
-        } else {
-            log::warn!("xHCI: init_no_reset produced no CCS=1, trying full HCRST");
-        }
+        log::warn!("xHCI: no CCS=1 after init_ports recovery, trying full HCRST");
         self.controller_reset()?;
         self.configure_before_start();
         self.setup_erst()?;
