@@ -313,25 +313,11 @@ impl RtsxController {
             return Err("controller disappeared from PCI bus");
         }
 
-        // Re-assert D0 to prevent PCIe link from entering L1 during
-        // the idle period that follows. Some chipsets hang on MMIO
-        // access after link transitions.
+        // Re-assert D0 and re-enable memory access before any MMIO.
+        // The PCIe link may have entered a lower power state since boot;
+        // re-programming the device's config space wakes it up.
         self.device.ensure_d0();
-
-        // Long delay for card power stabilization.
-        // Keep the PCIe link alive by reading config space periodically.
-        for i in 0..200 {
-            if i & 1 == 0 {
-                let v = crate::pci::PciConfigSpace::read_config_word(
-                    self.device.bus, self.device.device, self.device.function, 0x00);
-                if v != self.device.vendor_id {
-                    return Err("controller disappeared during delay");
-                }
-            }
-            for _ in 0..10_000 {
-                core::hint::spin_loop();
-            }
-        }
+        self.device.enable_memory_access();
 
         if !self.init_hardware() {
             return Err("hardware init failed");

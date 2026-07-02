@@ -80,14 +80,12 @@ macro_rules! define_commands {
 /// buffering a potentially large result (e.g. `dmesg`) in a String only
 /// to flush it in one shot.
 pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool {
-    terminal.write_str("dbg: dispatch entered\n");
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return true;
     }
 
     let pipeline = Pipeline::parse(trimmed);
-    terminal.write_str("dbg: pipeline parsed\n");
     if pipeline.commands.is_empty() {
         return true;
     }
@@ -100,7 +98,6 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
     let mut pipe_buffer: Option<alloc::string::String> = None;
 
     for (i, cmd) in pipeline.commands.iter().enumerate() {
-        terminal.write_str("dbg: iterating commands\n");
         let cmd_name = cmd.name.as_str();
         let is_last = i == pipeline.commands.len() - 1;
 
@@ -108,13 +105,11 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
 
         match found {
             Some(&matched) => {
-                terminal.write_str("dbg: matched command\n");
                 let mut args: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
                 args.push(cmd_name);
                 for a in &cmd.args {
                     args.push(a.as_str());
                 }
-                terminal.write_str("dbg: args built\n");
 
                 if let Some(input) = pipe_buffer.take() {
                     terminal.set_stdin(input);
@@ -126,7 +121,6 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
                     terminal.arm_pipe_stdout();
                 }
 
-                terminal.write_str("dbg: before execute\n");
                 let mut ctx = CommandContext {
                     terminal,
                     args: &args,
