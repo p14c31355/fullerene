@@ -900,9 +900,6 @@ dependencies = [
 [[package]]
 name = "rle_player"
 version = "0.1.0"
-dependencies = [
- "nitrogen",
-]
 
 [[package]]
 name = "rmp3"

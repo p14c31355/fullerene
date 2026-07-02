@@ -39,7 +39,6 @@ pub mod uefi;
 
 pub use constants::*;
 pub use color::*;
-pub use nitrogen::port::{HardwarePorts, PortWriter, VgaPortOps};
 // VGA graphics modes
 pub use framebuffer::UefiFramebufferWriter;
 pub use framebuffer::*;

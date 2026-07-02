@@ -31,8 +31,6 @@ pub use common::{check_memory_initialized, set_memory_initialized};
 pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;
-pub use nitrogen::ioapic::IoApicRedirectionEntry;
-pub use nitrogen::port::{MsrHelper, PortOperations, PortWriter, RegisterConfig};
 
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     buffer: &mut B,

@@ -300,7 +300,41 @@ pub fn is_initialized() -> bool {
     RUNTIME.lock().is_some()
 }
 
-// ── Lightweight cursor update ────────────────────────────────
+// ── Cursor helpers ────────────────────────────────────────────
+
+fn cursor_save_background(
+    cursor: &lattice::cursor::Cursor,
+    buf: &mut [u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
+    save_x: &mut i32,
+    save_y: &mut i32,
+    save_valid: &mut bool,
+    fb: &[u32], fb_stride: u32, fb_width: u32, fb_height: u32,
+) {
+    if !cursor.visible { return; }
+    let cur_sz = lattice::cursor::Cursor::SIZE as i32;
+    let cx = cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
+    let cy = cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
+    let stride_i = fb_stride as i32;
+    let fbw_i = fb_width as i32;
+    let fbh_i = fb_height as i32;
+    let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
+    for row in 0..cur_sz {
+        let sy = cy + row;
+        for col in 0..cur_sz {
+            let val = if sy >= 0 && sy < fbh_i {
+                let sx = cx + col;
+                if sx >= 0 && sx < fbw_i {
+                    let idx = (sy * stride_i + sx) as usize;
+                    if idx < fb_len { fb[idx] } else { 0 }
+                } else { 0 }
+            } else { 0 };
+            buf[(row * cur_sz + col) as usize] = val;
+        }
+    }
+    *save_x = cx;
+    *save_y = cy;
+    *save_valid = true;
+}
 
 pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
     let (fb_addr, fbw, fbh, fb_stride) = *LAST_FB.lock();
@@ -308,15 +342,39 @@ pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
         rt.frame_due = true;
         return;
     }
-    let fb_ptr = fb_addr as *mut u32;
-    let cur = &rt.desktop.cursor;
-    if !cur.visible {
+    if !rt.desktop.cursor.visible {
+        // Cursor turned off: restore saved background and clear state
+        if rt.cursor_save_valid {
+            let fb_ptr = fb_addr as *mut u32;
+            let cur_sz = lattice::cursor::Cursor::SIZE as i32;
+            let fbw_i = fbw as i32;
+            let stride_i = fb_stride as i32;
+            let fbh_i = fbh as i32;
+            let fb_len = (fb_stride as usize).saturating_mul(fbh as usize);
+            unsafe {
+                let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
+                let sx = rt.cursor_save_x;
+                let sy = rt.cursor_save_y;
+                for row in 0..cur_sz {
+                    let dy = sy + row;
+                    if dy < 0 || dy >= fbh_i { continue; }
+                    for col in 0..cur_sz {
+                        let dx = sx + col;
+                        if dx < 0 || dx >= fbw_i { continue; }
+                        let idx = (dy * stride_i + dx) as usize;
+                        if idx < fb_len {
+                            fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
+                        }
+                    }
+                }
+            }
+            rt.cursor_save_valid = false;
+        }
         return;
     }
+    let fb_ptr = fb_addr as *mut u32;
 
     let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-    let new_x = cur.x - lattice::cursor::Cursor::HOTSPOT_X;
-    let new_y = cur.y - lattice::cursor::Cursor::HOTSPOT_Y;
     let fbw_i = fbw as i32;
     let stride_i = fb_stride as i32;
     let fbh_i = fbh as i32;
@@ -329,14 +387,10 @@ pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
             let sy = rt.cursor_save_y;
             for row in 0..cur_sz {
                 let dy = sy + row;
-                if dy < 0 || dy >= fbh_i {
-                    continue;
-                }
+                if dy < 0 || dy >= fbh_i { continue; }
                 for col in 0..cur_sz {
                     let dx = sx + col;
-                    if dx < 0 || dx >= fbw_i {
-                        continue;
-                    }
+                    if dx < 0 || dx >= fbw_i { continue; }
                     let idx = (dy * stride_i + dx) as usize;
                     if idx < fb_len {
                         fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
@@ -344,27 +398,12 @@ pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
                 }
             }
         }
-        rt.cursor_save_x = new_x;
-        rt.cursor_save_y = new_y;
-        for row in 0..cur_sz {
-            let sy = new_y + row;
-            for col in 0..cur_sz {
-                let val = if sy >= 0 && sy < fbh_i {
-                    let sx = new_x + col;
-                    if sx >= 0 && sx < fbw_i {
-                        let idx = (sy * stride_i + sx) as usize;
-                        if idx < fb_len { fb[idx] } else { 0 }
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
-                rt.cursor_save_buf[(row * cur_sz + col) as usize] = val;
-            }
-        }
-        rt.cursor_save_valid = true;
-        Compositor::draw_cursor_direct(fb, fb_stride, fbh, cur);
+        cursor_save_background(
+            &rt.desktop.cursor, &mut rt.cursor_save_buf,
+            &mut rt.cursor_save_x, &mut rt.cursor_save_y, &mut rt.cursor_save_valid,
+            fb, fb_stride, fbw, fbh,
+        );
+        Compositor::draw_cursor_direct(fb, fb_stride, fbh, &rt.desktop.cursor);
     }
 }
 
@@ -473,95 +512,7 @@ pub fn poll_keyboard() {
 }
 
 fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
-    use resonance::KeyCode::*;
-    const EXT: [Option<resonance::KeyCode>; 128] = {
-        let mut t = [None; 128];
-        t[0x1D] = Some(Ctrl);
-        t[0x38] = Some(Alt);
-        t[0x5B] = Some(SuperLeft);
-        t[0x5C] = Some(SuperRight);
-        t
-    };
-    const BASE: [resonance::KeyCode; 128] = {
-        let mut t = [Unknown(0); 128];
-        let mut i = 0;
-        while i < 128 {
-            t[i] = Unknown(i as u32);
-            i += 1;
-        }
-        t[0x01] = Escape;
-        t[0x02] = Digit1;
-        t[0x03] = Digit2;
-        t[0x04] = Digit3;
-        t[0x05] = Digit4;
-        t[0x06] = Digit5;
-        t[0x07] = Digit6;
-        t[0x08] = Digit7;
-        t[0x09] = Digit8;
-        t[0x0A] = Digit9;
-        t[0x0B] = Digit0;
-        t[0x0E] = Backspace;
-        t[0x0F] = Tab;
-        t[0x10] = Q;
-        t[0x11] = W;
-        t[0x12] = E;
-        t[0x13] = R;
-        t[0x14] = T;
-        t[0x15] = Y;
-        t[0x16] = U;
-        t[0x17] = I;
-        t[0x18] = O;
-        t[0x19] = P;
-        t[0x1C] = Enter;
-        t[0x1D] = Ctrl;
-        t[0x1E] = A;
-        t[0x1F] = S;
-        t[0x20] = D;
-        t[0x21] = F;
-        t[0x22] = G;
-        t[0x23] = H;
-        t[0x24] = J;
-        t[0x25] = K;
-        t[0x26] = L;
-        t[0x2A] = Shift;
-        t[0x2C] = Z;
-        t[0x2D] = X;
-        t[0x2E] = C;
-        t[0x2F] = V;
-        t[0x30] = B;
-        t[0x31] = N;
-        t[0x32] = M;
-        t[0x36] = Shift;
-        t[0x38] = Alt;
-        t[0x39] = Space;
-        t[0x3B] = F1;
-        t[0x3C] = F2;
-        t[0x3D] = F3;
-        t[0x3E] = F4;
-        t[0x3F] = F5;
-        t[0x40] = F6;
-        t[0x41] = F7;
-        t[0x42] = F8;
-        t[0x43] = F9;
-        t[0x44] = F10;
-        t[0x47] = Home;
-        t[0x48] = Up;
-        t[0x49] = PageUp;
-        t[0x4B] = Left;
-        t[0x4D] = Right;
-        t[0x4F] = End;
-        t[0x50] = Down;
-        t[0x51] = PageDown;
-        t[0x57] = F11;
-        t[0x58] = F12;
-        t
-    };
-    let base = scancode & 0x7F;
-    if scancode & 0x80 != 0 {
-        EXT[base as usize].unwrap_or_else(|| BASE[base as usize])
-    } else {
-        BASE[base as usize]
-    }
+    resonance::scancode::from_scancode(scancode)
 }
 
 // ── ChronoLine tick ──────────────────────────────────────────
@@ -901,39 +852,16 @@ where
             let (fb_addr, _, _, fb_stride) = *LAST_FB.lock();
             if fb_addr != 0 {
                 let fb_ptr = fb_addr as *mut u32;
-                let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-                let cx = rt.desktop.cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
-                let cy = rt.desktop.cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
-                let fbw_i = fb_width as i32;
-                let stride_i = fb_stride as i32;
-                let fbh_i = fb_height as i32;
                 let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
                 unsafe {
                     let fb = core::slice::from_raw_parts(fb_ptr, fb_len);
-                    for row in 0..cur_sz {
-                        let sy = cy + row;
-                        for col in 0..cur_sz {
-                            let val = if sy >= 0 && sy < fbh_i {
-                                let sx = cx + col;
-                                if sx >= 0 && sx < fbw_i {
-                                    let idx = (sy * stride_i + sx) as usize;
-                                    if idx < fb_len { fb[idx] } else { 0 }
-                                } else {
-                                    0
-                                }
-                            } else {
-                                0
-                            };
-                            rt.cursor_save_buf[(row * cur_sz + col) as usize] = val;
-                        }
-                    }
+                    cursor_save_background(
+                        &rt.desktop.cursor, &mut rt.cursor_save_buf,
+                        &mut rt.cursor_save_x, &mut rt.cursor_save_y, &mut rt.cursor_save_valid,
+                        fb, fb_stride, fb_width, fb_height,
+                    );
                 }
-                rt.cursor_save_x = cx;
-                rt.cursor_save_y = cy;
-                rt.cursor_save_valid = true;
             }
-        }
-        if rt.desktop.cursor.visible {
             Compositor::draw_cursor_direct(
                 fb_pixels,
                 fb_stride_pixels,
@@ -1137,19 +1065,13 @@ pub fn set_render_fn(f: fn()) {
     *RENDER_FN.lock() = Some(f);
 }
 
-fn runtime_tick_no_fb() {
-    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
     poll_keyboard();
     update_clock();
     chrono_tick(now);
     process_events();
-
-    // Deferred launch checks
     if RUNTIME.lock().as_mut().map_or(false, |r| {
         let p = r.shell_launch_pending;
         r.shell_launch_pending = false;
@@ -1165,7 +1087,14 @@ fn runtime_tick_no_fb() {
     }) {
         ensure_editor_window();
     }
+}
 
+fn runtime_tick_no_fb() {
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    tick_core(now);
     let do_render = RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
         if due {
@@ -1198,37 +1127,13 @@ where
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
-    poll_mouse_state();
-    poll_keyboard();
-    update_clock();
-    chrono_tick(now);
-    process_events();
-
-    if RUNTIME.lock().as_mut().map_or(false, |r| {
-        let p = r.shell_launch_pending;
-        r.shell_launch_pending = false;
-        p
-    }) {
-        ensure_terminal_window();
-        launch_shell();
-    }
-    if RUNTIME.lock().as_mut().map_or(false, |r| {
-        let p = r.editor_launch_pending;
-        r.editor_launch_pending = false;
-        p
-    }) {
-        ensure_editor_window();
-    }
+    tick_core(now);
 
     static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
     if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
         LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
-        let poll_fn = {
-            let cb_guard = SOLVENT_CALLBACKS.lock();
-            cb_guard.usb_poll
-        };
+        let poll_fn = SOLVENT_CALLBACKS.lock().usb_poll;
         if let Some(f) = poll_fn {
             if f() {
                 if let Some(ref mut r) = *RUNTIME.lock() {

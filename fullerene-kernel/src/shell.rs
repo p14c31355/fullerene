@@ -18,6 +18,17 @@ macro_rules! tstr {
         $t.write_str(concat!($s, '\n'))
     };
 }
+/// Helper: match a launch function returning Result<ProcessId, Err>, write
+/// ok/error messages to the terminal.
+macro_rules! launch_cmd {
+    ($t:expr, $launch:expr, $ok:expr) => {
+        match $launch {
+            Ok(pid) => tline!($t, $ok, pid.0),
+            Err(e) => tline!($t, "Failed to launch: {:?}", e),
+        }
+    };
+}
+
 
 /// Read the entire contents of a file at `path`. Returns the raw bytes.
 /// Limited to MAX_FILE_SIZE to prevent unbounded memory growth.
@@ -101,8 +112,7 @@ fn register_nozzle_hooks() {
         }),
         pwd: Some(|ctx| match crate::vfs::working_directory() {
             Ok(wd) => {
-                ctx.terminal.write_str(&wd);
-                ctx.terminal.write_str("\n");
+                tline!(ctx.terminal, "{}", wd);
             }
             Err(e) => {
                 tline!(ctx.terminal, "pwd: {}", e);
@@ -426,19 +436,10 @@ fn register_nozzle_hooks() {
         "linux_run" => {
             if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: linux_run <path>"); }
             tline!(ctx.terminal, "Loading Linux binary: {}", ctx.args[1]);
-            match crate::linux::launch::launch_linux_binary(ctx.args[1]) {
-                Ok(pid) => tline!(ctx.terminal, "Linux process started (PID: {})", pid.0),
-                Err(e) => tline!(ctx.terminal, "Failed to launch: {:?}", e),
-            }
+            launch_cmd!(ctx.terminal, crate::linux::launch::launch_linux_binary(ctx.args[1]), "Linux process started (PID: {})");
         }
-        "run_busybox" => match crate::linux::launch::launch_busybox() {
-            Ok(pid) => tline!(ctx.terminal, "BusyBox shell started (PID: {})", pid.0),
-            Err(e) => tline!(ctx.terminal, "Failed to launch BusyBox: {:?}", e),
-        },
-        "hello_linux" => match crate::linux::launch::launch_test_binary() {
-            Ok(pid) => tline!(ctx.terminal, "Test Linux binary started (PID: {})", pid.0),
-            Err(e) => tline!(ctx.terminal, "Failed to launch test binary: {:?}", e),
-        },
+        "run_busybox" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_busybox(), "BusyBox shell started (PID: {})"),
+        "hello_linux" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_test_binary(), "Test Linux binary started (PID: {})"),
         "usb_info" => {
             use crate::drivers::usb_storage;
             let count = usb_storage::USB_DRIVE_COUNT.load(core::sync::atomic::Ordering::Relaxed);
@@ -618,30 +619,12 @@ fn register_nozzle_hooks() {
         }
         }),
         ctl: Some(|cmd| match cmd {
-        "theme dark" => {
-            solvent::set_theme(solvent::ThemeVariant::Dark);
-            solvent::force_desktop_redraw();
-        }
-        "theme light" => {
-            solvent::set_theme(solvent::ThemeVariant::Light);
-            solvent::force_desktop_redraw();
-        }
-        "theme toggle" => {
-            solvent::toggle_theme();
-            solvent::force_desktop_redraw();
-        }
-        "wallpaper solid" => {
-            solvent::set_wallpaper(solvent::WallpaperMode::SolidColor);
-            solvent::force_desktop_redraw();
-        }
-        "wallpaper grid" => {
-            solvent::set_wallpaper(solvent::WallpaperMode::GridPattern);
-            solvent::force_desktop_redraw();
-        }
-        "wallpaper gradient" => {
-            solvent::set_wallpaper(solvent::WallpaperMode::Gradient);
-            solvent::force_desktop_redraw();
-        }
+        "theme dark" => { solvent::set_theme(solvent::ThemeVariant::Dark); solvent::force_desktop_redraw(); }
+        "theme light" => { solvent::set_theme(solvent::ThemeVariant::Light); solvent::force_desktop_redraw(); }
+        "theme toggle" => { solvent::toggle_theme(); solvent::force_desktop_redraw(); }
+        "wallpaper solid" => { solvent::set_wallpaper(solvent::WallpaperMode::SolidColor); solvent::force_desktop_redraw(); }
+        "wallpaper grid" => { solvent::set_wallpaper(solvent::WallpaperMode::GridPattern); solvent::force_desktop_redraw(); }
+        "wallpaper gradient" => { solvent::set_wallpaper(solvent::WallpaperMode::Gradient); solvent::force_desktop_redraw(); }
         _ if cmd.starts_with("wallpaper ") => {
             let name = &cmd[10..];
             if let Some(idx) = solvent::find_preset(name) {

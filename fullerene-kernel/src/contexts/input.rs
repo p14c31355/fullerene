@@ -1,93 +1,7 @@
 //! InputContext — unified keyboard+mouse event queue.
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MouseButton {
-    Left,
-    Middle,
-    Right,
-    Other(u8),
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeyCode {
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    G,
-    H,
-    I,
-    J,
-    K,
-    L,
-    M,
-    N,
-    O,
-    P,
-    Q,
-    R,
-    S,
-    T,
-    U,
-    V,
-    W,
-    X,
-    Y,
-    Z,
-    Digit0,
-    Digit1,
-    Digit2,
-    Digit3,
-    Digit4,
-    Digit5,
-    Digit6,
-    Digit7,
-    Digit8,
-    Digit9,
-    Shift,
-    Ctrl,
-    Alt,
-    Meta,
-    SuperLeft,
-    SuperRight,
-    Enter,
-    Tab,
-    Space,
-    Backspace,
-    Escape,
-    Up,
-    Down,
-    Left,
-    Right,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    F1,
-    F2,
-    F3,
-    F4,
-    F5,
-    F6,
-    F7,
-    F8,
-    F9,
-    F10,
-    F11,
-    F12,
-    Unknown(u32),
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InputEvent {
-    MouseMove { x: i32, y: i32 },
-    MouseDown(MouseButton),
-    MouseUp(MouseButton),
-    KeyDown(KeyCode),
-    KeyUp(KeyCode),
-}
+pub use resonance::{InputEvent, KeyCode, MouseButton};
 
 const MAX_EVENTS: usize = 256;
 
@@ -121,60 +35,6 @@ impl InputContext {
             self.sensitivity = val;
         }
     }
-    pub fn poll(&mut self) {
-        let ps2 = nitrogen::ps2::mouse::consume_state();
-        let (dx, dy, btn) = (
-            ps2.get_x(),
-            ps2.get_y(),
-            nitrogen::ps2::mouse::mouse_buttons(),
-        );
-        let (ox, oy) = (self.mouse_x, self.mouse_y);
-        self.mouse_x = self.mouse_x.wrapping_add(dx.wrapping_mul(self.sensitivity));
-        self.mouse_y = self
-            .mouse_y
-            .wrapping_add(dy.wrapping_mul(self.sensitivity).wrapping_neg());
-        self.mouse_buttons = btn;
-        if ox != self.mouse_x || oy != self.mouse_y {
-            self.push(InputEvent::MouseMove {
-                x: self.mouse_x as i32,
-                y: self.mouse_y as i32,
-            });
-        }
-        let ch = btn ^ self.prev_buttons;
-        if ch & 1 != 0 {
-            self.push(if btn & 1 != 0 {
-                InputEvent::MouseDown(MouseButton::Left)
-            } else {
-                InputEvent::MouseUp(MouseButton::Left)
-            });
-        }
-        if ch & 2 != 0 {
-            self.push(if btn & 2 != 0 {
-                InputEvent::MouseDown(MouseButton::Right)
-            } else {
-                InputEvent::MouseUp(MouseButton::Right)
-            });
-        }
-        if ch & 4 != 0 {
-            self.push(if btn & 4 != 0 {
-                InputEvent::MouseDown(MouseButton::Middle)
-            } else {
-                InputEvent::MouseUp(MouseButton::Middle)
-            });
-        }
-        self.prev_buttons = btn;
-        while nitrogen::ps2::keyboard::raw_key_available() {
-            let (sc, pr) = match nitrogen::ps2::keyboard::pop_raw_key() {
-                Some(k) => k,
-                None => break,
-            };
-            self.push(if pr {
-                InputEvent::KeyDown(scancode_to_keycode(sc))
-            } else {
-                InputEvent::KeyUp(scancode_to_keycode(sc))
-            });
-        }
-    }
     fn push(&mut self, ev: InputEvent) {
         while self.queue.len() >= MAX_EVENTS {
             self.queue.pop_front();
@@ -190,8 +50,6 @@ impl InputContext {
 }
 
 pub fn drain_into_event_context() {
-    use resonance::{Event, InputEvent as ResInput};
-    // Check if event context exists before draining input
     let has_event_ctx = super::event::with_event_mut(|_| ()).is_some();
     if !has_event_ctx {
         return;
@@ -200,130 +58,9 @@ pub fn drain_into_event_context() {
     let Some(events) = events else { return };
     super::event::with_event_mut(|ec| {
         for ev in events {
-            let res_ev = match ev {
-                InputEvent::MouseMove { x, y } => ResInput::MouseMove { x, y },
-                InputEvent::MouseDown(b) => ResInput::MouseDown(b.into()),
-                InputEvent::MouseUp(b) => ResInput::MouseUp(b.into()),
-                InputEvent::KeyDown(k) => ResInput::KeyDown(k.into()),
-                InputEvent::KeyUp(k) => ResInput::KeyUp(k.into()),
-            };
-            ec.push(Event::Input(res_ev));
+            ec.push(resonance::Event::Input(ev));
         }
     });
-}
-
-impl From<MouseButton> for resonance::MouseButton {
-    fn from(b: MouseButton) -> Self {
-        match b {
-            MouseButton::Left => Self::Left,
-            MouseButton::Middle => Self::Middle,
-            MouseButton::Right => Self::Right,
-            MouseButton::Other(v) => Self::Other(v),
-        }
-    }
-}
-impl From<KeyCode> for resonance::KeyCode {
-    fn from(k: KeyCode) -> Self {
-        use KeyCode::*;
-        use resonance::KeyCode as R;
-        match k {
-            A => R::A, B => R::B, C => R::C, D => R::D, E => R::E,
-            F => R::F, G => R::G, H => R::H, I => R::I, J => R::J,
-            K => R::K, L => R::L, M => R::M, N => R::N, O => R::O,
-            P => R::P, Q => R::Q, R => R::R, S => R::S, T => R::T,
-            U => R::U, V => R::V, W => R::W, X => R::X, Y => R::Y,
-            Z => R::Z,
-            Digit0 => R::Digit0, Digit1 => R::Digit1, Digit2 => R::Digit2,
-            Digit3 => R::Digit3, Digit4 => R::Digit4, Digit5 => R::Digit5,
-            Digit6 => R::Digit6, Digit7 => R::Digit7, Digit8 => R::Digit8,
-            Digit9 => R::Digit9,
-            Shift => R::Shift, Ctrl => R::Ctrl, Alt => R::Alt,
-            Meta => R::Meta, SuperLeft => R::SuperLeft, SuperRight => R::SuperRight,
-            Enter => R::Enter, Tab => R::Tab, Space => R::Space,
-            Backspace => R::Backspace, Escape => R::Escape,
-            Up => R::Up, Down => R::Down, Left => R::Left, Right => R::Right,
-            Home => R::Home, End => R::End, PageUp => R::PageUp, PageDown => R::PageDown,
-            F1 => R::F1, F2 => R::F2, F3 => R::F3, F4 => R::F4,
-            F5 => R::F5, F6 => R::F6, F7 => R::F7, F8 => R::F8,
-            F9 => R::F9, F10 => R::F10, F11 => R::F11, F12 => R::F12,
-            Unknown(v) => R::Unknown(v),
-        }
-    }
-}
-
-fn scancode_to_keycode(sc: u8) -> KeyCode {
-    use KeyCode::*;
-    const BASE: [KeyCode; 128] = {
-        let mut t = [Unknown(0); 128];
-        t[0x01] = Escape;
-        t[0x02] = Digit1;
-        t[0x03] = Digit2;
-        t[0x04] = Digit3;
-        t[0x05] = Digit4;
-        t[0x06] = Digit5;
-        t[0x07] = Digit6;
-        t[0x08] = Digit7;
-        t[0x09] = Digit8;
-        t[0x0A] = Digit9;
-        t[0x0B] = Digit0;
-        t[0x0E] = Backspace;
-        t[0x0F] = Tab;
-        t[0x10] = Q;
-        t[0x11] = W;
-        t[0x12] = E;
-        t[0x13] = R;
-        t[0x14] = T;
-        t[0x15] = Y;
-        t[0x16] = U;
-        t[0x17] = I;
-        t[0x18] = O;
-        t[0x19] = P;
-        t[0x1C] = Enter;
-        t[0x1D] = Ctrl;
-        t[0x1E] = A;
-        t[0x1F] = S;
-        t[0x20] = D;
-        t[0x21] = F;
-        t[0x22] = G;
-        t[0x23] = H;
-        t[0x24] = J;
-        t[0x25] = K;
-        t[0x26] = L;
-        t[0x2A] = Shift;
-        t[0x2C] = Z;
-        t[0x2D] = X;
-        t[0x2E] = C;
-        t[0x2F] = V;
-        t[0x30] = B;
-        t[0x31] = N;
-        t[0x32] = M;
-        t[0x36] = Shift;
-        t[0x38] = Alt;
-        t[0x39] = Space;
-        t[0x3B] = F1;
-        t[0x3C] = F2;
-        t[0x3D] = F3;
-        t[0x3E] = F4;
-        t[0x3F] = F5;
-        t[0x40] = F6;
-        t[0x41] = F7;
-        t[0x42] = F8;
-        t[0x43] = F9;
-        t[0x44] = F10;
-        t[0x47] = Home;
-        t[0x48] = Up;
-        t[0x49] = PageUp;
-        t[0x4B] = Left;
-        t[0x4D] = Right;
-        t[0x4F] = End;
-        t[0x50] = Down;
-        t[0x51] = PageDown;
-        t[0x57] = F11;
-        t[0x58] = F12;
-        t
-    };
-    let b = sc & 0x7F;
-    BASE[b as usize]
 }
 
 crate::define_context!(InputContext, input, INPUT_CTX);
