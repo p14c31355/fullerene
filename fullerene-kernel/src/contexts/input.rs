@@ -1,93 +1,7 @@
 //! InputContext — unified keyboard+mouse event queue.
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum MouseButton {
-    Left,
-    Middle,
-    Right,
-    Other(u8),
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KeyCode {
-    A,
-    B,
-    C,
-    D,
-    E,
-    F,
-    G,
-    H,
-    I,
-    J,
-    K,
-    L,
-    M,
-    N,
-    O,
-    P,
-    Q,
-    R,
-    S,
-    T,
-    U,
-    V,
-    W,
-    X,
-    Y,
-    Z,
-    Digit0,
-    Digit1,
-    Digit2,
-    Digit3,
-    Digit4,
-    Digit5,
-    Digit6,
-    Digit7,
-    Digit8,
-    Digit9,
-    Shift,
-    Ctrl,
-    Alt,
-    Meta,
-    SuperLeft,
-    SuperRight,
-    Enter,
-    Tab,
-    Space,
-    Backspace,
-    Escape,
-    Up,
-    Down,
-    Left,
-    Right,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    F1,
-    F2,
-    F3,
-    F4,
-    F5,
-    F6,
-    F7,
-    F8,
-    F9,
-    F10,
-    F11,
-    F12,
-    Unknown(u32),
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum InputEvent {
-    MouseMove { x: i32, y: i32 },
-    MouseDown(MouseButton),
-    MouseUp(MouseButton),
-    KeyDown(KeyCode),
-    KeyUp(KeyCode),
-}
+pub use resonance::{InputEvent, KeyCode, MouseButton};
 
 const MAX_EVENTS: usize = 256;
 
@@ -190,8 +104,6 @@ impl InputContext {
 }
 
 pub fn drain_into_event_context() {
-    use resonance::{Event, InputEvent as ResInput};
-    // Check if event context exists before draining input
     let has_event_ctx = super::event::with_event_mut(|_| ()).is_some();
     if !has_event_ctx {
         return;
@@ -200,55 +112,9 @@ pub fn drain_into_event_context() {
     let Some(events) = events else { return };
     super::event::with_event_mut(|ec| {
         for ev in events {
-            let res_ev = match ev {
-                InputEvent::MouseMove { x, y } => ResInput::MouseMove { x, y },
-                InputEvent::MouseDown(b) => ResInput::MouseDown(b.into()),
-                InputEvent::MouseUp(b) => ResInput::MouseUp(b.into()),
-                InputEvent::KeyDown(k) => ResInput::KeyDown(k.into()),
-                InputEvent::KeyUp(k) => ResInput::KeyUp(k.into()),
-            };
-            ec.push(Event::Input(res_ev));
+            ec.push(resonance::Event::Input(ev));
         }
     });
-}
-
-impl From<MouseButton> for resonance::MouseButton {
-    fn from(b: MouseButton) -> Self {
-        match b {
-            MouseButton::Left => Self::Left,
-            MouseButton::Middle => Self::Middle,
-            MouseButton::Right => Self::Right,
-            MouseButton::Other(v) => Self::Other(v),
-        }
-    }
-}
-impl From<KeyCode> for resonance::KeyCode {
-    fn from(k: KeyCode) -> Self {
-        use KeyCode::*;
-        use resonance::KeyCode as R;
-        match k {
-            A => R::A, B => R::B, C => R::C, D => R::D, E => R::E,
-            F => R::F, G => R::G, H => R::H, I => R::I, J => R::J,
-            K => R::K, L => R::L, M => R::M, N => R::N, O => R::O,
-            P => R::P, Q => R::Q, R => R::R, S => R::S, T => R::T,
-            U => R::U, V => R::V, W => R::W, X => R::X, Y => R::Y,
-            Z => R::Z,
-            Digit0 => R::Digit0, Digit1 => R::Digit1, Digit2 => R::Digit2,
-            Digit3 => R::Digit3, Digit4 => R::Digit4, Digit5 => R::Digit5,
-            Digit6 => R::Digit6, Digit7 => R::Digit7, Digit8 => R::Digit8,
-            Digit9 => R::Digit9,
-            Shift => R::Shift, Ctrl => R::Ctrl, Alt => R::Alt,
-            Meta => R::Meta, SuperLeft => R::SuperLeft, SuperRight => R::SuperRight,
-            Enter => R::Enter, Tab => R::Tab, Space => R::Space,
-            Backspace => R::Backspace, Escape => R::Escape,
-            Up => R::Up, Down => R::Down, Left => R::Left, Right => R::Right,
-            Home => R::Home, End => R::End, PageUp => R::PageUp, PageDown => R::PageDown,
-            F1 => R::F1, F2 => R::F2, F3 => R::F3, F4 => R::F4,
-            F5 => R::F5, F6 => R::F6, F7 => R::F7, F8 => R::F8,
-            F9 => R::F9, F10 => R::F10, F11 => R::F11, F12 => R::F12,
-            Unknown(v) => R::Unknown(v),
-        }
-    }
 }
 
 fn scancode_to_keycode(sc: u8) -> KeyCode {
