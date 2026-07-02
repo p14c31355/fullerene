@@ -276,7 +276,12 @@ impl OperationalRegisters {
     }
     pub fn update_portsc(&self, port: u32, set: u32, clear: u32) {
         let off = OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE;
-        self.0.write32(off, ((self.0.read32(off) & !clear) | set) & !PORTSC_RW1C_MASK);
+        // Note: do NOT mask out RW1C bits here — they are write-1-to-clear,
+        // so writing 0 to them (as we do via read-modify-write) is harmless.
+        // Masking them would discard connection-change events (CSC=1) that
+        // arrived between the read and write, preventing the driver from
+        // ever seeing the port as connected.
+        self.0.write32(off, ((self.0.read32(off) & !clear) | set));
     }
 }
 

@@ -243,7 +243,11 @@ impl XhciContext {
     /// DCBAAP/CRCR/CONFIG while running can reset port state, losing
     /// CCS.  Strategy:
     ///   - If halted: write pre-RS registers, then RS=1, then ERST.
-    ///   - If running: skip DCBAAP/CRCR/CONFIG, just add ERST + HSEE.
+    ///   - If running: stop, reconfigure, restart.  Stopping a running
+    ///     controller can cause USB 3.0 PHY calibration loss on some
+    ///     Intel xHCI controllers.  We mitigate this by aggressive port
+    ///     recovery (PP toggle, WPR, PR) after the restart instead of
+    ///     falling through to a full HCRST, which would be even worse.
     pub fn init_no_reset(&mut self) -> Result<(), &'static str> {
         log::info!("xHCI: init_no_reset — preserving firmware state");
 
@@ -267,7 +271,9 @@ impl XhciContext {
             self.start_controller()?;
         } else {
             log::info!("xHCI: controller already running — stopping, then reconfiguring");
-            // Halt the running controller before reconfiguring core registers
+            // Halt the running controller before reconfiguring core registers.
+            // This may cause USB 3.0 PHY calibration loss on some Intel xHCIs,
+            // but is necessary to set up our own DCBAAP/CRCR/CONFIG.
             let op = &self.registers.op;
             op.set_usbcmd(op.usbcmd() & !USBCMD_RS); // Clear RS to halt
             let mut halted = false;
@@ -430,6 +436,30 @@ impl XhciContext {
                 if op.portsc(port_idx).ccs() {
                     log::info!("xHCI: port {} CCS=1 after PR", port_idx);
                     continue;
+                }
+            }
+
+            // PP toggle fallback: power-cycle the port to force PHY
+            // re-initialization.  Some Intel xHCI controllers lose USB 3.0
+            // PHY calibration after HCRST or stop/restart; toggling port
+            // power forces the PHY to recalibrate.
+            if self.ports.ppc && !op.portsc(port_idx).ccs() {
+                log::info!("xHCI: port {} CCS=0, PP toggle fallback", port_idx);
+                let ps_raw = op.portsc(port_idx).0;
+                op.write_portsc(port_idx, (ps_raw & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                super::port::delay_ms(50);
+                let v2 = op.portsc(port_idx).0;
+                op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                super::port::delay_ms(200);
+
+                // After PP toggle, force RxDetect and wait for training
+                force_rx_detect(op, port_idx);
+                for _ in 0..200 {
+                    super::port::delay_ms(10);
+                    if op.portsc(port_idx).ccs() {
+                        log::info!("xHCI: port {} CCS=1 after PP toggle", port_idx);
+                        break;
+                    }
                 }
             }
             self.log_portsc(port_idx);

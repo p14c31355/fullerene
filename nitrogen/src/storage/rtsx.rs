@@ -182,19 +182,37 @@ impl RtsxController {
     fn init_hardware(&self) -> bool {
         // First MMIO access must be a WRITE (posted) — PCIe reads
         // (non-posted) can hang if the link is in an unstable state.
-        // Write MSI disable to wake the link, THEN do reads.
+        // Write MSI disable to wake the link, THEN do reads after a
+        // small delay to allow the PCIe link to stabilise.
         log::info!("RTSX: first MMIO write at {:p}+0x1C", self.mmio);
         self.w16(RTSX_MSI_EN, 0x0000);
 
-        let test0 = self.r8(0x00);
-        log::info!("RTSX: BAR0[0x00] = {:#04x}", test0);
+        // Wait for PCIe link to wake (L1→L0 transition).
+        // The link may take up to several microseconds to retrain;
+        // 100 µs is a conservative saftey margin.
+        for _ in 0..1000 {
+            core::hint::spin_loop();
+        }
 
+        // Read a status register instead of offset 0x00, which is
+        // undefined on some RTSX revisions and may return 0xFF
+        // spuriously even when the device is alive.
         let cfg = self.r8(RTSX_CFG);
         if cfg == 0xFF {
-            log::warn!("RTSX: device not responding (CFG=0xFF)");
-            return false;
+            // Check if the device has genuinely vanished:
+            // if the PCI config-space vendor reads back as 0xFFFF,
+            // the device truly disappeared; otherwise 0xFF at RTSX_CFG
+            // may be a valid register value on this revision.
+            let vendor = crate::pci::PciConfigSpace::read_config_word(
+                self.device.bus, self.device.device, self.device.function, 0x00);
+            if vendor == 0xFFFF || vendor == 0x0000 {
+                log::warn!("RTSX: device not responding (vendor={:#06x})", vendor);
+                return false;
+            }
+            log::info!("RTSX: CFG=0xFF but device present on PCI bus, continuing");
+        } else {
+            log::info!("RTSX: CFG={:#04x}", cfg);
         }
-        log::info!("RTSX: CFG={:#04x}", cfg);
 
         // Skip soft-reset (RTSX_CFG bit 0). PCI config-space init
         // (ensure_d0, ASPM disable) already puts the device in a known
