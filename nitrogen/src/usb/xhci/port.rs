@@ -209,23 +209,21 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         return Err("port reset timeout");
     }
 
-    // If the port had CCS=0 before PR, wait for CCS to appear, but use
-    // a shorter timeout for quiescent empty ports (no recent activity).
-    // Only use the long ~5 s wait when the port was recently connected/changed.
-    if !had_ccs {
-        let max_iterations = if had_change { 50_000 } else { 1_000 };
-        let mut ccs_appeared = false;
-        for _ in 0..max_iterations {
-            if op.portsc(port).0 & PORTSC_CCS != 0 {
-                ccs_appeared = true;
-                break;
-            }
-            delay_us(100);
+    // Always wait for CCS after PR clears — USB 3.0 link training
+    // momentarily drops CCS during re-training even when the device
+    // remains physically connected. Use a longer timeout when a device
+    // was known to be present or there was recent activity.
+    let max_iterations = if had_ccs { 50_000 } else if had_change { 50_000 } else { 1_000 };
+    let mut ccs_appeared = false;
+    for _ in 0..max_iterations {
+        if op.portsc(port).0 & PORTSC_CCS != 0 {
+            ccs_appeared = true;
+            break;
         }
-        if !ccs_appeared {
-            return Err("disconnected");
-        }
-        // CCS appeared — fall through to PED wait
+        delay_us(100);
+    }
+    if !ccs_appeared {
+        return Err("disconnected");
     }
 
     // Wait for PED (only meaningful when CCS=1)

@@ -112,8 +112,7 @@ fn register_nozzle_hooks() {
         }),
         pwd: Some(|ctx| match crate::vfs::working_directory() {
             Ok(wd) => {
-                ctx.terminal.write_str(&wd);
-                ctx.terminal.write_str("\n");
+                tline!(ctx.terminal, "{}", wd);
             }
             Err(e) => {
                 tline!(ctx.terminal, "pwd: {}", e);
@@ -272,7 +271,6 @@ fn register_nozzle_hooks() {
     nozzle::sys_hooks::SD_MOUNT_HOOK.lock().replace(|ctx: &mut nozzle::CommandContext| {
         use crate::drivers::sd_card;
         ctx.terminal.write_str("sd_mount: hook called\n");
-        crate::graphics::flush_gpu();
         if sd_card::probe_and_mount() {
             ctx.terminal.write_str("sd_mount: OK\n");
             let drives = sd_card::SD_DRIVES.lock();
@@ -463,7 +461,6 @@ fn register_nozzle_hooks() {
         }
         "sd_mount" => {
             tstr!(ctx.terminal, "SD card: attempting probe and mount...");
-            crate::graphics::flush_gpu();
             if crate::drivers::sd_card::probe_and_mount() {
                 tstr!(ctx.terminal, "SD card: mounted successfully");
                 let drives = crate::drivers::sd_card::SD_DRIVES.lock();

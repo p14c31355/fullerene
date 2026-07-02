@@ -6,6 +6,7 @@ mod dispatcher;
 pub mod event;
 mod handler;
 mod queue;
+pub mod scancode;
 mod source;
 pub mod tracing;
 
