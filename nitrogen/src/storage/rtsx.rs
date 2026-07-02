@@ -180,15 +180,12 @@ impl RtsxController {
     // ── RTSX Hardware Init (MMIO access starts here) ──────────
 
     fn init_hardware(&self) -> bool {
-        // Emergency serial debug before first MMIO
-        let mut serial = crate::port::PortWriter::new(crate::port::HardwarePorts::SERIAL_DATA_PORT);
-        serial.write_safe(b'R' as u32);
-        serial.write_safe(b'T' as u32);
-        serial.write_safe(b'S' as u32);
-        serial.write_safe(b'X' as u32);
-        serial.write_safe(b'\n' as u32);
+        // First MMIO access must be a WRITE (posted) — PCIe reads
+        // (non-posted) can hang if the link is in an unstable state.
+        // Write MSI disable to wake the link, THEN do reads.
+        log::info!("RTSX: first MMIO write at {:p}+0x1C", self.mmio);
+        self.w16(RTSX_MSI_EN, 0x0000);
 
-        log::info!("RTSX: first MMIO read at {:p}+0x00", self.mmio);
         let test0 = self.r8(0x00);
         log::info!("RTSX: BAR0[0x00] = {:#04x}", test0);
 
@@ -199,15 +196,10 @@ impl RtsxController {
         }
         log::info!("RTSX: CFG={:#04x}", cfg);
 
-        self.w8(RTSX_CFG, cfg | 0x01);
-        for _ in 0..100_000 {
-            if (self.r8(RTSX_CFG) & 0x01) == 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
+        // Skip soft-reset (RTSX_CFG bit 0). PCI config-space init
+        // (ensure_d0, ASPM disable) already puts the device in a known
+        // state, and the MMIO soft-reset can destabilise the PCIe link.
 
-        self.w16(RTSX_MSI_EN, 0x0000);
         self.w8(CARD_PWR_CTL, CARD_PWR_ON);
 
         for _ in 0..200_000 {
@@ -278,6 +270,9 @@ impl RtsxController {
             if (self.r8(SD_STAT1) & SD_TRANSFER_DONE) != 0 {
                 break;
             }
+            if !self.mmio_alive() {
+                return Err("SD cmd: controller vanished during transfer");
+            }
             core::hint::spin_loop();
         }
         if (self.r8(SD_STAT1) & SD_TRANSFER_DONE) == 0 {
@@ -310,9 +305,32 @@ impl RtsxController {
             return Err("MMIO not mapped");
         }
 
-        // Long delay for PCIe link and card power stabilization
-        for _ in 0..2_000_000 {
-            core::hint::spin_loop();
+        // Verify device is alive via PCI config space (port I/O, never hangs).
+        // Read vendor ID at config offset 0x00.
+        let vendor = crate::pci::PciConfigSpace::read_config_word(
+            self.device.bus, self.device.device, self.device.function, 0x00);
+        if vendor != self.device.vendor_id {
+            return Err("controller disappeared from PCI bus");
+        }
+
+        // Re-assert D0 to prevent PCIe link from entering L1 during
+        // the idle period that follows. Some chipsets hang on MMIO
+        // access after link transitions.
+        self.device.ensure_d0();
+
+        // Long delay for card power stabilization.
+        // Keep the PCIe link alive by reading config space periodically.
+        for i in 0..200 {
+            if i & 1 == 0 {
+                let v = crate::pci::PciConfigSpace::read_config_word(
+                    self.device.bus, self.device.device, self.device.function, 0x00);
+                if v != self.device.vendor_id {
+                    return Err("controller disappeared during delay");
+                }
+            }
+            for _ in 0..10_000 {
+                core::hint::spin_loop();
+            }
         }
 
         if !self.init_hardware() {
@@ -465,16 +483,9 @@ impl RtsxController {
 
         self.sd_cmd(CMD17_READ_SINGLE, addr, SD_RSP_TYPE_R1, 512)?;
 
-        for _ in 0..500_000 {
-            if (self.r8(SD_STAT1) & SD_DATA_DONE) != 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if (self.r8(SD_STAT1) & SD_DATA_DONE) == 0 {
-            return Err("read data timeout");
-        }
-
+        // sd_cmd already waited for TRANSFER_DONE — data is in PPBUF.
+        // Do NOT wait for DATA_DONE separately; some RTSX revisions never
+        // set it for reads, causing a 500K-spin hang.
         self.ppbuf_read(buf);
         Ok(())
     }

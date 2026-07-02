@@ -70,6 +70,9 @@ pub fn init() {
 /// Safe to call at any time — returns an error instead of hanging.
 /// The system continues booting even if this fails.
 pub fn probe_and_mount() -> bool {
+    // Flush terminal output to screen before any MMIO access.
+    crate::graphics::flush_gpu();
+
     // Atomically mark mount as in-progress to prevent concurrent re-entry.
     if SD_PROBED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
         klog_fmt!("SD card: already mounted or mount in progress\n");
