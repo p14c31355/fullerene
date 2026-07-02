@@ -25,13 +25,9 @@
 - [ ] vsync
 
 ## Storage
-- [x] AHCI
-- [x] NVMe
 - [ ] block cache
 
 ## Filesystem
-- [x] VFS
-- [x] tmpfs
 - [ ] FAT32
 - [ ] initramfs
 
@@ -64,7 +60,6 @@
 - [ ] CI
 - [ ] Nightly regression boot
 ## Documentation
-- [ ] Architecture.md
 - [ ] Graphics.md
 - [ ] Memory.md
 - [ ] Boot.md
