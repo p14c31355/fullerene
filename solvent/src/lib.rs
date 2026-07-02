@@ -342,7 +342,36 @@ pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
         rt.frame_due = true;
         return;
     }
-    if !rt.desktop.cursor.visible { return; }
+    if !rt.desktop.cursor.visible {
+        // Cursor turned off: restore saved background and clear state
+        if rt.cursor_save_valid {
+            let fb_ptr = fb_addr as *mut u32;
+            let cur_sz = lattice::cursor::Cursor::SIZE as i32;
+            let fbw_i = fbw as i32;
+            let stride_i = fb_stride as i32;
+            let fbh_i = fbh as i32;
+            let fb_len = (fb_stride as usize).saturating_mul(fbh as usize);
+            unsafe {
+                let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
+                let sx = rt.cursor_save_x;
+                let sy = rt.cursor_save_y;
+                for row in 0..cur_sz {
+                    let dy = sy + row;
+                    if dy < 0 || dy >= fbh_i { continue; }
+                    for col in 0..cur_sz {
+                        let dx = sx + col;
+                        if dx < 0 || dx >= fbw_i { continue; }
+                        let idx = (dy * stride_i + dx) as usize;
+                        if idx < fb_len {
+                            fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
+                        }
+                    }
+                }
+            }
+            rt.cursor_save_valid = false;
+        }
+        return;
+    }
     let fb_ptr = fb_addr as *mut u32;
 
     let cur_sz = lattice::cursor::Cursor::SIZE as i32;
