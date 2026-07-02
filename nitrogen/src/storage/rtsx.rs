@@ -180,21 +180,29 @@ impl RtsxController {
     // ── RTSX Hardware Init (MMIO access starts here) ──────────
 
     fn init_hardware(&self) -> bool {
+        // Before any MMIO access, verify the device is alive via PCI config
+        // space (port I/O, never hangs).  If the device is in D3cold or the
+        // PCIe link is down, this is our last safe bail-out point before
+        // touching MMIO registers that could hang the bus.
+        let vendor = crate::pci::PciConfigSpace::read_config_word(
+            self.device.bus, self.device.device, self.device.function, 0x00);
+        if vendor != self.device.vendor_id || vendor == 0xFFFF || vendor == 0x0000 {
+            log::warn!("RTSX: device not on PCI bus (vendor={:#06x})", vendor);
+            return false;
+        }
+
         // First MMIO access must be a WRITE (posted) — PCIe reads
         // (non-posted) can hang if the link is in an unstable state.
-        // Write MSI disable to wake the link, THEN do reads.
+        // We have already verified the device exists via PCI config space
+        // and re-asserted D0.  Skip any MMIO reads during init_hardware;
+        // register writes are posted and cannot hang the bus.
         log::info!("RTSX: first MMIO write at {:p}+0x1C", self.mmio);
         self.w16(RTSX_MSI_EN, 0x0000);
 
-        let test0 = self.r8(0x00);
-        log::info!("RTSX: BAR0[0x00] = {:#04x}", test0);
-
-        let cfg = self.r8(RTSX_CFG);
-        if cfg == 0xFF {
-            log::warn!("RTSX: device not responding (CFG=0xFF)");
-            return false;
+        // Wait for PCIe link to wake (L1→L0 transition).
+        for _ in 0..2000 {
+            core::hint::spin_loop();
         }
-        log::info!("RTSX: CFG={:#04x}", cfg);
 
         // Skip soft-reset (RTSX_CFG bit 0). PCI config-space init
         // (ensure_d0, ASPM disable) already puts the device in a known

@@ -208,18 +208,25 @@ impl XhciContext {
         // Phase 1: lightweight init without HCRST
         self.init_no_reset()?;
 
-        // Phase 2: if no port has CCS and no HSE, ports are ready
+        // Phase 2: always recover CCS=0 ports, even if others have CCS=1.
+        // Stopping a running controller in init_no_reset can lose USB 3.0
+        // PHY calibration; init_ports() handles WPR, PR, PP-toggle recovery.
+        // init_ports() skips ports that already have CCS=1, so it is safe
+        // to call unconditionally.
+        if self.registers.op.usbsts() & USBSTS_HSE != 0 {
+            log::warn!("xHCI: HSE after init_no_reset, clearing and recovering");
+            self.clear_hse_and_recover();
+        }
+        self.init_ports();
+
+        // If still no CCS after init_ports recovery, try full HCRST.
         let n_ports = self.ports.n_ports;
         let has_ccs = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
-        if has_ccs && self.registers.op.usbsts() & USBSTS_HSE == 0 {
+        if has_ccs {
             return Ok(());
         }
 
-        if self.registers.op.usbsts() & USBSTS_HSE != 0 {
-            log::warn!("xHCI: HSE after init_no_reset, trying full HCRST");
-        } else {
-            log::warn!("xHCI: init_no_reset produced no CCS=1, trying full HCRST");
-        }
+        log::warn!("xHCI: no CCS=1 after init_ports recovery, trying full HCRST");
         self.controller_reset()?;
         self.configure_before_start();
         self.setup_erst()?;
@@ -243,7 +250,11 @@ impl XhciContext {
     /// DCBAAP/CRCR/CONFIG while running can reset port state, losing
     /// CCS.  Strategy:
     ///   - If halted: write pre-RS registers, then RS=1, then ERST.
-    ///   - If running: skip DCBAAP/CRCR/CONFIG, just add ERST + HSEE.
+    ///   - If running: stop, reconfigure, restart.  Stopping a running
+    ///     controller can cause USB 3.0 PHY calibration loss on some
+    ///     Intel xHCI controllers.  We mitigate this by aggressive port
+    ///     recovery (PP toggle, WPR, PR) after the restart instead of
+    ///     falling through to a full HCRST, which would be even worse.
     pub fn init_no_reset(&mut self) -> Result<(), &'static str> {
         log::info!("xHCI: init_no_reset — preserving firmware state");
 
@@ -267,7 +278,9 @@ impl XhciContext {
             self.start_controller()?;
         } else {
             log::info!("xHCI: controller already running — stopping, then reconfiguring");
-            // Halt the running controller before reconfiguring core registers
+            // Halt the running controller before reconfiguring core registers.
+            // This may cause USB 3.0 PHY calibration loss on some Intel xHCIs,
+            // but is necessary to set up our own DCBAAP/CRCR/CONFIG.
             let op = &self.registers.op;
             op.set_usbcmd(op.usbcmd() & !USBCMD_RS); // Clear RS to halt
             let mut halted = false;
@@ -340,6 +353,9 @@ impl XhciContext {
     /// Initialise all root-hub ports: ensure port power is on, kick
     /// link training via RxDetect, and wait for devices to appear
     /// (CCS=1).  This is called once after the controller starts.
+    ///
+    /// Recovery/power-cycle/RxDetect logic only runs for ports with CCS=0,
+    /// preserving already-connected devices (CCS=1).
     fn init_ports(&mut self) {
         let op = &self.registers.op;
         log::info!("xHCI: initialising {} ports", self.ports.n_ports);
@@ -359,9 +375,15 @@ impl XhciContext {
         // ── Port power-up ─────────────────────────────────────
         // Power-cycle USB 3.0 ports that already have PP=1 (clean restart).
         // Only do this when PPC (Port Power Control) is supported.
+        // IMPORTANT: Only power-cycle ports with CCS=0 to avoid disturbing
+        // already-connected devices.
         if self.ports.ppc {
             for port_idx in 0..self.ports.n_ports {
                 let ps = op.portsc(port_idx).0;
+                let has_ccs = (ps & PORTSC_CCS) != 0;
+                if has_ccs {
+                    continue;
+                }
                 if (ps & PORTSC_PP) != 0 {
                     let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
                     if is_usb3 {
@@ -379,17 +401,32 @@ impl XhciContext {
         (0..self.ports.n_ports).for_each(|p| self.log_portsc(p));
 
         // ── Exit Compliance mode + kick RxDetect ──────────────
+        // Only perform recovery on ports with CCS=0 to avoid disturbing
+        // already-connected devices.
         for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx);
+            if ps.ccs() {
+                continue;
+            }
             super::port::exit_compliance(op, port_idx);
         }
         const PLS_RXDETECT: u32 = 5 << 5;
         for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx);
+            if ps.ccs() {
+                continue;
+            }
             op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
         }
         super::port::delay_ms(200);
 
         // ── Wait for link training (up to ~2s per port) ───────
+        // Only wait for ports with CCS=0 (those we attempted to recover).
         for port_idx in 0..self.ports.n_ports {
+            if op.portsc(port_idx).ccs() {
+                log::info!("xHCI: port {} already has CCS=1", port_idx);
+                continue;
+            }
             let mut appeared = false;
             for _ in 0..200 {
                 super::port::delay_ms(10);
@@ -430,6 +467,30 @@ impl XhciContext {
                 if op.portsc(port_idx).ccs() {
                     log::info!("xHCI: port {} CCS=1 after PR", port_idx);
                     continue;
+                }
+            }
+
+            // PP toggle fallback: power-cycle the port to force PHY
+            // re-initialization.  Some Intel xHCI controllers lose USB 3.0
+            // PHY calibration after HCRST or stop/restart; toggling port
+            // power forces the PHY to recalibrate.
+            if self.ports.ppc && !op.portsc(port_idx).ccs() {
+                log::info!("xHCI: port {} CCS=0, PP toggle fallback", port_idx);
+                let ps_raw = op.portsc(port_idx).0;
+                op.write_portsc(port_idx, (ps_raw & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                super::port::delay_ms(50);
+                let v2 = op.portsc(port_idx).0;
+                op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                super::port::delay_ms(200);
+
+                // After PP toggle, force RxDetect and wait for training
+                force_rx_detect(op, port_idx);
+                for _ in 0..200 {
+                    super::port::delay_ms(10);
+                    if op.portsc(port_idx).ccs() {
+                        log::info!("xHCI: port {} CCS=1 after PP toggle", port_idx);
+                        break;
+                    }
                 }
             }
             self.log_portsc(port_idx);
