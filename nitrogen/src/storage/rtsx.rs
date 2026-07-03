@@ -152,6 +152,52 @@ impl RtsxController {
         unsafe { ptr::write_volatile(self.mmio.add(off as usize) as *mut u16, val) }
     }
 
+    /// Check PCIe link status via config space (port I/O, safe).
+    /// Returns `true` if the link appears to be down.
+    ///
+    /// Walks the capabilities list to find the PCI Express capability
+    /// (cap ID 0x10), then reads the Link Status register at
+    /// `cap_offset + 0x12`.  If Negotiated Link Speed (bits 15:12)
+    /// is zero the link is down.
+    fn pcie_link_is_down(&self) -> bool {
+        let bus = self.device.bus;
+        let dev = self.device.device;
+        let func = self.device.function;
+
+        let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, 0x34);
+        if cap_ptr == 0 {
+            log::warn!("RTSX: no PCI capabilities list");
+            return true;
+        }
+        let mut off = cap_ptr;
+        loop {
+            if off < 0x40 || off > 0xFC {
+                break;
+            }
+            let cap_id = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off);
+            if cap_id == 0x10 {
+                let lnk_sts = crate::pci::PciConfigSpace::read_config_word(
+                    bus, dev, func, off + 0x12);
+                // Negotiated Link Speed in bits 15:12; zero means link down.
+                let speed = (lnk_sts >> 12) & 0xF;
+                if speed == 0 {
+                    log::warn!("RTSX: PCIe link down (lnk_sts={:#06x})", lnk_sts);
+                    return true;
+                }
+                log::info!("RTSX: PCIe link up (speed={})", speed);
+                return false;
+            }
+            let next = crate::pci::PciConfigSpace::read_config_byte(
+                bus, dev, func, off + 1);
+            if next == 0 || next == off {
+                break;
+            }
+            off = next;
+        }
+        log::warn!("RTSX: PCIe capability not found");
+        true
+    }
+
     // ── PPBUF data transfer ───────────────────────────────────
 
     fn ppbuf_read(&self, buf: &mut [u8]) {
@@ -332,6 +378,13 @@ impl RtsxController {
 
         if !self.init_hardware() {
             return Err("hardware init failed");
+        }
+
+        // Check PCIe link status via config space (port I/O, safe) before
+        // any MMIO read.  If the link is down, a non-posted MMIO read will
+        // hang the CPU bus with no timeout.
+        if self.pcie_link_is_down() {
+            return Err("PCIe link down");
         }
 
         for _ in 0..200_000 {

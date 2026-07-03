@@ -102,36 +102,56 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
     result
 }
 
-/// Write kernel log to a `Terminal`-compatible writer.
+/// Write kernel log to a string-sink callback without heap allocation.
+///
+/// The callback is invoked with one or more `&str` slices that together
+/// represent the entire ring buffer contents.  Invalid UTF-8 sequences
+/// (which can occur when the ring buffer wraps during multi-byte character
+/// writes) are replaced with the Unicode replacement character ``.
 ///
 /// This is called from the `dmesg` shell command handler.
-/// Invalid UTF-8 sequences (which can occur when the ring buffer
-/// wraps during multi-byte character writes) are replaced with the
-/// Unicode replacement character ``.
-pub fn write_to<W: fmt::Write>(writer: &mut W) -> fmt::Result {
-    let snap = snapshot();
-    let mut chunk = &snap[..];
+pub fn write_to<F>(mut emit: F)
+where
+    F: FnMut(&str),
+{
+    let guard = KLOG_BUF.lock();
+    let ring = &*guard;
+    if ring.len == 0 {
+        return;
+    }
+
+    let end = ring.head + ring.len;
+    if end <= KLOG_CAPACITY {
+        emit_utf8_lossy(&mut emit, &ring.buf[ring.head..end]);
+    } else {
+        emit_utf8_lossy(&mut emit, &ring.buf[ring.head..KLOG_CAPACITY]);
+        emit_utf8_lossy(&mut emit, &ring.buf[0..(end % KLOG_CAPACITY)]);
+    }
+}
+
+/// Split `bytes` on invalid UTF-8 boundaries and emit each valid segment.
+fn emit_utf8_lossy<F>(emit: &mut F, bytes: &[u8])
+where
+    F: FnMut(&str),
+{
+    let mut chunk = bytes;
     while !chunk.is_empty() {
         match core::str::from_utf8(chunk) {
             Ok(s) => {
-                writer.write_str(s)?;
+                emit(s);
                 break;
             }
             Err(e) => {
                 let valid_len = e.valid_up_to();
                 if valid_len > 0 {
-                    // SAFETY: the first `valid_len` bytes are valid UTF-8.
-                    writer.write_str(unsafe {
-                        core::str::from_utf8_unchecked(&chunk[..valid_len])
-                    })?;
+                    emit(unsafe { core::str::from_utf8_unchecked(&chunk[..valid_len]) });
                 }
-                writer.write_str("\u{FFFD}")?;
+                emit("\u{FFFD}");
                 let error_len = e.error_len().unwrap_or(1);
                 chunk = &chunk[valid_len + error_len..];
             }
         }
     }
-    Ok(())
 }
 
 /// Return the current size (in bytes) of the kernel log buffer.
