@@ -164,13 +164,22 @@ impl RtsxController {
         let dev = self.device.device;
         let func = self.device.function;
 
+        // First sanity check: if the device is off the bus, don't even try.
+        let vendor = crate::pci::PciConfigSpace::read_config_word(bus, dev, func, 0x00);
+        if vendor == 0xFFFF || vendor == 0x0000 {
+            log::warn!("RTSX: device not on PCI bus (vendor={:#06x})", vendor);
+            return true;
+        }
+
         let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, 0x34);
         if cap_ptr == 0 {
             log::warn!("RTSX: no PCI capabilities list");
             return true;
         }
         let mut off = cap_ptr;
-        loop {
+        // PCI spec allows at most 48 capabilities in the first 256 bytes
+        // (each capability header is at least 2 bytes).
+        for _ in 0..48 {
             if off < 0x40 || off > 0xFC {
                 break;
             }
@@ -194,7 +203,8 @@ impl RtsxController {
             }
             off = next;
         }
-        log::warn!("RTSX: PCIe capability not found");
+        log::warn!("RTSX: PCIe capability not found or walk terminated");
+        // Conservative: assume link is down if we can't confirm it's up.
         true
     }
 
@@ -383,9 +393,16 @@ impl RtsxController {
         // Check PCIe link status via config space (port I/O, safe) before
         // any MMIO read.  If the link is down, a non-posted MMIO read will
         // hang the CPU bus with no timeout.
+        // NOTE: This check is performed *after* init_hardware() so the
+        // posted MMIO writes have had a chance to wake the link.  The
+        // check itself only touches PCI config space (port I/O), which
+        // can never hang regardless of device state.
+        log::info!("RTSX: checking PCIe link status...");
         if self.pcie_link_is_down() {
+            log::error!("RTSX: PCIe link down, aborting");
             return Err("PCIe link down");
         }
+        log::info!("RTSX: PCIe link OK, proceeding to MMIO read");
 
         for _ in 0..200_000 {
             core::hint::spin_loop();
