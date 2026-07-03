@@ -114,19 +114,28 @@ pub fn write_to<F>(mut emit: F)
 where
     F: FnMut(&str),
 {
-    let guard = KLOG_BUF.lock();
-    let ring = &*guard;
-    if ring.len == 0 {
-        return;
-    }
+    // Copy ring buffer contents while lock is held, then drop the guard
+    // before calling emit_utf8_lossy, so terminal I/O runs without keeping
+    // KLOG_BUF locked.
+    let snapshot = {
+        let guard = KLOG_BUF.lock();
+        let ring = &*guard;
+        if ring.len == 0 {
+            return;
+        }
 
-    let end = ring.head + ring.len;
-    if end <= KLOG_CAPACITY {
-        emit_utf8_lossy(&mut emit, &ring.buf[ring.head..end]);
-    } else {
-        emit_utf8_lossy(&mut emit, &ring.buf[ring.head..KLOG_CAPACITY]);
-        emit_utf8_lossy(&mut emit, &ring.buf[0..(end % KLOG_CAPACITY)]);
-    }
+        let mut buf = alloc::vec::Vec::with_capacity(ring.len);
+        let end = ring.head + ring.len;
+        if end <= KLOG_CAPACITY {
+            buf.extend_from_slice(&ring.buf[ring.head..end]);
+        } else {
+            buf.extend_from_slice(&ring.buf[ring.head..KLOG_CAPACITY]);
+            buf.extend_from_slice(&ring.buf[0..(end % KLOG_CAPACITY)]);
+        }
+        buf
+    };
+
+    emit_utf8_lossy(&mut emit, &snapshot);
 }
 
 /// Split `bytes` on invalid UTF-8 boundaries and emit each valid segment.
@@ -147,8 +156,17 @@ where
                     emit(unsafe { core::str::from_utf8_unchecked(&chunk[..valid_len]) });
                 }
                 emit("\u{FFFD}");
-                let error_len = e.error_len().unwrap_or(1);
-                chunk = &chunk[valid_len + error_len..];
+                // error_len() == None means the error extends to end-of-input.
+                // Emit one replacement character for the tail and stop.
+                match e.error_len() {
+                    Some(len) => {
+                        chunk = &chunk[valid_len + len..];
+                    }
+                    None => {
+                        // Invalid UTF-8 extends to end of input — stop processing.
+                        break;
+                    }
+                }
             }
         }
     }

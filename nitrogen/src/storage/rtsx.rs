@@ -181,7 +181,9 @@ impl RtsxController {
         let mut found_pm = false;
         let mut found_pcie = false;
         for _ in 0..48 {
-            if off < 0x40 || off > 0xFC {
+            // Tighten bounds check: off + 0x12 must not overflow config space (256 bytes).
+            // PCIe capability reads at off+0x12, so off must be <= 0xED (256 - 19).
+            if off < 0x40 || off > 0xED {
                 break;
             }
             let cap_id = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off);
