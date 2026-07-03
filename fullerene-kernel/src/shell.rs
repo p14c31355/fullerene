@@ -371,13 +371,8 @@ fn register_nozzle_hooks() {
             let klog_len = crate::klog::len();
             if klog_len > 0 {
                 ctx.terminal.write_str("=== Kernel log ===\n");
-                let snap = crate::klog::snapshot();
-                let s = alloc::string::String::from_utf8_lossy(&snap);
-                ctx.terminal.write_str(&s);
-                if !s.ends_with('\n') {
-                    ctx.terminal.write_str("\n");
-                }
-                ctx.terminal.write_str("=== End kernel log ===\n");
+                crate::klog::write_to(|s| ctx.terminal.write_str(s));
+                ctx.terminal.write_str("\n=== End kernel log ===\n");
             }
             // ── HDA diagnostic info (read via KernelContext) ──
             {

@@ -102,36 +102,74 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
     result
 }
 
-/// Write kernel log to a `Terminal`-compatible writer.
+/// Write kernel log to a string-sink callback without heap allocation.
+///
+/// The callback is invoked with one or more `&str` slices that together
+/// represent the entire ring buffer contents.  Invalid UTF-8 sequences
+/// (which can occur when the ring buffer wraps during multi-byte character
+/// writes) are replaced with the Unicode replacement character ``.
 ///
 /// This is called from the `dmesg` shell command handler.
-/// Invalid UTF-8 sequences (which can occur when the ring buffer
-/// wraps during multi-byte character writes) are replaced with the
-/// Unicode replacement character ``.
-pub fn write_to<W: fmt::Write>(writer: &mut W) -> fmt::Result {
-    let snap = snapshot();
-    let mut chunk = &snap[..];
+pub fn write_to<F>(mut emit: F)
+where
+    F: FnMut(&str),
+{
+    // Copy ring buffer contents while lock is held, then drop the guard
+    // before calling emit_utf8_lossy, so terminal I/O runs without keeping
+    // KLOG_BUF locked.
+    let snapshot = {
+        let guard = KLOG_BUF.lock();
+        let ring = &*guard;
+        if ring.len == 0 {
+            return;
+        }
+
+        let mut buf = alloc::vec::Vec::with_capacity(ring.len);
+        let end = ring.head + ring.len;
+        if end <= KLOG_CAPACITY {
+            buf.extend_from_slice(&ring.buf[ring.head..end]);
+        } else {
+            buf.extend_from_slice(&ring.buf[ring.head..KLOG_CAPACITY]);
+            buf.extend_from_slice(&ring.buf[0..(end % KLOG_CAPACITY)]);
+        }
+        buf
+    };
+
+    emit_utf8_lossy(&mut emit, &snapshot);
+}
+
+/// Split `bytes` on invalid UTF-8 boundaries and emit each valid segment.
+fn emit_utf8_lossy<F>(emit: &mut F, bytes: &[u8])
+where
+    F: FnMut(&str),
+{
+    let mut chunk = bytes;
     while !chunk.is_empty() {
         match core::str::from_utf8(chunk) {
             Ok(s) => {
-                writer.write_str(s)?;
+                emit(s);
                 break;
             }
             Err(e) => {
                 let valid_len = e.valid_up_to();
                 if valid_len > 0 {
-                    // SAFETY: the first `valid_len` bytes are valid UTF-8.
-                    writer.write_str(unsafe {
-                        core::str::from_utf8_unchecked(&chunk[..valid_len])
-                    })?;
+                    emit(unsafe { core::str::from_utf8_unchecked(&chunk[..valid_len]) });
                 }
-                writer.write_str("\u{FFFD}")?;
-                let error_len = e.error_len().unwrap_or(1);
-                chunk = &chunk[valid_len + error_len..];
+                emit("\u{FFFD}");
+                // error_len() == None means the error extends to end-of-input.
+                // Emit one replacement character for the tail and stop.
+                match e.error_len() {
+                    Some(len) => {
+                        chunk = &chunk[valid_len + len..];
+                    }
+                    None => {
+                        // Invalid UTF-8 extends to end of input — stop processing.
+                        break;
+                    }
+                }
             }
         }
     }
-    Ok(())
 }
 
 /// Return the current size (in bytes) of the kernel log buffer.
