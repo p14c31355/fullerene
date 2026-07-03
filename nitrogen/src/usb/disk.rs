@@ -23,8 +23,12 @@ pub struct Disk {
     pub dev_addr: u8,
     /// Bulk OUT endpoint address.
     pub ep_out: u8,
+    /// Bulk OUT endpoint max packet size (bytes).
+    pub ep_out_mps: u16,
     /// Bulk IN endpoint address.
     pub ep_in: u8,
+    /// Bulk IN endpoint max packet size (bytes).
+    pub ep_in_mps: u16,
     /// Block size in bytes (typically 512).
     pub block_size: u32,
     /// Total number of blocks.
@@ -66,6 +70,30 @@ impl StorageManager {
         ep_in: u8,
         ctrl_idx: usize,
     ) -> bool {
+        self.try_mount_with_mps(
+            ctrl_type,
+            dev_addr,
+            ep_out,
+            512,
+            ep_in,
+            512,
+            ctrl_idx,
+        )
+    }
+
+    /// Try to mount a mass-storage device with the given endpoint info
+    /// and per-endpoint max packet sizes.  `ep_out_mps` and `ep_in_mps`
+    /// are the device-reported wMaxPacketSize for each bulk endpoint.
+    pub fn try_mount_with_mps(
+        &mut self,
+        ctrl_type: &'static str,
+        dev_addr: u8,
+        ep_out: u8,
+        ep_out_mps: u16,
+        ep_in: u8,
+        ep_in_mps: u16,
+        ctrl_idx: usize,
+    ) -> bool {
         let disk_num = self.disks.len() + 1;
         let name = alloc::format!("USB Drive {}", disk_num);
         let mount_point = alloc::format!("/mnt/usb-{}", disk_num);
@@ -75,7 +103,9 @@ impl StorageManager {
             mount_point,
             dev_addr,
             ep_out,
+            ep_out_mps,
             ep_in,
+            ep_in_mps,
             block_size: 512,
             total_blocks: 0,
             ctrl_type,

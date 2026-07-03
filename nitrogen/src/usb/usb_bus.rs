@@ -222,13 +222,13 @@ pub fn bot_write_sectors(
 
 /// Enumerate a mass-storage device on the given host controller.
 ///
-/// Returns `(dev_addr, ep_out, ep_in, block_size)` or an error.
+/// Returns `(ep_out, ep_out_mps, ep_in, ep_in_mps, block_size)` or an error.
 /// Uses the host controller's `control_transfer` and `bulk_transfer`.
 pub fn enumerate_mass_storage(
     host: &mut dyn HostController,
     dev_addr: u8,
     dev_idx: usize,
-) -> Result<(u8, u8, u32), &'static str> {
+) -> Result<(u8, u16, u8, u16, u32), &'static str> {
     // Step 1: Get device descriptor (64 bytes for safety)
     let mut desc_buf = [0u8; 64];
     let setup = UsbSetupPacket {
@@ -274,7 +274,7 @@ pub fn enumerate_mass_storage(
     };
     let cfg_res = host.control_transfer(dev_addr, &setup_cfg_read, &mut cfg_buf);
 
-    let (ep_out, ep_in) = if let Ok(cfg_len) = cfg_res {
+    let (ep_out, ep_out_mps, ep_in, ep_in_mps) = if let Ok(cfg_len) = cfg_res {
         if cfg_len < 9 {
             return Err("config too short");
         }
@@ -283,8 +283,8 @@ pub fn enumerate_mass_storage(
         if dev_class != 0x08 {
             return Err("not MSC");
         }
-        // Fallback: hardcoded endpoints
-        (0x02u8, 0x82u8)
+        // Fallback: hardcoded endpoints (High-speed defaults)
+        (0x02u8, 512u16, 0x82u8, 512u16)
     };
 
     // Update device metadata
@@ -294,15 +294,23 @@ pub fn enumerate_mass_storage(
         dev.device_protocol = desc_buf[6];
     }
 
-    Ok((ep_out, ep_in, 512))
+    Ok((ep_out, ep_out_mps, ep_in, ep_in_mps, 512))
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.
-fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u8) {
+///
+/// Returns `(ep_out_address, ep_out_mps, ep_in_address, ep_in_mps)`.
+/// For SuperSpeed USB devices, the wMaxPacketSize field of a Bulk endpoint
+/// must be 1024 bytes per USB 3.x spec §4.4.7.1. We use the value reported
+/// by the device so that the xHCI endpoint context is configured correctly;
+/// falling back to a speed-appropriate default when the descriptor is missing.
+fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u16, u8, u16) {
     let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let mut offset: usize = 9;
     let mut found_out: Option<u8> = None;
+    let mut found_out_mps: Option<u16> = None;
     let mut found_in: Option<u8> = None;
+    let mut found_in_mps: Option<u16> = None;
 
     let limit = total_len.min(cfg_len).min(cfg_buf.len());
     while offset + 2 <= limit {
@@ -315,12 +323,16 @@ fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u8) {
             // ENDPOINT descriptor
             let ep_addr = cfg_buf[offset + 2];
             let ep_attr = cfg_buf[offset + 3];
+            // wMaxPacketSize at offset 4..5 (little-endian)
+            let mps = u16::from_le_bytes([cfg_buf[offset + 4], cfg_buf[offset + 5]]);
             if (ep_attr & 0x03) == 2 {
                 // Bulk endpoint
                 if ep_addr & 0x80 != 0 {
                     found_in = Some(ep_addr);
+                    found_in_mps = Some(mps);
                 } else {
                     found_out = Some(ep_addr);
+                    found_out_mps = Some(mps);
                 }
             }
         }
@@ -329,7 +341,12 @@ fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u8) {
 
     let out = found_out.unwrap_or(0x02);
     let in_ep = found_in.unwrap_or(0x82);
-    (out, in_ep)
+    // Default mps to 512 for High-speed / Full-speed. SuperSpeed USB
+    // descriptors report 1024 for bulk endpoints; we use whatever the
+    // descriptor says when it is present.
+    let out_mps = found_out_mps.filter(|&m| m > 0).unwrap_or(512);
+    let in_mps = found_in_mps.filter(|&m| m > 0).unwrap_or(512);
+    (out, out_mps, in_ep, in_mps)
 }
 
 // EHCI-specific enumeration is in hub.rs (enumerate_device).

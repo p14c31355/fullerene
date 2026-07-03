@@ -132,6 +132,10 @@ pub struct RtsxController {
     mmio: *mut u8,
     mmio_mapped: bool,
     sd_card: Option<SdCardInfo>,
+    /// Upstream PCIe bridge coordinates (bus, dev, func).  When set,
+    /// we re-assert D0/ASPM disable on the bridge before each MMIO
+    /// session to avoid hangs caused by L1 substate transitions.
+    upstream_bridge: Option<(u8, u8, u8)>,
 }
 
 unsafe impl Send for RtsxController {}
@@ -295,6 +299,17 @@ impl RtsxController {
             core::hint::spin_loop();
         }
 
+        // Send several additional posted writes to flush the host bridge's
+        // posted-write buffer and ensure the PCIe link has fully exited L1.
+        // Some Realtek controllers need extra wake-up time before the first
+        // non-posted read; without this, sd_bus_stat reads can hang on
+        // cold-boot when ASPM put the link into L1 substate.
+        self.w8(CARD_CLK_EN, 0x00);
+        self.w8(CARD_CLK_EN, 0x00);
+        for _ in 0..50_000 {
+            core::hint::spin_loop();
+        }
+
         // Skip soft-reset (RTSX_CFG bit 0). PCI config-space init
         // (ensure_d0, ASPM disable) already puts the device in a known
         // state, and the MMIO soft-reset can destabilise the PCIe link.
@@ -421,6 +436,21 @@ impl RtsxController {
         self.device.ensure_d0();
         self.device.enable_memory_access();
 
+        // Re-disable ASPM on the device and the upstream bridge.  The
+        // PCIe link may have entered L1 substate since boot; if the link
+        // is in L1 when we issue the first non-posted MMIO read, the host
+        // will wait for the link to wake up — and on some Realtek
+        // controllers with buggy ASPM, this wait can hang the CPU
+        // indefinitely.  Disabling ASPM forces the link back to L0.
+        self.device.disable_pcie_aspm();
+        if let Some((b, d, f)) = self.upstream_bridge {
+            let bridge = PciDevice::new(b, d, f);
+            if let Some(bridge) = bridge {
+                log::info!("RTSX: re-disabling ASPM on upstream bridge {:02x}:{:02x}.{}", b, d, f);
+                bridge.disable_pcie_aspm();
+            }
+        }
+
         if !self.init_hardware() {
             return Err("hardware init failed");
         }
@@ -436,6 +466,17 @@ impl RtsxController {
 
         for _ in 0..200_000 {
             core::hint::spin_loop();
+        }
+
+        // Re-check the vendor ID via PCI config space immediately before
+        // the first non-posted MMIO read.  If the link dropped between the
+        // accessibility check above and this point, the upcoming MMIO read
+        // would hang the CPU indefinitely.  Bailing out here keeps the
+        // system responsive instead of hanging.
+        let vendor_now = crate::pci::PciConfigSpace::read_config_word(
+            self.device.bus, self.device.device, self.device.function, 0x00);
+        if vendor_now != self.device.vendor_id || vendor_now == 0xFFFF || vendor_now == 0 {
+            return Err("device vanished from PCI bus before MMIO read");
         }
 
         let bus = self.r8(SD_BUS_STAT);
@@ -770,6 +811,7 @@ pub fn init(ctx: &dyn DriverContext) {
                 mmio,
                 mmio_mapped: true,
                 sd_card: None,
+                upstream_bridge: upstream_bridge.map(|b| (b.bus, b.device, b.function)),
             });
             log::info!("RTSX: controller registered (MMIO deferred)");
             return;

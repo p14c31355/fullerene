@@ -362,7 +362,7 @@ impl USBContext {
     }
 
     fn mount_xhci_device(&mut self, ctrl_idx: usize, dev_idx: usize) {
-        let (dev_addr, ep_out, ep_in) = {
+        let (dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps) = {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
 
             let slot_id = match xhci.enable_slot() {
@@ -380,20 +380,34 @@ impl USBContext {
                 dev_addr,
                 dev_idx,
             );
-            let (ep_out, ep_in, _blk) = match result {
+            let (ep_out, ep_out_mps, ep_in, ep_in_mps, _blk) = match result {
                 Ok(v) => v,
                 Err(_) => return,
             };
 
-            if xhci.configure_endpoint_bulk(slot_id, ep_out, 512).is_err() {
+            // Use the device-reported wMaxPacketSize for each endpoint.
+            // For SuperSpeed (USB 3.x) bulk endpoints this must be 1024;
+            // for High-speed / Full-speed it is 512.  Using the wrong value
+            // causes the controller to mis-segment transfers and the
+            // device may silently fail to enumerate or stall on the
+            // first bulk transfer.
+            if xhci.configure_endpoint_bulk(slot_id, ep_out, ep_out_mps).is_err() {
                 return;
             }
-            if xhci.configure_endpoint_bulk(slot_id, ep_in, 512).is_err() {
+            if xhci.configure_endpoint_bulk(slot_id, ep_in, ep_in_mps).is_err() {
                 return;
             }
-            (dev_addr, ep_out, ep_in)
+            (dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps)
         };
 
-        self.storage.try_mount("xHCI", dev_addr, ep_out, ep_in, ctrl_idx);
+        self.storage.try_mount_with_mps(
+            "xHCI",
+            dev_addr,
+            ep_out,
+            ep_out_mps,
+            ep_in,
+            ep_in_mps,
+            ctrl_idx,
+        );
     }
 }
