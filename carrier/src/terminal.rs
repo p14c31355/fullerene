@@ -21,5 +21,3 @@ pub trait Terminal {
 
     fn clear_pipe_stdin(&mut self) {}
 }
-
-

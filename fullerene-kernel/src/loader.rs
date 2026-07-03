@@ -2,6 +2,14 @@
 //!
 //! This module is responsible for loading executable programs into memory
 //! and creating processes to run them.
+//!
+//! # Memory separation
+//!
+//! The loader writes segment data directly into the physical frames
+//! backing the process page table, using `physical_to_virtual` to map
+//! the kernel's direct-mapped view of the frames.  This avoids the need
+//! to switch CR3 to the process page table during loading, which is
+//! unsafe and racy in a preemptible kernel.
 
 use crate::process;
 use core::ptr;
@@ -11,38 +19,6 @@ use petroleum::page_table::types::PageTableHelper;
 use x86_64::structures::paging::FrameAllocator;
 
 pub const PROGRAM_LOAD_BASE: u64 = 0x400000; // 4MB base address for user programs
-
-/// Guard for switching CR3 (page table base register).
-///
-/// SAFETY: This guard performs an unsafe operation to switch the page table.
-/// It is safe because it always restores the original CR3 in the Drop implementation.
-pub struct CrxSwitchGuard {
-    original_cr3: x86_64::structures::paging::PhysFrame,
-    original_cr3_flags: x86_64::registers::control::Cr3Flags,
-}
-
-impl CrxSwitchGuard {
-    /// Create a new CR3 switch guard.
-    ///
-    /// SAFETY: This function performs an unsafe operation to switch the page table.
-    /// It is safe because we always restore the original CR3 in the Drop implementation.
-    unsafe fn new(page_table: &ProcessPageTable) -> Self {
-        let (original_cr3, original_cr3_flags) = x86_64::registers::control::Cr3::read();
-        let _ = crate::memory_management::switch_to_page_table(page_table);
-        Self {
-            original_cr3,
-            original_cr3_flags,
-        }
-    }
-}
-
-impl Drop for CrxSwitchGuard {
-    fn drop(&mut self) {
-        unsafe {
-            x86_64::registers::control::Cr3::write(self.original_cr3, self.original_cr3_flags);
-        }
-    }
-}
 
 /// Load a program from raw bytes and create a process for it using goblin.
 /// If `linux_abi` is true, attaches a LinuxRuntime for Linux ABI emulation.
@@ -90,113 +66,117 @@ fn load_program_inner(
         });
     }
 
-    // Load program segments using goblin
+    // Load program segments into the process page table.
+    //
+    // We write each PT_LOAD segment into the freshly allocated physical
+    // frame using `physical_to_virtual`, which gives us a kernel-visible
+    // pointer to the user-space page.  This avoids switching CR3 to the
+    // process page table during load and keeps the kernel's address space
+    // active.
     process::PROCESS_MANAGER
         .with_process(pid, |p| {
             let process_page_table = p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
 
             for ph in &elf.program_headers {
-                // Only load PT_LOAD segments
-                if ph.p_type == PT_LOAD {
-                    // Load the segment data inline
-                    let file_offset = ph.p_offset as usize;
-                    let file_size = ph.p_filesz as usize;
-                    let mem_size = ph.p_memsz as usize;
-                    let vaddr = ph.p_vaddr as u64;
+                if ph.p_type != PT_LOAD {
+                    continue;
+                }
+                let file_offset = ph.p_offset as usize;
+                let file_size = ph.p_filesz as usize;
+                let mem_size = ph.p_memsz as usize;
+                let vaddr = ph.p_vaddr as u64;
 
-                    // Bounds check
-                    if file_offset + file_size > image_data.len() {
-                        return Err(LoadError::InvalidFormat);
-                    }
+                // Check file range with overflow protection
+                let file_end = file_offset.checked_add(file_size)
+                    .ok_or(LoadError::InvalidFormat)?;
+                if file_end > image_data.len() {
+                    return Err(LoadError::InvalidFormat);
+                }
+                if mem_size < file_size {
+                    return Err(LoadError::InvalidFormat);
+                }
+                // Check virtual address range with overflow protection
+                let vaddr_end = vaddr.checked_add(mem_size as u64)
+                    .ok_or(LoadError::InvalidFormat)?;
+                if mem_size == 0 {
+                    return Err(LoadError::InvalidFormat);
+                }
+                let start_addr = x86_64::VirtAddr::new(vaddr);
+                let end_addr = x86_64::VirtAddr::new(vaddr_end - 1);
+                if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr)
+                {
+                    return Err(LoadError::UnsupportedArchitecture);
+                }
+                let num_pages = petroleum::common::utils::calculate_pages(mem_size);
 
-                    // Ensure mem_size >= file_size and check for overflow
-                    if mem_size < file_size || vaddr.checked_add(mem_size as u64).is_none() {
-                        return Err(LoadError::InvalidFormat);
-                    }
-
-                    // Validate that the virtual address range is in user space
-
-                    let start_addr = x86_64::VirtAddr::new(vaddr);
-                    let end_addr = x86_64::VirtAddr::new(vaddr + mem_size as u64 - 1);
-
-                    if !petroleum::is_user_address(start_addr)
-                        || !petroleum::is_user_address(end_addr)
+                // Check that the virtual address range is not already mapped.
+                for page_idx in 0..num_pages {
+                    let page_vaddr = x86_64::VirtAddr::new(
+                        petroleum::common::utils::calculate_offset_address(vaddr, page_idx),
+                    );
+                    let ppt: &ProcessPageTable = &**process_page_table;
+                    if PageTableHelper::translate_address(ppt, page_vaddr.as_u64() as usize).is_ok()
                     {
-                        return Err(LoadError::UnsupportedArchitecture);
+                        return Err(LoadError::AddressAlreadyMapped);
                     }
+                }
 
-                    let num_pages = petroleum::common::utils::calculate_pages(mem_size);
-
-                    // Check that the virtual address range is not already mapped
-                    for page_idx in 0..num_pages {
-                        let page_vaddr = x86_64::VirtAddr::new(
-                            petroleum::common::utils::calculate_offset_address(vaddr, page_idx),
-                        );
-                        let ppt: &ProcessPageTable = &**process_page_table;
-                        if PageTableHelper::translate_address(ppt, page_vaddr.as_u64() as usize)
-                            .is_ok()
-                        {
-                            return Err(LoadError::AddressAlreadyMapped);
-                        }
+                // For each page needed by the segment, allocate a physical frame,
+                // map it into the process page table, then write the segment data
+                // via the kernel's direct-mapped view of the frame.
+                use x86_64::structures::paging::PageTableFlags as X86Flags;
+                for page_idx in 0..num_pages {
+                    let page_vaddr = x86_64::VirtAddr::new(
+                        petroleum::common::utils::calculate_offset_address(vaddr, page_idx),
+                    );
+                    let frame = crate::heap::FRAME_ALLOCATOR
+                        .lock()
+                        .as_mut()
+                        .ok_or(LoadError::OutOfMemory)?
+                        .allocate_frame()
+                        .ok_or(LoadError::OutOfMemory)?;
+                    let mut page_flags = X86Flags::PRESENT | X86Flags::USER_ACCESSIBLE;
+                    if (ph.p_flags & PF_W) != 0 {
+                        page_flags |= X86Flags::WRITABLE;
                     }
-
-                    // For each page needed by the segment, allocate a physical frame and map it
-                    for page_idx in 0..num_pages {
-                        let page_vaddr = x86_64::VirtAddr::new(
-                            petroleum::common::utils::calculate_offset_address(vaddr, page_idx),
-                        );
-
-                        // Allocate a physical frame for this page
-                        let frame = crate::heap::FRAME_ALLOCATOR
-                            .lock()
-                            .as_mut()
-                            .ok_or(LoadError::OutOfMemory)?
-                            .allocate_frame()
-                            .ok_or(LoadError::OutOfMemory)?;
-
-                        // Map the virtual page to the physical frame
-                        use x86_64::structures::paging::PageTableFlags as X86Flags;
-                        let mut page_flags = X86Flags::PRESENT | X86Flags::USER_ACCESSIBLE;
-                        if (ph.p_flags & PF_W) != 0 {
-                            page_flags |= X86Flags::WRITABLE;
-                        }
-                        if (ph.p_flags & PF_X) == 0 {
-                            page_flags |= X86Flags::NO_EXECUTE;
-                        }
-                        if (ph.p_flags & PF_X) != 0 {
-                            // Clear NO_EXECUTE if executable
-                            page_flags.remove(X86Flags::NO_EXECUTE);
-                        }
-
-                        // Map directly into the process page table (not kernel's),
-                        // so the mapping is visible after the CR3 switch below.
-                        PageTableHelper::map_page(
-                            &mut **process_page_table,
-                            page_vaddr.as_u64() as usize,
-                            frame.start_address().as_u64() as usize,
-                            page_flags,
-                            petroleum::page_table::constants::get_frame_allocator_mut(),
-                        )
-                        .map_err(|_| LoadError::OutOfMemory)?;
+                    if (ph.p_flags & PF_X) == 0 {
+                        page_flags |= X86Flags::NO_EXECUTE;
                     }
+                    PageTableHelper::map_page(
+                        &mut **process_page_table,
+                        page_vaddr.as_u64() as usize,
+                        frame.start_address().as_u64() as usize,
+                        page_flags,
+                        petroleum::page_table::constants::get_frame_allocator_mut(),
+                    )
+                    .map_err(|_| LoadError::OutOfMemory)?;
 
-                    // Switch to process page table to copy segment data.
-                    // Now the process page table has the mapping, so writing
-                    // through the virtual address will work correctly.
-                    let _cr3_guard = unsafe { CrxSwitchGuard::new(process_page_table) };
-
-                    // Copy file data
-                    let src = &image_data[file_offset..file_offset + file_size];
-                    let dest = vaddr as *mut u8;
-
+                    // Write directly through the kernel's direct-mapped view of
+                    // the physical frame.  This does NOT require a CR3 switch —
+                    // the kernel's page table always maps all physical memory at
+                    // `physical_memory_offset`.
+                    let frame_phys = frame.start_address().as_u64() as usize;
+                    let frame_vaddr = petroleum::common::memory::physical_to_virtual(frame_phys);
+                    let page_offset = (page_idx * 4096) as u64;
                     unsafe {
-                        ptr::copy_nonoverlapping(src.as_ptr(), dest, file_size);
-                    }
-
-                    // Zero out remaining memory if mem_size > file_size
-                    if mem_size > file_size {
-                        unsafe {
-                            ptr::write_bytes(dest.add(file_size), 0, mem_size - file_size);
+                        if page_offset < file_size as u64 {
+                            let copy_len = ((file_size as u64) - page_offset).min(4096) as usize;
+                            let src_offset = (file_offset as u64 + page_offset) as usize;
+                            ptr::copy_nonoverlapping(
+                                image_data[src_offset..src_offset + copy_len].as_ptr(),
+                                frame_vaddr as *mut u8,
+                                copy_len,
+                            );
+                            if copy_len < 4096 {
+                                ptr::write_bytes(
+                                    (frame_vaddr as *mut u8).add(copy_len),
+                                    0,
+                                    4096 - copy_len,
+                                );
+                            }
+                        } else {
+                            // Zero-fill BSS page entirely.
+                            ptr::write_bytes(frame_vaddr as *mut u8, 0, 4096);
                         }
                     }
                 }

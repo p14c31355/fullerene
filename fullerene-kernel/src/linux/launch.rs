@@ -1,7 +1,6 @@
 // Linux binary launcher
 use crate::loader::LoadError;
-use crate::process::{self, ProcessId};
-use alloc::vec::Vec;
+use crate::process::ProcessId;
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
@@ -25,7 +24,7 @@ pub fn launch_linux_from_slice(data: &[u8], name: &str) -> Result<ProcessId, Loa
 /// Launch a Linux ELF binary from raw bytes, extracting filename from path.
 pub fn launch_linux_from_data(data: &[u8], name: &str) -> Result<ProcessId, LoadError> {
     // Use the existing ELF loader with is_linux=true
-    let name = name.rsplit('/').next().unwrap_or(name);
+    let _ = name.rsplit('/').next().unwrap_or(name);
     // We need a static name. Use a simple approach.
     let static_name = "linux-app";
     crate::loader::load_program_with_runtime(data, static_name, true)
@@ -54,7 +53,7 @@ pub fn launch_busybox() -> Result<ProcessId, &'static str> {
 }
 
 /// Initialize the initramfs: creates basic Linux filesystem structure
-/// and places built-in binaries if available.
+/// and unpacks any embedded CPIO archive into the VFS.
 pub fn init_initramfs() {
     log::info!("Initramfs: creating Linux filesystem structure");
 
@@ -76,6 +75,7 @@ pub fn init_initramfs() {
         "/home",
         "/lib",
         "/lib64",
+        "/mnt",
     ];
 
     for dir in &dirs {
@@ -88,5 +88,28 @@ pub fn init_initramfs() {
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
 
+    // If a CPIO archive is embedded in the kernel, unpack it now.
+    // This is the third layer of the storage stack foundation:
+    //   block cache → FAT32 → initramfs.
+    if let Some(archive) = embedded_initramfs() {
+        log::info!(
+            "Initramfs: unpacking {} bytes of CPIO archive",
+            archive.len()
+        );
+        match crate::initramfs::unpack(archive) {
+            Ok(n) => log::info!("Initramfs: unpacked {} entries from CPIO archive", n),
+            Err(e) => log::warn!("Initramfs: CPIO unpack failed: {}", e),
+        }
+    }
+
     log::info!("Initramfs: Linux filesystem structure created");
+}
+
+/// Return the embedded CPIO archive, if one was compiled into the kernel.
+///
+/// This is a hook for future build-time integration.  When the build
+/// system embeds a CPIO archive via `include_bytes!`, this function
+/// returns `Some(&[u8])`.  For now, it returns `None`.
+fn embedded_initramfs() -> Option<&'static [u8]> {
+    None
 }

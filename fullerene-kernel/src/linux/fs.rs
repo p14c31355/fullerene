@@ -1,10 +1,28 @@
 // Linux file system syscall implementations
 use super::numbers::*;
 use super::runtime::{
-    LinuxFileDesc, LinuxRuntime, Runtime, copy_from_user, copy_to_user, copy_user_string,
-    copy_val_to_user, errno_code, errno_result,
+    LinuxFileDesc, LinuxRuntime, copy_from_user, copy_to_user, copy_user_string, copy_val_to_user,
+    errno_code, errno_result,
 };
 use super::types::*;
+
+/// Define a stub Linux syscall that returns `ret`.
+macro_rules! linux_stub {
+    ($name:ident, $ret:expr) => {
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+            $ret
+        }
+    };
+}
+
+/// Define a stub Linux syscall that returns `errno_code($err)`.
+macro_rules! linux_stub_errno {
+    ($name:ident, $err:expr) => {
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+            errno_code($err)
+        }
+    };
+}
 
 pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
@@ -194,7 +212,6 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
 
 pub fn sys_creat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
-    let mode = args[1] as u32;
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
         Err(e) => return errno_code(e),
@@ -271,7 +288,7 @@ fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn sys_stat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_stat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
     let statbuf = args[1];
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
@@ -284,11 +301,9 @@ pub fn sys_stat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_newfstatat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _dirfd = args[0] as i32;
+pub fn sys_newfstatat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[1];
     let statbuf = args[2];
-    let _flags = args[3] as i32;
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
         Err(e) => return errno_code(e),
@@ -302,14 +317,10 @@ pub fn sys_newfstatat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 /// Internal stat info for a VFS fd.
 struct StatInfo {
     ino: u64,
-    is_dir: bool,
 }
 
 fn fill_stat_from_fd(vfs_fd: u32) -> StatInfo {
-    StatInfo {
-        ino: vfs_fd as u64,
-        is_dir: false,
-    }
+    StatInfo { ino: vfs_fd as u64 }
 }
 
 pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -343,9 +354,8 @@ pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let size = {
         let mut buf = [0u8; 512];
         let mut total = 0usize;
-        let mut vfs_fd_ref = desc;
         loop {
-            match crate::contexts::vfs::read(vfs_fd_ref.vfs_fd, &mut buf) {
+            match crate::contexts::vfs::read(desc.vfs_fd, &mut buf) {
                 Ok(0) => break,
                 Ok(n) => total += n,
                 Err(_) => break,
@@ -353,8 +363,6 @@ pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
         total
     };
-    // Re-fetch desc (it was moved)
-    let desc = rt.fd_table.get(fd).unwrap().clone();
 
     let stat = LinuxStat {
         st_dev: 0,
@@ -508,9 +516,8 @@ pub fn sys_writev(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     total
 }
 
-pub fn sys_access(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_access(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
-    let _mode = args[1] as i32;
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
         Err(e) => return errno_code(e),
@@ -522,10 +529,8 @@ pub fn sys_access(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_faccessat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _dirfd = args[0] as i32;
+pub fn sys_faccessat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[1];
-    let _mode = args[2] as i32;
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
         Err(e) => return errno_code(e),
@@ -544,64 +549,53 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if LinuxRuntime::is_std_fd(fd) {
         return errno_code(ENOTDIR);
     }
-    let desc = match rt.fd_table.get(fd) {
-        Some(d) => d.clone(),
-        None => return errno_code(EBADF),
-    };
+    if rt.fd_table.get(fd).is_none() {
+        return errno_code(EBADF);
+    }
     // TODO: Track directory paths per fd for proper getdents64 support.
     // For now, always read the root directory.
-    let path = "/";
-    let entries = match crate::contexts::vfs::readdir(path) {
+    let entries = match crate::contexts::vfs::readdir("/") {
         Ok(e) => e,
         Err(_) => return errno_code(ENOTDIR),
     };
     let mut written = 0u32;
     let base = buf;
-    unsafe {
-        for entry in &entries {
-            let name_bytes = entry.name.as_bytes();
-            let name_len = name_bytes.len().min(255);
-            let reclen = core::mem::size_of::<LinuxDirent64>() as u16;
-            if written + reclen as u32 > count {
-                break;
-            }
-            let d = LinuxDirent64 {
-                d_ino: 1,
-                d_off: 1,
-                d_reclen: reclen,
-                d_type: if entry.is_dir { DT_DIR } else { DT_REG },
-                d_name: {
-                    let mut bufname = [0u8; 256];
-                    bufname[..name_len].copy_from_slice(&name_bytes[..name_len]);
-                    bufname
-                },
-            };
-            let dst = base + written as u64;
-            if unsafe { copy_val_to_user(dst, &d) }.is_err() {
-                return errno_code(EFAULT);
-            }
-            written += reclen as u32;
+    for entry in &entries {
+        let name_bytes = entry.name.as_bytes();
+        let name_len = name_bytes.len().min(255);
+        let reclen = core::mem::size_of::<LinuxDirent64>() as u16;
+        if written + reclen as u32 > count {
+            break;
         }
+        let d = LinuxDirent64 {
+            d_ino: 1,
+            d_off: 1,
+            d_reclen: reclen,
+            d_type: if entry.is_dir { DT_DIR } else { DT_REG },
+            d_name: {
+                let mut bufname = [0u8; 256];
+                bufname[..name_len].copy_from_slice(&name_bytes[..name_len]);
+                bufname
+            },
+        };
+        let dst = base + written as u64;
+        if unsafe { copy_val_to_user(dst, &d) }.is_err() {
+            return errno_code(EFAULT);
+        }
+        written += reclen as u32;
     }
     written as u64
 }
 
-pub fn sys_readlink(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _path_ptr = args[0];
-    let _buf = args[1];
-    let _size = args[2];
+pub fn sys_readlink(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     errno_code(EINVAL) // symlinks not supported yet
 }
 
-pub fn sys_readlinkat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _dirfd = args[0] as i32;
-    let _path_ptr = args[1];
-    let _buf = args[2];
-    let _size = args[3];
+pub fn sys_readlinkat(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     errno_code(EINVAL)
 }
 
-pub fn sys_unlink(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_unlink(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
@@ -613,10 +607,8 @@ pub fn sys_unlink(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_unlinkat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _dirfd = args[0] as i32;
+pub fn sys_unlinkat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[1];
-    let _flags = args[2] as i32;
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
         Err(e) => return errno_code(e),
@@ -627,9 +619,8 @@ pub fn sys_unlinkat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_mkdir(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_mkdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
-    let _mode = args[1] as u32;
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
         Err(e) => return errno_code(e),
@@ -640,10 +631,8 @@ pub fn sys_mkdir(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_mkdirat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _dirfd = args[0] as i32;
+pub fn sys_mkdirat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[1];
-    let _mode = args[2] as u32;
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
         Err(e) => return errno_code(e),
@@ -654,7 +643,7 @@ pub fn sys_mkdirat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_rmdir(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_rmdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
@@ -666,19 +655,10 @@ pub fn sys_rmdir(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_symlink(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _target_ptr = args[0];
-    let _linkpath_ptr = args[1];
-    errno_code(ENOSYS)
-}
+linux_stub_errno!(sys_symlink, ENOSYS);
+linux_stub_errno!(sys_rename, ENOSYS);
 
-pub fn sys_rename(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _old_ptr = args[0];
-    let _new_ptr = args[1];
-    errno_code(ENOSYS)
-}
-
-pub fn sys_chdir(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_chdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
         Ok(p) => p,
@@ -690,7 +670,7 @@ pub fn sys_chdir(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_getcwd(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_getcwd(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let buf = args[0];
     let size = args[1];
     let cwd = match crate::contexts::vfs::working_directory() {
@@ -710,21 +690,8 @@ pub fn sys_getcwd(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     buf
 }
 
-pub fn sys_mount(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _source = args[0];
-    let _target = args[1];
-    let _fstype = args[2];
-    let _flags = args[3];
-    let _data = args[4];
-    // Mount not fully supported; pretend it succeeds for /proc, /sys, /dev etc.
-    0
-}
-
-pub fn sys_umount2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _target = args[0];
-    let _flags = args[1] as i32;
-    0
-}
+linux_stub!(sys_mount, 0);
+linux_stub!(sys_umount2, 0);
 
 pub fn sys_dup(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let oldfd = args[0] as i32;
@@ -801,7 +768,7 @@ pub fn sys_fcntl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_ioctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
     let request = args[1];
     let arg = args[2];
@@ -863,30 +830,9 @@ pub fn sys_pipe2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     sys_pipe(rt, &[args[0], 0, 0, 0, 0, 0])
 }
 
-pub fn sys_truncate(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _path = args[0];
-    let _length = args[1] as i64;
-    0
-}
-
-pub fn sys_ftruncate(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _fd = args[0] as i32;
-    let _length = args[1] as i64;
-    0
-}
-
-pub fn sys_fsync(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
-
-pub fn sys_fdatasync(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
-
-pub fn sys_fchmod(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
-
-pub fn sys_fchmodat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
+linux_stub!(sys_truncate, 0);
+linux_stub!(sys_ftruncate, 0);
+linux_stub!(sys_fsync, 0);
+linux_stub!(sys_fdatasync, 0);
+linux_stub!(sys_fchmod, 0);
+linux_stub!(sys_fchmodat, 0);

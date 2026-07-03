@@ -97,11 +97,21 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     // ACPI RSDP discovery from UEFI Configuration Table.
     // Store the physical RSDP address before the world switch so it
     // survives page-table changes.
-    if let Some(rsdp) = unsafe { petroleum::common::uefi::find_rsdp_from_uefi(system_table_virt as usize) } {
+    if let Some(rsdp) =
+        unsafe { petroleum::common::uefi::find_rsdp_from_uefi(system_table_virt as usize) }
+    {
         crate::boot::UEFI_RSDP_ADDRESS.store(rsdp, core::sync::atomic::Ordering::Relaxed);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] RSDP found via UEFI Config Table\n");
+        petroleum::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [uefi_entry] RSDP found via UEFI Config Table\n",
+        );
     } else {
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [uefi_entry] RSDP not found in UEFI Config Table\n");
+        petroleum::write_serial_bytes(
+            0x3F8,
+            0x3FD,
+            b"DEBUG: [uefi_entry] RSDP not found in UEFI Config Table\n",
+        );
     }
 
     let mut ctx = UefiInitContext {
@@ -133,7 +143,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         0x3FD,
         b"DEBUG: [uefi_entry] Calling memory_management_initialization\n",
     );
-    let (physical_memory_offset, heap_start, virtual_heap_start) =
+    let (physical_memory_offset, _heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start);
     petroleum::write_serial_bytes(
         0x3F8,

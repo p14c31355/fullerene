@@ -3,8 +3,8 @@
 //! Each command receives a `CommandContext` with the terminal and arguments.
 //! Return `true` to continue the shell, `false` to exit.
 
-use carrier::exec::CommandContext;
 use alloc::format;
+use carrier::exec::CommandContext;
 
 /// `clear` — clear the terminal screen
 pub fn cmd_clear(ctx: &mut CommandContext) -> bool {

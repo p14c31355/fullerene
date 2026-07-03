@@ -128,8 +128,6 @@ pub struct SdCardInfo {
 pub struct RtsxController {
     #[allow(dead_code)]
     device: PciDevice,
-    bar0_phys: u64,
-    bar0_size: u32,
     mmio: *mut u8,
     mmio_mapped: bool,
     sd_card: Option<SdCardInfo>,
@@ -198,8 +196,8 @@ impl RtsxController {
                     // Power Management capability
                     found_pm = true;
                     // PMCSR at cap_offset + 4, bits 1:0 = power state.
-                    let pmcsr = crate::pci::PciConfigSpace::read_config_word(
-                        bus, dev, func, off + 4);
+                    let pmcsr =
+                        crate::pci::PciConfigSpace::read_config_word(bus, dev, func, off + 4);
                     let pstate = pmcsr & 0x3;
                     if pstate != 0 {
                         log::warn!("RTSX: device not in D0 (state={})", pstate);
@@ -210,8 +208,8 @@ impl RtsxController {
                 0x10 => {
                     // PCI Express capability
                     found_pcie = true;
-                    let lnk_sts = crate::pci::PciConfigSpace::read_config_word(
-                        bus, dev, func, off + 0x12);
+                    let lnk_sts =
+                        crate::pci::PciConfigSpace::read_config_word(bus, dev, func, off + 0x12);
                     // Negotiated Link Speed in bits 3:0 (Link Status register bits 3:0)
                     let speed = lnk_sts & 0xF;
                     if speed == 0 {
@@ -227,8 +225,7 @@ impl RtsxController {
                 return Ok(());
             }
 
-            let next = crate::pci::PciConfigSpace::read_config_byte(
-                bus, dev, func, off + 1);
+            let next = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off + 1);
             // Self-loop check: some broken hardware can return the same
             // offset as the next pointer.
             if next == 0 || next == off {
@@ -253,7 +250,8 @@ impl RtsxController {
     fn ppbuf_read(&self, buf: &mut [u8]) {
         assert!(buf.len() <= 512, "RTSX: ppbuf read size exceeds 512 bytes");
         for (i, chunk) in buf.chunks_mut(4).enumerate() {
-            let val = unsafe { ptr::read_volatile(self.mmio.add(PPBUF_BASE + i * 4) as *const u32) };
+            let val =
+                unsafe { ptr::read_volatile(self.mmio.add(PPBUF_BASE + i * 4) as *const u32) };
             for (j, b) in chunk.iter_mut().enumerate().take(4) {
                 *b = ((val >> (j * 8)) & 0xFF) as u8;
             }
@@ -281,7 +279,11 @@ impl RtsxController {
         // PCIe link is down, this is our last safe bail-out point before
         // touching MMIO registers that could hang the bus.
         let vendor = crate::pci::PciConfigSpace::read_config_word(
-            self.device.bus, self.device.device, self.device.function, 0x00);
+            self.device.bus,
+            self.device.device,
+            self.device.function,
+            0x00,
+        );
         if vendor != self.device.vendor_id || vendor == 0xFFFF || vendor == 0x0000 {
             log::warn!("RTSX: device not on PCI bus (vendor={:#06x})", vendor);
             return false;
@@ -344,7 +346,10 @@ impl RtsxController {
         self.w8(CARD_CLK_SOURCE, 0x00);
 
         self.w8(SD_CFG1, SD_CLK_DIVIDE_128 | SD_BUS_WIDTH_1);
-        self.w8(SD_CFG2, SD_CALC_CRC_CMD | SD_CALC_CRC_DATA | SD_RSP_TIMEOUT_5S);
+        self.w8(
+            SD_CFG2,
+            SD_CALC_CRC_CMD | SD_CALC_CRC_DATA | SD_RSP_TIMEOUT_5S,
+        );
         self.w8(SD_CFG3, SD_DATA_TIMEOUT_1S);
         self.w8(SD_PAD_CTL, 0x48);
         self.w16(SD_SAMPLE_POINT_CTL, 0x0007);
@@ -385,7 +390,10 @@ impl RtsxController {
         self.w8(SD_CMD2, (arg >> 8) as u8);
         self.w8(SD_CMD3, (arg >> 16) as u8);
         self.w8(SD_CMD4, (arg >> 24) as u8);
-        self.w8(SD_CFG1, SD_CLK_DIVIDE_128 | SD_BUS_WIDTH_1 | SD_CRC_CHECK_EN | SD_CRC_GEN_EN);
+        self.w8(
+            SD_CFG1,
+            SD_CLK_DIVIDE_128 | SD_BUS_WIDTH_1 | SD_CRC_CHECK_EN | SD_CRC_GEN_EN,
+        );
 
         if data_len > 0 {
             self.w8(SD_BYTE_CNT_L, (data_len & 0xFF) as u8);
@@ -444,7 +452,11 @@ impl RtsxController {
         // Verify device is alive via PCI config space (port I/O, never hangs).
         // Read vendor ID at config offset 0x00.
         let vendor = crate::pci::PciConfigSpace::read_config_word(
-            self.device.bus, self.device.device, self.device.function, 0x00);
+            self.device.bus,
+            self.device.device,
+            self.device.function,
+            0x00,
+        );
         if vendor != self.device.vendor_id {
             return Err("controller disappeared from PCI bus");
         }
@@ -465,7 +477,12 @@ impl RtsxController {
         if let Some((b, d, f)) = self.upstream_bridge {
             let bridge = PciDevice::new(b, d, f);
             if let Some(bridge) = bridge {
-                log::info!("RTSX: re-disabling ASPM on upstream bridge {:02x}:{:02x}.{}", b, d, f);
+                log::info!(
+                    "RTSX: re-disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
+                    b,
+                    d,
+                    f
+                );
                 // Ensure bridge is in D0 before disabling ASPM so the downstream path is usable
                 bridge.ensure_d0();
                 bridge.disable_pcie_aspm();
@@ -509,7 +526,10 @@ impl RtsxController {
         match self.ensure_device_accessible() {
             Ok(()) => {}
             Err(e) => {
-                log::warn!("RTSX: device no longer accessible before first MMIO read: {}", e);
+                log::warn!(
+                    "RTSX: device no longer accessible before first MMIO read: {}",
+                    e
+                );
                 return Err(e);
             }
         }
@@ -532,7 +552,7 @@ impl RtsxController {
 
         log::info!("RTSX: CMD8");
         let sdhc = match self.sd_cmd(CMD8_SEND_IF_COND, 0x1AA, SD_RSP_TYPE_R7, 0) {
-            Ok(rsp) => (rsp as u8 == 0x01 && (rsp >> 8) as u8 == 0xAA),
+            Ok(rsp) => rsp as u8 == 0x01 && (rsp >> 8) as u8 == 0xAA,
             Err(_) => false,
         };
         log::info!("RTSX: SDHC={}", sdhc);
@@ -597,7 +617,11 @@ impl RtsxController {
             let _ = self.sd_cmd(CMD16_SET_BLOCKLEN, 512, SD_RSP_TYPE_R1, 0);
         }
 
-        let bs = if card_type == SdCardType::SDSC { 512 } else { block_size };
+        let bs = if card_type == SdCardType::SDSC {
+            512
+        } else {
+            block_size
+        };
         let tb = if card_type == SdCardType::SDSC {
             total_blocks * (block_size as u64) / 512
         } else {
@@ -613,16 +637,19 @@ impl RtsxController {
             total_blocks: tb,
         });
 
-        log::info!("RTSX: SD card {:?}: {} blocks, {} bytes/block", card_type, tb, bs);
+        log::info!(
+            "RTSX: SD card {:?}: {} blocks, {} bytes/block",
+            card_type,
+            tb,
+            bs
+        );
         Ok(())
     }
 
     fn parse_csd(csd: &[u8; 16], card_type: SdCardType) -> (u32, u64) {
         match card_type {
             SdCardType::SDHC | SdCardType::SDXC => {
-                let c_size = ((csd[7] & 0x3F) as u32) << 16
-                    | (csd[8] as u32) << 8
-                    | csd[9] as u32;
+                let c_size = ((csd[7] & 0x3F) as u32) << 16 | (csd[8] as u32) << 8 | csd[9] as u32;
                 (512, (c_size as u64 + 1) * 1024)
             }
             _ => {
@@ -631,8 +658,7 @@ impl RtsxController {
                 let c_size = ((csd[6] & 0x03) as u32) << 10
                     | (csd[7] as u32) << 2
                     | ((csd[8] >> 6) & 0x03) as u32;
-                let c_size_mult = (((csd[9] >> 7) & 0x01) << 2)
-                    | ((csd[10] >> 6) & 0x03);
+                let c_size_mult = (((csd[9] >> 7) & 0x01) << 2) | ((csd[10] >> 6) & 0x03);
                 let mult = 1u32 << (c_size_mult as u32 + 2);
                 let blocks = ((c_size as u64 + 1) * mult as u64) * (bs as u64) / 512;
                 (bs, blocks)
@@ -683,7 +709,10 @@ impl RtsxController {
         self.w8(SD_CMD3, (addr >> 16) as u8);
         self.w8(SD_CMD4, (addr >> 24) as u8);
 
-        self.w8(SD_CFG1, SD_CLK_DIVIDE_128 | SD_BUS_WIDTH_1 | SD_CRC_CHECK_EN | SD_CRC_GEN_EN);
+        self.w8(
+            SD_CFG1,
+            SD_CLK_DIVIDE_128 | SD_BUS_WIDTH_1 | SD_CRC_CHECK_EN | SD_CRC_GEN_EN,
+        );
         self.w8(SD_TRANSFER, SD_TRANSFER_START | SD_TRANSFER_WRITE);
 
         for _ in 0..500_000 {
@@ -752,8 +781,14 @@ pub fn init(ctx: &dyn DriverContext) {
         if dev.vendor_id == 0x10EC
             && (dev.device_id == 0x5249 || dev.device_id == 0x5250 || dev.device_id == 0x5260)
         {
-            log::info!("RTSX: found at {:02x}:{:02x}.{} ({:#06x}:{:#06x})",
-                dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id);
+            log::info!(
+                "RTSX: found at {:02x}:{:02x}.{} ({:#06x}:{:#06x})",
+                dev.bus,
+                dev.device,
+                dev.function,
+                dev.vendor_id,
+                dev.device_id
+            );
 
             // Ensure D0 via PCI config space (safe)
             dev.ensure_d0();
@@ -771,8 +806,12 @@ pub fn init(ctx: &dyn DriverContext) {
                 sec_bus == dev.bus
             });
             if let Some(bridge) = upstream_bridge {
-                log::info!("RTSX: disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
-                    bridge.bus, bridge.device, bridge.function);
+                log::info!(
+                    "RTSX: disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
+                    bridge.bus,
+                    bridge.device,
+                    bridge.function
+                );
                 bridge.disable_pcie_aspm();
             } else {
                 log::info!("RTSX: upstream bridge not found for bus {:#x}", dev.bus);
@@ -780,7 +819,8 @@ pub fn init(ctx: &dyn DriverContext) {
 
             // Read BAR0 directly — do NOT call get_bar_info() which writes
             // 0xFFFFFFFF to the BAR (detect_bar_size) and can confuse the device.
-            let bar_val = PciConfigSpace::read_config_dword(dev.bus, dev.device, dev.function, 0x10);
+            let bar_val =
+                PciConfigSpace::read_config_dword(dev.bus, dev.device, dev.function, 0x10);
             if bar_val == 0 || bar_val == 0xFFFFFFFF {
                 log::info!("RTSX: BAR0 invalid ({:#x})", bar_val);
                 return;
@@ -800,7 +840,11 @@ pub fn init(ctx: &dyn DriverContext) {
 
             if bar0_addr + bar0_size as u64 > 0x1_0000_0000 {
                 log::info!("RTSX: BAR0 is above 4GB, not supported by 32-bit bridge window");
-                log::info!("RTSX: mapping MMIO at {:#x} size {} anyway", bar0_addr, bar0_size);
+                log::info!(
+                    "RTSX: mapping MMIO at {:#x} size {} anyway",
+                    bar0_addr,
+                    bar0_size
+                );
             }
 
             // Configure the upstream bridge's 32-bit memory window to cover BAR0.
@@ -810,7 +854,11 @@ pub fn init(ctx: &dyn DriverContext) {
             if let Some(ref bridge) = upstream_bridge {
                 if bar0_addr + bar0_size as u64 <= 0x1_0000_0000 {
                     let base_reg = PciConfigSpace::read_config_dword(
-                        bridge.bus, bridge.device, bridge.function, 0x20);
+                        bridge.bus,
+                        bridge.device,
+                        bridge.function,
+                        0x20,
+                    );
                     let mem_base = base_reg as u16;
                     let mem_limit = (base_reg >> 16) as u16;
                     let bar_top = bar0_addr + bar0_size as u64 - 1;
@@ -818,15 +866,34 @@ pub fn init(ctx: &dyn DriverContext) {
                     let need_limit = ((bar_top >> 16) & 0xFFF0) as u16;
 
                     let window_enabled = mem_base <= mem_limit;
-                    let already_covered = window_enabled && mem_base <= need_base && mem_limit >= need_limit;
+                    let already_covered =
+                        window_enabled && mem_base <= need_base && mem_limit >= need_limit;
                     if !already_covered {
-                        let new_base = if window_enabled { mem_base.min(need_base) } else { need_base };
-                        let new_limit = if window_enabled { mem_limit.max(need_limit) } else { need_limit };
-                        log::info!("RTSX: bridge window {:#06x}-{:#06x} expanded to {:#06x}-{:#06x}",
-                            mem_base, mem_limit, new_base, new_limit);
+                        let new_base = if window_enabled {
+                            mem_base.min(need_base)
+                        } else {
+                            need_base
+                        };
+                        let new_limit = if window_enabled {
+                            mem_limit.max(need_limit)
+                        } else {
+                            need_limit
+                        };
+                        log::info!(
+                            "RTSX: bridge window {:#06x}-{:#06x} expanded to {:#06x}-{:#06x}",
+                            mem_base,
+                            mem_limit,
+                            new_base,
+                            new_limit
+                        );
                         let new_win = (new_limit as u32) << 16 | new_base as u32;
                         PciConfigSpace::write_config_dword_raw(
-                            bridge.bus, bridge.device, bridge.function, 0x20, new_win);
+                            bridge.bus,
+                            bridge.device,
+                            bridge.function,
+                            0x20,
+                            new_win,
+                        );
                     }
                 }
             }
@@ -834,15 +901,16 @@ pub fn init(ctx: &dyn DriverContext) {
             log::info!("RTSX: BAR0 at {:#x} size {:#x}", bar0_addr, bar0_size);
 
             let mmio = ctx.phys_to_virt(bar0_addr) as *mut u8;
-            if ctx.map_mmio_region(bar0_addr as usize, mmio as usize, bar0_size as usize).is_err() {
+            if ctx
+                .map_mmio_region(bar0_addr as usize, mmio as usize, bar0_size as usize)
+                .is_err()
+            {
                 log::info!("RTSX: MMIO mapping failed");
                 return;
             }
 
             *CONTROLLER.lock() = Some(RtsxController {
                 device: dev.clone(),
-                bar0_phys: bar0_addr,
-                bar0_size,
                 mmio,
                 mmio_mapped: true,
                 sd_card: None,
@@ -872,12 +940,18 @@ pub fn sd_card_info() -> Option<SdCardInfo> {
 
 pub fn read_sectors(lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
     let guard = CONTROLLER.lock();
-    guard.as_ref().ok_or("no controller")?.read_sectors(lba, count, buf)
+    guard
+        .as_ref()
+        .ok_or("no controller")?
+        .read_sectors(lba, count, buf)
 }
 
 pub fn write_sectors(lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
     let guard = CONTROLLER.lock();
-    guard.as_ref().ok_or("no controller")?.write_sectors(lba, count, buf)
+    guard
+        .as_ref()
+        .ok_or("no controller")?
+        .write_sectors(lba, count, buf)
 }
 
 pub fn is_present() -> bool {

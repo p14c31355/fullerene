@@ -41,12 +41,14 @@ pub(super) unsafe fn create_tmp_mapper(
     frame_allocator: &mut petroleum::page_table::allocator::bitmap::BitmapFrameAllocator,
     kernel_phys: u64,
 ) -> x86_64::structures::paging::OffsetPageTable<'static> {
-    petroleum::page_table::init::<_, PageTableInitCb>(
-        phys_offset,
-        frame_allocator,
-        kernel_phys,
-        None,
-    )
+    unsafe {
+        petroleum::page_table::init::<_, PageTableInitCb>(
+            phys_offset,
+            frame_allocator,
+            kernel_phys,
+            None,
+        )
+    }
 }
 
 // ── BootFrameAllocator (circular-dependency resolver) ────────

@@ -6,7 +6,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
 
 // ============================================================================
 //  Disk — a mounted USB storage device
@@ -70,15 +69,7 @@ impl StorageManager {
         ep_in: u8,
         ctrl_idx: usize,
     ) -> bool {
-        self.try_mount_with_mps(
-            ctrl_type,
-            dev_addr,
-            ep_out,
-            512,
-            ep_in,
-            512,
-            ctrl_idx,
-        )
+        self.try_mount_with_mps(ctrl_type, dev_addr, ep_out, 512, ep_in, 512, ctrl_idx)
     }
 
     /// Try to mount a mass-storage device with the given endpoint info
@@ -133,8 +124,7 @@ impl StorageManager {
 /// is responsible for all VFS interactions and should update the
 /// disk's block_size and total_blocks fields based on the actual
 /// device geometry.
-static MOUNT_FN: spin::Mutex<Option<fn(&mut Disk) -> bool>> =
-    spin::Mutex::new(None);
+static MOUNT_FN: spin::Mutex<Option<fn(&mut Disk) -> bool>> = spin::Mutex::new(None);
 
 /// Register the platform's FAT-mount callback.
 pub fn set_mount_fn(f: fn(&mut Disk) -> bool) {

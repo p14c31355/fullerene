@@ -8,7 +8,6 @@ extern crate alloc;
 #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    use core::fmt::Write;
     crate::boot_stage::set_boot_stage(crate::boot_stage::BootStage::Panic);
     petroleum::serial::_print(format_args!("\n========== KERNEL PANIC ==========\n"));
     if let Some(loc) = info.location() {
@@ -57,6 +56,7 @@ pub mod gui;
 pub mod hardware;
 pub mod heap;
 pub mod init;
+pub mod initramfs;
 pub mod interrupts;
 pub mod klog;
 pub mod loader;

@@ -3,14 +3,11 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 pub use resonance::{InputEvent, KeyCode, MouseButton};
 
-const MAX_EVENTS: usize = 256;
-
 pub struct InputContext {
     pub queue: VecDeque<InputEvent>,
     pub mouse_x: i16,
     pub mouse_y: i16,
     pub mouse_buttons: u8,
-    prev_buttons: u8,
     sensitivity: i16,
 }
 
@@ -21,7 +18,6 @@ impl InputContext {
             mouse_x: 512,
             mouse_y: 384,
             mouse_buttons: 0,
-            prev_buttons: 0,
             sensitivity: 6,
         }
     }
@@ -34,12 +30,6 @@ impl InputContext {
         if let Some(val) = super::kernel::with_kernel(|k| k.settings.mouse.sensitivity_raw()) {
             self.sensitivity = val;
         }
-    }
-    fn push(&mut self, ev: InputEvent) {
-        while self.queue.len() >= MAX_EVENTS {
-            self.queue.pop_front();
-        }
-        self.queue.push_back(ev);
     }
     pub fn drain_events(&mut self) -> Vec<InputEvent> {
         self.queue.drain(..).collect()

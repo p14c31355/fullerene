@@ -90,6 +90,37 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static 
     Err("no FAT partition")
 }
 
+// ── Block device registry ────────────────────────────────────
+//
+// A simple registry of block devices by name so that the VFS layer can
+// mount a FAT32 filesystem by name (e.g. `mount("/dev/sda", "/mnt", "fat32")`)
+// without having to know about the kernel's USB storage internals.
+
+use spin::Mutex;
+
+static BLOCK_DEVICES: Mutex<Vec<(&'static str, Box<dyn BlockDevice>)>> = Mutex::new(Vec::new());
+
+/// Register a named block device in the global registry.
+///
+/// The registry is used by the VFS layer to look up block devices
+/// when mounting a `fat32` filesystem.
+pub fn register_block_device(name: &'static str, device: Box<dyn BlockDevice>) {
+    BLOCK_DEVICES.lock().push((name, device));
+    klog_fmt!("FAT: registered block device {}\n", name);
+}
+
+/// Open a registered block device by name and return a `FatFileSystem`
+/// mounted on it.
+pub fn open_block_device(name: &str) -> Result<FatFileSystem, &'static str> {
+    let mut devices = BLOCK_DEVICES.lock();
+    let pos = devices
+        .iter()
+        .position(|(n, _)| *n == name)
+        .ok_or("block device not found")?;
+    let (_, device) = devices.remove(pos);
+    FatFileSystem::from_device(device)
+}
+
 // ── Block device abstraction ──────────────────────────────────
 // The block device provides sector-level read/write.
 
@@ -98,6 +129,129 @@ pub trait BlockDevice: Send {
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str>;
     fn sector_size(&self) -> u32;
     fn total_sectors(&self) -> u64;
+}
+
+/// A simple direct-mapped block cache for read-only workloads.
+///
+/// Caches `CAP` sectors keyed by LBA.  Each entry holds a copy of the
+/// 512-byte (or larger) sector.  Writes are passed through to the
+/// underlying device and invalidate the matching cache line.
+///
+/// This is the storage stack foundation mentioned in the architecture
+/// spec: `block cache → FAT32 → initramfs`.
+pub struct BlockCache<D: BlockDevice> {
+    inner: D,
+    bps: usize,
+    entries: Vec<(u32, Vec<u8>)>,
+    #[allow(dead_code)]
+    capacity: usize,
+}
+
+impl<D: BlockDevice> BlockCache<D> {
+    pub fn new(inner: D, capacity: usize) -> Self {
+        let bps = inner.sector_size() as usize;
+        let mut entries = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            entries.push((0xFFFF_FFFF, vec![0u8; bps]));
+        }
+        Self {
+            inner,
+            bps,
+            entries,
+            capacity,
+        }
+    }
+
+    fn lookup(&self, lba: u32) -> Option<usize> {
+        self.entries.iter().position(|(l, _)| *l == lba)
+    }
+
+    /// Read a single sector into `buf`, returning the cached entry if
+    /// the same sector is already cached.  If the cache is full, the
+    /// slot is overwritten.
+    pub fn read_sector(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+        if let Some(idx) = self.lookup(lba) {
+            buf[..self.bps].copy_from_slice(&self.entries[idx].1);
+            return Ok(());
+        }
+        let idx = self.evict_slot();
+        let entry = &mut self.entries[idx];
+        self.inner.read_sectors(lba, 1, &mut entry.1)?;
+        entry.0 = lba;
+        // The caller may have a smaller buffer; only copy what's needed.
+        if buf.len() < self.bps {
+            return Err("buffer too small");
+        }
+        buf[..self.bps].copy_from_slice(&entry.1);
+        Ok(())
+    }
+
+    /// Read a single sector returning a reference to the cached buffer.
+    /// The returned reference is invalidated by any subsequent cache
+    /// operation.
+    pub fn get_sector(&mut self, lba: u32) -> Result<&[u8], &'static str> {
+        if let Some(idx) = self.lookup(lba) {
+            return Ok(&self.entries[idx].1);
+        }
+        let idx = self.evict_slot();
+        let entry = &mut self.entries[idx];
+        self.inner.read_sectors(lba, 1, &mut entry.1)?;
+        entry.0 = lba;
+        Ok(&self.entries[idx].1)
+    }
+
+    fn evict_slot(&self) -> usize {
+        // Simple round-robin eviction: pick the first slot whose LBA is
+        // 0xFFFFFFFF (never used) or wrap around.  This is O(capacity) but
+        // capacity is small (~64).
+        if let Some(idx) = self.entries.iter().position(|(l, _)| *l == 0xFFFF_FFFF) {
+            return idx;
+        }
+        0
+    }
+
+    /// Write a single sector and invalidate its cache entry.
+    pub fn write_sector(&mut self, lba: u32, buf: &[u8]) -> Result<(), &'static str> {
+        if let Some(idx) = self.lookup(lba) {
+            self.entries[idx].0 = 0xFFFF_FFFF;
+        }
+        self.inner.write_sectors(lba, 1, buf)
+    }
+
+    pub fn sector_size(&self) -> u32 {
+        self.bps as u32
+    }
+
+    pub fn total_sectors(&self) -> u64 {
+        self.inner.total_sectors()
+    }
+}
+
+impl<D: BlockDevice> BlockDevice for BlockCache<D> {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        let count = count as usize;
+        for i in 0..count {
+            let off = i * self.bps;
+            self.read_sector(lba + i as u32, &mut buf[off..off + self.bps])?;
+        }
+        Ok(())
+    }
+
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        for i in 0..count as usize {
+            let off = i * self.bps;
+            self.write_sector(lba + i as u32, &buf[off..off + self.bps])?;
+        }
+        Ok(())
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.bps as u32
+    }
+
+    fn total_sectors(&self) -> u64 {
+        self.inner.total_sectors()
+    }
 }
 
 /// Wraps a block device and applies an LBA offset (for partition access).
@@ -120,6 +274,21 @@ impl BlockDevice for PartitionBlockDevice {
         self.inner
             .total_sectors()
             .saturating_sub(self.offset as u64)
+    }
+}
+
+impl BlockDevice for Box<dyn BlockDevice> {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        (**self).read_sectors(lba, count, buf)
+    }
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        (**self).write_sectors(lba, count, buf)
+    }
+    fn sector_size(&self) -> u32 {
+        (**self).sector_size()
+    }
+    fn total_sectors(&self) -> u64 {
+        (**self).total_sectors()
     }
 }
 
@@ -204,25 +373,13 @@ struct ExFatBootSector {
     reserved: [u8; 7],
 }
 
-// ── exFAT Directory Entry ───────────────────────────────────
+// exFAT Directory Entry
 //
 // exFAT directory entries are 32 bytes each, grouped into sets.
 // Key entry types:
-#[repr(C, packed)]
-struct ExFatDirEntry {
-    entry_type: u8,     // 0x81 = file, 0x85 = file info, 0xC0 = volume GUID, etc.
-    custom1: [u8; 19],  // varies by type
-    first_cluster: u32, // low 32 bits of first cluster
-    data_length: u64,   // file size
-}
-
-// File entry type codes
 const EXFAT_ENTRY_FILE_INFO: u8 = 0x85; // file info (name follows)
 const EXFAT_ENTRY_STREAM_EXT: u8 = 0xC0; // stream extension (contains file size)
 const EXFAT_ENTRY_FILE_NAME: u8 = 0xC1; // file name (continued)
-const EXFAT_ENTRY_UP_CASE: u8 = 0x81; // up-case table (root dir only)
-const EXFAT_ENTRY_BITMAP: u8 = 0x81; // allocation bitmap (root dir only)
-const EXFAT_ENTRY_VOLUME_LABEL: u8 = 0x83; // volume label
 
 pub fn is_exfat(boot: &[u8; 512]) -> bool {
     &boot[3..11] == b"EXFAT   "
@@ -234,12 +391,15 @@ pub fn is_exfat(boot: &[u8; 512]) -> bool {
 ///
 /// Parses the boot-sector BPB, auto-detects FAT32 vs exFAT,
 /// and provides read/write access to files via the [`FileSystem`] trait.
+///
+/// The underlying block device is wrapped in a [`BlockCache`] so that
+/// repeated reads of the FAT table and directory sectors do not
+/// re-issue USB I/O.  This is the storage stack foundation
+/// (`block cache → FAT32 → initramfs`).
 pub struct FatFileSystem {
     device: Box<dyn BlockDevice>,
     bps: u32, // bytes per sector
     spc: u32, // sectors per cluster
-    bps_log2: u8,
-    spc_log2: u8,
     reserved_sectors: u32,
     num_fats: u32,
     sectors_per_fat: u32,
@@ -259,24 +419,21 @@ pub struct FatFileSystem {
 impl FatFileSystem {
     /// Create a FAT/exFAT filesystem from a block device, auto-detecting
     /// MBR partition tables and parsing the correct boot sector.
+    /// Wraps the device in a [`BlockCache`] for repeated reads.
     pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
         let lba = find_fat_partition(&mut *device)?;
         if lba > 0 {
             // Repoint the device to read from partition start.
-            // We wrap the device to add an LBA offset.
+            // We wrap the device to add an LBA offset, then wrap that in a block cache.
             let wrapped = PartitionBlockDevice {
                 inner: device,
                 offset: lba,
             };
-            return Self::new_at(Box::new(wrapped), 0);
+            let cached = BlockCache::new(wrapped, 64);
+            return Self::new(Box::new(cached));
         }
-        Self::new_at(device, 0)
-    }
-
-    /// Create from device at a specific LBA offset (relative to the device).
-    fn new_at(device: Box<dyn BlockDevice>, _lba_offset: u32) -> Result<Self, &'static str> {
-        // Delegate to `new` which reads LBA 0 of the given device
-        Self::new(device)
+        let cached = BlockCache::new(device, 64);
+        Self::new(Box::new(cached))
     }
 
     pub fn new(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
@@ -312,8 +469,6 @@ impl FatFileSystem {
                 device,
                 bps,
                 spc,
-                bps_log2: bps_shift as u8,
-                spc_log2: spc_shift as u8,
                 reserved_sectors: reserved,
                 num_fats,
                 sectors_per_fat,
@@ -357,8 +512,6 @@ impl FatFileSystem {
                 device,
                 bps,
                 spc,
-                bps_log2: (bps.trailing_zeros()) as u8,
-                spc_log2: (spc.trailing_zeros()) as u8,
                 reserved_sectors: reserved,
                 num_fats,
                 sectors_per_fat,
@@ -573,34 +726,6 @@ impl FatFileSystem {
         }
     }
 
-    /// Read entire file content into a Vec<u8> starting from cluster.
-    fn read_file_data(&mut self, cluster: u32, size: u32) -> Result<Vec<u8>, &'static str> {
-        let mut data = Vec::with_capacity(size as usize);
-        let mut remaining = size;
-        let mut clus = cluster;
-        loop {
-            let sector = self.cluster_to_sector(clus);
-            for i in 0..self.spc {
-                if remaining == 0 {
-                    break;
-                }
-                let to_read = min(remaining, self.bps);
-                self.device
-                    .read_sectors(sector + i, 1, &mut self.sector_buf)?;
-                data.extend_from_slice(&self.sector_buf[..to_read as usize]);
-                remaining -= to_read;
-            }
-            if remaining == 0 {
-                break;
-            }
-            match self.read_fat_entry(clus) {
-                Ok(next) if !Self::is_end_of_chain(next) => clus = next,
-                _ => break,
-            }
-        }
-        Ok(data)
-    }
-
     /// Write a 32-bit entry into the FAT table.
     fn write_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), &'static str> {
         let fat_offset = cluster * 4;
@@ -625,7 +750,8 @@ impl FatFileSystem {
 
         // Write to all FAT copies
         for fat_idx in 0..self.num_fats {
-            let fat_sector = self.reserved_sectors + fat_idx * self.sectors_per_fat + fat_offset / self.bps;
+            let fat_sector =
+                self.reserved_sectors + fat_idx * self.sectors_per_fat + fat_offset / self.bps;
             self.device.write_sectors(fat_sector, 1, &self.sector_buf)?;
         }
         Ok(())
@@ -634,7 +760,11 @@ impl FatFileSystem {
     /// Scan the FAT and allocate a single free cluster.
     /// Marks it as end-of-chain and returns the cluster number.
     fn allocate_one_cluster(&mut self) -> Result<u32, &'static str> {
-        let eoc = if self.is_exfat { 0xFFFFFFFFu32 } else { 0x0FFFFFFFu32 };
+        let eoc = if self.is_exfat {
+            0xFFFFFFFFu32
+        } else {
+            0x0FFFFFFFu32
+        };
         // Start scanning from cluster 2 (first data cluster)
         let mut cluster = 2u32;
         let max_cluster = 2 + self.data_cluster_count;
@@ -659,74 +789,16 @@ impl FatFileSystem {
         Err("no free clusters")
     }
 
-    /// Allocate a chain of `count` clusters and link them.
-    /// Returns the first cluster number.
-    fn allocate_cluster_chain(&mut self, count: u32) -> Result<u32, &'static str> {
-        if count == 0 {
-            return Err("zero cluster allocation");
-        }
-        let first = self.allocate_one_cluster()?;
-        if count == 1 {
-            return Ok(first);
-        }
-
-        let mut allocated = vec![first];
-        let mut prev = first;
-
-        // Try to allocate all clusters; track them for rollback on failure
-        for _ in 1..count {
-            match self.allocate_one_cluster() {
-                Ok(next) => {
-                    allocated.push(next);
-                    if let Err(e) = self.write_fat_entry(prev, next) {
-                        // Rollback: free all allocated clusters
-                        for &clus in &allocated {
-                            let _ = self.write_fat_entry(clus, 0);
-                        }
-                        return Err(e);
-                    }
-                    prev = next;
-                }
-                Err(e) => {
-                    // Rollback: free all allocated clusters
-                    for &clus in &allocated {
-                        let _ = self.write_fat_entry(clus, 0);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        // Write final EOC marker
-        let eoc = if self.is_exfat { 0xFFFFFFFFu32 } else { 0x0FFFFFFFu32 };
-        if let Err(e) = self.write_fat_entry(prev, eoc) {
-            // Rollback: free all allocated clusters
-            for &clus in &allocated {
-                let _ = self.write_fat_entry(clus, 0);
-            }
-            return Err(e);
-        }
-        Ok(first)
-    }
-
-    /// Return the last cluster in a chain (the EOC marker).
-    fn walk_to_end(&mut self, mut cluster: u32) -> Result<u32, &'static str> {
-        if cluster == 0 {
-            return Err("null cluster");
-        }
-        loop {
-            match self.read_fat_entry(cluster) {
-                Ok(next) if !Self::is_end_of_chain(next) => cluster = next,
-                _ => return Ok(cluster),
-            }
-        }
-    }
-
     /// Write data to file starting at cluster (0 = unallocated).
     /// Allocates clusters on demand when the chain runs out.
     /// Skips `offset` bytes within the cluster chain before writing,
     /// mirroring the offset handling already added to `read()`.
-    fn write_file_data(&mut self, cluster: &mut u32, offset: u32, data: &[u8]) -> Result<(), &'static str> {
+    fn write_file_data(
+        &mut self,
+        cluster: &mut u32,
+        offset: u32,
+        data: &[u8],
+    ) -> Result<(), &'static str> {
         let mut remaining = data.len() as u32;
         let mut clus = *cluster;
         let mut data_off = 0usize;
@@ -929,7 +1001,6 @@ impl FatFileSystem {
             (name_utf16.len() + 14) / 15
         };
         let total_entries = 2 + name_entry_count; // File Info + Stream Ext + File Name(s)
-        let entries_per_sector = (self.bps / 32) as usize;
 
         // Find a run of consecutive free slots
         let (start_sector, start_off) = self.find_free_exfat_run(dir_cluster, total_entries)?;
@@ -1000,7 +1071,11 @@ impl FatFileSystem {
     }
 
     /// Find N consecutive free 32-byte entry slots in an exFAT directory.
-    fn find_free_exfat_run(&mut self, dir_cluster: u32, count: usize) -> Result<(u32, usize), &'static str> {
+    fn find_free_exfat_run(
+        &mut self,
+        dir_cluster: u32,
+        count: usize,
+    ) -> Result<(u32, usize), &'static str> {
         let mut cluster = dir_cluster;
         loop {
             let sector_base = self.cluster_to_sector(cluster);
@@ -1237,7 +1312,12 @@ impl FatFileSystem {
 }
 
 impl FatFileSystem {
-    fn update_dir_entry_on_close(&mut self, path: &str, first_cluster: u32, file_size: u32) -> Result<(), &'static str> {
+    fn update_dir_entry_on_close(
+        &mut self,
+        path: &str,
+        first_cluster: u32,
+        file_size: u32,
+    ) -> Result<(), &'static str> {
         let path = path.trim_matches('/');
         let (parent_path, file_name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
@@ -1253,14 +1333,25 @@ impl FatFileSystem {
         };
         if self.is_exfat {
             let target_utf16: Vec<u16> = file_name.encode_utf16().collect();
-            self.update_exfat_entry_internal(parent_cluster, &target_utf16, first_cluster, file_size as u64)
+            self.update_exfat_entry_internal(
+                parent_cluster,
+                &target_utf16,
+                first_cluster,
+                file_size as u64,
+            )
         } else {
             let short_name = name_to_83(file_name);
             self.update_83_in_dir(parent_cluster, &short_name, first_cluster, file_size)
         }
     }
 
-    fn update_83_in_dir(&mut self, dir_cluster: u32, short_name: &[u8; 11], first_cluster: u32, file_size: u32) -> Result<(), &'static str> {
+    fn update_83_in_dir(
+        &mut self,
+        dir_cluster: u32,
+        short_name: &[u8; 11],
+        first_cluster: u32,
+        file_size: u32,
+    ) -> Result<(), &'static str> {
         let mut cluster = dir_cluster;
         loop {
             let sector_base = self.cluster_to_sector(cluster);
@@ -1297,7 +1388,13 @@ impl FatFileSystem {
         }
     }
 
-    fn update_exfat_entry_internal(&mut self, dir_cluster: u32, target_name: &[u16], first_cluster: u32, file_size: u64) -> Result<(), &'static str> {
+    fn update_exfat_entry_internal(
+        &mut self,
+        dir_cluster: u32,
+        target_name: &[u16],
+        first_cluster: u32,
+        file_size: u64,
+    ) -> Result<(), &'static str> {
         let mut cluster = dir_cluster;
         let mut name_buf: Vec<u16> = Vec::new();
         let mut in_entry = false;
@@ -1375,14 +1472,16 @@ impl FatFileSystem {
         let se_buf_off = (se_off % self.bps) as usize;
         self.device.read_sectors(se_sec, 1, &mut self.sector_buf)?;
         self.sector_buf[se_buf_off + 8..se_buf_off + 16].copy_from_slice(&file_size.to_le_bytes());
-        self.sector_buf[se_buf_off + 20..se_buf_off + 24].copy_from_slice(&first_cluster.to_le_bytes());
+        self.sector_buf[se_buf_off + 20..se_buf_off + 24]
+            .copy_from_slice(&first_cluster.to_le_bytes());
         self.sector_buf[se_buf_off + 24..se_buf_off + 32].copy_from_slice(&file_size.to_le_bytes());
         self.device.write_sectors(se_sec, 1, &self.sector_buf)?;
 
         // ── Recompute entry-set checksum ─────────────────────────
         let se_setting_sec = found_sector_base + fi_off / self.bps;
         let se_setting_off = (fi_off % self.bps) as usize;
-        self.device.read_sectors(se_setting_sec, 1, &mut self.sector_buf)?;
+        self.device
+            .read_sectors(se_setting_sec, 1, &mut self.sector_buf)?;
         let secondary_count = self.sector_buf[se_setting_off + 1] as usize;
         let total_entries = 1 + secondary_count;
 
@@ -1435,13 +1534,14 @@ impl FatFileSystem {
         };
 
         if total_entries > 1 {
-            let (slot_sector, slot_off) = match self.find_free_exfat_run(parent_cluster, total_entries) {
-                Ok(v) => v,
-                Err(_) => {
-                    let _ = self.write_fat_entry(first_cluster, 0);
-                    return None;
-                }
-            };
+            let (slot_sector, slot_off) =
+                match self.find_free_exfat_run(parent_cluster, total_entries) {
+                    Ok(v) => v,
+                    Err(_) => {
+                        let _ = self.write_fat_entry(first_cluster, 0);
+                        return None;
+                    }
+                };
 
             // Compute checksum for the short name
             let checksum = lfn_checksum(&short_name);
@@ -1457,7 +1557,10 @@ impl FatFileSystem {
                 let byte_off = slot_off + i * 32;
                 let sec = slot_sector + (byte_off / self.bps as usize) as u32;
                 let b_off = byte_off % self.bps as usize;
-                if self.write_lfn_entry(sec, b_off, flags, chars_slice, checksum).is_err() {
+                if self
+                    .write_lfn_entry(sec, b_off, flags, chars_slice, checksum)
+                    .is_err()
+                {
                     let _ = self.write_fat_entry(first_cluster, 0);
                     return None;
                 }
@@ -1465,7 +1568,10 @@ impl FatFileSystem {
             let byte_off = slot_off + lfn_entry_count * 32;
             let sec = slot_sector + (byte_off / self.bps as usize) as u32;
             let b_off = byte_off % self.bps as usize;
-            if self.write_83_entry(sec, b_off, &short_name, first_cluster, 0, false).is_err() {
+            if self
+                .write_83_entry(sec, b_off, &short_name, first_cluster, 0, false)
+                .is_err()
+            {
                 let _ = self.write_fat_entry(first_cluster, 0);
                 return None;
             }
@@ -1477,7 +1583,10 @@ impl FatFileSystem {
                     return None;
                 }
             };
-            if self.write_83_entry(sec, off, &short_name, first_cluster, 0, false).is_err() {
+            if self
+                .write_83_entry(sec, off, &short_name, first_cluster, 0, false)
+                .is_err()
+            {
                 let _ = self.write_fat_entry(first_cluster, 0);
                 return None;
             }
@@ -1527,7 +1636,6 @@ impl FileSystem for FatFileSystem {
         let offset = self.handles[pos].2;
         let file_size = self.handles[pos].3;
         let to_read = min(buf.len() as u32, file_size.saturating_sub(offset));
-        let mut total = 0usize;
         let mut clus = cluster;
         let mut remaining_offset = offset;
         loop {

@@ -28,19 +28,19 @@ pub mod ehci;
 pub mod xhci;
 
 // USB class drivers
+pub mod disk;
 pub mod hub;
 pub mod msd;
 pub mod scsi;
 pub mod usb_bus;
-pub mod disk;
 
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbSpeed {
-    Low,         // 1.5 Mbps
-    Full,        // 12 Mbps
-    High,        // 480 Mbps
-    SuperSpeed,  // 5 Gbps (USB 3.x)
+    Low,        // 1.5 Mbps
+    Full,       // 12 Mbps
+    High,       // 480 Mbps
+    SuperSpeed, // 5 Gbps (USB 3.x)
 }
 
 impl UsbSpeed {

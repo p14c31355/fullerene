@@ -3,21 +3,13 @@ use crate::DriverContextError;
 use alloc::vec::Vec;
 
 // ── IOMMU Page Table Entry flags (VT-d SL page tables) ─────────
-pub const IOPTE_R: u64 = 1 << 0;  // Read (must be set)
-pub const IOPTE_W: u64 = 1 << 1;  // Write
-pub const IOPTE_S: u64 = 1 << 7;  // Page Size (2MB at SL1, 1GB at SL2)
+pub const IOPTE_R: u64 = 1 << 0; // Read (must be set)
+pub const IOPTE_W: u64 = 1 << 1; // Write
+pub const IOPTE_S: u64 = 1 << 7; // Page Size (2MB at SL1, 1GB at SL2)
 pub const IOPTE_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
 
 fn iopte_addr(entry: u64) -> u64 {
     entry & IOPTE_ADDR_MASK
-}
-
-fn iopte_is_present(entry: u64) -> bool {
-    entry & IOPTE_R != 0
-}
-
-fn iopte_is_huge(entry: u64) -> bool {
-    entry & IOPTE_S != 0
 }
 
 // ── IOMMU Page Table (3-level, 4KB pages) ──────────────────────
@@ -30,11 +22,9 @@ fn iopte_is_huge(entry: u64) -> bool {
 //              [20:12] → SL0 index
 //              [11:0]  → page offset
 
-const IOVA_BITS: u8 = 39; // 3-level 4KiB SLPT covers bits [38:0]
 const SL2_SHIFT: u8 = 30;
 const SL1_SHIFT: u8 = 21;
 const SL0_SHIFT: u8 = 12;
-const PAGE_SHIFT: u8 = 12;
 
 fn sl2_index(iova: u64) -> usize {
     ((iova >> SL2_SHIFT) & 0x1ff) as usize
@@ -89,10 +79,15 @@ impl IommuPageTable {
         self.domain_id
     }
 
-    fn alloc_sl_table(&mut self, ctx: &dyn DriverContext) -> Result<(u64, *mut u64), DriverContextError> {
+    fn alloc_sl_table(
+        &mut self,
+        ctx: &dyn DriverContext,
+    ) -> Result<(u64, *mut u64), DriverContextError> {
         let phys = ctx.allocate_frame()?;
         let virt = ctx.phys_to_virt(phys) as *mut u64;
-        unsafe { core::ptr::write_bytes(virt, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(virt, 0, 4096);
+        }
         self.allocated_pages.push(phys);
         Ok((phys, virt))
     }
@@ -139,12 +134,16 @@ impl IommuPageTable {
         let sl2_virt = self.root_virt;
         let sl2_idx = sl2_index(iova);
         let sl2_entry = unsafe { &*sl2_virt.add(sl2_idx) };
-        if *sl2_entry & IOPTE_R == 0 { return; }
+        if *sl2_entry & IOPTE_R == 0 {
+            return;
+        }
 
         let sl1_virt = ctx.phys_to_virt(iopte_addr(*sl2_entry)) as *mut u64;
         let sl1_idx = sl1_index(iova);
         let sl1_entry = unsafe { &*sl1_virt.add(sl1_idx) };
-        if *sl1_entry & IOPTE_R == 0 { return; }
+        if *sl1_entry & IOPTE_R == 0 {
+            return;
+        }
 
         let sl0_virt = ctx.phys_to_virt(iopte_addr(*sl1_entry)) as *mut u64;
         let sl0_idx = sl0_index(iova);
@@ -209,11 +208,11 @@ impl RootEntry {
 //   bits 7:3:   Reserved
 //   bits 23:8:  Domain ID
 
-pub const CTX_TT_MULTI_LEVEL: u64 = 0;    // 00b: Host translation
-pub const CTX_TT_PASS_THROUGH: u64 = 2;   // 10b: Pass-through
-pub const CTX_AW_3LEVEL: u64 = 2;         // 010b = 39-bit AGAW
-pub const CTX_AW_4LEVEL: u64 = 3;         // 011b = 48-bit AGAW
-pub const CTX_FPD: u64 = 1 << 1;          // Fault Processing Disable
+pub const CTX_TT_MULTI_LEVEL: u64 = 0; // 00b: Host translation
+pub const CTX_TT_PASS_THROUGH: u64 = 2; // 10b: Pass-through
+pub const CTX_AW_3LEVEL: u64 = 2; // 010b = 39-bit AGAW
+pub const CTX_AW_4LEVEL: u64 = 3; // 011b = 48-bit AGAW
+pub const CTX_FPD: u64 = 1 << 1; // Fault Processing Disable
 
 #[derive(Clone, Copy)]
 #[repr(C, align(16))]
@@ -264,7 +263,9 @@ impl IommuRootTable {
     pub fn new(ctx: &dyn DriverContext) -> Result<Self, DriverContextError> {
         let phys = ctx.allocate_frame()?;
         let virt = ctx.phys_to_virt(phys) as *mut RootEntry;
-        unsafe { core::ptr::write_bytes(virt, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(virt, 0, 4096);
+        }
         Ok(Self {
             root_table_phys: phys,
             root_table_virt: virt,
@@ -290,7 +291,9 @@ impl IommuRootTable {
         let ctx_table_virt: *mut ContextEntry = if !root_entry.is_present() {
             let ct_phys = ctx.allocate_frame()?;
             let ct_virt = ctx.phys_to_virt(ct_phys) as *mut ContextEntry;
-            unsafe { core::ptr::write_bytes(ct_virt, 0, 4096); }
+            unsafe {
+                core::ptr::write_bytes(ct_virt, 0, 4096);
+            }
             *root_entry = RootEntry::new(ct_phys);
             self.context_table_pages.push(ct_phys);
             ct_virt

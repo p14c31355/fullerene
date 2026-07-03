@@ -1,4 +1,4 @@
-// Runtime trait and LinuxRuntime implementation
+// LinuxRuntime implementation
 use super::fs as linux_fs;
 use super::memory as linux_mem;
 use super::memory::LinuxMmapRegion;
@@ -10,170 +10,6 @@ use super::time as linux_time;
 use super::types::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-
-/// Unified Kernel Request — the "kernel language" message.
-/// Every runtime translates its ABI into these messages.
-pub enum KernelRequest {
-    Read {
-        fd: u32,
-        buf: u64,
-        count: usize,
-    },
-    Write {
-        fd: u32,
-        buf: u64,
-        count: usize,
-    },
-    Open {
-        path: u64,
-        flags: i32,
-        mode: u32,
-    },
-    Close {
-        fd: u32,
-    },
-    Lseek {
-        fd: u32,
-        offset: i64,
-        whence: i32,
-    },
-    Stat {
-        path: u64,
-        statbuf: u64,
-    },
-    Fstat {
-        fd: u32,
-        statbuf: u64,
-    },
-    Newfstatat {
-        dirfd: i32,
-        path: u64,
-        statbuf: u64,
-        flags: i32,
-    },
-    Access {
-        path: u64,
-        mode: i32,
-    },
-    Getdents64 {
-        fd: u32,
-        buf: u64,
-        count: u32,
-    },
-    Readlink {
-        path: u64,
-        buf: u64,
-        size: u64,
-    },
-    Unlink {
-        path: u64,
-    },
-    Mkdir {
-        path: u64,
-        mode: u32,
-    },
-    Rmdir {
-        path: u64,
-    },
-    Symlink {
-        target: u64,
-        linkpath: u64,
-    },
-    Rename {
-        oldpath: u64,
-        newpath: u64,
-    },
-    Chdir {
-        path: u64,
-    },
-    Getcwd {
-        buf: u64,
-        size: u64,
-    },
-    Mount {
-        source: u64,
-        target: u64,
-        fstype: u64,
-        flags: u64,
-        data: u64,
-    },
-    Umount2 {
-        target: u64,
-        flags: i32,
-    },
-    Ioctl {
-        fd: u32,
-        request: u64,
-        arg: u64,
-    },
-    Dup {
-        oldfd: i32,
-    },
-    Dup2 {
-        oldfd: i32,
-        newfd: i32,
-    },
-    Dup3 {
-        oldfd: i32,
-        newfd: i32,
-        flags: i32,
-    },
-    Fcntl {
-        fd: i32,
-        cmd: i32,
-        arg: u64,
-    },
-    Pipe {
-        pipefd: u64,
-    },
-    Truncate {
-        path: u64,
-        length: i64,
-    },
-    Ftruncate {
-        fd: u32,
-        length: i64,
-    },
-    Fsync {
-        fd: u32,
-    },
-    Fdatasync {
-        fd: u32,
-    },
-    Chmod {
-        path: u64,
-        mode: u32,
-    },
-    Fchmod {
-        fd: u32,
-        mode: u32,
-    },
-    Utime {
-        path: u64,
-        times: u64,
-    },
-    Utimensat {
-        dirfd: i32,
-        path: u64,
-        times: u64,
-        flags: i32,
-    },
-    Readdir {
-        path: u64,
-    },
-}
-
-pub enum KernelResponse {
-    Value(u64),
-    Buffer(Vec<u8>),
-    Error(i32),
-}
-
-/// Abstract runtime: translates ABI-specific requests into kernel messages.
-pub trait Runtime {
-    fn dispatch(&mut self, syscall_no: u64, args: &[u64; 6]) -> u64;
-    fn name(&self) -> &str;
-}
 
 /// Dispatch mode for the process: which runtime handles its syscalls.
 pub enum DispatchMode {
@@ -237,12 +73,11 @@ impl LinuxRuntime {
     }
 
     pub fn is_std_fd(fd: i32) -> bool {
-        fd >= 0 && fd <= 2
+        (0..=2).contains(&fd)
     }
-}
 
-impl Runtime for LinuxRuntime {
-    fn dispatch(&mut self, syscall_no: u64, args: &[u64; 6]) -> u64 {
+    /// Dispatch a Linux syscall by number.
+    pub fn dispatch(&mut self, syscall_no: u64, args: &[u64; 6]) -> u64 {
         match syscall_no {
             // File system
             SYS_READ => linux_fs::sys_read(self, args),
@@ -354,10 +189,6 @@ impl Runtime for LinuxRuntime {
                 errno_code(ENOSYS)
             }
         }
-    }
-
-    fn name(&self) -> &str {
-        "Linux"
     }
 }
 

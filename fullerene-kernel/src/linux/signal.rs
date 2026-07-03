@@ -66,7 +66,7 @@ pub fn sys_rt_sigprocmask(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_rt_sigreturn(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_rt_sigreturn(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     // In a real implementation, this would restore the signal context
     // from the stack and return to the interrupted code.
     // For now, just return -EINTR to simulate a signal interruption.

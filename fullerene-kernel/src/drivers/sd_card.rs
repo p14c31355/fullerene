@@ -71,7 +71,10 @@ pub fn init() {
 /// The system continues booting even if this fails.
 pub fn probe_and_mount() -> bool {
     // Atomically mark mount as in-progress to prevent concurrent re-entry.
-    if SD_PROBED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+    if SD_PROBED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
         klog_fmt!("SD card: already mounted or mount in progress\n");
         return true;
     }
@@ -110,8 +113,12 @@ fn probe_and_mount_impl() -> bool {
         }
     };
 
-    klog_fmt!("SD card: {:?} {} sectors {} bytes/sector\n",
-        info.card_type, info.total_blocks, info.block_size);
+    klog_fmt!(
+        "SD card: {:?} {} sectors {} bytes/sector\n",
+        info.card_type,
+        info.total_blocks,
+        info.block_size
+    );
 
     let _ = crate::vfs::mkdir("/mnt");
 

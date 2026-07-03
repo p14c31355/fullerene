@@ -122,14 +122,22 @@ impl Mmio {
 
 macro_rules! reg32 {
     ($rd:ident, $wr:ident, $off:expr) => {
-        pub fn $rd(&self) -> u32 { self.0.read32($off) }
-        pub fn $wr(&self, val: u32) { self.0.write32($off, val); }
+        pub fn $rd(&self) -> u32 {
+            self.0.read32($off)
+        }
+        pub fn $wr(&self, val: u32) {
+            self.0.write32($off, val);
+        }
     };
 }
 macro_rules! reg64 {
     ($rd:ident, $wr:ident, $off:expr) => {
-        pub fn $rd(&self) -> u64 { self.0.read64($off) }
-        pub fn $wr(&self, val: u64) { self.0.write64($off, val); }
+        pub fn $rd(&self) -> u64 {
+            self.0.read64($off)
+        }
+        pub fn $wr(&self, val: u64) {
+            self.0.write64($off, val);
+        }
     };
 }
 
@@ -226,15 +234,33 @@ impl CapabilityRegisters {
 
 pub struct PortSc(pub u32);
 impl PortSc {
-    pub fn ccs(&self) -> bool { self.0 & PORTSC_CCS != 0 }
-    pub fn ped(&self) -> bool { self.0 & PORTSC_PED != 0 }
-    pub fn pr(&self) -> bool { self.0 & PORTSC_PR != 0 }
-    pub fn pp(&self) -> bool { self.0 & PORTSC_PP != 0 }
-    pub fn pls(&self) -> u32 { (self.0 & PORTSC_PLS_MASK) >> 5 }
-    pub fn speed(&self) -> u32 { (self.0 & PORTSC_SPEED_MASK) >> 10 }
-    pub fn wpr(&self) -> bool { self.0 & PORTSC_WPR != 0 }
-    pub fn csc(&self) -> bool { self.0 & PORTSC_CSC != 0 }
-    pub fn pec(&self) -> bool { self.0 & PORTSC_PEC != 0 }
+    pub fn ccs(&self) -> bool {
+        self.0 & PORTSC_CCS != 0
+    }
+    pub fn ped(&self) -> bool {
+        self.0 & PORTSC_PED != 0
+    }
+    pub fn pr(&self) -> bool {
+        self.0 & PORTSC_PR != 0
+    }
+    pub fn pp(&self) -> bool {
+        self.0 & PORTSC_PP != 0
+    }
+    pub fn pls(&self) -> u32 {
+        (self.0 & PORTSC_PLS_MASK) >> 5
+    }
+    pub fn speed(&self) -> u32 {
+        (self.0 & PORTSC_SPEED_MASK) >> 10
+    }
+    pub fn wpr(&self) -> bool {
+        self.0 & PORTSC_WPR != 0
+    }
+    pub fn csc(&self) -> bool {
+        self.0 & PORTSC_CSC != 0
+    }
+    pub fn pec(&self) -> bool {
+        self.0 & PORTSC_PEC != 0
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -248,31 +274,63 @@ impl OperationalRegisters {
         Self(Mmio(base))
     }
 
-    pub fn read(&self, off: usize) -> u32 { self.0.read32(off) }
-    pub fn write(&self, off: usize, val: u32) { self.0.write32(off, val); }
+    pub fn read(&self, off: usize) -> u32 {
+        self.0.read32(off)
+    }
+    pub fn write(&self, off: usize, val: u32) {
+        self.0.write32(off, val);
+    }
 
     // ── Registers ─────────────────────────────────────────────────
-    pub fn usbcmd(&self) -> u32 { self.0.read32(OP_USBCMD) }
-    pub fn set_usbcmd(&self, val: u32) { self.0.write32(OP_USBCMD, val); }
-    pub fn set_usbcmd_bits(&self, bits: u32) { self.0.write32(OP_USBCMD, self.0.read32(OP_USBCMD) | bits); }
-    pub fn clear_usbcmd_bits(&self, bits: u32) { self.0.write32(OP_USBCMD, self.0.read32(OP_USBCMD) & !bits); }
+    pub fn usbcmd(&self) -> u32 {
+        self.0.read32(OP_USBCMD)
+    }
+    pub fn set_usbcmd(&self, val: u32) {
+        self.0.write32(OP_USBCMD, val);
+    }
+    pub fn set_usbcmd_bits(&self, bits: u32) {
+        self.0.write32(OP_USBCMD, self.0.read32(OP_USBCMD) | bits);
+    }
+    pub fn clear_usbcmd_bits(&self, bits: u32) {
+        self.0.write32(OP_USBCMD, self.0.read32(OP_USBCMD) & !bits);
+    }
 
-    pub fn usbsts(&self) -> u32 { self.0.read32(OP_USBSTS) }
-    pub fn clear_usbsts_bits(&self, bits: u32) { self.0.write32(OP_USBSTS, bits); }
+    pub fn usbsts(&self) -> u32 {
+        self.0.read32(OP_USBSTS)
+    }
+    pub fn clear_usbsts_bits(&self, bits: u32) {
+        self.0.write32(OP_USBSTS, bits);
+    }
 
-    pub fn crcr(&self) -> u64 { self.0.read64(OP_CRCR) }
-    pub fn set_crcr(&self, val: u64) { self.0.write64(OP_CRCR, val); }
-    pub fn dcbaap(&self) -> u64 { self.0.read64(OP_DCBAAP) }
-    pub fn set_dcbaap(&self, val: u64) { self.0.write64(OP_DCBAAP, val); }
+    pub fn crcr(&self) -> u64 {
+        self.0.read64(OP_CRCR)
+    }
+    pub fn set_crcr(&self, val: u64) {
+        self.0.write64(OP_CRCR, val);
+    }
+    pub fn dcbaap(&self) -> u64 {
+        self.0.read64(OP_DCBAAP)
+    }
+    pub fn set_dcbaap(&self, val: u64) {
+        self.0.write64(OP_DCBAAP, val);
+    }
 
-    pub fn config(&self) -> u32 { self.0.read32(OP_CONFIG) }
-    pub fn set_config(&self, val: u32) { self.0.write32(OP_CONFIG, val); }
+    pub fn config(&self) -> u32 {
+        self.0.read32(OP_CONFIG)
+    }
+    pub fn set_config(&self, val: u32) {
+        self.0.write32(OP_CONFIG, val);
+    }
 
     pub fn portsc(&self, port: u32) -> PortSc {
-        PortSc(self.0.read32(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE))
+        PortSc(
+            self.0
+                .read32(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE),
+        )
     }
     pub fn write_portsc(&self, port: u32, val: u32) {
-        self.0.write32(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE, val);
+        self.0
+            .write32(OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE, val);
     }
     pub fn update_portsc(&self, port: u32, set: u32, clear: u32) {
         let off = OP_PORTSC_BASE + port as usize * OP_PORTSC_STRIDE;
@@ -283,7 +341,7 @@ impl OperationalRegisters {
         // Only the explicitly requested set/clear operations should affect
         // non-RW1C bits like PLS, PP, etc.
         let current = self.0.read32(off) & !PORTSC_RW1C_MASK;
-        self.0.write32(off, ((current & !clear) | set));
+        self.0.write32(off, (current & !clear) | set);
     }
 }
 
@@ -364,31 +422,54 @@ pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
     let mut iters = 0;
     while off != 0 && off < 0x100000 {
         iters += 1;
-        if iters > 64 { log::warn!("xHCI: EC list exceeded max iterations"); break; }
+        if iters > 64 {
+            log::warn!("xHCI: EC list exceeded max iterations");
+            break;
+        }
         let ec_id = m.read32(off * 4) as u8;
         let ec_next = (m.read32(off * 4) >> 8) as u8;
         let ec_dw1 = m.read32(off * 4 + 4);
-        log::info!("xHCI EC: id={} next={} DWORD1=0x{:08X} (offset 0x{:04x})", ec_id, ec_next, ec_dw1, off * 4);
+        log::info!(
+            "xHCI EC: id={} next={} DWORD1=0x{:08X} (offset 0x{:04x})",
+            ec_id,
+            ec_next,
+            ec_dw1,
+            off * 4
+        );
         if ec_id == 1 {
             let legsup = m.read32(off * 4);
             let legctl = m.read32(off * 4 + 4);
-            log::info!("  → USB Legacy Support: BIOS_SEM={} OS_SEM={} SMI_en=0x{:03x}",
-                (legsup >> 16) & 1, (legsup >> 24) & 1, legctl & 0x1F);
+            log::info!(
+                "  → USB Legacy Support: BIOS_SEM={} OS_SEM={} SMI_en=0x{:03x}",
+                (legsup >> 16) & 1,
+                (legsup >> 24) & 1,
+                legctl & 0x1F
+            );
         } else if ec_id == 2 {
             let dw2 = m.read32(off * 4 + 8);
             let port_off = (dw2 & 0xFF) as u32;
             let port_cnt = ((dw2 >> 8) & 0xFF) as u32;
             let major_rev = m.read32(off * 4) >> 24;
-            log::info!("  → Supported Protocol: ports {}-{} rev={}.0 {}",
-                port_off, port_off + port_cnt - 1, major_rev,
-                if major_rev >= 3 { "USB 3.x" } else { "USB 2.0" });
+            log::info!(
+                "  → Supported Protocol: ports {}-{} rev={}.0 {}",
+                port_off,
+                port_off + port_cnt - 1,
+                major_rev,
+                if major_rev >= 3 { "USB 3.x" } else { "USB 2.0" }
+            );
         }
-        if ec_next == 0 { break; }
+        if ec_next == 0 {
+            break;
+        }
         off += ec_next as usize;
     }
 }
 
-pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) -> alloc::vec::Vec<u32> {
+pub fn parse_port_protocols(
+    mmio_base: *mut u8,
+    ext_cap_ptr: u16,
+    n_ports: u32,
+) -> alloc::vec::Vec<u32> {
     let m = Mmio(mmio_base);
     let n_words = ((n_ports + 31) / 32).max(1) as usize;
     let mut bitmap = alloc::vec![0xFFFFFFFFu32; n_words];
@@ -396,12 +477,22 @@ pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) 
     let mut iters = 0;
     while off != 0 && off < 0x100000 {
         iters += 1;
-        if iters > 64 { log::warn!("xHCI: parse_port_protocols exceeded max iterations"); break; }
+        if iters > 64 {
+            log::warn!("xHCI: parse_port_protocols exceeded max iterations");
+            break;
+        }
         let ec_id = m.read32(off * 4) as u8;
         if ec_id == 2 {
             let dw2 = m.read32(off * 4 + 8);
             let port_off = (dw2 & 0xFF) as u32;
-            if port_off == 0 { let next = (m.read32(off * 4) >> 8) as u8; if next == 0 { break; } off += next as usize; continue; }
+            if port_off == 0 {
+                let next = (m.read32(off * 4) >> 8) as u8;
+                if next == 0 {
+                    break;
+                }
+                off += next as usize;
+                continue;
+            }
             let port_cnt = ((dw2 >> 8) & 0xFF) as u32;
             let major_rev = m.read32(off * 4) >> 24;
             let is_usb3 = major_rev >= 3;
@@ -409,15 +500,21 @@ pub fn parse_port_protocols(mmio_base: *mut u8, ext_cap_ptr: u16, n_ports: u32) 
                 let port_idx = port_off + p - 1;
                 if port_idx < n_ports {
                     let word = (port_idx / 32) as usize;
-                    let bit  = port_idx % 32;
+                    let bit = port_idx % 32;
                     if word < bitmap.len() {
-                        if is_usb3 { bitmap[word] |= 1 << bit; } else { bitmap[word] &= !(1 << bit); }
+                        if is_usb3 {
+                            bitmap[word] |= 1 << bit;
+                        } else {
+                            bitmap[word] &= !(1 << bit);
+                        }
                     }
                 }
             }
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;
-        if ec_next == 0 { break; }
+        if ec_next == 0 {
+            break;
+        }
         off += ec_next as usize;
     }
     bitmap
@@ -429,7 +526,9 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
     let mut iters = 0;
     while off != 0 && off < 0x100000 {
         iters += 1;
-        if iters > 64 { return Err("circular capability list"); }
+        if iters > 64 {
+            return Err("circular capability list");
+        }
         let ec_id = m.read32(off * 4) as u8;
         if ec_id == 1 {
             let cap_base = off * 4;
@@ -441,15 +540,22 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
             m.write32(cap_base, legsup | (1 << 24));
             let mut ok = false;
             for _ in 0..5_000_000 {
-                if (m.read32(cap_base) & (1 << 16)) == 0 { ok = true; break; }
+                if (m.read32(cap_base) & (1 << 16)) == 0 {
+                    ok = true;
+                    break;
+                }
                 core::hint::spin_loop();
             }
-            if !ok { return Err("legacy handoff timed out"); }
+            if !ok {
+                return Err("legacy handoff timed out");
+            }
             m.write32(cap_base + 4, m.read32(cap_base + 4) & !0x00F8001F);
             return Ok(false);
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;
-        if ec_next == 0 { break; }
+        if ec_next == 0 {
+            break;
+        }
         off += ec_next as usize;
     }
     Ok(true)
@@ -556,16 +662,27 @@ mod tests {
             let op_base = 0x20usize;
             let port_start = op_base + OP_PORTSC_BASE;
             let port_end = port_start + 32 * OP_PORTSC_STRIDE;
-            if (port_start..port_end).contains(&offset) && (offset - port_start) % OP_PORTSC_STRIDE == 0 {
+            if (port_start..port_end).contains(&offset)
+                && (offset - port_start) % OP_PORTSC_STRIDE == 0
+            {
                 let pp_was_set = (old & PORTSC_PP) == 0 && (val & PORTSC_PP) != 0;
                 let pr_set = (val & PORTSC_PR) != 0;
                 if pp_was_set {
                     // Device connects after power-up
-                    self.write_hw(offset, (val & !PORTSC_RW1C_MASK) | PORTSC_CCS | PORTSC_PED | PORTSC_PP);
+                    self.write_hw(
+                        offset,
+                        (val & !PORTSC_RW1C_MASK) | PORTSC_CCS | PORTSC_PED | PORTSC_PP,
+                    );
                     self.write_hw(offset + 4, 0); // PORTPMSC = 0
                 } else if pr_set && (val & PORTSC_PR) == 0 {
                     // Port reset completing → CCS=1
-                    self.write_hw(offset, (val & !PORTSC_PR & !PORTSC_RW1C_MASK) | PORTSC_CCS | PORTSC_PED | PORTSC_PP);
+                    self.write_hw(
+                        offset,
+                        (val & !PORTSC_PR & !PORTSC_RW1C_MASK)
+                            | PORTSC_CCS
+                            | PORTSC_PED
+                            | PORTSC_PP,
+                    );
                 }
             }
         }
@@ -582,14 +699,41 @@ mod tests {
     /// Simulated DriverContext for test use.
     struct TestDriver;
     impl crate::DriverContext for TestDriver {
-        fn phys_to_virt(&self, _phys: u64) -> usize { 0 }
-        fn allocate_frame(&self) -> Result<u64, crate::DriverContextError> { Ok(0x1000) }
-        fn allocate_contiguous_frames(&self, _n: usize) -> Result<u64, crate::DriverContextError> { Ok(0x1000) }
-        fn map_mmio_region(&self, _phys: usize, _virt: usize, _size: usize) -> Result<(), crate::DriverContextError> { Ok(()) }
-        fn map_page(&self, _virt: usize, _phys: usize, _flags: crate::PageFlags) -> Result<(), crate::DriverContextError> { Ok(()) }
+        fn phys_to_virt(&self, _phys: u64) -> usize {
+            0
+        }
+        fn allocate_frame(&self) -> Result<u64, crate::DriverContextError> {
+            Ok(0x1000)
+        }
+        fn allocate_contiguous_frames(&self, _n: usize) -> Result<u64, crate::DriverContextError> {
+            Ok(0x1000)
+        }
+        fn map_mmio_region(
+            &self,
+            _phys: usize,
+            _virt: usize,
+            _size: usize,
+        ) -> Result<(), crate::DriverContextError> {
+            Ok(())
+        }
+        fn map_page(
+            &self,
+            _virt: usize,
+            _phys: usize,
+            _flags: crate::PageFlags,
+        ) -> Result<(), crate::DriverContextError> {
+            Ok(())
+        }
         fn free_frame(&self, _phys: u64) {}
         fn free_contiguous_frames(&self, _phys: u64, _count: usize) {}
-        fn dma_map(&self, _device_id: u16, _phys: u64, _size: usize) -> Result<u64, crate::DriverContextError> { Ok(_phys) }
+        fn dma_map(
+            &self,
+            _device_id: u16,
+            _phys: u64,
+            _size: usize,
+        ) -> Result<u64, crate::DriverContextError> {
+            Ok(_phys)
+        }
         fn dma_unmap(&self, _iova: u64, _size: usize) {}
     }
 
@@ -636,7 +780,10 @@ mod tests {
 
         // Now CCS=1 is reflected through the OperationalRegisters
         let ps = regs.portsc(0);
-        assert!(ps.ccs(), "port 0 should detect device after simulated connection");
+        assert!(
+            ps.ccs(),
+            "port 0 should detect device after simulated connection"
+        );
         assert!(ps.ped(), "port 0 should be enabled");
     }
 
@@ -681,8 +828,16 @@ mod tests {
         let val = regs.portsc(0).0;
         assert_eq!(val & PORTSC_PP, 0, "PP should be cleared");
         assert_ne!(val & PORTSC_PED, 0, "PED should be set");
-        assert_ne!(val & PORTSC_CSC, 0, "CSC should be preserved (not accidentally cleared)");
-        assert_ne!(val & PORTSC_PEC, 0, "PEC should be preserved (not accidentally cleared)");
+        assert_ne!(
+            val & PORTSC_CSC,
+            0,
+            "CSC should be preserved (not accidentally cleared)"
+        );
+        assert_ne!(
+            val & PORTSC_PEC,
+            0,
+            "PEC should be preserved (not accidentally cleared)"
+        );
     }
 
     #[test]
@@ -763,7 +918,11 @@ mod tests {
         // Verify driver can read CCS=1
         for p in 0..2 {
             let ps = op.portsc(p);
-            assert!(ps.ccs(), "port {} should have CCS=1 after simulated connect", p);
+            assert!(
+                ps.ccs(),
+                "port {} should have CCS=1 after simulated connect",
+                p
+            );
             assert!(ps.ped(), "port {} should be enabled", p);
         }
 

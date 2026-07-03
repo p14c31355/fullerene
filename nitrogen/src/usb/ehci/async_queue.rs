@@ -103,21 +103,33 @@ macro_rules! dma_pool {
             pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
                 let mut dma = dma::alloc_dma::<$ty>(ctx, $count)?;
                 let init_fn = $init;
-                for q in dma.as_mut().iter_mut() { init_fn(q); }
+                for q in dma.as_mut().iter_mut() {
+                    init_fn(q);
+                }
                 let usable = $count - $reserved;
                 let mut free = [0usize; $count];
-                for i in 0..usable { free[i] = usable - 1 - i; }
-                Some(Self { dma, free, free_len: usable })
+                for i in 0..usable {
+                    free[i] = usable - 1 - i;
+                }
+                Some(Self {
+                    dma,
+                    free,
+                    free_len: usable,
+                })
             }
 
             pub fn allocate(&mut self) -> Option<(&'static mut $ty, u64)> {
-                if self.free_len == 0 { return None; }
+                if self.free_len == 0 {
+                    return None;
+                }
                 self.free_len -= 1;
                 let idx = self.free[self.free_len];
                 let ptr = &mut self.dma.as_mut()[idx] as *mut $ty;
                 let phys = self.dma.phys + (idx as u64) * core::mem::size_of::<$ty>() as u64;
                 let init_fn = $init;
-                unsafe { init_fn(&mut *ptr); }
+                unsafe {
+                    init_fn(&mut *ptr);
+                }
                 unsafe { Some((&mut *ptr, phys)) }
             }
 
@@ -132,9 +144,13 @@ macro_rules! dma_pool {
 
             pub fn reset(&mut self) {
                 self.free_len = $count - $reserved;
-                for i in 0..self.free_len { self.free[i] = self.free_len - 1 - i; }
+                for i in 0..self.free_len {
+                    self.free[i] = self.free_len - 1 - i;
+                }
                 let init_fn = $init;
-                for q in self.dma.as_mut().iter_mut() { init_fn(q); }
+                for q in self.dma.as_mut().iter_mut() {
+                    init_fn(q);
+                }
             }
 
             pub fn free_pool(&self, ctx: &dyn DriverContext) {
@@ -165,7 +181,9 @@ dma_pool!(QueueHeadPool, QueueHead, 64, 0, qh_init);
 dma_pool!(QtdPool, Qtd, 128, 8, qtd_init);
 
 impl QtdPool {
-    pub fn staging_phys(&self) -> u64 { self.dma.phys + 120 * core::mem::size_of::<Qtd>() as u64 }
+    pub fn staging_phys(&self) -> u64 {
+        self.dma.phys + 120 * core::mem::size_of::<Qtd>() as u64
+    }
 }
 
 // ============================================================================
@@ -192,7 +210,11 @@ impl AsyncSchedule {
             ptr::write_volatile(&mut head.horz_link, (phys as u32) | QH_HORZ_TYPE_QH);
             ptr::write_volatile(&mut head.ep_chars, 1 << 15);
         }
-        Some(Self { _dma: dma, head, head_phys: phys })
+        Some(Self {
+            _dma: dma,
+            head,
+            head_phys: phys,
+        })
     }
 
     pub fn free(&self, ctx: &dyn DriverContext) {

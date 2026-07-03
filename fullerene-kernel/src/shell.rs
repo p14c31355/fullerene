@@ -29,32 +29,13 @@ macro_rules! launch_cmd {
     };
 }
 
-
 /// Read the entire contents of a file at `path`. Returns the raw bytes.
 /// Limited to MAX_FILE_SIZE to prevent unbounded memory growth.
 fn read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
-    const MAX_FILE_SIZE: usize = 10 * 1024 * 1024; // 10 MiB limit
-    let fd = crate::vfs::open(path, 0).map_err(|_| "cannot open file")?;
-    let mut buf = [0u8; 1024];
-    let mut data = alloc::vec::Vec::new();
-    loop {
-        match crate::vfs::read(fd.fd, &mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                if data.len() + n > MAX_FILE_SIZE {
-                    let _ = crate::vfs::close(fd.fd);
-                    return Err("file too large");
-                }
-                data.extend_from_slice(&buf[..n]);
-            }
-            Err(e) => {
-                let _ = crate::vfs::close(fd.fd);
-                return Err(e);
-            }
-        }
-    }
-    let _ = crate::vfs::close(fd.fd);
-    Ok(data)
+    crate::fs::read_entire_file(path).map_err(|e| match e {
+        crate::fs::FsError::FileNotFound => "file not found",
+        _ => "read failed",
+    })
 }
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
@@ -268,19 +249,21 @@ fn register_nozzle_hooks() {
 
     // ── Install sys info / control hooks ───────────────────────
     // Register SD mount hook for direct access (bypasses info hook)
-    nozzle::sys_hooks::SD_MOUNT_HOOK.lock().replace(|ctx: &mut nozzle::CommandContext| {
-        use crate::drivers::sd_card;
-        ctx.terminal.write_str("sd_mount: hook called\n");
-        if sd_card::probe_and_mount() {
-            ctx.terminal.write_str("sd_mount: OK\n");
-            let drives = sd_card::SD_DRIVES.lock();
-            for d in drives.iter() {
-                tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
+    nozzle::sys_hooks::SD_MOUNT_HOOK
+        .lock()
+        .replace(|ctx: &mut nozzle::CommandContext| {
+            use crate::drivers::sd_card;
+            ctx.terminal.write_str("sd_mount: hook called\n");
+            if sd_card::probe_and_mount() {
+                ctx.terminal.write_str("sd_mount: OK\n");
+                let drives = sd_card::SD_DRIVES.lock();
+                for d in drives.iter() {
+                    tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
+                }
+            } else {
+                ctx.terminal.write_str("sd_mount: FAILED\n");
             }
-        } else {
-            ctx.terminal.write_str("sd_mount: FAILED\n");
-        }
-    });
+        });
 
     nozzle::sys_hooks::SysHooks {
         info: Some(|ctx, cmd| match cmd {

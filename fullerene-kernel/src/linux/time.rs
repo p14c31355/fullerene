@@ -3,7 +3,7 @@ use super::numbers::*;
 use super::runtime::{LinuxRuntime, copy_from_user, copy_val_to_user, errno_code};
 use super::types::*;
 
-pub fn sys_nanosleep(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_nanosleep(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let req = args[0];
     let _rem = args[1];
 
@@ -52,7 +52,7 @@ pub fn sys_nanosleep(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_clock_gettime(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_clock_gettime(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let _clk_id = args[0] as i32;
     let tp = args[1];
 
@@ -78,7 +78,7 @@ pub fn sys_clock_gettime(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_gettimeofday(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_gettimeofday(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let tv = args[0];
     let _tz = args[1];
 
@@ -102,7 +102,7 @@ pub fn sys_gettimeofday(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_time(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_time(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let t = args[0];
     let ticks = core::sync::atomic::AtomicU64::load(
         &solvent::GLOBAL_TICK,

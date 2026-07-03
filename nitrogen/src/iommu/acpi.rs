@@ -116,7 +116,9 @@ pub(crate) fn get_sdt_addresses(rsdp_phys: u64) -> Option<(u64, Option<u64>)> {
     if rev >= 2 {
         let xsdt = read_u64(virt + 24);
         let rsdt = read_u32(virt + 16) as u64;
-        if xsdt == 0 { return None; }
+        if xsdt == 0 {
+            return None;
+        }
         Some((xsdt, if rsdt != 0 { Some(rsdt) } else { None }))
     } else {
         let rsdt = read_u32(virt + 16) as u64;
@@ -156,9 +158,13 @@ pub(crate) fn find_table(sdt_phys: u64, signature: &[u8; 4]) -> Option<u64> {
         } else {
             read_u32(virt + 36 + i * entry_size) as u64
         };
-        if entry_phys == 0 { continue; }
+        if entry_phys == 0 {
+            continue;
+        }
         let entry_virt = phys_to_virt(entry_phys);
-        if entry_virt == 0 { continue; }
+        if entry_virt == 0 {
+            continue;
+        }
         let tbl_sig = unsafe { *(entry_virt as *const [u8; 4]) };
         if &tbl_sig == signature {
             return Some(entry_phys);

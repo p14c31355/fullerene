@@ -1,5 +1,3 @@
-use x86_64;
-
 #[cfg(not(target_os = "uefi"))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {

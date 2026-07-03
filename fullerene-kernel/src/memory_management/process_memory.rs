@@ -7,10 +7,8 @@ use petroleum::page_table::process::ProcessPageTable;
 pub struct ProcessMemoryManagerImpl {
     process_id: usize,
     page_table: ProcessPageTable,
-    heap_start: usize,
     heap_end: usize,
     stack_start: usize,
-    stack_end: usize,
     allocations: BTreeMap<usize, usize>, // address -> size mapping
 }
 
@@ -22,10 +20,8 @@ impl ProcessMemoryManagerImpl {
         Self {
             process_id,
             page_table: ProcessPageTable::new(),
-            heap_start: 0x4000_0000, // Start heap at 1GB
             heap_end: 0x4000_0000,
-            stack_start: 0x7FFF_0000, // Start stack near top of user space
-            stack_end: 0x7FFF_0000,
+            stack_start: 0x7FFF_0000,
             allocations: BTreeMap::new(),
         }
     }

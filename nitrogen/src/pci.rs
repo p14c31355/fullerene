@@ -248,16 +248,34 @@ impl PciDevice {
             }
             visited[off as usize] = true;
 
-            let cap_id = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
+            let cap_id =
+                PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
             if cap_id == 0x01 {
-                let pmcsr = PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 4);
+                let pmcsr =
+                    PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 4);
                 let pstate = pmcsr & 0x3;
                 if pstate != 0 {
-                    log::info!("PCI: device {:02x}:{:02x}.{} in D{} → requesting D0",
-                        self.bus, self.device, self.function, pstate);
-                    PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, off + 4, pmcsr & !0x3);
+                    log::info!(
+                        "PCI: device {:02x}:{:02x}.{} in D{} → requesting D0",
+                        self.bus,
+                        self.device,
+                        self.function,
+                        pstate
+                    );
+                    PciConfigSpace::write_config_word_raw(
+                        self.bus,
+                        self.device,
+                        self.function,
+                        off + 4,
+                        pmcsr & !0x3,
+                    );
                     for _ in 0..10000 {
-                        let cur = PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 4);
+                        let cur = PciConfigSpace::read_config_word(
+                            self.bus,
+                            self.device,
+                            self.function,
+                            off + 4,
+                        );
                         if cur & 0x3 == 0 {
                             break;
                         }
@@ -265,7 +283,8 @@ impl PciDevice {
                 }
                 return;
             }
-            let next = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
+            let next =
+                PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
             if next == 0 || next as usize == off as usize {
                 break;
             }
@@ -296,20 +315,38 @@ impl PciDevice {
                 break;
             }
             visited[off as usize] = true;
-            let cap_id = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
+            let cap_id =
+                PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
             if cap_id == 0x10 {
                 // PCI Express capability found
                 // Link Control register is at cap_offset + 0x10
-                let lnk_ctrl = PciConfigSpace::read_config_word(self.bus, self.device, self.function, off + 0x10);
+                let lnk_ctrl = PciConfigSpace::read_config_word(
+                    self.bus,
+                    self.device,
+                    self.function,
+                    off + 0x10,
+                );
                 let aspm = lnk_ctrl & 0x3;
                 if aspm != 0 {
-                    log::info!("PCI: disabling ASPM on {:02x}:{:02x}.{} (was {})",
-                        self.bus, self.device, self.function, aspm);
-                    PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, off + 0x10, lnk_ctrl & !0x3);
+                    log::info!(
+                        "PCI: disabling ASPM on {:02x}:{:02x}.{} (was {})",
+                        self.bus,
+                        self.device,
+                        self.function,
+                        aspm
+                    );
+                    PciConfigSpace::write_config_word_raw(
+                        self.bus,
+                        self.device,
+                        self.function,
+                        off + 0x10,
+                        lnk_ctrl & !0x3,
+                    );
                 }
                 return;
             }
-            let next = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
+            let next =
+                PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
             if next == 0 || next as usize == off as usize {
                 break;
             }

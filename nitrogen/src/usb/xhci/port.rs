@@ -25,9 +25,6 @@ use crate::usb::UsbSpeed;
 /// Maximum consecutive port detection failures before marking the port as done.
 pub const MAX_PORT_RETRIES: u32 = 8;
 
-/// Default TSC ticks per millisecond (1 GHz minimum).
-const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
-
 // ============================================================================
 //  Port — data for a single port
 // ============================================================================
@@ -213,7 +210,13 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
     // momentarily drops CCS during re-training even when the device
     // remains physically connected. Use a longer timeout when a device
     // was known to be present or there was recent activity.
-    let max_iterations = if had_ccs { 50_000 } else if had_change { 50_000 } else { 1_000 };
+    let max_iterations = if had_ccs {
+        50_000
+    } else if had_change {
+        50_000
+    } else {
+        1_000
+    };
     let mut ccs_appeared = false;
     for _ in 0..max_iterations {
         if op.portsc(port).0 & PORTSC_CCS != 0 {
@@ -283,7 +286,10 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     // during the reset.  Failing to acknowledge them may prevent the
     // xHC from reporting subsequent port status changes (e.g. CCS=1).
     let v2 = op.portsc(port).0;
-    op.write_portsc(port, (v2 & !PORTSC_RW1C_MASK) | (PORTSC_WRC | PORTSC_PRC | PORTSC_PLC));
+    op.write_portsc(
+        port,
+        (v2 & !PORTSC_RW1C_MASK) | (PORTSC_WRC | PORTSC_PRC | PORTSC_PLC),
+    );
     delay_us(50);
 
     // After Warm Port Reset, the xHC automatically starts link training
@@ -309,7 +315,11 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
         // Some older / quirky xHC implementations may need this extra
         // kick after WPR when the automatic training stalls.
         const PLS_RXDETECT: u32 = 5 << 5;
-        op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
+        op.update_portsc(
+            port,
+            PLS_RXDETECT | PORTSC_LWS,
+            PORTSC_PLS_MASK | PORTSC_LWS,
+        );
         for _ in 0..120 {
             delay_ms(10);
             if op.portsc(port).ccs() {
@@ -321,7 +331,10 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     if trained {
         log::info!("xHCI: port {} WPR link trained successfully", port);
     } else {
-        log::warn!("xHCI: port {} WPR link training did not complete (CCS still 0)", port);
+        log::warn!(
+            "xHCI: port {} WPR link training did not complete (CCS still 0)",
+            port
+        );
     }
     Ok(op.portsc(port))
 }
@@ -331,7 +344,11 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
 /// Uses `update_portsc` to preserve all non-PLS register bits.
 pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
     const PLS_RXDETECT: u32 = 5 << 5;
-    op.update_portsc(port, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
+    op.update_portsc(
+        port,
+        PLS_RXDETECT | PORTSC_LWS,
+        PORTSC_PLS_MASK | PORTSC_LWS,
+    );
 }
 
 /// Exit Compliance (PLS=15) mode by transitioning to a non-compliance link state.
@@ -346,7 +363,10 @@ pub fn exit_compliance(op: &OperationalRegisters, port: u32) -> bool {
     if ps.pls() != 15 {
         return false;
     }
-    log::info!("xHCI: port {} in Compliance mode (PLS=15), attempting exit", port);
+    log::info!(
+        "xHCI: port {} in Compliance mode (PLS=15), attempting exit",
+        port
+    );
     const PLS_U0: u32 = 0 << 5;
     op.update_portsc(port, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
     delay_ms(50);
@@ -355,7 +375,10 @@ pub fn exit_compliance(op: &OperationalRegisters, port: u32) -> bool {
         log::info!("xHCI: port {} exited Compliance → PLS={}", port, ps2.pls());
         return true;
     }
-    log::info!("xHCI: port {} still in Compliance after U0 write, trying Port Reset", port);
+    log::info!(
+        "xHCI: port {} still in Compliance after U0 write, trying Port Reset",
+        port
+    );
     port_reset(op, port).is_ok()
 }
 
@@ -483,7 +506,9 @@ mod tests {
             assert!(
                 p.retry_count < MAX_PORT_RETRIES,
                 "retry_count ({}) must be < MAX_PORT_RETRIES ({}) on attempt {}",
-                p.retry_count, MAX_PORT_RETRIES, attempt
+                p.retry_count,
+                MAX_PORT_RETRIES,
+                attempt
             );
             p.retry_count += 1;
         }
@@ -515,7 +540,10 @@ mod tests {
         ctx.clear_done_flags();
         for p in &ctx.ports {
             assert!(!p.done, "clear_done_flags must reset done");
-            assert!(!p.wpr_attempted, "clear_done_flags must reset wpr_attempted");
+            assert!(
+                !p.wpr_attempted,
+                "clear_done_flags must reset wpr_attempted"
+            );
             assert_eq!(p.retry_count, 0, "clear_done_flags must reset retry_count");
         }
     }
@@ -550,7 +578,10 @@ mod tests {
         // No bitmap → all ports default to USB 3.0
         let ctx = PortContext::new(8, false, None);
         for p in &ctx.ports {
-            assert!(p.is_usb3, "all ports should default to USB 3.0 when no bitmap");
+            assert!(
+                p.is_usb3,
+                "all ports should default to USB 3.0 when no bitmap"
+            );
         }
     }
 

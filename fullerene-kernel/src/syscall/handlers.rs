@@ -13,7 +13,9 @@ use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::contexts::kernel;
-use crate::linux::{Runtime as LinuxRuntimeTrait, O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND};
+use crate::linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
+
+use resonance::Event as ResonanceEvent;
 
 // ── Global tables ──────────────────────────────────────────────
 
@@ -47,11 +49,7 @@ fn with_kernel_mut_result<F>(f: F) -> SyscallResult
 where
     F: FnOnce(&mut crate::contexts::KernelContext) -> SyscallResult,
 {
-    match crate::contexts::kernel::with_kernel_mut(f) {
-        Some(Ok(v)) => Ok(v),
-        Some(Err(e)) => Err(e),
-        None => Err(SyscallError::NotSupported),
-    }
+    crate::contexts::kernel::with_kernel_mut(f).ok_or(SyscallError::NotSupported)?
 }
 
 /// Extract a specific `KernelObject` variant or return `BadHandle` from the enclosing closure.
@@ -91,7 +89,6 @@ struct EventState {
 
 /// Inner state shared between duplicated thread handles.
 struct ThreadInner {
-    tid: u64,
     pid: process::ProcessId,
     detached: bool,
     exit_code: Option<i32>,
@@ -104,19 +101,12 @@ struct ThreadState {
 }
 
 struct WindowState {
-    /// Native window ID in WindowContext.
     window_id: crate::contexts::window::WindowId,
     pid: process::ProcessId,
 }
 
-struct DeviceState {
-    /// Device identifier string.
-    device_id: alloc::string::String,
-    /// Device class (e.g. "pci", "usb", "input").
-    device_class: alloc::string::String,
-}
+struct DeviceState {}
 
-/// Inner state shared between duplicated channel handles.
 struct ChannelInner {
     messages: Vec<Vec<u8>>,
     waiters: Vec<process::ProcessId>,
@@ -124,26 +114,37 @@ struct ChannelInner {
 }
 
 struct ChannelState {
-    /// Shared inner state so duplicated handles see the same queue.
     inner: alloc::sync::Arc<Mutex<ChannelInner>>,
 }
 
 struct PipeState {
-    /// Shared pipe buffer (read and write ends share the same buffer).
     buffer: alloc::sync::Arc<Mutex<Vec<u8>>>,
-    /// Whether this is the read end or write end.
     is_read_end: bool,
-    /// PID blocked on the other end.
-    peer_waiters: Vec<process::ProcessId>,
 }
 
 struct TimerState {
-    deadline_us: u64,
-    signal_event: Option<Handle>,
+    deadline_ns: u64,
+    event_handle: Handle,
     fired: bool,
 }
 
 const KERNEL_STACK_SIZE: usize = 4096;
+
+/// Allocate a kernel stack of `KERNEL_STACK_SIZE` bytes. Returns (ptr, top_virt).
+/// Returns `Err(OutOfMemory)` if allocation fails.
+fn alloc_kernel_stack() -> Result<(*mut u8, VirtAddr), SyscallError> {
+    let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let ptr = petroleum::common::memory::allocate_layout(layout)
+        .map_err(|_| SyscallError::OutOfMemory)?;
+    let top = VirtAddr::new(ptr as u64 + KERNEL_STACK_SIZE as u64);
+    Ok((ptr, top))
+}
+
+/// Free a kernel stack allocated by `alloc_kernel_stack`.
+fn free_kernel_stack(ptr: *mut u8) {
+    let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    petroleum::common::memory::deallocate_layout(ptr, layout);
+}
 
 // ── Handle helper ──────────────────────────────────────────────
 
@@ -162,17 +163,6 @@ where
         Some(obj) => f(obj),
         None => Err(SyscallError::BadHandle),
     }
-}
-
-// ── Global kernel-object handle table access ───────────────────
-
-/// Access the global HANDLE_TABLE for kernel-internal use.
-pub fn with_handle_table<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut BTreeMap<u64, KernelObject>) -> R,
-{
-    let mut table = HANDLE_TABLE.lock();
-    f(&mut *table)
 }
 
 // ── Main dispatch ──────────────────────────────────────────────
@@ -346,10 +336,7 @@ fn syscall_fork() -> SyscallResult {
     petroleum::initializer::Initializable::init(&mut child_page_table)
         .map_err(|_| SyscallError::InvalidArgument)?;
 
-    let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-    let kernel_stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)
-        .map_err(|_| SyscallError::OutOfMemory)?;
-    let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+    let (kernel_stack_ptr, kernel_stack_top) = alloc_kernel_stack()?;
 
     let child_pid = process::PROCESS_MANAGER.allocate_pid().0 as usize;
 
@@ -363,22 +350,17 @@ fn syscall_fork() -> SyscallResult {
             Some(fa) => fa,
             None => {
                 drop(fa_lock);
-                petroleum::common::memory::deallocate_layout(kernel_stack_ptr, stack_layout);
+                free_kernel_stack(kernel_stack_ptr);
                 crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
                 return Err(SyscallError::OutOfMemory);
             }
         };
-        let vdso = crate::vdso::create_vdso_page(
-            &mut child_page_table,
-            fa,
-            child_pid as u64,
-        );
+        let vdso = crate::vdso::create_vdso_page(&mut child_page_table, fa, child_pid as u64);
         drop(fa_lock);
         match vdso {
             Ok(v) => Some(v),
             Err(_) => {
-                let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-                petroleum::common::memory::deallocate_layout(kernel_stack_ptr, layout);
+                free_kernel_stack(kernel_stack_ptr);
                 crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
                 return Err(SyscallError::OutOfMemory);
             }
@@ -413,9 +395,7 @@ fn syscall_fork() -> SyscallResult {
     crate::process::PROCESS_MANAGER
         .add(child_box)
         .map_err(|_| {
-            // Deallocate kernel stack and cloned page-table frames on failure.
-            let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-            petroleum::common::memory::deallocate_layout(kernel_stack_ptr, layout);
+            free_kernel_stack(kernel_stack_ptr);
             crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
             SyscallError::OutOfMemory
         })?;
@@ -512,9 +492,6 @@ fn syscall_open(filename: *const u8, flags: core::ffi::c_int, _mode: u32) -> Sys
 }
 
 fn syscall_close(fd: core::ffi::c_int) -> SyscallResult {
-    if fd < 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
     if fd <= 2 {
         return Err(SyscallError::InvalidArgument);
     }
@@ -586,7 +563,6 @@ fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallResult {
             }
         })
         .ok_or(SyscallError::NoSuchProcess)?
-        .map_err(|e| e)
 }
 
 fn syscall_yield() -> SyscallResult {
@@ -601,8 +577,6 @@ fn syscall_yield() -> SyscallResult {
 const PROT_READ: u64 = 1;
 const PROT_WRITE: u64 = 2;
 const PROT_EXEC: u64 = 4;
-
-const MAP_ANONYMOUS: u64 = 1 << 10;
 
 /// Helper: unmap+free all pages in `pages` on a partial failure during
 /// [`syscall_map_memory`].
@@ -632,10 +606,7 @@ fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> SyscallResult 
         }
     }
 
-    let map_flags = flags & 0xFFFF;
     let prot = (flags >> 16) & 0xFF;
-
-    let is_anonymous = (map_flags & MAP_ANONYMOUS) != 0;
 
     // Translate protection flags to page-table flags
     let mut pt_flags = x86_64::structures::paging::PageTableFlags::empty();
@@ -701,30 +672,20 @@ fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
         return Err(SyscallError::PermissionDenied);
     }
 
-    match kernel::with_kernel_mut(|k| -> SyscallResult {
+    with_kernel_mut_result(|k| -> SyscallResult {
         let memory = &mut k.memory;
         let num_pages = (len + 4095) / 4096;
         let mgr = memory.manager.as_mut().ok_or(SyscallError::OutOfMemory)?;
         for i in 0..num_pages {
-            let _vaddr = addr as usize + i * 4096;
-            // Unmap and free the underlying physical frame.
-            mgr.safe_unmap_page(_vaddr)
+            let vaddr = addr as usize + i * 4096;
+            mgr.safe_unmap_page(vaddr)
                 .map_err(|_| SyscallError::OutOfMemory)?;
         }
         Ok(0)
-    }) {
-        Some(Ok(v)) => Ok(v),
-        Some(Err(e)) => Err(e),
-        None => Err(SyscallError::NotSupported),
-    }
+    })
 }
 
-fn syscall_protect_memory(addr: u64, _length: u64, _prot: u64) -> SyscallResult {
-    if addr % 4096 != 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
-    // Stub: real implementation would walk the page table and update
-    // the protection bits for the given range.
+fn syscall_protect_memory(_addr: u64, _length: u64, _prot: u64) -> SyscallResult {
     Err(SyscallError::NotSupported)
 }
 
@@ -757,13 +718,11 @@ fn syscall_create_event(flags: u64) -> SyscallResult {
         manual_reset,
         waiters: Vec::new(),
     }));
-    let state = EventState { inner };
-    let handle = alloc_handle(KernelObject::Event(state));
+    let handle = alloc_handle(KernelObject::Event(EventState { inner }));
 
     // Also push the event into the global EventContext system queue so
     // the dispatcher knows about it.
     kernel::with_kernel_mut(|k| {
-        use resonance::Event as ResonanceEvent;
         k.event.push_system(ResonanceEvent::System(
             resonance::event::SystemEvent::Resume, // reuse as "object created"
         ));
@@ -782,7 +741,9 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
             }
             Ok(true)
         } else {
-            if timeout_us == 0 { return Ok(false); }
+            if timeout_us == 0 {
+                return Ok(false);
+            }
             let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
             inner.waiters.push(pid);
             Ok(false)
@@ -826,7 +787,6 @@ fn syscall_signal_event(handle: u64) -> SyscallResult {
 
     // Also push a generic event update into the kernel event context.
     kernel::with_kernel_mut(|k| {
-        use resonance::Event as ResonanceEvent;
         k.event.push_system(ResonanceEvent::System(
             resonance::event::SystemEvent::Resume,
         ));
@@ -835,11 +795,7 @@ fn syscall_signal_event(handle: u64) -> SyscallResult {
     Ok(0)
 }
 
-fn syscall_subscribe_event(event_type: u64, _callback_info: u64) -> SyscallResult {
-    // Stub: register a subscription to a given event type.
-    // In a full implementation the callback_info would contain a handler
-    // reference or a target handle.
-    let _ = event_type;
+fn syscall_subscribe_event(_event_type: u64, _callback_info: u64) -> SyscallResult {
     Err(SyscallError::NotSupported)
 }
 
@@ -875,13 +831,9 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
             .ok_or(SyscallError::NoSuchProcess)?
     };
 
-    let stack_layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-    let kernel_stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)
-        .map_err(|_| SyscallError::OutOfMemory)?;
-    let kernel_stack_top = VirtAddr::new(kernel_stack_ptr as u64 + KERNEL_STACK_SIZE as u64);
+    let (kernel_stack_ptr, kernel_stack_top) = alloc_kernel_stack()?;
 
     let child_pid = process::PROCESS_MANAGER.allocate_pid();
-    let tid = child_pid.0;
 
     let mut thread_process = Process {
         id: child_pid,
@@ -909,24 +861,18 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
     crate::process::PROCESS_MANAGER
         .add(thread_box)
         .map_err(|_| {
-            // Deallocate kernel stack on failure.
-            let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
-            petroleum::common::memory::deallocate_layout(kernel_stack_ptr, layout);
+            free_kernel_stack(kernel_stack_ptr);
             SyscallError::OutOfMemory
         })?;
 
     // Allocate a thread handle for join/detach
     let inner = alloc::sync::Arc::new(Mutex::new(ThreadInner {
-        tid: child_pid.0,
         pid: child_pid,
         detached: false,
         exit_code: None,
         waiters: Vec::new(),
     }));
-    let tstate = ThreadState { inner };
-    let handle = alloc_handle(KernelObject::Thread(tstate));
-
-    Ok(handle)
+    Ok(alloc_handle(KernelObject::Thread(ThreadState { inner })))
 }
 
 fn syscall_join_thread(handle: u64) -> SyscallResult {
@@ -1000,30 +946,26 @@ fn syscall_exit_thread(exit_code: i32) -> SyscallResult {
 //  Window syscalls (60–69)
 // ===================================================================
 
-fn syscall_create_window(x: i32, y: i32, width: u32, height: u32, flags: u64) -> SyscallResult {
+fn syscall_create_window(x: i32, y: i32, width: u32, height: u32, _flags: u64) -> SyscallResult {
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return Err(SyscallError::InvalidArgument);
     }
 
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    let win_id: crate::contexts::window::WindowId = match kernel::with_kernel_mut(|k| {
+    let win_id = kernel::with_kernel_mut(|k| {
         let win_id = k.window.next_window_id();
         let win = crate::contexts::window::Window::new(win_id, "New Window", x, y, width, height);
         k.window.add_window(win);
         win_id
-    }) {
-        Some(id) => id,
-        None => return Err(SyscallError::OutOfMemory),
-    };
+    })
+    .ok_or(SyscallError::OutOfMemory)?;
 
     let state = WindowState {
         window_id: win_id,
         pid,
     };
-    let handle = alloc_handle(KernelObject::Window(state));
-
-    Ok(handle)
+    Ok(alloc_handle(KernelObject::Window(state)))
 }
 
 fn syscall_destroy_window(handle: u64) -> SyscallResult {
@@ -1060,7 +1002,6 @@ fn syscall_present_window(handle: u64) -> SyscallResult {
         kernel::with_kernel_mut(|k| {
             if let Some(win) = k.window.windows.iter_mut().find(|w| w.id == id) {
                 win.visible = true;
-                use resonance::Event as ResonanceEvent;
                 k.event.push(ResonanceEvent::Window(
                     resonance::event::WindowEvent::Redraw(win.id.0),
                 ));
@@ -1143,12 +1084,7 @@ fn syscall_open_device(device_id: *const u8) -> SyscallResult {
     if id_str.is_empty() {
         return Err(SyscallError::InvalidArgument);
     }
-
-    let state = DeviceState {
-        device_id: id_str.clone(),
-        device_class: alloc::string::String::from("unknown"),
-    };
-    let handle = alloc_handle(KernelObject::Device(state));
+    let handle = alloc_handle(KernelObject::Device(DeviceState {}));
     Ok(handle)
 }
 
@@ -1169,9 +1105,7 @@ fn syscall_channel_create(_flags: u64) -> SyscallResult {
         waiters: Vec::new(),
         max_messages: 64,
     }));
-    let state = ChannelState { inner };
-    let handle = alloc_handle(KernelObject::Channel(state));
-    Ok(handle)
+    Ok(alloc_handle(KernelObject::Channel(ChannelState { inner })))
 }
 
 fn syscall_channel_send(handle: u64, data_ptr: *const u8, data_size: u64) -> SyscallResult {
@@ -1245,12 +1179,10 @@ fn syscall_pipe_create(_flags: u64) -> SyscallResult {
     let read_end = PipeState {
         buffer: alloc::sync::Arc::clone(&shared_buffer),
         is_read_end: true,
-        peer_waiters: Vec::new(),
     };
     let write_end = PipeState {
         buffer: shared_buffer,
         is_read_end: false,
-        peer_waiters: Vec::new(),
     };
 
     let read_h = alloc_handle(KernelObject::Pipe(read_end));
@@ -1337,7 +1269,6 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
                 let copy = PipeState {
                     buffer: alloc::sync::Arc::clone(&p.buffer),
                     is_read_end: p.is_read_end,
-                    peer_waiters: Vec::new(),
                 };
                 table.insert(new_h, KernelObject::Pipe(copy));
                 Ok(new_h)
@@ -1369,6 +1300,34 @@ static UPTIME_US: AtomicU64 = AtomicU64::new(0);
 /// handler with the number of microseconds elapsed since the last tick.
 pub fn tick_uptime(delta_us: u64) {
     UPTIME_US.fetch_add(delta_us, Ordering::Relaxed);
+    check_and_fire_timers();
+}
+
+/// Check all timers and fire (signal) any that have expired.
+/// Called from tick_uptime during timer interrupts.
+pub fn check_and_fire_timers() {
+    let now_ns = uptime_us() * 1000; // convert microseconds to nanoseconds
+
+    // Collect expired timers outside the lock to avoid deadlock when signaling events.
+    let expired: Vec<(u64, u64)> = {
+        let mut table = HANDLE_TABLE.lock();
+        let mut expired_timers = Vec::new();
+
+        for (_handle, obj) in table.iter_mut() {
+            if let KernelObject::Timer(timer) = obj {
+                if !timer.fired && now_ns >= timer.deadline_ns {
+                    timer.fired = true;
+                    expired_timers.push((_handle.clone(), timer.event_handle));
+                }
+            }
+        }
+        expired_timers
+    };
+
+    // Signal the event for each expired timer.
+    for (_timer_handle, event_handle) in expired {
+        let _ = syscall_signal_event(event_handle);
+    }
 }
 
 /// Get the current uptime in microseconds.
@@ -1405,16 +1364,26 @@ fn syscall_clock_gettime(clock_id: u64, timespec_buf: *mut u8) -> SyscallResult 
 }
 
 fn syscall_timer_create(_clock_id: u64, deadline_ns: u64, event_handle: u64) -> SyscallResult {
-    let state = TimerState {
-        deadline_us: deadline_ns / 1000,
-        signal_event: if event_handle != 0 {
-            Some(event_handle)
-        } else {
-            None
-        },
+    // Validate the event handle exists before creating the timer.
+    {
+        let table = HANDLE_TABLE.lock();
+        if !table.contains_key(&event_handle) {
+            return Err(SyscallError::BadHandle);
+        }
+        // Verify it's actually an event
+        if let Some(obj) = table.get(&event_handle) {
+            if !matches!(obj, KernelObject::Event(_)) {
+                return Err(SyscallError::BadHandle);
+            }
+        }
+    }
+
+    let timer = TimerState {
+        deadline_ns,
+        event_handle,
         fired: false,
     };
-    let handle = alloc_handle(KernelObject::Timer(state));
+    let handle = alloc_handle(KernelObject::Timer(timer));
     Ok(handle)
 }
 

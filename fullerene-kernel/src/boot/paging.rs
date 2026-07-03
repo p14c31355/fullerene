@@ -10,15 +10,10 @@ pub fn bootstrap_memory(
     ctx: &mut super::uefi_init::UefiInitContext,
     kernel_phys_start: x86_64::PhysAddr,
 ) -> (x86_64::VirtAddr, x86_64::PhysAddr, x86_64::VirtAddr) {
-    use super::uefi_init::{create_tmp_mapper, debug_serial};
+    use super::uefi_init::create_tmp_mapper;
     use crate::MEMORY_MAP;
-    use crate::heap;
-    use petroleum::page_table::{ALLOCATOR as PETROLEUM_ALLOCATOR, MemoryMapDescriptor};
     use petroleum::{debug_log_no_alloc, write_serial_bytes};
-    use x86_64::{
-        PhysAddr, VirtAddr,
-        structures::paging::{Mapper, PageTableFlags},
-    };
+    use x86_64::{PhysAddr, VirtAddr, structures::paging::PageTableFlags};
 
     petroleum::set_physical_memory_offset(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE);
     ctx.physical_memory_offset =
@@ -59,8 +54,7 @@ pub fn bootstrap_memory(
     ctx.init_memory_map();
     debug_log_no_alloc!("DEBUG: init_memory_map returned");
 
-    let boot_heap_ptr =
-        unsafe { core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8 };
+    let boot_heap_ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
     unsafe { petroleum::page_table::init_global_heap(boot_heap_ptr, crate::heap::HEAP_SIZE) };
 
     let memory_map_ref = MEMORY_MAP

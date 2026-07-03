@@ -7,9 +7,7 @@
 
 use alloc::vec::Vec;
 
-pub use genome::vfs::{
-    FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs,
-};
+pub use genome::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs};
 
 // ── Public API — delegated to VfsContext ────────────────────────
 

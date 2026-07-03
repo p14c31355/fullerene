@@ -14,7 +14,6 @@ pub enum InodeType {
 
 #[derive(Debug, Clone)]
 struct Inode {
-    ino: u64,
     name: String,
     kind: InodeType,
     data: Vec<u8>,
@@ -26,8 +25,8 @@ struct Inode {
 
 impl Inode {
     fn new(ino: u64, name: &str, kind: InodeType, parent: u64) -> Self {
+        let _ = ino;
         Self {
-            ino,
             name: String::from(name),
             kind,
             data: Vec::new(),
@@ -176,18 +175,6 @@ impl MemFileSystem {
                     .map_or(false, |i| i.name.as_str() == name)
             })
             .copied()
-    }
-
-    fn collect_descendants(&self, dir_ino: u64) -> Vec<u64> {
-        let mut result = Vec::new();
-        let Some(inode) = self.inodes.get(&dir_ino) else {
-            return result;
-        };
-        for &c in &inode.children {
-            result.push(c);
-            result.extend(self.collect_descendants(c));
-        }
-        result
     }
 }
 
@@ -419,10 +406,7 @@ impl Vfs {
         }
     }
 
-    pub fn find_fs(
-        &mut self,
-        absolute_path: &str,
-    ) -> Option<(&mut Box<dyn FileSystem>, String)> {
+    pub fn find_fs(&mut self, absolute_path: &str) -> Option<(&mut Box<dyn FileSystem>, String)> {
         let path = if absolute_path.starts_with('/') {
             absolute_path
         } else {

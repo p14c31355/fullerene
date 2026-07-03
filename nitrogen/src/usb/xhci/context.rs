@@ -30,11 +30,11 @@ use core::ptr;
 
 // ── Import sub-contexts from sibling modules ──────────────────
 use super::device::*;
-use crate::usb::host_controller::HostController;
 use super::interrupt::*;
 use super::port::*;
 use super::register::*;
 use super::ring::*;
+use crate::usb::host_controller::HostController;
 
 // ============================================================================
 //  XhciContext — top-level xHCI state container
@@ -105,10 +105,7 @@ impl XhciContext {
             hcc1.csz,
             hcc1.ppc,
         );
-        log::info!(
-            "xHCI: HCIVERSION=0x{:04X}",
-            cap_regs.hci_version,
-        );
+        log::info!("xHCI: HCIVERSION=0x{:04X}", cap_regs.hci_version,);
 
         // ── Step 2: Dump extended capabilities ────────────────
         if hcc1.ext_cap_ptr != 0 {
@@ -214,7 +211,9 @@ impl XhciContext {
         let sts = self.registers.op.usbsts();
         if sts & USBSTS_HCH == 0 {
             log::info!("xHCI: controller running, halting before HCRST");
-            self.registers.op.set_usbcmd(self.registers.op.usbcmd() & !USBCMD_RS);
+            self.registers
+                .op
+                .set_usbcmd(self.registers.op.usbcmd() & !USBCMD_RS);
             for _ in 0..200_000 {
                 if self.registers.op.usbsts() & USBSTS_HCH != 0 {
                     break;
@@ -250,11 +249,21 @@ impl XhciContext {
         log::info!(
             "xHCI:   PORTSC[{}]={:#010X} CCS={} PED={} PLS={} PP={} PR={} WPR={} speed={} \
              CSC={} PEC={} WRC={} PRC={} PLC={} OCC={} CEC={}",
-            port_idx, ps.0,
-            ps.ccs() as u32, ps.ped() as u32, ps.pls(), ps.pp() as u32,
-            ps.pr() as u32, ps.wpr() as u32, ps.speed(),
-            (ps.0 >> 17) & 1, (ps.0 >> 18) & 1, (ps.0 >> 19) & 1,
-            (ps.0 >> 21) & 1, (ps.0 >> 22) & 1, (ps.0 >> 20) & 1,
+            port_idx,
+            ps.0,
+            ps.ccs() as u32,
+            ps.ped() as u32,
+            ps.pls(),
+            ps.pp() as u32,
+            ps.pr() as u32,
+            ps.wpr() as u32,
+            ps.speed(),
+            (ps.0 >> 17) & 1,
+            (ps.0 >> 18) & 1,
+            (ps.0 >> 19) & 1,
+            (ps.0 >> 21) & 1,
+            (ps.0 >> 22) & 1,
+            (ps.0 >> 20) & 1,
             (ps.0 >> 23) & 1,
         );
     }
@@ -298,7 +307,10 @@ impl XhciContext {
                     if is_usb3 {
                         op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
                         super::port::delay_ms(50);
-                        op.write_portsc(port_idx, (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                        op.write_portsc(
+                            port_idx,
+                            (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP,
+                        );
                         super::port::delay_ms(100);
                     }
                 } else {
@@ -332,7 +344,11 @@ impl XhciContext {
             }
             let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
             if is_usb3 {
-                op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
+                op.update_portsc(
+                    port_idx,
+                    PLS_RXDETECT | PORTSC_LWS,
+                    PORTSC_PLS_MASK | PORTSC_LWS,
+                );
             }
         }
         super::port::delay_ms(200);
@@ -360,7 +376,10 @@ impl XhciContext {
             let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
             log::info!(
                 "xHCI: port {} no CCS (portsc=0x{:08X} pls={} usb3={})",
-                port_idx, op.portsc(port_idx).0, op.portsc(port_idx).pls(), is_usb3
+                port_idx,
+                op.portsc(port_idx).0,
+                op.portsc(port_idx).pls(),
+                is_usb3
             );
 
             // WPR for USB 3.0 restarts link training on idle ports.
@@ -377,7 +396,10 @@ impl XhciContext {
             if pls == 15 {
                 log::info!("xHCI: port {} still in Compliance, skip (idle)", port_idx);
             } else if pls == 5 {
-                log::info!("xHCI: port {} in RxDetect — idle, awaiting connection", port_idx);
+                log::info!(
+                    "xHCI: port {} in RxDetect — idle, awaiting connection",
+                    port_idx
+                );
             } else {
                 log::info!("xHCI: port {} CCS=0 in PLS={}, trying PR", port_idx, pls);
                 let _ = port_reset(op, port_idx);
@@ -436,7 +458,8 @@ impl XhciContext {
         let already_running = sts & USBSTS_HCH == 0;
         log::info!(
             "xHCI: USBCMD=0x{:08X} USBSTS=0x{:08X} HCHalted={} already_running={}",
-            usbcmd, sts,
+            usbcmd,
+            sts,
             (sts & USBSTS_HCH) != 0,
             already_running
         );
@@ -490,7 +513,9 @@ impl XhciContext {
         let sts_after = op.usbsts();
         log::info!(
             "xHCI: after HCRST, USBSTS=0x{:08X} HCHalted={} CNR={}",
-            sts_after, (sts_after & USBSTS_HCH) != 0, (sts_after & USBSTS_CNR) != 0
+            sts_after,
+            (sts_after & USBSTS_HCH) != 0,
+            (sts_after & USBSTS_CNR) != 0
         );
 
         Ok(())
@@ -529,8 +554,6 @@ impl XhciContext {
         rt.set_erdp(self.rings.event.dequeue_ptr());
         Ok(())
     }
-
-
 
     /// Start the controller — public for `HostController` trait.
     pub fn start(&mut self) -> Result<(), &'static str> {
@@ -634,7 +657,12 @@ impl XhciContext {
                         p.done = false;
                         p.wpr_attempted = false;
                         p.retry_count = 0;
-                        log::info!("xHCI: port {} CCS changed ({} → {}), re-evaluating", port_idx, was, ccs);
+                        log::info!(
+                            "xHCI: port {} CCS changed ({} → {}), re-evaluating",
+                            port_idx,
+                            was,
+                            ccs
+                        );
                     }
                 }
             }
@@ -716,13 +744,22 @@ impl XhciContext {
             }
 
             let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-            let wpr_done = self.ports.get(port_idx).map(|p| p.wpr_attempted).unwrap_or(true);
+            let wpr_done = self
+                .ports
+                .get(port_idx)
+                .map(|p| p.wpr_attempted)
+                .unwrap_or(true);
 
             if is_usb3 && !wpr_done && ps.pp() {
                 if let Some(p) = self.ports.get_mut(port_idx) {
                     p.wpr_attempted = true;
                 }
-                log::info!("xHCI: port {} WPR (portsc=0x{:08X} pls={})", port_idx, ps.0, ps.pls());
+                log::info!(
+                    "xHCI: port {} WPR (portsc=0x{:08X} pls={})",
+                    port_idx,
+                    ps.0,
+                    ps.pls()
+                );
                 let _ = warm_port_reset(op, port_idx);
                 for _ in 0..120 {
                     super::port::delay_ms(10);
@@ -800,7 +837,11 @@ impl XhciContext {
             p.retry_count = p.retry_count.saturating_add(1);
             if p.retry_count >= MAX_PORT_RETRIES {
                 p.done = true;
-                log::debug!("xHCI: port {} done after {} retries", port_idx, p.retry_count);
+                log::debug!(
+                    "xHCI: port {} done after {} retries",
+                    port_idx,
+                    p.retry_count
+                );
             } else {
                 log::debug!(
                     "xHCI: port {} no device (ccs={} pls={} pp={} retry={})",
@@ -912,7 +953,7 @@ impl XhciContext {
         self.send_cmd(
             Trb::new(trb_type::ADDRESS_DEVICE, self.rings.command.cycle)
                 .with_data_ptr(in_ctx_phys)
-                .with_flags((slot_id << 24) | trb_flag::IOC)
+                .with_flags((slot_id << 24) | trb_flag::IOC),
         )?;
 
         // Update slot state
@@ -974,7 +1015,7 @@ impl XhciContext {
         let cmd = self.send_cmd(
             Trb::new(trb_type::CONFIGURE_ENDPOINT, self.rings.command.cycle)
                 .with_data_ptr(in_ctx_phys)
-                .with_flags((slot_id << 24) | trb_flag::IOC)
+                .with_flags((slot_id << 24) | trb_flag::IOC),
         );
         if cmd.is_err() {
             bulk_ring.free(self.driver_ctx);
@@ -997,8 +1038,7 @@ impl XhciContext {
     pub fn disable_slot(&mut self, slot_id: u32) {
         // Send DISABLE_SLOT command TRB (xHCI spec §6.4.3.8)
         let _ = self.send_cmd(
-            Trb::new(trb_type::DISABLE_SLOT, self.rings.command.cycle)
-                .with_flags(slot_id << 24)
+            Trb::new(trb_type::DISABLE_SLOT, self.rings.command.cycle).with_flags(slot_id << 24),
         );
         let ctx = self.driver_ctx;
         self.device.dcbaa.clear_slot(slot_id);
@@ -1013,7 +1053,7 @@ impl XhciContext {
         for slot_id in &ids {
             let _ = self.send_cmd(
                 Trb::new(trb_type::DISABLE_SLOT, self.rings.command.cycle)
-                    .with_flags(*slot_id << 24)
+                    .with_flags(*slot_id << 24),
             );
             self.device.dcbaa.clear_slot(*slot_id);
         }
@@ -1084,13 +1124,22 @@ impl XhciContext {
 
         if let Some(slot) = self.device.slots.get_mut(slot_id) {
             // SETUP TRB (8-byte setup packet goes directly into params as Immediate Data)
-            let trt = if data_len == 0 { 0 } else if is_in { 2 << 16 } else { 3 << 16 };
+            let trt = if data_len == 0 {
+                0
+            } else if is_in {
+                2 << 16
+            } else {
+                3 << 16
+            };
             let mut s_trb = Trb::new(trb_type::SETUP_STAGE, slot.ep0_ring.cycle)
                 .with_length(8)
                 .with_flags(trb_flag::IDT);
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    setup as *const UsbSetupPacket as *const u8, s_trb.params.as_mut_ptr(), 8);
+                    setup as *const UsbSetupPacket as *const u8,
+                    s_trb.params.as_mut_ptr(),
+                    8,
+                );
             }
             s_trb.flags |= trb_flag::CHAIN | trt;
             slot.ep0_ring.enqueue(s_trb);
@@ -1102,15 +1151,19 @@ impl XhciContext {
                     Trb::new(trb_type::DATA_STAGE, slot.ep0_ring.cycle)
                         .with_data_ptr(staging_phys)
                         .with_length(data_len as u32)
-                        .with_flags(dir | trb_flag::CHAIN)
+                        .with_flags(dir | trb_flag::CHAIN),
                 );
             }
 
             // STATUS TRB
-            let st_dir = if !is_in || data_len == 0 { trb_flag::DIR_IN } else { 0 };
+            let st_dir = if !is_in || data_len == 0 {
+                trb_flag::DIR_IN
+            } else {
+                0
+            };
             slot.ep0_ring.enqueue(
                 Trb::new(trb_type::STATUS_STAGE, slot.ep0_ring.cycle)
-                    .with_flags(st_dir | trb_flag::IOC)
+                    .with_flags(st_dir | trb_flag::IOC),
             );
         }
 
@@ -1190,12 +1243,16 @@ impl XhciContext {
                 UsbDirection::Out => slot.bulk_out_ring.as_mut().unwrap(),
             };
 
-            let dir_flag = if dir == UsbDirection::In { trb_flag::DIR_IN } else { 0 };
+            let dir_flag = if dir == UsbDirection::In {
+                trb_flag::DIR_IN
+            } else {
+                0
+            };
             ring.enqueue(
                 Trb::new(trb_type::NORMAL, ring.cycle)
                     .with_data_ptr(staging_phys)
                     .with_length(len as u32)
-                    .with_flags(dir_flag | trb_flag::IOC | trb_flag::ENT)
+                    .with_flags(dir_flag | trb_flag::IOC | trb_flag::ENT),
             );
 
             let ep_num = (endpoint & 0x0F) as u32;
