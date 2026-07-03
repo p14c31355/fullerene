@@ -176,8 +176,8 @@ impl<D: BlockDevice> BlockCache<D> {
         }
         let idx = self.evict_slot();
         let entry = &mut self.entries[idx];
-        entry.0 = lba;
         self.inner.read_sectors(lba, 1, &mut entry.1)?;
+        entry.0 = lba;
         // The caller may have a smaller buffer; only copy what's needed.
         if buf.len() < self.bps {
             return Err("buffer too small");
@@ -195,8 +195,8 @@ impl<D: BlockDevice> BlockCache<D> {
         }
         let idx = self.evict_slot();
         let entry = &mut self.entries[idx];
-        entry.0 = lba;
         self.inner.read_sectors(lba, 1, &mut entry.1)?;
+        entry.0 = lba;
         Ok(&self.entries[idx].1)
     }
 
@@ -274,6 +274,21 @@ impl BlockDevice for PartitionBlockDevice {
         self.inner
             .total_sectors()
             .saturating_sub(self.offset as u64)
+    }
+}
+
+impl BlockDevice for Box<dyn BlockDevice> {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        (**self).read_sectors(lba, count, buf)
+    }
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        (**self).write_sectors(lba, count, buf)
+    }
+    fn sector_size(&self) -> u32 {
+        (**self).sector_size()
+    }
+    fn total_sectors(&self) -> u64 {
+        (**self).total_sectors()
     }
 }
 
@@ -417,7 +432,8 @@ impl FatFileSystem {
             let cached = BlockCache::new(wrapped, 64);
             return Self::new(Box::new(cached));
         }
-        Self::new(device)
+        let cached = BlockCache::new(device, 64);
+        Self::new(Box::new(cached))
     }
 
     pub fn new(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {

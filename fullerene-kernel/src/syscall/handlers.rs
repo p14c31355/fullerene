@@ -122,7 +122,11 @@ struct PipeState {
     is_read_end: bool,
 }
 
-struct TimerState {}
+struct TimerState {
+    deadline_ns: u64,
+    event_handle: Handle,
+    fired: bool,
+}
 
 const KERNEL_STACK_SIZE: usize = 4096;
 
@@ -1296,6 +1300,34 @@ static UPTIME_US: AtomicU64 = AtomicU64::new(0);
 /// handler with the number of microseconds elapsed since the last tick.
 pub fn tick_uptime(delta_us: u64) {
     UPTIME_US.fetch_add(delta_us, Ordering::Relaxed);
+    check_and_fire_timers();
+}
+
+/// Check all timers and fire (signal) any that have expired.
+/// Called from tick_uptime during timer interrupts.
+pub fn check_and_fire_timers() {
+    let now_ns = uptime_us() * 1000; // convert microseconds to nanoseconds
+
+    // Collect expired timers outside the lock to avoid deadlock when signaling events.
+    let expired: Vec<(u64, u64)> = {
+        let mut table = HANDLE_TABLE.lock();
+        let mut expired_timers = Vec::new();
+
+        for (_handle, obj) in table.iter_mut() {
+            if let KernelObject::Timer(timer) = obj {
+                if !timer.fired && now_ns >= timer.deadline_ns {
+                    timer.fired = true;
+                    expired_timers.push((_handle.clone(), timer.event_handle));
+                }
+            }
+        }
+        expired_timers
+    };
+
+    // Signal the event for each expired timer.
+    for (_timer_handle, event_handle) in expired {
+        let _ = syscall_signal_event(event_handle);
+    }
 }
 
 /// Get the current uptime in microseconds.
@@ -1331,8 +1363,27 @@ fn syscall_clock_gettime(clock_id: u64, timespec_buf: *mut u8) -> SyscallResult 
     Ok(0)
 }
 
-fn syscall_timer_create(_clock_id: u64, _deadline_ns: u64, _event_handle: u64) -> SyscallResult {
-    let handle = alloc_handle(KernelObject::Timer(TimerState {}));
+fn syscall_timer_create(_clock_id: u64, deadline_ns: u64, event_handle: u64) -> SyscallResult {
+    // Validate the event handle exists before creating the timer.
+    {
+        let table = HANDLE_TABLE.lock();
+        if !table.contains_key(&event_handle) {
+            return Err(SyscallError::BadHandle);
+        }
+        // Verify it's actually an event
+        if let Some(obj) = table.get(&event_handle) {
+            if !matches!(obj, KernelObject::Event(_)) {
+                return Err(SyscallError::BadHandle);
+            }
+        }
+    }
+
+    let timer = TimerState {
+        deadline_ns,
+        event_handle,
+        fired: false,
+    };
+    let handle = alloc_handle(KernelObject::Timer(timer));
     Ok(handle)
 }
 

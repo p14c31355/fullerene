@@ -146,6 +146,7 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
 }
 
 pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
+    const MAX_FILE_SIZE: usize = 16 * 1024 * 1024; // 16 MiB limit
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
@@ -154,6 +155,9 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
             Ok(n) => {
                 if n == 0 {
                     break Ok(buf);
+                }
+                if buf.len() + n > MAX_FILE_SIZE {
+                    break Err(FsError::DiskFull);
                 }
                 buf.extend_from_slice(&chunk[..n]);
             }

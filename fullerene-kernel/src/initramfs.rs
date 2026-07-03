@@ -100,6 +100,11 @@ fn parse_entry(data: &[u8], offset: usize) -> Option<(CpioHeader, usize, usize)>
     let body_end = body_start + filesize as usize;
     let next = align4(body_end);
 
+    // Verify the body stays within the archive buffer.
+    if body_end > data.len() || next > data.len() {
+        return None;
+    }
+
     Some((
         CpioHeader {
             name,
