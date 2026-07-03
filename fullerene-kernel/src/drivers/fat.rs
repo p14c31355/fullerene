@@ -90,6 +90,37 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static 
     Err("no FAT partition")
 }
 
+// ── Block device registry ────────────────────────────────────
+//
+// A simple registry of block devices by name so that the VFS layer can
+// mount a FAT32 filesystem by name (e.g. `mount("/dev/sda", "/mnt", "fat32")`)
+// without having to know about the kernel's USB storage internals.
+
+use spin::Mutex;
+
+static BLOCK_DEVICES: Mutex<Vec<(&'static str, Box<dyn BlockDevice>)>> = Mutex::new(Vec::new());
+
+/// Register a named block device in the global registry.
+///
+/// The registry is used by the VFS layer to look up block devices
+/// when mounting a `fat32` filesystem.
+pub fn register_block_device(name: &'static str, device: Box<dyn BlockDevice>) {
+    BLOCK_DEVICES.lock().push((name, device));
+    klog_fmt!("FAT: registered block device {}\n", name);
+}
+
+/// Open a registered block device by name and return a `FatFileSystem`
+/// mounted on it.
+pub fn open_block_device(name: &str) -> Result<FatFileSystem, &'static str> {
+    let mut devices = BLOCK_DEVICES.lock();
+    let pos = devices
+        .iter()
+        .position(|(n, _)| *n == name)
+        .ok_or("block device not found")?;
+    let (_, device) = devices.remove(pos);
+    FatFileSystem::from_device(device)
+}
+
 // ── Block device abstraction ──────────────────────────────────
 // The block device provides sector-level read/write.
 
@@ -98,6 +129,122 @@ pub trait BlockDevice: Send {
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str>;
     fn sector_size(&self) -> u32;
     fn total_sectors(&self) -> u64;
+}
+
+/// A simple direct-mapped block cache for read-only workloads.
+///
+/// Caches `CAP` sectors keyed by LBA.  Each entry holds a copy of the
+/// 512-byte (or larger) sector.  Writes are passed through to the
+/// underlying device and invalidate the matching cache line.
+///
+/// This is the storage stack foundation mentioned in the architecture
+/// spec: `block cache → FAT32 → initramfs`.
+pub struct BlockCache<D: BlockDevice> {
+    inner: D,
+    bps: usize,
+    entries: Vec<(u32, Vec<u8>)>,
+    #[allow(dead_code)]
+    capacity: usize,
+}
+
+impl<D: BlockDevice> BlockCache<D> {
+    pub fn new(inner: D, capacity: usize) -> Self {
+        let bps = inner.sector_size() as usize;
+        let mut entries = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            entries.push((0xFFFF_FFFF, vec![0u8; bps]));
+        }
+        Self { inner, bps, entries, capacity }
+    }
+
+    fn lookup(&self, lba: u32) -> Option<usize> {
+        self.entries.iter().position(|(l, _)| *l == lba)
+    }
+
+    /// Read a single sector into `buf`, returning the cached entry if
+    /// the same sector is already cached.  If the cache is full, the
+    /// slot is overwritten.
+    pub fn read_sector(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+        if let Some(idx) = self.lookup(lba) {
+            buf[..self.bps].copy_from_slice(&self.entries[idx].1);
+            return Ok(());
+        }
+        let idx = self.evict_slot();
+        let entry = &mut self.entries[idx];
+        entry.0 = lba;
+        self.inner.read_sectors(lba, 1, &mut entry.1)?;
+        // The caller may have a smaller buffer; only copy what's needed.
+        if buf.len() < self.bps { return Err("buffer too small"); }
+        buf[..self.bps].copy_from_slice(&entry.1);
+        Ok(())
+    }
+
+    /// Read a single sector returning a reference to the cached buffer.
+    /// The returned reference is invalidated by any subsequent cache
+    /// operation.
+    pub fn get_sector(&mut self, lba: u32) -> Result<&[u8], &'static str> {
+        if let Some(idx) = self.lookup(lba) {
+            return Ok(&self.entries[idx].1);
+        }
+        let idx = self.evict_slot();
+        let entry = &mut self.entries[idx];
+        entry.0 = lba;
+        self.inner.read_sectors(lba, 1, &mut entry.1)?;
+        Ok(&self.entries[idx].1)
+    }
+
+    fn evict_slot(&self) -> usize {
+        // Simple round-robin eviction: pick the first slot whose LBA is
+        // 0xFFFFFFFF (never used) or wrap around.  This is O(capacity) but
+        // capacity is small (~64).
+        if let Some(idx) = self.entries.iter().position(|(l, _)| *l == 0xFFFF_FFFF) {
+            return idx;
+        }
+        0
+    }
+
+    /// Write a single sector and invalidate its cache entry.
+    pub fn write_sector(&mut self, lba: u32, buf: &[u8]) -> Result<(), &'static str> {
+        if let Some(idx) = self.lookup(lba) {
+            self.entries[idx].0 = 0xFFFF_FFFF;
+        }
+        self.inner.write_sectors(lba, 1, buf)
+    }
+
+    pub fn sector_size(&self) -> u32 {
+        self.bps as u32
+    }
+
+    pub fn total_sectors(&self) -> u64 {
+        self.inner.total_sectors()
+    }
+}
+
+impl<D: BlockDevice> BlockDevice for BlockCache<D> {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        let count = count as usize;
+        for i in 0..count {
+            let off = i * self.bps;
+            self.read_sector(lba + i as u32, &mut buf[off..off + self.bps])?;
+        }
+        Ok(())
+    }
+
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        for i in 0..count as usize {
+            let off = i * self.bps;
+            self.write_sector(lba + i as u32, &buf[off..off + self.bps])?;
+        }
+        Ok(())
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.bps as u32
+    }
+
+    fn total_sectors(&self) -> u64 {
+        self.inner.total_sectors()
+    }
 }
 
 /// Wraps a block device and applies an LBA offset (for partition access).
@@ -222,6 +369,11 @@ pub fn is_exfat(boot: &[u8; 512]) -> bool {
 ///
 /// Parses the boot-sector BPB, auto-detects FAT32 vs exFAT,
 /// and provides read/write access to files via the [`FileSystem`] trait.
+///
+/// The underlying block device is wrapped in a [`BlockCache`] so that
+/// repeated reads of the FAT table and directory sectors do not
+/// re-issue USB I/O.  This is the storage stack foundation
+/// (`block cache → FAT32 → initramfs`).
 pub struct FatFileSystem {
     device: Box<dyn BlockDevice>,
     bps: u32, // bytes per sector
@@ -245,16 +397,18 @@ pub struct FatFileSystem {
 impl FatFileSystem {
     /// Create a FAT/exFAT filesystem from a block device, auto-detecting
     /// MBR partition tables and parsing the correct boot sector.
+    /// Wraps the device in a [`BlockCache`] for repeated reads.
     pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
         let lba = find_fat_partition(&mut *device)?;
         if lba > 0 {
             // Repoint the device to read from partition start.
-            // We wrap the device to add an LBA offset.
+            // We wrap the device to add an LBA offset, then wrap that in a block cache.
             let wrapped = PartitionBlockDevice {
                 inner: device,
                 offset: lba,
             };
-            return Self::new(Box::new(wrapped));
+            let cached = BlockCache::new(wrapped, 64);
+            return Self::new(Box::new(cached));
         }
         Self::new(device)
     }

@@ -56,6 +56,7 @@ pub mod gui;
 pub mod hardware;
 pub mod heap;
 pub mod init;
+pub mod initramfs;
 pub mod interrupts;
 pub mod klog;
 pub mod loader;
