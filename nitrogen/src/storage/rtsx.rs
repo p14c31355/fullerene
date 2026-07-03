@@ -22,6 +22,7 @@ use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
 #[allow(dead_code)]
 const RTSX_MSI_EN: u8 = 0x1C;
 const RTSX_CFG: u8 = 0x20;
+const RTSX_CFG_RESET: u8 = 0x01;
 
 // ── SD Card Registers ─────────────────────────────────────────
 const SD_CMD0: u8 = 0x40;
@@ -310,9 +311,27 @@ impl RtsxController {
             core::hint::spin_loop();
         }
 
-        // Skip soft-reset (RTSX_CFG bit 0). PCI config-space init
-        // (ensure_d0, ASPM disable) already puts the device in a known
-        // state, and the MMIO soft-reset can destabilise the PCIe link.
+        // Perform soft-reset (RTSX_CFG bit 0).  This resets the internal
+        // chip state machine to a known state.  Without it, the controller
+        // may accept MMIO writes but never respond to SD commands, causing
+        // the first non-posted MMIO read to hang the CPU indefinitely.
+        // The Linux rtsx_pci driver performs this reset unconditionally.
+        log::info!("RTSX: soft-reset");
+        self.w8(RTSX_CFG, RTSX_CFG_RESET);
+        // Wait for the internal chip reset to complete.  The chip typically
+        // takes ~100-200 microseconds; we use a generous spin loop.
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+        // Clear the reset bit manually.  The auto-clear may not be reliable
+        // on all revisions; writing 0x00 explicitly matches the Linux
+        // rtsx_pci driver behaviour.  We do NOT read back here — reading
+        // while the chip is still resetting can cause an undefined response
+        // and potentially hang the CPU.
+        self.w8(RTSX_CFG, 0x00);
+        for _ in 0..50_000 {
+            core::hint::spin_loop();
+        }
 
         self.w8(CARD_PWR_CTL, CARD_PWR_ON);
 
@@ -451,18 +470,31 @@ impl RtsxController {
             }
         }
 
+        // Verify the PCIe link is up *before* any MMIO access.  The very
+        // first MMIO write (even though it's "posted") will block on
+        // x86_64 when the memory type is Uncached, so if the link is in
+        // L1 substate or D3cold, the write will hang the CPU indefinitely.
+        // Checking the Negotiated Link Speed via PCI config space (port I/O)
+        // is safe because it goes through the host bridge without needing
+        // the downstream device to respond.
+        match self.ensure_device_accessible() {
+            Ok(()) => {}
+            Err(e) => {
+                log::warn!("RTSX: device not accessible before MMIO: {}", e);
+                return Err(e);
+            }
+        }
+        log::info!("RTSX: PCIe link confirmed up, proceeding with MMIO");
+
         if !self.init_hardware() {
             return Err("hardware init failed");
         }
 
-        // Verify device is safe to access via MMIO before doing any
-        // non-posted MMIO reads.  We check power state, PCIe link status,
-        // and vendor ID — all via PCI config space (port I/O, safe).
-        // This is performed *after* init_hardware() so the posted MMIO
-        // writes have had a chance to wake the link.
-        log::info!("RTSX: checking device accessibility...");
-        self.ensure_device_accessible()?;
-        log::info!("RTSX: device accessible, proceeding to MMIO read");
+        // After init_hardware() completes, the device should be responsive.
+        // The link has already been verified before the first MMIO write,
+        // and the posted writes have had a chance to settle.  We don't need
+        // a second accessibility check here — the ensure_device_accessible()
+        // call above is sufficient.
 
         for _ in 0..200_000 {
             core::hint::spin_loop();
