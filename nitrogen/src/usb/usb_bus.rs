@@ -78,11 +78,14 @@ impl<'a> BotBuffer<'a> {
 ///
 /// `host` is any host controller implementing [`HostController`].
 /// `dev_addr` is the USB device address, `ep_out`/`ep_in` are bulk endpoints.
+/// `ep_out_mps` and `ep_in_mps` are the device-reported max packet sizes for each endpoint.
 pub fn bot_exec_command(
     host: &mut dyn HostController,
     dev_addr: u8,
     ep_out: u8,
+    ep_out_mps: u16,
     ep_in: u8,
+    ep_in_mps: u16,
     cdb: &[u8],
     data: Option<BotBuffer<'_>>,
     tag: &mut u32,
@@ -103,14 +106,14 @@ pub fn bot_exec_command(
     cbw_raw[14] = cdb.len().min(16) as u8;
     cbw_raw[15..15 + cdb.len().min(16)].copy_from_slice(&cdb[..cdb.len().min(16)]);
 
-    host.bulk_transfer(dev_addr, ep_out, &mut cbw_raw, UsbDirection::Out, 512)?;
+    host.bulk_transfer(dev_addr, ep_out, &mut cbw_raw, UsbDirection::Out, ep_out_mps)?;
 
     // ── Phase 2: Data (optional) ──────────────────────────
     if let Some(buf) = data {
-        let ep = if dir_in { ep_in } else { ep_out };
+        let (ep, mps) = if dir_in { (ep_in, ep_in_mps) } else { (ep_out, ep_out_mps) };
         match buf {
             BotBuffer::In(buf) => {
-                host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, 512)?;
+                host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, mps)?;
             }
             BotBuffer::Out(buf) => {
                 // SAFETY: bulk_transfer for OUT only reads the buffer, so creating a
@@ -119,14 +122,14 @@ pub fn bot_exec_command(
                 let len = buf.len();
                 let mut tmp = alloc::vec![0u8; len];
                 tmp.copy_from_slice(buf);
-                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, 512)?;
+                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, mps)?;
             }
         }
     }
 
     // ── Phase 3: Receive CSW ──────────────────────────────
     let mut csw_raw = [0u8; 13];
-    host.bulk_transfer(dev_addr, ep_in, &mut csw_raw, UsbDirection::In, 512)?;
+    host.bulk_transfer(dev_addr, ep_in, &mut csw_raw, UsbDirection::In, ep_in_mps)?;
 
     let sig = u32::from_le_bytes([csw_raw[0], csw_raw[1], csw_raw[2], csw_raw[3]]);
     if sig != CSW_SIGNATURE {
@@ -151,7 +154,9 @@ pub fn bot_read_sectors(
     host: &mut dyn HostController,
     dev_addr: u8,
     ep_out: u8,
+    ep_out_mps: u16,
     ep_in: u8,
+    ep_in_mps: u16,
     lba: u32,
     count: u16,
     block_size: u32,
@@ -170,7 +175,9 @@ pub fn bot_read_sectors(
         host,
         dev_addr,
         ep_out,
+        ep_out_mps,
         ep_in,
+        ep_in_mps,
         &cdb,
         Some(BotBuffer::In(&mut buf[..dlen as usize])),
         tag,
@@ -186,7 +193,9 @@ pub fn bot_write_sectors(
     host: &mut dyn HostController,
     dev_addr: u8,
     ep_out: u8,
+    ep_out_mps: u16,
     ep_in: u8,
+    ep_in_mps: u16,
     lba: u32,
     count: u16,
     block_size: u32,
@@ -205,7 +214,9 @@ pub fn bot_write_sectors(
         host,
         dev_addr,
         ep_out,
+        ep_out_mps,
         ep_in,
+        ep_in_mps,
         &cdb,
         Some(BotBuffer::Out(buf)),
         tag,

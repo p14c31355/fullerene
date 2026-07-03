@@ -258,7 +258,9 @@ impl USBContext {
         ctrl_idx: usize,
         dev_addr: u8,
         ep_out: u8,
+        ep_out_mps: u16,
         ep_in: u8,
+        ep_in_mps: u16,
         lba: u32,
         count: u16,
         block_size: u32,
@@ -279,7 +281,7 @@ impl USBContext {
                 &mut *self.controllers.ehci[ctrl_idx]
             }
         };
-        super::usb_bus::bot_read_sectors(host, dev_addr, ep_out, ep_in, lba, count, block_size, buf, tag)
+        super::usb_bus::bot_read_sectors(host, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba, count, block_size, buf, tag)
     }
 
     /// Perform a BOT write via the identified controller.
@@ -289,7 +291,9 @@ impl USBContext {
         ctrl_idx: usize,
         dev_addr: u8,
         ep_out: u8,
+        ep_out_mps: u16,
         ep_in: u8,
+        ep_in_mps: u16,
         lba: u32,
         count: u16,
         block_size: u32,
@@ -310,7 +314,7 @@ impl USBContext {
                 &mut *self.controllers.ehci[ctrl_idx]
             }
         };
-        super::usb_bus::bot_write_sectors(host, dev_addr, ep_out, ep_in, lba, count, block_size, buf, tag)
+        super::usb_bus::bot_write_sectors(host, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba, count, block_size, buf, tag)
     }
 
     // ── Internal mount helpers ──────────────────────────────
@@ -382,7 +386,10 @@ impl USBContext {
             );
             let (ep_out, ep_out_mps, ep_in, ep_in_mps, _blk) = match result {
                 Ok(v) => v,
-                Err(_) => return,
+                Err(_) => {
+                    let _ = xhci.disable_slot(slot_id);
+                    return;
+                }
             };
 
             // Use the device-reported wMaxPacketSize for each endpoint.
@@ -392,9 +399,11 @@ impl USBContext {
             // device may silently fail to enumerate or stall on the
             // first bulk transfer.
             if xhci.configure_endpoint_bulk(slot_id, ep_out, ep_out_mps).is_err() {
+                let _ = xhci.disable_slot(slot_id);
                 return;
             }
             if xhci.configure_endpoint_bulk(slot_id, ep_in, ep_in_mps).is_err() {
+                let _ = xhci.disable_slot(slot_id);
                 return;
             }
             (dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps)

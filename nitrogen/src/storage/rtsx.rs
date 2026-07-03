@@ -212,8 +212,8 @@ impl RtsxController {
                     found_pcie = true;
                     let lnk_sts = crate::pci::PciConfigSpace::read_config_word(
                         bus, dev, func, off + 0x12);
-                    // Negotiated Link Speed in bits 15:12; zero = link down.
-                    let speed = (lnk_sts >> 12) & 0xF;
+                    // Negotiated Link Speed in bits 3:0 (Link Status register bits 3:0)
+                    let speed = lnk_sts & 0xF;
                     if speed == 0 {
                         log::warn!("RTSX: PCIe link down (lnk_sts={:#06x})", lnk_sts);
                         return Err("PCIe link down");
@@ -466,6 +466,8 @@ impl RtsxController {
             let bridge = PciDevice::new(b, d, f);
             if let Some(bridge) = bridge {
                 log::info!("RTSX: re-disabling ASPM on upstream bridge {:02x}:{:02x}.{}", b, d, f);
+                // Ensure bridge is in D0 before disabling ASPM so the downstream path is usable
+                bridge.ensure_d0();
                 bridge.disable_pcie_aspm();
             }
         }
@@ -500,15 +502,16 @@ impl RtsxController {
             core::hint::spin_loop();
         }
 
-        // Re-check the vendor ID via PCI config space immediately before
-        // the first non-posted MMIO read.  If the link dropped between the
-        // accessibility check above and this point, the upcoming MMIO read
-        // would hang the CPU indefinitely.  Bailing out here keeps the
-        // system responsive instead of hanging.
-        let vendor_now = crate::pci::PciConfigSpace::read_config_word(
-            self.device.bus, self.device.device, self.device.function, 0x00);
-        if vendor_now != self.device.vendor_id || vendor_now == 0xFFFF || vendor_now == 0 {
-            return Err("device vanished from PCI bus before MMIO read");
+        // Revalidate full accessibility (D0/link readiness) immediately before
+        // the first non-posted MMIO read.  If the link dropped or entered a low-power
+        // state between the earlier check and this point, the upcoming MMIO read
+        // would hang the CPU indefinitely.  Bailing out here keeps the system responsive.
+        match self.ensure_device_accessible() {
+            Ok(()) => {}
+            Err(e) => {
+                log::warn!("RTSX: device no longer accessible before first MMIO read: {}", e);
+                return Err(e);
+            }
         }
 
         let bus = self.r8(SD_BUS_STAT);

@@ -401,7 +401,12 @@ impl XhciContext {
                 super::port::delay_ms(200);
 
                 // After PP toggle, force RxDetect and wait for training
-                force_rx_detect(op, port_idx);
+                // Only for USB 3.0 ports; USB 2.0 doesn't use PLS and writing
+                // LWS+PLS can leave the controller in an undefined state.
+                let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+                if is_usb3 {
+                    force_rx_detect(op, port_idx);
+                }
                 for _ in 0..200 {
                     super::port::delay_ms(10);
                     if op.portsc(port_idx).ccs() {
