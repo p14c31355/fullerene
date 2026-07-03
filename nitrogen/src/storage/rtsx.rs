@@ -152,60 +152,93 @@ impl RtsxController {
         unsafe { ptr::write_volatile(self.mmio.add(off as usize) as *mut u16, val) }
     }
 
-    /// Check PCIe link status via config space (port I/O, safe).
-    /// Returns `true` if the link appears to be down.
+    /// Check device accessibility via config space (port I/O, safe).
+    /// Returns `Err` with a reason if the device cannot be safely accessed
+    /// via MMIO.  Checks:
     ///
-    /// Walks the capabilities list to find the PCI Express capability
-    /// (cap ID 0x10), then reads the Link Status register at
-    /// `cap_offset + 0x12`.  If Negotiated Link Speed (bits 15:12)
-    /// is zero the link is down.
-    fn pcie_link_is_down(&self) -> bool {
+    /// 1. Vendor ID sanity (device must be on the bus).
+    /// 2. Power Management state (must be D0 — D3hot/D3cold reads hang).
+    /// 3. PCIe link status (Negotiated Speed must be non-zero).
+    fn ensure_device_accessible(&self) -> Result<(), &'static str> {
         let bus = self.device.bus;
         let dev = self.device.device;
         let func = self.device.function;
 
-        // First sanity check: if the device is off the bus, don't even try.
+        // 1. Vendor check
         let vendor = crate::pci::PciConfigSpace::read_config_word(bus, dev, func, 0x00);
-        if vendor == 0xFFFF || vendor == 0x0000 {
+        if vendor == 0xFFFF || vendor == 0x0000 || vendor != self.device.vendor_id {
             log::warn!("RTSX: device not on PCI bus (vendor={:#06x})", vendor);
-            return true;
+            return Err("device off PCI bus");
         }
 
+        // 2. Walk capabilities list to find PM cap (0x01) and PCIe cap (0x10).
         let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, 0x34);
         if cap_ptr == 0 {
             log::warn!("RTSX: no PCI capabilities list");
-            return true;
+            return Err("no capabilities");
         }
         let mut off = cap_ptr;
-        // PCI spec allows at most 48 capabilities in the first 256 bytes
-        // (each capability header is at least 2 bytes).
+        let mut found_pm = false;
+        let mut found_pcie = false;
         for _ in 0..48 {
             if off < 0x40 || off > 0xFC {
                 break;
             }
             let cap_id = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off);
-            if cap_id == 0x10 {
-                let lnk_sts = crate::pci::PciConfigSpace::read_config_word(
-                    bus, dev, func, off + 0x12);
-                // Negotiated Link Speed in bits 15:12; zero means link down.
-                let speed = (lnk_sts >> 12) & 0xF;
-                if speed == 0 {
-                    log::warn!("RTSX: PCIe link down (lnk_sts={:#06x})", lnk_sts);
-                    return true;
+
+            match cap_id {
+                0x01 => {
+                    // Power Management capability
+                    found_pm = true;
+                    // PMCSR at cap_offset + 4, bits 1:0 = power state.
+                    let pmcsr = crate::pci::PciConfigSpace::read_config_word(
+                        bus, dev, func, off + 4);
+                    let pstate = pmcsr & 0x3;
+                    if pstate != 0 {
+                        log::warn!("RTSX: device not in D0 (state={})", pstate);
+                        return Err("device not in D0");
+                    }
+                    log::info!("RTSX: power state D0 confirmed");
                 }
-                log::info!("RTSX: PCIe link up (speed={})", speed);
-                return false;
+                0x10 => {
+                    // PCI Express capability
+                    found_pcie = true;
+                    let lnk_sts = crate::pci::PciConfigSpace::read_config_word(
+                        bus, dev, func, off + 0x12);
+                    // Negotiated Link Speed in bits 15:12; zero = link down.
+                    let speed = (lnk_sts >> 12) & 0xF;
+                    if speed == 0 {
+                        log::warn!("RTSX: PCIe link down (lnk_sts={:#06x})", lnk_sts);
+                        return Err("PCIe link down");
+                    }
+                    log::info!("RTSX: PCIe link up (speed={})", speed);
+                }
+                _ => {}
             }
+
+            if found_pm && found_pcie {
+                return Ok(());
+            }
+
             let next = crate::pci::PciConfigSpace::read_config_byte(
                 bus, dev, func, off + 1);
+            // Self-loop check: some broken hardware can return the same
+            // offset as the next pointer.
             if next == 0 || next == off {
                 break;
             }
             off = next;
         }
-        log::warn!("RTSX: PCIe capability not found or walk terminated");
-        // Conservative: assume link is down if we can't confirm it's up.
-        true
+
+        if !found_pm {
+            log::warn!("RTSX: Power Management capability not found");
+            return Err("PM cap not found");
+        }
+        if !found_pcie {
+            log::warn!("RTSX: PCIe capability not found");
+            return Err("PCIe cap not found");
+        }
+        Ok(())
     }
 
     // ── PPBUF data transfer ───────────────────────────────────
@@ -390,19 +423,14 @@ impl RtsxController {
             return Err("hardware init failed");
         }
 
-        // Check PCIe link status via config space (port I/O, safe) before
-        // any MMIO read.  If the link is down, a non-posted MMIO read will
-        // hang the CPU bus with no timeout.
-        // NOTE: This check is performed *after* init_hardware() so the
-        // posted MMIO writes have had a chance to wake the link.  The
-        // check itself only touches PCI config space (port I/O), which
-        // can never hang regardless of device state.
-        log::info!("RTSX: checking PCIe link status...");
-        if self.pcie_link_is_down() {
-            log::error!("RTSX: PCIe link down, aborting");
-            return Err("PCIe link down");
-        }
-        log::info!("RTSX: PCIe link OK, proceeding to MMIO read");
+        // Verify device is safe to access via MMIO before doing any
+        // non-posted MMIO reads.  We check power state, PCIe link status,
+        // and vendor ID — all via PCI config space (port I/O, safe).
+        // This is performed *after* init_hardware() so the posted MMIO
+        // writes have had a chance to wake the link.
+        log::info!("RTSX: checking device accessibility...");
+        self.ensure_device_accessible()?;
+        log::info!("RTSX: device accessible, proceeding to MMIO read");
 
         for _ in 0..200_000 {
             core::hint::spin_loop();
