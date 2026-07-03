@@ -13,8 +13,8 @@ use super::host_controller::HostController;
 use super::xhci::context::XhciContext;
 use crate::DriverContext;
 use crate::usb::{
-    DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION,
-    UsbDirection, UsbSetupPacket,
+    DESC_CONFIGURATION, DESC_DEVICE, REQ_GET_DESCRIPTOR, REQ_SET_CONFIGURATION, UsbDirection,
+    UsbSetupPacket,
 };
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -84,11 +84,21 @@ pub fn bot_exec_command(
     cbw_raw[14] = cdb.len().min(16) as u8;
     cbw_raw[15..15 + cdb.len().min(16)].copy_from_slice(&cdb[..cdb.len().min(16)]);
 
-    host.bulk_transfer(dev_addr, ep_out, &mut cbw_raw, UsbDirection::Out, ep_out_mps)?;
+    host.bulk_transfer(
+        dev_addr,
+        ep_out,
+        &mut cbw_raw,
+        UsbDirection::Out,
+        ep_out_mps,
+    )?;
 
     // ── Phase 2: Data (optional) ──────────────────────────
     if let Some(buf) = data {
-        let (ep, mps) = if dir_in { (ep_in, ep_in_mps) } else { (ep_out, ep_out_mps) };
+        let (ep, mps) = if dir_in {
+            (ep_in, ep_in_mps)
+        } else {
+            (ep_out, ep_out_mps)
+        };
         match buf {
             BotBuffer::In(buf) => {
                 host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, mps)?;

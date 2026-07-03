@@ -57,7 +57,11 @@ pub struct Trb {
 
 impl Trb {
     pub fn new(trb_type: u8, cycle: u32) -> Self {
-        Self { params: [0; 8], status: 0, flags: cycle | ((trb_type as u32) << trb_flag::TRB_TYPE_SHIFT) }
+        Self {
+            params: [0; 8],
+            status: 0,
+            flags: cycle | ((trb_type as u32) << trb_flag::TRB_TYPE_SHIFT),
+        }
     }
 
     pub fn with_data_ptr(mut self, phys: u64) -> Self {
@@ -123,10 +127,18 @@ impl Ring {
         let entries = dma.as_mut();
         if n > 1 {
             let last = &mut entries[n - 1];
-            last.flags = ((trb_type::LINK as u32) << trb_flag::TRB_TYPE_SHIFT) | trb_flag::TC | trb_flag::CYCLE;
+            last.flags = ((trb_type::LINK as u32) << trb_flag::TRB_TYPE_SHIFT)
+                | trb_flag::TC
+                | trb_flag::CYCLE;
             last.params[..8].copy_from_slice(&phys.to_le_bytes());
         }
-        Some(Self { dma, phys, enq: 0, cycle: 1, len: n })
+        Some(Self {
+            dma,
+            phys,
+            enq: 0,
+            cycle: 1,
+            len: n,
+        })
     }
 
     pub fn free(&self, ctx: &dyn DriverContext) {
@@ -136,13 +148,17 @@ impl Ring {
     pub fn enqueue(&mut self, mut trb: Trb) {
         trb.flags = (trb.flags & !trb_flag::CYCLE) | self.cycle;
         let entries = self.dma.as_mut();
-        unsafe { ptr::write_volatile(&mut entries[self.enq], trb); }
+        unsafe {
+            ptr::write_volatile(&mut entries[self.enq], trb);
+        }
         self.enq += 1;
         if self.enq >= self.len - 1 {
             let link = self.len - 1;
             unsafe {
-                ptr::write_volatile(&mut entries[link].flags,
-                    (entries[link].flags & !trb_flag::CYCLE) | self.cycle);
+                ptr::write_volatile(
+                    &mut entries[link].flags,
+                    (entries[link].flags & !trb_flag::CYCLE) | self.cycle,
+                );
             }
             self.enq = 0;
             self.cycle ^= 1;
@@ -157,7 +173,9 @@ impl Ring {
         self.len.saturating_sub(1)
     }
 
-    pub fn enq_index(&self) -> usize { self.enq }
+    pub fn enq_index(&self) -> usize {
+        self.enq
+    }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -176,7 +194,13 @@ impl EventRing {
     pub fn alloc(ctx: &dyn DriverContext, n: usize) -> Option<Self> {
         let dma = alloc_ring_slice(ctx, n)?;
         let phys = dma.phys;
-        Some(Self { dma, phys, deq: 0, cycle: 1, len: n })
+        Some(Self {
+            dma,
+            phys,
+            deq: 0,
+            cycle: 1,
+            len: n,
+        })
     }
 
     pub fn free(&self, ctx: &dyn DriverContext) {
@@ -190,11 +214,16 @@ impl EventRing {
     }
 
     pub fn pop(&mut self) -> Option<Trb> {
-        if !self.has_pending() { return None; }
+        if !self.has_pending() {
+            return None;
+        }
         let entries = self.dma.as_mut();
         let trb = unsafe { ptr::read_volatile(&entries[self.deq]) };
         self.deq += 1;
-        if self.deq >= self.len { self.deq = 0; self.cycle ^= 1; }
+        if self.deq >= self.len {
+            self.deq = 0;
+            self.cycle ^= 1;
+        }
         Some(trb)
     }
 
@@ -202,7 +231,9 @@ impl EventRing {
         (self.phys + self.deq as u64 * TRB_SIZE as u64) | (1 << 3)
     }
 
-    pub fn deq_index(&self) -> usize { self.deq }
+    pub fn deq_index(&self) -> usize {
+        self.deq
+    }
 }
 
 // ══════════════════════════════════════════════════════════════

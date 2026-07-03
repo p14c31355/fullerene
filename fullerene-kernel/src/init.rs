@@ -92,7 +92,8 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("IOMMU", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step start\n");
             // Try UEFI Configuration Table RSDP first, then BootContext, then legacy scan
-            let uefi_rsdp = crate::boot::UEFI_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
+            let uefi_rsdp =
+                crate::boot::UEFI_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
             let rsdp = if uefi_rsdp != 0 {
                 uefi_rsdp
             } else {
@@ -102,14 +103,20 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize
             };
             let ctx = super::driver_context_impl::KernelDriverContext;
-            let rsdp_source = if uefi_rsdp != 0 { "UEFI config table" }
-                else if crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0) != 0 { "boot context" }
-                else { "ACPI scan" };
+            let rsdp_source = if uefi_rsdp != 0 {
+                "UEFI config table"
+            } else if crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0) != 0 {
+                "boot context"
+            } else {
+                "ACPI scan"
+            };
             match nitrogen::iommu::init(rsdp, phys_to_virt, &ctx) {
                 Ok(()) => log::info!("IOMMU initialized (RSDP from {})", rsdp_source),
                 Err(e) => {
                     log::warn!("IOMMU not available: {e} (RSDP={rsdp:#018x} from {rsdp_source})");
-                    log::warn!("IOMMU: VT-d may be disabled in firmware, or hardware does not support it");
+                    log::warn!(
+                        "IOMMU: VT-d may be disabled in firmware, or hardware does not support it"
+                    );
                 }
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");

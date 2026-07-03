@@ -83,8 +83,7 @@ pub fn scheduler_loop() -> ! {
             let tsc = unsafe { core::arch::x86_64::_rdtsc() };
             (tsc as u128 * 1000 / solvent::get_tsc_per_ms() as u128) as u64
         } else {
-            crate::interrupts::TICK_COUNTER
-                .load(core::sync::atomic::Ordering::Relaxed)
+            crate::interrupts::TICK_COUNTER.load(core::sync::atomic::Ordering::Relaxed)
         };
         vdso::update_vdso_metadata(now_us, now_us);
 

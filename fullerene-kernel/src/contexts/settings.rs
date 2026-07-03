@@ -120,7 +120,8 @@ impl DisplaySettings {
     }
 
     pub fn set_top_panel_enabled(&self, on: bool) {
-        self.top_panel_enabled.store(u32::from(on), Ordering::Relaxed);
+        self.top_panel_enabled
+            .store(u32::from(on), Ordering::Relaxed);
     }
 
     pub fn toggle_top_panel(&self) -> bool {

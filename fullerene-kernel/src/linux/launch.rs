@@ -92,7 +92,10 @@ pub fn init_initramfs() {
     // This is the third layer of the storage stack foundation:
     //   block cache → FAT32 → initramfs.
     if let Some(archive) = embedded_initramfs() {
-        log::info!("Initramfs: unpacking {} bytes of CPIO archive", archive.len());
+        log::info!(
+            "Initramfs: unpacking {} bytes of CPIO archive",
+            archive.len()
+        );
         match crate::initramfs::unpack(archive) {
             Ok(n) => log::info!("Initramfs: unpacked {} entries from CPIO archive", n),
             Err(e) => log::warn!("Initramfs: CPIO unpack failed: {}", e),

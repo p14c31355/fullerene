@@ -1,5 +1,5 @@
-use crate::KeyCode::*;
 use crate::KeyCode;
+use crate::KeyCode::*;
 
 pub const EXT: [Option<KeyCode>; 128] = {
     let mut t = [None; 128];

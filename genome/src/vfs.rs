@@ -406,10 +406,7 @@ impl Vfs {
         }
     }
 
-    pub fn find_fs(
-        &mut self,
-        absolute_path: &str,
-    ) -> Option<(&mut Box<dyn FileSystem>, String)> {
+    pub fn find_fs(&mut self, absolute_path: &str) -> Option<(&mut Box<dyn FileSystem>, String)> {
         let path = if absolute_path.starts_with('/') {
             absolute_path
         } else {

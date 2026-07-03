@@ -1,8 +1,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-pub use genome::fs::{parse_manifest, DirEntry, FsError, PackageEntry};
 use crate::vfs;
+pub use genome::fs::{DirEntry, FsError, PackageEntry, parse_manifest};
 
 pub fn init() {
     vfs::init();

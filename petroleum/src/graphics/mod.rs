@@ -37,8 +37,8 @@ pub mod setup;
 pub mod text;
 pub mod uefi;
 
-pub use constants::*;
 pub use color::*;
+pub use constants::*;
 // VGA graphics modes
 pub use framebuffer::UefiFramebufferWriter;
 pub use framebuffer::*;

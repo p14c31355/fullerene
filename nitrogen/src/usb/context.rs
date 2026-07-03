@@ -62,11 +62,19 @@ impl ControllerManager {
             dev.ensure_d0();
 
             let prog_if = crate::pci::PciConfigSpace::read_config_byte(
-                dev.bus, dev.device, dev.function, 0x09,
+                dev.bus,
+                dev.device,
+                dev.function,
+                0x09,
             );
             match prog_if {
                 0x20 => {
-                    log::info!("USB: EHCI at {:02x}:{:02x}.{}", dev.bus, dev.device, dev.function);
+                    log::info!(
+                        "USB: EHCI at {:02x}:{:02x}.{}",
+                        dev.bus,
+                        dev.device,
+                        dev.function
+                    );
                     if let Some(mut hc) = EhciContext::new(mmio_virt, ctx) {
                         if hc.initialize().is_ok() {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
@@ -79,7 +87,12 @@ impl ControllerManager {
                     }
                 }
                 0x30 => {
-                    log::info!("USB: xHCI at {:02x}:{:02x}.{}", dev.bus, dev.device, dev.function);
+                    log::info!(
+                        "USB: xHCI at {:02x}:{:02x}.{}",
+                        dev.bus,
+                        dev.device,
+                        dev.function
+                    );
                     if let Some(mut hc) = XhciContext::new(mmio_virt, ctx) {
                         if hc.init().is_ok() {
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
@@ -92,8 +105,13 @@ impl ControllerManager {
                     }
                 }
                 _ => {
-                    log::info!("USB: unknown prog_if 0x{:02x} at {:02x}:{:02x}.{}",
-                        prog_if, dev.bus, dev.device, dev.function);
+                    log::info!(
+                        "USB: unknown prog_if 0x{:02x} at {:02x}:{:02x}.{}",
+                        prog_if,
+                        dev.bus,
+                        dev.device,
+                        dev.function
+                    );
                 }
             }
         }
@@ -140,7 +158,10 @@ impl ControllerManager {
                 let ps = ehci.read_portsc(p);
                 log::info!(
                     "  PORTSC[{}]=0x{:08X} CCS={} PE={}",
-                    p, ps, ps & 1, (ps >> 2) & 1
+                    p,
+                    ps,
+                    ps & 1,
+                    (ps >> 2) & 1
                 );
             }
         }
@@ -161,8 +182,14 @@ impl ControllerManager {
                 }
                 log::info!(
                     "xHCI PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={} speed={}",
-                    p, ps, ps & 1, (ps >> 1) & 1,
-                    (ps >> 5) & 0xF, (ps >> 9) & 1, (ps >> 4) & 1, (ps >> 10) & 0xF
+                    p,
+                    ps,
+                    ps & 1,
+                    (ps >> 1) & 1,
+                    (ps >> 5) & 0xF,
+                    (ps >> 9) & 1,
+                    (ps >> 4) & 1,
+                    (ps >> 10) & 0xF
                 );
             }
         }
@@ -217,23 +244,35 @@ impl USBContext {
         for (idx, xhci) in self.controllers.xhci.iter().enumerate() {
             for p in 0..xhci.n_ports() {
                 let ps = xhci.read_portsc(p);
-                if ps == 0xFFFF_FFFF { continue; }
+                if ps == 0xFFFF_FFFF {
+                    continue;
+                }
                 log::info!(
                     "USB: xHCI[{}] PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={}",
-                    idx, p, ps,
-                    (ps >> 0) & 1, (ps >> 1) & 1,
-                    (ps >> 5) & 0xF, (ps >> 9) & 1, (ps >> 4) & 1
+                    idx,
+                    p,
+                    ps,
+                    (ps >> 0) & 1,
+                    (ps >> 1) & 1,
+                    (ps >> 5) & 0xF,
+                    (ps >> 9) & 1,
+                    (ps >> 4) & 1
                 );
             }
         }
         for (idx, ehci) in self.controllers.ehci.iter().enumerate() {
             for p in 0..ehci.n_ports().min(4) {
                 let ps = ehci.read_portsc(p);
-                if ps == 0xFFFF_FFFF { continue; }
+                if ps == 0xFFFF_FFFF {
+                    continue;
+                }
                 log::info!(
                     "USB: EHCI[{}] PORTSC[{}]={:#08X} CCS={} PE={}",
-                    idx, p, ps,
-                    ps & 1, (ps >> 2) & 1
+                    idx,
+                    p,
+                    ps,
+                    ps & 1,
+                    (ps >> 2) & 1
                 );
             }
         }
@@ -281,7 +320,9 @@ impl USBContext {
                 &mut *self.controllers.ehci[ctrl_idx]
             }
         };
-        super::usb_bus::bot_read_sectors(host, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba, count, block_size, buf, tag)
+        super::usb_bus::bot_read_sectors(
+            host, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba, count, block_size, buf, tag,
+        )
     }
 
     /// Perform a BOT write via the identified controller.
@@ -314,7 +355,9 @@ impl USBContext {
                 &mut *self.controllers.ehci[ctrl_idx]
             }
         };
-        super::usb_bus::bot_write_sectors(host, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba, count, block_size, buf, tag)
+        super::usb_bus::bot_write_sectors(
+            host, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, lba, count, block_size, buf, tag,
+        )
     }
 
     // ── Internal mount helpers ──────────────────────────────
@@ -362,7 +405,8 @@ impl USBContext {
             (dev.address, bulk_out, bulk_in)
         };
 
-        self.storage.try_mount("EHCI", dev_addr, bulk_out, bulk_in, ctrl_idx);
+        self.storage
+            .try_mount("EHCI", dev_addr, bulk_out, bulk_in, ctrl_idx);
     }
 
     fn mount_xhci_device(&mut self, ctrl_idx: usize, dev_idx: usize) {
@@ -398,11 +442,17 @@ impl USBContext {
             // causes the controller to mis-segment transfers and the
             // device may silently fail to enumerate or stall on the
             // first bulk transfer.
-            if xhci.configure_endpoint_bulk(slot_id, ep_out, ep_out_mps).is_err() {
+            if xhci
+                .configure_endpoint_bulk(slot_id, ep_out, ep_out_mps)
+                .is_err()
+            {
                 let _ = xhci.disable_slot(slot_id);
                 return;
             }
-            if xhci.configure_endpoint_bulk(slot_id, ep_in, ep_in_mps).is_err() {
+            if xhci
+                .configure_endpoint_bulk(slot_id, ep_in, ep_in_mps)
+                .is_err()
+            {
                 let _ = xhci.disable_slot(slot_id);
                 return;
             }
@@ -410,13 +460,7 @@ impl USBContext {
         };
 
         self.storage.try_mount_with_mps(
-            "xHCI",
-            dev_addr,
-            ep_out,
-            ep_out_mps,
-            ep_in,
-            ep_in_mps,
-            ctrl_idx,
+            "xHCI", dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, ctrl_idx,
         );
     }
 }

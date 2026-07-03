@@ -33,20 +33,38 @@ impl EhciOperationalRegisters {
         unsafe { ptr::read_volatile(self.0.add(off) as *const u32) }
     }
     pub fn write(&self, off: usize, val: u32) {
-        unsafe { ptr::write_volatile(self.0.add(off) as *mut u32, val); }
+        unsafe {
+            ptr::write_volatile(self.0.add(off) as *mut u32, val);
+        }
     }
 
-    pub fn usbcmd(&self) -> u32 { self.read(OP_USBCMD) }
-    pub fn set_usbcmd(&self, val: u32) { self.write(OP_USBCMD, val); }
-    pub fn set_usbcmd_bits(&self, bits: u32) { self.write(OP_USBCMD, self.read(OP_USBCMD) | bits); }
+    pub fn usbcmd(&self) -> u32 {
+        self.read(OP_USBCMD)
+    }
+    pub fn set_usbcmd(&self, val: u32) {
+        self.write(OP_USBCMD, val);
+    }
+    pub fn set_usbcmd_bits(&self, bits: u32) {
+        self.write(OP_USBCMD, self.read(OP_USBCMD) | bits);
+    }
 
-    pub fn usbsts(&self) -> u32 { self.read(OP_USBSTS) }
-    pub fn write_usbsts(&self, val: u32) { self.write(OP_USBSTS, val); }
+    pub fn usbsts(&self) -> u32 {
+        self.read(OP_USBSTS)
+    }
+    pub fn write_usbsts(&self, val: u32) {
+        self.write(OP_USBSTS, val);
+    }
 
-    pub fn set_async_list_addr(&self, val: u32) { self.write(OP_ASYNCLISTADDR, val); }
+    pub fn set_async_list_addr(&self, val: u32) {
+        self.write(OP_ASYNCLISTADDR, val);
+    }
 
-    pub fn portsc(&self, port: u32) -> u32 { self.read(OP_PORTSC_BASE + port as usize * 4) }
-    pub fn write_portsc(&self, port: u32, val: u32) { self.write(OP_PORTSC_BASE + port as usize * 4, val); }
+    pub fn portsc(&self, port: u32) -> u32 {
+        self.read(OP_PORTSC_BASE + port as usize * 4)
+    }
+    pub fn write_portsc(&self, port: u32, val: u32) {
+        self.write(OP_PORTSC_BASE + port as usize * 4, val);
+    }
 }
 
 pub struct EhciRegisterContext {
@@ -59,7 +77,11 @@ impl EhciRegisterContext {
     pub unsafe fn new(mmio_base: *mut u8) -> Self {
         unsafe {
             let caplength = ptr::read_volatile(mmio_base as *const u8);
-            Self { mmio_base, caplength, op: EhciOperationalRegisters::new(mmio_base.add(caplength as usize)) }
+            Self {
+                mmio_base,
+                caplength,
+                op: EhciOperationalRegisters::new(mmio_base.add(caplength as usize)),
+            }
         }
     }
 }

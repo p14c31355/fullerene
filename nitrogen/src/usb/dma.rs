@@ -46,15 +46,24 @@ pub(crate) fn alloc_dma<T>(ctx: &dyn DriverContext, n: usize) -> Option<DmaSlice
     let zero_len = pages.checked_mul(4096)?;
     let phys = ctx.allocate_contiguous_frames(pages).ok()?;
     let virt = ctx.phys_to_virt(phys) as *mut u8;
-    unsafe { core::ptr::write_bytes(virt, 0, zero_len); }
-    Some(DmaSlice { ptr: virt as *mut T, len: n, phys, pages })
+    unsafe {
+        core::ptr::write_bytes(virt, 0, zero_len);
+    }
+    Some(DmaSlice {
+        ptr: virt as *mut T,
+        len: n,
+        phys,
+        pages,
+    })
 }
 
 /// Allocate a single zeroed 4KB page. Returns (virtual address, physical address).
 pub(crate) fn alloc_dma_page(ctx: &dyn DriverContext) -> Option<(*mut u8, u64)> {
     let phys = ctx.allocate_contiguous_frames(1).ok()?;
     let virt = ctx.phys_to_virt(phys) as *mut u8;
-    unsafe { core::ptr::write_bytes(virt, 0, 4096); }
+    unsafe {
+        core::ptr::write_bytes(virt, 0, 4096);
+    }
     Some((virt, phys))
 }
 

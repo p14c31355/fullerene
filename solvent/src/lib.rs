@@ -304,13 +304,19 @@ pub fn is_initialized() -> bool {
 
 fn cursor_save_background(
     cursor: &lattice::cursor::Cursor,
-    buf: &mut [u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
+    buf: &mut [u32; lattice::cursor::Cursor::SIZE as usize
+             * lattice::cursor::Cursor::SIZE as usize],
     save_x: &mut i32,
     save_y: &mut i32,
     save_valid: &mut bool,
-    fb: &[u32], fb_stride: u32, fb_width: u32, fb_height: u32,
+    fb: &[u32],
+    fb_stride: u32,
+    fb_width: u32,
+    fb_height: u32,
 ) {
-    if !cursor.visible { return; }
+    if !cursor.visible {
+        return;
+    }
     let cur_sz = lattice::cursor::Cursor::SIZE as i32;
     let cx = cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
     let cy = cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
@@ -326,8 +332,12 @@ fn cursor_save_background(
                 if sx >= 0 && sx < fbw_i {
                     let idx = (sy * stride_i + sx) as usize;
                     if idx < fb_len { fb[idx] } else { 0 }
-                } else { 0 }
-            } else { 0 };
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
             buf[(row * cur_sz + col) as usize] = val;
         }
     }
@@ -357,10 +367,14 @@ pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
                 let sy = rt.cursor_save_y;
                 for row in 0..cur_sz {
                     let dy = sy + row;
-                    if dy < 0 || dy >= fbh_i { continue; }
+                    if dy < 0 || dy >= fbh_i {
+                        continue;
+                    }
                     for col in 0..cur_sz {
                         let dx = sx + col;
-                        if dx < 0 || dx >= fbw_i { continue; }
+                        if dx < 0 || dx >= fbw_i {
+                            continue;
+                        }
                         let idx = (dy * stride_i + dx) as usize;
                         if idx < fb_len {
                             fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
@@ -387,10 +401,14 @@ pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
             let sy = rt.cursor_save_y;
             for row in 0..cur_sz {
                 let dy = sy + row;
-                if dy < 0 || dy >= fbh_i { continue; }
+                if dy < 0 || dy >= fbh_i {
+                    continue;
+                }
                 for col in 0..cur_sz {
                     let dx = sx + col;
-                    if dx < 0 || dx >= fbw_i { continue; }
+                    if dx < 0 || dx >= fbw_i {
+                        continue;
+                    }
                     let idx = (dy * stride_i + dx) as usize;
                     if idx < fb_len {
                         fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
@@ -399,9 +417,15 @@ pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
             }
         }
         cursor_save_background(
-            &rt.desktop.cursor, &mut rt.cursor_save_buf,
-            &mut rt.cursor_save_x, &mut rt.cursor_save_y, &mut rt.cursor_save_valid,
-            fb, fb_stride, fbw, fbh,
+            &rt.desktop.cursor,
+            &mut rt.cursor_save_buf,
+            &mut rt.cursor_save_x,
+            &mut rt.cursor_save_y,
+            &mut rt.cursor_save_valid,
+            fb,
+            fb_stride,
+            fbw,
+            fbh,
         );
         Compositor::draw_cursor_direct(fb, fb_stride, fbh, &rt.desktop.cursor);
     }
@@ -856,9 +880,15 @@ where
                 unsafe {
                     let fb = core::slice::from_raw_parts(fb_ptr, fb_len);
                     cursor_save_background(
-                        &rt.desktop.cursor, &mut rt.cursor_save_buf,
-                        &mut rt.cursor_save_x, &mut rt.cursor_save_y, &mut rt.cursor_save_valid,
-                        fb, fb_stride, fb_width, fb_height,
+                        &rt.desktop.cursor,
+                        &mut rt.cursor_save_buf,
+                        &mut rt.cursor_save_x,
+                        &mut rt.cursor_save_y,
+                        &mut rt.cursor_save_valid,
+                        fb,
+                        fb_stride,
+                        fb_width,
+                        fb_height,
                     );
                 }
             }

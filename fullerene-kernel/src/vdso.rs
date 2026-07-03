@@ -1,9 +1,9 @@
 use core::sync::atomic::Ordering;
 
 use petroleum::page_table::types::PageTableHelper;
-use petroleum::vdso::{VdsoPage, VDSO_COMPLETE, VDSO_PENDING, VDSO_USER_BASE};
-use x86_64::structures::paging::{FrameAllocator, PageTableFlags, PhysFrame, Size4KiB};
+use petroleum::vdso::{VDSO_COMPLETE, VDSO_PENDING, VDSO_USER_BASE, VdsoPage};
 use x86_64::VirtAddr;
+use x86_64::structures::paging::{FrameAllocator, PageTableFlags, PhysFrame, Size4KiB};
 
 use crate::process::PROCESS_MANAGER;
 use crate::syscall::handlers::handle_syscall;
@@ -39,9 +39,8 @@ pub fn create_vdso_page(
     *page = VdsoPage::new();
     page.pid = pid;
 
-    let flags = PageTableFlags::PRESENT
-        | PageTableFlags::WRITABLE
-        | PageTableFlags::USER_ACCESSIBLE;
+    let flags =
+        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
     process_pt
         .map_page(
             VDSO_USER_BASE as usize,
@@ -79,7 +78,13 @@ pub fn poll_vdso_page(vdso: &VdsoPage) {
             let args = vdso.requests[slot].args();
             let result = unsafe {
                 handle_syscall(
-                    syscall_num, args[0], args[1], args[2], args[3], args[4], args[5],
+                    syscall_num,
+                    args[0],
+                    args[1],
+                    args[2],
+                    args[3],
+                    args[4],
+                    args[5],
                 )
             };
             vdso.requests[slot].set_result(result);

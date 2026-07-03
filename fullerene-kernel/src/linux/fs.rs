@@ -1,22 +1,26 @@
 // Linux file system syscall implementations
 use super::numbers::*;
 use super::runtime::{
-    LinuxFileDesc, LinuxRuntime, copy_from_user, copy_to_user, copy_user_string,
-    copy_val_to_user, errno_code, errno_result,
+    LinuxFileDesc, LinuxRuntime, copy_from_user, copy_to_user, copy_user_string, copy_val_to_user,
+    errno_code, errno_result,
 };
 use super::types::*;
 
 /// Define a stub Linux syscall that returns `ret`.
 macro_rules! linux_stub {
     ($name:ident, $ret:expr) => {
-        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { $ret }
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+            $ret
+        }
     };
 }
 
 /// Define a stub Linux syscall that returns `errno_code($err)`.
 macro_rules! linux_stub_errno {
     ($name:ident, $err:expr) => {
-        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { errno_code($err) }
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+            errno_code($err)
+        }
     };
 }
 
@@ -316,9 +320,7 @@ struct StatInfo {
 }
 
 fn fill_stat_from_fd(vfs_fd: u32) -> StatInfo {
-    StatInfo {
-        ino: vfs_fd as u64,
-    }
+    StatInfo { ino: vfs_fd as u64 }
 }
 
 pub fn sys_fstat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {

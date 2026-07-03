@@ -24,13 +24,17 @@ impl VdsoRequest {
         unsafe { *self.syscall_num.get() }
     }
     pub fn set_syscall_num(&self, val: u64) {
-        unsafe { *self.syscall_num.get() = val; }
+        unsafe {
+            *self.syscall_num.get() = val;
+        }
     }
     pub fn args(&self) -> [u64; 6] {
         unsafe { *self.args.get() }
     }
     pub fn set_args(&self, val: [u64; 6]) {
-        unsafe { *self.args.get() = val; }
+        unsafe {
+            *self.args.get() = val;
+        }
     }
     pub fn result(&self) -> u64 {
         self.args()[0]
@@ -104,7 +108,9 @@ impl VdsoPage {
         let state = self.requests[slot].state.load(Ordering::Acquire);
         if state == VDSO_COMPLETE {
             let result = self.requests[slot].result();
-            self.requests[slot].state.store(VDSO_FREE, Ordering::Release);
+            self.requests[slot]
+                .state
+                .store(VDSO_FREE, Ordering::Release);
             Some(result)
         } else {
             None

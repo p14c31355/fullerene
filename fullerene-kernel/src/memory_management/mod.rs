@@ -105,9 +105,8 @@ pub fn create_process_page_table() -> SystemResult<ProcessPageTable> {
     // current CR3), so PageTableHelper::map_page modifies the process's page
     // table, not the kernel's.
     let mut page_table_manager = ProcessPageTable::new_with_frame(pml4_frame);
-    let phys_offset = x86_64::VirtAddr::new(
-        petroleum::common::memory::get_physical_memory_offset() as u64,
-    );
+    let phys_offset =
+        x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
     {
         use x86_64::structures::paging::{OffsetPageTable, PageTable};
         let l4_virt = phys_offset + pml4_frame.start_address().as_u64();

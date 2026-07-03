@@ -62,7 +62,8 @@ impl<'a> Shell<'a> {
                 continue;
             }
 
-            let should_continue = carrier::exec::dispatch(self.commands, &mut *self.terminal, trimmed);
+            let should_continue =
+                carrier::exec::dispatch(self.commands, &mut *self.terminal, trimmed);
             if !should_continue {
                 break;
             }
@@ -102,19 +103,39 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("shutdown", "Shutdown the system", builtins::cmd_shutdown),
         ("calc", "Simple arithmetic calculator", builtins::cmd_calc),
         ("run", "Launch an external application", builtins::cmd_run),
-        ("taskmon", "Detailed task/process monitor", builtins::cmd_taskmon),
-        ("devices", "List registered hardware devices", builtins::cmd_devices),
+        (
+            "taskmon",
+            "Detailed task/process monitor",
+            builtins::cmd_taskmon
+        ),
+        (
+            "devices",
+            "List registered hardware devices",
+            builtins::cmd_devices
+        ),
         ("theme", "Show or change desktop theme", builtins::cmd_theme),
-        ("wallpaper", "Show or change desktop wallpaper", builtins::cmd_wallpaper),
+        (
+            "wallpaper",
+            "Show or change desktop wallpaper",
+            builtins::cmd_wallpaper
+        ),
         ("pci", "List PCI devices", builtins::cmd_pci),
-        ("badapple", "Play Bad Apple!! animation", builtins::cmd_badapple),
+        (
+            "badapple",
+            "Play Bad Apple!! animation",
+            builtins::cmd_badapple
+        ),
         ("cd", "Change working directory", builtins::cmd_cd),
         ("tree", "Display directory tree", builtins::cmd_tree),
         ("find", "Search for files", builtins::cmd_find),
         ("cp", "Copy a file", builtins::cmd_cp),
         ("mv", "Move a file", builtins::cmd_mv),
         ("write", "Write content to a file", builtins::cmd_write),
-        ("app", "Package manager (install/remove/list)", builtins::cmd_app),
+        (
+            "app",
+            "Package manager (install/remove/list)",
+            builtins::cmd_app
+        ),
         ("rm", "Remove files or directories", builtins::cmd_rm),
         ("mkdir", "Create directories", builtins::cmd_mkdir),
         ("touch", "Create empty files", builtins::cmd_touch),
@@ -128,10 +149,26 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("sort", "Sort lines of text", builtins::cmd_sort),
         ("wc", "Count lines, words, and bytes", builtins::cmd_wc),
         ("usb_info", "Show USB device status", builtins::cmd_usb_info),
-        ("sd_mount", "Probe and mount SD card", builtins::cmd_sd_mount),
-        ("hello_linux", "Launch the built-in Linux test binary", builtins::cmd_hello_linux),
-        ("linux_run", "Launch a Linux ELF binary from the filesystem", builtins::cmd_linux_run),
-        ("run_busybox", "Launch BusyBox shell from the filesystem", builtins::cmd_run_busybox),
+        (
+            "sd_mount",
+            "Probe and mount SD card",
+            builtins::cmd_sd_mount
+        ),
+        (
+            "hello_linux",
+            "Launch the built-in Linux test binary",
+            builtins::cmd_hello_linux
+        ),
+        (
+            "linux_run",
+            "Launch a Linux ELF binary from the filesystem",
+            builtins::cmd_linux_run
+        ),
+        (
+            "run_busybox",
+            "Launch BusyBox shell from the filesystem",
+            builtins::cmd_run_busybox
+        ),
     )
 }
 

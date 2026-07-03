@@ -38,7 +38,10 @@ pub struct Dcbaa {
 impl Dcbaa {
     pub fn alloc(ctx: &dyn DriverContext) -> Option<Self> {
         let (virt, phys) = dma::alloc_dma_page(ctx)?;
-        Some(Self { entries: unsafe { &mut *virt.cast::<[u64; 256]>() }, phys })
+        Some(Self {
+            entries: unsafe { &mut *virt.cast::<[u64; 256]>() },
+            phys,
+        })
     }
 
     /// Write the device context pointer for a given slot.
@@ -218,7 +221,9 @@ pub struct Scratchpad {
 
 impl Scratchpad {
     pub fn alloc(ctx: &dyn DriverContext, count: u32) -> Option<Self> {
-        if count == 0 { return None; }
+        if count == 0 {
+            return None;
+        }
         let mut dma = dma::alloc_dma::<u64>(ctx, count as usize)?;
         let phys = dma.phys;
         let pages = dma.pages;
@@ -236,7 +241,9 @@ impl Scratchpad {
                         return None;
                     }
                 };
-                unsafe { ptr::write_volatile(&mut array[i], buf_phys); }
+                unsafe {
+                    ptr::write_volatile(&mut array[i], buf_phys);
+                }
             }
         }
         Some(Self { phys, count })

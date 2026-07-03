@@ -1,6 +1,6 @@
 pub mod acpi;
-pub mod vtd;
 pub mod table;
+pub mod vtd;
 
 use alloc::vec::Vec;
 use spin::Mutex;
@@ -8,9 +8,8 @@ use spin::Mutex;
 use crate::DriverContext;
 use crate::DriverContextError;
 use crate::pci::PciScanner;
-use vtd::VtdRegisters;
 use table::{IommuPageTable, IommuRootTable};
-
+use vtd::VtdRegisters;
 
 // ── IOVA Allocator ──────────────────────────────────────────────────
 
@@ -31,7 +30,10 @@ impl IovaAllocator {
         let max_addr = (1u64 << iova_bits.min(48)) - 1;
         let start = 0x10_0000u64; // 1MB
         Self {
-            free: alloc::vec![IovaInterval { start, end: max_addr }],
+            free: alloc::vec![IovaInterval {
+                start,
+                end: max_addr
+            }],
         }
     }
 
@@ -64,13 +66,19 @@ impl IovaAllocator {
         for iv in self.free.iter() {
             if !inserted && end < iv.start {
                 new_free.push(IovaInterval { start, end });
-                new_free.push(IovaInterval { start: iv.start, end: iv.end });
+                new_free.push(IovaInterval {
+                    start: iv.start,
+                    end: iv.end,
+                });
                 inserted = true;
             } else if !inserted && start <= iv.end && end >= iv.start {
                 // Merge adjacent
                 let merged_start = start.min(iv.start);
                 let merged_end = end.max(iv.end);
-                new_free.push(IovaInterval { start: merged_start, end: merged_end });
+                new_free.push(IovaInterval {
+                    start: merged_start,
+                    end: merged_end,
+                });
                 inserted = true;
             } else if inserted && start <= iv.start && end >= iv.start {
                 // If the last merged entry overlaps the next one, coalesce
@@ -80,9 +88,15 @@ impl IovaAllocator {
                         continue;
                     }
                 }
-                new_free.push(IovaInterval { start: iv.start, end: iv.end });
+                new_free.push(IovaInterval {
+                    start: iv.start,
+                    end: iv.end,
+                });
             } else {
-                new_free.push(IovaInterval { start: iv.start, end: iv.end });
+                new_free.push(IovaInterval {
+                    start: iv.start,
+                    end: iv.end,
+                });
             }
         }
         if !inserted {
@@ -120,7 +134,12 @@ impl IommuEngine {
         // IOVA allocator
         let iova = IovaAllocator::new(iova_bits);
 
-        Ok(Self { registers, root_table, page_table, iova })
+        Ok(Self {
+            registers,
+            root_table,
+            page_table,
+            iova,
+        })
     }
 
     pub fn set_device_context(
@@ -130,9 +149,15 @@ impl IommuEngine {
         device: u8,
         function: u8,
     ) -> Result<(), DriverContextError> {
-        let entry = self.root_table.get_context_entry(ctx, bus, device, function)?;
+        let entry = self
+            .root_table
+            .get_context_entry(ctx, bus, device, function)?;
         let aw_bits = table::CTX_AW_3LEVEL;
-        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), aw_bits, self.page_table.domain_id());
+        *entry = table::ContextEntry::new_host(
+            self.page_table.root_phys(),
+            aw_bits,
+            self.page_table.domain_id(),
+        );
         Ok(())
     }
 
@@ -177,7 +202,10 @@ impl IommuEngine {
         }
 
         // Validate before mutating state
-        let iova = self.iova.alloc(size).ok_or(DriverContextError::OutOfMemory)?;
+        let iova = self
+            .iova
+            .alloc(size)
+            .ok_or(DriverContextError::OutOfMemory)?;
         let pages = (size + 4095) / 4096;
 
         // Map pages with rollback on failure
@@ -218,14 +246,20 @@ impl IommuEngine {
                 return Err(e);
             }
         };
-        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL, self.page_table.domain_id());
+        *entry = table::ContextEntry::new_host(
+            self.page_table.root_phys(),
+            table::CTX_AW_3LEVEL,
+            self.page_table.domain_id(),
+        );
 
         // Ensure page table and context entry writes are committed before invalidating caches
         core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
 
         // Flush context cache and IOTLB
-        self.registers.context_cache_invalidate_domain(self.page_table.domain_id());
-        self.registers.iotlb_domain_invalidate(self.page_table.domain_id());
+        self.registers
+            .context_cache_invalidate_domain(self.page_table.domain_id());
+        self.registers
+            .iotlb_domain_invalidate(self.page_table.domain_id());
         Ok(iova)
     }
 
@@ -236,7 +270,8 @@ impl IommuEngine {
             self.page_table.unmap_page(ctx, iova_page);
         }
         self.iova.free(iova, size);
-        self.registers.iotlb_domain_invalidate(self.page_table.domain_id());
+        self.registers
+            .iotlb_domain_invalidate(self.page_table.domain_id());
     }
 
     /// Set up pass-through context entries for all devices found by a PCI scan.
@@ -259,7 +294,10 @@ impl IommuEngine {
         }
         for dev_info in scanner.get_devices() {
             let entry = self.root_table.get_context_entry(
-                ctx, dev_info.bus, dev_info.device, dev_info.function,
+                ctx,
+                dev_info.bus,
+                dev_info.device,
+                dev_info.function,
             )?;
             *entry = table::ContextEntry::new_pass_through();
         }
@@ -277,7 +315,8 @@ static GLOBAL_IOMMU: Mutex<Option<IommuEngine>> = Mutex::new(None);
 
 /// Physical-to-virtual mapping function set by [`init`] and used by ACPI parsing.
 /// Defaults to the hardcoded offset for backward compatibility.
-pub(crate) static PHYS_TO_VIRT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0xFFFF_8000_0000_0000);
+pub(crate) static PHYS_TO_VIRT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0xFFFF_8000_0000_0000);
 
 /// Initialize IOMMU from ACPI DMAR table.
 ///
@@ -330,7 +369,8 @@ pub fn init(
 
     // Set up pass-through context entries for all enumerated PCI devices
     // before enabling translation, so non-IOMMU-aware drivers keep working.
-    engine.setup_pass_through_all(ctx)
+    engine
+        .setup_pass_through_all(ctx)
         .map_err(|_| "IOMMU pass-through setup failed")?;
 
     // Check if hardware is already enabled by firmware

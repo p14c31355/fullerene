@@ -153,7 +153,12 @@ pub unsafe fn syscall(
         // Truly zero-overhead: read directly from VDSO page, no ring submission.
         if syscall_num == SyscallNumber::Uptime as u64 {
             if arg1 != 0 {
-                unsafe { core::ptr::write_unaligned(arg1 as *mut u64, crate::vdso::user::vdso_uptime_us()); }
+                unsafe {
+                    core::ptr::write_unaligned(
+                        arg1 as *mut u64,
+                        crate::vdso::user::vdso_uptime_us(),
+                    );
+                }
                 return 0;
             }
         } else if syscall_num == SyscallNumber::GetPid as u64 {

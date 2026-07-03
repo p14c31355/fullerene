@@ -13,7 +13,7 @@ use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::contexts::kernel;
-use crate::linux::{O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND};
+use crate::linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 
 use resonance::Event as ResonanceEvent;
 
@@ -49,8 +49,7 @@ fn with_kernel_mut_result<F>(f: F) -> SyscallResult
 where
     F: FnOnce(&mut crate::contexts::KernelContext) -> SyscallResult,
 {
-    crate::contexts::kernel::with_kernel_mut(f)
-        .ok_or(SyscallError::NotSupported)?
+    crate::contexts::kernel::with_kernel_mut(f).ok_or(SyscallError::NotSupported)?
 }
 
 /// Extract a specific `KernelObject` variant or return `BadHandle` from the enclosing closure.
@@ -352,11 +351,7 @@ fn syscall_fork() -> SyscallResult {
                 return Err(SyscallError::OutOfMemory);
             }
         };
-        let vdso = crate::vdso::create_vdso_page(
-            &mut child_page_table,
-            fa,
-            child_pid as u64,
-        );
+        let vdso = crate::vdso::create_vdso_page(&mut child_page_table, fa, child_pid as u64);
         drop(fa_lock);
         match vdso {
             Ok(v) => Some(v),
@@ -742,7 +737,9 @@ fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
             }
             Ok(true)
         } else {
-            if timeout_us == 0 { return Ok(false); }
+            if timeout_us == 0 {
+                return Ok(false);
+            }
             let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
             inner.waiters.push(pid);
             Ok(false)
@@ -960,7 +957,10 @@ fn syscall_create_window(x: i32, y: i32, width: u32, height: u32, _flags: u64) -
     })
     .ok_or(SyscallError::OutOfMemory)?;
 
-    let state = WindowState { window_id: win_id, pid };
+    let state = WindowState {
+        window_id: win_id,
+        pid,
+    };
     Ok(alloc_handle(KernelObject::Window(state)))
 }
 
@@ -1233,22 +1233,31 @@ fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
         // shallow copy of their state.
         match obj {
             KernelObject::Event(e) => {
-                let copy = EventState { inner: alloc::sync::Arc::clone(&e.inner) };
+                let copy = EventState {
+                    inner: alloc::sync::Arc::clone(&e.inner),
+                };
                 table.insert(new_h, KernelObject::Event(copy));
                 Ok(new_h)
             }
             KernelObject::Thread(t) => {
-                let copy = ThreadState { inner: alloc::sync::Arc::clone(&t.inner) };
+                let copy = ThreadState {
+                    inner: alloc::sync::Arc::clone(&t.inner),
+                };
                 table.insert(new_h, KernelObject::Thread(copy));
                 Ok(new_h)
             }
             KernelObject::Channel(ch) => {
-                let copy = ChannelState { inner: alloc::sync::Arc::clone(&ch.inner) };
+                let copy = ChannelState {
+                    inner: alloc::sync::Arc::clone(&ch.inner),
+                };
                 table.insert(new_h, KernelObject::Channel(copy));
                 Ok(new_h)
             }
             KernelObject::Window(w) => {
-                let copy = WindowState { window_id: w.window_id, pid: w.pid };
+                let copy = WindowState {
+                    window_id: w.window_id,
+                    pid: w.pid,
+                };
                 table.insert(new_h, KernelObject::Window(copy));
                 Ok(new_h)
             }

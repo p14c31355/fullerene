@@ -14,7 +14,9 @@ static mut VDSO_PAGE: *const VdsoPage = core::ptr::null();
 /// Initialize the VDSO pointer.
 /// Must be called once at process start.
 pub unsafe fn init_vdso(page: *const VdsoPage) {
-    unsafe { VDSO_PAGE = page; }
+    unsafe {
+        VDSO_PAGE = page;
+    }
 }
 
 /// Check whether the VDSO pointer has been initialized.
@@ -80,7 +82,12 @@ pub struct VdsoFuture {
 
 impl VdsoFuture {
     pub fn new(syscall_num: u64, args: [u64; 6]) -> Self {
-        VdsoFuture { slot: None, syscall_num, args, waker: None }
+        VdsoFuture {
+            slot: None,
+            syscall_num,
+            args,
+            waker: None,
+        }
     }
 }
 
@@ -92,7 +99,10 @@ impl Drop for VdsoFuture {
                 // If CAS fails, the slot is VDSO_PENDING or VDSO_COMPLETE and
                 // cannot be safely reclaimed — see struct-level docs.
                 let _ = page.requests[slot].state.compare_exchange(
-                    VDSO_CLAIMED, VDSO_FREE, Ordering::AcqRel, Ordering::Relaxed,
+                    VDSO_CLAIMED,
+                    VDSO_FREE,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
                 );
             }
         }
@@ -112,19 +122,17 @@ impl Future for VdsoFuture {
         // Phase 1: claim a slot
         let slot = match this.slot {
             Some(s) => s,
-            None => {
-                match page.try_claim_slot() {
-                    Some(s) => {
-                        page.submit_request(s, this.syscall_num, this.args);
-                        this.slot = Some(s);
-                        s
-                    }
-                    None => {
-                        this.waker = Some(cx.waker().clone());
-                        return Poll::Pending;
-                    }
+            None => match page.try_claim_slot() {
+                Some(s) => {
+                    page.submit_request(s, this.syscall_num, this.args);
+                    this.slot = Some(s);
+                    s
                 }
-            }
+                None => {
+                    this.waker = Some(cx.waker().clone());
+                    return Poll::Pending;
+                }
+            },
         };
 
         // Phase 2: check completion
@@ -154,12 +162,16 @@ pub fn vdso_call_async(syscall_num: u64, args: [u64; 6]) -> VdsoFuture {
 
 /// Get monotonic uptime in microseconds — no kernel transition.
 pub fn vdso_uptime_us() -> u64 {
-    vdso().map(|p| p.uptime_us.load(Ordering::Relaxed)).unwrap_or(0)
+    vdso()
+        .map(|p| p.uptime_us.load(Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 /// Get current wall-clock time in microseconds — no kernel transition.
 pub fn vdso_time_us() -> u64 {
-    vdso().map(|p| p.time_us.load(Ordering::Acquire)).unwrap_or(0)
+    vdso()
+        .map(|p| p.time_us.load(Ordering::Acquire))
+        .unwrap_or(0)
 }
 
 /// Get current PID — no kernel transition.

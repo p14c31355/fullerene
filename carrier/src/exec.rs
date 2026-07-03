@@ -169,7 +169,10 @@ pub fn list_commands(commands: &[&dyn Command], terminal: &mut dyn Terminal) {
     }
 }
 
-pub fn get_completions_for(prefix: &str, cmds: &[&dyn Command]) -> alloc::vec::Vec<alloc::string::String> {
+pub fn get_completions_for(
+    prefix: &str,
+    cmds: &[&dyn Command],
+) -> alloc::vec::Vec<alloc::string::String> {
     if prefix.contains(' ') {
         return alloc::vec::Vec::new();
     }

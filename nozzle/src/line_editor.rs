@@ -1,10 +1,10 @@
 //! Line editor for Nozzle shell — with TAB completion support.
 
-use carrier::terminal::Terminal;
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use carrier::terminal::Terminal;
 
 /// Retrieve a snapshot of the shared command history.
 ///

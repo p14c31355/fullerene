@@ -94,8 +94,7 @@ fn load_program_inner(
                 }
                 let start_addr = x86_64::VirtAddr::new(vaddr);
                 let end_addr = x86_64::VirtAddr::new(vaddr + mem_size as u64 - 1);
-                if !petroleum::is_user_address(start_addr)
-                    || !petroleum::is_user_address(end_addr)
+                if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr)
                 {
                     return Err(LoadError::UnsupportedArchitecture);
                 }
