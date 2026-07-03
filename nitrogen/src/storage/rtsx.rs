@@ -22,6 +22,7 @@ use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
 #[allow(dead_code)]
 const RTSX_MSI_EN: u8 = 0x1C;
 const RTSX_CFG: u8 = 0x20;
+const RTSX_CFG_RESET: u8 = 0x01;
 
 // ── SD Card Registers ─────────────────────────────────────────
 const SD_CMD0: u8 = 0x40;
@@ -132,6 +133,10 @@ pub struct RtsxController {
     mmio: *mut u8,
     mmio_mapped: bool,
     sd_card: Option<SdCardInfo>,
+    /// Upstream PCIe bridge coordinates (bus, dev, func).  When set,
+    /// we re-assert D0/ASPM disable on the bridge before each MMIO
+    /// session to avoid hangs caused by L1 substate transitions.
+    upstream_bridge: Option<(u8, u8, u8)>,
 }
 
 unsafe impl Send for RtsxController {}
@@ -207,8 +212,8 @@ impl RtsxController {
                     found_pcie = true;
                     let lnk_sts = crate::pci::PciConfigSpace::read_config_word(
                         bus, dev, func, off + 0x12);
-                    // Negotiated Link Speed in bits 15:12; zero = link down.
-                    let speed = (lnk_sts >> 12) & 0xF;
+                    // Negotiated Link Speed in bits 3:0 (Link Status register bits 3:0)
+                    let speed = lnk_sts & 0xF;
                     if speed == 0 {
                         log::warn!("RTSX: PCIe link down (lnk_sts={:#06x})", lnk_sts);
                         return Err("PCIe link down");
@@ -295,9 +300,38 @@ impl RtsxController {
             core::hint::spin_loop();
         }
 
-        // Skip soft-reset (RTSX_CFG bit 0). PCI config-space init
-        // (ensure_d0, ASPM disable) already puts the device in a known
-        // state, and the MMIO soft-reset can destabilise the PCIe link.
+        // Send several additional posted writes to flush the host bridge's
+        // posted-write buffer and ensure the PCIe link has fully exited L1.
+        // Some Realtek controllers need extra wake-up time before the first
+        // non-posted read; without this, sd_bus_stat reads can hang on
+        // cold-boot when ASPM put the link into L1 substate.
+        self.w8(CARD_CLK_EN, 0x00);
+        self.w8(CARD_CLK_EN, 0x00);
+        for _ in 0..50_000 {
+            core::hint::spin_loop();
+        }
+
+        // Perform soft-reset (RTSX_CFG bit 0).  This resets the internal
+        // chip state machine to a known state.  Without it, the controller
+        // may accept MMIO writes but never respond to SD commands, causing
+        // the first non-posted MMIO read to hang the CPU indefinitely.
+        // The Linux rtsx_pci driver performs this reset unconditionally.
+        log::info!("RTSX: soft-reset");
+        self.w8(RTSX_CFG, RTSX_CFG_RESET);
+        // Wait for the internal chip reset to complete.  The chip typically
+        // takes ~100-200 microseconds; we use a generous spin loop.
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+        // Clear the reset bit manually.  The auto-clear may not be reliable
+        // on all revisions; writing 0x00 explicitly matches the Linux
+        // rtsx_pci driver behaviour.  We do NOT read back here — reading
+        // while the chip is still resetting can cause an undefined response
+        // and potentially hang the CPU.
+        self.w8(RTSX_CFG, 0x00);
+        for _ in 0..50_000 {
+            core::hint::spin_loop();
+        }
 
         self.w8(CARD_PWR_CTL, CARD_PWR_ON);
 
@@ -421,21 +455,63 @@ impl RtsxController {
         self.device.ensure_d0();
         self.device.enable_memory_access();
 
+        // Re-disable ASPM on the device and the upstream bridge.  The
+        // PCIe link may have entered L1 substate since boot; if the link
+        // is in L1 when we issue the first non-posted MMIO read, the host
+        // will wait for the link to wake up — and on some Realtek
+        // controllers with buggy ASPM, this wait can hang the CPU
+        // indefinitely.  Disabling ASPM forces the link back to L0.
+        self.device.disable_pcie_aspm();
+        if let Some((b, d, f)) = self.upstream_bridge {
+            let bridge = PciDevice::new(b, d, f);
+            if let Some(bridge) = bridge {
+                log::info!("RTSX: re-disabling ASPM on upstream bridge {:02x}:{:02x}.{}", b, d, f);
+                // Ensure bridge is in D0 before disabling ASPM so the downstream path is usable
+                bridge.ensure_d0();
+                bridge.disable_pcie_aspm();
+            }
+        }
+
+        // Verify the PCIe link is up *before* any MMIO access.  The very
+        // first MMIO write (even though it's "posted") will block on
+        // x86_64 when the memory type is Uncached, so if the link is in
+        // L1 substate or D3cold, the write will hang the CPU indefinitely.
+        // Checking the Negotiated Link Speed via PCI config space (port I/O)
+        // is safe because it goes through the host bridge without needing
+        // the downstream device to respond.
+        match self.ensure_device_accessible() {
+            Ok(()) => {}
+            Err(e) => {
+                log::warn!("RTSX: device not accessible before MMIO: {}", e);
+                return Err(e);
+            }
+        }
+        log::info!("RTSX: PCIe link confirmed up, proceeding with MMIO");
+
         if !self.init_hardware() {
             return Err("hardware init failed");
         }
 
-        // Verify device is safe to access via MMIO before doing any
-        // non-posted MMIO reads.  We check power state, PCIe link status,
-        // and vendor ID — all via PCI config space (port I/O, safe).
-        // This is performed *after* init_hardware() so the posted MMIO
-        // writes have had a chance to wake the link.
-        log::info!("RTSX: checking device accessibility...");
-        self.ensure_device_accessible()?;
-        log::info!("RTSX: device accessible, proceeding to MMIO read");
+        // After init_hardware() completes, the device should be responsive.
+        // The link has already been verified before the first MMIO write,
+        // and the posted writes have had a chance to settle.  We don't need
+        // a second accessibility check here — the ensure_device_accessible()
+        // call above is sufficient.
 
         for _ in 0..200_000 {
             core::hint::spin_loop();
+        }
+
+        // Revalidate full accessibility (D0/link readiness) immediately before
+        // the first non-posted MMIO read.  If the link dropped or entered a low-power
+        // state between the earlier check and this point, the upcoming MMIO read
+        // would hang the CPU indefinitely.  Bailing out here keeps the system responsive.
+        match self.ensure_device_accessible() {
+            Ok(()) => {}
+            Err(e) => {
+                log::warn!("RTSX: device no longer accessible before first MMIO read: {}", e);
+                return Err(e);
+            }
         }
 
         let bus = self.r8(SD_BUS_STAT);
@@ -770,6 +846,7 @@ pub fn init(ctx: &dyn DriverContext) {
                 mmio,
                 mmio_mapped: true,
                 sd_card: None,
+                upstream_bridge: upstream_bridge.map(|b| (b.bus, b.device, b.function)),
             });
             log::info!("RTSX: controller registered (MMIO deferred)");
             return;

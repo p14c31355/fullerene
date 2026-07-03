@@ -194,144 +194,53 @@ impl XhciContext {
     /// Initialise the controller: configure registers, start, init ports.
     ///
     /// Strategy:
-    /// 1. Always try `init_no_reset()` first — this preserves the firmware's
-    ///    PHY tuning parameters and port state.  Many xHCI controllers (both
-    ///    1.0 and 1.1+) lose USB 3.0 PHY calibration after HCRST, making
-    ///    it impossible to detect connected devices (CCS never sets).
-    /// 2. If no port has CCS=1 after init_no_reset, fall back to a full
-    ///    HCRST (Host Controller Reset) as a recovery attempt.  Some controllers
-    ///    need the clean slate that HCRST provides.
+    ///   Always do a full HCRST (Host Controller Reset) followed by proper
+    ///   port power management.  The previous two-phase approach of trying
+    ///   to preserve firmware state via `init_no_reset()` caused USB 3.0
+    ///   PHY calibration loss on Wildcat Point-LP xHCI because stopping a
+    ///   running controller disrupts the PHY and no amount of WPR/PR can
+    ///   recover it afterwards.  A clean HCRST restores the controller to a
+    ///   known state; following up with proper port power-cycling and link
+    ///   training lets the hardware re-calibrate the PHY from scratch.
+    ///
+    /// This mirrors the Linux behaviour for Intel Wildcat Point-LP xHCI
+    /// quirks (XHCI_RESET_ON_RESUME).
     pub fn init(&mut self) -> Result<(), &'static str> {
         let hci_ver = self.registers.cap.hci_version;
         log::info!("xHCI: hci_version=0x{:04X}", hci_ver);
 
-        // Phase 1: lightweight init without HCRST
-        self.init_no_reset()?;
-
-        // Phase 2: always recover CCS=0 ports, even if others have CCS=1.
-        // Stopping a running controller in init_no_reset can lose USB 3.0
-        // PHY calibration; init_ports() handles WPR, PR, PP-toggle recovery.
-        // init_ports() skips ports that already have CCS=1, so it is safe
-        // to call unconditionally.
-        if self.registers.op.usbsts() & USBSTS_HSE != 0 {
-            log::warn!("xHCI: HSE after init_no_reset, clearing and recovering");
-            self.clear_hse_and_recover();
-        }
-        self.init_ports();
-
-        // If still no CCS after init_ports recovery, try full HCRST.
-        let n_ports = self.ports.n_ports;
-        let has_ccs = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
-        if has_ccs {
-            return Ok(());
+        // Phase 1: Full HCRST.
+        // Stop the controller first (it cannot be running during HCRST).
+        let sts = self.registers.op.usbsts();
+        if sts & USBSTS_HCH == 0 {
+            log::info!("xHCI: controller running, halting before HCRST");
+            self.registers.op.set_usbcmd(self.registers.op.usbcmd() & !USBCMD_RS);
+            for _ in 0..200_000 {
+                if self.registers.op.usbsts() & USBSTS_HCH != 0 {
+                    break;
+                }
+                super::port::delay_us(100);
+            }
+            if self.registers.op.usbsts() & USBSTS_HCH == 0 {
+                return Err("controller failed to halt before HCRST");
+            }
         }
 
-        log::warn!("xHCI: no CCS=1 after init_ports recovery, trying full HCRST");
         self.controller_reset()?;
         self.configure_before_start();
         self.setup_erst()?;
         self.interrupts.enable(&self.registers.runtime);
         self.registers.op.set_usbcmd_bits(USBCMD_INTE);
+
+        if self.registers.op.usbsts() & USBSTS_HSE != 0 {
+            log::warn!("xHCI: HSE after HCRST, clearing");
+            self.clear_hse_and_recover();
+        }
+
         self.start_controller()?;
         self.clear_hse_and_recover();
         self.init_ports();
 
-        let after_hcrst = (0..n_ports).any(|i| self.registers.op.portsc(i).ccs());
-        if !after_hcrst {
-            log::warn!("xHCI: even HCRST did not produce CCS=1");
-        }
-        Ok(())
-    }
-
-    /// Lightweight init without HCRST — preserves firmware port state.
-    ///
-    /// On xHCI 1.0 (Wildcat Point etc.), the firmware may leave the
-    /// controller running with devices already detected.  Writing
-    /// DCBAAP/CRCR/CONFIG while running can reset port state, losing
-    /// CCS.  Strategy:
-    ///   - If halted: write pre-RS registers, then RS=1, then ERST.
-    ///   - If running: stop, reconfigure, restart.  Stopping a running
-    ///     controller can cause USB 3.0 PHY calibration loss on some
-    ///     Intel xHCI controllers.  We mitigate this by aggressive port
-    ///     recovery (PP toggle, WPR, PR) after the restart instead of
-    ///     falling through to a full HCRST, which would be even worse.
-    pub fn init_no_reset(&mut self) -> Result<(), &'static str> {
-        log::info!("xHCI: init_no_reset — preserving firmware state");
-
-        let sts = self.registers.op.usbsts();
-        log::info!(
-            "xHCI: USBSTS={:#010X} HCHalted={} CNR={} HSE={} PCD={}",
-            sts,
-            (sts & USBSTS_HCH != 0) as u32,
-            (sts & USBSTS_CNR != 0) as u32,
-            (sts & USBSTS_HSE != 0) as u32,
-            (sts & USBSTS_PCD != 0) as u32,
-        );
-
-        let halted = self.registers.op.usbsts() & USBSTS_HCH != 0;
-        if halted {
-            log::info!("xHCI: controller halted — configuring before RS=1");
-            self.configure_before_start();
-            self.setup_erst()?;
-            self.interrupts.enable(&self.registers.runtime);
-            self.registers.op.set_usbcmd_bits(USBCMD_INTE);
-            self.start_controller()?;
-        } else {
-            log::info!("xHCI: controller already running — stopping, then reconfiguring");
-            // Halt the running controller before reconfiguring core registers.
-            // This may cause USB 3.0 PHY calibration loss on some Intel xHCIs,
-            // but is necessary to set up our own DCBAAP/CRCR/CONFIG.
-            let op = &self.registers.op;
-            op.set_usbcmd(op.usbcmd() & !USBCMD_RS); // Clear RS to halt
-            let mut halted = false;
-            for _ in 0..200_000 {
-                if op.usbsts() & USBSTS_HCH != 0 {
-                    halted = true;
-                    break;
-                }
-                super::port::delay_us(100);
-            }
-            if !halted {
-                return Err("xHCI: failed to halt running controller before reconfiguration");
-            }
-            self.configure_before_start();
-            self.setup_erst()?;
-            self.interrupts.enable(&self.registers.runtime);
-            self.registers.op.set_usbcmd_bits(USBCMD_INTE);
-            self.start_controller()?;
-        }
-        super::port::delay_ms(200);
-
-        // Step 3: Reflect current firmware-detected ports.
-        let n_ports = self.ports.n_ports;
-        {
-            let op = &self.registers.op;
-            for port in &mut self.ports.ports {
-                port.refresh(op);
-            }
-        }
-        let mut found = 0;
-        for port_idx in 0..n_ports {
-            self.log_portsc(port_idx);
-            let ps = self.registers.op.portsc(port_idx);
-            if ps.ccs() {
-                found += 1;
-                log::info!("xHCI: port {} already has CCS=1 (firmware detected)", port_idx);
-                // If the port is already enabled (PED=1), the device has a
-                // firmware-assigned non-zero address.  After init_no_reset our
-                // driver's DCBAAP/CRCR are fresh, so we must Port Reset to
-                // return the device to Default state (address 0) before
-                // enumeration.
-                if ps.ped() {
-                    log::info!("xHCI: port {} already PED=1, resetting for fresh enumeration", port_idx);
-                    super::port::port_reset(&self.registers.op, port_idx);
-                }
-            }
-        }
-        if found == 0 {
-            log::warn!("xHCI: no ports with CCS=1, trying init_ports");
-            self.init_ports();
-        }
         Ok(())
     }
 
@@ -411,12 +320,20 @@ impl XhciContext {
             super::port::exit_compliance(op, port_idx);
         }
         const PLS_RXDETECT: u32 = 5 << 5;
+        // Only force RxDetect for USB 3.0 ports.  On USB 2.0 ports the
+        // PLS field is not meaningful and writing LWS+PLS can leave the
+        // controller's internal state machine in an undefined state.
+        // USB 2.0 device detection is handled by the controller's own
+        // hardware when PP=1 is set.
         for port_idx in 0..self.ports.n_ports {
             let ps = op.portsc(port_idx);
             if ps.ccs() {
                 continue;
             }
-            op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if is_usb3 {
+                op.update_portsc(port_idx, PLS_RXDETECT | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
+            }
         }
         super::port::delay_ms(200);
 
@@ -484,7 +401,12 @@ impl XhciContext {
                 super::port::delay_ms(200);
 
                 // After PP toggle, force RxDetect and wait for training
-                force_rx_detect(op, port_idx);
+                // Only for USB 3.0 ports; USB 2.0 doesn't use PLS and writing
+                // LWS+PLS can leave the controller in an undefined state.
+                let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+                if is_usb3 {
+                    force_rx_detect(op, port_idx);
+                }
                 for _ in 0..200 {
                     super::port::delay_ms(10);
                     if op.portsc(port_idx).ccs() {
@@ -648,9 +570,14 @@ impl XhciContext {
         log::info!("xHCI: HSE detected, recovering...");
         op.clear_usbsts_bits(USBSTS_HSE);
 
-        // Force RxDetect on all ports
+        // Force RxDetect on all USB 3.0 ports only.  Writing LWS+PLS to
+        // USB 2.0 ports is undefined per the xHCI spec and may leave the
+        // controller's internal state machine in an undefined state.
         for port in 0..self.ports.n_ports {
-            force_rx_detect(op, port);
+            let is_usb3 = self.ports.get(port).map(|p| p.is_usb3).unwrap_or(true);
+            if is_usb3 {
+                force_rx_detect(op, port);
+            }
         }
 
         self.ports.clear_done_flags();
@@ -809,10 +736,25 @@ impl XhciContext {
                 }
             }
 
-            // Force RxDetect to restart link training
+            // Force RxDetect to restart link training (USB 3.0 only).
+            // For USB 2.0 ports, the PLS field is not meaningful and writing
+            // LWS+PLS can leave the controller's internal state machine in
+            // an undefined state.  USB 2.0 detection relies on PP=1 and PR.
             if !op.portsc(port_idx).ccs() {
-                force_rx_detect(op, port_idx);
-                super::port::delay_ms(200);
+                if is_usb3 {
+                    force_rx_detect(op, port_idx);
+                    super::port::delay_ms(200);
+                } else {
+                    // For USB 2.0 ports, just wait for the device to assert
+                    // CCS after power-up.  The controller's hardware handles
+                    // this automatically.
+                    for _ in 0..200 {
+                        super::port::delay_ms(10);
+                        if op.portsc(port_idx).ccs() {
+                            break;
+                        }
+                    }
+                }
 
                 if op.portsc(port_idx).ccs() && op.portsc(port_idx).ped() {
                     return true;
@@ -821,7 +763,9 @@ impl XhciContext {
                 // HSE recovery
                 if op.usbsts() & USBSTS_HSE != 0 {
                     op.clear_usbsts_bits(USBSTS_HSE);
-                    force_rx_detect(op, port_idx);
+                    if is_usb3 {
+                        force_rx_detect(op, port_idx);
+                    }
                     super::port::delay_ms(300);
                     if op.portsc(port_idx).ccs() && op.portsc(port_idx).ped() {
                         return true;

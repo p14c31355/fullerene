@@ -78,11 +78,14 @@ impl<'a> BotBuffer<'a> {
 ///
 /// `host` is any host controller implementing [`HostController`].
 /// `dev_addr` is the USB device address, `ep_out`/`ep_in` are bulk endpoints.
+/// `ep_out_mps` and `ep_in_mps` are the device-reported max packet sizes for each endpoint.
 pub fn bot_exec_command(
     host: &mut dyn HostController,
     dev_addr: u8,
     ep_out: u8,
+    ep_out_mps: u16,
     ep_in: u8,
+    ep_in_mps: u16,
     cdb: &[u8],
     data: Option<BotBuffer<'_>>,
     tag: &mut u32,
@@ -103,14 +106,14 @@ pub fn bot_exec_command(
     cbw_raw[14] = cdb.len().min(16) as u8;
     cbw_raw[15..15 + cdb.len().min(16)].copy_from_slice(&cdb[..cdb.len().min(16)]);
 
-    host.bulk_transfer(dev_addr, ep_out, &mut cbw_raw, UsbDirection::Out, 512)?;
+    host.bulk_transfer(dev_addr, ep_out, &mut cbw_raw, UsbDirection::Out, ep_out_mps)?;
 
     // ── Phase 2: Data (optional) ──────────────────────────
     if let Some(buf) = data {
-        let ep = if dir_in { ep_in } else { ep_out };
+        let (ep, mps) = if dir_in { (ep_in, ep_in_mps) } else { (ep_out, ep_out_mps) };
         match buf {
             BotBuffer::In(buf) => {
-                host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, 512)?;
+                host.bulk_transfer(dev_addr, ep, buf, UsbDirection::In, mps)?;
             }
             BotBuffer::Out(buf) => {
                 // SAFETY: bulk_transfer for OUT only reads the buffer, so creating a
@@ -119,14 +122,14 @@ pub fn bot_exec_command(
                 let len = buf.len();
                 let mut tmp = alloc::vec![0u8; len];
                 tmp.copy_from_slice(buf);
-                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, 512)?;
+                host.bulk_transfer(dev_addr, ep, &mut tmp, UsbDirection::Out, mps)?;
             }
         }
     }
 
     // ── Phase 3: Receive CSW ──────────────────────────────
     let mut csw_raw = [0u8; 13];
-    host.bulk_transfer(dev_addr, ep_in, &mut csw_raw, UsbDirection::In, 512)?;
+    host.bulk_transfer(dev_addr, ep_in, &mut csw_raw, UsbDirection::In, ep_in_mps)?;
 
     let sig = u32::from_le_bytes([csw_raw[0], csw_raw[1], csw_raw[2], csw_raw[3]]);
     if sig != CSW_SIGNATURE {
@@ -151,7 +154,9 @@ pub fn bot_read_sectors(
     host: &mut dyn HostController,
     dev_addr: u8,
     ep_out: u8,
+    ep_out_mps: u16,
     ep_in: u8,
+    ep_in_mps: u16,
     lba: u32,
     count: u16,
     block_size: u32,
@@ -170,7 +175,9 @@ pub fn bot_read_sectors(
         host,
         dev_addr,
         ep_out,
+        ep_out_mps,
         ep_in,
+        ep_in_mps,
         &cdb,
         Some(BotBuffer::In(&mut buf[..dlen as usize])),
         tag,
@@ -186,7 +193,9 @@ pub fn bot_write_sectors(
     host: &mut dyn HostController,
     dev_addr: u8,
     ep_out: u8,
+    ep_out_mps: u16,
     ep_in: u8,
+    ep_in_mps: u16,
     lba: u32,
     count: u16,
     block_size: u32,
@@ -205,7 +214,9 @@ pub fn bot_write_sectors(
         host,
         dev_addr,
         ep_out,
+        ep_out_mps,
         ep_in,
+        ep_in_mps,
         &cdb,
         Some(BotBuffer::Out(buf)),
         tag,
@@ -222,13 +233,13 @@ pub fn bot_write_sectors(
 
 /// Enumerate a mass-storage device on the given host controller.
 ///
-/// Returns `(dev_addr, ep_out, ep_in, block_size)` or an error.
+/// Returns `(ep_out, ep_out_mps, ep_in, ep_in_mps, block_size)` or an error.
 /// Uses the host controller's `control_transfer` and `bulk_transfer`.
 pub fn enumerate_mass_storage(
     host: &mut dyn HostController,
     dev_addr: u8,
     dev_idx: usize,
-) -> Result<(u8, u8, u32), &'static str> {
+) -> Result<(u8, u16, u8, u16, u32), &'static str> {
     // Step 1: Get device descriptor (64 bytes for safety)
     let mut desc_buf = [0u8; 64];
     let setup = UsbSetupPacket {
@@ -274,7 +285,7 @@ pub fn enumerate_mass_storage(
     };
     let cfg_res = host.control_transfer(dev_addr, &setup_cfg_read, &mut cfg_buf);
 
-    let (ep_out, ep_in) = if let Ok(cfg_len) = cfg_res {
+    let (ep_out, ep_out_mps, ep_in, ep_in_mps) = if let Ok(cfg_len) = cfg_res {
         if cfg_len < 9 {
             return Err("config too short");
         }
@@ -283,8 +294,8 @@ pub fn enumerate_mass_storage(
         if dev_class != 0x08 {
             return Err("not MSC");
         }
-        // Fallback: hardcoded endpoints
-        (0x02u8, 0x82u8)
+        // Fallback: hardcoded endpoints (High-speed defaults)
+        (0x02u8, 512u16, 0x82u8, 512u16)
     };
 
     // Update device metadata
@@ -294,15 +305,23 @@ pub fn enumerate_mass_storage(
         dev.device_protocol = desc_buf[6];
     }
 
-    Ok((ep_out, ep_in, 512))
+    Ok((ep_out, ep_out_mps, ep_in, ep_in_mps, 512))
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.
-fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u8) {
+///
+/// Returns `(ep_out_address, ep_out_mps, ep_in_address, ep_in_mps)`.
+/// For SuperSpeed USB devices, the wMaxPacketSize field of a Bulk endpoint
+/// must be 1024 bytes per USB 3.x spec §4.4.7.1. We use the value reported
+/// by the device so that the xHCI endpoint context is configured correctly;
+/// falling back to a speed-appropriate default when the descriptor is missing.
+fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u16, u8, u16) {
     let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let mut offset: usize = 9;
     let mut found_out: Option<u8> = None;
+    let mut found_out_mps: Option<u16> = None;
     let mut found_in: Option<u8> = None;
+    let mut found_in_mps: Option<u16> = None;
 
     let limit = total_len.min(cfg_len).min(cfg_buf.len());
     while offset + 2 <= limit {
@@ -315,12 +334,16 @@ fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u8) {
             // ENDPOINT descriptor
             let ep_addr = cfg_buf[offset + 2];
             let ep_attr = cfg_buf[offset + 3];
+            // wMaxPacketSize at offset 4..5 (little-endian)
+            let mps = u16::from_le_bytes([cfg_buf[offset + 4], cfg_buf[offset + 5]]);
             if (ep_attr & 0x03) == 2 {
                 // Bulk endpoint
                 if ep_addr & 0x80 != 0 {
                     found_in = Some(ep_addr);
+                    found_in_mps = Some(mps);
                 } else {
                     found_out = Some(ep_addr);
+                    found_out_mps = Some(mps);
                 }
             }
         }
@@ -329,7 +352,12 @@ fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u8) {
 
     let out = found_out.unwrap_or(0x02);
     let in_ep = found_in.unwrap_or(0x82);
-    (out, in_ep)
+    // Default mps to 512 for High-speed / Full-speed. SuperSpeed USB
+    // descriptors report 1024 for bulk endpoints; we use whatever the
+    // descriptor says when it is present.
+    let out_mps = found_out_mps.filter(|&m| m > 0).unwrap_or(512);
+    let in_mps = found_in_mps.filter(|&m| m > 0).unwrap_or(512);
+    (out, out_mps, in_ep, in_mps)
 }
 
 // EHCI-specific enumeration is in hub.rs (enumerate_device).

@@ -160,14 +160,18 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
     let ctrl_idx = disk.ctrl_idx;
     let dev_addr = disk.dev_addr;
     let ep_out = disk.ep_out;
+    let ep_out_mps = disk.ep_out_mps;
     let ep_in = disk.ep_in;
+    let ep_in_mps = disk.ep_in_mps;
 
     struct BotBlockDev {
         ctrl_type: &'static str,
         ctrl_idx: usize,
         dev_addr: u8,
         ep_out: u8,
+        ep_out_mps: u16,
         ep_in: u8,
+        ep_in_mps: u16,
         block_size: u32,
         total_blocks: u64,
         tag: u32,
@@ -187,7 +191,9 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
                     self.ctrl_idx,
                     self.dev_addr,
                     self.ep_out,
+                    self.ep_out_mps,
                     self.ep_in,
+                    self.ep_in_mps,
                     lba,
                     count,
                     self.block_size,
@@ -204,7 +210,9 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
                     self.ctrl_idx,
                     self.dev_addr,
                     self.ep_out,
+                    self.ep_out_mps,
                     self.ep_in,
+                    self.ep_in_mps,
                     lba,
                     count,
                     self.block_size,
@@ -226,7 +234,7 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
     // This logic mirrors `find_fat_partition` to discover the correct boot sector LBA.
     let mut mbr = [0u8; 512];
     let ok = with_ctx(|ctx| {
-        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_in, 0, 1, 512, &mut mbr, &mut 1)
+        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, 0, 1, 512, &mut mbr, &mut 1)
     });
     if ok.is_err() {
         return false;
@@ -242,15 +250,159 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
         // Check MBR signature
         let sig = u16::from_le_bytes([mbr[0x1FE], mbr[0x1FF]]);
         if sig == 0xAA55 {
-            // Scan partition table for FAT partition
+            // Scan MBR partition table for FAT/exFAT partition types.
+            // We do NOT stop at the first matching entry — chain-loader
+            // USB drives (Ventoy / Rufus / etc.) typically have a small
+            // boot/EFI partition followed by an exFAT data partition.  We
+            // prefer the largest FAT/exFAT partition so that the actual
+            // data area is mounted instead of the boot stub.
+            let mut best_lba: Option<u32> = None;
+            let mut best_sectors: u64 = 0;
             for i in 0..4 {
                 let off = 0x1BE + i * 16;
                 let ptype = mbr[off + 4];
-                let lba_start = u32::from_le_bytes([mbr[off + 8], mbr[off + 9], mbr[off + 10], mbr[off + 11]]);
+                let lba_start = u32::from_le_bytes([
+                    mbr[off + 8], mbr[off + 9], mbr[off + 10], mbr[off + 11],
+                ]);
+                let sector_count = u32::from_le_bytes([
+                    mbr[off + 12], mbr[off + 13], mbr[off + 14], mbr[off + 15],
+                ]) as u64;
                 // FAT32, FAT16, exFAT partition types
-                if ptype == 0x0B || ptype == 0x0C || ptype == 0x06 || ptype == 0x0E || ptype == 0x07 {
-                    partition_lba = lba_start;
-                    break;
+                // 0x0B/0x0C = FAT32, 0x06/0x0E = FAT16, 0x07 = NTFS/exFAT (ambiguous)
+                // Prioritize known FAT/exFAT types; validate ambiguous 0x07 by checking boot sector
+                let is_known_fat = ptype == 0x0B || ptype == 0x0C || ptype == 0x06 || ptype == 0x0E;
+                let is_ambiguous_07 = ptype == 0x07;
+
+                if is_known_fat || is_ambiguous_07 {
+                    let mut accept = is_known_fat; // Known FAT types are always accepted
+
+                    // For ambiguous 0x07, validate by reading boot sector
+                    if is_ambiguous_07 {
+                        let mut boot_check = [0u8; 512];
+                        let read_ok = with_ctx(|ctx| {
+                            ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps,
+                                lba_start, 1, 512, &mut boot_check, &mut 1)
+                        });
+                        if read_ok.is_ok() {
+                            // Check for exFAT signature at offset 3-10
+                            let is_exfat_sig = &boot_check[3..11] == b"EXFAT   ";
+                            // Check for FAT BPB (valid bytes-per-sector at offset 11-12)
+                            let bps = u16::from_le_bytes([boot_check[11], boot_check[12]]);
+                            let is_fat_bps = bps == 512 || bps == 1024 || bps == 2048 || bps == 4096;
+                            accept = is_exfat_sig || is_fat_bps;
+                        }
+                    }
+
+                    if accept && sector_count > best_sectors {
+                        best_lba = Some(lba_start);
+                        best_sectors = sector_count;
+                    }
+                }
+            }
+            partition_lba = best_lba.unwrap_or(0);
+
+            // GPT support: detect GPT Protective MBR and follow the GUID
+            // Partition Table. Ventoy and similar tools use GPT instead of
+            // MBR; the protective MBR contains only one entry of type 0xEE.
+            if partition_lba == 0 {
+                let gpt_protective = (|| {
+                    let off = 0x1BE;
+                    let ptype = mbr[off + 4];
+                    ptype == 0xEE
+                })();
+                if gpt_protective {
+                    // Read the GPT header at LBA 1
+                    let mut gpt_hdr = [0u8; 512];
+                    let ok = with_ctx(|ctx| {
+                        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps,
+                            1, 1, 512, &mut gpt_hdr, &mut 1)
+                    });
+                    if ok.is_ok() && &gpt_hdr[0..8] == b"EFI PART" {
+                        // GPT Header Layout (offsets from start of sector):
+                        //   44..51 = First Usable LBA
+                        //   52..59 = Last Usable LBA
+                        //   72..79 = Partition Entries Starting LBA
+                        //   80..83 = Number of Partition Entries
+                        //   84..87 = Size of Each Partition Entry
+                        let _first_usable = u64::from_le_bytes([
+                            gpt_hdr[44], gpt_hdr[45], gpt_hdr[46], gpt_hdr[47],
+                            gpt_hdr[48], gpt_hdr[49], gpt_hdr[50], gpt_hdr[51],
+                        ]);
+                        let _last_usable = u64::from_le_bytes([
+                            gpt_hdr[52], gpt_hdr[53], gpt_hdr[54], gpt_hdr[55],
+                            gpt_hdr[56], gpt_hdr[57], gpt_hdr[58], gpt_hdr[59],
+                        ]);
+                        let entries_lba = u64::from_le_bytes([
+                            gpt_hdr[72], gpt_hdr[73], gpt_hdr[74], gpt_hdr[75],
+                            gpt_hdr[76], gpt_hdr[77], gpt_hdr[78], gpt_hdr[79],
+                        ]);
+                        let _num_entries = u32::from_le_bytes([
+                            gpt_hdr[80], gpt_hdr[81], gpt_hdr[82], gpt_hdr[83],
+                        ]);
+                        let num_entries = u32::from_le_bytes([
+                            gpt_hdr[80], gpt_hdr[81], gpt_hdr[82], gpt_hdr[83],
+                        ]);
+                        let entry_size = u32::from_le_bytes([
+                            gpt_hdr[84], gpt_hdr[85], gpt_hdr[86], gpt_hdr[87],
+                        ]).max(128);
+                        // Read the GPT entries array. Each sector holds multiple entries;
+                        // iterate through entries using entry_size, reading sectors as needed.
+                        // Scan up to num_entries or 128 entries (whichever is smaller).
+                        let mut best_lba_gpt: u32 = 0;
+                        let mut best_size_gpt: u64 = 0;
+                        let max_entries = num_entries.min(128);
+                        let entries_per_sector = 512 / entry_size;
+
+                        for idx in 0..max_entries {
+                            let sector_idx = idx / entries_per_sector;
+                            let entry_in_sector = idx % entries_per_sector;
+                            let sector_lba = entries_lba + sector_idx as u64;
+
+                            // Read sector containing this entry
+                            let mut sector = [0u8; 512];
+                            let ok = with_ctx(|ctx| {
+                                ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps,
+                                    sector_lba as u32, 1, 512, &mut sector, &mut 1)
+                            });
+                            if ok.is_err() {
+                                break;
+                            }
+
+                            // Extract entry from sector buffer
+                            let entry_off = (entry_in_sector * entry_size) as usize;
+                            if entry_off + 128 > 512 {
+                                break; // Entry spans sectors (unsupported)
+                            }
+                            let entry = &sector[entry_off..entry_off + 128];
+
+                            // Type GUID at offset 0..15. If all zeros -> unused entry.
+                            if entry[..16] == [0u8; 16] {
+                                continue;
+                            }
+                            // First usable LBA at offset 32..39, last usable LBA at 40..47.
+                            let start_lba = u64::from_le_bytes([
+                                entry[32], entry[33], entry[34], entry[35],
+                                entry[36], entry[37], entry[38], entry[39],
+                            ]);
+                            let end_lba = u64::from_le_bytes([
+                                entry[40], entry[41], entry[42], entry[43],
+                                entry[44], entry[45], entry[46], entry[47],
+                            ]);
+                            let size_sectors = end_lba.saturating_sub(start_lba) + 1;
+                            // Heuristic: pick the largest partition. Most
+                            // multi-boot tools create a small EFI/boot
+                            // partition followed by the data partition.
+                            // Reject partitions whose start_lba exceeds u32::MAX
+                            if start_lba <= u32::MAX as u64 && size_sectors > best_size_gpt {
+                                best_size_gpt = size_sectors;
+                                best_lba_gpt = start_lba as u32;
+                            }
+                        }
+                        partition_lba = best_lba_gpt;
+                        log::info!(
+                            "USB: GPT detected, using {}",
+                            partition_lba);
+                    }
                 }
             }
         }
@@ -259,7 +411,7 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
     // Read the actual boot sector (at partition start if partitioned)
     let mut boot = [0u8; 512];
     let ok = with_ctx(|ctx| {
-        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_in, partition_lba, 1, 512, &mut boot, &mut 1)
+        ctx.bot_read(ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, partition_lba, 1, 512, &mut boot, &mut 1)
     });
     if ok.is_err() {
         return false;
@@ -299,7 +451,9 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
         ctrl_idx,
         dev_addr,
         ep_out,
+        ep_out_mps,
         ep_in,
+        ep_in_mps,
         block_size,
         total_blocks,
         tag: 1,
