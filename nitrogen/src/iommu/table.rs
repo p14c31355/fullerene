@@ -12,14 +12,6 @@ fn iopte_addr(entry: u64) -> u64 {
     entry & IOPTE_ADDR_MASK
 }
 
-fn iopte_is_present(entry: u64) -> bool {
-    entry & IOPTE_R != 0
-}
-
-fn iopte_is_huge(entry: u64) -> bool {
-    entry & IOPTE_S != 0
-}
-
 // ── IOMMU Page Table (3-level, 4KB pages) ──────────────────────
 // Level 2 (SL2): PML4-like, maps 512GB (512 × 512 × 512 × 4KB)
 // Level 1 (SL1): PDP-like,  maps   1GB (512 × 512 × 4KB)
@@ -30,11 +22,9 @@ fn iopte_is_huge(entry: u64) -> bool {
 //              [20:12] → SL0 index
 //              [11:0]  → page offset
 
-const IOVA_BITS: u8 = 39; // 3-level 4KiB SLPT covers bits [38:0]
 const SL2_SHIFT: u8 = 30;
 const SL1_SHIFT: u8 = 21;
 const SL0_SHIFT: u8 = 12;
-const PAGE_SHIFT: u8 = 12;
 
 fn sl2_index(iova: u64) -> usize {
     ((iova >> SL2_SHIFT) & 0x1ff) as usize

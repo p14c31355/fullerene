@@ -4,7 +4,6 @@
 
 use crate::{DISPLAY_BRIGHTNESS_X100, FB_DIMS, MOUSE_SENSITIVITY, RUNTIME, SOLVENT_CALLBACKS};
 use alloc::vec;
-use alloc::vec::Vec;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use resonance::KeyCode;
 

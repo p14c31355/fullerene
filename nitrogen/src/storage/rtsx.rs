@@ -128,8 +128,6 @@ pub struct SdCardInfo {
 pub struct RtsxController {
     #[allow(dead_code)]
     device: PciDevice,
-    bar0_phys: u64,
-    bar0_size: u32,
     mmio: *mut u8,
     mmio_mapped: bool,
     sd_card: Option<SdCardInfo>,
@@ -532,7 +530,7 @@ impl RtsxController {
 
         log::info!("RTSX: CMD8");
         let sdhc = match self.sd_cmd(CMD8_SEND_IF_COND, 0x1AA, SD_RSP_TYPE_R7, 0) {
-            Ok(rsp) => (rsp as u8 == 0x01 && (rsp >> 8) as u8 == 0xAA),
+            Ok(rsp) => rsp as u8 == 0x01 && (rsp >> 8) as u8 == 0xAA,
             Err(_) => false,
         };
         log::info!("RTSX: SDHC={}", sdhc);
@@ -841,8 +839,6 @@ pub fn init(ctx: &dyn DriverContext) {
 
             *CONTROLLER.lock() = Some(RtsxController {
                 device: dev.clone(),
-                bar0_phys: bar0_addr,
-                bar0_size,
                 mmio,
                 mmio_mapped: true,
                 sd_card: None,

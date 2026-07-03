@@ -23,29 +23,7 @@ use alloc::vec::Vec;
 //  CBW / CSW (Bulk-Only Transport)
 // ============================================================================
 
-/// Command Block Wrapper (31 bytes, BOT spec §5.1).
-#[repr(C, packed)]
-struct Cbw {
-    signature: u32, // 0x43425355 ("USBC")
-    tag: u32,
-    data_len: u32,
-    flags: u8, // 0x80 = IN, 0x00 = OUT
-    lun: u8,
-    cb_len: u8,
-    cb: [u8; 16],
-}
-
 const CBW_SIGNATURE: u32 = 0x43425355;
-
-/// Command Status Wrapper (13 bytes, BOT spec §5.2).
-#[repr(C, packed)]
-struct Csw {
-    signature: u32, // 0x53425355 ("USBS")
-    tag: u32,
-    residue: u32,
-    status: u8, // 0 = success
-}
-
 const CSW_SIGNATURE: u32 = 0x53425355;
 
 // ============================================================================

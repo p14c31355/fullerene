@@ -76,19 +76,19 @@ impl VtdRegisters {
     }
 
     unsafe fn r32(&self, off: usize) -> u32 {
-        read_volatile(self.base.add(off) as *const u32)
+        unsafe { read_volatile(self.base.add(off) as *const u32) }
     }
 
     unsafe fn w32(&self, off: usize, val: u32) {
-        write_volatile(self.base.add(off) as *mut u32, val);
+        unsafe { write_volatile(self.base.add(off) as *mut u32, val) };
     }
 
     unsafe fn r64(&self, off: usize) -> u64 {
-        read_volatile(self.base.add(off) as *const u64)
+        unsafe { read_volatile(self.base.add(off) as *const u64) }
     }
 
     unsafe fn w64(&self, off: usize, val: u64) {
-        write_volatile(self.base.add(off) as *mut u64, val);
+        unsafe { write_volatile(self.base.add(off) as *mut u64, val) };
     }
 
     // ── High-level register accessors ──────────────────────────

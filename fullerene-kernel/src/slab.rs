@@ -29,14 +29,10 @@ struct SlabPage {
     phys: usize,
     /// Virtual address of the mapped page.
     virt: usize,
-    /// Object size for this slab.
-    obj_size: usize,
     /// Head of the free‑list (offset within the page, or `core::usize::MAX` if none).
     free_head: usize,
     /// Number of allocated objects in this page.
     allocated: usize,
-    /// Maximum number of objects per page.
-    capacity: usize,
 }
 
 impl SlabPage {
@@ -63,10 +59,8 @@ impl SlabPage {
         let mut this = Self {
             phys,
             virt,
-            obj_size,
             free_head: usize::MAX,
             allocated: 0,
-            capacity,
         };
 
         // Build the free list: each slot stores the offset of the next free slot.

@@ -38,7 +38,7 @@ pub const MAX_DESCRIPTORS: usize = 2048;
 /// Placed in `.data` to ensure it is page‑mapped at boot by OVMF.
 /// 36 MiB is within OVMF's safe handling limits.
 #[repr(align(4096))]
-pub struct TotalHeapBuffer(pub(crate) [u8; HEAP_TOTAL]);
+pub struct TotalHeapBuffer(#[allow(dead_code)] pub(crate) [u8; HEAP_TOTAL]);
 
 #[unsafe(link_section = ".data")]
 pub static mut TOTAL_HEAP_BUFFER: TotalHeapBuffer = TotalHeapBuffer([0; HEAP_TOTAL]);

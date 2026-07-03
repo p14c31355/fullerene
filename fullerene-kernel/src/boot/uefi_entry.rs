@@ -133,7 +133,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         0x3FD,
         b"DEBUG: [uefi_entry] Calling memory_management_initialization\n",
     );
-    let (physical_memory_offset, heap_start, virtual_heap_start) =
+    let (physical_memory_offset, _heap_start, virtual_heap_start) =
         ctx.memory_management_initialization(kernel_phys_start);
     petroleum::write_serial_bytes(
         0x3F8,

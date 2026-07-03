@@ -14,9 +14,8 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use nitrogen::usb::context::USBContext;
@@ -36,7 +35,6 @@ pub struct UsbDrive {
 // ── Global USB context ────────────────────────────────────
 
 static USB_CTX: spin::Mutex<Option<USBContext>> = spin::Mutex::new(None);
-static CTRL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Busy-wait for approximately `ms` milliseconds using RDTSC.
 fn delay_ms(ms: u64) {

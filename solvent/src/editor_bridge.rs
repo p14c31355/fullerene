@@ -6,7 +6,6 @@ use crate::{
     DEFAULT_COLS, DEFAULT_ROWS, GLYPH_H, GLYPH_W, HEAP_EXTEND_RESERVE, RUNTIME, SOLVENT_CALLBACKS,
 };
 use alloc::vec;
-use alloc::vec::Vec;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use resonance::KeyCode;
 

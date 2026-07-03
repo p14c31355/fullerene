@@ -724,11 +724,6 @@ impl ErrorLogging for UnifiedMemoryManager {
 }
 
 impl UnifiedMemoryManager {
-    fn find_free_virtual_address(&self, size: usize) -> SystemResult<usize> {
-        crate::memory_management::kernel_space::find_free_virtual_address(size as u64)
-            .ok_or(SystemError::MemOutOfMemory)
-    }
-
     fn copy_from_user_space(
         &mut self,
         user_addr: usize,

@@ -25,9 +25,6 @@ use crate::usb::UsbSpeed;
 /// Maximum consecutive port detection failures before marking the port as done.
 pub const MAX_PORT_RETRIES: u32 = 8;
 
-/// Default TSC ticks per millisecond (1 GHz minimum).
-const DEFAULT_TSC_PER_MS: u64 = 1_000_000;
-
 // ============================================================================
 //  Port — data for a single port
 // ============================================================================

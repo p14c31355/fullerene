@@ -3,7 +3,21 @@ use super::numbers::*;
 use super::runtime::{LinuxRuntime, copy_to_user, copy_val_to_user, errno_code};
 use super::types::*;
 
-pub fn sys_uname(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+/// Define a stub Linux syscall that returns `ret`.
+macro_rules! linux_stub {
+    ($name:ident, $ret:expr) => {
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { $ret }
+    };
+}
+
+/// Define a stub Linux syscall that returns `errno_code($err)`.
+macro_rules! linux_stub_errno {
+    ($name:ident, $err:expr) => {
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { errno_code($err) }
+    };
+}
+
+pub fn sys_uname(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let buf = args[0];
     if buf == 0 {
         return errno_code(EFAULT);
@@ -79,7 +93,7 @@ pub fn sys_get_robust_list(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_getrandom(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_getrandom(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let buf = args[0];
     let count = args[1];
     let _flags = args[2] as u32;
@@ -116,7 +130,7 @@ pub fn sys_getrandom(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     count as u64
 }
 
-pub fn sys_prlimit64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_prlimit64(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let _pid = args[0] as i32;
     let resource = args[1] as i32;
     let _new_rlim = args[2];
@@ -150,7 +164,7 @@ pub fn sys_prlimit64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_getrlimit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_getrlimit(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let resource = args[0] as i32;
     let rlim = args[1];
 
@@ -185,30 +199,17 @@ pub fn sys_getrlimit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_setrlimit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0 // Ignore
-}
+linux_stub!(sys_setrlimit, 0);
 
-pub fn sys_sched_yield(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_sched_yield(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     crate::process::yield_current();
     0
 }
 
-pub fn sys_getuid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
-
-pub fn sys_getgid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
-
-pub fn sys_geteuid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
-
-pub fn sys_getegid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
+linux_stub!(sys_getuid, 0);
+linux_stub!(sys_getgid, 0);
+linux_stub!(sys_geteuid, 0);
+linux_stub!(sys_getegid, 0);
 
 pub fn sys_umask(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let new_mask = args[0] as u32;
@@ -217,13 +218,9 @@ pub fn sys_umask(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     old as u64
 }
 
-pub fn sys_capget(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _header = args[0];
-    let _data = args[1];
-    0 // Pretend we have no capabilities
-}
+linux_stub!(sys_capget, 0);
 
-pub fn sys_sysinfo(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_sysinfo(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let info = args[0];
     if info == 0 {
         return errno_code(EFAULT);
@@ -233,17 +230,9 @@ pub fn sys_sysinfo(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_prctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _option = args[0] as i32;
-    let _arg2 = args[1];
-    let _arg3 = args[2];
-    let _arg4 = args[3];
-    let _arg5 = args[4];
-    // Most prctl options can be safely ignored
-    0
-}
+linux_stub!(sys_prctl, 0);
 
-pub fn sys_futex(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_futex(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let _uaddr = args[0];
     let op = args[1] as i32;
     let _val = args[2] as i32;
@@ -266,20 +255,10 @@ pub fn sys_futex(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_statfs(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _path = args[0];
-    let _buf = args[1];
-    // TODO: statfs64 implementation
-    errno_code(ENOSYS)
-}
+linux_stub_errno!(sys_statfs, ENOSYS);
+linux_stub_errno!(sys_fstatfs, ENOSYS);
 
-pub fn sys_fstatfs(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _fd = args[0] as i32;
-    let _buf = args[1];
-    errno_code(ENOSYS)
-}
-
-pub fn sys_sched_getaffinity(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_sched_getaffinity(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let _pid = args[0] as i32;
     let cpusetsize = args[1];
     let mask = args[2];
@@ -301,6 +280,4 @@ pub fn sys_sched_getaffinity(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_sched_setaffinity(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    0
-}
+linux_stub!(sys_sched_setaffinity, 0);

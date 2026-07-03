@@ -14,7 +14,7 @@
 //!                          │
 //!                     handle_syscall()
 //!                          │
-//!                     Runtime::dispatch()
+//!                     LinuxRuntime::dispatch()
 //!                          │
 //!                    ┌─────┴──────┐
 //!                    │  fs  │ mem │
@@ -39,4 +39,4 @@ pub mod time;
 pub mod types;
 
 pub use numbers::*;
-pub use runtime::{DispatchMode, KernelRequest, KernelResponse, LinuxRuntime, Runtime, errno_code};
+pub use runtime::{DispatchMode, LinuxRuntime, errno_code};

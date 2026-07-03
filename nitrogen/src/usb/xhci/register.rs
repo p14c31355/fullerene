@@ -283,7 +283,7 @@ impl OperationalRegisters {
         // Only the explicitly requested set/clear operations should affect
         // non-RW1C bits like PLS, PP, etc.
         let current = self.0.read32(off) & !PORTSC_RW1C_MASK;
-        self.0.write32(off, ((current & !clear) | set));
+        self.0.write32(off, (current & !clear) | set);
     }
 }
 

@@ -171,7 +171,7 @@ pub fn sys_munmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_mprotect(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let addr = args[0];
     let length = args[1];
     let prot = args[2] as i32;
@@ -271,10 +271,10 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     new_brk
 }
 
-pub fn sys_mremap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_mremap(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     errno_code(ENOSYS)
 }
 
-pub fn sys_madvise(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_madvise(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     0
 }

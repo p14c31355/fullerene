@@ -27,11 +27,11 @@ pub fn sys_exit_group(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     sys_exit(rt, args)
 }
 
-pub fn sys_getpid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_getpid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     process::current_pid().map(|pid| pid.0).unwrap_or(0)
 }
 
-pub fn sys_getppid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_getppid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     let pid = process::current_pid().unwrap_or(ProcessId(0));
     process::PROCESS_MANAGER
         .with_process(pid, |p| p.parent_id.map(|id| id.0).unwrap_or(0))
@@ -121,7 +121,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     };
 
-    let mut child_process = process::Process {
+    let child_process = process::Process {
         id: child_pid,
         name: "linux-child",
         state: process::ProcessState::Ready,
@@ -156,14 +156,14 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     child_pid.0
 }
 
-pub fn sys_fork(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_fork(rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     // fork() is clone(SIGCHLD, 0, NULL, NULL, 0)
     sys_clone(rt, &[SIGCHLD as u64, 0, 0, 0, 0, 0])
 }
 
 pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let path_ptr = args[0];
-    let argv_ptr = args[1];
+    let _argv = args[1];
     let _envp = args[2];
 
     let path = match unsafe { copy_user_string(path_ptr, 256) } {
@@ -383,7 +383,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_wait4(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_wait4(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let pid = args[0] as i64;
     let status = args[1];
     let options = args[2] as i32;
@@ -439,21 +439,14 @@ pub fn sys_wait4(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     target_pid.0
 }
 
-pub fn sys_kill(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _pid = args[0] as i32;
-    let _sig = args[1] as i32;
+pub fn sys_kill(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     0 // No-op for now
 }
 
-pub fn sys_tkill(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _tid = args[0] as i32;
-    let _sig = args[1] as i32;
+pub fn sys_tkill(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     0
 }
 
-pub fn sys_tgkill(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
-    let _tgid = args[0] as i32;
-    let _tid = args[1] as i32;
-    let _sig = args[2] as i32;
+pub fn sys_tgkill(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     0
 }

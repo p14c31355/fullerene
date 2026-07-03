@@ -2,11 +2,7 @@
 #![cfg(target_os = "uefi")]
 
 use crate::MEMORY_MAP;
-use crate::interrupts;
-use petroleum::write_serial_bytes;
 use x86_64::VirtAddr;
-
-use crate::boot::uefi_init::UefiInitContext;
 
 // Re-export debug_serial helper from uefi_init (reduces repetitive port I/O in debug logging)
 use super::uefi_init::debug_serial;

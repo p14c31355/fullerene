@@ -204,25 +204,13 @@ struct ExFatBootSector {
     reserved: [u8; 7],
 }
 
-// ── exFAT Directory Entry ───────────────────────────────────
+// exFAT Directory Entry
 //
 // exFAT directory entries are 32 bytes each, grouped into sets.
 // Key entry types:
-#[repr(C, packed)]
-struct ExFatDirEntry {
-    entry_type: u8,     // 0x81 = file, 0x85 = file info, 0xC0 = volume GUID, etc.
-    custom1: [u8; 19],  // varies by type
-    first_cluster: u32, // low 32 bits of first cluster
-    data_length: u64,   // file size
-}
-
-// File entry type codes
 const EXFAT_ENTRY_FILE_INFO: u8 = 0x85; // file info (name follows)
 const EXFAT_ENTRY_STREAM_EXT: u8 = 0xC0; // stream extension (contains file size)
 const EXFAT_ENTRY_FILE_NAME: u8 = 0xC1; // file name (continued)
-const EXFAT_ENTRY_UP_CASE: u8 = 0x81; // up-case table (root dir only)
-const EXFAT_ENTRY_BITMAP: u8 = 0x81; // allocation bitmap (root dir only)
-const EXFAT_ENTRY_VOLUME_LABEL: u8 = 0x83; // volume label
 
 pub fn is_exfat(boot: &[u8; 512]) -> bool {
     &boot[3..11] == b"EXFAT   "
@@ -238,8 +226,6 @@ pub struct FatFileSystem {
     device: Box<dyn BlockDevice>,
     bps: u32, // bytes per sector
     spc: u32, // sectors per cluster
-    bps_log2: u8,
-    spc_log2: u8,
     reserved_sectors: u32,
     num_fats: u32,
     sectors_per_fat: u32,
@@ -268,14 +254,8 @@ impl FatFileSystem {
                 inner: device,
                 offset: lba,
             };
-            return Self::new_at(Box::new(wrapped), 0);
+            return Self::new(Box::new(wrapped));
         }
-        Self::new_at(device, 0)
-    }
-
-    /// Create from device at a specific LBA offset (relative to the device).
-    fn new_at(device: Box<dyn BlockDevice>, _lba_offset: u32) -> Result<Self, &'static str> {
-        // Delegate to `new` which reads LBA 0 of the given device
         Self::new(device)
     }
 
@@ -312,8 +292,6 @@ impl FatFileSystem {
                 device,
                 bps,
                 spc,
-                bps_log2: bps_shift as u8,
-                spc_log2: spc_shift as u8,
                 reserved_sectors: reserved,
                 num_fats,
                 sectors_per_fat,
@@ -357,8 +335,6 @@ impl FatFileSystem {
                 device,
                 bps,
                 spc,
-                bps_log2: (bps.trailing_zeros()) as u8,
-                spc_log2: (spc.trailing_zeros()) as u8,
                 reserved_sectors: reserved,
                 num_fats,
                 sectors_per_fat,
@@ -573,34 +549,6 @@ impl FatFileSystem {
         }
     }
 
-    /// Read entire file content into a Vec<u8> starting from cluster.
-    fn read_file_data(&mut self, cluster: u32, size: u32) -> Result<Vec<u8>, &'static str> {
-        let mut data = Vec::with_capacity(size as usize);
-        let mut remaining = size;
-        let mut clus = cluster;
-        loop {
-            let sector = self.cluster_to_sector(clus);
-            for i in 0..self.spc {
-                if remaining == 0 {
-                    break;
-                }
-                let to_read = min(remaining, self.bps);
-                self.device
-                    .read_sectors(sector + i, 1, &mut self.sector_buf)?;
-                data.extend_from_slice(&self.sector_buf[..to_read as usize]);
-                remaining -= to_read;
-            }
-            if remaining == 0 {
-                break;
-            }
-            match self.read_fat_entry(clus) {
-                Ok(next) if !Self::is_end_of_chain(next) => clus = next,
-                _ => break,
-            }
-        }
-        Ok(data)
-    }
-
     /// Write a 32-bit entry into the FAT table.
     fn write_fat_entry(&mut self, cluster: u32, value: u32) -> Result<(), &'static str> {
         let fat_offset = cluster * 4;
@@ -657,69 +605,6 @@ impl FatFileSystem {
             cluster += 1;
         }
         Err("no free clusters")
-    }
-
-    /// Allocate a chain of `count` clusters and link them.
-    /// Returns the first cluster number.
-    fn allocate_cluster_chain(&mut self, count: u32) -> Result<u32, &'static str> {
-        if count == 0 {
-            return Err("zero cluster allocation");
-        }
-        let first = self.allocate_one_cluster()?;
-        if count == 1 {
-            return Ok(first);
-        }
-
-        let mut allocated = vec![first];
-        let mut prev = first;
-
-        // Try to allocate all clusters; track them for rollback on failure
-        for _ in 1..count {
-            match self.allocate_one_cluster() {
-                Ok(next) => {
-                    allocated.push(next);
-                    if let Err(e) = self.write_fat_entry(prev, next) {
-                        // Rollback: free all allocated clusters
-                        for &clus in &allocated {
-                            let _ = self.write_fat_entry(clus, 0);
-                        }
-                        return Err(e);
-                    }
-                    prev = next;
-                }
-                Err(e) => {
-                    // Rollback: free all allocated clusters
-                    for &clus in &allocated {
-                        let _ = self.write_fat_entry(clus, 0);
-                    }
-                    return Err(e);
-                }
-            }
-        }
-
-        // Write final EOC marker
-        let eoc = if self.is_exfat { 0xFFFFFFFFu32 } else { 0x0FFFFFFFu32 };
-        if let Err(e) = self.write_fat_entry(prev, eoc) {
-            // Rollback: free all allocated clusters
-            for &clus in &allocated {
-                let _ = self.write_fat_entry(clus, 0);
-            }
-            return Err(e);
-        }
-        Ok(first)
-    }
-
-    /// Return the last cluster in a chain (the EOC marker).
-    fn walk_to_end(&mut self, mut cluster: u32) -> Result<u32, &'static str> {
-        if cluster == 0 {
-            return Err("null cluster");
-        }
-        loop {
-            match self.read_fat_entry(cluster) {
-                Ok(next) if !Self::is_end_of_chain(next) => cluster = next,
-                _ => return Ok(cluster),
-            }
-        }
     }
 
     /// Write data to file starting at cluster (0 = unallocated).
@@ -929,7 +814,6 @@ impl FatFileSystem {
             (name_utf16.len() + 14) / 15
         };
         let total_entries = 2 + name_entry_count; // File Info + Stream Ext + File Name(s)
-        let entries_per_sector = (self.bps / 32) as usize;
 
         // Find a run of consecutive free slots
         let (start_sector, start_off) = self.find_free_exfat_run(dir_cluster, total_entries)?;
@@ -1527,7 +1411,6 @@ impl FileSystem for FatFileSystem {
         let offset = self.handles[pos].2;
         let file_size = self.handles[pos].3;
         let to_read = min(buf.len() as u32, file_size.saturating_sub(offset));
-        let mut total = 0usize;
         let mut clus = cluster;
         let mut remaining_offset = offset;
         loop {

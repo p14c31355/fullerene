@@ -120,19 +120,21 @@ unsafe fn syscall_insn(
     arg6: u64,
 ) -> u64 {
     let result: u64;
-    core::arch::asm!(
-        "syscall",
-        in("rax") syscall_num,
-        in("rdi") arg1,
-        in("rsi") arg2,
-        in("rdx") arg3,
-        in("r10") arg4,
-        in("r8") arg5,
-        in("r9") arg6,
-        lateout("rax") result,
-        out("rcx") _,
-        out("r11") _,
-    );
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            in("rax") syscall_num,
+            in("rdi") arg1,
+            in("rsi") arg2,
+            in("rdx") arg3,
+            in("r10") arg4,
+            in("r8") arg5,
+            in("r9") arg6,
+            lateout("rax") result,
+            out("rcx") _,
+            out("r11") _,
+        );
+    }
     result
 }
 
@@ -159,7 +161,7 @@ pub unsafe fn syscall(
         }
     }
     // Fallback: traditional syscall instruction (traps to kernel)
-    syscall_insn(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6)
+    unsafe { syscall_insn(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6) }
 }
 
 /// Simple write syscall wrapper

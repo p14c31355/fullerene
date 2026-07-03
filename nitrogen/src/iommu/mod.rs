@@ -21,8 +21,6 @@ struct IovaInterval {
 
 /// Simple interval-based IOVA allocator.
 struct IovaAllocator {
-    base: u64,
-    max: u64,
     free: Vec<IovaInterval>,
 }
 
@@ -33,8 +31,6 @@ impl IovaAllocator {
         let max_addr = (1u64 << iova_bits.min(48)) - 1;
         let start = 0x10_0000u64; // 1MB
         Self {
-            base: start,
-            max: max_addr,
             free: alloc::vec![IovaInterval { start, end: max_addr }],
         }
     }
@@ -116,7 +112,7 @@ impl IommuEngine {
         let registers = VtdRegisters::new(mmio_base);
 
         // Build root table
-        let mut root_table = IommuRootTable::new(ctx)?;
+        let root_table = IommuRootTable::new(ctx)?;
 
         // Build IOMMU page table for domain 0
         let page_table = IommuPageTable::new(ctx, 0)?;

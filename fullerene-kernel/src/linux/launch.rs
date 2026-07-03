@@ -1,7 +1,6 @@
 // Linux binary launcher
 use crate::loader::LoadError;
-use crate::process::{self, ProcessId};
-use alloc::vec::Vec;
+use crate::process::ProcessId;
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
@@ -25,7 +24,7 @@ pub fn launch_linux_from_slice(data: &[u8], name: &str) -> Result<ProcessId, Loa
 /// Launch a Linux ELF binary from raw bytes, extracting filename from path.
 pub fn launch_linux_from_data(data: &[u8], name: &str) -> Result<ProcessId, LoadError> {
     // Use the existing ELF loader with is_linux=true
-    let name = name.rsplit('/').next().unwrap_or(name);
+    let _ = name.rsplit('/').next().unwrap_or(name);
     // We need a static name. Use a simple approach.
     let static_name = "linux-app";
     crate::loader::load_program_with_runtime(data, static_name, true)

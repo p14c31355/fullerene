@@ -2,7 +2,6 @@
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
 use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, truncate_to_chars};
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -295,30 +294,6 @@ pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
     rt.settings_window = Some(id);
     rt.settings_dirty = true;
     rt.desktop.force_full_redraw();
-    rt.frame_due = true;
-}
-
-/// Open an info window with custom text and coordinates.
-fn open_info_window_raw(
-    rt: &mut RuntimeState,
-    title: &str,
-    x: i32,
-    y: i32,
-    cols: u32,
-    extra_rows: u32,
-    bg: u32,
-    fg: u32,
-    text: &str,
-) {
-    let rows = (text.lines().count() as u32) + extra_rows;
-    let id = rt
-        .desktop
-        .wm
-        .create_titled_window(x, y, cols * GLYPH_W, rows * GLYPH_H, bg, title);
-    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        let _ = render_text_into_surface(&mut w.surface, text, cols, fg, bg);
-    }
-    rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
 }
 
