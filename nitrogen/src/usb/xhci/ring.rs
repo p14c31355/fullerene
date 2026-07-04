@@ -5,6 +5,7 @@
 //! for command submission, transfer scheduling, and event reporting.
 
 use crate::DriverContext;
+use crate::mmio;
 use crate::usb::dma;
 use core::ptr;
 
@@ -148,9 +149,14 @@ impl Ring {
     pub fn enqueue(&mut self, mut trb: Trb) {
         trb.flags = (trb.flags & !trb_flag::CYCLE) | self.cycle;
         let entries = self.dma.as_mut();
+        let enq_idx = self.enq;
         unsafe {
-            ptr::write_volatile(&mut entries[self.enq], trb);
+            ptr::write_volatile(&mut entries[enq_idx], trb);
         }
+        // Flush the TRB from cache so the xHC sees the latest data via DMA.
+        let trb_addr = &entries[enq_idx] as *const Trb as *const u8;
+        mmio::cache_flush(trb_addr);
+
         self.enq += 1;
         if self.enq >= self.len - 1 {
             let link = self.len - 1;
@@ -160,6 +166,8 @@ impl Ring {
                     (entries[link].flags & !trb_flag::CYCLE) | self.cycle,
                 );
             }
+            let link_addr = &entries[link].flags as *const u32 as *const u8;
+            mmio::cache_flush(link_addr);
             self.enq = 0;
             self.cycle ^= 1;
         }

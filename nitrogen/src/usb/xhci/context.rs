@@ -1087,6 +1087,10 @@ impl XhciContext {
     /// event's completion code is not Success (xHCI spec §6.4.2.1).
     fn send_cmd(&mut self, trb: Trb) -> Result<u32, &'static str> {
         self.rings.command.enqueue(trb);
+        // Write barrier: ensure enqueued TRB is visible to the xHC
+        // via DMA before ringing the doorbell (MMIO).  Without this,
+        // the xHC may read stale TRB data from cache.
+        crate::mmio::write_barrier();
         self.registers.doorbell.ring(0, 0);
         let ev = wait_event(&mut self.rings.event, &self.registers.runtime, 5_000_000)?;
         if ev.completion_code() != COMP_SUCCESS {
@@ -1187,6 +1191,8 @@ impl XhciContext {
             );
         }
 
+        // Ensure all EP0 TRB writes are visible to the xHC before doorbell
+        crate::mmio::write_barrier();
         // Doorbell EP0 (DCI=1)
         self.registers.doorbell.ring(slot_id, 1);
         let res = self.wait_event(5_000_000);
@@ -1281,6 +1287,8 @@ impl XhciContext {
             ep_num * 2 + u32::from(is_in)
         };
 
+        // Ensure all bulk TRB writes are visible to the xHC before doorbell
+        crate::mmio::write_barrier();
         self.registers.doorbell.ring(slot_id, db_stream);
         let res = self.wait_event(5_000_000);
 

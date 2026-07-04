@@ -17,6 +17,8 @@ use spin::Mutex;
 
 use crate::driver_context::DriverContext;
 use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
+use crate::pci_health::PciHealth;
+use crate::mmio::MemRegion;
 
 // ── RTSX Host Controller Registers (byte offsets from BAR0) ──
 #[allow(dead_code)]
@@ -164,6 +166,11 @@ pub struct RtsxController {
     upstream_bridge: Option<(u8, u8, u8)>,
     /// Whether a card was detected in the previous poll cycle.
     card_was_present: bool,
+    /// PCIe health monitor — verifies D0 + link status before MMIO.
+    health: PciHealth,
+    /// MMIO region wrapper with proper access barriers.
+    #[allow(dead_code)]
+    mmio_region: MemRegion,
 }
 
 unsafe impl Send for RtsxController {}
@@ -184,94 +191,26 @@ impl RtsxController {
         unsafe { ptr::write_volatile(self.mmio.add(off as usize) as *mut u16, val) }
     }
 
-    /// Check device accessibility via config space (port I/O, safe).
+    /// Check device accessibility via `PciHealth` (config space, safe).
     /// Returns `Err` with a reason if the device cannot be safely accessed
-    /// via MMIO.  Checks:
-    ///
-    /// 1. Vendor ID sanity (device must be on the bus).
-    /// 2. Power Management state (must be D0 — D3hot/D3cold reads hang).
-    /// 3. PCIe link status (Negotiated Speed must be non-zero).
-    fn ensure_device_accessible(&self) -> Result<(), &'static str> {
-        let bus = self.device.bus;
-        let dev = self.device.device;
-        let func = self.device.function;
-
-        // 1. Vendor check
-        let vendor = crate::pci::PciConfigSpace::read_config_word(bus, dev, func, 0x00);
-        if vendor == 0xFFFF || vendor == 0x0000 || vendor != self.device.vendor_id {
-            log::warn!("RTSX: device not on PCI bus (vendor={:#06x})", vendor);
-            return Err("device off PCI bus");
-        }
-
-        // 2. Walk capabilities list to find PM cap (0x01) and PCIe cap (0x10).
-        let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, 0x34);
-        if cap_ptr == 0 {
-            log::warn!("RTSX: no PCI capabilities list");
-            return Err("no capabilities");
-        }
-        let mut off = cap_ptr;
-        let mut found_pm = false;
-        let mut found_pcie = false;
-        for _ in 0..48 {
-            // Tighten bounds check: off + 0x12 must not overflow config space (256 bytes).
-            // PCIe capability reads at off+0x12, so off must be <= 0xED (256 - 19).
-            if off < 0x40 || off > 0xED {
-                break;
+    /// via MMIO.
+    fn ensure_device_accessible(&mut self) -> Result<(), &'static str> {
+        match self.health.pre_mmio_access() {
+            Ok(()) => {
+                log::info!("RTSX: device accessible (D0, link up)");
+                Ok(())
             }
-            let cap_id = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off);
-
-            match cap_id {
-                0x01 => {
-                    // Power Management capability
-                    found_pm = true;
-                    // PMCSR at cap_offset + 4, bits 1:0 = power state.
-                    let pmcsr =
-                        crate::pci::PciConfigSpace::read_config_word(bus, dev, func, off + 4);
-                    let pstate = pmcsr & 0x3;
-                    if pstate != 0 {
-                        log::warn!("RTSX: device not in D0 (state={})", pstate);
-                        return Err("device not in D0");
-                    }
-                    log::info!("RTSX: power state D0 confirmed");
-                }
-                0x10 => {
-                    // PCI Express capability
-                    found_pcie = true;
-                    let lnk_sts =
-                        crate::pci::PciConfigSpace::read_config_word(bus, dev, func, off + 0x12);
-                    // Negotiated Link Speed in bits 3:0 (Link Status register bits 3:0)
-                    let speed = lnk_sts & 0xF;
-                    if speed == 0 {
-                        log::warn!("RTSX: PCIe link down (lnk_sts={:#06x})", lnk_sts);
-                        return Err("PCIe link down");
-                    }
-                    log::info!("RTSX: PCIe link up (speed={})", speed);
-                }
-                _ => {}
+            Err(e) => {
+                let msg = match e {
+                    crate::pci_health::PciHealthError::DeviceGone => "device off PCI bus",
+                    crate::pci_health::PciHealthError::NotD0 => "device not in D0",
+                    crate::pci_health::PciHealthError::LinkDown => "PCIe link down",
+                    _ => "device not accessible",
+                };
+                log::warn!("RTSX: {}", msg);
+                Err(msg)
             }
-
-            if found_pm && found_pcie {
-                return Ok(());
-            }
-
-            let next = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off + 1);
-            // Self-loop check: some broken hardware can return the same
-            // offset as the next pointer.
-            if next == 0 || next == off {
-                break;
-            }
-            off = next;
         }
-
-        if !found_pm {
-            log::warn!("RTSX: Power Management capability not found");
-            return Err("PM cap not found");
-        }
-        if !found_pcie {
-            log::warn!("RTSX: PCIe capability not found");
-            return Err("PCIe cap not found");
-        }
-        Ok(())
     }
 
     // ── PPBUF data transfer ───────────────────────────────────
@@ -302,7 +241,7 @@ impl RtsxController {
 
     // ── RTSX Hardware Init (MMIO access starts here) ──────────
 
-    fn init_hardware(&self) -> bool {
+    fn init_hardware(&mut self) -> bool {
         // Before any MMIO access, verify the device is alive via PCI config
         // space (port I/O, never hangs).  If the device is in D3cold or the
         // PCIe link is down, this is our last safe bail-out point before
@@ -1061,6 +1000,15 @@ pub fn init(ctx: &dyn DriverContext) {
                 return;
             }
 
+            // SAFETY: mmio points to a valid UC-mapped MMIO region (BAR0, 4KB).
+            let mmio_region = unsafe { MemRegion::new(mmio, bar0_size as usize) };
+            let health = if let Some(ref bridge) = upstream_bridge {
+                PciHealth::new(&dev)
+                    .with_upstream_bridge(bridge.bus, bridge.device, bridge.function)
+            } else {
+                PciHealth::new(&dev)
+            };
+
             *CONTROLLER.lock() = Some(RtsxController {
                 device: dev.clone(),
                 mmio,
@@ -1068,6 +1016,8 @@ pub fn init(ctx: &dyn DriverContext) {
                 sd_card: None,
                 upstream_bridge: upstream_bridge.map(|b| (b.bus, b.device, b.function)),
                 card_was_present: false,
+                health,
+                mmio_region,
             });
             log::info!("RTSX: controller registered (MMIO deferred)");
             return;
