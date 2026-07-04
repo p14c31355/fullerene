@@ -1190,8 +1190,9 @@ fn tick_core(now: u64) {
             // Sync AP list to desktop
             let aps = rt.net_manager.get_aps().to_vec();
             let status = rt.net_manager.get_status().clone();
-            rt.desktop.update_ap_list(aps, status);
-            rt.frame_due = true;
+            if rt.desktop.update_ap_list(aps, status) {
+                rt.frame_due = true;
+            }
         }
     }
 

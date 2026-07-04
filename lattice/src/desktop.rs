@@ -466,13 +466,18 @@ impl Desktop {
     }
 
     /// Update the access point list for the network menu.
-    pub fn update_ap_list(&mut self, aps: alloc::vec::Vec<ApDisplay>, status: NetStatus) {
-        self.ap_list = aps;
-        self.net_status = status;
-        self.wifi_networks_visible = match &self.net_status {
-            NetStatus::NoDevice => false,
-            _ => true,
-        };
+    /// Returns `true` if the list or status actually changed.
+    pub fn update_ap_list(&mut self, aps: alloc::vec::Vec<ApDisplay>, status: NetStatus) -> bool {
+        let changed = self.ap_list != aps || self.net_status != status;
+        if changed {
+            self.ap_list = aps;
+            self.net_status = status;
+            self.wifi_networks_visible = match &self.net_status {
+                NetStatus::NoDevice => false,
+                _ => true,
+            };
+        }
+        changed
     }
 
     /// Dismiss the active menu.

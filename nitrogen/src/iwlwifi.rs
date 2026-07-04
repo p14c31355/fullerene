@@ -532,7 +532,7 @@ impl IwlWifiDevice {
         // of the embedded firmware blob, so a tampered payload is rejected
         // before any section is uploaded to the device.
         let crc_computed = Self::crc32(fw_data);
-        if fw_data.as_ptr() == EMBEDDED_FW.as_ptr() && crc_computed != EMBEDDED_FW_CRC32 {
+        if crc_computed != EMBEDDED_FW_CRC32 {
             log::warn!(
                 "iwlwifi: firmware checksum mismatch (computed={:#010x}, expected={:#010x})",
                 crc_computed, EMBEDDED_FW_CRC32
@@ -1082,11 +1082,14 @@ impl IwlWifiDevice {
 
                             // Start DHCP
                             self.dhcp = Some(DhcpClient::new(self.mac));
-                            let _discover = self.dhcp.as_mut().unwrap().build_discover();
-                            // Wrap and send as data frame
-                            log::info!(
-                                "iwlwifi: associated (AID={}), starting DHCP", aid
-                            );
+                            if let Some(ref mut dhcp) = self.dhcp {
+                                let discover = dhcp.build_discover();
+                                log::info!(
+                                    "iwlwifi: associated (AID={}), sending DHCP discover", aid
+                                );
+                                // Wrap and send as 802.11 data frame
+                                let _ = self.send_raw_80211_frame(&discover);
+                            }
                         } else {
                             self.wifi_conn.status = WifiStatus::Error;
                             log::warn!("iwlwifi: assoc failed with status {}", status_code);
@@ -1117,6 +1120,48 @@ impl IwlWifiDevice {
                                     let _ = self.send_raw_80211_frame(&reply);
                                 }
                             }
+                        } else if ether_type == 0x0800 {
+                            // IPv4 - check for DHCP (UDP port 68)
+                            let dhcp_handled = if data.len() >= 20 + 8 {
+                                let ip_ver_ihl = data[0];
+                                let ihl = (ip_ver_ihl & 0x0F) as usize * 4;
+                                let protocol = data[9];
+                                if protocol == 17 && data.len() >= ihl + 8 {
+                                    let dst_port = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
+                                    if dst_port == 68 {
+                                        if let Some(ref mut dhcp) = self.dhcp {
+                                            let dhcp_data = &data[ihl + 8..];
+                                            if let Ok(msg_type) = dhcp.parse_response(dhcp_data) {
+                                                log::info!("iwlwifi: DHCP {} received", msg_type as u8);
+                                                if msg_type == bonder::dhcp::DhcpMessageType::Offer {
+                                                    let req = dhcp.build_request(dhcp.lease.ip_address, dhcp.lease.server_id);
+                                                    let _ = self.send_raw_80211_frame(&req);
+                                                } else if msg_type == bonder::dhcp::DhcpMessageType::Ack {
+                                                    self.ip_address = dhcp.lease.ip_address;
+                                                    self.subnet_mask = dhcp.lease.subnet_mask;
+                                                    self.gateway = dhcp.lease.router;
+                                                    self.dns_server = dhcp.lease.dns_server;
+                                                    log::info!("iwlwifi: IP address assigned: {:?}", self.ip_address);
+                                                }
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        false
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            if !dhcp_handled {
+                                self.rx_queue.push_back(data.to_vec());
+                            }
                         } else {
                             self.rx_queue.push_back(data.to_vec());
                         }
@@ -1135,15 +1180,30 @@ impl IwlWifiDevice {
 
     /// Periodic tick - process pending events, scan results, etc.
     pub fn tick(&mut self) {
+        // Poll firmware for events
+        let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
+        if int_cause != 0 && int_cause != 0xFFFF_FFFF {
+            unsafe {
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+            }
+
+            // Check for RX
+            if (int_cause & (1 << 18)) != 0 {
+                self.rx_head = unsafe {
+                    core::ptr::read_volatile(self.mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize))
+                } as usize;
+            }
+        }
+
         // Process any pending frames in the RX queue
         while self.rx_tail != self.rx_head {
-            let desc_idx = self.rx_tail % RX_QUEUE_SIZE;
+            let desc_idx = self.rx_tail;
             let desc = &self.rx_dma_ring[desc_idx];
             if desc.len > 0 && desc_idx < self.rx_bufs.len() {
                 let frame_data = self.rx_bufs[desc_idx][..desc.len as usize].to_vec();
                 self.process_rx_frame(&frame_data);
             }
-            self.rx_tail = self.rx_tail.wrapping_add(1);
+            self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
         }
 
         // Check for scan completion
@@ -1157,21 +1217,6 @@ impl IwlWifiDevice {
                     "iwlwifi: scan complete ({} APs found)",
                     self.scan_results.len()
                 );
-            }
-        }
-
-        // Poll firmware for events
-        let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
-        if int_cause != 0 && int_cause != 0xFFFF_FFFF {
-            unsafe {
-                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
-            }
-
-            // Check for RX
-            if (int_cause & (1 << 18)) != 0 {
-                self.rx_head = unsafe {
-                    core::ptr::read_volatile(self.mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize))
-                } as usize;
             }
         }
     }

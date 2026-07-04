@@ -58,6 +58,7 @@ pub const OPTION_END: u8 = 255;
 
 /// DHCP header (fixed part, 240 bytes).
 #[repr(C, packed)]
+#[derive(Clone, Copy)]
 pub struct DhcpHeader {
     pub op: u8,
     pub htype: u8,
@@ -287,18 +288,17 @@ impl DhcpClient {
             return Err("Response too short");
         }
 
-        let header = unsafe { &*(data.as_ptr() as *const DhcpHeader) };
-
-        if header.magic != DHCP_MAGIC_COOKIE {
+        let header = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const DhcpHeader) };
+        let magic = header.magic;
+        if magic != DHCP_MAGIC_COOKIE {
             return Err("Invalid magic cookie");
         }
-
         let op = header.op;
         if op != 2 {
             return Err("Not a BOOTREPLY");
         }
-
-        if header.xid != self.xid.to_be_bytes() {
+        let xid = header.xid;
+        if xid != self.xid.to_be_bytes() {
             return Err("Transaction ID mismatch");
         }
 

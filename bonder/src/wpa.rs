@@ -158,8 +158,15 @@ impl WpaSupplicant {
             let success = 0;
             if success == 0 {
                 // Fallback to TSC if RDRAND is not supported or fails
-                let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-                val = tsc ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+                #[cfg(target_arch = "x86_64")]
+                {
+                    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                    val = tsc ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    val = (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+                }
             }
 
             // xorshift64* PRNG to whiten the sample

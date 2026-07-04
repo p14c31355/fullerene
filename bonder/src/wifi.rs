@@ -321,7 +321,7 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
         return None;
     }
 
-    let header = unsafe { &*(frame.as_ptr() as *const WifiFrameHeader) };
+    let header = unsafe { core::ptr::read_unaligned(frame.as_ptr() as *const WifiFrameHeader) };
 
     let subtype = header.mgmt_subtype()?;
     if !matches!(subtype, MgmtSubtype::Beacon | MgmtSubtype::ProbeResponse) {
@@ -441,7 +441,7 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
     }
 
     Some(BeaconFrame {
-        header: *header,
+        header,
         timestamp,
         beacon_interval,
         capability,

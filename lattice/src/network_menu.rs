@@ -5,7 +5,6 @@
 
 use crate::font;
 use alloc::string::String;
-use alloc::format;
 
 // ── Constants ──────────────────────────────────────────────────
 
@@ -48,7 +47,7 @@ const PWD_INPUT_TEXT: u32 = 0xFFFFFF;
 // ── Scan result for display ──────────────────────────────────
 
 /// Display-friendly access point info.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApDisplay {
     pub ssid: String,
     pub signal_bars: u8,
@@ -59,7 +58,7 @@ pub struct ApDisplay {
 // ── Network status ────────────────────────────────────────────
 
 /// Overall network status for menu display.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetStatus {
     NoDevice,
     Scanning,
@@ -191,35 +190,10 @@ pub fn render_password_dialog(
     }
 
     // Title
-    let title = alloc::format!("Connect to {}", ssid);
     let title_x = dialog_x + 10;
     let title_y = dialog_y + 10;
-
-    for (i, ch) in title.bytes().enumerate() {
-        if ch < 32 || ch > 126 {
-            continue;
-        }
-        let glyph = font::glyph_fast(ch);
-        let gx = title_x + (i as u32) * 8;
-        for row in 0..12 {
-            let py = title_y + row;
-            if py >= fb_height {
-                continue;
-            }
-            for col in 0..8 {
-                let px = gx + col;
-                if px >= fb_width {
-                    continue;
-                }
-                if glyph.pixel(row, col) {
-                    let idx = (py as usize) * fw + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = PWD_TEXT;
-                    }
-                }
-            }
-        }
-    }
+    render_menu_text(fb, fb_width, fb_height, title_x, title_y, "Connect to ", PWD_TEXT);
+    render_menu_text(fb, fb_width, fb_height, title_x + 11 * 8, title_y, ssid, PWD_TEXT);
 
     // Password input field
     let input_x = dialog_x + (PWD_DIALOG_W - PWD_INPUT_W) / 2;
@@ -249,17 +223,11 @@ pub fn render_password_dialog(
     }
 
     // Draw password text (masked with *)
-    let display_pass: String = core::iter::repeat('*')
-        .take(password.len())
-        .collect();
     let text_x = input_x + 4;
     let text_y = input_y + 6;
 
-    for (i, ch) in display_pass.bytes().enumerate() {
-        if ch < 32 || ch > 126 {
-            continue;
-        }
-        let glyph = font::glyph_fast(ch);
+    let glyph = font::glyph_fast(b'*');
+    for i in 0..password.len() {
         let gx = text_x + (i as u32) * 8;
         for row in 0..12 {
             let py = text_y + row;
@@ -416,22 +384,44 @@ pub fn render_network_menu(
         }
     }
 
-    // Status line - use a pre-allocated String to avoid lifetime issues
-    let status_buf = match status {
-        NetStatus::NoDevice => String::from("No WiFi device"),
-        NetStatus::Scanning => String::from("Scanning..."),
-        NetStatus::Disconnected => String::from("Select a network:"),
-        NetStatus::Connecting(ssid) => format!("Connecting to {}...", ssid),
-        NetStatus::Connected(ssid, ip) => format!("Connected to {} ({})", ssid, ip),
-        NetStatus::Error(e) => format!("Error: {}", e),
-    };
-
-    render_menu_text(
-        fb, fb_width, fb_height,
-        menu_x + 6, menu_y + 4,
-        &status_buf,
-        NET_MENU_TEXT,
-    );
+    // Status line
+    match status {
+        NetStatus::NoDevice => {
+            render_menu_text(fb, fb_width, fb_height, menu_x + 6, menu_y + 4, "No WiFi device", NET_MENU_TEXT);
+        }
+        NetStatus::Scanning => {
+            render_menu_text(fb, fb_width, fb_height, menu_x + 6, menu_y + 4, "Scanning...", NET_MENU_TEXT);
+        }
+        NetStatus::Disconnected => {
+            render_menu_text(fb, fb_width, fb_height, menu_x + 6, menu_y + 4, "Select a network:", NET_MENU_TEXT);
+        }
+        NetStatus::Connecting(ssid) => {
+            let mut cur_x = menu_x + 6;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "Connecting to ", NET_MENU_TEXT);
+            cur_x += 14 * 8;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ssid, NET_MENU_TEXT);
+            cur_x += (ssid.len() as u32) * 8;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "...", NET_MENU_TEXT);
+        }
+        NetStatus::Connected(ssid, ip) => {
+            let mut cur_x = menu_x + 6;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "Connected to ", NET_MENU_TEXT);
+            cur_x += 13 * 8;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ssid, NET_MENU_TEXT);
+            cur_x += (ssid.len() as u32) * 8;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, " (", NET_MENU_TEXT);
+            cur_x += 2 * 8;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ip, NET_MENU_TEXT);
+            cur_x += (ip.len() as u32) * 8;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ")", NET_MENU_TEXT);
+        }
+        NetStatus::Error(e) => {
+            let mut cur_x = menu_x + 6;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "Error: ", NET_MENU_TEXT);
+            cur_x += 7 * 8;
+            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, e, NET_MENU_TEXT);
+        }
+    }
 
     // Draw each AP
     for (i, ap) in aps.iter().enumerate() {
