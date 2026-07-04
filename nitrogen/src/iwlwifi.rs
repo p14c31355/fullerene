@@ -1200,7 +1200,8 @@ impl IwlWifiDevice {
             let desc_idx = self.rx_tail;
             let desc = &self.rx_dma_ring[desc_idx];
             if desc.len > 0 && desc_idx < self.rx_bufs.len() {
-                let frame_data = self.rx_bufs[desc_idx][..desc.len as usize].to_vec();
+                let len = (desc.len as usize).min(self.rx_bufs[desc_idx].len());
+                let frame_data = self.rx_bufs[desc_idx][..len].to_vec();
                 self.process_rx_frame(&frame_data);
             }
             self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
