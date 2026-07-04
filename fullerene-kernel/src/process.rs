@@ -111,9 +111,16 @@ struct HandleEntry {
     object: KernelObject,
 }
 
+/// A slot that retains its generation across free/alloc cycles for
+/// stale-handle (use-after-free) protection.
+struct HandleSlot {
+    generation: u16,
+    entry: Option<HandleEntry>,
+}
+
 /// Per-process handle table using slot-based allocation with generation counters.
 pub struct HandleTable {
-    slots: alloc::vec::Vec<Option<HandleEntry>>,
+    slots: alloc::vec::Vec<HandleSlot>,
     #[allow(dead_code)]
     free_head: Option<u16>,
     #[allow(dead_code)]
@@ -132,32 +139,30 @@ impl HandleTable {
     /// Allocate a new handle slot. Returns the Handle with owner-default permissions.
     pub fn alloc(&mut self, object: KernelObject) -> Handle {
         let slot_idx = self.find_free_slot();
-        let generation = match &self.slots[slot_idx as usize] {
-            Some(entry) => entry.generation.wrapping_add(1),
-            None => 1,
-        };
+        let slot = &mut self.slots[slot_idx as usize];
+        slot.generation = slot.generation.wrapping_add(1);
         let perms = (HandlePerms::READ
             | HandlePerms::WRITE
             | HandlePerms::SIGNAL
             | HandlePerms::DUPLICATE
             | HandlePerms::TRANSFER)
             .bits();
-        self.slots[slot_idx as usize] = Some(HandleEntry {
-            generation,
+        slot.entry = Some(HandleEntry {
+            generation: slot.generation,
             permissions: perms,
             object,
         });
-        Handle::new(slot_idx, generation, perms)
+        Handle::new(slot_idx, slot.generation, perms)
     }
 
     fn find_free_slot(&mut self) -> u16 {
         for i in 0..self.slots.len() {
-            if self.slots[i].is_none() {
+            if self.slots[i].entry.is_none() {
                 return i as u16;
             }
         }
         let idx = self.slots.len() as u16;
-        self.slots.push(None);
+        self.slots.push(HandleSlot { generation: 0, entry: None });
         idx
     }
 
@@ -165,42 +170,44 @@ impl HandleTable {
     pub fn get_mut(&mut self, handle: Handle) -> Option<&mut KernelObject> {
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        match self.slots.get_mut(slot) {
-            Some(Some(entry)) if entry.generation == gen_val => {
-                entry.permissions = handle.permissions();
-                Some(&mut entry.object)
-            }
-            _ => None,
-        }
+        self.slots.get_mut(slot)
+            .and_then(|s| s.entry.as_mut())
+            .filter(|e| e.generation == gen_val)
+            .map(|e| &mut e.object)
     }
 
     /// Look up a handle (immutable), validating generation counter.
     pub fn get(&self, handle: Handle) -> Option<&KernelObject> {
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        match self.slots.get(slot) {
-            Some(Some(entry)) if entry.generation == gen_val => Some(&entry.object),
-            _ => None,
-        }
+        self.slots.get(slot)
+            .and_then(|s| s.entry.as_ref())
+            .filter(|e| e.generation == gen_val)
+            .map(|e| &e.object)
     }
 
     /// Remove a handle from the table, returning the object if it existed.
     pub fn remove(&mut self, handle: Handle) -> Option<KernelObject> {
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        let entry = self.slots.get_mut(slot)?;
-        if let Some(inner) = entry {
-            if inner.generation == gen_val {
-                return entry.take().map(|e| e.object);
+        let slot = self.slots.get_mut(slot)?;
+        if let Some(entry) = &slot.entry {
+            if entry.generation == gen_val {
+                return slot.entry.take().map(|e| e.object);
             }
         }
         None
     }
 
     /// Check whether the handle has the required permission bits set.
+    /// Uses the stored permissions from the handle table (not the raw handle bits).
     pub fn check_perm(&self, handle: Handle, required: HandlePerms) -> bool {
-        let perms = handle.permissions();
-        (perms & required.bits()) == required.bits()
+        let slot = handle.slot() as usize;
+        let gen_val = handle.generation();
+        self.slots.get(slot)
+            .and_then(|s| s.entry.as_ref())
+            .filter(|e| e.generation == gen_val)
+            .map_or(false, |e| (e.permissions & required.bits()) == required.bits())
     }
 
     /// Iterate over all handle objects mutably (for cleanup / thread exit).
@@ -209,15 +216,15 @@ impl HandleTable {
     ) -> impl Iterator<Item = &mut KernelObject> {
         self.slots
             .iter_mut()
-            .filter_map(|entry| entry.as_mut().map(|e| &mut e.object))
+            .filter_map(|slot| slot.entry.as_mut().map(|e| &mut e.object))
     }
 
     /// Get all handles with their objects.
     pub fn entries(
         &self,
     ) -> impl Iterator<Item = (Handle, &KernelObject)> {
-        self.slots.iter().enumerate().filter_map(|(i, entry)| {
-            entry.as_ref().map(|e| {
+        self.slots.iter().enumerate().filter_map(|(i, slot)| {
+            slot.entry.as_ref().map(|e| {
                 let h = Handle::new(i as u16, e.generation, e.permissions);
                 (h, &e.object)
             })
@@ -228,8 +235,8 @@ impl HandleTable {
     pub fn entries_mut(
         &mut self,
     ) -> impl Iterator<Item = (Handle, &mut KernelObject)> {
-        self.slots.iter_mut().enumerate().filter_map(|(i, entry)| {
-            entry.as_mut().map(|e| {
+        self.slots.iter_mut().enumerate().filter_map(|(i, slot)| {
+            slot.entry.as_mut().map(|e| {
                 let h = Handle::new(i as u16, e.generation, e.permissions);
                 (h, &mut e.object)
             })

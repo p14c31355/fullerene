@@ -30,8 +30,10 @@ pub(crate) fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> Sys
         let end_vaddr = addr_hint
             .checked_add(length)
             .ok_or(SyscallError::InvalidArgument)?;
-        let start_addr = VirtAddr::new(addr_hint);
-        let end_addr = VirtAddr::new(end_vaddr - 1);
+        let start_addr = VirtAddr::try_new(addr_hint)
+            .map_err(|_| SyscallError::InvalidArgument)?;
+        let end_addr = VirtAddr::try_new(end_vaddr - 1)
+            .map_err(|_| SyscallError::InvalidArgument)?;
         if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
             return Err(SyscallError::PermissionDenied);
         }
@@ -93,8 +95,10 @@ pub(crate) fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
     let end_vaddr = addr
         .checked_add(length)
         .ok_or(SyscallError::InvalidArgument)?;
-    let start_addr = VirtAddr::new(addr);
-    let end_addr = VirtAddr::new(end_vaddr - 1);
+    let start_addr = VirtAddr::try_new(addr)
+        .map_err(|_| SyscallError::InvalidArgument)?;
+    let end_addr = VirtAddr::try_new(end_vaddr - 1)
+        .map_err(|_| SyscallError::InvalidArgument)?;
     if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
         return Err(SyscallError::PermissionDenied);
     }

@@ -62,9 +62,15 @@ pub(crate) fn syscall_fork() -> SyscallResult {
     let mut child_page_table =
         petroleum::page_table::ProcessPageTable::new_with_frame(cloned_pml4_frame);
     petroleum::initializer::Initializable::init(&mut child_page_table)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+        .map_err(|_| {
+            crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+            SyscallError::InvalidArgument
+        })?;
 
-    let (kernel_stack_ptr, kernel_stack_top) = alloc_kernel_stack()?;
+    let (kernel_stack_ptr, kernel_stack_top) = alloc_kernel_stack().map_err(|e| {
+        crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+        e
+    })?;
 
     let child_pid = process::PROCESS_MANAGER.allocate_pid().0 as usize;
 
@@ -269,7 +275,12 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
             .is_some()
         {
             crate::process::block_current();
-            Ok(0)
+            // Re-read exit_code after unblock (parent was unblocked by terminate_process)
+            let ec = crate::process::PROCESS_MANAGER
+                .with_process(pid_type, |process| process.exit_code)
+                .flatten()
+                .unwrap_or(0);
+            Ok(ec as u64)
         } else {
             Err(SyscallError::NoSuchProcess)
         }

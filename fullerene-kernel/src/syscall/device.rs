@@ -9,7 +9,7 @@ use super::types::*;
 use crate::contexts::kernel;
 
 pub(crate) fn syscall_enumerate_devices(class: u64, buf: *mut u8, buf_size: usize) -> SyscallResult {
-    if buf.is_null() || buf_size == 0 {
+    if buf.is_null() || buf_size == 0 || buf_size > (1 << 20) {
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(buf as usize, buf_size, false)?;

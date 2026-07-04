@@ -88,8 +88,9 @@ pub fn is_user_address(addr: VirtAddr) -> bool {
 /// Walks the full 4-level page table hierarchy. If a huge page (1 GiB or 2 MiB)
 /// is encountered at an intermediate level, the flags from that entry are returned.
 fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
+    let offset = get_physical_memory_offset();
     let (p4_frame, _) = Cr3::read();
-    let p4_ptr = p4_frame.start_address().as_u64() as *const PageTable;
+    let p4_ptr = (p4_frame.start_address().as_u64() as usize + offset) as *const PageTable;
     let p4 = unsafe { &*p4_ptr };
 
     let p4e = &p4[((vaddr.as_u64() >> 39) & 0x1FF) as usize];
@@ -100,7 +101,7 @@ fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
         return Some(p4e.flags());
     }
 
-    let p3_ptr = p4e.addr().as_u64() as *const PageTable;
+    let p3_ptr = (p4e.addr().as_u64() as usize + offset) as *const PageTable;
     let p3 = unsafe { &*p3_ptr };
     let p3e = &p3[((vaddr.as_u64() >> 30) & 0x1FF) as usize];
     if !p3e.flags().contains(PageTableFlags::PRESENT) {
@@ -110,7 +111,7 @@ fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
         return Some(p3e.flags());
     }
 
-    let p2_ptr = p3e.addr().as_u64() as *const PageTable;
+    let p2_ptr = (p3e.addr().as_u64() as usize + offset) as *const PageTable;
     let p2 = unsafe { &*p2_ptr };
     let p2e = &p2[((vaddr.as_u64() >> 21) & 0x1FF) as usize];
     if !p2e.flags().contains(PageTableFlags::PRESENT) {
@@ -120,7 +121,7 @@ fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
         return Some(p2e.flags());
     }
 
-    let p1_ptr = p2e.addr().as_u64() as *const PageTable;
+    let p1_ptr = (p2e.addr().as_u64() as usize + offset) as *const PageTable;
     let p1 = unsafe { &*p1_ptr };
     let p1e = &p1[((vaddr.as_u64() >> 12) & 0x1FF) as usize];
     if !p1e.flags().contains(PageTableFlags::PRESENT) {
@@ -137,8 +138,15 @@ pub fn validate_user_range(addr: *const u8, len: usize, writable: bool) -> Resul
     if len == 0 {
         return Ok(());
     }
-    let start = VirtAddr::from_ptr(addr);
-    let end = start + (len as u64 - 1);
+    let start_addr_u64 = addr as u64;
+    let end_addr_u64 = start_addr_u64
+        .checked_add(len as u64 - 1)
+        .ok_or(SystemError::InvalidArgument)?;
+
+    let start = VirtAddr::try_new(start_addr_u64)
+        .map_err(|_| SystemError::InvalidArgument)?;
+    let end = VirtAddr::try_new(end_addr_u64)
+        .map_err(|_| SystemError::InvalidArgument)?;
 
     // Must be in user space
     if !is_user_address(start) || !is_user_address(end) {
@@ -147,7 +155,9 @@ pub fn validate_user_range(addr: *const u8, len: usize, writable: bool) -> Resul
 
     // Walk pages
     let page_start = start.align_down(4096u64);
-    let page_end = VirtAddr::new(end.as_u64() + 4095).align_down(4096u64);
+    let page_end = VirtAddr::try_new(end.as_u64() + 4095)
+        .map_err(|_| SystemError::InvalidArgument)?
+        .align_down(4096u64);
     let num_pages = ((page_end - page_start) / 4096) + 1;
 
     for i in 0..num_pages {
@@ -232,7 +242,7 @@ impl<T> UserPtr<T> {
     ///
     /// The caller must ensure that `T` is valid for the memory at the pointer.
     pub unsafe fn copy_from_user(&self) -> Result<T, SystemError> {
-        unsafe { Ok((self.ptr as *const T).read()) }
+        unsafe { Ok(core::ptr::read_unaligned(self.ptr)) }
     }
 
     /// Copy a value into user space.
@@ -243,7 +253,7 @@ impl<T> UserPtr<T> {
     /// and that the user buffer is writable.
     pub unsafe fn copy_to_user(&self, val: T) -> SystemResult<()> {
         unsafe {
-            (self.ptr as *mut T).write_volatile(val);
+            core::ptr::write_volatile(self.ptr as *mut T, val);
         }
         Ok(())
     }
@@ -360,12 +370,14 @@ pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Sys
     if ptr == 0 {
         return Err(SystemError::InvalidArgument);
     }
-    let start = VirtAddr::new(ptr as u64);
+    let start = VirtAddr::try_new(ptr as u64)
+        .map_err(|_| SystemError::InvalidArgument)?;
     if !allow_kernel && !is_user_address(start) {
         return Err(SystemError::InvalidArgument);
     }
     if let Some(end_ptr) = ptr.checked_add(count - 1) {
-        let end = VirtAddr::new(end_ptr as u64);
+        let end = VirtAddr::try_new(end_ptr as u64)
+            .map_err(|_| SystemError::InvalidArgument)?;
         if !allow_kernel && !is_user_address(end) {
             return Err(SystemError::InvalidArgument);
         }

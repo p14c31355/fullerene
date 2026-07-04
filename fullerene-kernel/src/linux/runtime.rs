@@ -310,13 +310,23 @@ pub unsafe fn copy_user_string(ptr: u64, max_len: usize) -> Result<alloc::string
     if ptr == 0 || max_len == 0 {
         return Err(EFAULT);
     }
-    // Validate range via UserSlice
-    let slice = UserSlice::new(ptr as *mut u8, max_len, false).map_err(|_| EFAULT)?;
-    let mut buf = alloc::vec::Vec::with_capacity(max_len);
-    buf.resize(max_len, 0);
-    unsafe { slice.copy_from_user(&mut buf) }.map_err(|_| EFAULT)?;
-    let actual_len = buf.iter().position(|&b| b == 0).unwrap_or(max_len);
-    buf.truncate(actual_len);
+    let ptr = ptr as *mut u8;
+    let mut buf = alloc::vec::Vec::with_capacity(max_len.min(256));
+    let mut offset = 0;
+    while offset < max_len {
+        let current = unsafe { ptr.add(offset) };
+        if offset == 0 || ((current as usize) & 0xFFF) == 0 {
+            let bytes_left_in_page = 4096 - ((current as usize) & 0xFFF);
+            let remaining = (max_len - offset).min(bytes_left_in_page);
+            let _ = UserSlice::new(current, remaining, false).map_err(|_| EFAULT)?;
+        }
+        let byte = unsafe { core::ptr::read_volatile(current) };
+        if byte == 0 {
+            break;
+        }
+        buf.push(byte);
+        offset += 1;
+    }
     alloc::string::String::from_utf8(buf).map_err(|_| EINVAL)
 }
 

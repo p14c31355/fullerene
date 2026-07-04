@@ -23,16 +23,16 @@ pub fn tick_uptime(delta_us: u64) {
 pub fn check_and_fire_timers() {
     let now_ns = uptime_us() * 1000;
 
-    let expired: Vec<(Handle, Handle)> = {
+    let expired: Vec<(process::ProcessId, Handle)> = {
         let mut expired_timers = Vec::new();
         process::PROCESS_MANAGER.with_list(|list| {
-            for (_, proc) in list.iter_mut() {
+            for (owner_pid, proc) in list.iter_mut() {
                 let mut ht = proc.resources.handle_table.lock();
-                for (handle, obj) in ht.entries_mut() {
+                for (_handle, obj) in ht.entries_mut() {
                     if let KernelObject::Timer(timer) = obj {
                         if !timer.fired && now_ns >= timer.deadline_ns {
                             timer.fired = true;
-                            expired_timers.push((handle, timer.event_handle));
+                            expired_timers.push((*owner_pid, timer.event_handle));
                         }
                     }
                 }
@@ -41,21 +41,18 @@ pub fn check_and_fire_timers() {
         expired_timers
     };
 
-    for (_timer_handle, event_handle) in expired {
-        let waiters_to_unblock: Vec<process::ProcessId> = {
-            let mut found = Vec::new();
-            process::PROCESS_MANAGER.with_list(|list| {
-                for (_, proc) in list.iter_mut() {
-                    let mut ht = proc.resources.handle_table.lock();
-                    if let Some(KernelObject::Event(e)) = ht.get_mut(event_handle) {
-                        let mut inner = e.inner.lock();
-                        inner.signaled = true;
-                        found = core::mem::take(&mut inner.waiters);
-                    }
+    for (owner_pid, event_handle) in expired {
+        let waiters_to_unblock: Vec<process::ProcessId> =
+            process::PROCESS_MANAGER.with_process(owner_pid, |proc| {
+                let mut ht = proc.resources.handle_table.lock();
+                if let Some(KernelObject::Event(e)) = ht.get_mut(event_handle) {
+                    let mut inner = e.inner.lock();
+                    inner.signaled = true;
+                    core::mem::take(&mut inner.waiters)
+                } else {
+                    Vec::new()
                 }
-            });
-            found
-        };
+            }).unwrap_or_default();
         for pid in waiters_to_unblock {
             crate::process::unblock_process(pid);
         }

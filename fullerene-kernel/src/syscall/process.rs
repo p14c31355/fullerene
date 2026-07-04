@@ -78,17 +78,15 @@ pub(crate) fn check_handle_permission(h: Handle, required: HandlePerms) -> Resul
     })
 }
 
-const KERNEL_STACK_SIZE: usize = 4096;
-
 pub(crate) fn alloc_kernel_stack() -> Result<(*mut u8, VirtAddr), SyscallError> {
-    let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
     let ptr = petroleum::common::memory::allocate_layout(layout)
         .map_err(|_| SyscallError::OutOfMemory)?;
-    let top = VirtAddr::new(ptr as u64 + KERNEL_STACK_SIZE as u64);
+    let top = VirtAddr::new(ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
     Ok((ptr, top))
 }
 
 pub(crate) fn free_kernel_stack(ptr: *mut u8) {
-    let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
+    let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
     petroleum::common::memory::deallocate_layout(ptr, layout);
 }

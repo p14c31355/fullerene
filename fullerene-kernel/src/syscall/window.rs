@@ -50,6 +50,7 @@ pub(crate) fn syscall_resize_window(handle: u64, width: u32, height: u32) -> Sys
         return Err(SyscallError::InvalidArgument);
     }
     let h = Handle::from_raw(handle);
+    check_handle_permission(h, HandlePerms::WRITE)?;
     with_handle_mut(h, |obj| {
         let id = map_handle!(obj, Window, w).window_id;
         kernel::with_kernel_mut(|k| {
@@ -64,6 +65,7 @@ pub(crate) fn syscall_resize_window(handle: u64, width: u32, height: u32) -> Sys
 
 pub(crate) fn syscall_present_window(handle: u64) -> SyscallResult {
     let h = Handle::from_raw(handle);
+    check_handle_permission(h, HandlePerms::WRITE)?;
     with_handle_mut(h, |obj| {
         let id = map_handle!(obj, Window, w).window_id;
         kernel::with_kernel_mut(|k| {

@@ -12,8 +12,10 @@ use super::types::*;
 use crate::process::{self, Process, ProcessState};
 
 pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
-    let entry_point = VirtAddr::new(entry);
-    let user_stack = VirtAddr::new(stack);
+    let entry_point = VirtAddr::try_new(entry)
+        .map_err(|_| SyscallError::InvalidArgument)?;
+    let user_stack = VirtAddr::try_new(stack)
+        .map_err(|_| SyscallError::InvalidArgument)?;
 
     if !petroleum::is_user_address(entry_point) {
         return Err(SyscallError::InvalidArgument);
@@ -72,7 +74,11 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
         exit_code: None,
         waiters: Vec::new(),
     }));
-    Ok(alloc_handle(KernelObject::Thread(ThreadState { inner }))?)
+    let handle = alloc_handle(KernelObject::Thread(ThreadState { inner }));
+    if handle.is_err() {
+        crate::process::terminate_process(child_pid, -1);
+    }
+    handle
 }
 
 pub(crate) fn syscall_join_thread(handle: u64) -> SyscallResult {
@@ -96,10 +102,20 @@ pub(crate) fn syscall_join_thread(handle: u64) -> SyscallResult {
             with_handle_mut(h, |obj| {
                 let thread = map_handle!(obj, Thread, t);
                 let inner = thread.inner.lock();
-                inner
-                    .exit_code
-                    .map(|ec| ec as u64)
-                    .ok_or(SyscallError::NoSuchProcess)
+                if let Some(exit_code) = inner.exit_code {
+                    Ok(exit_code as u64)
+                } else {
+                    // Detect lost-wakeup race: exit_thread consumed our PID
+                    // from waiters before block_current() completed.
+                    let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+                    if !inner.waiters.contains(&pid) {
+                        // exit_code was written then consumed — re-read
+                        inner.exit_code.map(|ec| ec as u64)
+                            .ok_or(SyscallError::NoSuchProcess)
+                    } else {
+                        Err(SyscallError::NoSuchProcess)
+                    }
+                }
             })
         }
     }

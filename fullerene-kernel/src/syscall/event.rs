@@ -67,7 +67,15 @@ pub(crate) fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult 
                 }
                 Ok(0)
             } else {
-                Err(SyscallError::TimedOut)
+                // Detect lost-wakeup race: signal arrived between registering
+                // the waiter and block_current(), consuming our PID from waiters.
+                let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+                if !inner.waiters.contains(&pid) {
+                    // Our waiter was consumed — treat as successfully woken
+                    Ok(0)
+                } else {
+                    Err(SyscallError::TimedOut)
+                }
             }
         })
     }
