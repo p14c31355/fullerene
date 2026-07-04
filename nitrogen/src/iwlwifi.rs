@@ -120,12 +120,13 @@ struct FwHeader {
 const IWL_FW_MAGIC: u32 = 0x0a4c5749; // "IWL\n" in ASCII (LE)
 const FW_HEADER_SIZE: usize = 88; // 4+4+64+4+4+8
 
-/// TLV entry type.
-const TLV_INST: u32 = 1;       // CPU1 instruction section
-const TLV_DATA: u32 = 2;       // CPU1 data section
-const TLV_INIT: u32 = 3;       // CPU2 init section
-const TLV_INIT_DATA: u32 = 4;  // CPU2 init data section
-const TLV_SECDER: u32 = 29;    // runtime section {u32 offset, u32 size, u8 data[]}
+/// TLV entry type (modern iwlwifi firmware format).
+const TLV_INST: u32 = 19;      // CPU1 instruction section
+const TLV_DATA: u32 = 20;      // CPU1 data section
+const TLV_INIT: u32 = 21;      // CPU2 init section
+const TLV_INIT_DATA: u32 = 22; // CPU2 init data section
+const TLV_SECDER: u32 = 29;    // runtime section descriptor {u32 offset, u32 size}
+const TLV_SECDER_USNIFFER: u32 = 30;
 
 // ── HCMD (Host Command) interface ────────────────────────────────────
 
@@ -511,20 +512,19 @@ impl IwlWifiDevice {
             }
 
             match tlv_type {
-                TLV_INST | TLV_DATA | TLV_INIT | TLV_INIT_DATA | TLV_SECDER => {
-                    // These entries have embedded {target, size, data}
-                    if tlv_len < 8 {
+                TLV_INST | TLV_DATA | TLV_INIT | TLV_INIT_DATA => {
+                    // Inner format: {target(u32), data[rest]}
+                    // rest = tlv_len - 4
+                    if tlv_len < 4 {
                         off = tlv_end;
                         continue;
                     }
                     let target: u32 = unsafe {
                         core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
                     };
-                    let data_size: u32 = unsafe {
-                        core::ptr::read_unaligned(fw_ptr.add(tlv_data_off + 4) as *const u32)
-                    };
-                    if data_size > 0 && (tlv_len as usize) >= 8 + data_size as usize {
-                        let section_data = &fw_data[tlv_data_off + 8..tlv_data_off + 8 + data_size as usize];
+                    let data_size = tlv_len - 4;
+                    if data_size > 0 {
+                        let section_data = &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
                         self.upload_section(target, section_data)?;
                         section_count += 1;
                         log::info!(
