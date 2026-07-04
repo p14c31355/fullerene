@@ -171,14 +171,12 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
         }
         DesktopAction::SubmitPassword => {
             // Trigger connection via iwlwifi with password
-            if let Some(ap_idx) = rt.desktop.pwd_target_ap {
-                if ap_idx < rt.net_manager.display_aps.len() {
-                    let ssid_str = rt.desktop.pwd_dialog_ssid.clone();
-                    let password = rt.desktop.pwd_dialog_password.clone();
-                    let ssid = bonder::wifi::Ssid::new(ssid_str.as_bytes());
-                    // Call iwlwifi driver to connect with WPA2-PSK
-                    nitrogen::iwlwifi::connect_to_ap(&ssid, Some(&password));
-                }
+            if let Some(_) = rt.desktop.pwd_target_ap {
+                let ssid_str = rt.desktop.pwd_dialog_ssid.clone();
+                let password = rt.desktop.pwd_dialog_password.clone();
+                let ssid = bonder::wifi::Ssid::new(ssid_str.as_bytes());
+                // Call iwlwifi driver to connect with WPA2-PSK
+                nitrogen::iwlwifi::connect_to_ap(&ssid, Some(&password));
             }
             rt.desktop.pwd_dialog_open = false;
             rt.desktop.pwd_target_ap = None;

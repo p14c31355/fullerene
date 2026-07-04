@@ -283,7 +283,7 @@ pub fn render_password_dialog(
 
     // Cursor blink
     let cursor_x = text_x + (cursor_pos as u32) * 8;
-    if cursor_x < input_x + PWD_INPUT_W - 4 {
+    if cursor_x < input_x + PWD_INPUT_W - 4 && cursor_x < fb_width {
         for row in 0..12 {
             let py = text_y + row;
             if py >= fb_height {

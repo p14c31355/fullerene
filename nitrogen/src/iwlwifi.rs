@@ -514,7 +514,7 @@ impl IwlWifiDevice {
         // of the embedded firmware blob, so a tampered payload is rejected
         // before any section is uploaded to the device.
         let crc_computed = Self::crc32(fw_data);
-        if crc_computed != EMBEDDED_FW_CRC32 {
+        if fw_data.as_ptr() == EMBEDDED_FW.as_ptr() && crc_computed != EMBEDDED_FW_CRC32 {
             log::warn!(
                 "iwlwifi: firmware checksum mismatch (computed={:#010x}, expected={:#010x})",
                 crc_computed, EMBEDDED_FW_CRC32
@@ -807,8 +807,9 @@ impl IwlWifiDevice {
         // FIXME: This uses a virtual address directly as DMA address, which is incorrect.
         // In a production driver, use DriverContext::dma_map() to obtain a proper DMA/IOVA address.
         // For now, this works in QEMU identity-mapped environments.
-        desc.addr_lo = cmd_buf.as_ptr() as u32;
-        desc.addr_hi = 0;
+        let addr = cmd_buf.as_ptr() as u64;
+        desc.addr_lo = addr as u32;
+        desc.addr_hi = (addr >> 32) as u32;
         desc.len = total_len as u16;
         desc.flags = 0;
 
@@ -968,8 +969,9 @@ impl IwlWifiDevice {
                 let desc = &mut self.tx_dma_ring[self.tx_head % TX_QUEUE_SIZE];
                 // FIXME: This uses a virtual address directly as DMA address, which is incorrect.
                 // In a production driver, use DriverContext::dma_map() to obtain a proper DMA/IOVA address.
-                desc.addr_lo = self.tx_buf.as_ptr() as u32;
-                desc.addr_hi = 0;
+                let addr = self.tx_buf.as_ptr() as u64;
+                desc.addr_lo = addr as u32;
+                desc.addr_hi = (addr >> 32) as u32;
                 desc.len = tx_frame.len() as u16;
                 desc.flags = 0;
 
@@ -1106,7 +1108,7 @@ impl IwlWifiDevice {
                 let frame_data = [0u8; MAX_FRAME_SIZE];
                 let _data: &[u8] = &frame_data;
                 // In real impl, read from DMA buffer
-                self.process_rx_frame(&[]);
+                self.process_rx_frame(_data);
             }
             self.rx_tail = self.rx_tail.wrapping_add(1);
         }

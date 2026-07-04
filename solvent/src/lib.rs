@@ -510,8 +510,8 @@ pub fn poll_keyboard() {
         let mut rt = RUNTIME.lock();
         if let Some(ref mut r) = *rt {
             // Password dialog keyboard input
-            if r.desktop.pwd_dialog_open && pressed {
-                handle_password_dialog_key(r, scancode);
+            if r.desktop.pwd_dialog_open {
+                handle_password_dialog_key(r, scancode, pressed);
                 continue;
             }
 
@@ -553,17 +553,38 @@ fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
 }
 
 /// Handle keyboard input when the password dialog is open.
-fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8) {
+fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
+    static mut SHIFT_HELD: bool = false;
     let action = match scancode {
-        0x1C => DesktopAction::SubmitPassword,      // Enter
-        0x01 => DesktopAction::DismissPasswordDialog, // Escape
-        0x0E => DesktopAction::PasswordBackspace,    // Backspace
-        // Shift keys - ignore (modifier only)
-        0x2A | 0x36 => return,
+        0x1C => {
+            if !pressed { return; }
+            DesktopAction::SubmitPassword // Enter
+        }
+        0x01 => {
+            if !pressed { return; }
+            DesktopAction::DismissPasswordDialog // Escape
+        }
+        0x0E => {
+            if !pressed { return; }
+            DesktopAction::PasswordBackspace // Backspace
+        }
+        // Shift keys
+        0x2A | 0x36 => {
+            unsafe { SHIFT_HELD = pressed; }
+            return;
+        }
         // Alphanumeric and symbol keys
         _ => {
-            let ch = scancode_to_ascii(scancode);
+            if !pressed { return; }
+            let mut ch = scancode_to_ascii(scancode);
             if ch != 0 {
+                if unsafe { SHIFT_HELD } {
+                    // Simple uppercase conversion for a-z
+                    if ch >= b'a' && ch <= b'z' {
+                        ch = ch - b'a' + b'A';
+                    }
+                    // Add other shifted symbol mappings here if needed
+                }
                 DesktopAction::PasswordChar(ch)
             } else {
                 return; // ignore unmapped scancodes
@@ -1170,6 +1191,7 @@ fn tick_core(now: u64) {
             let aps = rt.net_manager.get_aps().to_vec();
             let status = rt.net_manager.get_status().clone();
             rt.desktop.update_ap_list(aps, status);
+            rt.frame_due = true;
         }
     }
 

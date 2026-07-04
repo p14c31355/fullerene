@@ -141,23 +141,25 @@ impl WpaSupplicant {
 
     /// Generate a random SNonce.
     fn generate_snonce(&mut self) {
-        // Generate the SNonce from a fresh entropy source (CPU timestamp
-        // counter) on every call, so it is neither predictable nor derived
-        // from any connection state such as the PMK.
         let mut snonce = [0u8; 32];
 
         for (i, chunk) in snonce.chunks_mut(8).enumerate() {
-            // Re-sample the TSC for each 8-byte chunk and mix in the chunk
-            // index so successive words don't collapse to the same seed.
-            let mut state = unsafe { core::arch::x86_64::_rdtsc() } ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            let mut val = 0u64;
+            let success = unsafe { core::arch::x86_64::_rdrand64_step(&mut val) };
+            if success == 0 {
+                // Fallback to TSC if RDRAND is not supported or fails
+                let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                val = tsc ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+            }
 
-            // xorshift64* PRNG to whiten the TSC sample into output bytes.
+            // xorshift64* PRNG to whiten the sample
+            let mut state = val;
             state ^= state >> 12;
             state ^= state << 25;
             state ^= state >> 27;
-            let val = state.wrapping_mul(0x2545F4914F6CDD1D);
+            let whiten = state.wrapping_mul(0x2545F4914F6CDD1D);
 
-            chunk.copy_from_slice(&val.to_le_bytes()[..chunk.len()]);
+            chunk.copy_from_slice(&whiten.to_le_bytes()[..chunk.len()]);
         }
 
         self.snonce = snonce;
@@ -393,13 +395,12 @@ fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
     let block_size = 64;
 
     let mut k = [0u8; 64];
-    let klen = key.len().min(64);
-    k[..klen].copy_from_slice(&key[..klen]);
-
     if key.len() > block_size {
         // Key is longer than block: hash it first
         let hashed = sha1(key);
         k[..20].copy_from_slice(&hashed);
+    } else {
+        k[..key.len()].copy_from_slice(key);
     }
 
     let mut ipad = [0u8; 64];
