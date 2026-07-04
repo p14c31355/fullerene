@@ -558,12 +558,17 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8) {
         0x1C => DesktopAction::SubmitPassword,      // Enter
         0x01 => DesktopAction::DismissPasswordDialog, // Escape
         0x0E => DesktopAction::PasswordBackspace,    // Backspace
-        // Alphanumeric keys
-        0x10..=0x19 | 0x1E..=0x26 | 0x2C..=0x32 | 0x2A | 0x36 => {
+        // Shift keys - ignore (modifier only)
+        0x2A | 0x36 => return,
+        // Alphanumeric and symbol keys
+        _ => {
             let ch = scancode_to_ascii(scancode);
-            DesktopAction::PasswordChar(ch)
+            if ch != 0 {
+                DesktopAction::PasswordChar(ch)
+            } else {
+                return; // ignore unmapped scancodes
+            }
         }
-        _ => return, // ignore other keys
     };
     let _ = network_manager::handle_network_action(rt, &action);
     rt.frame_due = true;

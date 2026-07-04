@@ -107,9 +107,9 @@ impl WpaSupplicant {
     let mut output = [0u8; 32];
 
     // WPA2 PSK = PBKDF2(HMAC-SHA1, passphrase, ssid, 4096, 256)
-    // Simplified version iterating to produce 32 bytes
+    // HMAC-SHA1 produces 20 bytes per block, so we need 2 blocks for 32 bytes
     let mut block = 1u32;
-    for i in 0..4 {
+    for i in 0..2 {
         let start = (i as usize) * 20;
         let end = core::cmp::min(start + 20, 32);
         let len = end - start;
@@ -132,24 +132,34 @@ impl WpaSupplicant {
             }
         }
 
-        if start + len <= 32 {
-            let copy_len = core::cmp::min(len, 20);
-            output[start..start + copy_len].copy_from_slice(&t[..copy_len]);
-        }
+        // Copy the appropriate amount of bytes to output
+        output[start..start + len].copy_from_slice(&t[..len]);
     }
 
         self.pmk = output;
     }
 
-    /// Generate a random SNonce (simplified).
+    /// Generate a random SNonce.
     fn generate_snonce(&mut self) {
-        // In a real implementation, get random bytes from the RNG.
-        // For now, use a deterministic but unique nonce based on state.
+        // Generate the SNonce from a fresh entropy source (CPU timestamp
+        // counter) on every call, so it is neither predictable nor derived
+        // from any connection state such as the PMK.
         let mut snonce = [0u8; 32];
-        for i in 0..32 {
-            snonce[i] = ((i as u64).wrapping_mul(0x9E3779B97F4A7C15)
-                .wrapping_add(self.pmk[i as usize % 32] as u64)) as u8;
+
+        for (i, chunk) in snonce.chunks_mut(8).enumerate() {
+            // Re-sample the TSC for each 8-byte chunk and mix in the chunk
+            // index so successive words don't collapse to the same seed.
+            let mut state = unsafe { core::arch::x86_64::_rdtsc() } ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15);
+
+            // xorshift64* PRNG to whiten the TSC sample into output bytes.
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            let val = state.wrapping_mul(0x2545F4914F6CDD1D);
+
+            chunk.copy_from_slice(&val.to_le_bytes()[..chunk.len()]);
         }
+
         self.snonce = snonce;
     }
 

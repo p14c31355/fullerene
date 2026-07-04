@@ -113,11 +113,14 @@ pub fn render_wifi_icon(
             if py >= fb_height {
                 continue;
             }
-            let idx = (py as usize) * fw + bx as usize;
-            for col in 0..bar_width as usize {
-                let dx = idx + col;
-                if dx < fb.len() {
-                    fb[dx] = bar_color;
+            for col in 0..bar_width {
+                let px = bx + col;
+                if px >= fb_width {
+                    continue;
+                }
+                let idx = (py as usize) * fw + px as usize;
+                if idx < fb.len() {
+                    fb[idx] = bar_color;
                 }
             }
         }
@@ -168,17 +171,20 @@ pub fn render_password_dialog(
         if py >= fb_height {
             continue;
         }
-        let idx = (py as usize) * fw + dialog_x as usize;
         for col in 0..PWD_DIALOG_W {
-            let dx = idx + col as usize;
-            if dx < fb.len() {
+            let px = dialog_x + col;
+            if px >= fb_width {
+                continue;
+            }
+            let idx = (py as usize) * fw + px as usize;
+            if idx < fb.len() {
                 // Border
                 if row < PWD_BORDER_WIDTH || row >= PWD_DIALOG_H - PWD_BORDER_WIDTH
                     || col < PWD_BORDER_WIDTH || col >= PWD_DIALOG_W - PWD_BORDER_WIDTH
                 {
-                    fb[dx] = PWD_BORDER_COLOR;
+                    fb[idx] = PWD_BORDER_COLOR;
                 } else {
-                    fb[dx] = PWD_BG;
+                    fb[idx] = PWD_BG;
                 }
             }
         }
@@ -224,16 +230,19 @@ pub fn render_password_dialog(
         if py >= fb_height {
             continue;
         }
-        let idx = (py as usize) * fw + input_x as usize;
         for col in 0..PWD_INPUT_W {
-            let dx = idx + col as usize;
-            if dx < fb.len() {
+            let px = input_x + col;
+            if px >= fb_width {
+                continue;
+            }
+            let idx = (py as usize) * fw + px as usize;
+            if idx < fb.len() {
                 if row == 0 || row == PWD_INPUT_H - 1
                     || col == 0 || col == PWD_INPUT_W - 1
                 {
-                    fb[dx] = PWD_BORDER_COLOR;
+                    fb[idx] = PWD_BORDER_COLOR;
                 } else {
-                    fb[dx] = PWD_INPUT_BG;
+                    fb[idx] = PWD_INPUT_BG;
                 }
             }
         }
@@ -320,14 +329,17 @@ fn render_button(
         if py >= fb_height {
             continue;
         }
-        let idx = (py as usize) * fw + x as usize;
         for col in 0..w {
-            let dx = idx + col as usize;
-            if dx < fb.len() {
+            let px = x + col;
+            if px >= fb_width {
+                continue;
+            }
+            let idx = (py as usize) * fw + px as usize;
+            if idx < fb.len() {
                 if row < 1 || row >= h - 1 || col < 1 || col >= w - 1 {
-                    fb[dx] = btn_border;
+                    fb[idx] = btn_border;
                 } else {
-                    fb[dx] = btn_bg;
+                    fb[idx] = btn_bg;
                 }
             }
         }
@@ -386,16 +398,19 @@ pub fn render_network_menu(
         if py >= fb_height {
             continue;
         }
-        let idx = (py as usize) * fw + menu_x as usize;
         for col in 0..NET_MENU_WIDTH {
-            let dx = idx + col as usize;
-            if dx < fb.len() {
+            let px = menu_x + col;
+            if px >= fb_width {
+                continue;
+            }
+            let idx = (py as usize) * fw + px as usize;
+            if idx < fb.len() {
                 if row < NET_MENU_BORDER || row >= menu_h - NET_MENU_BORDER
                     || col < NET_MENU_BORDER || col >= NET_MENU_WIDTH - NET_MENU_BORDER
                 {
-                    fb[dx] = NET_MENU_BORDER_COLOR;
+                    fb[idx] = NET_MENU_BORDER_COLOR;
                 } else {
-                    fb[dx] = NET_MENU_BG;
+                    fb[idx] = NET_MENU_BG;
                 }
             }
         }

@@ -436,9 +436,14 @@ impl Desktop {
     /// Show the network menu with access point list.
     pub fn show_network_menu(&mut self, fb_width: u32, fb_height: u32) {
         self.network_menu_open = true;
-        // Position the menu above the WiFi icon
+        // Position the menu above the WiFi icon, right-aligned to stay on-screen
         let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
-        self.net_menu_x = wifi_icon_x;
+        // Right-align the menu with the WiFi icon so it doesn't extend past fb_width
+        self.net_menu_x = if wifi_icon_x + network_menu::NET_MENU_WIDTH > fb_width {
+            fb_width.saturating_sub(network_menu::NET_MENU_WIDTH)
+        } else {
+            wifi_icon_x
+        };
         let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
         self.net_menu_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT).saturating_sub(menu_h);
 

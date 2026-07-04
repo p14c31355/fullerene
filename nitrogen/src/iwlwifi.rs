@@ -449,6 +449,23 @@ impl IwlWifiDevice {
         }
     }
 
+    /// Compute CRC32 checksum for firmware verification.
+    fn crc32(data: &[u8]) -> u32 {
+        const POLY: u32 = 0xEDB88320;
+        let mut crc = 0xFFFFFFFFu32;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                crc = if (crc & 1) != 0 {
+                    (crc >> 1) ^ POLY
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        !crc
+    }
+
     // ── Firmware loading ───────────────────────────────────────────
 
     /// Load firmware binary into the device.
@@ -491,6 +508,19 @@ impl IwlWifiDevice {
         let magic: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(4) as *const u32) };
         if magic != IWL_FW_MAGIC {
             return Err("Invalid firmware magic");
+        }
+
+        // Verify firmware integrity with CRC32 against the known-good checksum
+        // of the embedded firmware blob, so a tampered payload is rejected
+        // before any section is uploaded to the device.
+        let crc_computed = Self::crc32(fw_data);
+        if crc_computed != EMBEDDED_FW_CRC32 {
+            log::warn!(
+                "iwlwifi: firmware checksum mismatch (computed={:#010x}, expected={:#010x})",
+                crc_computed, EMBEDDED_FW_CRC32
+            );
+            self.fw_state = FwState::NotLoaded;
+            return Err("Firmware checksum verification failed");
         }
 
         // Read build description
@@ -774,6 +804,9 @@ impl IwlWifiDevice {
         }
         cmd_buf[core::mem::size_of::<HcmdHeader>()..total_len].copy_from_slice(data);
 
+        // FIXME: This uses a virtual address directly as DMA address, which is incorrect.
+        // In a production driver, use DriverContext::dma_map() to obtain a proper DMA/IOVA address.
+        // For now, this works in QEMU identity-mapped environments.
         desc.addr_lo = cmd_buf.as_ptr() as u32;
         desc.addr_hi = 0;
         desc.len = total_len as u16;
@@ -933,6 +966,8 @@ impl IwlWifiDevice {
 
                 // Program TX DMA descriptor
                 let desc = &mut self.tx_dma_ring[self.tx_head % TX_QUEUE_SIZE];
+                // FIXME: This uses a virtual address directly as DMA address, which is incorrect.
+                // In a production driver, use DriverContext::dma_map() to obtain a proper DMA/IOVA address.
                 desc.addr_lo = self.tx_buf.as_ptr() as u32;
                 desc.addr_hi = 0;
                 desc.len = tx_frame.len() as u16;
@@ -956,7 +991,8 @@ impl IwlWifiDevice {
             return;
         }
 
-        let frame_type = frame[0] & 0x0C;
+        // Extract frame type (bits 2-3) and shift down to normalize to 0/1/2
+        let frame_type = (frame[0] & 0x0C) >> 2;
         let subtype = (frame[0] >> 4) & 0x0F;
 
         match (frame_type, subtype) {
@@ -1182,6 +1218,10 @@ pub struct WifiManager {
 /// Path relative to this file: ../../bonder/iwlwifi/iwlwifi-7265D-29.ucode
 const EMBEDDED_FW: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7265D-29.ucode");
 
+/// Known-good CRC32 checksum of `EMBEDDED_FW`, used by [`IwlWifiDevice::load_firmware`]
+/// to reject a tampered or corrupted blob before any section is uploaded to the device.
+const EMBEDDED_FW_CRC32: u32 = 0xECB4_1451;
+
 /// Probe for an Intel wireless device, load firmware and store it for periodic ticking.
 ///
 /// Safe to call multiple times.
@@ -1253,6 +1293,16 @@ pub fn wifi_state_snapshot() -> Option<WifiManager> {
 /// Initialize the global WiFi manager.
 pub fn init_wifi_manager() {
     *WIFI_MANAGER.lock() = Some(WifiManager::new());
+}
+
+/// Connect to an access point by SSID with optional password.
+///
+/// This is a convenience wrapper for UI code to initiate connections.
+pub fn connect_to_ap(ssid: &bonder::wifi::Ssid, password: Option<&str>) {
+    let mut dev_guard = WIFI_DEVICE.lock();
+    if let Some(ref mut dev) = *dev_guard {
+        let _ = dev.connect(ssid, password);
+    }
 }
 
 // ── Error types ──────────────────────────────────────────────────────

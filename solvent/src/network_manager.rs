@@ -1,12 +1,12 @@
 //! Network manager — bridges between the iwlwifi driver, bonder stack,
 //! and the lattice UI.
 
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use bonder::wifi::WifiStatus;
 use lattice::desktop::DesktopAction;
-use lattice::network_menu::{self, ApDisplay, NetStatus};
+use lattice::network_menu::{ApDisplay, NetStatus};
 
 /// Global network state for the UI.
 #[derive(Debug)]
@@ -69,7 +69,13 @@ impl NetworkManager {
                 .collect();
 
             // Put connected AP first
-            aps.sort_by(|a, _| if a.connected { core::cmp::Ordering::Less } else { core::cmp::Ordering::Greater });
+            aps.sort_by(|a, b| {
+                match (a.connected, b.connected) {
+                    (true, false) => core::cmp::Ordering::Less,
+                    (false, true) => core::cmp::Ordering::Greater,
+                    _ => core::cmp::Ordering::Equal,
+                }
+            });
 
             self.display_aps = aps;
 
@@ -142,8 +148,14 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
             rt.frame_due = true;
             true
         }
-        DesktopAction::ConnectAp(_idx) => {
-            // TODO: trigger actual WiFi connection via iwlwifi
+        DesktopAction::ConnectAp(idx) => {
+            // Connect to open network (no password)
+            if *idx < rt.net_manager.display_aps.len() {
+                let ap = &rt.net_manager.display_aps[*idx];
+                let ssid = bonder::wifi::Ssid::new(ap.ssid.as_bytes());
+                // Call iwlwifi driver to connect
+                nitrogen::iwlwifi::connect_to_ap(&ssid, None);
+            }
             rt.desktop.dismiss_network_menu();
             rt.frame_due = true;
             true
@@ -151,20 +163,27 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
         DesktopAction::DismissPasswordDialog => {
             rt.desktop.pwd_dialog_open = false;
             rt.desktop.pwd_target_ap = None;
+            rt.desktop.pwd_dialog_password.clear();
+            rt.desktop.pwd_dialog_cursor = 0;
             rt.desktop.dismiss_network_menu();
             rt.frame_due = true;
             true
         }
         DesktopAction::SubmitPassword => {
-            // Trigger connection via iwlwifi
-            if let Some(_ap_idx) = rt.desktop.pwd_target_ap {
-                let ssid = rt.desktop.pwd_dialog_ssid.clone();
-                let password = rt.desktop.pwd_dialog_password.clone();
-                // TODO: pass to iwlwifi::connect()
-                let _ = (ssid, password);
+            // Trigger connection via iwlwifi with password
+            if let Some(ap_idx) = rt.desktop.pwd_target_ap {
+                if ap_idx < rt.net_manager.display_aps.len() {
+                    let ssid_str = rt.desktop.pwd_dialog_ssid.clone();
+                    let password = rt.desktop.pwd_dialog_password.clone();
+                    let ssid = bonder::wifi::Ssid::new(ssid_str.as_bytes());
+                    // Call iwlwifi driver to connect with WPA2-PSK
+                    nitrogen::iwlwifi::connect_to_ap(&ssid, Some(&password));
+                }
             }
             rt.desktop.pwd_dialog_open = false;
             rt.desktop.pwd_target_ap = None;
+            rt.desktop.pwd_dialog_password.clear();
+            rt.desktop.pwd_dialog_cursor = 0;
             rt.desktop.dismiss_network_menu();
             rt.frame_due = true;
             true
