@@ -106,24 +106,26 @@ enum IwlState {
 
 // ── Firmware image header ─────────────────────────────────────────────
 
-/// Firmware section descriptor.
-#[repr(C, packed)]
-struct FwSection {
-    offset: u32,
-    size: u32,
-}
-
-/// Firmware header (first bytes of the ucode binary).
+/// Firmware header (88 bytes).
 #[repr(C, packed)]
 struct FwHeader {
-    magic: u32,
-    api_version: u32,
-    build: u32,
-    num_sections: u32,
-    sections: [FwSection; IWL_FW_MAX_SECTIONS],
+    zero: u32,                // must be 0
+    magic: u32,               // "IWL\n" = 0x0a4c5749 (LE)
+    description: [u8; 64],    // human-readable build string
+    ver: u32,                 // firmware API version (e.g. 29)
+    build: u32,               // build number
+    ignore: u64,              // reserved
 }
 
-const IWL_FW_MAGIC: u32 = 0x4C57_495F; // "_IWL" in ASCII
+const IWL_FW_MAGIC: u32 = 0x0a4c5749; // "IWL\n" in ASCII (LE)
+const FW_HEADER_SIZE: usize = 88; // 4+4+64+4+4+8
+
+/// TLV entry type.
+const TLV_INST: u32 = 1;       // CPU1 instruction section
+const TLV_DATA: u32 = 2;       // CPU1 data section
+const TLV_INIT: u32 = 3;       // CPU2 init section
+const TLV_INIT_DATA: u32 = 4;  // CPU2 init data section
+const TLV_SECDER: u32 = 29;    // runtime section {u32 offset, u32 size, u8 data[]}
 
 // ── HCMD (Host Command) interface ────────────────────────────────────
 
@@ -452,63 +454,94 @@ impl IwlWifiDevice {
     ///
     /// `fw_data` is the complete firmware binary (.ucode file contents).
     pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
-        if fw_data.len() < core::mem::size_of::<FwHeader>() {
+        if fw_data.len() < FW_HEADER_SIZE {
             return Err("Firmware data too short");
         }
 
         self.fw_state = FwState::Loading;
 
-        // Parse firmware header
         let fw_ptr = fw_data.as_ptr();
-        let header_size = core::mem::size_of::<FwHeader>();
 
-        let magic: u32 = unsafe { core::ptr::read_unaligned(fw_ptr as *const u32) };
+        // zero field must be 0
+        let zero: u32 = unsafe { core::ptr::read_unaligned(fw_ptr as *const u32) };
+        if zero != 0 {
+            return Err("Invalid firmware header (zero != 0)");
+        }
+
+        // Magic check
+        let magic: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(4) as *const u32) };
         if magic != IWL_FW_MAGIC {
             return Err("Invalid firmware magic");
         }
 
-        self.fw_api_ver = unsafe { core::ptr::read_unaligned(fw_ptr.add(4) as *const u32) };
-        self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(8) as *const u32) };
+        // Read build description
+        let mut desc_buf = [0u8; 64];
+        unsafe {
+            core::ptr::copy_nonoverlapping(fw_ptr.add(8), desc_buf.as_mut_ptr(), 64);
+        }
+        let build_str = core::ffi::CStr::from_bytes_until_nul(&desc_buf)
+            .map(|c| c.to_str().unwrap_or("<invalid>"))
+            .unwrap_or("<unknown>");
+        log::info!("iwlwifi: firmware build: {}", build_str);
+
+        // API version and build number
+        self.fw_api_ver = unsafe { core::ptr::read_unaligned(fw_ptr.add(72) as *const u32) };
+        self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
         log::info!(
             "iwlwifi: firmware API v{}, build {}",
-            self.fw_api_ver,
-            self.fw_build
+            self.fw_api_ver, self.fw_build
         );
 
-        let num_sections = unsafe {
-            core::ptr::read_unaligned(fw_ptr.add(12) as *const u32)
-        }.min(IWL_FW_MAX_SECTIONS as u32) as usize;
-        if num_sections == 0 {
-            return Err("No firmware sections");
-        }
+        // Parse TLV entries starting at offset 88
+        let mut off = FW_HEADER_SIZE;
+        let mut section_count = 0u32;
 
-        // Upload each firmware section
-        let mut data_offset = core::mem::size_of::<FwHeader>();
-        for i in 0..num_sections {
-            // Each section entry: offset(u32) + size(u32) = 8 bytes
-            let section_entry_ptr = unsafe { fw_ptr.add(header_size + i * 8) };
-            let section_offset: u32 = unsafe {
-                core::ptr::read_unaligned(section_entry_ptr as *const u32)
+        while off + 8 <= fw_data.len() {
+            let tlv_type: u32 = unsafe {
+                core::ptr::read_unaligned(fw_ptr.add(off) as *const u32)
             };
-            let section_size = unsafe {
-                core::ptr::read_unaligned(section_entry_ptr.add(4) as *const u32)
-            } as usize;
+            let tlv_len: u32 = unsafe {
+                core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32)
+            };
+            let tlv_data_off = off + 8;
+            let tlv_end = tlv_data_off + tlv_len as usize;
 
-            if data_offset + section_size > fw_data.len() {
-                return Err("Firmware section data truncated");
+            if tlv_end > fw_data.len() {
+                break;
             }
 
-            let section_data = &fw_data[data_offset..data_offset + section_size];
-            self.upload_section(section_offset, section_data)?;
+            match tlv_type {
+                TLV_INST | TLV_DATA | TLV_INIT | TLV_INIT_DATA | TLV_SECDER => {
+                    // These entries have embedded {target, size, data}
+                    if tlv_len < 8 {
+                        off = tlv_end;
+                        continue;
+                    }
+                    let target: u32 = unsafe {
+                        core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                    };
+                    let data_size: u32 = unsafe {
+                        core::ptr::read_unaligned(fw_ptr.add(tlv_data_off + 4) as *const u32)
+                    };
+                    if data_size > 0 && (tlv_len as usize) >= 8 + data_size as usize {
+                        let section_data = &fw_data[tlv_data_off + 8..tlv_data_off + 8 + data_size as usize];
+                        self.upload_section(target, section_data)?;
+                        section_count += 1;
+                        log::info!(
+                            "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
+                            section_count, target, data_size
+                        );
+                    }
+                }
+                _ => {
+                    // Unknown TLV type, skip
+                }
+            }
+            off = tlv_end;
+        }
 
-            log::info!(
-                "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
-                i,
-                section_offset,
-                section_size
-            );
-
-            data_offset += section_size;
+        if section_count == 0 {
+            return Err("No firmware sections uploaded");
         }
 
         log::info!("iwlwifi: firmware upload complete, waiting for alive...");
@@ -1056,7 +1089,11 @@ pub struct WifiManager {
     pub ip_address: Option<String>,
 }
 
-/// Probe for an Intel wireless device and store it for periodic ticking.
+/// Embedded firmware binary: iwlwifi-7265D-29.ucode.
+/// Path relative to this file: ../../bonder/iwlwifi/iwlwifi-7265D-29.ucode
+const EMBEDDED_FW: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7265D-29.ucode");
+
+/// Probe for an Intel wireless device, load firmware and store it for periodic ticking.
 ///
 /// Safe to call multiple times.
 pub fn try_init_wifi_device() {
@@ -1064,8 +1101,19 @@ pub fn try_init_wifi_device() {
     if dev_guard.is_some() {
         return;
     }
-    if let Some(dev) = IwlWifiDevice::probe_and_init() {
-        *dev_guard = Some(dev);
+    if let Some(mut dev) = IwlWifiDevice::probe_and_init() {
+        log::info!("iwlwifi: loading embedded firmware ({} bytes)", EMBEDDED_FW.len());
+        match dev.load_firmware(EMBEDDED_FW) {
+            Ok(()) => {
+                log::info!("iwlwifi: firmware loaded successfully");
+                *dev_guard = Some(dev);
+            }
+            Err(e) => {
+                log::error!("iwlwifi: firmware load failed: {}", e);
+                // Keep the device anyway so UI knows it exists
+                *dev_guard = Some(dev);
+            }
+        }
     }
 }
 
