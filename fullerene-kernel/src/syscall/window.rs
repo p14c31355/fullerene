@@ -28,7 +28,7 @@ pub(crate) fn syscall_create_window(x: i32, y: i32, width: u32, height: u32, _fl
         window_id: win_id,
         pid,
     };
-    Ok(alloc_handle(KernelObject::Window(state))?)
+    alloc_handle(KernelObject::Window(state))
 }
 
 pub(crate) fn syscall_destroy_window(handle: u64) -> SyscallResult {

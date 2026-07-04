@@ -111,9 +111,7 @@ mod support_matrix {
     #[test]
     fn syscall_numbers_are_sorted() {
         let mut prev: Option<u64> = None;
-        let mut sorted: Vec<_> = SYSCALLS.iter().map(|s| s.number).collect();
-        sorted.sort();
-        for n in sorted {
+        for n in SYSCALLS.iter().map(|s| s.number) {
             if let Some(p) = prev {
                 assert!(p < n, "syscall numbers must be strictly increasing: {} >= {}", p, n);
             }

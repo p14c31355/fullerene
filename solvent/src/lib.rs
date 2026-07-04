@@ -247,7 +247,7 @@ pub fn init() {
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();
 
-    chrono.register_with_mode(
+    let _ = chrono.register_with_mode(
         Deadline::new(CURSOR_BLINK_INTERVAL),
         CURSOR_TIMER_ID,
         TimerMode::Repeating {
@@ -262,7 +262,7 @@ pub fn init() {
     *EVENT_QUEUE.lock() = Some(EventQueue::new());
     *DISPATCHER.lock() = Some(dispatcher);
 
-    chrono.register_with_mode(
+    let _ = chrono.register_with_mode(
         Deadline::new(FRAME_INTERVAL_TICKS),
         FRAME_TIMER_ID,
         TimerMode::Repeating {

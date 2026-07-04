@@ -47,6 +47,7 @@ impl From<&'static str> for FsError {
             "inode not found" => FsError::FileNotFound,
             "directory not empty" => FsError::DirectoryNotEmpty,
             "invalid path" => FsError::InvalidPath,
+            "no free clusters" => FsError::DiskFull,
             "create failed" | "open failed after create" => FsError::FileExists,
             "mkdir failed" => FsError::PermissionDenied,
             "vfs not init" | "only tmpfs is supported" => FsError::PermissionDenied,

@@ -1713,7 +1713,7 @@ impl FileSystem for FatFileSystem {
             .handles
             .iter()
             .position(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let cluster = self.handles[pos].1;
         let offset = self.handles[pos].2;
         let file_size = self.handles[pos].3;
@@ -1768,7 +1768,7 @@ impl FileSystem for FatFileSystem {
             .handles
             .iter()
             .position(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let cluster = self.handles[pos].1;
         let offset = self.handles[pos].2;
         let mut new_cluster = cluster;
@@ -1785,7 +1785,7 @@ impl FileSystem for FatFileSystem {
             .handles
             .iter()
             .position(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let cluster = self.handles[pos].1;
         let final_size = self.handles[pos].3;
         let path = self.handles[pos].4.clone();
@@ -1799,7 +1799,7 @@ impl FileSystem for FatFileSystem {
             .handles
             .iter_mut()
             .find(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         h.2 = pos as u32;
         Ok(())
     }

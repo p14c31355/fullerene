@@ -57,7 +57,7 @@ pub(crate) fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> 
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::READ)?;
     let max = buf_size as usize;
-    if buf.is_null() || max == 0 {
+    if buf.is_null() || max == 0 || max > 65536 {
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(buf as usize, max, false)?;
@@ -87,6 +87,11 @@ pub(crate) fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> 
 }
 
 pub(crate) fn syscall_pipe_create(buf: *mut u64) -> SyscallResult {
+    if buf.is_null() {
+        return Err(SyscallError::InvalidArgument);
+    }
+    petroleum::validate_user_buffer(buf as usize, 16, false)?;
+
     let shared_buffer = Arc::new(Mutex::new(Vec::with_capacity(4096)));
 
     let read_end = PipeState {
@@ -106,8 +111,11 @@ pub(crate) fn syscall_pipe_create(buf: *mut u64) -> SyscallResult {
     let mut kernel_buf = [0u8; 16];
     kernel_buf[0..8].copy_from_slice(&read_h.to_ne_bytes());
     kernel_buf[8..16].copy_from_slice(&write_h.to_ne_bytes());
-    unsafe { slice.copy_to_user(&kernel_buf) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    if unsafe { slice.copy_to_user(&kernel_buf) }.is_err() {
+        let _ = super::cap::syscall_handle_revoke(read_h);
+        let _ = super::cap::syscall_handle_revoke(write_h);
+        return Err(SyscallError::InvalidArgument);
+    }
 
     Ok(0)
 }

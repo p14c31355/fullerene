@@ -90,22 +90,32 @@ impl From<petroleum::common::logging::SystemError> for SyscallError {
 /// The caller must ensure the user pages are mapped.  Page faults during
 /// copy are caught by the kernel's page fault handler.
 pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
-    if max_len == 0 {
+    if ptr.is_null() || max_len == 0 {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Validate the entire range via UserSlice (read-only)
-    let slice = UserSlice::new(ptr as *mut u8, max_len, false)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let mut buf = alloc::vec::Vec::with_capacity(max_len.min(256));
+    let mut offset = 0;
 
-    // Copy into kernel-owned buffer
-    let mut buf = vec![0u8; max_len];
-    unsafe { slice.copy_from_user(&mut buf) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    while offset < max_len {
+        let current = unsafe { ptr.add(offset) };
 
-    // Find NUL terminator (or use the full buffer)
-    let actual_len = buf.iter().position(|&b| b == 0).unwrap_or(max_len);
-    buf.truncate(actual_len);
+        // Validate page on first access or when crossing a page boundary,
+        // so a valid NUL-terminated string near an unmapped page works.
+        if offset == 0 || ((current as usize) & 0xFFF) == 0 {
+            let bytes_left_in_page = 4096 - ((current as usize) & 0xFFF);
+            let remaining = (max_len - offset).min(bytes_left_in_page);
+            let _ = UserSlice::new(current as *mut u8, remaining, false)
+                .map_err(|_| SyscallError::InvalidArgument)?;
+        }
+
+        let byte = unsafe { core::ptr::read_volatile(current) };
+        if byte == 0 {
+            break;
+        }
+        buf.push(byte);
+        offset += 1;
+    }
 
     String::from_utf8(buf).map_err(|_| SyscallError::InvalidArgument)
 }

@@ -236,11 +236,11 @@ impl VfsContext {
                 let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
                 if !fs.exists(&remaining) {
                     fs.create(&remaining, InodeType::File)
-                        .ok_or(FsError::FileExists)?;
+                        .ok_or(FsError::PermissionDenied)?;
                 }
             }
             let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
-            let fd = fs.open(&remaining, 0).ok_or(FsError::FileExists)?;
+            let fd = fs.open(&remaining, 0).ok_or(FsError::FileNotFound)?;
             (mount_index, fd)
         };
         // …then acquire handle_table.

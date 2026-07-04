@@ -117,7 +117,7 @@ pub(crate) fn syscall_protect_memory(_addr: u64, _length: u64, _prot: u64) -> Sy
 }
 
 pub(crate) fn syscall_query_memory(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
-    if info_buf.is_null() || buf_size < 64 {
+    if info_buf.is_null() || buf_size < 64 || buf_size > (1 << 20) {
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(info_buf as usize, buf_size, false)?;

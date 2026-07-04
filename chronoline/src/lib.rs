@@ -130,20 +130,7 @@ impl ChronoLine {
         id: TimerId,
         mode: TimerMode,
     ) -> Result<TimerId, RegisterError> {
-        if let TimerMode::Repeating { interval_ticks } = mode {
-            if interval_ticks == 0 {
-                return Err(RegisterError::ZeroInterval);
-            }
-        }
-        self.timers.push(Timer {
-            deadline,
-            id,
-            mode,
-            policy: TimerPolicy::default(),
-            missed_ticks: 0,
-            max_catch_up: self.max_catch_up,
-        });
-        Ok(id)
+        self.register_with_mode_and_policy(deadline, id, mode, TimerPolicy::default())
     }
 
     pub fn register_with_mode_and_policy(
@@ -197,7 +184,7 @@ impl ChronoLine {
                     timer
                         .deadline
                         .ticks()
-                        .saturating_add(interval_ticks * timer.missed_ticks),
+                        .saturating_add(interval_ticks.saturating_mul(timer.missed_ticks)),
                 ),
                 TimerPolicy::FixedDelay => {
                     Deadline::new(self.now.saturating_add(interval_ticks))

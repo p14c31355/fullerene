@@ -52,7 +52,7 @@ Priority convention:
 ## P1: Structural Improvements
 
 ### P1-1. Typed errors (replace `&'static str`)
-- [ ] `BlockError` (done as part of P0-4)
+- [x] `BlockError` (done as part of P0-4)
 - [ ] `FsError`, `DriverError`, `MemoryError` in respective crates
 - [ ] `From` impls to convert to `SyscallError` / Linux errno
 - [ ] Remove `Result<..., &'static str>` usage (~200+ sites across kernel/nitrogen/genome)

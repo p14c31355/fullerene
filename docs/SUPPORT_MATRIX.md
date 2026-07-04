@@ -52,9 +52,9 @@
 |---------|--------|
 | read, write, open, close | ✅ |
 | fork, getpid | ✅ |
-| mount, umount2 | ❌ ENOSYS |
-| truncate, ftruncate | ❌ ENOSYS |
-| fsync, fdatasync | ❌ ENOSYS |
+| mount, umount2 | ❌ NotSupported |
+| truncate, ftruncate | ❌ NotSupported |
+| fsync, fdatasync | ❌ NotSupported |
 | exit, exit_group | ✅ |
 | mmap, munmap | ✅ |
 | brk | ✅ |
