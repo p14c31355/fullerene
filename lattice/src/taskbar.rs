@@ -60,6 +60,16 @@ impl Taskbar {
         }
     }
 
+    /// Compute the WiFi icon X position based on clock text width.
+    pub fn wifi_icon_x(&self, fb_width: u32) -> u32 {
+        let clock_w = if !self.clock_text.is_empty() {
+            (self.clock_text.len() as u32 * 8) + 8
+        } else {
+            0
+        };
+        fb_width.saturating_sub(clock_w + crate::network_menu::NET_ICON_WIDTH + 8)
+    }
+
     /// Update entries from window list.
     pub fn update_from_windows(&mut self, windows: &[crate::window::Window]) {
         self.entries.clear();
@@ -96,13 +106,7 @@ impl Taskbar {
         }
 
         // Draw WiFi indicator icon (right side, before clock)
-        let wifi_icon_x = fb_width.saturating_sub(
-            if !self.clock_text.is_empty() {
-                (self.clock_text.len() as u32 * 8) + 8 + crate::network_menu::NET_ICON_WIDTH + 8
-            } else {
-                crate::network_menu::NET_ICON_WIDTH + 8
-            }
-        );
+        let wifi_icon_x = self.wifi_icon_x(fb_width);
         crate::network_menu::render_wifi_icon(
             fb, fb_width, fb_height,
             wifi_icon_x, bar_y + 6,

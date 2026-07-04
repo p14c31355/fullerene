@@ -344,7 +344,7 @@ impl Desktop {
         }
 
         // Check WiFi icon click (before taskbar window check)
-        let wifi_icon_x = fb_width.saturating_sub(network_menu::NET_ICON_WIDTH + 8 + 80); // ~right side, before clock
+        let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
         if network_menu::hit_wifi_icon(self.cursor.x, self.cursor.y, fb_width, fb_height, wifi_icon_x) {
             self.menu_action_pending = Some(DesktopAction::ShowNetworkMenu);
             return;
@@ -437,7 +437,7 @@ impl Desktop {
     pub fn show_network_menu(&mut self, fb_width: u32, fb_height: u32) {
         self.network_menu_open = true;
         // Position the menu above the WiFi icon
-        let wifi_icon_x = fb_width.saturating_sub(network_menu::NET_ICON_WIDTH + 8 + 80);
+        let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
         self.net_menu_x = wifi_icon_x;
         let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
         self.net_menu_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT).saturating_sub(menu_h);
@@ -657,8 +657,9 @@ impl Desktop {
                 network_menu::NET_MENU_WIDTH, menu_h,
             ));
             // Also push WiFi icon area as dirty
+            let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
             self.dirty_cache.push(DirtyRect::new(
-                fb_width.saturating_sub(network_menu::NET_ICON_WIDTH + 8 + 80),
+                wifi_icon_x,
                 fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT),
                 network_menu::NET_ICON_WIDTH,
                 crate::taskbar::TASKBAR_HEIGHT,
