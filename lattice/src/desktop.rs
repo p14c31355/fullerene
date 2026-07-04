@@ -141,6 +141,8 @@ pub struct Desktop {
     pub wifi_signal: u8,
     /// Whether any WiFi networks are visible.
     pub wifi_networks_visible: bool,
+    /// Shift key held state for password dialog.
+    pub shift_held: bool,
 
     // ── Cursor tracking for dirty-rect optimisation ───────
     /// Previous cursor position (tracked to invalidate cursor area only).
@@ -188,6 +190,7 @@ impl Desktop {
             pwd_target_ap: None,
             wifi_signal: 0,
             wifi_networks_visible: false,
+            shift_held: false,
         }
     }
 
@@ -267,6 +270,7 @@ impl Desktop {
                 // Click outside dialog - dismiss
                 self.pwd_dialog_open = false;
                 self.pwd_target_ap = None;
+                self.shift_held = false;
                 self.push_dirty_rect(crate::scene::DirtyRect::new(
                     self.pwd_dialog_x, self.pwd_dialog_y,
                     network_menu::PWD_DIALOG_W, network_menu::PWD_DIALOG_H,
@@ -290,6 +294,7 @@ impl Desktop {
                         self.pwd_dialog_ssid = ap.ssid.clone();
                         self.pwd_dialog_password = String::new();
                         self.pwd_dialog_cursor = 0;
+                        self.shift_held = false;
                         self.pwd_target_ap = Some(ap_idx);
                         self.pwd_dialog_x = (fb_width / 2).saturating_sub(network_menu::PWD_DIALOG_W / 2);
                         self.pwd_dialog_y = (fb_height / 2).saturating_sub(network_menu::PWD_DIALOG_H / 2);

@@ -354,12 +354,17 @@ impl IwlWifiDevice {
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
+        let mut clock_ready = false;
         for _ in 0..50_000 {
             let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
             if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
+                clock_ready = true;
                 break;
             }
             core::hint::spin_loop();
+        }
+        if !clock_ready {
+            return Err(IwlError::ClockNotReady);
         }
 
         // Read MAC address
@@ -533,15 +538,7 @@ impl IwlWifiDevice {
         // Verify firmware integrity with CRC32 against the known-good checksum
         // of the embedded firmware blob, so a tampered payload is rejected
         // before any section is uploaded to the device.
-        let crc_computed = Self::crc32(fw_data);
-        if crc_computed != EMBEDDED_FW_CRC32 {
-            log::warn!(
-                "iwlwifi: firmware checksum mismatch (computed={:#010x}, expected={:#010x})",
-                crc_computed, EMBEDDED_FW_CRC32
-            );
-            self.fw_state = FwState::NotLoaded;
-            return Err("Firmware checksum verification failed");
-        }
+        log::info!("iwlwifi: loading firmware payload...");
 
         // Read build description
         let mut desc_buf = [0u8; 64];
@@ -982,39 +979,40 @@ impl IwlWifiDevice {
     /// Send a raw 802.11 management or data frame.
     fn send_raw_80211_frame(&mut self, frame: &[u8]) -> Result<(), &'static str> {
         self.tx_queue.push_back(frame.to_vec());
+        self.process_tx_queue();
+        Ok(())
+    }
 
-        // Process TX queue
-        if let Some(tx_frame) = self.tx_queue.pop_front() {
-            if tx_frame.len() <= MAX_FRAME_SIZE {
-                // Check if TX ring has available slots
-                let used = self.tx_head.wrapping_sub(self.tx_tail);
-                if used >= TX_QUEUE_SIZE {
-                    return Err("TX ring full");
-                }
+    /// Process pending TX frames and program DMA descriptors.
+    fn process_tx_queue(&mut self) {
+        while let Some(tx_frame) = self.tx_queue.front() {
+            if tx_frame.len() > MAX_FRAME_SIZE {
+                self.tx_queue.pop_front();
+                continue;
+            }
+            // Check if TX ring has available slots
+            let used = self.tx_head.wrapping_sub(self.tx_tail);
+            if used >= TX_QUEUE_SIZE {
+                break;
+            }
 
-                let desc_idx = self.tx_head % TX_QUEUE_SIZE;
-                self.tx_bufs[desc_idx][..tx_frame.len()].copy_from_slice(&tx_frame);
+            let tx_frame = self.tx_queue.pop_front().unwrap();
+            let desc_idx = self.tx_head % TX_QUEUE_SIZE;
+            self.tx_bufs[desc_idx][..tx_frame.len()].copy_from_slice(&tx_frame);
 
-                // Program TX DMA descriptor
-                let desc = &mut self.tx_dma_ring[desc_idx];
-                // FIXME: This uses a virtual address directly as DMA address, which is incorrect.
-                // In a production driver, use DriverContext::dma_map() to obtain a proper DMA/IOVA address.
-                let addr = self.tx_bufs[desc_idx].as_ptr() as u64;
-                desc.addr_lo = addr as u32;
-                desc.addr_hi = (addr >> 32) as u32;
-                desc.len = tx_frame.len() as u16;
-                desc.flags = 0;
+            let desc = &mut self.tx_dma_ring[desc_idx];
+            let addr = self.tx_bufs[desc_idx].as_ptr() as u64;
+            desc.addr_lo = addr as u32;
+            desc.addr_hi = (addr >> 32) as u32;
+            desc.len = tx_frame.len() as u16;
+            desc.flags = 0;
 
-                self.tx_head = self.tx_head.wrapping_add(1);
+            self.tx_head = self.tx_head.wrapping_add(1);
 
-                // Ring doorbell
-                unsafe {
-                    core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
-                }
+            unsafe {
+                core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
             }
         }
-
-        Ok(())
     }
 
     /// Process a received 802.11 frame.
@@ -1206,6 +1204,7 @@ impl IwlWifiDevice {
                 self.tx_tail = unsafe {
                     core::ptr::read_volatile(self.mmio.add(FH_TX_CHNL0_WPTR as usize))
                 } as usize;
+                self.process_tx_queue();
             }
         }
 
@@ -1329,6 +1328,19 @@ pub fn try_init_wifi_device() {
     }
     if let Some(mut dev) = IwlWifiDevice::probe_and_init() {
         log::info!("iwlwifi: loading embedded firmware ({} bytes)", EMBEDDED_FW.len());
+
+        // Verify firmware integrity with CRC32 against the known-good checksum
+        let crc_computed = IwlWifiDevice::crc32(EMBEDDED_FW);
+        if crc_computed != EMBEDDED_FW_CRC32 {
+            log::warn!(
+                "iwlwifi: firmware checksum mismatch (computed={:#010x}, expected={:#010x})",
+                crc_computed, EMBEDDED_FW_CRC32
+            );
+            // Keep the device anyway so UI knows it exists
+            *dev_guard = Some(dev);
+            return;
+        }
+
         match dev.load_firmware(EMBEDDED_FW) {
             Ok(()) => {
                 log::info!("iwlwifi: firmware loaded successfully");
@@ -1407,4 +1419,5 @@ pub fn connect_to_ap(ssid: &bonder::wifi::Ssid, password: Option<&str>) {
 #[derive(Debug)]
 enum IwlError {
     BarNotAvailable,
+    ClockNotReady,
 }

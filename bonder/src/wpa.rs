@@ -272,22 +272,55 @@ impl WpaSupplicant {
         if frame.len() < 4 + 97 {
             return Err("EAPOL-Key Message 3 too short");
         }
+
+        // Verify MIC: zero the MIC field in a copy, compute, compare
+        let mut mic_verified = false;
+        if self.state == WpaState::WaitMsg3 {
+            let mic_field = &frame[81..97];
+            let mut frame_copy = frame.to_vec();
+            frame_copy[81..97].fill(0);
+            let computed_mic = compute_mic(&self.ptk, &frame_copy);
+            if &computed_mic[..] == mic_field {
+                mic_verified = true;
+            }
+        }
+        if !mic_verified {
+            return Err("MIC verification failed");
+        }
+
         let body = &frame[4..];
 
-        // Verify MIC
         let key_data_len = u16::from_be_bytes([body[93], body[94]]);
         let key_data_end = 95 + key_data_len as usize;
         if body.len() < key_data_end {
             return Err("Frame too short for key data");
         }
 
-        // Extract GTK from key data (simplified - in real impl, parse KDE)
-        if key_data_len >= 24 {
-            let gtk_start: usize = 95 + 8; // Skip KDE header
-            let gtk_len: usize = core::cmp::min(32, (key_data_len.saturating_sub(8)) as usize);
-            if gtk_start + gtk_len <= body.len() {
-                self.gtk[..gtk_len].copy_from_slice(&body[gtk_start..gtk_start + gtk_len]);
+        // Parse Key Data Descriptors to extract GTK
+        let mut pos = 95;
+        while pos + 2 <= key_data_end {
+            let kde_type = body[pos];
+            let kde_len = body[pos + 1] as usize;
+            let kde_end = pos + 2 + kde_len;
+            if kde_end > key_data_end {
+                break;
             }
+            // GTK KDE: type=0xDD, OUI=00-0F-AC, data_type=1
+            if kde_type == 0xDD && kde_len >= 6
+                && body[pos + 2] == 0x00
+                && body[pos + 3] == 0x0F
+                && body[pos + 4] == 0xAC
+                && body[pos + 5] == 0x01
+            {
+                let gtk_data = &body[pos + 6..kde_end];
+                // gtk_data: key_id(1) + reserved(1) + gtk(N)
+                if gtk_data.len() >= 2 {
+                    let gtk_len = core::cmp::min(gtk_data.len() - 2, 32);
+                    self.gtk[..gtk_len].copy_from_slice(&gtk_data[2..2 + gtk_len]);
+                }
+                break;
+            }
+            pos = kde_end;
         }
 
         self.state = WpaState::WaitMsg4;

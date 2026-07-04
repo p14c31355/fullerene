@@ -165,6 +165,7 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
             rt.desktop.pwd_target_ap = None;
             rt.desktop.pwd_dialog_password.clear();
             rt.desktop.pwd_dialog_cursor = 0;
+            rt.desktop.shift_held = false;
             rt.desktop.dismiss_network_menu();
             rt.frame_due = true;
             true
@@ -182,6 +183,7 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
             rt.desktop.pwd_target_ap = None;
             rt.desktop.pwd_dialog_password.clear();
             rt.desktop.pwd_dialog_cursor = 0;
+            rt.desktop.shift_held = false;
             rt.desktop.dismiss_network_menu();
             rt.frame_due = true;
             true
