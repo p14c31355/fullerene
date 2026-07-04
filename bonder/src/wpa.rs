@@ -147,7 +147,12 @@ impl WpaSupplicant {
             let mut val = 0u64;
             #[cfg(target_arch = "x86_64")]
             let success = unsafe {
-                core::arch::x86_64::_rdrand64_step(&mut val)
+                let cpuid = core::arch::x86_64::__cpuid(1);
+                if (cpuid.ecx & (1 << 30)) != 0 {
+                    core::arch::x86_64::_rdrand64_step(&mut val)
+                } else {
+                    0
+                }
             };
             #[cfg(not(target_arch = "x86_64"))]
             let success = 0;
@@ -172,24 +177,25 @@ impl WpaSupplicant {
 
     /// Handle EAPOL-Key Message 1 (from AP).
     pub fn handle_message_1(&mut self, frame: &[u8]) -> Result<Vec<u8>, &'static str> {
-        if frame.len() < 97 {
+        if frame.len() < 4 + 97 {
             return Err("EAPOL-Key frame too short");
         }
+        let body = &frame[4..];
 
-        let _key_info = u16::from_be_bytes([frame[1], frame[2]]);
+        let _key_info = u16::from_be_bytes([body[1], body[2]]);
 
         // Extract ANonce (bytes 13-44 relative to key descriptor)
         let anonce_start = 13;
-        if anonce_start + 32 > frame.len() {
+        if anonce_start + 32 > body.len() {
             return Err("Frame too short for ANonce");
         }
-        self.anonce.copy_from_slice(&frame[anonce_start..anonce_start + 32]);
+        self.anonce.copy_from_slice(&body[anonce_start..anonce_start + 32]);
 
         // Update replay counter
-        if frame.len() >= 9 {
+        if body.len() >= 13 {
             let rc_bytes: [u8; 8] = [
-                frame[5], frame[6], frame[7], frame[8],
-                frame[9], frame[10], frame[11], frame[12],
+                body[5], body[6], body[7], body[8],
+                body[9], body[10], body[11], body[12],
             ];
             self.replay_counter = u64::from_be_bytes(rc_bytes);
         }
@@ -256,14 +262,15 @@ impl WpaSupplicant {
 
     /// Handle EAPOL-Key Message 3 (from AP, contains GTK).
     pub fn handle_message_3(&mut self, frame: &[u8]) -> Result<Vec<u8>, &'static str> {
-        if frame.len() < 97 {
+        if frame.len() < 4 + 97 {
             return Err("EAPOL-Key Message 3 too short");
         }
+        let body = &frame[4..];
 
         // Verify MIC
-        let key_data_len = u16::from_be_bytes([frame[93], frame[94]]);
+        let key_data_len = u16::from_be_bytes([body[93], body[94]]);
         let key_data_end = 95 + key_data_len as usize;
-        if frame.len() < key_data_end {
+        if body.len() < key_data_end {
             return Err("Frame too short for key data");
         }
 
@@ -271,8 +278,8 @@ impl WpaSupplicant {
         if key_data_len >= 24 {
             let gtk_start: usize = 95 + 8; // Skip KDE header
             let gtk_len: usize = core::cmp::min(32, (key_data_len.saturating_sub(8)) as usize);
-            if gtk_start + gtk_len <= frame.len() {
-                self.gtk[..gtk_len].copy_from_slice(&frame[gtk_start..gtk_start + gtk_len]);
+            if gtk_start + gtk_len <= body.len() {
+                self.gtk[..gtk_len].copy_from_slice(&body[gtk_start..gtk_start + gtk_len]);
             }
         }
 

@@ -20,6 +20,7 @@
 //! - IEEE 802.11-2016 standard
 
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
 use alloc::collections::VecDeque;
@@ -63,6 +64,9 @@ const CSR_RESET_BIT_MASTER_DISABLED: u32 = 1 << 8;
 const CSR_RESET_BIT_STOP_MASTER: u32 = 1 << 9;
 const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3; // MAC_ACCESS_REQ = bit 3 = 0x08
 const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
+
+/// FH register for RX ring head index.
+const FH_RSCSR_CHNL0_RBDCB_RPTR_REG: u32 = 0x0C0 / 4;
 
 // ── Firmware constants ───────────────────────────────────────────────
 
@@ -278,8 +282,9 @@ pub struct IwlWifiDevice {
     rx_head: usize,
     rx_tail: usize,
 
-    // ── TX buffer ─────────────────────────────────────────
-    tx_buf: Box<[u8; MAX_FRAME_SIZE]>,
+    // ── DMA buffers ───────────────────────────────────────
+    tx_bufs: Vec<Vec<u8>>,
+    rx_bufs: Vec<Vec<u8>>,
 
     // ── IP configuration (from DHCP) ─────────────────────
     ip_address: [u8; 4],
@@ -367,10 +372,22 @@ impl IwlWifiDevice {
         let tx_dma_ring = Box::new([TxDmaDesc {
             addr_lo: 0, addr_hi: 0, len: 0, flags: 0, reserved: [0; 2],
         }; TX_QUEUE_SIZE]);
-        let rx_dma_ring = Box::new([RxDmaDesc {
+        let mut rx_dma_ring = Box::new([RxDmaDesc {
             addr_lo: 0, addr_hi: 0, len: 0, flags: 0,
         }; RX_QUEUE_SIZE]);
-        let tx_buf = Box::new([0u8; MAX_FRAME_SIZE]);
+        let mut tx_bufs = Vec::new();
+        for _ in 0..TX_QUEUE_SIZE {
+            tx_bufs.push(vec![0u8; MAX_FRAME_SIZE]);
+        }
+        let mut rx_bufs = Vec::new();
+        for i in 0..RX_QUEUE_SIZE {
+            let buf = vec![0u8; MAX_FRAME_SIZE];
+            let addr = buf.as_ptr() as u64;
+            rx_dma_ring[i].addr_lo = addr as u32;
+            rx_dma_ring[i].addr_hi = (addr >> 32) as u32;
+            rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
+            rx_bufs.push(buf);
+        }
 
         log::info!("iwlwifi: hardware initialized (firmware not loaded)");
 
@@ -397,7 +414,8 @@ impl IwlWifiDevice {
             tx_tail: 0,
             rx_head: 0,
             rx_tail: 0,
-            tx_buf,
+            tx_bufs,
+            rx_bufs,
             ip_address: [0u8; 4],
             subnet_mask: [0u8; 4],
             gateway: [0u8; 4],
@@ -553,7 +571,10 @@ impl IwlWifiDevice {
                 core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32)
             };
             let tlv_data_off = off + 8;
-            let tlv_end = tlv_data_off + tlv_len as usize;
+            let tlv_end = match tlv_data_off.checked_add(tlv_len as usize) {
+                Some(end) => end,
+                None => break,
+            };
 
             if tlv_end > fw_data.len() {
                 break;
@@ -792,7 +813,7 @@ impl IwlWifiDevice {
 
         // Write to TX DMA ring
         let desc = &mut self.tx_dma_ring[self.tx_head % TX_QUEUE_SIZE];
-        let cmd_buf = &mut *self.tx_buf;
+        let cmd_buf = &mut *self.tx_bufs[self.tx_head % TX_QUEUE_SIZE];
 
         unsafe {
             let hdr_ptr = &hcmd_header as *const HcmdHeader as *const u8;
@@ -963,13 +984,14 @@ impl IwlWifiDevice {
         // Process TX queue
         if let Some(tx_frame) = self.tx_queue.pop_front() {
             if tx_frame.len() <= MAX_FRAME_SIZE {
-                self.tx_buf[..tx_frame.len()].copy_from_slice(&tx_frame);
+                let desc_idx = self.tx_head % TX_QUEUE_SIZE;
+                self.tx_bufs[desc_idx][..tx_frame.len()].copy_from_slice(&tx_frame);
 
                 // Program TX DMA descriptor
-                let desc = &mut self.tx_dma_ring[self.tx_head % TX_QUEUE_SIZE];
+                let desc = &mut self.tx_dma_ring[desc_idx];
                 // FIXME: This uses a virtual address directly as DMA address, which is incorrect.
                 // In a production driver, use DriverContext::dma_map() to obtain a proper DMA/IOVA address.
-                let addr = self.tx_buf.as_ptr() as u64;
+                let addr = self.tx_bufs[desc_idx].as_ptr() as u64;
                 desc.addr_lo = addr as u32;
                 desc.addr_hi = (addr >> 32) as u32;
                 desc.len = tx_frame.len() as u16;
@@ -1115,18 +1137,10 @@ impl IwlWifiDevice {
     pub fn tick(&mut self) {
         // Process any pending frames in the RX queue
         while self.rx_tail != self.rx_head {
-            let desc = &self.rx_dma_ring[self.rx_tail % RX_QUEUE_SIZE];
-            if desc.len > 0 {
-                // Read the actual received frame from the DMA buffer
-                let mut frame_data = alloc::vec![0u8; desc.len as usize];
-                let dma_addr = ((desc.addr_hi as u64) << 32) | (desc.addr_lo as u64);
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        dma_addr as *const u8,
-                        frame_data.as_mut_ptr(),
-                        desc.len as usize,
-                    );
-                }
+            let desc_idx = self.rx_tail % RX_QUEUE_SIZE;
+            let desc = &self.rx_dma_ring[desc_idx];
+            if desc.len > 0 && desc_idx < self.rx_bufs.len() {
+                let frame_data = self.rx_bufs[desc_idx][..desc.len as usize].to_vec();
                 self.process_rx_frame(&frame_data);
             }
             self.rx_tail = self.rx_tail.wrapping_add(1);
@@ -1155,7 +1169,9 @@ impl IwlWifiDevice {
 
             // Check for RX
             if (int_cause & (1 << 18)) != 0 {
-                // Process RX
+                self.rx_head = unsafe {
+                    core::ptr::read_volatile(self.mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize))
+                } as usize;
             }
         }
     }

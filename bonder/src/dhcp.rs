@@ -150,7 +150,16 @@ impl DhcpClient {
     pub fn new(client_mac: [u8; 6]) -> Self {
         Self {
             state: DhcpState::Initial,
-            xid: 0x12345678,
+            xid: {
+                #[cfg(target_arch = "x86_64")]
+                {
+                    (unsafe { core::arch::x86_64::_rdtsc() } & 0xFFFF_FFFF) as u32
+                }
+                #[cfg(not(target_arch = "x86_64"))]
+                {
+                    0x12345678
+                }
+            },
             lease: DhcpLease::new(),
             client_mac,
             retries: 0,
