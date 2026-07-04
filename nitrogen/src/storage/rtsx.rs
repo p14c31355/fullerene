@@ -653,8 +653,6 @@ impl RtsxController {
             for _ in 0..50_000 {
                 core::hint::spin_loop();
             }
-            // Switch to 4-bit bus width
-            let _ = self.sd_set_bus_width_4();
         }
 
         self.sd_cmd(CMD2_ALL_SEND_CID, 0, SD_RSP_TYPE_R2, 0)?;
@@ -675,6 +673,11 @@ impl RtsxController {
         let (block_size, total_blocks) = Self::parse_csd(&csd, card_type);
 
         self.sd_cmd(CMD7_SELECT_CARD, (rca as u32) << 16, SD_RSP_TYPE_R1B, 0)?;
+
+        // Switch to 4-bit bus width after card selection
+        if card_type != SdCardType::SDSC {
+            let _ = self.sd_set_bus_width_4();
+        }
 
         if card_type == SdCardType::SDSC {
             let _ = self.sd_cmd(CMD16_SET_BLOCKLEN, 512, SD_RSP_TYPE_R1, 0);
@@ -793,7 +796,7 @@ impl RtsxController {
         // Without this, a subsequent write command may fail because
         // the card is still programming the previous data.
         if let Some(ref card) = self.sd_card {
-            let _ = self.sd_wait_ready(card.rca);
+            self.sd_wait_ready(card.rca)?;
         }
 
         Ok(())

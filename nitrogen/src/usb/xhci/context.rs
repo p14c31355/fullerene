@@ -654,7 +654,7 @@ impl XhciContext {
     /// Performs power cycling, warm port reset, and port reset as needed.
     /// Returns the number of newly detected devices.
     pub fn poll_ports(&mut self) -> usize {
-        let initial_count = self.devices.len();
+        let mut added = 0usize;
 
         // PCD (Port Change Detect) → re-evaluate changed ports
         if self.registers.op.usbsts() & USBSTS_PCD != 0 {
@@ -724,12 +724,13 @@ impl XhciContext {
                 endpoints: Vec::new(),
                 port_index: port_idx,
             });
+            added += 1;
             if let Some(p) = self.ports.get_mut(port_idx) {
                 p.done = true;
             }
         }
 
-        self.devices.len() - initial_count
+        added
     }
 
     /// Try to bring up a single port.  Returns true if CCS=1 and PED=1.
@@ -1292,22 +1293,30 @@ impl XhciContext {
         self.registers.doorbell.ring(slot_id, db_stream);
         let res = self.wait_event(5_000_000);
 
-        // Copy IN data back on success; free staging buffer unconditionally
-        let actual_len = if let Ok(ev) = res {
-            let remainder = ev.remaining() as usize;
-            let xfer_len = len.saturating_sub(remainder.min(len));
-            if dir == UsbDirection::In && xfer_len > 0 {
-                unsafe {
-                    ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), xfer_len);
+        // Validate transfer event and copy IN data back; free staging buffer
+        let actual_len = match res {
+            Ok(ev) => {
+                if ev.completion_code() != COMP_SUCCESS {
+                    self.driver_ctx
+                        .free_contiguous_frames(staging_phys, staging_pages);
+                    return Err("bulk completion code not success");
                 }
+                let remainder = ev.remaining() as usize;
+                let xfer_len = len.saturating_sub(remainder.min(len));
+                if dir == UsbDirection::In && xfer_len > 0 {
+                    unsafe {
+                        ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), xfer_len);
+                    }
+                }
+                self.driver_ctx
+                    .free_contiguous_frames(staging_phys, staging_pages);
+                Ok(xfer_len)
             }
-            self.driver_ctx
-                .free_contiguous_frames(staging_phys, staging_pages);
-            Ok(xfer_len)
-        } else {
-            self.driver_ctx
-                .free_contiguous_frames(staging_phys, staging_pages);
-            Err("bulk transfer failed")
+            Err(_) => {
+                self.driver_ctx
+                    .free_contiguous_frames(staging_phys, staging_pages);
+                Err("bulk transfer failed")
+            }
         };
 
         actual_len

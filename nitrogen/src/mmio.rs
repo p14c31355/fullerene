@@ -47,12 +47,17 @@ pub fn cache_flush(addr: *const u8) {
 /// Flush a range of cache lines and issue a memory fence afterwards.
 /// This ensures all prior writes are visible to DMA before a doorbell.
 pub fn cache_flush_range(base: *const u8, len: usize) {
+    if len == 0 {
+        return;
+    }
     let base_addr = base as usize;
-    let end = base_addr.wrapping_add(len);
+    let end = base_addr
+        .checked_add(len)
+        .expect("cache flush range overflow");
     let mut addr = base_addr & !0x3F; // align to cache line
     while addr < end {
         cache_flush(addr as *const u8);
-        addr = addr.wrapping_add(64);
+        addr = addr.checked_add(64).expect("cache flush address overflow");
     }
     write_barrier();
 }
@@ -114,17 +119,29 @@ impl MemRegion {
         self.size
     }
 
+    /// Create a pointer to a register of type T at the given offset,
+    /// with unconditional alignment and bounds checks.
+    #[inline]
+    fn reg_ptr<T>(&self, offset: usize) -> *mut T {
+        let width = core::mem::size_of::<T>();
+        assert!(
+            offset % core::mem::align_of::<T>() == 0,
+            "MMIO access is not naturally aligned"
+        );
+        let end = offset.checked_add(width).expect("MMIO offset overflow");
+        assert!(end <= self.size, "MMIO access out of bounds");
+        unsafe { self.base.add(offset) as *mut T }
+    }
+
     /// Read a u32 from an offset within this region.
     #[inline]
     pub fn read32(&self, offset: usize) -> u32 {
-        debug_assert!(offset + 4 <= self.size, "MMIO read32 out of bounds");
-        unsafe { ptr::read_volatile(self.base.add(offset) as *const u32) }
+        unsafe { ptr::read_volatile(self.reg_ptr::<u32>(offset) as *const u32) }
     }
 
     /// Read a u64 from an offset within this region.
     #[inline]
     pub fn read64(&self, offset: usize) -> u64 {
-        debug_assert!(offset + 8 <= self.size, "MMIO read64 out of bounds");
         let lo = self.read32(offset);
         let hi = self.read32(offset + 4);
         (lo as u64) | ((hi as u64) << 32)
@@ -133,14 +150,12 @@ impl MemRegion {
     /// Write a u32 to an offset within this region.
     #[inline]
     pub fn write32(&self, offset: usize, val: u32) {
-        debug_assert!(offset + 4 <= self.size, "MMIO write32 out of bounds");
-        unsafe { ptr::write_volatile(self.base.add(offset) as *mut u32, val) };
+        unsafe { ptr::write_volatile(self.reg_ptr::<u32>(offset), val) };
     }
 
     /// Write a u64 to an offset within this region.
     #[inline]
     pub fn write64(&self, offset: usize, val: u64) {
-        debug_assert!(offset + 8 <= self.size, "MMIO write64 out of bounds");
         self.write32(offset, val as u32);
         self.write32(offset + 4, (val >> 32) as u32);
     }
@@ -175,6 +190,7 @@ pub struct DmaRegion {
     virt: *mut u8,
     phys: u64,
     len: usize,
+    dma_iova: u64,
     /// Whether this region is currently mapped for DMA.
     mapped: bool,
 }
@@ -182,14 +198,20 @@ pub struct DmaRegion {
 impl DmaRegion {
     /// Allocate a DMA buffer via `DriverContext`.
     pub fn alloc(ctx: &dyn DriverContext, size: usize) -> Option<Self> {
-        let pages = (size + 4095) / 4096;
+        if size == 0 {
+            return None;
+        }
+        let pages = size.checked_add(4095)? / 4096;
+        let alloc_len = pages.checked_mul(4096)?;
         let phys = ctx.allocate_contiguous_frames(pages).ok()?;
         let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe { core::ptr::write_bytes(virt, 0, size); }
+        unsafe { core::ptr::write_bytes(virt, 0, alloc_len); }
+        cache_flush_range(virt, alloc_len);
         Some(Self {
             virt,
             phys,
             len: size,
+            dma_iova: 0,
             mapped: false,
         })
     }
@@ -250,17 +272,18 @@ impl DmaRegion {
 
     /// Map this buffer for DMA via IOMMU.
     pub fn dma_map(&mut self, ctx: &dyn DriverContext, device_id: u16) -> Result<u64, &'static str> {
-        let dma = ctx
+        let iova = ctx
             .dma_map(device_id, self.phys, self.len)
             .map_err(|_| "dma_map failed")?;
+        self.dma_iova = iova;
         self.mapped = true;
-        Ok(dma)
+        Ok(iova)
     }
 
     /// Unmap this buffer.
     pub fn dma_unmap(&mut self, ctx: &dyn DriverContext, _device_id: u16) {
         if self.mapped {
-            ctx.dma_unmap(self.phys, self.len);
+            ctx.dma_unmap(self.dma_iova, self.len);
             self.mapped = false;
         }
     }
@@ -268,12 +291,19 @@ impl DmaRegion {
 
 impl DmaRegion {
     pub fn free(&mut self, ctx: &dyn DriverContext) {
+        if self.len == 0 {
+            return;
+        }
         if self.mapped {
-            ctx.dma_unmap(self.phys, self.len);
+            ctx.dma_unmap(self.dma_iova, self.len);
             self.mapped = false;
         }
         let pages = (self.len + 4095) / 4096;
         ctx.free_contiguous_frames(self.phys, pages);
+        self.virt = core::ptr::null_mut();
+        self.phys = 0;
+        self.len = 0;
+        self.dma_iova = 0;
     }
 }
 
@@ -281,6 +311,8 @@ impl Drop for DmaRegion {
     fn drop(&mut self) {
         if self.mapped {
             log::warn!("DmaRegion dropped while still mapped");
+        } else if self.len != 0 {
+            log::warn!("DmaRegion dropped without free()");
         }
     }
 }

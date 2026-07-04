@@ -211,15 +211,8 @@ impl PciHealth {
     /// device has disappeared — in which case the caller MUST NOT
     /// perform non-posted MMIO reads (they could hang the CPU).
     pub fn pre_mmio_access(&mut self) -> Result<(), PciHealthError> {
-        // Fast path: if we recently verified, skip re-check
-        if self.d0_verified && self.aspm_disabled {
-            // Quick presence check (single config read)
-            if self.is_device_present() {
-                return Ok(());
-            }
-            // Device disappeared — clear cache and fall through
-            self.d0_verified = false;
-        }
+        // Keep this gate authoritative until a real, bounded cache expiry is wired up.
+        self.d0_verified = false;
 
         // Slow path: full health check
         match self.check() {
@@ -231,12 +224,12 @@ impl PciHealth {
                 }
                 Ok(())
             }
-            Err(e) => {
+            Err(_e) => {
                 // Attempt recovery once
-                if let Ok(()) = self.recover() {
-                    return Ok(());
+                match self.recover() {
+                    Ok(()) => Ok(()),
+                    Err(recovery_err) => Err(recovery_err),
                 }
-                Err(e)
             }
         }
     }

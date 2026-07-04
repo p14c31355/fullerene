@@ -158,6 +158,7 @@ enum LegacyCmd {
     Deauth          = 0x1D,
     AddSta          = 0x18 | 0x40,
     Rxon            = 0x1E,
+    TxAntConfig     = 0x0C,
     RxonAssoc       = 0x20,
     PowerDown      = 0x26,
     PowerUp        = 0x27,
@@ -368,9 +369,13 @@ impl IwlWifiDevice {
         device.enable_memory_access();
 
         let bar0_addr = device.read_bar(0).ok_or(IwlError::BarNotAvailable)?;
+        let mmio_virt = ctx.phys_to_virt(bar0_addr);
+        // If available here, also register the UC MMIO mapping:
+        // ctx.map_mmio_region(bar0_addr as usize, mmio_virt, IWL_BAR0_SIZE)
+        //     .map_err(|_| IwlError::BarNotAvailable)?;
         // NOTE: CSR_* constants are u32-relative (offset/4).  We use raw u32
         // pointer arithmetic to access registers, matching the iwlwifi spec.
-        let mmio = bar0_addr as *mut u32;
+        let mmio = mmio_virt as *mut u32;
 
         // Re-verify health after enabling memory access
         health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
@@ -875,7 +880,7 @@ impl IwlWifiDevice {
         // cfg[0] = valid_tx_antenna mask (bitmask of antennas 1/2)
         // cfg[1] = valid_rx_antenna mask
         let ant_cfg: [u8; 8] = [0x03, 0x03, 0, 0, 0, 0, 0, 0];
-        self.send_hcmd(LegacyCmd::Rxon as u8, GroupId::Legacy as u8, &ant_cfg)
+        self.send_hcmd(LegacyCmd::TxAntConfig as u8, GroupId::Legacy as u8, &ant_cfg)
             .map_err(|_| "TX antenna config failed")?;
         log::info!("iwlwifi: TX antenna config sent");
 
@@ -931,6 +936,10 @@ impl IwlWifiDevice {
         };
 
         // Write to TX DMA ring
+        let used = self.tx_head.wrapping_sub(self.tx_tail);
+        if used >= TX_QUEUE_SIZE {
+            return Err("TX ring full");
+        }
         let desc_idx = self.tx_head % TX_QUEUE_SIZE;
         let desc = &mut self.tx_dma_ring[desc_idx];
         let cmd_buf = &mut self.tx_bufs[desc_idx];
@@ -1142,7 +1151,7 @@ impl IwlWifiDevice {
             // Use ctx.dma_map() to get the proper DMA/IOVA address
             let dma_addr = self.ctx
                 .dma_map(self._pci_dev.device_id, buf.phys(), tx_frame.len())
-                .unwrap_or(buf.phys());
+                .map_err(|_| "dma_map failed for TX frame")?;
             desc.addr_lo = dma_addr as u32;
             desc.addr_hi = (dma_addr >> 32) as u32;
             desc.len = tx_frame.len() as u16;
@@ -1335,7 +1344,9 @@ impl IwlWifiDevice {
     /// Periodic tick - process pending events, scan results, etc.
     pub fn tick(&mut self) {
         // Verify health before touching hardware registers
-        let _ = self.health.pre_mmio_access();
+        if self.health.pre_mmio_access().is_err() {
+            return;
+        }
 
         // Poll firmware for events
         let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };

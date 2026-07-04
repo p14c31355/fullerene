@@ -269,6 +269,8 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
 
 fn map_vfs_error(e: &str) -> FsError {
     match e {
+        "mount point not found" => FsError::FileNotFound,
+        "mount point not a directory" => FsError::InvalidPath,
         "not found" => FsError::FileNotFound,
         "bad fd" => FsError::InvalidFileDescriptor,
         "inode not found" => FsError::FileNotFound,
