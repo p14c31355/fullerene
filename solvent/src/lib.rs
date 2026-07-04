@@ -579,11 +579,18 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool
             let mut ch = scancode_to_ascii(scancode);
             if ch != 0 {
                 if SHIFT_HELD.load(core::sync::atomic::Ordering::Relaxed) {
-                    // Simple uppercase conversion for a-z
-                    if ch >= b'a' && ch <= b'z' {
-                        ch = ch - b'a' + b'A';
-                    }
-                    // Add other shifted symbol mappings here if needed
+                    // Shifted symbol mapping
+                    let shifted = match ch {
+                        b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$',
+                        b'5' => b'%', b'6' => b'^', b'7' => b'&', b'8' => b'*',
+                        b'9' => b'(', b'0' => b')', b'-' => b'_', b'=' => b'+',
+                        b'[' => b'{', b']' => b'}', b'\\' => b'|', b';' => b':',
+                        b'\'' => b'"', b'`' => b'~', b',' => b'<', b'.' => b'>',
+                        b'/' => b'?',
+                        _ if ch >= b'a' && ch <= b'z' => ch - b'a' + b'A',
+                        _ => ch,
+                    };
+                    ch = shifted;
                 }
                 DesktopAction::PasswordChar(ch)
             } else {

@@ -67,6 +67,8 @@ const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
 
 /// FH register for RX ring head index.
 const FH_RSCSR_CHNL0_RBDCB_RPTR_REG: u32 = 0x0C0 / 4;
+/// FH register for TX ring head index (written by hardware on completion).
+const FH_TX_CHNL0_WPTR: u32 = 0x0A0 / 4;
 
 // ── Firmware constants ───────────────────────────────────────────────
 
@@ -984,6 +986,12 @@ impl IwlWifiDevice {
         // Process TX queue
         if let Some(tx_frame) = self.tx_queue.pop_front() {
             if tx_frame.len() <= MAX_FRAME_SIZE {
+                // Check if TX ring has available slots
+                let used = self.tx_head.wrapping_sub(self.tx_tail);
+                if used >= TX_QUEUE_SIZE {
+                    return Err("TX ring full");
+                }
+
                 let desc_idx = self.tx_head % TX_QUEUE_SIZE;
                 self.tx_bufs[desc_idx][..tx_frame.len()].copy_from_slice(&tx_frame);
 
@@ -1191,6 +1199,12 @@ impl IwlWifiDevice {
             if (int_cause & (1 << 18)) != 0 {
                 self.rx_head = unsafe {
                     core::ptr::read_volatile(self.mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize))
+                } as usize;
+            }
+            // Check for TX completion
+            if (int_cause & (1 << 15)) != 0 {
+                self.tx_tail = unsafe {
+                    core::ptr::read_volatile(self.mmio.add(FH_TX_CHNL0_WPTR as usize))
                 } as usize;
             }
         }
