@@ -558,42 +558,48 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    /// Upload a single firmware section to the device's SRAM.
+    /// HBUS register offsets (byte addresses / 4 for u32 mmio access).
+    const HBUS_TARG_MEM_WADDR: u32 = (0x400 + 0x010) / 4; // 0x104
+    const HBUS_TARG_MEM_WDAT: u32  = (0x400 + 0x018) / 4; // 0x106
+
+    /// Upload a single firmware section to the device SRAM via HBUS direct writes.
+    ///
+    /// Writes the data one dword at a time.  The address auto-increments after
+    /// each `WDAT` write, so only the initial WADDR needs to be set.
     fn upload_section(&mut self, target_addr: u32, data: &[u8]) -> Result<(), &'static str> {
-        // In a real implementation, this would:
-        // 1. Allocate a DMA buffer for the section data
-        // 2. Copy the data into the DMA buffer
-        // 3. Program the device's DMA engine to transfer data to SRAM
-        // 4. Wait for transfer completion
-        //
-        // For this implementation, we simulate the upload process.
-        // The actual hardware interface writes to specific MMIO registers
-        // to trigger the DMA transfer.
+        let dwords = data.len() / 4;
+        let extra = data.len() % 4;
 
         unsafe {
-            // Write transfer address
+            // Set starting SRAM address
             core::ptr::write_volatile(
-                self.mmio.add(0x0A4 / 4),
+                self.mmio.add(Self::HBUS_TARG_MEM_WADDR as usize),
                 target_addr,
             );
-            // Write transfer size
-            core::ptr::write_volatile(
-                self.mmio.add(0x0A8 / 4),
-                data.len() as u32,
-            );
-            // Trigger transfer
-            core::ptr::write_volatile(
-                self.mmio.add(0x0AC / 4),
-                0x8000_0000,
-            );
 
-            // Spin-wait for transfer complete
-            for _ in 0..1_000_000 {
-                let status = core::ptr::read_volatile(self.mmio.add(0x0AC / 4));
-                if (status & 0x8000_0000) == 0 {
-                    break;
-                }
-                core::hint::spin_loop();
+            // Write each full dword
+            for i in 0..dwords {
+                let val = u32::from_le_bytes([
+                    data[i * 4],
+                    data[i * 4 + 1],
+                    data[i * 4 + 2],
+                    data[i * 4 + 3],
+                ]);
+                core::ptr::write_volatile(
+                    self.mmio.add(Self::HBUS_TARG_MEM_WDAT as usize),
+                    val,
+                );
+            }
+
+            // Write remaining partial dword
+            if extra > 0 {
+                let mut last = [0u8; 4];
+                last[..extra].copy_from_slice(&data[dwords * 4..]);
+                let val = u32::from_le_bytes(last);
+                core::ptr::write_volatile(
+                    self.mmio.add(Self::HBUS_TARG_MEM_WDAT as usize),
+                    val,
+                );
             }
         }
 
