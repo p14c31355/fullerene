@@ -1149,9 +1149,16 @@ impl IwlWifiDevice {
 
             let desc = &mut self.tx_dma_ring[desc_idx];
             // Use ctx.dma_map() to get the proper DMA/IOVA address
-            let dma_addr = self.ctx
+            let dma_addr = match self
+                .ctx
                 .dma_map(self._pci_dev.device_id, buf.phys(), tx_frame.len())
-                .map_err(|_| "dma_map failed for TX frame")?;
+            {
+                Ok(addr) => addr,
+                Err(_) => {
+                    log::warn!("iwlwifi: dma_map failed for TX frame");
+                    break;
+                }
+            };
             desc.addr_lo = dma_addr as u32;
             desc.addr_hi = (dma_addr >> 32) as u32;
             desc.len = tx_frame.len() as u16;

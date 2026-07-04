@@ -63,6 +63,15 @@ pub struct XhciContext {
     pub legacy_handoff_done: bool,
     /// ERST physical address (allocated in setup_erst).
     erst_phys: Option<u64>,
+    /// Deferred free list for staging buffers.
+    ///
+    /// When a control or bulk transfer times out or the xHC reports a
+    /// non-success completion, the staging buffer (DMA pages) must **not** be
+    /// freed immediately — the xHC may still own the TRB and DMA into those
+    /// pages.  Instead, the (phys, pages) tuple is pushed onto this list and
+    /// freed later, after the owning endpoint has been stopped or the slot
+    /// disabled (xHCI spec §4.6.9).
+    deferred_free_list: Vec<(u64, /* phys */ usize /* pages */)>,
 }
 
 // SAFETY: xHCI is used only on the main kernel thread (single-threaded kernel).
@@ -151,6 +160,7 @@ impl XhciContext {
             driver_ctx: ctx,
             legacy_handoff_done: legacy_ok,
             erst_phys: None,
+            deferred_free_list: Vec::new(),
         })
     }
 
@@ -1064,6 +1074,11 @@ impl XhciContext {
         let ctx = self.driver_ctx;
         self.device.dcbaa.clear_slot(slot_id);
         self.device.slots.release_slot(slot_id, ctx);
+
+        // DISABLE_SLOT guarantees the xHC has released all endpoint state
+        // for this slot.  Deferred staging buffers (from prior timeouts /
+        // non-success completions) are now safe to free.
+        self.drain_deferred_free_list();
     }
 
     /// Release all device slots and free resources.
@@ -1079,6 +1094,21 @@ impl XhciContext {
             self.device.dcbaa.clear_slot(*slot_id);
         }
         self.device.slots.release_all(ctx);
+        // All slots are now disabled — safe to free deferred staging buffers.
+        self.drain_deferred_free_list();
+    }
+
+    /// Drain and free all deferred staging buffers.
+    ///
+    /// After a DISABLE_SLOT command, the xHC has released all endpoint
+    /// state and will no longer DMA into any staging buffer.  This is
+    /// the safe point to free pages that were deferred by earlier
+    /// timeout / non-success-completion paths.
+    fn drain_deferred_free_list(&mut self) {
+        let ctx = self.driver_ctx;
+        for (phys, pages) in self.deferred_free_list.drain(..) {
+            ctx.free_contiguous_frames(phys, pages);
+        }
     }
 
     // ── Command submission ─────────────────────────────────────
@@ -1205,15 +1235,27 @@ impl XhciContext {
             }
         }
 
-        // Free staging buffer unconditionally.  On timeout, the endpoint
-        // must be reset/recovered before the next use, but the pages must
-        // not leak regardless.  The caller is responsible for recovery.
-        if staging_phys != 0 {
-            self.driver_ctx
-                .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
+        match res {
+            Ok(_) => {
+                // Success — safe to free immediately: the xHC has completed
+                // the transfer and no longer owns the staging buffer.
+                if staging_phys != 0 {
+                    self.driver_ctx
+                        .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
+                }
+                Ok(data_len)
+            }
+            Err(_) => {
+                // On timeout or error the xHC may still own the TRB and DMA
+                // into the staging buffer.  Defer freeing until the endpoint
+                // is stopped / slot disabled (xHCI spec §4.6.9).
+                if staging_phys != 0 {
+                    self.deferred_free_list
+                        .push((staging_phys, (data_len + 4095) / 4096));
+                }
+                Err("control transfer failed")
+            }
         }
-
-        res.map(|_| data_len)
     }
 
     // ── Bulk transfer ──────────────────────────────────────────
@@ -1293,12 +1335,15 @@ impl XhciContext {
         self.registers.doorbell.ring(slot_id, db_stream);
         let res = self.wait_event(5_000_000);
 
-        // Validate transfer event and copy IN data back; free staging buffer
-        let actual_len = match res {
+        // Validate transfer event and copy IN data back.
+        // On success the staging buffer is freed immediately; on error or
+        // timeout it is deferred until the endpoint is stopped / slot disabled.
+        match res {
             Ok(ev) => {
                 if ev.completion_code() != COMP_SUCCESS {
-                    self.driver_ctx
-                        .free_contiguous_frames(staging_phys, staging_pages);
+                    // Non-success completion: xHC may still own the TRB.
+                    self.deferred_free_list
+                        .push((staging_phys, staging_pages));
                     return Err("bulk completion code not success");
                 }
                 let remainder = ev.remaining() as usize;
@@ -1308,18 +1353,17 @@ impl XhciContext {
                         ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), xfer_len);
                     }
                 }
+                // Success — safe to free immediately.
                 self.driver_ctx
                     .free_contiguous_frames(staging_phys, staging_pages);
                 Ok(xfer_len)
             }
             Err(_) => {
-                self.driver_ctx
-                    .free_contiguous_frames(staging_phys, staging_pages);
+                self.deferred_free_list
+                    .push((staging_phys, staging_pages));
                 Err("bulk transfer failed")
             }
-        };
-
-        actual_len
+        }
     }
 
     // ── Descriptor helpers ─────────────────────────────────────
@@ -1461,6 +1505,10 @@ impl Drop for XhciContext {
             let array_pages = ((sp.count as usize * 8) + 4095) / 4096;
             let _ = self.driver_ctx.free_contiguous_frames(sp.phys, array_pages);
         }
+
+        // Paranoid safety net: drain any remaining deferred staging buffers
+        // that were not already freed by disable_all_slots (should be empty).
+        self.drain_deferred_free_list();
     }
 }
 
