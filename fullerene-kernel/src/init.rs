@@ -12,6 +12,9 @@
 use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
 
+static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
+    super::driver_context_impl::KernelDriverContext;
+
 /// Common initialization function for both UEFI and BIOS boot paths
 ///
 /// # Arguments
@@ -196,6 +199,11 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("sd_card", || {
             crate::drivers::sd_card::init();
             petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
+            Ok(())
+        }),
+        petroleum::init_step!("wifi", || {
+            nitrogen::iwlwifi::set_wifi_driver_context(&WIFI_DRIVER_CTX);
+            petroleum::serial::serial_log(format_args!("WiFi driver context set\n"));
             Ok(())
         }),
         petroleum::init_step!("gui", || {

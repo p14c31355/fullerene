@@ -263,6 +263,7 @@ impl EhciContext {
                 device_protocol: 0,
                 configurations: 0,
                 endpoints: Vec::new(),
+                port_index: port_idx,
             });
             self.ports.mark_processed(port_idx);
         }

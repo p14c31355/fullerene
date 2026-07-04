@@ -78,8 +78,24 @@ const SD_RSP_TYPE_R6: u8 = 0x02;
 const SD_RSP_TYPE_R7: u8 = 0x01;
 
 // ── SD_CFG constants ──────────────────────────────────────────
+#[allow(dead_code)]
 const SD_CLK_DIVIDE_128: u8 = 0x0C;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_64: u8 = 0x0A;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_32: u8 = 0x08;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_16: u8 = 0x06;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_8: u8 = 0x04;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_4: u8 = 0x02;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_2: u8 = 0x01;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_1: u8 = 0x00;
 const SD_BUS_WIDTH_1: u8 = 0x00;
+const SD_BUS_WIDTH_4: u8 = 0x01;
 const SD_CRC_CHECK_EN: u8 = 0x20;
 const SD_CRC_GEN_EN: u8 = 0x40;
 const SD_CALC_CRC_CMD: u8 = 0x10;
@@ -94,14 +110,25 @@ const CARD_PWR_ON: u8 = 0x07;
 const CMD0_GO_IDLE: u8 = 0;
 const CMD2_ALL_SEND_CID: u8 = 2;
 const CMD3_SEND_RELATIVE_ADDR: u8 = 3;
+#[allow(dead_code)]
+const CMD6_SWITCH_FUNC: u8 = 6;
 const CMD7_SELECT_CARD: u8 = 7;
 const CMD8_SEND_IF_COND: u8 = 8;
 const CMD9_SEND_CSD: u8 = 9;
+const CMD11_VOLTAGE_SWITCH: u8 = 11;
+#[allow(dead_code)]
+const CMD12_STOP_TRANSMISSION: u8 = 12;
+const CMD13_SEND_STATUS: u8 = 13;
 const CMD16_SET_BLOCKLEN: u8 = 16;
 const CMD17_READ_SINGLE: u8 = 17;
+#[allow(dead_code)]
+const CMD18_READ_MULTIPLE: u8 = 18;
 const CMD24_WRITE_SINGLE: u8 = 24;
+#[allow(dead_code)]
+const CMD25_WRITE_MULTIPLE: u8 = 25;
 const CMD55_APP_CMD: u8 = 55;
 const ACMD41_SEND_OP_COND: u8 = 41;
+const ACMD6_SET_BUS_WIDTH: u8 = 6;
 
 // ── SD Card Type ──────────────────────────────────────────────
 
@@ -135,6 +162,8 @@ pub struct RtsxController {
     /// we re-assert D0/ASPM disable on the bridge before each MMIO
     /// session to avoid hangs caused by L1 substate transitions.
     upstream_bridge: Option<(u8, u8, u8)>,
+    /// Whether a card was detected in the previous poll cycle.
+    card_was_present: bool,
 }
 
 unsafe impl Send for RtsxController {}
@@ -458,6 +487,74 @@ impl RtsxController {
         self.sd_cmd(acmd, arg, rsp_type, 0)
     }
 
+    /// Send CMD13 (SEND_STATUS) to poll the card's current state.
+    /// The card responds with R1 containing the 16-bit status in the upper 16 bits.
+    fn sd_status(&self, rca: u16) -> Result<u32, &'static str> {
+        self.sd_cmd(CMD13_SEND_STATUS, (rca as u32) << 16, SD_RSP_TYPE_R1, 0)
+    }
+
+    /// Wait for the card to become ready (not busy) after a write command.
+    /// Polls CMD13 until the card exits the programming state.
+    fn sd_wait_ready(&self, rca: u16) -> Result<(), &'static str> {
+        for _ in 0..500_000 {
+            let st = self.sd_status(rca)?;
+            // R1 bit 8 = READY_FOR_DATA; bit 9 = CURRENT_STATE (0=idle, 7=prg)
+            if (st & (1 << 8)) != 0 {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err("card busy timeout")
+    }
+
+    /// Switch the SD bus to 4-bit wide mode via ACMD6.
+    fn sd_set_bus_width_4(&self) -> Result<(), &'static str> {
+        let _ = self.sd_acmd(ACMD6_SET_BUS_WIDTH, 0x02, SD_RSP_TYPE_R1)?;
+        self.w8(SD_CFG1, self.r8(SD_CFG1) | SD_BUS_WIDTH_4);
+        Ok(())
+    }
+
+    /// Attempt UHS-I voltage switch (1.8V signaling) and SDR mode.
+    ///
+    /// CMD11 tells the card to switch signaling voltage.  On success,
+    /// the card drives CMD and DAT[3:0] low for 5ms, then the host
+    /// switches its voltage regulator.
+    ///
+    /// We then switch to higher clock speed (SD_CLK_DIVIDE_4 or better)
+    /// and 4-bit data bus for SDR25/SDR50 operation.
+    ///
+    /// Returns `true` if voltage switch succeeded, `false` if the card
+    /// doesn't support UHS-I or the switch failed (cards remain at 3.3V).
+    fn sd_uhs_voltage_switch(&self) -> bool {
+        // CMD11: arg=0, R1 response.  If card supports UHS-I it will
+        // respond successfully and drive data lines low.
+        match self.sd_cmd(CMD11_VOLTAGE_SWITCH, 0, SD_RSP_TYPE_R1, 0) {
+            Ok(_) => {
+                // Per SD spec, after CMD11 success wait 5ms for the card
+                // to pull data lines low (indicating it has switched).
+                for _ in 0..50_000 {
+                    core::hint::spin_loop();
+                }
+
+                // Verify card is still responsive via ACMD41
+                match self.sd_acmd(ACMD41_SEND_OP_COND, 0x00FF_8000, SD_RSP_TYPE_R3) {
+                    Ok(_) => {
+                        log::info!("RTSX: UHS-I voltage switch succeeded");
+                        true
+                    }
+                    Err(_) => {
+                        log::warn!("RTSX: UHS-I voltage switch failed, staying at 3.3V");
+                        false
+                    }
+                }
+            }
+            Err(_) => {
+                log::info!("RTSX: card does not support UHS-I, staying at 3.3V");
+                false
+            }
+        }
+    }
+
     // ── SD Card Init (called after boot) ───────────────────────
 
     pub fn init_sd_card(&mut self) -> Result<(), &'static str> {
@@ -610,6 +707,17 @@ impl RtsxController {
             SdCardType::SDSC
         };
 
+        // Attempt UHS-I voltage switch for SDHC/SDXC cards
+        if card_type != SdCardType::SDSC && self.sd_uhs_voltage_switch() {
+            // Increase clock speed (4x faster = SD_CLK_DIVIDE_32)
+            self.w8(SD_CFG1, SD_CLK_DIVIDE_32 | SD_BUS_WIDTH_1 | SD_CRC_CHECK_EN | SD_CRC_GEN_EN);
+            for _ in 0..50_000 {
+                core::hint::spin_loop();
+            }
+            // Switch to 4-bit bus width
+            let _ = self.sd_set_bus_width_4();
+        }
+
         self.sd_cmd(CMD2_ALL_SEND_CID, 0, SD_RSP_TYPE_R2, 0)?;
         let mut cid = [0u8; 16];
         self.ppbuf_read(&mut cid);
@@ -652,6 +760,7 @@ impl RtsxController {
             block_size: bs,
             total_blocks: tb,
         });
+        self.card_was_present = true;
 
         log::info!(
             "RTSX: SD card {:?}: {} blocks, {} bytes/block",
@@ -741,7 +850,34 @@ impl RtsxController {
             return Err("write data timeout");
         }
 
+        // Wait for card to complete programming (R1b busy state).
+        // Without this, a subsequent write command may fail because
+        // the card is still programming the previous data.
+        if let Some(ref card) = self.sd_card {
+            let _ = self.sd_wait_ready(card.rca);
+        }
+
         Ok(())
+    }
+
+    /// Poll the SD_BUS_STAT register for card presence changes.
+    /// Returns `true` if card presence has changed since the last call.
+    fn poll_card_detect(&mut self) -> bool {
+        if !self.mmio_mapped {
+            return false;
+        }
+        // Only do MMIO reads if the controller is alive.
+        if !self.mmio_alive() {
+            return false;
+        }
+        let bus = self.r8(SD_BUS_STAT);
+        let present = (bus & 0x01) != 0;
+        let changed = present != self.card_was_present;
+        self.card_was_present = present;
+        if changed {
+            log::info!("RTSX: card detect changed (present={})", present);
+        }
+        changed
     }
 
     // ── Public API ────────────────────────────────────────────
@@ -931,6 +1067,7 @@ pub fn init(ctx: &dyn DriverContext) {
                 mmio_mapped: true,
                 sd_card: None,
                 upstream_bridge: upstream_bridge.map(|b| (b.bus, b.device, b.function)),
+                card_was_present: false,
             });
             log::info!("RTSX: controller registered (MMIO deferred)");
             return;
@@ -972,4 +1109,27 @@ pub fn write_sectors(lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static st
 
 pub fn is_present() -> bool {
     CONTROLLER.lock().is_some()
+}
+
+/// Poll the card reader for card insertion/removal events.
+/// Returns `true` if the card presence state has changed.
+/// If a card was removed, the cached `SdCardInfo` is cleared.
+pub fn poll_card_detect() -> bool {
+    let mut guard = CONTROLLER.lock();
+    if let Some(ref mut ctrl) = *guard {
+        let changed = ctrl.poll_card_detect();
+        if changed && !ctrl.card_was_present {
+            // Card removed: clear cached info
+            ctrl.sd_card = None;
+        }
+        changed
+    } else {
+        false
+    }
+}
+
+/// Returns `true` if an SD card is currently detected.
+pub fn is_card_detected() -> bool {
+    let guard = CONTROLLER.lock();
+    guard.as_ref().map(|c| c.card_was_present).unwrap_or(false)
 }

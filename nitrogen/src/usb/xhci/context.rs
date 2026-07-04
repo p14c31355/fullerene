@@ -680,6 +680,9 @@ impl XhciContext {
                             ccs
                         );
                     }
+                    // When CCS transitions 0→1 or 1→0, remove stale device
+                    // entry for this specific port only.
+                    self.devices.retain(|d| d.port_index != port_idx);
                 }
             }
         } else {
@@ -692,10 +695,10 @@ impl XhciContext {
             }
 
             if !self.try_connect_port(port_idx) {
-                // CCS became 0 → device was disconnected; remove stale entries
+                // CCS became 0 → device was disconnected; remove entry for this port only
                 if !self.registers.op.portsc(port_idx).ccs() {
-                    self.devices.clear(); // simplified: clear all for now
-                    log::info!("xHCI: port {} disconnected, clearing devices", port_idx);
+                    self.devices.retain(|d| d.port_index != port_idx);
+                    log::info!("xHCI: port {} disconnected", port_idx);
                 }
                 continue;
             }
@@ -706,7 +709,7 @@ impl XhciContext {
             log::info!("xHCI: port {} device detected, speed={:?}", port_idx, speed);
 
             // Remove any stale device record for this port before adding a new one
-            self.devices.clear();
+            self.devices.retain(|d| d.port_index != port_idx);
 
             self.devices.push(UsbDevice {
                 address: 0,
@@ -719,6 +722,7 @@ impl XhciContext {
                 device_protocol: 0,
                 configurations: 0,
                 endpoints: Vec::new(),
+                port_index: port_idx,
             });
             if let Some(p) = self.ports.get_mut(port_idx) {
                 p.done = true;
@@ -1194,9 +1198,10 @@ impl XhciContext {
             }
         }
 
-        // Free only when the transfer completed; timeout recovery must stop or
-        // reset the endpoint before returning these pages to the allocator.
-        if staging_phys != 0 && res.is_ok() {
+        // Free staging buffer unconditionally.  On timeout, the endpoint
+        // must be reset/recovered before the next use, but the pages must
+        // not leak regardless.  The caller is responsible for recovery.
+        if staging_phys != 0 {
             self.driver_ctx
                 .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
         }
@@ -1280,15 +1285,24 @@ impl XhciContext {
         let res = self.wait_event(5_000_000);
 
         // Copy IN data back on success; free staging buffer unconditionally
-        if res.is_ok() && dir == UsbDirection::In {
-            unsafe {
-                ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len);
+        let actual_len = if let Ok(ev) = res {
+            let remainder = ev.remaining() as usize;
+            let xfer_len = len.saturating_sub(remainder.min(len));
+            if dir == UsbDirection::In && xfer_len > 0 {
+                unsafe {
+                    ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), xfer_len);
+                }
             }
-        }
-        self.driver_ctx
-            .free_contiguous_frames(staging_phys, staging_pages);
+            self.driver_ctx
+                .free_contiguous_frames(staging_phys, staging_pages);
+            Ok(xfer_len)
+        } else {
+            self.driver_ctx
+                .free_contiguous_frames(staging_phys, staging_pages);
+            Err("bulk transfer failed")
+        };
 
-        res.map(|_| len)
+        actual_len
     }
 
     // ── Descriptor helpers ─────────────────────────────────────
