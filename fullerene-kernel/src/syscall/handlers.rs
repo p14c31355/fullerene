@@ -1,8 +1,7 @@
 use super::interface::{SyscallError, SyscallResult, copy_user_string};
 use crate::process;
-use crate::process::{Process, ProcessState};
+use crate::process::{Process, ProcessResources, ProcessState};
 use alloc::boxed::Box;
-use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -17,32 +16,40 @@ use crate::linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 
 use resonance::Event as ResonanceEvent;
 
-// ── Global tables ──────────────────────────────────────────────
-
-/// Global file-descriptor table mapping integer FDs to FileDesc.
-///
-/// NOTE: This is a process-global table.  For proper process isolation,
-/// the FD table should be per-process (stored inside the Process struct)
-/// so that each process has its own private namespace of file descriptors.
-static FD_TABLE: Mutex<BTreeMap<u32, crate::fs::FileDesc>> = Mutex::new(BTreeMap::new());
-static NEXT_FD: Mutex<u32> = Mutex::new(3); // Start after stdin/stdout/stderr
-
-/// Global kernel-object handle table.
-///
-/// Every kernel object (event, thread, window, device, channel, pipe, timer)
-/// that is exposed to user-space gets a unique [`Handle`] allocated here.
-/// Handles are never re-used within a boot cycle.
-///
-/// NOTE: This is a global table — any process can access any handle by
-/// guessing/brute-forcing the integer ID.  For proper process isolation,
-/// handles should be per-process or access should be gated by ownership
-/// checks (e.g. storing the owning PID in each object and verifying on
-/// access).
-static HANDLE_TABLE: Mutex<BTreeMap<u64, KernelObject>> = Mutex::new(BTreeMap::new());
-static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1000);
-
 /// Opaque kernel-object handle exposed to user-space.
 pub type Handle = u64;
+
+// ── Per-process helpers ────────────────────────────────────────
+
+/// Retrieve the current process's fd table and run a closure on it.
+fn with_current_fd_table<F, R>(f: F) -> Result<R, SyscallError>
+where
+    F: FnOnce(&mut process::FdTable) -> Result<R, SyscallError>,
+{
+    let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    match process::PROCESS_MANAGER.with_process(pid, |p| {
+        let mut ft = p.resources.fd_table.lock();
+        f(&mut *ft)
+    }) {
+        Some(r) => r,
+        None => Err(SyscallError::NoSuchProcess),
+    }
+}
+
+/// Retrieve the current process's handle table and run a closure on it.
+fn with_current_handle_table<F, R>(f: F) -> Result<R, SyscallError>
+where
+    F: FnOnce(&mut crate::process::HandleTable) -> Result<R, SyscallError>,
+{
+    let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    match process::PROCESS_MANAGER.with_process(pid, |p| {
+        let mut ht = p.resources.handle_table.lock();
+        f(&mut *ht)
+    }) {
+        Some(r) => r,
+        None => Err(SyscallError::NoSuchProcess),
+    }
+}
 
 /// Helper: call `with_kernel_mut` and unwrap through `Option<SyscallResult>`.
 fn with_kernel_mut_result<F>(f: F) -> SyscallResult
@@ -62,8 +69,29 @@ macro_rules! map_handle {
     };
 }
 
+/// Allocate a new handle in the current process's handle table.
+fn alloc_handle(obj: KernelObject) -> Result<Handle, SyscallError> {
+    with_current_handle_table(|ht| {
+        let h = ht.next_handle;
+        ht.next_handle = ht.next_handle.checked_add(1).ok_or(SyscallError::OutOfMemory)?;
+        ht.entries.insert(h, obj);
+        Ok(h)
+    })
+}
+
+/// Run a closure on a handle in the current process's handle table.
+fn with_handle_mut<F, R>(h: Handle, f: F) -> Result<R, SyscallError>
+where
+    F: FnOnce(&mut KernelObject) -> Result<R, SyscallError>,
+{
+    with_current_handle_table(|ht| match ht.entries.get_mut(&h) {
+        Some(obj) => f(obj),
+        None => Err(SyscallError::BadHandle),
+    })
+}
+
 /// Set of kernel objects that can be referenced by a [`Handle`].
-enum KernelObject {
+pub enum KernelObject {
     Event(EventState),
     Thread(ThreadState),
     Window(WindowState),
@@ -76,56 +104,56 @@ enum KernelObject {
 // ── Per-object state types ─────────────────────────────────────
 
 /// Inner state shared between duplicated event handles.
-struct EventInner {
-    signaled: bool,
-    manual_reset: bool,
-    waiters: Vec<process::ProcessId>,
+pub struct EventInner {
+    pub signaled: bool,
+    pub manual_reset: bool,
+    pub waiters: Vec<process::ProcessId>,
 }
 
-struct EventState {
+pub struct EventState {
     /// Shared inner state so duplicated handles see the same event.
-    inner: alloc::sync::Arc<Mutex<EventInner>>,
+    pub inner: alloc::sync::Arc<Mutex<EventInner>>,
 }
 
 /// Inner state shared between duplicated thread handles.
-struct ThreadInner {
-    pid: process::ProcessId,
-    detached: bool,
-    exit_code: Option<i32>,
-    waiters: Vec<process::ProcessId>,
+pub struct ThreadInner {
+    pub pid: process::ProcessId,
+    pub detached: bool,
+    pub exit_code: Option<i32>,
+    pub waiters: Vec<process::ProcessId>,
 }
 
-struct ThreadState {
+pub struct ThreadState {
     /// Shared inner state so duplicated handles see the same thread state.
-    inner: alloc::sync::Arc<Mutex<ThreadInner>>,
+    pub inner: alloc::sync::Arc<Mutex<ThreadInner>>,
 }
 
-struct WindowState {
-    window_id: crate::contexts::window::WindowId,
-    pid: process::ProcessId,
+pub struct WindowState {
+    pub window_id: crate::contexts::window::WindowId,
+    pub pid: process::ProcessId,
 }
 
-struct DeviceState {}
+pub struct DeviceState {}
 
-struct ChannelInner {
-    messages: Vec<Vec<u8>>,
-    waiters: Vec<process::ProcessId>,
-    max_messages: usize,
+pub struct ChannelInner {
+    pub messages: Vec<Vec<u8>>,
+    pub waiters: Vec<process::ProcessId>,
+    pub max_messages: usize,
 }
 
-struct ChannelState {
-    inner: alloc::sync::Arc<Mutex<ChannelInner>>,
+pub struct ChannelState {
+    pub inner: alloc::sync::Arc<Mutex<ChannelInner>>,
 }
 
-struct PipeState {
-    buffer: alloc::sync::Arc<Mutex<Vec<u8>>>,
-    is_read_end: bool,
+pub struct PipeState {
+    pub buffer: alloc::sync::Arc<Mutex<Vec<u8>>>,
+    pub is_read_end: bool,
 }
 
-struct TimerState {
-    deadline_ns: u64,
-    event_handle: Handle,
-    fired: bool,
+pub struct TimerState {
+    pub deadline_ns: u64,
+    pub event_handle: Handle,
+    pub fired: bool,
 }
 
 const KERNEL_STACK_SIZE: usize = 4096;
@@ -144,25 +172,6 @@ fn alloc_kernel_stack() -> Result<(*mut u8, VirtAddr), SyscallError> {
 fn free_kernel_stack(ptr: *mut u8) {
     let layout = Layout::from_size_align(KERNEL_STACK_SIZE, 16).unwrap();
     petroleum::common::memory::deallocate_layout(ptr, layout);
-}
-
-// ── Handle helper ──────────────────────────────────────────────
-
-fn alloc_handle(obj: KernelObject) -> Handle {
-    let h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-    HANDLE_TABLE.lock().insert(h, obj);
-    h
-}
-
-fn with_handle_mut<F, R>(h: Handle, f: F) -> Result<R, SyscallError>
-where
-    F: FnOnce(&mut KernelObject) -> Result<R, SyscallError>,
-{
-    let mut table = HANDLE_TABLE.lock();
-    match table.get_mut(&h) {
-        Some(obj) => f(obj),
-        None => Err(SyscallError::BadHandle),
-    }
 }
 
 // ── Main dispatch ──────────────────────────────────────────────
@@ -385,6 +394,7 @@ fn syscall_fork() -> SyscallResult {
         parent_id: Some(current_pid),
         dispatch_mode: None,
         vdso_page: child_vdso,
+        resources: process::ProcessResources::new(),
     };
 
     child_process.context.regs[0] = 0;
@@ -429,15 +439,15 @@ fn syscall_read(fd: core::ffi::c_int, buffer: *mut u8, count: usize) -> SyscallR
         if fd < 0 {
             return Err(SyscallError::BadFileDescriptor);
         }
-        let mut fd_table = FD_TABLE.lock();
-        if let Some(file_desc) = fd_table.get_mut(&(fd as u32)) {
-            match crate::fs::read_file(file_desc, data) {
-                Ok(n) => Ok(n as u64),
-                Err(_) => Err(SyscallError::BadFileDescriptor),
+        with_current_fd_table(|ft| {
+            match ft.entries.get_mut(&(fd as u32)) {
+                Some(file_desc) => match crate::fs::read_file(file_desc, data) {
+                    Ok(n) => Ok(n as u64),
+                    Err(_) => Err(SyscallError::BadFileDescriptor),
+                },
+                None => Err(SyscallError::BadFileDescriptor),
             }
-        } else {
-            Err(SyscallError::BadFileDescriptor)
-        }
+        })
     }
 }
 
@@ -475,14 +485,12 @@ fn syscall_open(filename: *const u8, flags: core::ffi::c_int, _mode: u32) -> Sys
 
     if read_only {
         match crate::fs::open_file(&filename_str) {
-            Ok(file_desc) => {
-                let mut fd_table = FD_TABLE.lock();
-                let mut next_fd = NEXT_FD.lock();
-                let fd = *next_fd;
-                *next_fd += 1;
-                fd_table.insert(fd, file_desc);
+            Ok(file_desc) => with_current_fd_table(|ft| {
+                let fd = ft.next_fd;
+                ft.next_fd = ft.next_fd.checked_add(1).ok_or(SyscallError::OutOfMemory)?;
+                ft.entries.insert(fd, file_desc);
                 Ok(fd as u64)
-            }
+            }),
             Err(crate::fs::FsError::FileNotFound) => Err(SyscallError::FileNotFound),
             Err(_) => Err(SyscallError::PermissionDenied),
         }
@@ -495,15 +503,15 @@ fn syscall_close(fd: core::ffi::c_int) -> SyscallResult {
     if fd <= 2 {
         return Err(SyscallError::InvalidArgument);
     }
-    let mut fd_table = FD_TABLE.lock();
-    if let Some(file_desc) = fd_table.remove(&(fd as u32)) {
-        match crate::fs::close_file(file_desc) {
-            Ok(_) => Ok(0),
-            Err(_) => Err(SyscallError::BadFileDescriptor),
+    with_current_fd_table(|ft| {
+        match ft.entries.remove(&(fd as u32)) {
+            Some(file_desc) => match crate::fs::close_file(file_desc) {
+                Ok(_) => Ok(0),
+                Err(_) => Err(SyscallError::BadFileDescriptor),
+            },
+            None => Err(SyscallError::BadFileDescriptor),
         }
-    } else {
-        Err(SyscallError::BadFileDescriptor)
-    }
+    })
 }
 
 fn syscall_wait(pid: u64) -> SyscallResult {
@@ -718,7 +726,7 @@ fn syscall_create_event(flags: u64) -> SyscallResult {
         manual_reset,
         waiters: Vec::new(),
     }));
-    let handle = alloc_handle(KernelObject::Event(EventState { inner }));
+    let handle = alloc_handle(KernelObject::Event(EventState { inner }))?;
 
     // Also push the event into the global EventContext system queue so
     // the dispatcher knows about it.
@@ -851,6 +859,7 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
         parent_id: Some(current_pid),
         dispatch_mode: None,
         vdso_page: None, // shares parent's VDSO via shared page table
+        resources: process::ProcessResources::new(),
     };
 
     thread_process.context.regs[0] = 0;
@@ -872,7 +881,7 @@ fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
         exit_code: None,
         waiters: Vec::new(),
     }));
-    Ok(alloc_handle(KernelObject::Thread(ThreadState { inner })))
+    Ok(alloc_handle(KernelObject::Thread(ThreadState { inner }))?)
 }
 
 fn syscall_join_thread(handle: u64) -> SyscallResult {
@@ -916,21 +925,24 @@ fn syscall_detach_thread(handle: u64) -> SyscallResult {
 fn syscall_exit_thread(exit_code: i32) -> SyscallResult {
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    // Update all matching thread handles (covers duplicated handles too).
+    // Update all matching thread handles across all processes (covers duplicated handles).
     let waiters: Vec<process::ProcessId> = {
-        let mut table = HANDLE_TABLE.lock();
         let mut found_waiters: Vec<process::ProcessId> = Vec::new();
-        for (_h, obj) in table.iter_mut() {
-            if let KernelObject::Thread(t) = obj {
-                let mut inner = t.inner.lock();
-                if inner.pid == pid {
-                    inner.exit_code = Some(exit_code);
-                    let mut taken = core::mem::take(&mut inner.waiters);
-                    found_waiters.append(&mut taken);
-                    // Don't break — update all duplicated handles.
+        process::PROCESS_MANAGER.with_list(|list| {
+            for (_, proc) in list.iter_mut() {
+                let mut ht = proc.resources.handle_table.lock();
+                for (_h, obj) in ht.entries.iter_mut() {
+                    if let KernelObject::Thread(t) = obj {
+                        let mut inner = t.inner.lock();
+                        if inner.pid == pid {
+                            inner.exit_code = Some(exit_code);
+                            let mut taken = core::mem::take(&mut inner.waiters);
+                            found_waiters.append(&mut taken);
+                        }
+                    }
                 }
             }
-        }
+        });
         found_waiters
     };
 
@@ -965,7 +977,7 @@ fn syscall_create_window(x: i32, y: i32, width: u32, height: u32, _flags: u64) -
         window_id: win_id,
         pid,
     };
-    Ok(alloc_handle(KernelObject::Window(state)))
+    Ok(alloc_handle(KernelObject::Window(state))?)
 }
 
 fn syscall_destroy_window(handle: u64) -> SyscallResult {
@@ -1084,8 +1096,7 @@ fn syscall_open_device(device_id: *const u8) -> SyscallResult {
     if id_str.is_empty() {
         return Err(SyscallError::InvalidArgument);
     }
-    let handle = alloc_handle(KernelObject::Device(DeviceState {}));
-    Ok(handle)
+    alloc_handle(KernelObject::Device(DeviceState {}))
 }
 
 fn syscall_device_ioctl(handle: u64, _cmd: u64, _arg: u64) -> SyscallResult {
@@ -1105,7 +1116,7 @@ fn syscall_channel_create(_flags: u64) -> SyscallResult {
         waiters: Vec::new(),
         max_messages: 64,
     }));
-    Ok(alloc_handle(KernelObject::Channel(ChannelState { inner })))
+    alloc_handle(KernelObject::Channel(ChannelState { inner }))
 }
 
 fn syscall_channel_send(handle: u64, data_ptr: *const u8, data_size: u64) -> SyscallResult {
@@ -1185,8 +1196,8 @@ fn syscall_pipe_create(_flags: u64) -> SyscallResult {
         is_read_end: false,
     };
 
-    let read_h = alloc_handle(KernelObject::Pipe(read_end));
-    let write_h = alloc_handle(KernelObject::Pipe(write_end));
+    let read_h = alloc_handle(KernelObject::Pipe(read_end))?;
+    let write_h = alloc_handle(KernelObject::Pipe(write_end))?;
 
     // Returns two handles packed into a single u64.
     //
@@ -1205,88 +1216,88 @@ fn syscall_pipe_create(_flags: u64) -> SyscallResult {
 
 fn syscall_handle_transfer(target_pid: u64, handle: u64) -> SyscallResult {
     let target = process::ProcessId(target_pid);
-    if crate::process::PROCESS_MANAGER
-        .with_process(target, |_| {})
-        .is_none()
-    {
-        return Err(SyscallError::NoSuchProcess);
-    }
+    let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    // Remove from table and re-insert — effectively reassociates
-    // handle with caller's rights.  A real capability system would
-    // maintain a per-process handle table.
-    let mut table = HANDLE_TABLE.lock();
-    if let Some(obj) = table.remove(&handle) {
-        // For now just put it back; full capability transfer would
-        // move the object into the target's namespace.
-        table.insert(handle, obj);
-        Ok(0)
-    } else {
-        Err(SyscallError::BadHandle)
+    // Remove from current process's handle table
+    let mut obj = Some(with_current_handle_table(|ht| {
+        ht.entries.remove(&handle).ok_or(SyscallError::BadHandle)
+    })?);
+
+    // Insert into target process, returning object if collision
+    let result: Option<Option<KernelObject>> =
+        process::PROCESS_MANAGER.with_process(target, |p| {
+            let our_obj = obj.take().unwrap();
+            let mut ht = p.resources.handle_table.lock();
+            if ht.entries.contains_key(&handle) {
+                return Some(our_obj);
+            }
+            ht.entries.insert(handle, our_obj);
+            None
+        });
+
+    match result {
+        // Target existed and no collision
+        Some(None) => Ok(0),
+        // Target existed but had collision — put handle back
+        Some(Some(returned_obj)) => {
+            let _ = process::PROCESS_MANAGER.with_process(current_pid, |p| {
+                let mut ht = p.resources.handle_table.lock();
+                ht.entries.insert(handle, returned_obj);
+            });
+            Err(SyscallError::AlreadyExists)
+        }
+        // Target doesn't exist — put handle back
+        None => {
+            let returned_obj = obj.take().unwrap();
+            let _ = process::PROCESS_MANAGER.with_process(current_pid, |p| {
+                let mut ht = p.resources.handle_table.lock();
+                ht.entries.insert(handle, returned_obj);
+            });
+            Err(SyscallError::NoSuchProcess)
+        }
     }
 }
 
 fn syscall_handle_duplicate(handle: u64) -> SyscallResult {
-    let mut table = HANDLE_TABLE.lock();
-    if let Some(obj) = table.get(&handle) {
-        let new_h = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
-        // Shallow duplicate: clone the KernelObject handle.
-        // Objects with Arc-wrapped inner state (Event, Thread, Channel, Pipe)
-        // share the underlying state so duplicated handles observe the same
-        // object.  Objects without shared state (Window, Device) get a
-        // shallow copy of their state.
-        match obj {
-            KernelObject::Event(e) => {
-                let copy = EventState {
-                    inner: alloc::sync::Arc::clone(&e.inner),
-                };
-                table.insert(new_h, KernelObject::Event(copy));
-                Ok(new_h)
-            }
-            KernelObject::Thread(t) => {
-                let copy = ThreadState {
-                    inner: alloc::sync::Arc::clone(&t.inner),
-                };
-                table.insert(new_h, KernelObject::Thread(copy));
-                Ok(new_h)
-            }
-            KernelObject::Channel(ch) => {
-                let copy = ChannelState {
-                    inner: alloc::sync::Arc::clone(&ch.inner),
-                };
-                table.insert(new_h, KernelObject::Channel(copy));
-                Ok(new_h)
-            }
-            KernelObject::Window(w) => {
-                let copy = WindowState {
-                    window_id: w.window_id,
-                    pid: w.pid,
-                };
-                table.insert(new_h, KernelObject::Window(copy));
-                Ok(new_h)
-            }
-            KernelObject::Pipe(p) => {
-                let copy = PipeState {
-                    buffer: alloc::sync::Arc::clone(&p.buffer),
-                    is_read_end: p.is_read_end,
-                };
-                table.insert(new_h, KernelObject::Pipe(copy));
-                Ok(new_h)
-            }
-            _ => Err(SyscallError::NotSupported),
-        }
-    } else {
-        Err(SyscallError::BadHandle)
-    }
+    // Find the object and create a duplicate.
+    let (new_h, new_obj) = with_current_handle_table(|ht| {
+        let obj = ht.entries.get(&handle).ok_or(SyscallError::BadHandle)?;
+        let new_h = ht.next_handle;
+        ht.next_handle = ht.next_handle.checked_add(1).ok_or(SyscallError::OutOfMemory)?;
+        let new_obj = match obj {
+            KernelObject::Event(e) => KernelObject::Event(EventState {
+                inner: alloc::sync::Arc::clone(&e.inner),
+            }),
+            KernelObject::Thread(t) => KernelObject::Thread(ThreadState {
+                inner: alloc::sync::Arc::clone(&t.inner),
+            }),
+            KernelObject::Channel(ch) => KernelObject::Channel(ChannelState {
+                inner: alloc::sync::Arc::clone(&ch.inner),
+            }),
+            KernelObject::Window(w) => KernelObject::Window(WindowState {
+                window_id: w.window_id,
+                pid: w.pid,
+            }),
+            KernelObject::Pipe(p) => KernelObject::Pipe(PipeState {
+                buffer: alloc::sync::Arc::clone(&p.buffer),
+                is_read_end: p.is_read_end,
+            }),
+            _ => return Err(SyscallError::NotSupported),
+        };
+        ht.entries.insert(new_h, new_obj);
+        Ok(new_h)
+    })?;
+    Ok(new_h)
 }
 
 fn syscall_handle_revoke(handle: u64) -> SyscallResult {
-    let mut table = HANDLE_TABLE.lock();
-    if table.remove(&handle).is_some() {
-        Ok(0)
-    } else {
-        Err(SyscallError::BadHandle)
-    }
+    with_current_handle_table(|ht| {
+        if ht.entries.remove(&handle).is_some() {
+            Ok(0)
+        } else {
+            Err(SyscallError::BadHandle)
+        }
+    })
 }
 
 // ===================================================================
@@ -1308,25 +1319,45 @@ pub fn tick_uptime(delta_us: u64) {
 pub fn check_and_fire_timers() {
     let now_ns = uptime_us() * 1000; // convert microseconds to nanoseconds
 
-    // Collect expired timers outside the lock to avoid deadlock when signaling events.
+    // Collect expired timers across all processes, outside the handle-table locks.
     let expired: Vec<(u64, u64)> = {
-        let mut table = HANDLE_TABLE.lock();
         let mut expired_timers = Vec::new();
-
-        for (_handle, obj) in table.iter_mut() {
-            if let KernelObject::Timer(timer) = obj {
-                if !timer.fired && now_ns >= timer.deadline_ns {
-                    timer.fired = true;
-                    expired_timers.push((_handle.clone(), timer.event_handle));
+        process::PROCESS_MANAGER.with_list(|list| {
+            for (_, proc) in list.iter_mut() {
+                let mut ht = proc.resources.handle_table.lock();
+                for (handle, obj) in ht.entries.iter_mut() {
+                    if let KernelObject::Timer(timer) = obj {
+                        if !timer.fired && now_ns >= timer.deadline_ns {
+                            timer.fired = true;
+                            expired_timers.push((*handle, timer.event_handle));
+                        }
+                    }
                 }
             }
-        }
+        });
         expired_timers
     };
 
     // Signal the event for each expired timer.
     for (_timer_handle, event_handle) in expired {
-        let _ = syscall_signal_event(event_handle);
+        // Collect waiters across all processes, then unblock outside locks
+        let waiters_to_unblock: Vec<process::ProcessId> = {
+            let mut found = Vec::new();
+            process::PROCESS_MANAGER.with_list(|list| {
+                for (_, proc) in list.iter_mut() {
+                    let mut ht = proc.resources.handle_table.lock();
+                    if let Some(KernelObject::Event(e)) = ht.entries.get_mut(&event_handle) {
+                        let mut inner = e.inner.lock();
+                        inner.signaled = true;
+                        found = core::mem::take(&mut inner.waiters);
+                    }
+                }
+            });
+            found
+        };
+        for pid in waiters_to_unblock {
+            crate::process::unblock_process(pid);
+        }
     }
 }
 
@@ -1364,27 +1395,20 @@ fn syscall_clock_gettime(clock_id: u64, timespec_buf: *mut u8) -> SyscallResult 
 }
 
 fn syscall_timer_create(_clock_id: u64, deadline_ns: u64, event_handle: u64) -> SyscallResult {
-    // Validate the event handle exists before creating the timer.
-    {
-        let table = HANDLE_TABLE.lock();
-        if !table.contains_key(&event_handle) {
-            return Err(SyscallError::BadHandle);
+    // Validate the event handle exists in the current process before creating the timer.
+    with_current_handle_table(|ht| {
+        match ht.entries.get(&event_handle) {
+            Some(KernelObject::Event(_)) => Ok(()),
+            _ => Err(SyscallError::BadHandle),
         }
-        // Verify it's actually an event
-        if let Some(obj) = table.get(&event_handle) {
-            if !matches!(obj, KernelObject::Event(_)) {
-                return Err(SyscallError::BadHandle);
-            }
-        }
-    }
+    })?;
 
     let timer = TimerState {
         deadline_ns,
         event_handle,
         fired: false,
     };
-    let handle = alloc_handle(KernelObject::Timer(timer));
-    Ok(handle)
+    alloc_handle(KernelObject::Timer(timer))
 }
 
 fn syscall_sleep(us: u64) -> SyscallResult {

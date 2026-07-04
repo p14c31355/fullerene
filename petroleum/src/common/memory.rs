@@ -107,7 +107,159 @@ pub fn deallocate_layout(ptr: *mut u8, layout: Layout) {
     unsafe { alloc::alloc::dealloc(ptr, layout) };
 }
 
-/// Validate user buffer access
+/// Validated pointer to user-space memory.
+///
+/// `UserPtr` represents a pointer that has been validated to point into
+/// the user address range.  Access is performed through explicit copy
+/// operations rather than returning borrowed slices, so the kernel
+/// always owns its copies of user data.
+#[derive(Debug, Clone, Copy)]
+pub struct UserPtr<T: ?Sized> {
+    ptr: *const T,
+}
+
+impl<T> UserPtr<T> {
+    /// Create a `UserPtr` from a raw pointer, validating it is in user space.
+    pub fn new(ptr: *const T) -> SystemResult<Self> {
+        if ptr.is_null() {
+            return Err(SystemError::InvalidArgument);
+        }
+        let addr = ptr as u64;
+        if addr >= 0x0000800000000000 {
+            return Err(SystemError::PermissionDenied);
+        }
+        Ok(Self { ptr })
+    }
+
+    /// Create a `UserPtr` from a raw mutable pointer.
+    pub fn new_mut(ptr: *mut T) -> SystemResult<Self> {
+        Self::new(ptr as *const T)
+    }
+
+    /// Copy a value from user space into kernel-owned memory.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `T` is valid for the memory at the pointer.
+    pub unsafe fn copy_from_user(&self) -> Result<T, SystemError> {
+        unsafe { Ok((self.ptr as *const T).read()) }
+    }
+
+    /// Copy a value into user space.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `T` is valid for the memory at the pointer
+    /// and that the user buffer is writable.
+    pub unsafe fn copy_to_user(&self, val: T) -> SystemResult<()> {
+        unsafe {
+            (self.ptr as *mut T).write_volatile(val);
+        }
+        Ok(())
+    }
+
+    /// Get the raw pointer (for use in syscall ABI where needed).
+    pub fn as_raw_ptr(&self) -> *const T {
+        self.ptr
+    }
+}
+
+/// A validated user-space byte slice for safe copy operations.
+///
+/// Unlike `user_slice` which returns `&'static [u8]`, `UserSlice` only
+/// provides copy-in/copy-out operations, ensuring the kernel owns its
+/// data copies.
+#[derive(Debug, Clone, Copy)]
+pub struct UserSlice {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl UserSlice {
+    /// Validate a user-space buffer range and create a `UserSlice`.
+    ///
+    /// Checks:
+    /// - Non-null pointer
+    /// - Entire range is in user space
+    /// - No arithmetic overflow
+    pub fn new(ptr: *mut u8, len: usize) -> SystemResult<Self> {
+        if len == 0 {
+            return Ok(Self { ptr, len: 0 });
+        }
+        if ptr.is_null() {
+            return Err(SystemError::InvalidArgument);
+        }
+        // Check the start address
+        let start = ptr as u64;
+        if start >= 0x0000800000000000 {
+            return Err(SystemError::PermissionDenied);
+        }
+        // Check the end address (with overflow guard)
+        let end = start.checked_add(len as u64).ok_or(SystemError::InvalidArgument)?;
+        if end > 0x0000800000000000 {
+            return Err(SystemError::PermissionDenied);
+        }
+        Ok(Self { ptr, len })
+    }
+
+    /// Return the length of the slice.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Check if the slice is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Copy data FROM user space INTO a kernel-owned buffer.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the user pages are mapped.  Page faults
+    /// during copy are caught by the kernel's page fault handler.
+    pub unsafe fn copy_from_user(&self, buf: &mut [u8]) -> SystemResult<()> {
+        let count = buf.len().min(self.len);
+        if count == 0 {
+            return Ok(());
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(self.ptr, buf.as_mut_ptr(), count);
+        }
+        Ok(())
+    }
+
+    /// Copy data FROM a kernel-owned buffer INTO user space.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the user pages are mapped and writable.
+    pub unsafe fn copy_to_user(&self, buf: &[u8]) -> SystemResult<()> {
+        let count = buf.len().min(self.len);
+        if count == 0 {
+            return Ok(());
+        }
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.as_ptr(), self.ptr, count);
+        }
+        Ok(())
+    }
+
+    /// Create a `UserSlice` from a raw pointer and length (no validation).
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee the pointer and length are valid.
+    pub unsafe fn from_raw_parts(ptr: *mut u8, len: usize) -> SystemResult<Self> {
+        // Minimal null check only; caller guarantees user-space validity.
+        if len > 0 && ptr.is_null() {
+            return Err(SystemError::InvalidArgument);
+        }
+        Ok(Self { ptr, len })
+    }
+}
+
+/// Validate user buffer access (legacy, replaced by `UserSlice`).
 pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> SystemResult<()> {
     if count == 0 {
         return Ok(());
@@ -142,6 +294,58 @@ pub fn validate_syscall_buffer(ptr: usize, allow_kernel: bool) -> SystemResult<(
     validate_user_buffer(ptr, 1, allow_kernel)
 }
 
+/// Read a value from user space into kernel-owned memory.
+///
+/// # Safety
+///
+/// The caller must ensure the pointer is valid and the memory is mapped.
+pub unsafe fn read_user<T>(ptr: *const T) -> Result<T, SystemError> {
+    let user = UserPtr::new(ptr)?;
+    unsafe { user.copy_from_user() }
+}
+
+/// Write a value into user space.
+///
+/// # Safety
+///
+/// The caller must ensure the pointer is valid and the memory is mapped writable.
+pub unsafe fn write_user<T>(ptr: *mut T, val: T) -> SystemResult<()> {
+    let user = UserPtr::new_mut(ptr)?;
+    unsafe { user.copy_to_user(val) }
+}
+
+/// Copy a byte slice from user space into a kernel-owned buffer.
+///
+/// Returns the number of bytes copied.
+///
+/// # Safety
+///
+/// The caller must ensure the user pointer is valid and mapped.
+pub unsafe fn copy_from_user(ptr: *const u8, buf: &mut [u8]) -> SystemResult<usize> {
+    let slice = UserSlice::new(ptr as *mut u8, buf.len())?;
+    unsafe { slice.copy_from_user(buf)?; }
+    Ok(buf.len().min(slice.len()))
+}
+
+/// Copy a byte slice from kernel memory into user space.
+///
+/// # Safety
+///
+/// The caller must ensure the user pointer is valid, mapped, and writable.
+pub unsafe fn copy_to_user(ptr: *mut u8, buf: &[u8]) -> SystemResult<()> {
+    let slice = UserSlice::new(ptr, buf.len())?;
+    unsafe { slice.copy_to_user(buf) }
+}
+
+/// Legacy: create a temporary user-space slice (borrows from user memory).
+///
+/// NOTE: Prefer `copy_from_user` / `UserSlice` instead.  This returns a
+/// `'static` borrow that is unsound if the user buffer is deallocated.
+///
+/// # Safety
+///
+/// The caller must ensure the pointer is valid for the entire `'static`
+/// lifetime of the returned slice.
 pub unsafe fn user_slice(
     ptr: *const u8,
     count: usize,
@@ -153,6 +357,15 @@ pub unsafe fn user_slice(
     }
 }
 
+/// Legacy: create a temporary mutable user-space slice.
+///
+/// NOTE: Prefer `copy_to_user` / `UserSlice` instead.  This returns a
+/// `'static` mut borrow that is unsound if the user buffer is deallocated.
+///
+/// # Safety
+///
+/// The caller must ensure the pointer is valid for the entire `'static`
+/// lifetime of the returned slice.
 pub unsafe fn user_slice_mut(
     ptr: *mut u8,
     count: usize,

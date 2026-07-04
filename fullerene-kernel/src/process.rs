@@ -4,6 +4,8 @@
 //! capabilities for user-space programs.
 
 use alloc::boxed::Box;
+use alloc::collections::btree_map::BTreeMap;
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use heapless::Vec;
@@ -85,6 +87,99 @@ impl Default for ProcessContext {
     }
 }
 
+/// Per-process file descriptor table.
+pub struct FdTable {
+    pub entries: BTreeMap<u32, crate::fs::FileDesc>,
+    pub next_fd: u32,
+}
+
+impl FdTable {
+    pub fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_fd: 3,
+        }
+    }
+}
+
+/// Per-process handle table.
+pub struct HandleTable {
+    pub entries: BTreeMap<u64, crate::syscall::handlers::KernelObject>,
+    pub next_handle: u64,
+}
+
+impl HandleTable {
+    pub fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_handle: 1000,
+        }
+    }
+}
+
+/// Per-process resources: file descriptors, kernel object handles.
+pub struct ProcessResources {
+    pub fd_table: spin::Mutex<FdTable>,
+    pub handle_table: spin::Mutex<HandleTable>,
+}
+
+impl ProcessResources {
+    pub fn new() -> Self {
+        Self {
+            fd_table: spin::Mutex::new(FdTable::new()),
+            handle_table: spin::Mutex::new(HandleTable::new()),
+        }
+    }
+
+    /// Clean up all resources held by this process.
+    /// Returns PIDs of waiters that need unblocking (caller must unblock
+    /// outside the process-manager lock to avoid deadlock).
+    pub fn cleanup(&mut self) -> Vec<ProcessId> {
+        use crate::syscall::handlers::KernelObject;
+
+        let mut to_unblock = Vec::new();
+
+        // Take all handle entries for cleanup.
+        let mut ht = self.handle_table.lock();
+        let entries: Vec<u64> = ht.entries.keys().copied().collect();
+        for handle in entries {
+            if let Some(obj) = ht.entries.remove(&handle) {
+                match obj {
+                    KernelObject::Event(e) => {
+                        let mut inner = e.inner.lock();
+                        to_unblock.append(&mut inner.waiters);
+                    }
+                    KernelObject::Thread(t) => {
+                        let mut inner = t.inner.lock();
+                        to_unblock.append(&mut inner.waiters);
+                    }
+                    KernelObject::Channel(ch) => {
+                        let mut inner = ch.inner.lock();
+                        to_unblock.append(&mut inner.waiters);
+                    }
+                    KernelObject::Window(w) => {
+                        // Notify compositor that window is gone
+                        crate::contexts::kernel::with_kernel_mut(|k| {
+                            if let Some(win) = k.window.windows.iter_mut().find(|win| win.id == w.window_id) {
+                                win.visible = false;
+                            }
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        drop(ht);
+
+        // Clear fd table
+        let mut ft = self.fd_table.lock();
+        ft.entries.clear();
+        drop(ft);
+
+        to_unblock
+    }
+}
+
 /// Process structure
 pub struct Process {
     /// Unique process ID
@@ -117,6 +212,8 @@ pub struct Process {
     pub dispatch_mode: Option<DispatchMode>,
     /// Per-process VDSO page for no-interrupt syscalls
     pub vdso_page: Option<VdsoPageRef>,
+    /// Per-process resources (fd table, handle table)
+    pub resources: ProcessResources,
 }
 
 impl Process {
@@ -140,6 +237,7 @@ impl Process {
             task_data: 0,
             dispatch_mode: None,
             vdso_page: None,
+            resources: ProcessResources::new(),
         }
     }
 
@@ -497,9 +595,13 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
-    PROCESS_MANAGER.with_process(pid, |process| {
+    let to_unblock = PROCESS_MANAGER.with_process(pid, |process| {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
+
+        // Clean up per-process resources (fd table, handle table)
+        // Collects waiters to unblock outside the process-manager lock.
+        let waiters = process.resources.cleanup();
 
         // Free resources
         let kernel_stack_base =
@@ -516,9 +618,14 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         }
 
         process.page_table = None;
-    });
 
-    // Unblock parent processes waiting for this child
+        waiters
+    }).unwrap_or_default();
+
+    // Unblock waiters (handles, parent) outside the process-manager lock.
+    for waiter in to_unblock {
+        unblock_process(waiter);
+    }
     unblock_waiting_parents(pid);
 
     // If current process is terminating, schedule next

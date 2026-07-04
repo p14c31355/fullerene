@@ -10,6 +10,7 @@ use super::time as linux_time;
 use super::types::*;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use petroleum::common::memory::UserSlice;
 
 /// Dispatch mode for the process: which runtime handles its syscalls.
 pub enum DispatchMode {
@@ -282,36 +283,30 @@ pub fn errno_result(err: &str) -> u64 {
 
 /// Convert string from raw user pointer.
 pub unsafe fn copy_user_string(ptr: u64, max_len: usize) -> Result<alloc::string::String, i32> {
-    if ptr == 0 {
+    if ptr == 0 || max_len == 0 {
         return Err(EFAULT);
     }
-    // Note: for now, assume the address is accessible (kernel might need
-    // to switch to the process page table).  Real implementation would
-    // validate user-space addresses.
-    let mut s = alloc::vec::Vec::new();
-    let mut len = 0usize;
-    while len < max_len {
-        let byte = unsafe { core::ptr::read_volatile((ptr as *const u8).add(len)) };
-        if byte == 0 {
-            break;
-        }
-        s.push(byte);
-        len += 1;
-    }
-    alloc::string::String::from_utf8(s).map_err(|_| EINVAL)
+    // Validate range via UserSlice
+    let slice = UserSlice::new(ptr as *mut u8, max_len).map_err(|_| EFAULT)?;
+    let mut buf = alloc::vec::Vec::with_capacity(max_len);
+    buf.resize(max_len, 0);
+    unsafe { slice.copy_from_user(&mut buf) }.map_err(|_| EFAULT)?;
+    let actual_len = buf.iter().position(|&b| b == 0).unwrap_or(max_len);
+    buf.truncate(actual_len);
+    alloc::string::String::from_utf8(buf).map_err(|_| EINVAL)
 }
 
 /// Copy data from user space to kernel (capped to prevent memory-exhaustion DoS).
 const MAX_USER_COPY: usize = 65536;
 pub unsafe fn copy_from_user(buf: u64, count: usize) -> Result<alloc::vec::Vec<u8>, i32> {
+    let limit = count.min(MAX_USER_COPY);
     if buf == 0 {
         return Err(EFAULT);
     }
-    let limit = count.min(MAX_USER_COPY);
+    let slice = UserSlice::new(buf as *mut u8, limit).map_err(|_| EFAULT)?;
     let mut data = alloc::vec::Vec::with_capacity(limit);
-    for i in 0..limit {
-        data.push(unsafe { core::ptr::read_volatile((buf as *const u8).add(i)) });
-    }
+    data.resize(limit, 0);
+    unsafe { slice.copy_from_user(&mut data) }.map_err(|_| EFAULT)?;
     Ok(data)
 }
 
@@ -320,10 +315,8 @@ pub unsafe fn copy_to_user(buf: u64, data: &[u8]) -> Result<(), i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    for (i, &byte) in data.iter().enumerate() {
-        unsafe { core::ptr::write_volatile((buf as *mut u8).add(i), byte) };
-    }
-    Ok(())
+    let slice = UserSlice::new(buf as *mut u8, data.len()).map_err(|_| EFAULT)?;
+    unsafe { slice.copy_to_user(data) }.map_err(|_| EFAULT)
 }
 
 /// Copy an arbitrary sized value to user space.
@@ -331,15 +324,9 @@ pub unsafe fn copy_val_to_user<T: Copy>(buf: u64, val: &T) -> Result<(), i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    let src = val as *const T as *const u8;
     let size = core::mem::size_of::<T>();
-    for i in 0..size {
-        unsafe {
-            core::ptr::write_volatile(
-                (buf as *mut u8).add(i),
-                core::ptr::read_volatile(src.add(i)),
-            )
-        };
-    }
-    Ok(())
+    let slice = UserSlice::new(buf as *mut u8, size).map_err(|_| EFAULT)?;
+    let src = val as *const T as *const u8;
+    let tmp = unsafe { core::slice::from_raw_parts(src, size) };
+    unsafe { slice.copy_to_user(tmp) }.map_err(|_| EFAULT)
 }

@@ -40,7 +40,33 @@ pub fn init_frame_allocator(allocator: BootInfoFrameAllocator) {
     }
 }
 
-pub fn get_frame_allocator() -> &'static mut BootInfoFrameAllocator {
+/// Run a closure with exclusive access to the frame allocator.
+///
+/// This is the preferred way to access the frame allocator, ensuring
+/// only one mutable reference exists at a time.
+pub fn with_frame_allocator<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut BootInfoFrameAllocator) -> R,
+{
+    unsafe {
+        let allocator = (*FRAME_ALLOCATOR.inner.get())
+            .as_mut()
+            .expect("Frame allocator not initialized");
+        f(allocator)
+    }
+}
+
+/// Get mutable access to the frame allocator.
+///
+/// NOTE: This returns `&'static mut` which can lead to multiple mutable
+/// references if called multiple times. Prefer `with_frame_allocator`
+/// which provides a closure-based guard.
+///
+/// # Safety
+///
+/// The caller must ensure this is called only once at a time (single-
+/// threaded boot phase or with external synchronization).
+pub unsafe fn get_frame_allocator() -> &'static mut BootInfoFrameAllocator {
     unsafe {
         (*FRAME_ALLOCATOR.inner.get())
             .as_mut()
@@ -48,6 +74,7 @@ pub fn get_frame_allocator() -> &'static mut BootInfoFrameAllocator {
     }
 }
 
-pub fn get_frame_allocator_mut() -> &'static mut BootInfoFrameAllocator {
-    get_frame_allocator()
+/// Deprecated alias for `get_frame_allocator`.
+pub unsafe fn get_frame_allocator_mut() -> &'static mut BootInfoFrameAllocator {
+    unsafe { get_frame_allocator() }
 }

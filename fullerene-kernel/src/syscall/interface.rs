@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::vec::Vec;
+use petroleum::common::memory::UserSlice;
 use x86_64::VirtAddr;
 
 /// System call result type
@@ -76,57 +77,34 @@ impl From<petroleum::common::logging::SystemError> for SyscallError {
     }
 }
 
-/// Helper function to safely copy a null-terminated string from user space
-/// Returns the string if successful, or an error if validation fails
+/// Helper function to safely copy a null-terminated string from user space.
+///
+/// Uses `UserSlice` for validated access.  The entire max_len range is
+/// validated first, then bytes are scanned for a NUL terminator.
+///
+/// Returns the string if successful, or an error if validation fails.
 ///
 /// # Safety
 ///
-/// The caller must ensure that the pointer `ptr` is valid and the memory range
-/// being read does not violate any memory safety constraints.
+/// The caller must ensure the user pages are mapped.  Page faults during
+/// copy are caught by the kernel's page fault handler.
 pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
-    if ptr.is_null() {
+    if max_len == 0 {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Validate that the initial pointer range is in user space
-    let start_addr = VirtAddr::new(ptr as u64);
-    if !petroleum::is_user_address(start_addr) {
-        return Err(SyscallError::InvalidArgument);
-    }
+    // Validate the entire range via UserSlice
+    let slice = UserSlice::new(ptr as *mut u8, max_len)
+        .map_err(|_| SyscallError::InvalidArgument)?;
 
-    // Note: In a real implementation, we would need to handle page faults
-    // when accessing user memory from kernel mode. For now, assume the memory
-    // is mapped and accessible.
+    // Copy into kernel-owned buffer
+    let mut buf = vec![0u8; max_len];
+    unsafe { slice.copy_from_user(&mut buf) }
+        .map_err(|_| SyscallError::InvalidArgument)?;
 
-    let mut len = 0;
-    let mut buffer = Vec::new();
+    // Find NUL terminator (or use the full buffer)
+    let actual_len = buf.iter().position(|&b| b == 0).unwrap_or(max_len);
+    buf.truncate(actual_len);
 
-    // Copy bytes one by one, validating each address
-    while len < max_len {
-        // Check if current pointer is in user space
-        if let Some(next_addr) = (ptr as u64).checked_add(len as u64) {
-            let addr = VirtAddr::new(next_addr);
-            if !petroleum::is_user_address(addr) {
-                return Err(SyscallError::InvalidArgument);
-            }
-        } else {
-            return Err(SyscallError::InvalidArgument);
-        }
-
-        // Read the byte safely
-        let byte = unsafe { ptr.add(len).read() };
-        if byte == 0 {
-            break; // Null terminator found
-        }
-        buffer.push(byte);
-        len += 1;
-
-        // Prevent infinite loops on malformed strings
-        if len >= max_len {
-            return Err(SyscallError::InvalidArgument);
-        }
-    }
-
-    // Convert bytes to string
-    String::from_utf8(buffer).map_err(|_| SyscallError::InvalidArgument)
+    String::from_utf8(buf).map_err(|_| SyscallError::InvalidArgument)
 }
