@@ -423,20 +423,40 @@ impl IwlWifiDevice {
             addr_lo: 0, addr_hi: 0, len: 0, flags: 0,
         }; RX_QUEUE_SIZE]);
         let mut tx_bufs = Vec::new();
-        for _ in 0..TX_QUEUE_SIZE {
-            let buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
-            tx_bufs.push(buf);
-        }
         let mut rx_bufs = Vec::new();
-        for i in 0..RX_QUEUE_SIZE {
-            let buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
-            // Program the RX DMA descriptor with the IOMMU-mapped DMA address
-            let dma = ctx.dma_map(device.device_id, buf.phys(), MAX_FRAME_SIZE)
-                .map_err(|_| IwlError::DmaAllocFailed)?;
-            rx_dma_ring[i].addr_lo = dma as u32;
-            rx_dma_ring[i].addr_hi = (dma >> 32) as u32;
-            rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
-            rx_bufs.push(buf);
+
+        // Pre-map all DMA buffers during initialisation so we reuse the
+        // IOVA on every transaction instead of calling dma_map/dma_unmap
+        // on the hot path (which leaks IOMMU mappings).
+        let init_result = (|| -> Result<(), IwlError> {
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf =
+                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                buf.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+                tx_bufs.push(buf);
+            }
+            for i in 0..RX_QUEUE_SIZE {
+                let mut buf =
+                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                let dma = buf
+                    .dma_map(ctx, device.device_id)
+                    .map_err(|_| IwlError::DmaAllocFailed)?;
+                rx_dma_ring[i].addr_lo = dma as u32;
+                rx_dma_ring[i].addr_hi = (dma >> 32) as u32;
+                rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
+                rx_bufs.push(buf);
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = init_result {
+            for mut buf in tx_bufs {
+                buf.free(ctx);
+            }
+            for mut buf in rx_bufs {
+                buf.free(ctx);
+            }
+            return Err(e);
         }
 
         log::info!("iwlwifi: hardware initialized (firmware not loaded)");
@@ -956,12 +976,9 @@ impl IwlWifiDevice {
         full_data.extend_from_slice(data);
         cmd_buf.write_from(&full_data);
 
-        // Map the buffer for DMA using DriverContext::dma_map().
-        // This returns either an IOMMU IOVA or the physical address
-        // (identity mapping) depending on whether VT-d is enabled.
-        let dma_addr = self.ctx
-            .dma_map(self._pci_dev.device_id, cmd_buf.phys(), total_len)
-            .map_err(|_| "dma_map failed for HCMD")?;
+        // Use the pre-mapped IOVA from init — no per-transaction
+        // dma_map/dma_unmap needed, avoiding IOMMU mapping leaks.
+        let dma_addr = cmd_buf.dma_iova();
         desc.addr_lo = dma_addr as u32;
         desc.addr_hi = (dma_addr >> 32) as u32;
         desc.len = total_len as u16;
@@ -1148,17 +1165,9 @@ impl IwlWifiDevice {
             buf.write_from(&tx_frame);
 
             let desc = &mut self.tx_dma_ring[desc_idx];
-            // Use ctx.dma_map() to get the proper DMA/IOVA address
-            let dma_addr = match self
-                .ctx
-                .dma_map(self._pci_dev.device_id, buf.phys(), tx_frame.len())
-            {
-                Ok(addr) => addr,
-                Err(_) => {
-                    log::warn!("iwlwifi: dma_map failed for TX frame");
-                    break;
-                }
-            };
+            // Use the pre-mapped IOVA from init — no per-transaction
+            // dma_map/dma_unmap needed, avoiding IOMMU mapping leaks.
+            let dma_addr = buf.dma_iova();
             desc.addr_lo = dma_addr as u32;
             desc.addr_hi = (dma_addr >> 32) as u32;
             desc.len = tx_frame.len() as u16;

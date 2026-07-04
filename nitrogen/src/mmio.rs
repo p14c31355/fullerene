@@ -228,6 +228,12 @@ impl DmaRegion {
         self.len
     }
 
+    /// Returns the IOMMU-mapped IOVA (or physical address in
+    /// identity-mapped mode).  Must be called after [`dma_map`].
+    pub fn dma_iova(&self) -> u64 {
+        self.dma_iova
+    }
+
     /// As a slice for reading.
     pub fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.virt, self.len) }
