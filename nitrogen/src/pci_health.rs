@@ -57,7 +57,6 @@ pub struct PciHealth {
     /// Upstream bridge coordinates for ASPM control.
     upstream_bridge: Option<(u8, u8, u8)>,
     // ── Health cache ──
-    d0_verified: bool,
     aspm_disabled: bool,
     /// Timestamp (TSC ticks) of last successful health check.
     last_check_ok: u64,
@@ -75,7 +74,6 @@ impl PciHealth {
             vendor_id: device.vendor_id,
             device_id: device.device_id,
             upstream_bridge: None,
-            d0_verified: false,
             aspm_disabled: false,
             last_check_ok: 0,
         }
@@ -130,7 +128,6 @@ impl PciHealth {
                     if pstate != 0 {
                         return Err(PciHealthError::NotD0);
                     }
-                    self.d0_verified = true;
                 }
                 0x10 => {
                     found_pcie = true;
@@ -202,19 +199,15 @@ impl PciHealth {
 
     /// Pre-MMIO access check.
     ///
-    /// Call this before every MMIO transaction cycle.  On the first call
-    /// (or after a failure), it performs a full health check.  On
-    /// subsequent calls within a short window, it uses a cached result.
+    /// Call this before every MMIO transaction cycle. This always performs
+    /// a full health check to ensure the device is safe to access.
     ///
     /// Returns `Ok(())` if it is safe to access the device via MMIO.
     /// Returns `Err` if the device is not in D0, link is down, or the
     /// device has disappeared — in which case the caller MUST NOT
     /// perform non-posted MMIO reads (they could hang the CPU).
     pub fn pre_mmio_access(&mut self) -> Result<(), PciHealthError> {
-        // Keep this gate authoritative until a real, bounded cache expiry is wired up.
-        self.d0_verified = false;
-
-        // Slow path: full health check
+        // Full health check
         match self.check() {
             Ok(()) => {
                 // On success, also recover ASPM if not done yet
