@@ -461,6 +461,17 @@ impl IwlWifiDevice {
 
         self.fw_state = FwState::Loading;
 
+        // Hold the CPU in reset while we upload sections
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_RESET as usize),
+                0x00000080, // CSR_RESET_REG_FLAG_SW_RESET
+            );
+            for _ in 0..200 {
+                core::hint::spin_loop();
+            }
+        }
+
         let fw_ptr = fw_data.as_ptr();
 
         // zero field must be 0
@@ -544,9 +555,35 @@ impl IwlWifiDevice {
             return Err("No firmware sections uploaded");
         }
 
-        log::info!("iwlwifi: firmware upload complete, waiting for alive...");
+        log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
-        // Wait for the device to signal alive
+        // Kick the firmware CPU to start executing.
+        // 1. Clear any pending interrupts first
+        unsafe {
+            let _pending = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
+            core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), _pending);
+        }
+
+        // 2. Ensure RESET is clear
+        unsafe {
+            core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
+        }
+        for _ in 0..200 {
+            core::hint::spin_loop();
+        }
+
+        // 3. Set INIT_DONE to release the CPU from reset
+        //    (bit 2 of CSR_GP_CNTRL, alongside MAC_ACCESS_EN bit 4)
+        unsafe {
+            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp | CSR_GP_CNTRL_MAC_ACCESS_EN | 0x04, // INIT_DONE
+            );
+        }
+
+        // 4. Wait for the ALIVE interrupt
+        log::info!("iwlwifi: waiting for alive...");
         self.wait_for_alive()?;
 
         self.fw_state = FwState::Ready;
