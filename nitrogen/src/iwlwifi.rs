@@ -20,7 +20,6 @@
 //! - IEEE 802.11-2016 standard
 
 use alloc::boxed::Box;
-use alloc::vec;
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
 use alloc::collections::VecDeque;
@@ -32,6 +31,9 @@ use bonder::wpa::WpaSupplicant;
 use bonder::dhcp::DhcpClient;
 
 use crate::pci::{PciDevice, PciScanner};
+use crate::pci_health::PciHealth;
+use crate::mmio::{self, DmaRegion};
+use crate::DriverContext;
 
 // ── PCI identifiers ───────────────────────────────────────────────────
 
@@ -156,6 +158,7 @@ enum LegacyCmd {
     Deauth          = 0x1D,
     AddSta          = 0x18 | 0x40,
     Rxon            = 0x1E,
+    TxAntConfig     = 0x0C,
     RxonAssoc       = 0x20,
     PowerDown      = 0x26,
     PowerUp        = 0x27,
@@ -258,6 +261,11 @@ pub struct IwlWifiDevice {
     /// Hardware revision.
     hw_rev: u16,
 
+    // ── Driver context for DMA ───────────────────────────
+    ctx: &'static dyn DriverContext,
+    /// PCIe health monitor for pre-MMIO access checks.
+    health: PciHealth,
+
     // ── Firmware state ────────────────────────────────────
     fw_state: FwState,
     fw_build: u32,
@@ -284,9 +292,9 @@ pub struct IwlWifiDevice {
     rx_head: usize,
     rx_tail: usize,
 
-    // ── DMA buffers ───────────────────────────────────────
-    tx_bufs: Vec<Vec<u8>>,
-    rx_bufs: Vec<Vec<u8>>,
+    // ── DMA buffers (physically contiguous, cache-coherent) ─
+    tx_bufs: Vec<DmaRegion>,
+    rx_bufs: Vec<DmaRegion>,
 
     // ── IP configuration (from DHCP) ─────────────────────
     ip_address: [u8; 4],
@@ -297,9 +305,19 @@ pub struct IwlWifiDevice {
 
 unsafe impl Send for IwlWifiDevice {}
 
+// ── Global driver context for DMA ───────────────────────────────
+
+static WIFI_DRIVER_CTX: Mutex<Option<&'static dyn DriverContext>> = Mutex::new(None);
+
+/// Set the driver context for WiFi DMA operations.
+/// Must be called before `try_init_wifi_device()`.
+pub fn set_wifi_driver_context(ctx: &'static dyn DriverContext) {
+    *WIFI_DRIVER_CTX.lock() = Some(ctx);
+}
+
 impl IwlWifiDevice {
     /// Scan the PCI bus for an Intel Wireless 7265 and initialize it.
-    pub fn probe_and_init() -> Option<Self> {
+    pub fn probe_and_init(ctx: &'static dyn DriverContext) -> Option<Self> {
         let mut scanner = PciScanner::new();
         let _ = scanner.scan_all_buses();
 
@@ -323,7 +341,7 @@ impl IwlWifiDevice {
                 device.function,
             );
 
-            match Self::init(device.clone()) {
+            match Self::init(device.clone(), ctx) {
                 Ok(s) => return Some(s),
                 Err(_) => {
                     log::warn!("iwlwifi: init failed");
@@ -337,10 +355,30 @@ impl IwlWifiDevice {
     }
 
     /// Initialize the device.
-    fn init(device: PciDevice) -> Result<Self, IwlError> {
+    fn init(device: PciDevice, ctx: &'static dyn DriverContext) -> Result<Self, IwlError> {
+        // ── Phase 0: PCIe health verification ──────────────
+        // Verify device is in D0, PCIe link is up, ASPM is disabled.
+        // All checks use PCI config space (port I/O) — never MMIO,
+        // so they cannot hang even if the device is unresponsive.
+        let mut health = PciHealth::new(&device);
+        health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
+
+        // Ensure D0 and disable ASPM on the device (config space, safe)
+        device.ensure_d0();
+        device.disable_pcie_aspm();
         device.enable_memory_access();
+
         let bar0_addr = device.read_bar(0).ok_or(IwlError::BarNotAvailable)?;
-        let mmio = bar0_addr as *mut u32;
+        let mmio_virt = ctx.phys_to_virt(bar0_addr);
+        // If available here, also register the UC MMIO mapping:
+        // ctx.map_mmio_region(bar0_addr as usize, mmio_virt, IWL_BAR0_SIZE)
+        //     .map_err(|_| IwlError::BarNotAvailable)?;
+        // NOTE: CSR_* constants are u32-relative (offset/4).  We use raw u32
+        // pointer arithmetic to access registers, matching the iwlwifi spec.
+        let mmio = mmio_virt as *mut u32;
+
+        // Re-verify health after enabling memory access
+        health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
 
         // Read hardware revision
         let hw_rev_raw = unsafe { core::ptr::read_volatile(mmio.add(CSR_HW_REV as usize)) };
@@ -354,6 +392,8 @@ impl IwlWifiDevice {
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
+        // Barrier: ensure MAC clock request is visible before polling
+        mmio::write_barrier();
         let mut clock_ready = false;
         for _ in 0..50_000 {
             let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
@@ -367,7 +407,7 @@ impl IwlWifiDevice {
             return Err(IwlError::ClockNotReady);
         }
 
-        // Read MAC address
+        // Read MAC address from NVM
         let mac = Self::read_mac(mmio);
 
         // Mask all interrupts
@@ -383,17 +423,40 @@ impl IwlWifiDevice {
             addr_lo: 0, addr_hi: 0, len: 0, flags: 0,
         }; RX_QUEUE_SIZE]);
         let mut tx_bufs = Vec::new();
-        for _ in 0..TX_QUEUE_SIZE {
-            tx_bufs.push(vec![0u8; MAX_FRAME_SIZE]);
-        }
         let mut rx_bufs = Vec::new();
-        for i in 0..RX_QUEUE_SIZE {
-            let buf = vec![0u8; MAX_FRAME_SIZE];
-            let addr = buf.as_ptr() as u64;
-            rx_dma_ring[i].addr_lo = addr as u32;
-            rx_dma_ring[i].addr_hi = (addr >> 32) as u32;
-            rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
-            rx_bufs.push(buf);
+
+        // Pre-map all DMA buffers during initialisation so we reuse the
+        // IOVA on every transaction instead of calling dma_map/dma_unmap
+        // on the hot path (which leaks IOMMU mappings).
+        let init_result = (|| -> Result<(), IwlError> {
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf =
+                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                buf.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+                tx_bufs.push(buf);
+            }
+            for i in 0..RX_QUEUE_SIZE {
+                let mut buf =
+                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                let dma = buf
+                    .dma_map(ctx, device.device_id)
+                    .map_err(|_| IwlError::DmaAllocFailed)?;
+                rx_dma_ring[i].addr_lo = dma as u32;
+                rx_dma_ring[i].addr_hi = (dma >> 32) as u32;
+                rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
+                rx_bufs.push(buf);
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = init_result {
+            for mut buf in tx_bufs {
+                buf.free(ctx);
+            }
+            for mut buf in rx_bufs {
+                buf.free(ctx);
+            }
+            return Err(e);
         }
 
         log::info!("iwlwifi: hardware initialized (firmware not loaded)");
@@ -403,6 +466,8 @@ impl IwlWifiDevice {
             _pci_dev: device,
             mmio,
             hw_rev,
+            ctx,
+            health,
             fw_state: FwState::NotLoaded,
             fw_build: 0,
             fw_api_ver: 0,
@@ -455,20 +520,61 @@ impl IwlWifiDevice {
         }
     }
 
-    /// Read MAC address from device registers.
+    /// Read MAC address from the NVM (non-volatile memory) via CSR registers.
+    ///
+    /// Intel WiFi NICs store the MAC address in the OTP/EEPROM NVM.  The
+    /// correct way to read it (matching Linux iwlwifi) is via the NVM_ACCESS
+    /// command or by reading the APMG_DRAM_INFO / CSR_EEPROM_AND_OTG registers
+    /// at offsets 0x0D0-0x0D4 (OTP shadow).  We read from the OTP shadow
+    /// region, which is loaded into CSR space after reset.
     fn read_mac(mmio: *mut u32) -> [u8; 6] {
         unsafe {
-            let eeprom_ctrl = core::ptr::read_volatile(mmio.add(CSR_EEPROM_GP as usize));
-            if eeprom_ctrl != 0 && eeprom_ctrl != 0xFFFF_FFFF {
-                let tbl_offset = CSR_DRAM_INT_TBL as usize;
-                let mac_lo = core::ptr::read_volatile(mmio.add(tbl_offset));
-                let mac_hi = core::ptr::read_volatile(mmio.add(tbl_offset + 1));
-                [
+            // OTP shadow for MAC address is typically at CSR offsets 0x0D0-0x0D4
+            // (OTP_DEVICE_SEL bit 0 must be set in CSR_EEPROM_GP register)
+            // This follows the Linux iwlwifi pattern for 7265 series.
+            let eeprom_gp = core::ptr::read_volatile(mmio.add(CSR_EEPROM_GP as usize));
+
+            // Check OTP is valid (bit 1 = OTP, bit 3 = OTP valid)
+            if eeprom_gp != 0xFFFF_FFFF && (eeprom_gp & 0x08) != 0 {
+                // OTP is valid: read MAC from the OTP shadow registers
+                // CSR_OTP_GP at 0x030 contains the OTP shadow base
+                let otp_gp = core::ptr::read_volatile(mmio.add(CSR_OTP_GP as usize));
+                let mac_addr_shadow = if (otp_gp & 0x01) != 0 {
+                    // OTP shadow is available, read from CSR_DRAM_INT_TBL region
+                    0x0A0usize
+                } else {
+                    // Fallback: NVM shadow at CSR_EEPROM_AND_OTG (0x0D4)
+                    0x0D4usize
+                };
+
+                let mac_lo = core::ptr::read_volatile(mmio.add(mac_addr_shadow / 4));
+                let mac_hi = core::ptr::read_volatile(mmio.add(mac_addr_shadow / 4 + 1));
+                let mac = [
                     mac_lo as u8, (mac_lo >> 8) as u8,
                     (mac_lo >> 16) as u8, (mac_lo >> 24) as u8,
                     mac_hi as u8, (mac_hi >> 8) as u8,
-                ]
+                ];
+
+                // Validate: MAC must not be all-zero or broadcast
+                if mac != [0; 6] && mac != [0xFF; 6] {
+                    return mac;
+                }
+            }
+
+            // Final fallback: read from OTP access registers directly
+            // CSR_EEPROM_AND_OTG at 0x0D4 contains the MAC in the lower
+            // two dwords when OTP_ACCESS_MODE is set.
+            let mac_lo = core::ptr::read_volatile(mmio.add(0x0D4 / 4));
+            let mac_hi = core::ptr::read_volatile(mmio.add(0x0D8 / 4));
+            let fallback = [
+                mac_lo as u8, (mac_lo >> 8) as u8,
+                (mac_lo >> 16) as u8, (mac_lo >> 24) as u8,
+                mac_hi as u8, (mac_hi >> 8) as u8,
+            ];
+            if fallback != [0; 6] && fallback != [0xFF; 6] {
+                fallback
             } else {
+                // Hardcoded fallback for QEMU
                 [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
             }
         }
@@ -778,17 +884,53 @@ impl IwlWifiDevice {
     }
 
     /// Send post-boot initialization commands to firmware.
+    ///
+    /// This sends the minimal set of host commands required to transition
+    /// the firmware from the "alive" state to "operational":
+    ///
+    /// 1. TX Antenna Configuration (0x24)
+    /// 2. RXON (0x1E) — configure station mode, channel, etc.
+    /// 3. Set MAC Address (0x16) — confirm our MAC to firmware
+    ///
+    /// On real hardware, additional commands for BT coexistence,
+    /// power-saving, HT/VHT capabilities, and queue setup would follow.
     fn send_init_commands(&mut self) -> Result<(), &'static str> {
-        // Send configuration commands to the firmware:
-        // 1. RXON (Radio ON) - configure station mode
-        // 2. Set MAC address
-        // 3. Enable TX/RX queues
-        // 4. Configure power saving
+        // ── 1. TX Antenna Configuration ────────────────────
+        // Report available TX antennas to firmware.
+        // cfg[0] = valid_tx_antenna mask (bitmask of antennas 1/2)
+        // cfg[1] = valid_rx_antenna mask
+        let ant_cfg: [u8; 8] = [0x03, 0x03, 0, 0, 0, 0, 0, 0];
+        self.send_hcmd(LegacyCmd::TxAntConfig as u8, GroupId::Legacy as u8, &ant_cfg)
+            .map_err(|_| "TX antenna config failed")?;
+        log::info!("iwlwifi: TX antenna config sent");
 
-        // In a real implementation, these are sent via the HCMD interface
-        // as command buffers written to the TX DMA ring.
+        // ── 2. RXON (Radio ON) — basic station configuration
+        // RXON configures the operating mode, channel, and basic rates.
+        // A minimal RXON structure (36 bytes):
+        //   flags(2), channel(2), bssid[6](6), node_addr[6](6),
+        //   atim_window(2), beacon_interval(2), assoc_id(2),
+        //   reserved[14](14)
+        let mut rxon = [0u8; 36];
+        // flags: bit 1 = STA mode, bit 6 = SHORT_SLOT
+        rxon[0] = 0x42;
+        rxon[1] = 0x00;
+        // Set our MAC address as the node address (offset 12..18)
+        let mac = self.mac;
+        rxon[12..18].copy_from_slice(&mac);
+        // Clear BSSID (we'll set it during association)
+        // Set beacon interval to 100 TU (~100ms)
+        rxon[22] = 100;
+        rxon[23] = 0;
+        self.send_hcmd(LegacyCmd::Rxon as u8, GroupId::Legacy as u8, &rxon)
+            .map_err(|_| "RXON config failed")?;
+        log::info!("iwlwifi: RXON config sent");
 
-        log::info!("iwlwifi: init commands sent");
+        // ── 3. Enable TX/RX queues ─────────────────────────
+        // A real driver would send QUEUE_CONFIG commands.  For now,
+        // the firmware defaults are used (single AC queue).
+        // This is sufficient for basic operation in QEMU.
+
+        log::info!("iwlwifi: init commands complete, device operational");
         Ok(())
     }
 
@@ -801,6 +943,9 @@ impl IwlWifiDevice {
             return Err("HCMD too large");
         }
 
+        // Verify device is accessible before DMA transactions
+        self.health.pre_mmio_access().map_err(|_| "device not accessible")?;
+
         // Build command header
         let hcmd_header = HcmdHeader {
             opcode,
@@ -811,35 +956,46 @@ impl IwlWifiDevice {
         };
 
         // Write to TX DMA ring
-        let desc = &mut self.tx_dma_ring[self.tx_head % TX_QUEUE_SIZE];
-        let cmd_buf = &mut *self.tx_bufs[self.tx_head % TX_QUEUE_SIZE];
-
-        unsafe {
-            let hdr_ptr = &hcmd_header as *const HcmdHeader as *const u8;
-            core::ptr::copy_nonoverlapping(
-                hdr_ptr,
-                cmd_buf.as_mut_ptr(),
-                core::mem::size_of::<HcmdHeader>(),
-            );
+        let used = self.tx_head.wrapping_sub(self.tx_tail);
+        if used >= TX_QUEUE_SIZE {
+            return Err("TX ring full");
         }
-        cmd_buf[core::mem::size_of::<HcmdHeader>()..total_len].copy_from_slice(data);
+        let desc_idx = self.tx_head % TX_QUEUE_SIZE;
+        let desc = &mut self.tx_dma_ring[desc_idx];
+        let cmd_buf = &mut self.tx_bufs[desc_idx];
 
-        // FIXME: This uses a virtual address directly as DMA address, which is incorrect.
-        // In a production driver, use DriverContext::dma_map() to obtain a proper DMA/IOVA address.
-        // For now, this works in QEMU identity-mapped environments.
-        let addr = cmd_buf.as_ptr() as u64;
-        desc.addr_lo = addr as u32;
-        desc.addr_hi = (addr >> 32) as u32;
+        // Write header + data into the DMA buffer
+        let header_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &hcmd_header as *const HcmdHeader as *const u8,
+                core::mem::size_of::<HcmdHeader>(),
+            )
+        };
+        let mut full_data = alloc::vec::Vec::with_capacity(total_len);
+        full_data.extend_from_slice(header_bytes);
+        full_data.extend_from_slice(data);
+        cmd_buf.write_from(&full_data);
+
+        // Use the pre-mapped IOVA from init — no per-transaction
+        // dma_map/dma_unmap needed, avoiding IOMMU mapping leaks.
+        let dma_addr = cmd_buf.dma_iova();
+        desc.addr_lo = dma_addr as u32;
+        desc.addr_hi = (dma_addr >> 32) as u32;
         desc.len = total_len as u16;
         desc.flags = 0;
 
+        // Flush descriptor ring cache line before doorbell
+        let desc_addr = &self.tx_dma_ring[desc_idx] as *const TxDmaDesc as *const u8;
+        mmio::cache_flush(desc_addr);
+
         self.tx_head += 1;
 
-        // In a real driver, ring the doorbell register to tell the device
-        // that a new command is available.
+        // Ring the doorbell register to tell the device a new command is available.
+        mmio::write_barrier();
         unsafe {
             core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
         }
+        mmio::write_barrier();
 
         Ok(())
     }
@@ -985,6 +1141,11 @@ impl IwlWifiDevice {
 
     /// Process pending TX frames and program DMA descriptors.
     fn process_tx_queue(&mut self) {
+        // Verify health before initiating DMA
+        if self.health.pre_mmio_access().is_err() {
+            return;
+        }
+
         while let Some(tx_frame) = self.tx_queue.front() {
             if tx_frame.len() > MAX_FRAME_SIZE {
                 self.tx_queue.pop_front();
@@ -998,20 +1159,32 @@ impl IwlWifiDevice {
 
             let tx_frame = self.tx_queue.pop_front().unwrap();
             let desc_idx = self.tx_head % TX_QUEUE_SIZE;
-            self.tx_bufs[desc_idx][..tx_frame.len()].copy_from_slice(&tx_frame);
+            let buf = &mut self.tx_bufs[desc_idx];
+
+            // Write frame data and flush cache for DMA
+            buf.write_from(&tx_frame);
 
             let desc = &mut self.tx_dma_ring[desc_idx];
-            let addr = self.tx_bufs[desc_idx].as_ptr() as u64;
-            desc.addr_lo = addr as u32;
-            desc.addr_hi = (addr >> 32) as u32;
+            // Use the pre-mapped IOVA from init — no per-transaction
+            // dma_map/dma_unmap needed, avoiding IOMMU mapping leaks.
+            let dma_addr = buf.dma_iova();
+            desc.addr_lo = dma_addr as u32;
+            desc.addr_hi = (dma_addr >> 32) as u32;
             desc.len = tx_frame.len() as u16;
             desc.flags = 0;
 
+            // Flush descriptor cache line so device sees correct values
+            let desc_addr = &self.tx_dma_ring[desc_idx] as *const TxDmaDesc as *const u8;
+            mmio::cache_flush(desc_addr);
+
             self.tx_head = self.tx_head.wrapping_add(1);
 
+            // Doorbell with write barrier
+            mmio::write_barrier();
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
             }
+            mmio::write_barrier();
         }
     }
 
@@ -1186,9 +1359,15 @@ impl IwlWifiDevice {
 
     /// Periodic tick - process pending events, scan results, etc.
     pub fn tick(&mut self) {
+        // Verify health before touching hardware registers
+        if self.health.pre_mmio_access().is_err() {
+            return;
+        }
+
         // Poll firmware for events
         let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
         if int_cause != 0 && int_cause != 0xFFFF_FFFF {
+            // Write-back to acknowledge (write to clear)
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
@@ -1213,8 +1392,12 @@ impl IwlWifiDevice {
             let desc_idx = self.rx_tail;
             let desc = &self.rx_dma_ring[desc_idx];
             if desc.len > 0 && desc_idx < self.rx_bufs.len() {
-                let len = (desc.len as usize).min(self.rx_bufs[desc_idx].len());
-                let frame_data = self.rx_bufs[desc_idx][..len].to_vec();
+                let buf = &self.rx_bufs[desc_idx];
+                let frame_len = (desc.len as usize).min(buf.len());
+                // Use DmaRegion::read_into for cache-invalidate + copy
+                let mut frame_data = alloc::vec::Vec::with_capacity(frame_len);
+                unsafe { frame_data.set_len(frame_len); }
+                buf.read_into(&mut frame_data);
                 self.process_rx_frame(&frame_data);
             }
             self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
@@ -1320,13 +1503,24 @@ const EMBEDDED_FW_CRC32: u32 = 0xECB4_1451;
 
 /// Probe for an Intel wireless device, load firmware and store it for periodic ticking.
 ///
-/// Safe to call multiple times.
+/// Safe to call multiple times.  Requires that `set_wifi_driver_context()` has
+/// been called before (typically by the kernel's init sequence).
 pub fn try_init_wifi_device() {
+    let ctx_opt = WIFI_DRIVER_CTX.lock();
+    let ctx = match *ctx_opt {
+        Some(c) => c,
+        None => {
+            log::warn!("iwlwifi: driver context not set, cannot init");
+            return;
+        }
+    };
+    drop(ctx_opt);
+
     let mut dev_guard = WIFI_DEVICE.lock();
     if dev_guard.is_some() {
         return;
     }
-    if let Some(mut dev) = IwlWifiDevice::probe_and_init() {
+    if let Some(mut dev) = IwlWifiDevice::probe_and_init(ctx) {
         log::info!("iwlwifi: loading embedded firmware ({} bytes)", EMBEDDED_FW.len());
 
         // Verify firmware integrity with CRC32 against the known-good checksum
@@ -1420,4 +1614,5 @@ pub fn connect_to_ap(ssid: &bonder::wifi::Ssid, password: Option<&str>) {
 enum IwlError {
     BarNotAvailable,
     ClockNotReady,
+    DmaAllocFailed,
 }

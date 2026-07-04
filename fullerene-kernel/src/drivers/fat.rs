@@ -60,6 +60,12 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static 
     }
 
     // Scan partition entries (at offset 0x1BE, 4 entries × 16 bytes)
+    // Chain-loader USB drives (Ventoy / Rufus / etc.) typically have a
+    // small boot/EFI partition followed by a larger data partition.  We
+    // prefer the largest FAT/exFAT partition so that the actual data area
+    // is mounted instead of the boot stub.
+    let mut best_lba: Option<u32> = None;
+    let mut best_sectors: u32 = 0;
     for i in 0..4 {
         let off = 0x1BE + i * 16;
         // SAFETY: boot[off..] has at least 16 bytes, and MbrPartitionEntry
@@ -67,24 +73,33 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static 
         let entry_ptr = boot[off..].as_ptr() as *const MbrPartitionEntry;
         let ptype = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).partition_type) };
         let lba_start = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).lba_start) };
+        let sector_count = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).sector_count) };
+        let is_fat = matches!(
+            ptype,
+            PARTITION_FAT32 | PARTITION_FAT32_LBA | PARTITION_FAT16 | PARTITION_FAT16_LBA | PARTITION_EXFAT
+        );
+        if is_fat {
+            if sector_count > best_sectors {
+                best_lba = Some(lba_start);
+                best_sectors = sector_count;
+            }
+        }
         match ptype {
             PARTITION_FAT32 | PARTITION_FAT32_LBA => {
-                klog_fmt!("FAT: MBR partition {} FAT32 at LBA {}\n", i, lba_start);
-                return Ok(lba_start);
+                klog_fmt!("FAT: MBR partition {} FAT32 at LBA {} sectors={}\n", i, lba_start, sector_count);
             }
             PARTITION_FAT16 | PARTITION_FAT16_LBA => {
-                klog_fmt!(
-                    "FAT: MBR partition {} FAT16 at LBA {} (stub)\n",
-                    i,
-                    lba_start
-                );
+                klog_fmt!("FAT: MBR partition {} FAT16 at LBA {} sectors={} (stub)\n", i, lba_start, sector_count);
             }
             PARTITION_EXFAT => {
-                klog_fmt!("FAT: MBR partition {} exFAT at LBA {}\n", i, lba_start);
-                return Ok(lba_start);
+                klog_fmt!("FAT: MBR partition {} exFAT at LBA {} sectors={}\n", i, lba_start, sector_count);
             }
             _ => {}
         }
+    }
+    if let Some(lba) = best_lba {
+        klog_fmt!("FAT: selected partition at LBA {} ({} sectors)\n", lba, best_sectors);
+        return Ok(lba);
     }
     klog_fmt!("FAT: no FAT partition found in MBR\n");
     Err("no FAT partition")

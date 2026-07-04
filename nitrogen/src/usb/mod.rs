@@ -194,6 +194,8 @@ pub struct UsbDevice {
     pub device_protocol: u8,
     pub configurations: u8,
     pub endpoints: alloc::vec::Vec<UsbEndpointDesc>,
+    /// Root-hub port index this device is connected to.
+    pub port_index: u32,
 }
 
 impl UsbDevice {

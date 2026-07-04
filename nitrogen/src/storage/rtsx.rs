@@ -17,6 +17,8 @@ use spin::Mutex;
 
 use crate::driver_context::DriverContext;
 use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
+use crate::pci_health::PciHealth;
+use crate::mmio::MemRegion;
 
 // ── RTSX Host Controller Registers (byte offsets from BAR0) ──
 #[allow(dead_code)]
@@ -78,8 +80,24 @@ const SD_RSP_TYPE_R6: u8 = 0x02;
 const SD_RSP_TYPE_R7: u8 = 0x01;
 
 // ── SD_CFG constants ──────────────────────────────────────────
+#[allow(dead_code)]
 const SD_CLK_DIVIDE_128: u8 = 0x0C;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_64: u8 = 0x0A;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_32: u8 = 0x08;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_16: u8 = 0x06;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_8: u8 = 0x04;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_4: u8 = 0x02;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_2: u8 = 0x01;
+#[allow(dead_code)]
+const SD_CLK_DIVIDE_1: u8 = 0x00;
 const SD_BUS_WIDTH_1: u8 = 0x00;
+const SD_BUS_WIDTH_4: u8 = 0x01;
 const SD_CRC_CHECK_EN: u8 = 0x20;
 const SD_CRC_GEN_EN: u8 = 0x40;
 const SD_CALC_CRC_CMD: u8 = 0x10;
@@ -94,14 +112,25 @@ const CARD_PWR_ON: u8 = 0x07;
 const CMD0_GO_IDLE: u8 = 0;
 const CMD2_ALL_SEND_CID: u8 = 2;
 const CMD3_SEND_RELATIVE_ADDR: u8 = 3;
+#[allow(dead_code)]
+const CMD6_SWITCH_FUNC: u8 = 6;
 const CMD7_SELECT_CARD: u8 = 7;
 const CMD8_SEND_IF_COND: u8 = 8;
 const CMD9_SEND_CSD: u8 = 9;
+const CMD11_VOLTAGE_SWITCH: u8 = 11;
+#[allow(dead_code)]
+const CMD12_STOP_TRANSMISSION: u8 = 12;
+const CMD13_SEND_STATUS: u8 = 13;
 const CMD16_SET_BLOCKLEN: u8 = 16;
 const CMD17_READ_SINGLE: u8 = 17;
+#[allow(dead_code)]
+const CMD18_READ_MULTIPLE: u8 = 18;
 const CMD24_WRITE_SINGLE: u8 = 24;
+#[allow(dead_code)]
+const CMD25_WRITE_MULTIPLE: u8 = 25;
 const CMD55_APP_CMD: u8 = 55;
 const ACMD41_SEND_OP_COND: u8 = 41;
+const ACMD6_SET_BUS_WIDTH: u8 = 6;
 
 // ── SD Card Type ──────────────────────────────────────────────
 
@@ -135,6 +164,13 @@ pub struct RtsxController {
     /// we re-assert D0/ASPM disable on the bridge before each MMIO
     /// session to avoid hangs caused by L1 substate transitions.
     upstream_bridge: Option<(u8, u8, u8)>,
+    /// Whether a card was detected in the previous poll cycle.
+    card_was_present: bool,
+    /// PCIe health monitor — verifies D0 + link status before MMIO.
+    health: PciHealth,
+    /// MMIO region wrapper with proper access barriers.
+    #[allow(dead_code)]
+    mmio_region: MemRegion,
 }
 
 unsafe impl Send for RtsxController {}
@@ -155,94 +191,26 @@ impl RtsxController {
         unsafe { ptr::write_volatile(self.mmio.add(off as usize) as *mut u16, val) }
     }
 
-    /// Check device accessibility via config space (port I/O, safe).
+    /// Check device accessibility via `PciHealth` (config space, safe).
     /// Returns `Err` with a reason if the device cannot be safely accessed
-    /// via MMIO.  Checks:
-    ///
-    /// 1. Vendor ID sanity (device must be on the bus).
-    /// 2. Power Management state (must be D0 — D3hot/D3cold reads hang).
-    /// 3. PCIe link status (Negotiated Speed must be non-zero).
-    fn ensure_device_accessible(&self) -> Result<(), &'static str> {
-        let bus = self.device.bus;
-        let dev = self.device.device;
-        let func = self.device.function;
-
-        // 1. Vendor check
-        let vendor = crate::pci::PciConfigSpace::read_config_word(bus, dev, func, 0x00);
-        if vendor == 0xFFFF || vendor == 0x0000 || vendor != self.device.vendor_id {
-            log::warn!("RTSX: device not on PCI bus (vendor={:#06x})", vendor);
-            return Err("device off PCI bus");
-        }
-
-        // 2. Walk capabilities list to find PM cap (0x01) and PCIe cap (0x10).
-        let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, 0x34);
-        if cap_ptr == 0 {
-            log::warn!("RTSX: no PCI capabilities list");
-            return Err("no capabilities");
-        }
-        let mut off = cap_ptr;
-        let mut found_pm = false;
-        let mut found_pcie = false;
-        for _ in 0..48 {
-            // Tighten bounds check: off + 0x12 must not overflow config space (256 bytes).
-            // PCIe capability reads at off+0x12, so off must be <= 0xED (256 - 19).
-            if off < 0x40 || off > 0xED {
-                break;
+    /// via MMIO.
+    fn ensure_device_accessible(&mut self) -> Result<(), &'static str> {
+        match self.health.pre_mmio_access() {
+            Ok(()) => {
+                log::info!("RTSX: device accessible (D0, link up)");
+                Ok(())
             }
-            let cap_id = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off);
-
-            match cap_id {
-                0x01 => {
-                    // Power Management capability
-                    found_pm = true;
-                    // PMCSR at cap_offset + 4, bits 1:0 = power state.
-                    let pmcsr =
-                        crate::pci::PciConfigSpace::read_config_word(bus, dev, func, off + 4);
-                    let pstate = pmcsr & 0x3;
-                    if pstate != 0 {
-                        log::warn!("RTSX: device not in D0 (state={})", pstate);
-                        return Err("device not in D0");
-                    }
-                    log::info!("RTSX: power state D0 confirmed");
-                }
-                0x10 => {
-                    // PCI Express capability
-                    found_pcie = true;
-                    let lnk_sts =
-                        crate::pci::PciConfigSpace::read_config_word(bus, dev, func, off + 0x12);
-                    // Negotiated Link Speed in bits 3:0 (Link Status register bits 3:0)
-                    let speed = lnk_sts & 0xF;
-                    if speed == 0 {
-                        log::warn!("RTSX: PCIe link down (lnk_sts={:#06x})", lnk_sts);
-                        return Err("PCIe link down");
-                    }
-                    log::info!("RTSX: PCIe link up (speed={})", speed);
-                }
-                _ => {}
+            Err(e) => {
+                let msg = match e {
+                    crate::pci_health::PciHealthError::DeviceGone => "device off PCI bus",
+                    crate::pci_health::PciHealthError::NotD0 => "device not in D0",
+                    crate::pci_health::PciHealthError::LinkDown => "PCIe link down",
+                    _ => "device not accessible",
+                };
+                log::warn!("RTSX: {}", msg);
+                Err(msg)
             }
-
-            if found_pm && found_pcie {
-                return Ok(());
-            }
-
-            let next = crate::pci::PciConfigSpace::read_config_byte(bus, dev, func, off + 1);
-            // Self-loop check: some broken hardware can return the same
-            // offset as the next pointer.
-            if next == 0 || next == off {
-                break;
-            }
-            off = next;
         }
-
-        if !found_pm {
-            log::warn!("RTSX: Power Management capability not found");
-            return Err("PM cap not found");
-        }
-        if !found_pcie {
-            log::warn!("RTSX: PCIe capability not found");
-            return Err("PCIe cap not found");
-        }
-        Ok(())
     }
 
     // ── PPBUF data transfer ───────────────────────────────────
@@ -273,7 +241,7 @@ impl RtsxController {
 
     // ── RTSX Hardware Init (MMIO access starts here) ──────────
 
-    fn init_hardware(&self) -> bool {
+    fn init_hardware(&mut self) -> bool {
         // Before any MMIO access, verify the device is alive via PCI config
         // space (port I/O, never hangs).  If the device is in D3cold or the
         // PCIe link is down, this is our last safe bail-out point before
@@ -357,8 +325,24 @@ impl RtsxController {
         self.w8(CARD_DRIVE_SEL, 0x03);
         self.w8(CARD_STOP, 0x00);
 
-        log::info!("RTSX: hardware init done");
-        true
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+
+        // After all posted writes have settled, verify the device is still
+        // accessible via PCI config space before the caller performs its
+        // first non-posted MMIO read.  If the link dropped during init,
+        // the upcoming read would hang the CPU indefinitely.
+        match self.ensure_device_accessible() {
+            Ok(()) => {
+                log::info!("RTSX: hardware init done, device accessible");
+                true
+            }
+            Err(e) => {
+                log::warn!("RTSX: hardware init done but device not accessible: {}", e);
+                false
+            }
+        }
     }
 
     // ── SD Command Execution ──────────────────────────────────
@@ -440,6 +424,74 @@ impl RtsxController {
             return Err("APP_CMD not accepted");
         }
         self.sd_cmd(acmd, arg, rsp_type, 0)
+    }
+
+    /// Send CMD13 (SEND_STATUS) to poll the card's current state.
+    /// The card responds with R1 containing the 16-bit status in the upper 16 bits.
+    fn sd_status(&self, rca: u16) -> Result<u32, &'static str> {
+        self.sd_cmd(CMD13_SEND_STATUS, (rca as u32) << 16, SD_RSP_TYPE_R1, 0)
+    }
+
+    /// Wait for the card to become ready (not busy) after a write command.
+    /// Polls CMD13 until the card exits the programming state.
+    fn sd_wait_ready(&self, rca: u16) -> Result<(), &'static str> {
+        for _ in 0..500_000 {
+            let st = self.sd_status(rca)?;
+            // R1 bit 8 = READY_FOR_DATA; bit 9 = CURRENT_STATE (0=idle, 7=prg)
+            if (st & (1 << 8)) != 0 {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err("card busy timeout")
+    }
+
+    /// Switch the SD bus to 4-bit wide mode via ACMD6.
+    fn sd_set_bus_width_4(&self) -> Result<(), &'static str> {
+        let _ = self.sd_acmd(ACMD6_SET_BUS_WIDTH, 0x02, SD_RSP_TYPE_R1)?;
+        self.w8(SD_CFG1, self.r8(SD_CFG1) | SD_BUS_WIDTH_4);
+        Ok(())
+    }
+
+    /// Attempt UHS-I voltage switch (1.8V signaling) and SDR mode.
+    ///
+    /// CMD11 tells the card to switch signaling voltage.  On success,
+    /// the card drives CMD and DAT[3:0] low for 5ms, then the host
+    /// switches its voltage regulator.
+    ///
+    /// We then switch to higher clock speed (SD_CLK_DIVIDE_4 or better)
+    /// and 4-bit data bus for SDR25/SDR50 operation.
+    ///
+    /// Returns `true` if voltage switch succeeded, `false` if the card
+    /// doesn't support UHS-I or the switch failed (cards remain at 3.3V).
+    fn sd_uhs_voltage_switch(&self) -> bool {
+        // CMD11: arg=0, R1 response.  If card supports UHS-I it will
+        // respond successfully and drive data lines low.
+        match self.sd_cmd(CMD11_VOLTAGE_SWITCH, 0, SD_RSP_TYPE_R1, 0) {
+            Ok(_) => {
+                // Per SD spec, after CMD11 success wait 5ms for the card
+                // to pull data lines low (indicating it has switched).
+                for _ in 0..50_000 {
+                    core::hint::spin_loop();
+                }
+
+                // Verify card is still responsive via ACMD41
+                match self.sd_acmd(ACMD41_SEND_OP_COND, 0x00FF_8000, SD_RSP_TYPE_R3) {
+                    Ok(_) => {
+                        log::info!("RTSX: UHS-I voltage switch succeeded");
+                        true
+                    }
+                    Err(_) => {
+                        log::warn!("RTSX: UHS-I voltage switch failed, staying at 3.3V");
+                        false
+                    }
+                }
+            }
+            Err(_) => {
+                log::info!("RTSX: card does not support UHS-I, staying at 3.3V");
+                false
+            }
+        }
     }
 
     // ── SD Card Init (called after boot) ───────────────────────
@@ -594,6 +646,15 @@ impl RtsxController {
             SdCardType::SDSC
         };
 
+        // Attempt UHS-I voltage switch for SDHC/SDXC cards
+        if card_type != SdCardType::SDSC && self.sd_uhs_voltage_switch() {
+            // Increase clock speed (4x faster = SD_CLK_DIVIDE_32)
+            self.w8(SD_CFG1, SD_CLK_DIVIDE_32 | SD_BUS_WIDTH_1 | SD_CRC_CHECK_EN | SD_CRC_GEN_EN);
+            for _ in 0..50_000 {
+                core::hint::spin_loop();
+            }
+        }
+
         self.sd_cmd(CMD2_ALL_SEND_CID, 0, SD_RSP_TYPE_R2, 0)?;
         let mut cid = [0u8; 16];
         self.ppbuf_read(&mut cid);
@@ -612,6 +673,11 @@ impl RtsxController {
         let (block_size, total_blocks) = Self::parse_csd(&csd, card_type);
 
         self.sd_cmd(CMD7_SELECT_CARD, (rca as u32) << 16, SD_RSP_TYPE_R1B, 0)?;
+
+        // Switch to 4-bit bus width after card selection
+        if card_type != SdCardType::SDSC {
+            let _ = self.sd_set_bus_width_4();
+        }
 
         if card_type == SdCardType::SDSC {
             let _ = self.sd_cmd(CMD16_SET_BLOCKLEN, 512, SD_RSP_TYPE_R1, 0);
@@ -636,6 +702,7 @@ impl RtsxController {
             block_size: bs,
             total_blocks: tb,
         });
+        self.card_was_present = true;
 
         log::info!(
             "RTSX: SD card {:?}: {} blocks, {} bytes/block",
@@ -725,7 +792,37 @@ impl RtsxController {
             return Err("write data timeout");
         }
 
+        // Wait for card to complete programming (R1b busy state).
+        // Without this, a subsequent write command may fail because
+        // the card is still programming the previous data.
+        if let Some(ref card) = self.sd_card {
+            self.sd_wait_ready(card.rca)?;
+        }
+
         Ok(())
+    }
+
+    /// Poll the SD_BUS_STAT register for card presence changes.
+    /// Returns `true` if card presence has changed since the last call.
+    fn poll_card_detect(&mut self) -> bool {
+        if !self.mmio_mapped {
+            return false;
+        }
+        if self.ensure_device_accessible().is_err() {
+            return false;
+        }
+        // Only do MMIO reads if the controller is alive.
+        if !self.mmio_alive() {
+            return false;
+        }
+        let bus = self.r8(SD_BUS_STAT);
+        let present = (bus & 0x01) != 0;
+        let changed = present != self.card_was_present;
+        self.card_was_present = present;
+        if changed {
+            log::info!("RTSX: card detect changed (present={})", present);
+        }
+        changed
     }
 
     // ── Public API ────────────────────────────────────────────
@@ -909,12 +1006,24 @@ pub fn init(ctx: &dyn DriverContext) {
                 return;
             }
 
+            // SAFETY: mmio points to a valid UC-mapped MMIO region (BAR0, 4KB).
+            let mmio_region = unsafe { MemRegion::new(mmio, bar0_size as usize) };
+            let health = if let Some(ref bridge) = upstream_bridge {
+                PciHealth::new(&dev)
+                    .with_upstream_bridge(bridge.bus, bridge.device, bridge.function)
+            } else {
+                PciHealth::new(&dev)
+            };
+
             *CONTROLLER.lock() = Some(RtsxController {
                 device: dev.clone(),
                 mmio,
                 mmio_mapped: true,
                 sd_card: None,
                 upstream_bridge: upstream_bridge.map(|b| (b.bus, b.device, b.function)),
+                card_was_present: false,
+                health,
+                mmio_region,
             });
             log::info!("RTSX: controller registered (MMIO deferred)");
             return;
@@ -956,4 +1065,27 @@ pub fn write_sectors(lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static st
 
 pub fn is_present() -> bool {
     CONTROLLER.lock().is_some()
+}
+
+/// Poll the card reader for card insertion/removal events.
+/// Returns `true` if the card presence state has changed.
+/// If a card was removed, the cached `SdCardInfo` is cleared.
+pub fn poll_card_detect() -> bool {
+    let mut guard = CONTROLLER.lock();
+    if let Some(ref mut ctrl) = *guard {
+        let changed = ctrl.poll_card_detect();
+        if changed && !ctrl.card_was_present {
+            // Card removed: clear cached info
+            ctrl.sd_card = None;
+        }
+        changed
+    } else {
+        false
+    }
+}
+
+/// Returns `true` if an SD card is currently detected.
+pub fn is_card_detected() -> bool {
+    let guard = CONTROLLER.lock();
+    guard.as_ref().map(|c| c.card_was_present).unwrap_or(false)
 }

@@ -63,6 +63,15 @@ pub struct XhciContext {
     pub legacy_handoff_done: bool,
     /// ERST physical address (allocated in setup_erst).
     erst_phys: Option<u64>,
+    /// Deferred free list for staging buffers.
+    ///
+    /// When a control or bulk transfer times out or the xHC reports a
+    /// non-success completion, the staging buffer (DMA pages) must **not** be
+    /// freed immediately — the xHC may still own the TRB and DMA into those
+    /// pages.  Instead, the (phys, pages) tuple is pushed onto this list and
+    /// freed later, after the owning endpoint has been stopped or the slot
+    /// disabled (xHCI spec §4.6.9).
+    deferred_free_list: Vec<(u64, /* phys */ usize /* pages */)>,
 }
 
 // SAFETY: xHCI is used only on the main kernel thread (single-threaded kernel).
@@ -151,6 +160,7 @@ impl XhciContext {
             driver_ctx: ctx,
             legacy_handoff_done: legacy_ok,
             erst_phys: None,
+            deferred_free_list: Vec::new(),
         })
     }
 
@@ -292,29 +302,45 @@ impl XhciContext {
 
         // ── Port power-up ─────────────────────────────────────
         // Power-cycle USB 3.0 ports that already have PP=1 (clean restart).
-        // Only do this when PPC (Port Power Control) is supported.
+        // When PPC (Port Power Control) is supported, we can reliably control
+        // port power.  When PPC is not supported, we still attempt a PP toggle
+        // because some controllers (e.g. Intel Wildcat Point-LP) report PPC=0
+        // in HCSPARAMS1 but still honor PP writes, and HCRST can leave USB 3.0
+        // PHYs in a state where CCS never asserts without a power cycle.
         // IMPORTANT: Only power-cycle ports with CCS=0 to avoid disturbing
         // already-connected devices.
-        if self.ports.ppc {
-            for port_idx in 0..self.ports.n_ports {
-                let ps = op.portsc(port_idx).0;
-                let has_ccs = (ps & PORTSC_CCS) != 0;
-                if has_ccs {
-                    continue;
-                }
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            let has_ccs = (ps & PORTSC_CCS) != 0;
+            if has_ccs {
+                continue;
+            }
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !is_usb3 {
+                // USB 2.0 ports don't need PHY recalibration after HCRST
+                continue;
+            }
+            if self.ports.ppc {
                 if (ps & PORTSC_PP) != 0 {
-                    let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-                    if is_usb3 {
-                        op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
-                        super::port::delay_ms(50);
-                        op.write_portsc(
-                            port_idx,
-                            (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP,
-                        );
-                        super::port::delay_ms(100);
-                    }
+                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                    super::port::delay_ms(50);
+                    op.write_portsc(
+                        port_idx,
+                        (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP,
+                    );
+                    super::port::delay_ms(100);
                 } else {
                     op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                    super::port::delay_ms(100);
+                }
+            } else {
+                // PPC=0: PP may be read-only, but attempt toggle anyway for
+                // controllers that honor it regardless of the capability bit.
+                if (ps & PORTSC_PP) != 0 {
+                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                    super::port::delay_ms(50);
+                    let v2 = op.portsc(port_idx).0;
+                    op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
                     super::port::delay_ms(100);
                 }
             }
@@ -638,7 +664,7 @@ impl XhciContext {
     /// Performs power cycling, warm port reset, and port reset as needed.
     /// Returns the number of newly detected devices.
     pub fn poll_ports(&mut self) -> usize {
-        let initial_count = self.devices.len();
+        let mut added = 0usize;
 
         // PCD (Port Change Detect) → re-evaluate changed ports
         if self.registers.op.usbsts() & USBSTS_PCD != 0 {
@@ -664,6 +690,9 @@ impl XhciContext {
                             ccs
                         );
                     }
+                    // When CCS transitions 0→1 or 1→0, remove stale device
+                    // entry for this specific port only.
+                    self.devices.retain(|d| d.port_index != port_idx);
                 }
             }
         } else {
@@ -676,10 +705,10 @@ impl XhciContext {
             }
 
             if !self.try_connect_port(port_idx) {
-                // CCS became 0 → device was disconnected; remove stale entries
+                // CCS became 0 → device was disconnected; remove entry for this port only
                 if !self.registers.op.portsc(port_idx).ccs() {
-                    self.devices.clear(); // simplified: clear all for now
-                    log::info!("xHCI: port {} disconnected, clearing devices", port_idx);
+                    self.devices.retain(|d| d.port_index != port_idx);
+                    log::info!("xHCI: port {} disconnected", port_idx);
                 }
                 continue;
             }
@@ -690,7 +719,7 @@ impl XhciContext {
             log::info!("xHCI: port {} device detected, speed={:?}", port_idx, speed);
 
             // Remove any stale device record for this port before adding a new one
-            self.devices.clear();
+            self.devices.retain(|d| d.port_index != port_idx);
 
             self.devices.push(UsbDevice {
                 address: 0,
@@ -703,13 +732,15 @@ impl XhciContext {
                 device_protocol: 0,
                 configurations: 0,
                 endpoints: Vec::new(),
+                port_index: port_idx,
             });
+            added += 1;
             if let Some(p) = self.ports.get_mut(port_idx) {
                 p.done = true;
             }
         }
 
-        self.devices.len() - initial_count
+        added
     }
 
     /// Try to bring up a single port.  Returns true if CCS=1 and PED=1.
@@ -1043,6 +1074,11 @@ impl XhciContext {
         let ctx = self.driver_ctx;
         self.device.dcbaa.clear_slot(slot_id);
         self.device.slots.release_slot(slot_id, ctx);
+
+        // DISABLE_SLOT guarantees the xHC has released all endpoint state
+        // for this slot.  Deferred staging buffers (from prior timeouts /
+        // non-success completions) are now safe to free.
+        self.drain_deferred_free_list();
     }
 
     /// Release all device slots and free resources.
@@ -1058,6 +1094,21 @@ impl XhciContext {
             self.device.dcbaa.clear_slot(*slot_id);
         }
         self.device.slots.release_all(ctx);
+        // All slots are now disabled — safe to free deferred staging buffers.
+        self.drain_deferred_free_list();
+    }
+
+    /// Drain and free all deferred staging buffers.
+    ///
+    /// After a DISABLE_SLOT command, the xHC has released all endpoint
+    /// state and will no longer DMA into any staging buffer.  This is
+    /// the safe point to free pages that were deferred by earlier
+    /// timeout / non-success-completion paths.
+    fn drain_deferred_free_list(&mut self) {
+        let ctx = self.driver_ctx;
+        for (phys, pages) in self.deferred_free_list.drain(..) {
+            ctx.free_contiguous_frames(phys, pages);
+        }
     }
 
     // ── Command submission ─────────────────────────────────────
@@ -1067,6 +1118,10 @@ impl XhciContext {
     /// event's completion code is not Success (xHCI spec §6.4.2.1).
     fn send_cmd(&mut self, trb: Trb) -> Result<u32, &'static str> {
         self.rings.command.enqueue(trb);
+        // Write barrier: ensure enqueued TRB is visible to the xHC
+        // via DMA before ringing the doorbell (MMIO).  Without this,
+        // the xHC may read stale TRB data from cache.
+        crate::mmio::write_barrier();
         self.registers.doorbell.ring(0, 0);
         let ev = wait_event(&mut self.rings.event, &self.registers.runtime, 5_000_000)?;
         if ev.completion_code() != COMP_SUCCESS {
@@ -1167,6 +1222,8 @@ impl XhciContext {
             );
         }
 
+        // Ensure all EP0 TRB writes are visible to the xHC before doorbell
+        crate::mmio::write_barrier();
         // Doorbell EP0 (DCI=1)
         self.registers.doorbell.ring(slot_id, 1);
         let res = self.wait_event(5_000_000);
@@ -1178,14 +1235,27 @@ impl XhciContext {
             }
         }
 
-        // Free only when the transfer completed; timeout recovery must stop or
-        // reset the endpoint before returning these pages to the allocator.
-        if staging_phys != 0 && res.is_ok() {
-            self.driver_ctx
-                .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
+        match res {
+            Ok(_) => {
+                // Success — safe to free immediately: the xHC has completed
+                // the transfer and no longer owns the staging buffer.
+                if staging_phys != 0 {
+                    self.driver_ctx
+                        .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
+                }
+                Ok(data_len)
+            }
+            Err(_) => {
+                // On timeout or error the xHC may still own the TRB and DMA
+                // into the staging buffer.  Defer freeing until the endpoint
+                // is stopped / slot disabled (xHCI spec §4.6.9).
+                if staging_phys != 0 {
+                    self.deferred_free_list
+                        .push((staging_phys, (data_len + 4095) / 4096));
+                }
+                Err("control transfer failed")
+            }
         }
-
-        res.map(|_| data_len)
     }
 
     // ── Bulk transfer ──────────────────────────────────────────
@@ -1260,19 +1330,40 @@ impl XhciContext {
             ep_num * 2 + u32::from(is_in)
         };
 
+        // Ensure all bulk TRB writes are visible to the xHC before doorbell
+        crate::mmio::write_barrier();
         self.registers.doorbell.ring(slot_id, db_stream);
         let res = self.wait_event(5_000_000);
 
-        // Copy IN data back on success; free staging buffer unconditionally
-        if res.is_ok() && dir == UsbDirection::In {
-            unsafe {
-                ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), len);
+        // Validate transfer event and copy IN data back.
+        // On success the staging buffer is freed immediately; on error or
+        // timeout it is deferred until the endpoint is stopped / slot disabled.
+        match res {
+            Ok(ev) => {
+                if ev.completion_code() != COMP_SUCCESS {
+                    // Non-success completion: xHC may still own the TRB.
+                    self.deferred_free_list
+                        .push((staging_phys, staging_pages));
+                    return Err("bulk completion code not success");
+                }
+                let remainder = ev.remaining() as usize;
+                let xfer_len = len.saturating_sub(remainder.min(len));
+                if dir == UsbDirection::In && xfer_len > 0 {
+                    unsafe {
+                        ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), xfer_len);
+                    }
+                }
+                // Success — safe to free immediately.
+                self.driver_ctx
+                    .free_contiguous_frames(staging_phys, staging_pages);
+                Ok(xfer_len)
+            }
+            Err(_) => {
+                self.deferred_free_list
+                    .push((staging_phys, staging_pages));
+                Err("bulk transfer failed")
             }
         }
-        self.driver_ctx
-            .free_contiguous_frames(staging_phys, staging_pages);
-
-        res.map(|_| len)
     }
 
     // ── Descriptor helpers ─────────────────────────────────────
@@ -1414,6 +1505,10 @@ impl Drop for XhciContext {
             let array_pages = ((sp.count as usize * 8) + 4095) / 4096;
             let _ = self.driver_ctx.free_contiguous_frames(sp.phys, array_pages);
         }
+
+        // Paranoid safety net: drain any remaining deferred staging buffers
+        // that were not already freed by disable_all_slots (should be empty).
+        self.drain_deferred_free_list();
     }
 }
 
