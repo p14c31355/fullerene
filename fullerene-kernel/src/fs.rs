@@ -69,7 +69,9 @@ pub fn read_file(fd: &mut FileDesc, buffer: &mut [u8]) -> Result<usize, FsError>
 }
 
 pub fn write_file(fd: &mut FileDesc, data: &[u8]) -> Result<usize, FsError> {
-    vfs::write(fd.fd, data).map_err(|e| map_vfs_error(e))
+    let written = vfs::write(fd.fd, data).map_err(|e| map_vfs_error(e))?;
+    fd.offset += written;
+    Ok(written)
 }
 
 pub fn seek_file(fd: &mut FileDesc, position: usize) -> Result<(), FsError> {
@@ -96,13 +98,7 @@ pub fn list_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 }
 
 pub fn exists(path: &str) -> bool {
-    match vfs::open(path, 0) {
-        Ok(fd_info) => {
-            let _ = vfs::close(fd_info.fd);
-            true
-        }
-        Err(_) => false,
-    }
+    vfs::exists(path)
 }
 
 pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsError> {

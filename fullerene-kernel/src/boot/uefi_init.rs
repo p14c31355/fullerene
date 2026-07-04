@@ -97,7 +97,7 @@ impl UefiInitContext {
             write_vga_string(vga_buffer, 1, b"Early init start", 0x1F00);
         }
 
-        let kernel_virt_addr = crate::boot::uefi_entry::efi_main as u64;
+        let kernel_virt_addr = crate::boot::uefi_entry::efi_main as *const () as u64;
         let kernel_phys_addr = kernel_virt_addr
             .wrapping_sub(petroleum::common::uefi::PHYSICAL_MEMORY_OFFSET_BASE as u64);
 

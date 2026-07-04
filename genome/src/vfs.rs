@@ -24,8 +24,7 @@ struct Inode {
 }
 
 impl Inode {
-    fn new(ino: u64, name: &str, kind: InodeType, parent: u64) -> Self {
-        let _ = ino;
+    fn new(name: &str, kind: InodeType, parent: u64) -> Self {
         Self {
             name: String::from(name),
             kind,
@@ -77,7 +76,7 @@ pub struct MemFileSystem {
 
 impl MemFileSystem {
     pub fn new() -> Self {
-        let root = Inode::new(1, "", InodeType::Directory, 0);
+        let root = Inode::new("", InodeType::Directory, 0);
         let mut inodes = BTreeMap::new();
         inodes.insert(1, root);
         Self {
@@ -120,13 +119,7 @@ impl MemFileSystem {
                 let ino = self.inodes.get(&current)?;
                 current = if ino.parent == 0 { 1 } else { ino.parent };
             } else {
-                let ino = self.inodes.get(&current)?;
-                let child = ino.children.iter().find(|&&c| {
-                    self.inodes
-                        .get(&c)
-                        .map_or(false, |i| i.name.as_str() == *comp)
-                })?;
-                current = *child;
+                current = self.lookup_child(current, comp)?;
             }
             if let Some(ref target) = self.inodes.get(&current)?.target {
                 let mut new_path = target.clone();
@@ -169,11 +162,7 @@ impl MemFileSystem {
         parent
             .children
             .iter()
-            .find(|&&c| {
-                self.inodes
-                    .get(&c)
-                    .map_or(false, |i| i.name.as_str() == name)
-            })
+            .find(|&&c| self.inodes.get(&c).is_some_and(|i| i.name.as_str() == name))
             .copied()
     }
 }
@@ -196,6 +185,9 @@ impl FileSystem for MemFileSystem {
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
         let desc = self.fds.get_mut(&fd).ok_or("bad fd")?;
         let ino = self.inodes.get(&desc.ino).ok_or("inode not found")?;
+        if ino.kind != InodeType::File {
+            return Err("not a file");
+        }
         if desc.offset >= ino.data.len() {
             return Ok(0);
         }
@@ -245,7 +237,7 @@ impl FileSystem for MemFileSystem {
         }
         let ino = self.next_ino;
         self.next_ino = ino + 1;
-        let inode = Inode::new(ino, &name, kind, parent_ino);
+        let inode = Inode::new(&name, kind, parent_ino);
         self.inodes.insert(ino, inode);
         if let Some(parent) = self.inodes.get_mut(&parent_ino) {
             parent.children.push(ino);
@@ -301,6 +293,12 @@ impl FileSystem for MemFileSystem {
     }
 }
 
+impl Default for MemFileSystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ── Vfs dispatcher ──────────────────────────────────────────────
 
 struct MountEntry {
@@ -315,11 +313,10 @@ pub struct Vfs {
 
 impl Vfs {
     pub fn new(root_fs: Box<dyn FileSystem>) -> Self {
-        let mut mounts = Vec::new();
-        mounts.push(MountEntry {
+        let mounts = alloc::vec![MountEntry {
             mount_point: String::from("/"),
             fs: root_fs,
-        });
+        }];
         Self {
             mounts,
             wd: String::from("/"),
@@ -346,17 +343,22 @@ impl Vfs {
         let mp = normalize_path(mount_point);
         if mp != "/" {
             let (target_fs, remaining) = self.find_fs(&mp).ok_or("mount point not found")?;
-            if !target_fs.exists(&remaining) {
-                return Err("mount point not found");
+            if let Err(error) = target_fs.readdir(&remaining) {
+                return Err(if error == "not found" {
+                    "mount point not found"
+                } else {
+                    "mount point not a directory"
+                });
             }
         }
-        self.mounts.retain(|m| m.mount_point != mp);
+        if let Some(entry) = self.mounts.iter_mut().find(|m| m.mount_point == mp) {
+            entry.fs = fs;
+            return Ok(());
+        }
         self.mounts.push(MountEntry {
             mount_point: mp,
             fs,
         });
-        self.mounts
-            .sort_by(|a, b| b.mount_point.len().cmp(&a.mount_point.len()));
         Ok(())
     }
 
@@ -372,22 +374,15 @@ impl Vfs {
 
     pub fn find_fs_index(&self, path: &str) -> Option<usize> {
         let absolute_path = self.resolve_path(path);
-        let path = if absolute_path.starts_with('/') {
-            &absolute_path
-        } else {
-            return None;
-        };
-        for (idx, entry) in self.mounts.iter().enumerate() {
-            let mp = &entry.mount_point;
-            if mp == "/" {
-                return Some(idx);
-            }
-            let mp_with_slash = alloc::format!("{}/", mp.as_str());
-            if path == mp.as_str() || path.starts_with(&mp_with_slash) {
-                return Some(idx);
-            }
-        }
-        None
+        self.find_fs_index_for_absolute_path(&absolute_path)
+    }
+
+    /// Return the index of a filesystem mounted exactly at `mount_point`.
+    pub fn mounted_fs_index(&self, mount_point: &str) -> Option<usize> {
+        let mount_point = normalize_path(mount_point);
+        self.mounts
+            .iter()
+            .position(|entry| entry.mount_point == mount_point)
     }
 
     pub fn resolve_path(&self, path: &str) -> String {
@@ -412,27 +407,21 @@ impl Vfs {
         } else {
             return None;
         };
+        let index = self.find_fs_index_for_absolute_path(path)?;
+        let remaining = relative_to_mount(path, &self.mounts[index].mount_point)?.to_string();
+        Some((&mut self.mounts.get_mut(index)?.fs, remaining))
+    }
 
-        for entry in &mut self.mounts {
-            let mp = &entry.mount_point;
-            if mp == "/" {
-                let remaining = path[1..].to_string();
-                let fs: *mut Box<dyn FileSystem> = &mut entry.fs;
-                return Some((unsafe { &mut *fs }, remaining));
-            }
-            let mp_prefix = mp.as_str();
-            let mp_with_slash = alloc::format!("{}/", mp_prefix);
-            if path == mp_prefix || path.starts_with(&mp_with_slash) {
-                let remaining = if path == mp_prefix {
-                    String::new()
-                } else {
-                    path[mp_with_slash.len()..].to_string()
-                };
-                let fs: *mut Box<dyn FileSystem> = &mut entry.fs;
-                return Some((unsafe { &mut *fs }, remaining));
-            }
+    fn find_fs_index_for_absolute_path(&self, path: &str) -> Option<usize> {
+        if !path.starts_with('/') {
+            return None;
         }
-        None
+        self.mounts
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| relative_to_mount(path, &entry.mount_point).is_some())
+            .max_by_key(|(_, entry)| entry.mount_point.len())
+            .map(|(index, _)| index)
     }
 
     pub fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
@@ -518,6 +507,23 @@ impl Vfs {
 
 // ── Path utilities ──────────────────────────────────────────────
 
+/// Return the path as seen from a mount point.
+///
+/// Mount names must end at a component boundary, so `/mnt2` is not routed to
+/// a filesystem mounted at `/mnt`.
+fn relative_to_mount<'a>(path: &'a str, mount_point: &str) -> Option<&'a str> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    if mount_point == "/" {
+        return path.strip_prefix('/');
+    }
+    if path == mount_point {
+        return Some("");
+    }
+    path.strip_prefix(mount_point)?.strip_prefix('/')
+}
+
 fn normalize_path(path: &str) -> String {
     let mut components: Vec<&str> = Vec::new();
     for comp in path.split('/') {
@@ -540,4 +546,101 @@ fn normalize_path(path: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memfs_round_trips_file_contents() {
+        let mut fs = MemFileSystem::new();
+        let ino = fs.create("/hello.txt", InodeType::File).unwrap();
+        let descriptor = fs.open("/hello.txt", 0).unwrap();
+
+        assert_eq!(descriptor.ino, ino);
+        assert_eq!(fs.write(descriptor.fd, b"fullerene"), Ok(9));
+        assert_eq!(fs.seek(descriptor.fd, 0), Ok(()));
+
+        let mut data = [0; 9];
+        assert_eq!(fs.read(descriptor.fd, &mut data), Ok(9));
+        assert_eq!(&data, b"fullerene");
+    }
+
+    #[test]
+    fn memfs_rejects_reading_a_directory_as_a_file() {
+        let mut fs = MemFileSystem::new();
+        fs.mkdir("/documents").unwrap();
+        let descriptor = fs.open("/documents", 0).unwrap();
+        let mut data = [0; 1];
+
+        assert_eq!(fs.read(descriptor.fd, &mut data), Err("not a file"));
+    }
+
+    #[test]
+    fn mount_requires_an_existing_directory() {
+        let mut root = MemFileSystem::new();
+        root.create("/file", InodeType::File).unwrap();
+        let mut vfs = Vfs::new(Box::new(root));
+
+        assert_eq!(
+            vfs.mount("/missing", Box::new(MemFileSystem::new())),
+            Err("mount point not found")
+        );
+        assert_eq!(
+            vfs.mount("/file", Box::new(MemFileSystem::new())),
+            Err("mount point not a directory")
+        );
+    }
+
+    #[test]
+    fn mount_routing_respects_component_boundaries() {
+        let mut root = MemFileSystem::new();
+        root.mkdir("/mnt").unwrap();
+        root.mkdir("/mnt2").unwrap();
+        let mut mounted = MemFileSystem::new();
+        mounted.create("/inside", InodeType::File).unwrap();
+        let mut vfs = Vfs::new(Box::new(root));
+        vfs.mount("/mnt", Box::new(mounted)).unwrap();
+
+        let mounted_index = vfs.find_fs_index("/mnt/inside").unwrap();
+        let root_index = vfs.find_fs_index("/mnt2").unwrap();
+        assert_ne!(mounted_index, root_index);
+
+        let (mounted_fs, relative_path) = vfs.find_fs("/mnt/inside").unwrap();
+        assert_eq!(relative_path, "inside");
+        assert!(mounted_fs.exists(&relative_path));
+    }
+
+    #[test]
+    fn mount_routing_prefers_the_most_specific_mount() {
+        let mut root = MemFileSystem::new();
+        root.mkdir("/mnt").unwrap();
+        let mut first_mount = MemFileSystem::new();
+        first_mount.mkdir("/nested").unwrap();
+        let mut vfs = Vfs::new(Box::new(root));
+        vfs.mount("/mnt", Box::new(first_mount)).unwrap();
+        let first_mount_index = vfs.mounted_fs_index("/mnt").unwrap();
+
+        let mut nested_mount = MemFileSystem::new();
+        nested_mount
+            .create("/nested-file", InodeType::File)
+            .unwrap();
+        vfs.mount("/mnt/nested", Box::new(nested_mount)).unwrap();
+
+        assert_eq!(vfs.mounted_fs_index("/mnt"), Some(first_mount_index));
+        assert_ne!(
+            vfs.find_fs_index("/mnt/nested/nested-file"),
+            Some(first_mount_index)
+        );
+        let (fs, relative_path) = vfs.find_fs("/mnt/nested/nested-file").unwrap();
+        assert_eq!(relative_path, "nested-file");
+        assert!(fs.exists(&relative_path));
+    }
+
+    #[test]
+    fn path_normalization_stays_within_the_root() {
+        assert_eq!(normalize_path("/a/./b/../c"), "/a/c");
+        assert_eq!(normalize_path("../../../"), "/");
+    }
 }

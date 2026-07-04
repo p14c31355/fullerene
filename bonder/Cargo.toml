@@ -25,7 +25,3 @@ path = "src/main.rs"
 
 [package.metadata.docs.rs]
 features = ["std"]
-
-[profile.release]
-opt-level = 3
-lto = true

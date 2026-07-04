@@ -12,11 +12,6 @@ crate-type = ["rlib"]
 name = "toluene"
 path = "src/main.rs"
 
-[[test]]
-name = "unit_tests"
-path = "tests/unit_tests.rs"
-required-features = ["test"]
-
 [features]
 default = ["vfs", "kernel-syscall"]
 binary = []

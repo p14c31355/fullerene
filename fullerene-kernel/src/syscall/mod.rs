@@ -9,8 +9,6 @@ pub use interface::*;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_syscall_numbers() {
         assert_eq!(petroleum::SyscallNumber::Exit as u64, 1);

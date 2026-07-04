@@ -57,12 +57,11 @@ pub fn bootstrap_memory(
     let boot_heap_ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
     unsafe { petroleum::page_table::init_global_heap(boot_heap_ptr, crate::heap::HEAP_SIZE) };
 
-    let memory_map_ref = MEMORY_MAP
-        .lock()
-        .as_ref()
-        .expect("Memory map not initialized")
-        .clone();
-    crate::heap::init_frame_allocator(memory_map_ref);
+    {
+        let memory_map = MEMORY_MAP.lock();
+        let memory_map_ref = memory_map.as_ref().expect("Memory map not initialized");
+        crate::heap::init_frame_allocator(memory_map_ref);
+    }
 
     let kernel_size =
         unsafe { petroleum::page_table::pe::calculate_kernel_memory_size(kernel_phys_start) };
@@ -132,8 +131,11 @@ pub fn bootstrap_memory(
     let kernel_cr3 = x86_64::registers::control::Cr3::read();
     crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
 
-    let memory_map_ref2 = MEMORY_MAP.lock().as_ref().expect("Memory map gone").clone();
-    let heap_phys_start = petroleum::uefi_helpers::find_heap_start(memory_map_ref2);
+    let heap_phys_start = {
+        let memory_map = MEMORY_MAP.lock();
+        let memory_map_ref = memory_map.as_ref().expect("Memory map gone");
+        petroleum::uefi_helpers::find_heap_start(memory_map_ref)
+    };
     let _heap_phys_addr =
         if heap_phys_start.as_u64() < 0x1000 || heap_phys_start.as_u64() >= 0x0000_8000_0000_0000 {
             PhysAddr::new(petroleum::FALLBACK_HEAP_START_ADDR)
