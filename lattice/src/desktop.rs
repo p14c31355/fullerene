@@ -2,9 +2,11 @@ extern crate alloc;
 
 use crate::cursor::Cursor;
 use crate::menu::PopupMenu;
+use crate::network_menu::{self, ApDisplay, NetStatus};
 use crate::scene::{DirtyRect, Scene};
 use crate::window::WindowId;
 use crate::wm::WindowManager;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Actions that can be dispatched from desktop menus (context menu, system menu, etc.).
@@ -24,6 +26,18 @@ pub enum DesktopAction {
     Separator,
     ChangeWallpaperSettings,
     OpenEditor,
+    /// Show the WiFi network menu.
+    ShowNetworkMenu,
+    /// Connect to the specified access point by index.
+    ConnectAp(usize),
+    /// Dismiss the password dialog.
+    DismissPasswordDialog,
+    /// Submit the password in the dialog.
+    SubmitPassword,
+    /// Add character to password input.
+    PasswordChar(u8),
+    /// Delete last character from password.
+    PasswordBackspace,
 }
 
 impl DesktopAction {
@@ -44,6 +58,7 @@ impl DesktopAction {
             "separator" => DesktopAction::Separator,
             "change_wallpaper" => DesktopAction::ChangeWallpaperSettings,
             "open_editor" => DesktopAction::OpenEditor,
+            "show_network_menu" => DesktopAction::ShowNetworkMenu,
             _ => return None,
         })
     }
@@ -103,6 +118,32 @@ pub struct Desktop {
     // ── Top panel (GNOME-style) ─────────────────────────
     pub top_panel: crate::top_panel::TopPanel,
 
+    // ── Network / WiFi state ─────────────────────────
+    /// Whether the network menu is open.
+    pub network_menu_open: bool,
+    /// Cached AP list for display.
+    pub ap_list: alloc::vec::Vec<ApDisplay>,
+    /// Current network status.
+    pub net_status: NetStatus,
+    /// Position of the network menu.
+    pub net_menu_x: u32,
+    pub net_menu_y: u32,
+    /// Password dialog state
+    pub pwd_dialog_open: bool,
+    pub pwd_dialog_ssid: String,
+    pub pwd_dialog_password: String,
+    pub pwd_dialog_cursor: usize,
+    pub pwd_dialog_x: u32,
+    pub pwd_dialog_y: u32,
+    /// Index in ap_list of the target AP for connection.
+    pub pwd_target_ap: Option<usize>,
+    /// WiFi signal level for indicator (0-100).
+    pub wifi_signal: u8,
+    /// Whether any WiFi networks are visible.
+    pub wifi_networks_visible: bool,
+    /// Shift key held state for password dialog.
+    pub shift_held: bool,
+
     // ── Cursor tracking for dirty-rect optimisation ───────
     /// Previous cursor position (tracked to invalidate cursor area only).
     prev_cursor_x: i32,
@@ -135,6 +176,21 @@ impl Desktop {
             prev_cursor_y: 384,
             cursor_moved: false,
             needs_full_redraw: true,
+            network_menu_open: false,
+            ap_list: alloc::vec::Vec::new(),
+            net_status: NetStatus::NoDevice,
+            net_menu_x: 0,
+            net_menu_y: 0,
+            pwd_dialog_open: false,
+            pwd_dialog_ssid: String::new(),
+            pwd_dialog_password: String::new(),
+            pwd_dialog_cursor: 0,
+            pwd_dialog_x: 0,
+            pwd_dialog_y: 0,
+            pwd_target_ap: None,
+            wifi_signal: 0,
+            wifi_networks_visible: false,
+            shift_held: false,
         }
     }
 
@@ -180,6 +236,87 @@ impl Desktop {
     ///
     /// `fb_width` / `fb_height` are required for maximize toggle.
     pub fn mouse_down(&mut self, fb_width: u32, fb_height: u32) {
+        let cx = self.cursor.x;
+        let cy = self.cursor.y;
+
+        // ── Handle password dialog clicks ───────────────────────
+        if self.pwd_dialog_open {
+            // Check if click is inside dialog
+            let in_dialog = cx >= self.pwd_dialog_x as i32
+                && cx < (self.pwd_dialog_x + network_menu::PWD_DIALOG_W) as i32
+                && cy >= self.pwd_dialog_y as i32
+                && cy < (self.pwd_dialog_y + network_menu::PWD_DIALOG_H) as i32;
+
+            if in_dialog {
+                // "Connect" button area (bottom right)
+                let btn_w = 80i32;
+                let btn_h = 24i32;
+                let btn_x = (self.pwd_dialog_x + network_menu::PWD_DIALOG_W - btn_w as u32 - 20) as i32;
+                let btn_y = (self.pwd_dialog_y + network_menu::PWD_DIALOG_H - btn_h as u32 - 10) as i32;
+                let cancel_x = btn_x - btn_w - 10;
+
+                if cx >= btn_x && cx < btn_x + btn_w && cy >= btn_y && cy < btn_y + btn_h {
+                    self.menu_action_pending = Some(DesktopAction::SubmitPassword);
+                } else if cx >= cancel_x && cx < cancel_x + btn_w && cy >= btn_y && cy < btn_y + btn_h {
+                    self.menu_action_pending = Some(DesktopAction::DismissPasswordDialog);
+                }
+
+                self.push_dirty_rect(crate::scene::DirtyRect::new(
+                    self.pwd_dialog_x, self.pwd_dialog_y,
+                    network_menu::PWD_DIALOG_W, network_menu::PWD_DIALOG_H,
+                ));
+                return;
+            } else {
+                // Click outside dialog - dismiss
+                self.pwd_dialog_open = false;
+                self.pwd_target_ap = None;
+                self.shift_held = false;
+                self.push_dirty_rect(crate::scene::DirtyRect::new(
+                    self.pwd_dialog_x, self.pwd_dialog_y,
+                    network_menu::PWD_DIALOG_W, network_menu::PWD_DIALOG_H,
+                ));
+                self.dismiss_network_menu();
+                return;
+            }
+        }
+
+        // ── Handle network menu clicks ─────────────────────────
+        if self.network_menu_open {
+            // Check if click hits an AP entry
+            if let Some(ap_idx) = network_menu::hit_ap_entry(
+                cx, cy, self.net_menu_x, self.net_menu_y, self.ap_list.len(),
+            ) {
+                if ap_idx < self.ap_list.len() {
+                    let ap = &self.ap_list[ap_idx];
+                    if ap.has_lock {
+                        // Open password dialog
+                        self.pwd_dialog_open = true;
+                        self.pwd_dialog_ssid = ap.ssid.clone();
+                        self.pwd_dialog_password = String::new();
+                        self.pwd_dialog_cursor = 0;
+                        self.shift_held = false;
+                        self.pwd_target_ap = Some(ap_idx);
+                        self.pwd_dialog_x = (fb_width / 2).saturating_sub(network_menu::PWD_DIALOG_W / 2);
+                        self.pwd_dialog_y = (fb_height / 2).saturating_sub(network_menu::PWD_DIALOG_H / 2);
+                    } else {
+                        // Open AP - connect directly
+                        self.menu_action_pending = Some(DesktopAction::ConnectAp(ap_idx));
+                    }
+                }
+                let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
+                    self.net_menu_x, self.net_menu_y,
+                    network_menu::NET_MENU_WIDTH, menu_h,
+                ));
+                self.network_menu_open = false;
+                return;
+            }
+
+            // Click outside - dismiss
+            self.dismiss_network_menu();
+            return;
+        }
+
         // If a menu is open, check if click hits it
         if let Some(ref menu) = self.active_menu {
             let cx = self.cursor.x;
@@ -208,6 +345,13 @@ impl Desktop {
             self.wm
                 .dirty_rects
                 .push(crate::scene::DirtyRect::new(menu_x, menu_y, menu_w, menu_h));
+            return;
+        }
+
+        // Check WiFi icon click (before taskbar window check)
+        let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
+        if network_menu::hit_wifi_icon(self.cursor.x, self.cursor.y, fb_width, fb_height, wifi_icon_x) {
+            self.menu_action_pending = Some(DesktopAction::ShowNetworkMenu);
             return;
         }
 
@@ -292,6 +436,53 @@ impl Desktop {
         let my = (y as u32).min(768);
         self.active_menu = Some(PopupMenu::new(mx, my, items));
         self.menu_is_system = false;
+    }
+
+    /// Show the network menu with access point list.
+    pub fn show_network_menu(&mut self, fb_width: u32, fb_height: u32) {
+        self.network_menu_open = true;
+        // Position the menu above the WiFi icon, right-aligned to stay on-screen
+        let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
+        // Right-align the menu with the WiFi icon so it doesn't extend past fb_width
+        self.net_menu_x = if wifi_icon_x + network_menu::NET_MENU_WIDTH > fb_width {
+            fb_width.saturating_sub(network_menu::NET_MENU_WIDTH)
+        } else {
+            wifi_icon_x
+        };
+        let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+        self.net_menu_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT).saturating_sub(menu_h);
+
+        self.push_dirty_rect(crate::scene::DirtyRect::new(
+            self.net_menu_x, self.net_menu_y,
+            network_menu::NET_MENU_WIDTH, menu_h,
+        ));
+    }
+
+    /// Dismiss the network menu.
+    pub fn dismiss_network_menu(&mut self) {
+        if self.network_menu_open {
+            let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+            self.push_dirty_rect(crate::scene::DirtyRect::new(
+                self.net_menu_x, self.net_menu_y,
+                network_menu::NET_MENU_WIDTH, menu_h,
+            ));
+            self.network_menu_open = false;
+        }
+    }
+
+    /// Update the access point list for the network menu.
+    /// Returns `true` if the list or status actually changed.
+    pub fn update_ap_list(&mut self, aps: alloc::vec::Vec<ApDisplay>, status: NetStatus) -> bool {
+        let changed = self.ap_list != aps || self.net_status != status;
+        if changed {
+            self.ap_list = aps;
+            self.net_status = status;
+            self.wifi_networks_visible = match &self.net_status {
+                NetStatus::NoDevice => false,
+                _ => true,
+            };
+        }
+        changed
     }
 
     /// Dismiss the active menu.
@@ -393,6 +584,10 @@ impl Desktop {
         self.taskbar.update_from_windows(self.wm.windows());
         // Update clock text on taskbar
         self.taskbar.clock_text = self.clock_text.clone();
+        // Update WiFi state on taskbar
+        self.taskbar.wifi_connected = matches!(&self.net_status, NetStatus::Connected(_, _));
+        self.taskbar.wifi_visible = self.wifi_networks_visible;
+        self.taskbar.wifi_signal = self.wifi_signal;
         let new_count = self.taskbar.entries.len();
         new_count != prev_count
     }
@@ -468,6 +663,31 @@ impl Desktop {
                 .push(DirtyRect::new(menu.x, menu.y, menu.width, menu.height));
             self.menu_overlays_cache = menu.to_overlays();
         }
+
+        // Network menu overlay (rendered by compositor via scene.active_menu render)
+        if self.network_menu_open {
+            let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+            self.dirty_cache.push(DirtyRect::new(
+                self.net_menu_x, self.net_menu_y,
+                network_menu::NET_MENU_WIDTH, menu_h,
+            ));
+            // Also push WiFi icon area as dirty
+            let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
+            self.dirty_cache.push(DirtyRect::new(
+                wifi_icon_x,
+                fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT),
+                network_menu::NET_ICON_WIDTH,
+                crate::taskbar::TASKBAR_HEIGHT,
+            ));
+        }
+
+        // Password dialog overlay
+        if self.pwd_dialog_open {
+            self.dirty_cache.push(DirtyRect::new(
+                self.pwd_dialog_x, self.pwd_dialog_y,
+                network_menu::PWD_DIALOG_W, network_menu::PWD_DIALOG_H,
+            ));
+        }
     }
 
     // ── scene snapshot ──────────────────────────────────────
@@ -492,6 +712,17 @@ impl Desktop {
             desktop_icons: Some(&self.desktop_icons),
             active_menu: self.active_menu.as_ref(),
             layered: true,
+            network_menu_open: self.network_menu_open,
+            net_menu_x: self.net_menu_x,
+            net_menu_y: self.net_menu_y,
+            net_aps: &self.ap_list,
+            net_status: &self.net_status,
+            pwd_dialog_open: self.pwd_dialog_open,
+            pwd_dialog_x: self.pwd_dialog_x,
+            pwd_dialog_y: self.pwd_dialog_y,
+            pwd_ssid: &self.pwd_dialog_ssid,
+            pwd_password: &self.pwd_dialog_password,
+            pwd_cursor: self.pwd_dialog_cursor,
         }
     }
 }

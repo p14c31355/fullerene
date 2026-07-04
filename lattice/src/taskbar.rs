@@ -4,6 +4,7 @@
 //! - Background fill
 //! - Clock display (system tick converted to "HH:MM:SS")
 //! - Window title buttons for each open window
+//! - WiFi network indicator icon
 //!
 //! The taskbar is drawn as an overlay on the compositor output.
 
@@ -40,6 +41,12 @@ pub struct Taskbar {
     pub entries: alloc::vec::Vec<TaskbarEntry>,
     /// Clock text (updated externally).
     pub clock_text: alloc::string::String,
+    /// Whether WiFi is connected (for icon display).
+    pub wifi_connected: bool,
+    /// Is there any WiFi network visible.
+    pub wifi_visible: bool,
+    /// Signal level 0-100.
+    pub wifi_signal: u8,
 }
 
 impl Taskbar {
@@ -47,7 +54,20 @@ impl Taskbar {
         Self {
             entries: alloc::vec::Vec::new(),
             clock_text: alloc::string::String::new(),
+            wifi_connected: false,
+            wifi_visible: false,
+            wifi_signal: 0,
         }
+    }
+
+    /// Compute the WiFi icon X position based on clock text width.
+    pub fn wifi_icon_x(&self, fb_width: u32) -> u32 {
+        let clock_w = if !self.clock_text.is_empty() {
+            (self.clock_text.len() as u32 * 8) + 8
+        } else {
+            0
+        };
+        fb_width.saturating_sub(clock_w + crate::network_menu::NET_ICON_WIDTH + 8)
     }
 
     /// Update entries from window list.
@@ -84,6 +104,16 @@ impl Taskbar {
             let row_start = (y as usize) * fb_w;
             fb[row_start..row_start + fb_w].fill(TASKBAR_BG);
         }
+
+        // Draw WiFi indicator icon (right side, before clock)
+        let wifi_icon_x = self.wifi_icon_x(fb_width);
+        crate::network_menu::render_wifi_icon(
+            fb, fb_width, fb_height,
+            wifi_icon_x, bar_y + 6,
+            self.wifi_connected,
+            self.wifi_visible,
+            self.wifi_signal,
+        );
 
         // Draw window buttons (from left)
         let mut btn_x = 4u32;

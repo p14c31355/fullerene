@@ -13,6 +13,7 @@ spin = { version = "0.10.0", default-features = false, features = [
   "mutex",
   "spin_mutex",
 ] }
+bonder = { path = "../bonder" }
 petroleum = { path = "../petroleum" }
 nitrogen = { path = "../nitrogen" }
 carrier = { path = "../carrier" }

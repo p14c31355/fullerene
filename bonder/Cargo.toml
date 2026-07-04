@@ -3,6 +3,13 @@ name = "bonder"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+description = "A no_std network protocol stack for bare-metal / kernel development"
+documentation = "https://github.com/p14c31355/fullerene"
+repository = "https://github.com/p14c31355/fullerene"
+license = "MIT OR Apache-2.0"
+keywords = ["no-std", "networking", "ethernet", "ipv4", "kernel"]
+categories = ["embedded", "network", "no-std", "os"]
+rust-version = "1.85"
 
 [dependencies]
 log = { version = "0.4.29", default-features = false }
@@ -15,3 +22,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "bonder"
 path = "src/main.rs"
+
+[package.metadata.docs.rs]
+features = ["std"]
+
+[profile.release]
+opt-level = 3
+lto = true

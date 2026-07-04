@@ -382,6 +382,30 @@ impl Compositor {
             inc_draw_calls();
         }
 
+        // ── Network menu overlay ───────────────────────
+        if scene.network_menu_open {
+            crate::network_menu::render_network_menu(
+                framebuffer, fb_width, fb_height,
+                scene.net_menu_x, scene.net_menu_y,
+                scene.net_aps,
+                scene.net_status,
+                None,
+            );
+            inc_draw_calls();
+        }
+
+        // ── Password dialog overlay ────────────────────
+        if scene.pwd_dialog_open {
+            crate::network_menu::render_password_dialog(
+                framebuffer, fb_width, fb_height,
+                scene.pwd_dialog_x, scene.pwd_dialog_y,
+                scene.pwd_ssid,
+                scene.pwd_password,
+                scene.pwd_cursor,
+            );
+            inc_draw_calls();
+        }
+
         // ── Layer 3: System UI ───────────────────────────
         // Taskbar
         if let Some(tb) = scene.taskbar {

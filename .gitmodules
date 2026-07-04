@@ -1,0 +1,3 @@
+[submodule "bonder/iwlwifi"]
+	path = bonder/iwlwifi
+	url = https://github.com/Slimbook-Team/iwlwifi.git
