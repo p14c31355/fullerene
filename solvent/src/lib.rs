@@ -22,6 +22,7 @@ mod editor_bridge;
 mod explorer;
 mod handlers;
 mod menu_actions;
+mod network_manager;
 mod settings_bridge;
 mod viewers;
 
@@ -31,7 +32,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
 use lattice::compositor::{Compositor, RenderTarget};
-use lattice::desktop::Desktop;
+use lattice::desktop::{Desktop, DesktopAction};
 use lattice::editor::EditorBuffer;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use lattice::terminal_surface::{self, Cell as LatticeCell};
@@ -234,9 +235,13 @@ pub struct RuntimeState {
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
     pub usb_poll_pending: bool,
+    pub net_manager: network_manager::NetworkManager,
 }
 
 pub fn init() {
+    // Initialize WiFi subsystem
+    nitrogen::iwlwifi::init_wifi_manager();
+
     let desktop = Desktop::new(BG_COLOR);
     let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
     let mut dispatcher = Dispatcher::new();
@@ -293,6 +298,7 @@ pub fn init() {
         settings_window: None,
         settings_dirty: false,
         usb_poll_pending: false,
+        net_manager: network_manager::NetworkManager::new(),
     });
 }
 
@@ -502,6 +508,12 @@ pub fn poll_keyboard() {
         };
         let mut rt = RUNTIME.lock();
         if let Some(ref mut r) = *rt {
+            // Password dialog keyboard input
+            if r.desktop.pwd_dialog_open && pressed {
+                handle_password_dialog_key(r, scancode);
+                continue;
+            }
+
             let top_id = r.desktop.wm.windows().last().map(|w| w.id);
             if top_id.is_some() && r.editor_window == top_id {
                 drop(rt);
@@ -537,6 +549,45 @@ pub fn poll_keyboard() {
 
 fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
     resonance::scancode::from_scancode(scancode)
+}
+
+/// Handle keyboard input when the password dialog is open.
+fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8) {
+    let action = match scancode {
+        0x1C => DesktopAction::SubmitPassword,      // Enter
+        0x01 => DesktopAction::DismissPasswordDialog, // Escape
+        0x0E => DesktopAction::PasswordBackspace,    // Backspace
+        // Alphanumeric keys
+        0x10..=0x19 | 0x1E..=0x26 | 0x2C..=0x32 | 0x2A | 0x36 => {
+            let ch = scancode_to_ascii(scancode);
+            DesktopAction::PasswordChar(ch)
+        }
+        _ => return, // ignore other keys
+    };
+    let _ = network_manager::handle_network_action(rt, &action);
+    rt.frame_due = true;
+}
+
+/// Convert PS/2 scancode to ASCII (simple mapping for password entry).
+fn scancode_to_ascii(scancode: u8) -> u8 {
+    // Scancode set 1 alphanumeric mapping (lowercase)
+    match scancode {
+        0x10 => b'q', 0x11 => b'w', 0x12 => b'e', 0x13 => b'r',
+        0x14 => b't', 0x15 => b'y', 0x16 => b'u', 0x17 => b'i',
+        0x18 => b'o', 0x19 => b'p', 0x1E => b'a', 0x1F => b's',
+        0x20 => b'd', 0x21 => b'f', 0x22 => b'g', 0x23 => b'h',
+        0x24 => b'j', 0x25 => b'k', 0x26 => b'l', 0x2C => b'z',
+        0x2D => b'x', 0x2E => b'c', 0x2F => b'v', 0x30 => b'b',
+        0x31 => b'n', 0x32 => b'm',
+        0x02 => b'1', 0x03 => b'2', 0x04 => b'3', 0x05 => b'4',
+        0x06 => b'5', 0x07 => b'6', 0x08 => b'7', 0x09 => b'8',
+        0x0A => b'9', 0x0B => b'0',
+        0x2B => b'\\', 0x0C => b'-', 0x0D => b'=', 0x1A => b'[',
+        0x1B => b']', 0x27 => b';', 0x28 => b'\'', 0x29 => b'`',
+        0x33 => b',', 0x34 => b'.', 0x35 => b'/',
+        0x39 => b' ', // Space
+        _ => 0,
+    }
 }
 
 // ── ChronoLine tick ──────────────────────────────────────────
@@ -1101,6 +1152,18 @@ fn tick_core(now: u64) {
     poll_keyboard();
     update_clock();
     chrono_tick(now);
+
+    // Poll network state every ~20 ticks
+    if now % 20 == 0 {
+        if let Some(ref mut rt) = *RUNTIME.lock() {
+            rt.net_manager.tick();
+            // Sync AP list to desktop
+            let aps = rt.net_manager.get_aps().to_vec();
+            let status = rt.net_manager.get_status().clone();
+            rt.desktop.update_ap_list(aps, status);
+        }
+    }
+
     process_events();
     if RUNTIME.lock().as_mut().map_or(false, |r| {
         let p = r.shell_launch_pending;

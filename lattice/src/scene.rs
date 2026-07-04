@@ -1,5 +1,6 @@
 use crate::cursor::Cursor;
 use crate::menu::PopupMenu;
+use crate::network_menu::NetStatus;
 use crate::window::Window;
 
 /// A rectangular dirty/update region in pixel coordinates.
@@ -81,6 +82,21 @@ pub struct Scene<'a> {
 
     /// Whether to use layer-based rendering order.
     pub layered: bool,
+
+    // ── Network menu ────────────────────────────────
+    pub network_menu_open: bool,
+    pub net_menu_x: u32,
+    pub net_menu_y: u32,
+    pub net_aps: &'a [crate::network_menu::ApDisplay],
+    pub net_status: &'a NetStatus,
+
+    // ── Password dialog ─────────────────────────────
+    pub pwd_dialog_open: bool,
+    pub pwd_dialog_x: u32,
+    pub pwd_dialog_y: u32,
+    pub pwd_ssid: &'a str,
+    pub pwd_password: &'a str,
+    pub pwd_cursor: usize,
 }
 
 /// A simple overlay rectangle (e.g. right-click menu, dropdown).
@@ -105,6 +121,17 @@ impl<'a> Scene<'a> {
             desktop_icons: None,
             active_menu: None,
             layered: false,
+            network_menu_open: false,
+            net_menu_x: 0,
+            net_menu_y: 0,
+            net_aps: &[],
+            net_status: &NetStatus::NoDevice,
+            pwd_dialog_open: false,
+            pwd_dialog_x: 0,
+            pwd_dialog_y: 0,
+            pwd_ssid: "",
+            pwd_password: "",
+            pwd_cursor: 0,
         }
     }
 
@@ -124,6 +151,17 @@ impl<'a> Scene<'a> {
             desktop_icons: None,
             active_menu: None,
             layered: false,
+            network_menu_open: false,
+            net_menu_x: 0,
+            net_menu_y: 0,
+            net_aps: &[],
+            net_status: &NetStatus::NoDevice,
+            pwd_dialog_open: false,
+            pwd_dialog_x: 0,
+            pwd_dialog_y: 0,
+            pwd_ssid: "",
+            pwd_password: "",
+            pwd_cursor: 0,
         }
     }
 

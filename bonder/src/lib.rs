@@ -24,10 +24,13 @@
 
 extern crate alloc;
 
+pub mod dhcp;
 pub mod ethernet;
 pub mod ipv4;
 pub mod logger;
 pub mod udp;
+pub mod wifi;
+pub mod wpa;
 
 /// Trait abstracting frame send/receive to a NIC.
 ///
