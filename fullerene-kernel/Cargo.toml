@@ -9,15 +9,17 @@ name = "fullerene-kernel"
 path = "src/main.rs"
 
 [dependencies]
-x86_64 = { version = "0.15.4", default-features = false, features = [
+x86_64 = { workspace = true, features = [
   "instructions",
   "abi_x86_interrupt",
 ] }
+# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
 spin = { version = "0.10.0", default-features = false, features = [
   "once",
   "mutex",
   "spin_mutex",
 ] }
+fullerene-abi = { path = "../fullerene-abi" }
 genome = { path = "../genome" }
 petroleum = { path = "../petroleum" }
 nitrogen = { path = "../nitrogen" }
@@ -25,24 +27,24 @@ nozzle = { path = "../nozzle" }
 solvent = { path = "../solvent" }
 resonance = { path = "../resonance" }
 rle_player = { path = "../toluene/rle_player" }
-embedded-graphics = { version = "0.8", default-features = false }
+embedded-graphics = { workspace = true }
 memoffset = { version = "0.9", default-features = false }
 linked_list_allocator = { version = "0.10.6", default-features = false, features = [
   "alloc_ref",
 ] }
-goblin = { version = "0.10.2", default-features = false, features = [
+goblin = { workspace = true, features = [
   "elf32",
   "elf64",
   "endian_fd",
 ] }
 bitfield = { version = "0.19.3", default-features = false }
 static_assertions = { version = "1.1", default-features = false }
-bitflags = { version = "2.11.1", default-features = false }
-volatile = { version = "0.6", default-features = false }
-pc-keyboard = { version = "0.8.0", default-features = false }
+bitflags = { workspace = true }
+volatile = { workspace = true }
+pc-keyboard = { workspace = true }
 heapless = { version = "0.9.2", default-features = false }
 paste = "1.0.15"
-log = { version = "0.4.29", default-features = false }
+log = { workspace = true }
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
 [features]

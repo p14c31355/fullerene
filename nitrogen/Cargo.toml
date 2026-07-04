@@ -3,16 +3,18 @@ name = "nitrogen"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [dependencies]
-x86_64 = { version = "0.15.2", default-features = false, features = [
+x86_64 = { workspace = true, features = [
   "instructions",
 ] }
+# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
 spin = { version = "0.10.0", default-features = false, features = [
   "once",
   "spin_mutex",
 ] }
-log = { version = "0.4.29", default-features = false }
+log = { workspace = true }
 ps2-mouse = "0.1.4"
 bonder = { path = "../bonder" }
 xhci = "0.9.2"

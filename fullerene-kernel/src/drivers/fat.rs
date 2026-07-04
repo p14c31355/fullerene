@@ -13,6 +13,7 @@ use core::str;
 
 use crate::klog_fmt;
 use crate::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
+use genome::fs::FsError;
 // Master Boot Record at LBA 0. Partition entries at offset 0x1BE.
 
 #[repr(C, packed)]
@@ -34,7 +35,7 @@ const PARTITION_EXFAT: u8 = 0x07; // exFAT often uses 0x07
 
 /// Detect whether LBA 0 contains an MBR and find the first FAT partition.
 /// Returns `Some(lba_start)` if found, or `None` if LBA 0 is already a FAT BPB.
-pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static str> {
+pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> {
     let mut boot = [0u8; 512];
     device.read_sectors(0, 1, &mut boot)?;
 
@@ -102,7 +103,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static 
         return Ok(lba);
     }
     klog_fmt!("FAT: no FAT partition found in MBR\n");
-    Err("no FAT partition")
+    Err(FsError::FileNotFound)
 }
 
 // ── Block device registry ────────────────────────────────────
@@ -126,12 +127,12 @@ pub fn register_block_device(name: &'static str, device: Box<dyn BlockDevice>) {
 
 /// Open a registered block device by name and return a `FatFileSystem`
 /// mounted on it.
-pub fn open_block_device(name: &str) -> Result<FatFileSystem, &'static str> {
+pub fn open_block_device(name: &str) -> Result<FatFileSystem, FsError> {
     let mut devices = BLOCK_DEVICES.lock();
     let pos = devices
         .iter()
         .position(|(n, _)| *n == name)
-        .ok_or("block device not found")?;
+        .ok_or(FsError::FileNotFound)?;
     let (_, device) = devices.remove(pos);
     FatFileSystem::from_device(device)
 }
@@ -501,7 +502,7 @@ impl FatFileSystem {
     /// Create a FAT/exFAT filesystem from a block device, auto-detecting
     /// MBR partition tables and parsing the correct boot sector.
     /// Wraps the device in a [`BlockCache`] for repeated reads.
-    pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
+    pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
         let lba = find_fat_partition(&mut *device)?;
         if lba > 0 {
             // Repoint the device to read from partition start.
@@ -517,7 +518,7 @@ impl FatFileSystem {
         Self::new(Box::new(cached))
     }
 
-    pub fn new(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
+    pub fn new(mut device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
         let mut boot = [0u8; 512];
         device.read_sectors(0, 1, &mut boot)?;
 
@@ -531,11 +532,11 @@ impl FatFileSystem {
 
             let bps_shift = ebpb.bytes_per_sector_shift as u32;
             if bps_shift < 9 || bps_shift > 12 {
-                return Err("invalid bytes_per_sector_shift");
+                return Err(FsError::InvalidInput);
             }
             let spc_shift = ebpb.sectors_per_cluster_shift as u32;
             if spc_shift > 25 {
-                return Err("invalid sectors_per_cluster_shift");
+                return Err(FsError::InvalidInput);
             }
             let bps = 1u32 << bps_shift;
             let spc = 1u32 << spc_shift;
@@ -569,10 +570,10 @@ impl FatFileSystem {
             let bps = bpb.bytes_per_sector as u32;
             let spc = bpb.sectors_per_cluster as u32;
             if bps < 512 || bps > 4096 || !bps.is_power_of_two() {
-                return Err("invalid bytes_per_sector");
+                return Err(FsError::InvalidInput);
             }
             if spc == 0 || !spc.is_power_of_two() {
-                return Err("invalid sectors_per_cluster");
+                return Err(FsError::InvalidInput);
             }
             let reserved = bpb.reserved_sector_count as u32;
             let num_fats = bpb.num_fats as u32;
@@ -1200,7 +1201,7 @@ impl FatFileSystem {
 
 impl FatFileSystem {
     /// Read all entries in a FAT32 directory cluster chain.
-    fn readdir_fat32_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, &'static str> {
+    fn readdir_fat32_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, FsError> {
         let mut entries = Vec::new();
         let mut cluster = dir_cluster;
         // LFN entries precede the main entry in reverse order
@@ -1277,7 +1278,7 @@ impl FatFileSystem {
     }
 
     /// Read all entries in an exFAT directory cluster chain.
-    fn readdir_exfat_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, &'static str> {
+    fn readdir_exfat_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, FsError> {
         let mut entries = Vec::new();
         let mut cluster = dir_cluster;
         let mut current_size: u64 = 0;
@@ -1707,7 +1708,7 @@ impl FileSystem for FatFileSystem {
         })
     }
 
-    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         let pos = self
             .handles
             .iter()
@@ -1762,7 +1763,7 @@ impl FileSystem for FatFileSystem {
         Ok(dst_off)
     }
 
-    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
+    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         let pos = self
             .handles
             .iter()
@@ -1779,7 +1780,7 @@ impl FileSystem for FatFileSystem {
         Ok(len)
     }
 
-    fn close(&mut self, fd: u32) -> Result<(), &'static str> {
+    fn close(&mut self, fd: u32) -> Result<(), FsError> {
         let pos = self
             .handles
             .iter()
@@ -1793,7 +1794,7 @@ impl FileSystem for FatFileSystem {
         Ok(())
     }
 
-    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), &'static str> {
+    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError> {
         let h = self
             .handles
             .iter_mut()
@@ -1827,15 +1828,15 @@ impl FileSystem for FatFileSystem {
         }
     }
 
-    fn mkdir(&mut self, _path: &str) -> Result<(), &'static str> {
-        Err("mkdir not implemented")
+    fn mkdir(&mut self, _path: &str) -> Result<(), FsError> {
+        Err(FsError::NotSupported)
     }
 
-    fn unlink(&mut self, _path: &str) -> Result<(), &'static str> {
-        Err("unlink not implemented")
+    fn unlink(&mut self, _path: &str) -> Result<(), FsError> {
+        Err(FsError::NotSupported)
     }
 
-    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
+    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
         let path = path.trim_matches('/');
         let cluster = if path.is_empty() {
             self.root_cluster
@@ -1848,11 +1849,11 @@ impl FileSystem for FatFileSystem {
                 match self.find_in_dir(cluster, component) {
                     Some((entry_cluster, _, is_dir)) => {
                         if !is_dir {
-                            return Err("not a directory");
+                            return Err(FsError::NotADirectory);
                         }
                         cluster = entry_cluster;
                     }
-                    None => return Err("not found"),
+                    None => return Err(FsError::FileNotFound),
                 }
             }
             cluster

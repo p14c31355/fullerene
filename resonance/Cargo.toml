@@ -3,8 +3,9 @@ name = "resonance"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [dependencies]
-x86_64 = { version = "0.15.2", default-features = false, features = [
+x86_64 = { workspace = true, features = [
   "instructions",
 ] }

@@ -18,20 +18,39 @@ pub struct FramebufferProbeResult {
 
 /// GOP parameters stored in `.data` during `efi_main_stage2`.
 /// Simple integers survive the world‑switch + shallow `clone_page_table`.
+///
+/// # Safety
+///
+/// This `static mut` is written exactly once during `efi_main_stage2` (boot phase)
+/// and read-only thereafter.  Access is serialised by the single‑core boot sequence.
+/// No concurrent readers or writers exist.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_PHYS: u64 = 0;
+/// # Safety
+/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_WIDTH: u32 = 0;
+/// # Safety
+/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_HEIGHT: u32 = 0;
+/// # Safety
+/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_STRIDE: u32 = 0;
+/// # Safety
+/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_BPP: u32 = 0;
+/// # Safety
+/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_PIXEL_FORMAT: u32 = 0;
 
 /// KernelArgs virtual address preserved in `.data`.
+///
+/// # Safety
+/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_ARGS_VA: u64 = 0;
 

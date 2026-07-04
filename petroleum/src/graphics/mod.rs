@@ -1,3 +1,41 @@
+/// A safe, lifetime-constrained wrapper around framebuffer pixel data.
+///
+/// Provides read/write access to the framebuffer while constraining the
+/// lifetime to the duration of a `with_framebuffer` closure call, preventing
+/// `&'static mut` aliasing bugs.
+pub struct FramebufferGuard<'a> {
+    pixels: &'a mut [u32],
+    width: u32,
+    height: u32,
+    stride: u32,
+}
+
+impl<'a> FramebufferGuard<'a> {
+    pub fn new(pixels: &'a mut [u32], width: u32, height: u32, stride: u32) -> Self {
+        Self { pixels, width, height, stride }
+    }
+
+    pub fn pixels(&self) -> &[u32] {
+        self.pixels
+    }
+
+    pub fn pixels_mut(&mut self) -> &mut [u32] {
+        self.pixels
+    }
+
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    pub fn stride(&self) -> u32 {
+        self.stride
+    }
+}
+
 pub trait FramebufferBackend {
     fn width(&self) -> usize;
     fn height(&self) -> usize;

@@ -3,11 +3,13 @@ name = "solvent"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [dependencies]
-x86_64 = { version = "0.15.4", default-features = false, features = [
+x86_64 = { workspace = true, features = [
   "instructions",
 ] }
+# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
 spin = { version = "0.10.0", default-features = false, features = [
   "once",
   "mutex",
@@ -21,7 +23,7 @@ nozzle = { path = "../nozzle" }
 lattice = { path = "../lattice" }
 resonance = { path = "../resonance" }
 chronoline = { path = "../chronoline" }
-log = { version = "0.4.29", default-features = false }
+log = { workspace = true }
 
 # Media format parsers
 tinybmp = { version = "0.7", default-features = false, optional = true }

@@ -3,10 +3,8 @@
 //! These handlers are thin wrappers that delegate to `crate` globals.
 //! The heavy logic (menu dispatch, terminal I/O) lives in dedicated modules.
 
-use crate::cursor_lightweight_update;
 use crate::{FB_DIMS, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS};
 use lattice::shell_overlay::ShellState;
-use lattice::wm::DragState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
 pub(crate) struct WmEventHandler;
@@ -26,12 +24,7 @@ impl EventHandler for WmEventHandler {
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 rt.desktop.mouse_move(*x, *y);
-                cursor_lightweight_update(rt);
-                if !matches!(rt.desktop.wm.drag_state(), DragState::None)
-                    || rt.desktop.has_pending_dirty_rects()
-                {
-                    rt.frame_due = true;
-                }
+                rt.frame_due = true;
                 true
             }
             Event::Input(InputEvent::MouseDown(btn)) => {
@@ -238,7 +231,7 @@ fn handle_overlay_event(rt: &mut crate::RuntimeState, event: &Event) -> bool {
     match event {
         Event::Input(InputEvent::MouseMove { x, y }) => {
             rt.desktop.mouse_move(*x, *y);
-            cursor_lightweight_update(rt);
+            rt.frame_due = true;
             true
         }
         Event::Input(InputEvent::MouseDown(_))

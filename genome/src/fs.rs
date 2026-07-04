@@ -14,6 +14,8 @@ pub enum FsError {
     DirectoryNotEmpty,
     IsADirectory,
     InvalidPath,
+    NotSupported,
+    InvalidInput,
 }
 
 impl core::fmt::Display for FsError {
@@ -29,6 +31,26 @@ impl core::fmt::Display for FsError {
             FsError::DirectoryNotEmpty => write!(f, "directory not empty"),
             FsError::IsADirectory => write!(f, "is a directory"),
             FsError::InvalidPath => write!(f, "invalid path"),
+            FsError::NotSupported => write!(f, "operation not supported"),
+            FsError::InvalidInput => write!(f, "invalid input"),
+        }
+    }
+}
+
+impl From<&'static str> for FsError {
+    fn from(e: &'static str) -> Self {
+        match e {
+            "not found" | "mount point not found" => FsError::FileNotFound,
+            "not a directory" | "mount point not a directory" => FsError::NotADirectory,
+            "not a file" | "mount point is a file" => FsError::IsADirectory,
+            "bad fd" => FsError::InvalidFileDescriptor,
+            "inode not found" => FsError::FileNotFound,
+            "directory not empty" => FsError::DirectoryNotEmpty,
+            "invalid path" => FsError::InvalidPath,
+            "create failed" | "open failed after create" => FsError::FileExists,
+            "mkdir failed" => FsError::PermissionDenied,
+            "vfs not init" | "only tmpfs is supported" => FsError::PermissionDenied,
+            _ => FsError::InvalidInput,
         }
     }
 }

@@ -1,7 +1,8 @@
 use alloc::string::String;
-use alloc::vec::Vec;
+use alloc::vec;
 use petroleum::common::memory::UserSlice;
-use x86_64::VirtAddr;
+
+use fullerene_abi::syscall_errors;
 
 /// System call result type
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -93,8 +94,8 @@ pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String,
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Validate the entire range via UserSlice
-    let slice = UserSlice::new(ptr as *mut u8, max_len)
+    // Validate the entire range via UserSlice (read-only)
+    let slice = UserSlice::new(ptr as *mut u8, max_len, false)
         .map_err(|_| SyscallError::InvalidArgument)?;
 
     // Copy into kernel-owned buffer
@@ -107,4 +108,27 @@ pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String,
     buf.truncate(actual_len);
 
     String::from_utf8(buf).map_err(|_| SyscallError::InvalidArgument)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_syscall_error_values() {
+        assert_eq!(SyscallError::InvalidSyscall as i64, syscall_errors::INVALID_SYSCALL);
+        assert_eq!(SyscallError::FileNotFound as i64, syscall_errors::FILE_NOT_FOUND);
+        assert_eq!(SyscallError::NoSuchProcess as i64, syscall_errors::NO_SUCH_PROCESS);
+        assert_eq!(SyscallError::BadFileDescriptor as i64, syscall_errors::BAD_FILE_DESCRIPTOR);
+        assert_eq!(SyscallError::Again as i64, syscall_errors::AGAIN);
+        assert_eq!(SyscallError::OutOfMemory as i64, syscall_errors::OUT_OF_MEMORY);
+        assert_eq!(SyscallError::PermissionDenied as i64, syscall_errors::PERMISSION_DENIED);
+        assert_eq!(SyscallError::AlreadyExists as i64, syscall_errors::ALREADY_EXISTS);
+        assert_eq!(SyscallError::NoSuchDevice as i64, syscall_errors::NO_SUCH_DEVICE);
+        assert_eq!(SyscallError::InvalidArgument as i64, syscall_errors::INVALID_ARGUMENT);
+        assert_eq!(SyscallError::NotSupported as i64, syscall_errors::NOT_SUPPORTED);
+        assert_eq!(SyscallError::BadHandle as i64, syscall_errors::BAD_HANDLE);
+        assert_eq!(SyscallError::TimedOut as i64, syscall_errors::TIMED_OUT);
+        assert_eq!(SyscallError::WouldBlock as i64, syscall_errors::WOULD_BLOCK);
+    }
 }

@@ -87,7 +87,7 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
 
         let num_pages = (aligned_len / 4096) as usize;
-        let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+        let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
 
         for i in 0..num_pages {
             let page_vaddr = addr + (i as u64) * 4096;
@@ -223,7 +223,7 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
         if end_page > start_page {
             let num_pages = ((end_page - start_page) / align) as usize;
-            let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+            let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
 
             if let Some(mgr) = crate::memory_management::get_memory_manager()
                 .lock()

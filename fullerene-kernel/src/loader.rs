@@ -147,7 +147,7 @@ fn load_program_inner(
                         page_vaddr.as_u64() as usize,
                         frame.start_address().as_u64() as usize,
                         page_flags,
-                        petroleum::page_table::constants::get_frame_allocator_mut(),
+                        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
                     )
                     .map_err(|_| LoadError::OutOfMemory)?;
 

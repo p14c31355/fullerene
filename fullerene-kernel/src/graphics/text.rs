@@ -22,9 +22,15 @@ use petroleum::graphics::color::{
 
 // FramebufferWriter now implements Write in petroleum
 
+/// # Safety
+/// Written once during boot, read-only after.  Only accessed on UEFI paths
+/// that are serialised by the single‑core boot sequence.
 #[cfg(target_os = "uefi")]
 pub static mut WRITER_UEFI: Option<petroleum::UefiFramebufferWriter> = None;
 
+/// # Safety
+/// Written once during boot, read-only after.  Only accessed on UEFI paths
+/// that are serialised by the single‑core boot sequence.
 #[cfg(target_os = "uefi")]
 pub static mut FRAMEBUFFER_UEFI: Option<petroleum::UefiFramebuffer> = None;
 

@@ -166,7 +166,7 @@ pub fn map_user_page(
             virtual_addr,
             physical_addr,
             flags,
-            petroleum::page_table::constants::get_frame_allocator_mut(),
+            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
         )
     } else {
         Err(SystemError::InternalError)

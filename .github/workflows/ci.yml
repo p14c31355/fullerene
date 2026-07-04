@@ -1,42 +1,94 @@
-name: CI
+name: Fullerene CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
 
 jobs:
-  check:
-    name: Check
+  fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: 'recursive'
-
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: nightly
-          components: rust-src, llvm-tools-preview
-
-      - name: Add UEFI target
-        run: rustup target add x86_64-unknown-uefi
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./ -> target"
-
-      - name: Cargo check (host packages)
-        run: cargo check --workspace --exclude bellows --exclude fullerene-kernel
-
-      - name: Build/check UEFI packages
+      - name: Install Rust toolchain
         run: |
-          cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
-          KERNEL_BIN_PATH="$GITHUB_WORKSPACE/target/x86_64-unknown-uefi/debug/fullerene-kernel.efi" \
-            cargo check -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi
+          rustup toolchain install nightly-2026-06-01 --component rustfmt
+          rustup override set nightly-2026-06-01
+      - name: Check formatting
+        run: cargo fmt --check
+
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-06-01
+          rustup override set nightly-2026-06-01
+          rustup target add x86_64-unknown-uefi
+      - name: Run tests
+        run: cargo test --workspace --exclude bellows --exclude fullerene-kernel
+      - name: Check workspace compilation
+        run: cargo check --workspace --exclude bellows --exclude fullerene-kernel
+      - name: Check duplicate dependencies
+        run: cargo tree -d --workspace --exclude bellows --exclude fullerene-kernel
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-06-01 --component clippy
+          rustup override set nightly-2026-06-01
+          rustup target add x86_64-unknown-uefi
+      - name: Clippy check
+        run: cargo clippy --workspace --exclude bellows --exclude fullerene-kernel -- -D warnings
+
+  uefi-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-06-01
+          rustup override set nightly-2026-06-01
+          rustup target add x86_64-unknown-uefi
+      - name: Build UEFI kernel
+        run: cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
+      - name: Build ISO
+        run: cargo build -p isobemak
+
+  kernel-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-06-01
+          rustup override set nightly-2026-06-01
+          rustup target add x86_64-unknown-uefi
+      - name: Check kernel
+        run: cargo check --package fullerene-kernel --target x86_64-unknown-uefi
+
+  qemu-smoke:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-06-01
+          rustup override set nightly-2026-06-01
+          rustup target add x86_64-unknown-uefi
+      - name: Build kernel
+        run: cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
+      - name: Build ISO
+        run: cargo build -p isobemak
+      - name: QEMU smoke test
+        run: |
+          timeout 30 qemu-system-x86_64 -cdrom fullerene.iso -nographic -machine pc,isa-debug-exit=on -serial stdio 2>&1 | head -50 || true

@@ -68,7 +68,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             Some(m) => m,
             None => return errno_code(ENOMEM),
         };
-        let alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+        let alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
         match mgr.clone_page_table(parent_pt.as_u64() as usize, alloc) {
             Ok(addr) => addr,
             Err(_) => return errno_code(ENOMEM),
@@ -141,6 +141,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         parent_id: Some(current_pid),
         task_data: 0,
         vdso_page: child_vdso,
+        resources: process::ProcessResources::new(),
         dispatch_mode: {
             let mut child_rt = super::runtime::LinuxRuntime::new(child_pid.0, rt.initial_break);
             child_rt.fd_table.entries = rt.fd_table.entries.clone();
@@ -226,7 +227,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 
     // ── Load and map new segments ─────────────────────────
-    let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+    let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
     if let Some(mgr) = crate::memory_management::get_memory_manager()
         .lock()
         .as_mut()
@@ -292,7 +293,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let stack_guard: u64 = 4096; // guard page
     let stack_base = stack_top_vaddr_default - stack_size - stack_guard;
 
-    let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+    let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
     if let Some(mgr) = crate::memory_management::get_memory_manager()
         .lock()
         .as_mut()

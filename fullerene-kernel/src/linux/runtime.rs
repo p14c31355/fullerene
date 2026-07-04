@@ -248,6 +248,25 @@ impl LinuxFdTable {
     }
 }
 
+/// Translate FsError to a Linux errno.
+pub fn fs_errno(err: &genome::fs::FsError) -> i32 {
+    use genome::fs::FsError;
+    match err {
+        FsError::FileNotFound => ENOENT,
+        FsError::FileExists => EEXIST,
+        FsError::PermissionDenied => EACCES,
+        FsError::InvalidFileDescriptor => EBADF,
+        FsError::InvalidSeek => EINVAL,
+        FsError::DiskFull => ENOSPC,
+        FsError::NotADirectory => ENOTDIR,
+        FsError::DirectoryNotEmpty => ENOTEMPTY,
+        FsError::IsADirectory => EISDIR,
+        FsError::InvalidPath => EINVAL,
+        FsError::NotSupported => ENOSYS,
+        FsError::InvalidInput => EINVAL,
+    }
+}
+
 /// Translate errno from FsError/C errors to Linux errno.
 pub fn to_linux_errno(err: &str) -> i32 {
     match err {
@@ -281,13 +300,18 @@ pub fn errno_result(err: &str) -> u64 {
     errno_code(e)
 }
 
+/// Translate a Fullerene FsError to a negative errno return.
+pub fn fs_errno_result(err: &genome::fs::FsError) -> u64 {
+    errno_code(fs_errno(err))
+}
+
 /// Convert string from raw user pointer.
 pub unsafe fn copy_user_string(ptr: u64, max_len: usize) -> Result<alloc::string::String, i32> {
     if ptr == 0 || max_len == 0 {
         return Err(EFAULT);
     }
     // Validate range via UserSlice
-    let slice = UserSlice::new(ptr as *mut u8, max_len).map_err(|_| EFAULT)?;
+    let slice = UserSlice::new(ptr as *mut u8, max_len, false).map_err(|_| EFAULT)?;
     let mut buf = alloc::vec::Vec::with_capacity(max_len);
     buf.resize(max_len, 0);
     unsafe { slice.copy_from_user(&mut buf) }.map_err(|_| EFAULT)?;
@@ -303,7 +327,7 @@ pub unsafe fn copy_from_user(buf: u64, count: usize) -> Result<alloc::vec::Vec<u
     if buf == 0 {
         return Err(EFAULT);
     }
-    let slice = UserSlice::new(buf as *mut u8, limit).map_err(|_| EFAULT)?;
+    let slice = UserSlice::new(buf as *mut u8, limit, false).map_err(|_| EFAULT)?;
     let mut data = alloc::vec::Vec::with_capacity(limit);
     data.resize(limit, 0);
     unsafe { slice.copy_from_user(&mut data) }.map_err(|_| EFAULT)?;
@@ -315,7 +339,7 @@ pub unsafe fn copy_to_user(buf: u64, data: &[u8]) -> Result<(), i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    let slice = UserSlice::new(buf as *mut u8, data.len()).map_err(|_| EFAULT)?;
+    let slice = UserSlice::new(buf as *mut u8, data.len(), true).map_err(|_| EFAULT)?;
     unsafe { slice.copy_to_user(data) }.map_err(|_| EFAULT)
 }
 
@@ -325,7 +349,7 @@ pub unsafe fn copy_val_to_user<T: Copy>(buf: u64, val: &T) -> Result<(), i32> {
         return Err(EFAULT);
     }
     let size = core::mem::size_of::<T>();
-    let slice = UserSlice::new(buf as *mut u8, size).map_err(|_| EFAULT)?;
+    let slice = UserSlice::new(buf as *mut u8, size, true).map_err(|_| EFAULT)?;
     let src = val as *const T as *const u8;
     let tmp = unsafe { core::slice::from_raw_parts(src, size) };
     unsafe { slice.copy_to_user(tmp) }.map_err(|_| EFAULT)

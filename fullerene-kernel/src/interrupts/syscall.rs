@@ -10,9 +10,18 @@ use x86_64::registers::rflags::RFlags;
 /// Static kernel stack for syscall to prevent page fault vulnerabilities
 const SYSCALL_STACK_SIZE: usize = 4096;
 
+/// # Safety
+/// Written once during `init_syscall_stack()` (boot phase), then read‑only.
+/// Single‑core assumption: no concurrent readers.  Accessed from `syscall_entry`
+/// assembly which runs with interrupts disabled.
 static mut SYSCALL_STACK_PTR: u64 = 0;
 
 /// Kernel CR3 for syscall to access kernel heap
+///
+/// # Safety
+/// Written once during boot via `set_kernel_cr3()`, then read‑only.
+/// Accessed from `syscall_entry` assembly with interrupts disabled.
+/// Single‑core assumption.
 #[unsafe(no_mangle)]
 pub static mut KERNEL_CR3_U64: u64 = 0;
 
