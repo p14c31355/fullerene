@@ -23,6 +23,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use alloc::string::{String, ToString};
 use alloc::collections::VecDeque;
+use spin::Mutex;
 
 use bonder::{NetDevice, NetError};
 use bonder::wifi::{self, Ssid, AccessPoint, WifiStatus};
@@ -1038,12 +1039,13 @@ impl NetDevice for IwlWifiDevice {
     }
 }
 
-// ── Stored scan state for external access (via firmware thread) ────
+// ── Stored wifi state for external access (via driver tick) ────────
 
 /// Global wifi manager state for UI polling.
-use spin::Mutex;
-
 static WIFI_MANAGER: Mutex<Option<WifiManager>> = Mutex::new(None);
+
+/// Global IwlWifiDevice instance so other parts of the OS can tick it.
+static WIFI_DEVICE: Mutex<Option<IwlWifiDevice>> = Mutex::new(None);
 
 #[derive(Clone)]
 pub struct WifiManager {
@@ -1052,6 +1054,28 @@ pub struct WifiManager {
     pub status: WifiStatus,
     pub connected_ssid: Option<String>,
     pub ip_address: Option<String>,
+}
+
+/// Probe for an Intel wireless device and store it for periodic ticking.
+///
+/// Safe to call multiple times.
+pub fn try_init_wifi_device() {
+    let mut dev_guard = WIFI_DEVICE.lock();
+    if dev_guard.is_some() {
+        return;
+    }
+    if let Some(dev) = IwlWifiDevice::probe_and_init() {
+        *dev_guard = Some(dev);
+    }
+}
+
+/// Tick the stored device and update the global wifi manager snapshot.
+pub fn tick_wifi_device() {
+    let mut dev_guard = WIFI_DEVICE.lock();
+    if let Some(ref mut dev) = *dev_guard {
+        dev.tick();
+        update_wifi_manager(dev);
+    }
 }
 
 impl WifiManager {

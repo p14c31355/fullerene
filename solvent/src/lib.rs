@@ -241,6 +241,7 @@ pub struct RuntimeState {
 pub fn init() {
     // Initialize WiFi subsystem
     nitrogen::iwlwifi::init_wifi_manager();
+    nitrogen::iwlwifi::try_init_wifi_device();
 
     let desktop = Desktop::new(BG_COLOR);
     let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
@@ -1152,6 +1153,9 @@ fn tick_core(now: u64) {
     poll_keyboard();
     update_clock();
     chrono_tick(now);
+
+    // Tick WiFi hardware and update the UI snapshot.
+    nitrogen::iwlwifi::tick_wifi_device();
 
     // Poll network state every ~20 ticks
     if now % 20 == 0 {
