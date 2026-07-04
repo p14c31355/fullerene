@@ -1104,7 +1104,14 @@ pub fn set_render_fn(f: fn()) {
     *RENDER_FN.lock() = Some(f);
 }
 
-fn tick_core(now: u64) {
+/// Run input polling, event processing, and timer logic **without** rendering.
+///
+/// This is the public entry point so the kernel can call it **before**
+/// acquiring the `KERNEL` lock for framebuffer rendering.  Keeping the
+/// two phases separate avoids a deadlock when `process_events()` handlers
+/// (e.g. file manager) re-enter the kernel VFS layer which also needs
+/// the `KERNEL` lock.
+pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
     poll_keyboard();
@@ -1174,6 +1181,16 @@ fn runtime_tick_no_fb() {
             render_fn();
         }
     }
+}
+
+/// Consume the `frame_due` flag from `RUNTIME` and return whether a frame
+/// should be rendered.  Must be called **after** `tick_core()`.
+pub fn consume_frame_due() -> bool {
+    RUNTIME.lock().as_mut().map_or(false, |r| {
+        let due = r.frame_due;
+        r.frame_due = false;
+        due
+    })
 }
 
 pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {

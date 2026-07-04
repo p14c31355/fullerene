@@ -24,8 +24,8 @@ use genome::fs::FsError;
 
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
-    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, is_initialized, poll_mouse_state,
-    process_events, push_key_event, set_render_fn, write_terminal,
+    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, is_initialized,
+    poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core, write_terminal,
 };
 
 /// Convert an FsError to a static string for the solvent callback boundary.
@@ -183,19 +183,34 @@ pub fn render() {
 
 /// Perform one tick of the runtime loop with kernel framebuffer access.
 ///
-/// This wraps `solvent::runtime_tick` with the kernel framebuffer callback.
+/// The tick is split into two phases to avoid a deadlock with
+/// `spin::Mutex` (which is non-recursive):
+///
+/// 1. **tick_core** — input polling, event processing, timer updates.
+///    This runs **without** the `KERNEL` lock so that event handlers
+///    (e.g. file manager opening, shell commands) can call back into
+///    VFS → `KERNEL.lock()` without self-deadlocking.
+///
+/// 2. **render** — framebuffer rendering under the `KERNEL` lock.
+///    Only started when `consume_frame_due()` returns `true`.
 pub fn runtime_tick(now: u64) {
-    crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
-        solvent::runtime_tick(now, fb);
-    });
+    // Phase 1: process input and events without the KERNEL lock.
+    solvent::tick_core(now);
 
-    // Signal present & flush GPU
-    crate::contexts::kernel::with_kernel_mut(|k| {
-        if let Some(ref mut renderer) = k.framebuffer.renderer {
-            renderer.present();
-        }
-    });
-    crate::graphics::flush_gpu();
+    // Phase 2: render only when a frame is actually due.
+    if solvent::consume_frame_due() {
+        crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
+            solvent::render(fb);
+        });
+
+        // Signal present & flush GPU
+        crate::contexts::kernel::with_kernel_mut(|k| {
+            if let Some(ref mut renderer) = k.framebuffer.renderer {
+                renderer.present();
+            }
+        });
+        crate::graphics::flush_gpu();
+    }
 }
 
 // ── Wall clock (CMOS RTC) ────────────────────────────────────
