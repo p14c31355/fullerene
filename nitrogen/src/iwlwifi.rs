@@ -61,7 +61,7 @@ const CSR_INT_PERIODIC: u32 = 0x014 / 4;
 const CSR_RESET_BIT_SW: u32 = 1 << 7;
 const CSR_RESET_BIT_MASTER_DISABLED: u32 = 1 << 8;
 const CSR_RESET_BIT_STOP_MASTER: u32 = 1 << 9;
-const CSR_GP_CNTRL_MAC_ACCESS_EN: u32 = 1 << 4;
+const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3; // MAC_ACCESS_REQ = bit 3 = 0x08
 const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
 
 // ── Firmware constants ───────────────────────────────────────────────
@@ -345,7 +345,7 @@ impl IwlWifiDevice {
 
         // Enable MAC clock
         unsafe {
-            core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_EN);
+            core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
         for _ in 0..50_000 {
             let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
@@ -579,17 +579,25 @@ impl IwlWifiDevice {
             core::hint::spin_loop();
         }
 
-        // 3. Set INIT_DONE to release the CPU from reset
+        // 3. Set MAC_SLEEP to 1 so firmware can clear it to indicate alive
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_UCODE_GP1 as usize),
+                0x00000001, // set MAC_SLEEP bit
+            );
+        }
+
+        // 4. Set INIT_DONE to release the CPU from reset
         //    (bit 2 of CSR_GP_CNTRL, alongside MAC_ACCESS_EN bit 4)
         unsafe {
             let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
-                gp | CSR_GP_CNTRL_MAC_ACCESS_EN | 0x04, // INIT_DONE
+                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | 0x04, // INIT_DONE
             );
         }
 
-        // 4. Unmask ALIVE interrupt (bit 0) so the hardware can signal it
+        // 5. Unmask ALIVE interrupt (bit 0) so the hardware can signal it
         unsafe {
             core::ptr::write_volatile(
                 self.mmio.add(CSR_INT_MASK as usize),
@@ -681,34 +689,36 @@ impl IwlWifiDevice {
 
     /// Wait for the firmware "alive" response.
     fn wait_for_alive(&mut self) -> Result<(), &'static str> {
-        // In a real implementation, this polls the interrupt status register
-        // for the ALIVE bit (bit 0 of CSR_INT).
-        //
-        // The firmware sets this bit after it has initialized and is ready
-        // to accept commands.
         for _ in 0..10_000_000 {
+            // Check CSR_INT bit 0 (ALIVE)
             let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
-            if int_cause == 0xFFFF_FFFF || int_cause == 0 {
-                core::hint::spin_loop();
-                continue;
-            }
-
-            // Check ALIVE bit (bit 0)
-            if (int_cause & 0x01) != 0 {
-                // Acknowledge interrupt
+            if int_cause != 0 && int_cause != 0xFFFF_FFFF {
+                if (int_cause & 0x01) != 0 {
+                    unsafe {
+                        core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+                    }
+                    self.fw_state = FwState::Alive;
+                    return Ok(());
+                }
+                if (int_cause & (1 << 25)) != 0 {
+                    unsafe {
+                        core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+                    }
+                    return Err("Firmware error");
+                }
                 unsafe {
                     core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
                 }
+            }
+
+            // Alternative alive check: MAC_SLEEP cleared by firmware
+            let ucode_gp1 = unsafe {
+                core::ptr::read_volatile(self.mmio.add(CSR_UCODE_GP1 as usize))
+            };
+            if (ucode_gp1 & 0x01) == 0 {
+                // MAC_SLEEP cleared = firmware booted and woke the MAC
                 self.fw_state = FwState::Alive;
                 return Ok(());
-            }
-
-            // Check for error
-            if (int_cause & (1 << 25)) != 0 {
-                unsafe {
-                    core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
-                }
-                return Err("Firmware error");
             }
 
             core::hint::spin_loop();
