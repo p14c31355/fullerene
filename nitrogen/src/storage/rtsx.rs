@@ -808,6 +808,9 @@ impl RtsxController {
         if !self.mmio_mapped {
             return false;
         }
+        if self.ensure_device_accessible().is_err() {
+            return false;
+        }
         // Only do MMIO reads if the controller is alive.
         if !self.mmio_alive() {
             return false;
