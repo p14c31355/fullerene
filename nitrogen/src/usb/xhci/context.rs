@@ -292,29 +292,45 @@ impl XhciContext {
 
         // ── Port power-up ─────────────────────────────────────
         // Power-cycle USB 3.0 ports that already have PP=1 (clean restart).
-        // Only do this when PPC (Port Power Control) is supported.
+        // When PPC (Port Power Control) is supported, we can reliably control
+        // port power.  When PPC is not supported, we still attempt a PP toggle
+        // because some controllers (e.g. Intel Wildcat Point-LP) report PPC=0
+        // in HCSPARAMS1 but still honor PP writes, and HCRST can leave USB 3.0
+        // PHYs in a state where CCS never asserts without a power cycle.
         // IMPORTANT: Only power-cycle ports with CCS=0 to avoid disturbing
         // already-connected devices.
-        if self.ports.ppc {
-            for port_idx in 0..self.ports.n_ports {
-                let ps = op.portsc(port_idx).0;
-                let has_ccs = (ps & PORTSC_CCS) != 0;
-                if has_ccs {
-                    continue;
-                }
+        for port_idx in 0..self.ports.n_ports {
+            let ps = op.portsc(port_idx).0;
+            let has_ccs = (ps & PORTSC_CCS) != 0;
+            if has_ccs {
+                continue;
+            }
+            let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
+            if !is_usb3 {
+                // USB 2.0 ports don't need PHY recalibration after HCRST
+                continue;
+            }
+            if self.ports.ppc {
                 if (ps & PORTSC_PP) != 0 {
-                    let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-                    if is_usb3 {
-                        op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
-                        super::port::delay_ms(50);
-                        op.write_portsc(
-                            port_idx,
-                            (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP,
-                        );
-                        super::port::delay_ms(100);
-                    }
+                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                    super::port::delay_ms(50);
+                    op.write_portsc(
+                        port_idx,
+                        (op.portsc(port_idx).0 & !PORTSC_RW1C_MASK) | PORTSC_PP,
+                    );
+                    super::port::delay_ms(100);
                 } else {
                     op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) | PORTSC_PP);
+                    super::port::delay_ms(100);
+                }
+            } else {
+                // PPC=0: PP may be read-only, but attempt toggle anyway for
+                // controllers that honor it regardless of the capability bit.
+                if (ps & PORTSC_PP) != 0 {
+                    op.write_portsc(port_idx, (ps & !PORTSC_RW1C_MASK) & !PORTSC_PP);
+                    super::port::delay_ms(50);
+                    let v2 = op.portsc(port_idx).0;
+                    op.write_portsc(port_idx, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
                     super::port::delay_ms(100);
                 }
             }

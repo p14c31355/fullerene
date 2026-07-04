@@ -357,8 +357,24 @@ impl RtsxController {
         self.w8(CARD_DRIVE_SEL, 0x03);
         self.w8(CARD_STOP, 0x00);
 
-        log::info!("RTSX: hardware init done");
-        true
+        for _ in 0..200_000 {
+            core::hint::spin_loop();
+        }
+
+        // After all posted writes have settled, verify the device is still
+        // accessible via PCI config space before the caller performs its
+        // first non-posted MMIO read.  If the link dropped during init,
+        // the upcoming read would hang the CPU indefinitely.
+        match self.ensure_device_accessible() {
+            Ok(()) => {
+                log::info!("RTSX: hardware init done, device accessible");
+                true
+            }
+            Err(e) => {
+                log::warn!("RTSX: hardware init done but device not accessible: {}", e);
+                false
+            }
+        }
     }
 
     // ── SD Command Execution ──────────────────────────────────

@@ -338,6 +338,11 @@ impl IwlWifiDevice {
 
     /// Initialize the device.
     fn init(device: PciDevice) -> Result<Self, IwlError> {
+        // Ensure device is in D0 and ASPM is disabled before any MMIO access.
+        // Without these, MMIO reads on a device in D3cold or behind an ASPM
+        // L1-enabled link can hang the CPU indefinitely.
+        device.ensure_d0();
+        device.disable_pcie_aspm();
         device.enable_memory_access();
         let bar0_addr = device.read_bar(0).ok_or(IwlError::BarNotAvailable)?;
         let mmio = bar0_addr as *mut u32;
