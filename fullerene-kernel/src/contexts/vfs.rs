@@ -36,48 +36,83 @@ use crate::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vf
 pub struct VfsContext {
     inner: Mutex<Vfs>,
 
-    /// Per-filesystem open-handle tracking so that `read(fd)` /
-    /// `close(fd)` routes to the correct filesystem without scanning
-    /// every mount every time.  Maps fd → index into `Vfs.mounts`.
+    /// Open-handle tracking so that `read(fd)` / `close(fd)` routes a
+    /// VFS-global descriptor to the owning mount and its local descriptor.
     handle_table: Mutex<HandleTable>,
 }
 
-/// Tracks which mount owns each open fd.
+/// Tracks which mount owns each VFS-global file descriptor.
 struct HandleTable {
     entries: Vec<HandleEntry>,
+    next_fd: u32,
 }
 
 struct HandleEntry {
     fd: u32,
     mount_index: usize,
+    local_fd: u32,
+}
+
+#[derive(Clone, Copy)]
+struct HandleLocation {
+    mount_index: usize,
+    local_fd: u32,
 }
 
 impl HandleTable {
     fn new() -> Self {
         Self {
             entries: Vec::new(),
+            next_fd: 0,
         }
     }
 
-    fn insert(&mut self, fd: u32, mount_index: usize) {
-        self.entries.push(HandleEntry { fd, mount_index });
+    fn insert(&mut self, descriptor: FileDescriptor, mount_index: usize) -> Option<FileDescriptor> {
+        let fd = self.allocate_fd()?;
+        let local_fd = descriptor.fd;
+        self.entries.push(HandleEntry {
+            fd,
+            mount_index,
+            local_fd,
+        });
+        Some(FileDescriptor { fd, ..descriptor })
     }
 
-    fn find(&self, fd: u32) -> Option<usize> {
+    fn find(&self, fd: u32) -> Option<HandleLocation> {
         self.entries
             .iter()
             .find(|e| e.fd == fd)
-            .map(|e| e.mount_index)
+            .map(|e| HandleLocation {
+                mount_index: e.mount_index,
+                local_fd: e.local_fd,
+            })
     }
 
     /// Find and remove an entry in a single lock acquisition to avoid
     /// double-lock on `handle_table`.
-    fn take(&mut self, fd: u32) -> Option<usize> {
+    fn take(&mut self, fd: u32) -> Option<HandleLocation> {
         if let Some(pos) = self.entries.iter().position(|e| e.fd == fd) {
             let entry = self.entries.remove(pos);
-            Some(entry.mount_index)
+            Some(HandleLocation {
+                mount_index: entry.mount_index,
+                local_fd: entry.local_fd,
+            })
         } else {
             None
+        }
+    }
+
+    fn allocate_fd(&mut self) -> Option<u32> {
+        let start = self.next_fd;
+        loop {
+            let candidate = self.next_fd;
+            self.next_fd = self.next_fd.wrapping_add(1);
+            if self.entries.iter().all(|entry| entry.fd != candidate) {
+                return Some(candidate);
+            }
+            if self.next_fd == start {
+                return None;
+            }
         }
     }
 }
@@ -106,7 +141,16 @@ impl VfsContext {
     // ── Mount management ────────────────────────────────────────
 
     pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), &'static str> {
-        self.inner.lock().mount(mount_point, fs)
+        let mut vfs = self.inner.lock();
+        let replaced_index = vfs.mounted_fs_index(mount_point);
+        vfs.mount(mount_point, fs)?;
+        if let Some(replaced_index) = replaced_index {
+            self.handle_table
+                .lock()
+                .entries
+                .retain(|entry| entry.mount_index != replaced_index);
+        }
+        Ok(())
     }
 
     /// Unmount a filesystem at `mount_point`.
@@ -120,7 +164,7 @@ impl VfsContext {
     pub fn unmount(&self, mount_point: &str) -> Result<bool, &'static str> {
         let mut vfs = self.inner.lock();
         let mut handle_table = self.handle_table.lock();
-        let target_idx = match vfs.find_fs_index(mount_point) {
+        let target_idx = match vfs.mounted_fs_index(mount_point) {
             Some(idx) => idx,
             None => return Ok(false),
         };
@@ -153,33 +197,32 @@ impl VfsContext {
             (mount_index, fd)
         };
         // …then acquire handle_table.
-        self.handle_table.lock().insert(fd.fd, mount_index);
-        Some(fd)
+        self.register_handle(mount_index, fd)
     }
 
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
-        let mount_idx = self.handle_table.lock().find(fd).ok_or("bad fd")?;
-        vfs.read_at(mount_idx, fd, buf)
+        let handle = self.handle_table.lock().find(fd).ok_or("bad fd")?;
+        vfs.read_at(handle.mount_index, handle.local_fd, buf)
     }
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
         let mut vfs = self.inner.lock();
-        let mount_idx = self.handle_table.lock().find(fd).ok_or("bad fd")?;
-        vfs.write_at(mount_idx, fd, data)
+        let handle = self.handle_table.lock().find(fd).ok_or("bad fd")?;
+        vfs.write_at(handle.mount_index, handle.local_fd, data)
     }
 
     pub fn close(&self, fd: u32) -> Result<(), &'static str> {
         let mut vfs = self.inner.lock();
-        let mount_idx = self.handle_table.lock().take(fd).ok_or("bad fd")?;
-        vfs.close_at(mount_idx, fd)
+        let handle = self.handle_table.lock().take(fd).ok_or("bad fd")?;
+        vfs.close_at(handle.mount_index, handle.local_fd)
     }
 
     pub fn seek(&self, fd: u32, pos: usize) -> Result<(), &'static str> {
         let mut vfs = self.inner.lock();
-        let mount_idx = self.handle_table.lock().find(fd).ok_or("bad fd")?;
-        vfs.seek_at(mount_idx, fd, pos)
+        let handle = self.handle_table.lock().find(fd).ok_or("bad fd")?;
+        vfs.seek_at(handle.mount_index, handle.local_fd, pos)
     }
 
     pub fn create(&self, path: &str) -> Result<FileDescriptor, &'static str> {
@@ -200,8 +243,8 @@ impl VfsContext {
             (mount_index, fd)
         };
         // …then acquire handle_table.
-        self.handle_table.lock().insert(fd.fd, mount_index);
-        Ok(fd)
+        self.register_handle(mount_index, fd)
+            .ok_or("file descriptor table full")
     }
 
     pub fn mkdir(&self, path: &str) -> Result<(), &'static str> {
@@ -224,6 +267,19 @@ impl VfsContext {
 
     pub fn exists(&self, path: &str) -> bool {
         self.inner.lock().exists(path)
+    }
+
+    fn register_handle(
+        &self,
+        mount_index: usize,
+        descriptor: FileDescriptor,
+    ) -> Option<FileDescriptor> {
+        let local_fd = descriptor.fd;
+        let registered = { self.handle_table.lock().insert(descriptor, mount_index) };
+        if registered.is_none() {
+            let _ = self.inner.lock().close_at(mount_index, local_fd);
+        }
+        registered
     }
 }
 
@@ -431,4 +487,56 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
         _inner: inner_guard,
         _handle_table: handle_table_guard,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handle_table_assigns_unique_descriptors_to_local_fd_collisions() {
+        let mut table = HandleTable::new();
+        let local_descriptor = FileDescriptor {
+            fd: 0,
+            ino: 1,
+            offset: 0,
+            flags: 0,
+        };
+
+        let first = table.insert(local_descriptor.clone(), 0).unwrap();
+        let second = table.insert(local_descriptor, 1).unwrap();
+
+        assert_ne!(first.fd, second.fd);
+        let first_location = table.find(first.fd).unwrap();
+        let second_location = table.find(second.fd).unwrap();
+        assert_eq!(first_location.mount_index, 0);
+        assert_eq!(first_location.local_fd, 0);
+        assert_eq!(second_location.mount_index, 1);
+        assert_eq!(second_location.local_fd, 0);
+    }
+
+    #[test]
+    fn vfs_context_routes_colliding_local_descriptors_to_their_mounts() {
+        let context = VfsContext::new();
+        context.mkdir("/mnt").unwrap();
+        context
+            .mount("/mnt", Box::new(MemFileSystem::new()))
+            .unwrap();
+
+        let root_file = context.create("/root-file").unwrap();
+        let mounted_file = context.create("/mnt/mounted-file").unwrap();
+        assert_ne!(root_file.fd, mounted_file.fd);
+
+        context.write(root_file.fd, b"root").unwrap();
+        context.write(mounted_file.fd, b"mounted").unwrap();
+        context.seek(root_file.fd, 0).unwrap();
+        context.seek(mounted_file.fd, 0).unwrap();
+
+        let mut root_data = [0; 4];
+        let mut mounted_data = [0; 7];
+        context.read(root_file.fd, &mut root_data).unwrap();
+        context.read(mounted_file.fd, &mut mounted_data).unwrap();
+        assert_eq!(&root_data, b"root");
+        assert_eq!(&mounted_data, b"mounted");
+    }
 }
