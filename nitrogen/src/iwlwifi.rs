@@ -1079,12 +1079,25 @@ impl IwlWifiDevice {
                     // Strip 802.11 header and LLC/SNAP
                     let llc_offset = 24;
                     if frame.len() > llc_offset + 8 {
-                        let _ether_type = u16::from_be_bytes([
+                        let ether_type = u16::from_be_bytes([
                             frame[llc_offset + 6],
                             frame[llc_offset + 7],
                         ]);
                         let data = &frame[llc_offset + 8..];
-                        self.rx_queue.push_back(data.to_vec());
+                        if ether_type == 0x888E {
+                            // Route EAPOL frames to the WPA supplicant
+                            if self.wpa.state == bonder::wpa::WpaState::WaitMsg1 {
+                                if let Ok(reply) = self.wpa.handle_message_1(data) {
+                                    let _ = self.send_raw_80211_frame(&reply);
+                                }
+                            } else if self.wpa.state == bonder::wpa::WpaState::WaitMsg3 {
+                                if let Ok(reply) = self.wpa.handle_message_3(data) {
+                                    let _ = self.send_raw_80211_frame(&reply);
+                                }
+                            }
+                        } else {
+                            self.rx_queue.push_back(data.to_vec());
+                        }
                     }
                 }
             }
@@ -1104,11 +1117,17 @@ impl IwlWifiDevice {
         while self.rx_tail != self.rx_head {
             let desc = &self.rx_dma_ring[self.rx_tail % RX_QUEUE_SIZE];
             if desc.len > 0 {
-                let _len = desc.len as usize;
-                let frame_data = [0u8; MAX_FRAME_SIZE];
-                let _data: &[u8] = &frame_data;
-                // In real impl, read from DMA buffer
-                self.process_rx_frame(_data);
+                // Read the actual received frame from the DMA buffer
+                let mut frame_data = alloc::vec![0u8; desc.len as usize];
+                let dma_addr = ((desc.addr_hi as u64) << 32) | (desc.addr_lo as u64);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        dma_addr as *const u8,
+                        frame_data.as_mut_ptr(),
+                        desc.len as usize,
+                    );
+                }
+                self.process_rx_frame(&frame_data);
             }
             self.rx_tail = self.rx_tail.wrapping_add(1);
         }

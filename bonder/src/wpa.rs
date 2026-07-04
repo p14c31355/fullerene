@@ -145,7 +145,12 @@ impl WpaSupplicant {
 
         for (i, chunk) in snonce.chunks_mut(8).enumerate() {
             let mut val = 0u64;
-            let success = unsafe { core::arch::x86_64::_rdrand64_step(&mut val) };
+            #[cfg(target_arch = "x86_64")]
+            let success = unsafe {
+                core::arch::x86_64::_rdrand64_step(&mut val)
+            };
+            #[cfg(not(target_arch = "x86_64"))]
+            let success = 0;
             if success == 0 {
                 // Fallback to TSC if RDRAND is not supported or fails
                 let tsc = unsafe { core::arch::x86_64::_rdtsc() };
@@ -201,8 +206,8 @@ impl WpaSupplicant {
         let mut msg = Vec::new();
 
         // EAPOL header
-        msg.push(0x03); // EAPOL-Key
-        msg.push(0xFE); // Key Descriptor Version (WPA2)
+        msg.push(0x03); // EAPOL Version (802.1X-2010)
+        msg.push(0x03); // EAPOL Packet Type (EAPOL-Key)
         msg.extend_from_slice(&[0x00, 0x00]); // Length placeholder
 
         // Key Descriptor Type
@@ -256,15 +261,15 @@ impl WpaSupplicant {
         }
 
         // Verify MIC
-        let key_data_len = u16::from_be_bytes([frame[95], frame[96]]);
-        let key_data_end = 97 + key_data_len as usize;
+        let key_data_len = u16::from_be_bytes([frame[93], frame[94]]);
+        let key_data_end = 95 + key_data_len as usize;
         if frame.len() < key_data_end {
             return Err("Frame too short for key data");
         }
 
         // Extract GTK from key data (simplified - in real impl, parse KDE)
         if key_data_len >= 24 {
-            let gtk_start: usize = 97 + 8; // Skip KDE header
+            let gtk_start: usize = 95 + 8; // Skip KDE header
             let gtk_len: usize = core::cmp::min(32, (key_data_len.saturating_sub(8)) as usize);
             if gtk_start + gtk_len <= frame.len() {
                 self.gtk[..gtk_len].copy_from_slice(&frame[gtk_start..gtk_start + gtk_len]);
@@ -281,8 +286,8 @@ impl WpaSupplicant {
     fn build_message_4(&mut self) -> Vec<u8> {
         let mut msg = Vec::new();
 
-        msg.push(0x03); // EAPOL-Key
-        msg.push(0xFE);
+        msg.push(0x03); // EAPOL Version (802.1X-2010)
+        msg.push(0x03); // EAPOL Packet Type (EAPOL-Key)
         msg.extend_from_slice(&[0x00, 0x00]); // Length placeholder
 
         msg.push(0x02); // WPA2 Key Descriptor

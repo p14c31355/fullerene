@@ -554,7 +554,7 @@ fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
 
 /// Handle keyboard input when the password dialog is open.
 fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
-    static mut SHIFT_HELD: bool = false;
+    static SHIFT_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     let action = match scancode {
         0x1C => {
             if !pressed { return; }
@@ -570,7 +570,7 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool
         }
         // Shift keys
         0x2A | 0x36 => {
-            unsafe { SHIFT_HELD = pressed; }
+            SHIFT_HELD.store(pressed, core::sync::atomic::Ordering::Relaxed);
             return;
         }
         // Alphanumeric and symbol keys
@@ -578,7 +578,7 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool
             if !pressed { return; }
             let mut ch = scancode_to_ascii(scancode);
             if ch != 0 {
-                if unsafe { SHIFT_HELD } {
+                if SHIFT_HELD.load(core::sync::atomic::Ordering::Relaxed) {
                     // Simple uppercase conversion for a-z
                     if ch >= b'a' && ch <= b'z' {
                         ch = ch - b'a' + b'A';
