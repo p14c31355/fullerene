@@ -253,7 +253,7 @@ impl<T> UserPtr<T> {
     /// and that the user buffer is writable.
     pub unsafe fn copy_to_user(&self, val: T) -> SystemResult<()> {
         unsafe {
-            core::ptr::write_volatile(self.ptr as *mut T, val);
+            core::ptr::write_unaligned(self.ptr as *mut T, val);
         }
         Ok(())
     }

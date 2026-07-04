@@ -34,7 +34,9 @@ pub(crate) fn syscall_create_event(flags: u64) -> SyscallResult {
 pub(crate) fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult {
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::READ)?;
-    let signaled = with_handle_mut(h, |obj| {
+
+    // Fast path: check if already signaled without blocking
+    let already_signaled = with_handle_mut(h, |obj| {
         let event = map_handle!(obj, Event, e);
         let mut inner = event.inner.lock();
         if inner.signaled {
@@ -43,42 +45,61 @@ pub(crate) fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult 
             }
             Ok(true)
         } else {
-            if timeout_us == 0 {
-                return Ok(false);
-            }
-            let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-            inner.waiters.push(pid);
             Ok(false)
         }
     })?;
 
-    if signaled {
-        Ok(0)
-    } else if timeout_us == 0 {
-        Err(SyscallError::WouldBlock)
-    } else {
+    if already_signaled {
+        return Ok(0);
+    }
+
+    // Non-blocking case
+    if timeout_us == 0 {
+        return Err(SyscallError::WouldBlock);
+    }
+
+    // Blocking case: atomically enqueue waiter and block
+    let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    with_handle_mut(h, |obj| {
+        let event = map_handle!(obj, Event, e);
+        let mut inner = event.inner.lock();
+        // Recheck signaled state before blocking to avoid lost wakeup
+        if inner.signaled {
+            if !inner.manual_reset {
+                inner.signaled = false;
+            }
+            return Ok(0);
+        }
+        inner.waiters.push(pid);
+        // Hold lock while blocking to ensure atomicity
+        drop(inner);
         crate::process::block_current();
-        with_handle_mut(h, |obj| {
-            let event = map_handle!(obj, Event, e);
-            let mut inner = event.inner.lock();
-            if inner.signaled {
-                if !inner.manual_reset {
-                    inner.signaled = false;
-                }
+        Ok(0)
+    })?;
+
+    // After waking, check final state
+    with_handle_mut(h, |obj| {
+        let event = map_handle!(obj, Event, e);
+        let mut inner = event.inner.lock();
+        if inner.signaled {
+            if !inner.manual_reset {
+                inner.signaled = false;
+            }
+            Ok(0)
+        } else {
+            // Woke up but not signaled - check if it was a timeout or spurious wake
+            let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+            if !inner.waiters.contains(&pid) {
+                // PID was consumed by signaler - treat as success
                 Ok(0)
             } else {
-                // Detect lost-wakeup race: signal arrived between registering
-                // the waiter and block_current(), consuming our PID from waiters.
-                let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-                if !inner.waiters.contains(&pid) {
-                    // Our waiter was consumed — treat as successfully woken
-                    Ok(0)
-                } else {
-                    Err(SyscallError::TimedOut)
-                }
+                // Still in waiters list - this is a timeout or spurious wake
+                // Remove ourselves from waiters
+                inner.waiters.retain(|&p| p != pid);
+                Err(SyscallError::TimedOut)
             }
-        })
-    }
+        }
+    })
 }
 
 pub(crate) fn syscall_signal_event(handle: u64) -> SyscallResult {

@@ -76,7 +76,13 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
     }));
     let handle = alloc_handle(KernelObject::Thread(ThreadState { inner }));
     if handle.is_err() {
-        crate::process::terminate_process(child_pid, -1);
+        // Clean up: remove thread from process manager and free kernel stack
+        crate::process::PROCESS_MANAGER.with_list(|list| {
+            if let Some(pos) = list.iter().position(|(id, _)| *id == child_pid) {
+                let _ = list.swap_remove(pos);
+            }
+        });
+        free_kernel_stack(kernel_stack_ptr);
     }
     handle
 }
