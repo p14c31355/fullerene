@@ -463,11 +463,18 @@ impl IwlWifiDevice {
 
         // Hold the CPU in reset while we upload sections
         unsafe {
+            // Clear INIT_DONE first
+            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp & !0x04, // clear INIT_DONE (bit 2)
+            );
+            // Assert SW_RESET to hold CPU
             core::ptr::write_volatile(
                 self.mmio.add(CSR_RESET as usize),
                 0x00000080, // CSR_RESET_REG_FLAG_SW_RESET
             );
-            for _ in 0..200 {
+            for _ in 0..500 {
                 core::hint::spin_loop();
             }
         }
@@ -582,9 +589,38 @@ impl IwlWifiDevice {
             );
         }
 
-        // 4. Wait for the ALIVE interrupt
-        log::info!("iwlwifi: waiting for alive...");
-        self.wait_for_alive()?;
+        // 4. Unmask ALIVE interrupt (bit 0) so the hardware can signal it
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_INT_MASK as usize),
+                !(1u32 << 0), // unmask only ALIVE
+            );
+        }
+
+        // 5. Wait for the ALIVE interrupt (or MAC_SLEEP clearing)
+        let alive = self.wait_for_alive();
+        if alive.is_err() {
+            // Diagnostic: dump key registers to understand hardware state
+            unsafe {
+                let csr_int = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
+                let csr_gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
+                let csr_ucode = core::ptr::read_volatile(self.mmio.add(CSR_UCODE_GP1 as usize));
+                let csr_reset = core::ptr::read_volatile(self.mmio.add(CSR_RESET as usize));
+                log::info!(
+                    "iwlwifi: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x}",
+                    csr_int, csr_gp, csr_ucode, csr_reset
+                );
+            }
+        }
+        alive?;
+
+        // Restore full mask after alive
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_INT_MASK as usize),
+                0xFFFFFFFFu32,
+            );
+        }
 
         self.fw_state = FwState::Ready;
         log::info!("iwlwifi: firmware alive and ready");
