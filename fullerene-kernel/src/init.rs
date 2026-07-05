@@ -125,6 +125,19 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");
             Ok(())
         }),
+        petroleum::init_step!("PAT", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PAT step start\n");
+            if !crate::memory_management::configure_framebuffer_pat() {
+                petroleum::write_serial_bytes(
+                    0x3F8,
+                    0x3FD,
+                    b"[init] PAT unavailable; GOP framebuffer disabled\n",
+                );
+                unsafe { crate::graphics::discovery::STORED_FB_PHYS = 0 };
+            }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PAT step done\n");
+            Ok(())
+        }),
         petroleum::init_step!("Graphics", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Graphics step start\n");
             crate::graphics::init_graphics();

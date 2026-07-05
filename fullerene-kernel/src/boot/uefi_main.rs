@@ -41,10 +41,6 @@ pub unsafe extern "C" fn efi_main_stage2(
             options(nomem, preserves_flags)
         );
         debug_serial(b"S2: Entering efi_main_stage2\n");
-        if !crate::memory_management::configure_framebuffer_pat() {
-            debug_serial(b"S2: PAT unavailable; GOP framebuffer disabled\n");
-            crate::graphics::discovery::STORED_FB_PHYS = 0;
-        }
 
         // Store args_ptr where it survives register clobbers.
         petroleum::early::transition::KERNEL_ARGS = args_ptr;

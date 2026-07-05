@@ -418,12 +418,32 @@ pub unsafe extern "C" fn init_and_jump(
             .expect("full 64GB huge page higher-half map failed");
         crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
 
-        // NOTE: The framebuffer is deliberately NOT mapped as 4KB pages here.
-        // The boot-phase 2MB huge-page identity+higher-half mappings (steps 1/1b)
-        // already cover it.  Splitting those huge pages into 4KB entries for the
-        // framebuffer breaks the mapping on InsydeH2O firmware (see docs/HARDWARE.md
-        // Fix #3).  The kernel's build_renderer_from_stored() later maps the
-        // framebuffer with proper WC attributes via the higher-half window.
+        // Map the framebuffer with 4KB WC entries so the kernel can write to it
+        // with write-combining semantics.  On some firmware (InsydeH2O) this huge
+        // page split can break the mapping, so we treat failure as non-fatal.
+        if _framebuffer_phys != 0 && _framebuffer_size != 0 {
+            let fb_start = _framebuffer_phys & !(PAGE_SIZE_4K - 1);
+            let fb_offset = _framebuffer_phys - fb_start;
+            let fb_pages = (fb_offset + _framebuffer_size).div_ceil(PAGE_SIZE_4K);
+            // UC (PCD=1, PWT=1 → PAT entry 3, default UC-) — always safe
+            // with any MTRR, avoids #GP on Broadwell where WC can fault.
+            let fb_flags = flags
+                | PageTableFlags::NO_EXECUTE
+                | PageTableFlags::NO_CACHE
+                | PageTableFlags::WRITE_THROUGH;
+            let _ = memory_ops.map_range_4k(
+                VirtAddr::new(fb_start),
+                PhysAddr::new(fb_start),
+                fb_pages,
+                fb_flags,
+            );
+            let _ = memory_ops.map_range_4k(
+                VirtAddr::new(physical_memory_offset.as_u64() + fb_start),
+                PhysAddr::new(fb_start),
+                fb_pages,
+                fb_flags,
+            );
+        }
 
         // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
         // These replace the existing HUGE_PAGE entries with proper L1 tables.
