@@ -187,6 +187,7 @@ pub(crate) fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallR
 }
 
 pub(crate) fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> SyscallResult {
+    let count = count.min(65536);
     petroleum::validate_syscall_fd(fd)?;
     if count == 0 {
         return Ok(0);
