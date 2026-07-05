@@ -469,8 +469,4 @@ impl UsbBus {
         pending
     }
 
-    /// Deprecated alias for poll_all_xhci().
-    pub fn poll_all(&mut self) -> Vec<(usize, usize)> {
-        self.poll_all_xhci()
-    }
 }
