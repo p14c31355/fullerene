@@ -155,9 +155,7 @@ pub fn validate_user_range(addr: *const u8, len: usize, writable: bool) -> Resul
 
     // Walk pages
     let page_start = start.align_down(4096u64);
-    let page_end = VirtAddr::try_new(end.as_u64() + 4095)
-        .map_err(|_| SystemError::InvalidArgument)?
-        .align_down(4096u64);
+    let page_end = end.align_down(4096u64);
     let num_pages = ((page_end - page_start) / 4096) + 1;
 
     for i in 0..num_pages {
