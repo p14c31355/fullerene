@@ -331,8 +331,8 @@ pub unsafe extern "C" fn init_and_jump(
         let map_phys_addr = args.map_phys_addr;
         let map_size = args.map_size;
         let l4_phys_addr = l4_phys_reg;
-        let framebuffer_phys = args.framebuffer_phys;
-        let framebuffer_size = args.framebuffer_size;
+        let _framebuffer_phys = args.framebuffer_phys;
+        let _framebuffer_size = args.framebuffer_size;
 
         crate::serial::_print(format_args!("IAJ: entered\n"));
         // Log the physical address of this function to verify it's within the identity map range
@@ -418,30 +418,12 @@ pub unsafe extern "C" fn init_and_jump(
             .expect("full 64GB huge page higher-half map failed");
         crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
 
-        if framebuffer_phys != 0 && framebuffer_size != 0 {
-            let fb_start = framebuffer_phys & !(PAGE_SIZE_4K - 1);
-            let fb_offset = framebuffer_phys - fb_start;
-            let fb_pages = (fb_offset + framebuffer_size).div_ceil(PAGE_SIZE_4K);
-            let fb_flags = flags
-                | PageTableFlags::NO_EXECUTE
-                | PageTableFlags::WRITE_THROUGH;
-            memory_ops
-                .map_range_4k(
-                    VirtAddr::new(fb_start),
-                    PhysAddr::new(fb_start),
-                    fb_pages,
-                    fb_flags,
-                )
-                .expect("framebuffer identity map failed");
-            memory_ops
-                .map_range_4k(
-                    VirtAddr::new(physical_memory_offset.as_u64() + fb_start),
-                    PhysAddr::new(fb_start),
-                    fb_pages,
-                    fb_flags,
-                )
-                .expect("framebuffer higher-half map failed");
-        }
+        // NOTE: The framebuffer is deliberately NOT mapped as 4KB pages here.
+        // The boot-phase 2MB huge-page identity+higher-half mappings (steps 1/1b)
+        // already cover it.  Splitting those huge pages into 4KB entries for the
+        // framebuffer breaks the mapping on InsydeH2O firmware (see docs/HARDWARE.md
+        // Fix #3).  The kernel's build_renderer_from_stored() later maps the
+        // framebuffer with proper WC attributes via the higher-half window.
 
         // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
         // These replace the existing HUGE_PAGE entries with proper L1 tables.
