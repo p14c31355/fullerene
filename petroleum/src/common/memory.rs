@@ -97,8 +97,9 @@ fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
     if !p4e.flags().contains(PageTableFlags::PRESENT) {
         return None;
     }
-    if p4e.flags().contains(PageTableFlags::HUGE_PAGE) {
-        return Some(p4e.flags());
+    let mut flags = p4e.flags();
+    if flags.contains(PageTableFlags::HUGE_PAGE) {
+        return Some(flags);
     }
 
     let p3_ptr = (p4e.addr().as_u64() as usize + offset) as *const PageTable;
@@ -107,8 +108,9 @@ fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
     if !p3e.flags().contains(PageTableFlags::PRESENT) {
         return None;
     }
-    if p3e.flags().contains(PageTableFlags::HUGE_PAGE) {
-        return Some(p3e.flags());
+    flags = flags & p3e.flags();
+    if flags.contains(PageTableFlags::HUGE_PAGE) {
+        return Some(flags);
     }
 
     let p2_ptr = (p3e.addr().as_u64() as usize + offset) as *const PageTable;
@@ -117,8 +119,9 @@ fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
     if !p2e.flags().contains(PageTableFlags::PRESENT) {
         return None;
     }
-    if p2e.flags().contains(PageTableFlags::HUGE_PAGE) {
-        return Some(p2e.flags());
+    flags = flags & p2e.flags();
+    if flags.contains(PageTableFlags::HUGE_PAGE) {
+        return Some(flags);
     }
 
     let p1_ptr = (p2e.addr().as_u64() as usize + offset) as *const PageTable;
@@ -127,7 +130,8 @@ fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
     if !p1e.flags().contains(PageTableFlags::PRESENT) {
         return None;
     }
-    Some(p1e.flags())
+    flags = flags & p1e.flags();
+    Some(flags)
 }
 
 /// Validate that the given user-space address range is fully mapped and

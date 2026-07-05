@@ -111,16 +111,7 @@ pub(crate) fn syscall_join_thread(handle: u64) -> SyscallResult {
                 if let Some(exit_code) = inner.exit_code {
                     Ok(exit_code as u64)
                 } else {
-                    // Detect lost-wakeup race: exit_thread consumed our PID
-                    // from waiters before block_current() completed.
-                    let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-                    if !inner.waiters.contains(&pid) {
-                        // exit_code was written then consumed — re-read
-                        inner.exit_code.map(|ec| ec as u64)
-                            .ok_or(SyscallError::NoSuchProcess)
-                    } else {
-                        Err(SyscallError::NoSuchProcess)
-                    }
+                    Err(SyscallError::NoSuchProcess)
                 }
             })
         }

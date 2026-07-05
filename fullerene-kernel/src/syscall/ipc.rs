@@ -28,7 +28,6 @@ pub(crate) fn syscall_channel_send(handle: u64, data_ptr: *const u8, data_size: 
         return Err(SyscallError::InvalidArgument);
     }
 
-    petroleum::validate_user_buffer(data_ptr as usize, size, false)?;
     let slice = UserSlice::new(data_ptr as *mut u8, size, false)
         .map_err(|_| SyscallError::InvalidArgument)?;
 

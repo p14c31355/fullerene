@@ -47,12 +47,13 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         let manager = manager_guard.as_mut().ok_or(SyscallError::OutOfMemory)?;
 
         let ptm = &mut manager.page_table_manager;
-        let alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-        petroleum::page_table::PageTableHelper::clone_page_table(
-            ptm,
-            parent_page_table_phys_addr.as_u64() as usize,
-            alloc,
-        )?
+        petroleum::page_table::constants::with_frame_allocator(|alloc| {
+            petroleum::page_table::PageTableHelper::clone_page_table(
+                ptm,
+                parent_page_table_phys_addr.as_u64() as usize,
+                alloc,
+            )
+        })?
     };
 
     let cloned_pml4_frame = x86_64::structures::paging::PhysFrame::containing_address(

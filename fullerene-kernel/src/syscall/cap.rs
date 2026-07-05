@@ -10,6 +10,10 @@ pub(crate) fn syscall_handle_transfer(target_pid: u64, handle: u64) -> SyscallRe
     check_handle_permission(h, HandlePerms::TRANSFER)?;
     let target = process::ProcessId(target_pid);
 
+    if process::PROCESS_MANAGER.with_process(target, |_| {}).is_none() {
+        return Err(SyscallError::NoSuchProcess);
+    }
+
     let mut obj = Some(with_current_handle_table(|ht| {
         ht.remove(h).ok_or(SyscallError::BadHandle)
     })?);

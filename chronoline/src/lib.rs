@@ -192,7 +192,7 @@ impl ChronoLine {
                     timer
                         .deadline
                         .ticks()
-                        .saturating_add(interval_ticks.saturating_mul(timer.missed_ticks)),
+                        .saturating_add(interval_ticks.saturating_mul(missed)),
                 ),
                 TimerPolicy::FixedDelay => {
                     Deadline::new(self.now.saturating_add(interval_ticks))
@@ -506,20 +506,16 @@ mod tests {
         let t = cl.pop_expired().unwrap();
         assert_eq!(t.id, TimerId(1));
         assert_eq!(t.missed_ticks, 2);
-        // FixedRate reschedules at deadline + interval * missed = 10 + 20 = 30
-        assert_eq!(cl.next_deadline(), Some(Deadline(30)));
+        // FixedRate advances by interval * missed=5 = 50: deadline 10 + 50 = 60
+        // (skips the 3 unhandled ticks rather than cascading immediate expirations)
+        assert_eq!(cl.next_deadline(), Some(Deadline(60)));
 
-        let t = cl.pop_expired().unwrap();
-        assert_eq!(t.id, TimerId(1));
-        assert_eq!(t.missed_ticks, 2);
-        // After handling ticks at 30 and 40, next at 30 + 20 = 50
-        assert_eq!(cl.next_deadline(), Some(Deadline(50)));
-
+        cl.tick(60);
         let t = cl.pop_expired().unwrap();
         assert_eq!(t.id, TimerId(1));
         assert_eq!(t.missed_ticks, 1);
-        // Next deadline at 50 + 10 = 60
-        assert_eq!(cl.next_deadline(), Some(Deadline(60)));
+        // Next deadline at current(60) + interval = 70
+        assert_eq!(cl.next_deadline(), Some(Deadline(70)));
     }
 
     #[test]

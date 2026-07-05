@@ -58,9 +58,9 @@ pub(crate) fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult 
         return Err(SyscallError::WouldBlock);
     }
 
-    // Blocking case: atomically enqueue waiter and block
+    // Enqueue waiter (must drop handle_table lock before block_current)
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-    with_handle_mut(h, |obj| {
+    let should_block = with_handle_mut(h, |obj| {
         let event = map_handle!(obj, Event, e);
         let mut inner = event.inner.lock();
         // Recheck signaled state before blocking to avoid lost wakeup
@@ -68,14 +68,15 @@ pub(crate) fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult 
             if !inner.manual_reset {
                 inner.signaled = false;
             }
-            return Ok(0);
+            return Ok(false);
         }
         inner.waiters.push(pid);
-        // Hold lock while blocking to ensure atomicity
-        drop(inner);
-        crate::process::block_current();
-        Ok(0)
+        Ok(true)
     })?;
+
+    if should_block {
+        crate::process::block_current();
+    }
 
     // After waking, check final state
     with_handle_mut(h, |obj| {
