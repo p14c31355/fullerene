@@ -58,7 +58,7 @@ fn stage_color(stage: u8) -> u32 {
         0   => 0x00_00_00_FF,  // bright red
         1   => 0x00_00_00_44,  // dark blue
         2   => 0x00_00_00_88,  // blue
-        3   => 0x00_00_88_88,  // cyan
+        3   => 0x00_88_88_00,  // cyan
         4   => 0x00_00_44_00,  // dark green
         5   => 0x00_00_88_00,  // green
         6   => 0x00_00_88_44,  // yellow-green
