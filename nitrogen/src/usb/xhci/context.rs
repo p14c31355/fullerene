@@ -287,7 +287,7 @@ impl XhciContext {
 
         for port_idx in 0..self.ports.n_ports {
             let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-            let ready = ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc);
+            let ready = ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc, false);
             if ready {
                 log::info!("xHCI: port {} ready after init_ports", port_idx);
             } else {
@@ -452,7 +452,7 @@ impl XhciContext {
 
         for port_idx in 0..self.ports.n_ports {
             let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
-            ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc);
+            ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc, false);
         }
     }
 
@@ -553,19 +553,20 @@ impl XhciContext {
 
         let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
 
-        // Use the unified port-ready helper (handles PP, Compliance, RxDetect,
-        // WPR/PR, and PP toggle).  For callers that need WPR tracking, mark it
-        // beforehand so the helper doesn't double-attempt WPR.
-        if is_usb3 && !op.portsc(port_idx).ccs() {
-            let wpr_done = self.ports.get(port_idx).map(|p| p.wpr_attempted).unwrap_or(true);
-            if !wpr_done {
-                if let Some(p) = self.ports.get_mut(port_idx) {
-                    p.wpr_attempted = true;
-                }
+        // Determine whether WPR was already attempted for this port on this
+        // connect cycle, so ensure_port_ready skips Phase-4 WPR.
+        let wpr_done = if is_usb3 && !op.portsc(port_idx).ccs() {
+            self.ports.get(port_idx).map(|p| p.wpr_attempted).unwrap_or(true)
+        } else {
+            true
+        };
+        if !wpr_done {
+            if let Some(p) = self.ports.get_mut(port_idx) {
+                p.wpr_attempted = true;
             }
         }
 
-        if ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc) {
+        if ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc, wpr_done) {
             return true;
         }
 
@@ -573,7 +574,7 @@ impl XhciContext {
         if op.usbsts() & USBSTS_HSE != 0 {
             op.clear_usbsts_bits(USBSTS_HSE);
             super::port::delay_ms(300);
-            if ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc) {
+            if ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc, wpr_done) {
                 return true;
             }
         }

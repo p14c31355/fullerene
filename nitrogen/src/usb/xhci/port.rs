@@ -362,7 +362,7 @@ pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
 /// - For USB 2.0 ports: sets PP=1 (if PPC), waits for CCS up to ~2s.
 ///   USB 2.0 ports DON'T need RxDetect/PLS writes.
 /// - Returns true if CCS=1 after all recovery attempts.
-pub fn ensure_port_ready(op: &OperationalRegisters, port_idx: u32, is_usb3: bool, ppc: bool) -> bool {
+pub fn ensure_port_ready(op: &OperationalRegisters, port_idx: u32, is_usb3: bool, ppc: bool, wpr_attempted: bool) -> bool {
     let ps = op.portsc(port_idx);
     if ps.ccs() && ps.ped() {
         return true;
@@ -412,8 +412,9 @@ pub fn ensure_port_ready(op: &OperationalRegisters, port_idx: u32, is_usb3: bool
         return true;
     }
 
-    // Phase 4: Warm Port Reset for USB 3.0, Port Reset for CCS=1/PED=0
-    if is_usb3 && !ccs_seen && op.portsc(port_idx).pp() {
+    // Phase 4: Warm Port Reset for USB 3.0 (only once per connect attempt),
+    // Port Reset for CCS=1/PED=0
+    if is_usb3 && !ccs_seen && op.portsc(port_idx).pp() && !wpr_attempted {
         let _ = warm_port_reset(op, port_idx);
         ccs_seen = op.portsc(port_idx).ccs();
     } else if ccs_seen && !op.portsc(port_idx).ped() {
