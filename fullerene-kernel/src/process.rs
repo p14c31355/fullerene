@@ -72,10 +72,10 @@ impl Default for ProcessContext {
             rip: 0,
             segments: [
                 // Use fallback segment selectors if GDT not ready
-                crate::gdt::code_selector()
+                crate::gdt::code()
                     .as_ref()
                     .map_or(1, |s| s.0 as u64), // cs
-                crate::gdt::kernel_data_selector_fallback()
+                crate::gdt::kernel_data()
                     .as_ref()
                     .map_or(2, |s| s.0 as u64), // ss
                 0,
@@ -375,20 +375,20 @@ impl Process {
         if self.is_user {
             // For user processes, the context RSP should be the user stack
             self.context.regs[7] = self.user_stack.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::user_code_selector_fallback()
+            self.context.segments[0] = crate::gdt::user_code()
                 .as_ref()
                 .map_or(1, |s| s.0 as u64); // cs
-            self.context.segments[1] = crate::gdt::user_data_selector_fallback()
+            self.context.segments[1] = crate::gdt::user_data()
                 .as_ref()
                 .map_or(2, |s| s.0 as u64); // ss
         } else {
             // For kernel processes, the context RSP is the kernel stack
             self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::code_selector()
+            self.context.segments[0] = crate::gdt::code()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(1); // cs
-            self.context.segments[1] = crate::gdt::kernel_data_selector_fallback()
+            self.context.segments[1] = crate::gdt::kernel_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(2); // ss
@@ -554,11 +554,11 @@ pub fn init(heap_start: usize, heap_end: usize) {
             rflags: 0x0202,
             rip: idle_addr.as_u64(),
             segments: [
-                crate::gdt::code_selector()
+                crate::gdt::code()
                     .as_ref()
                     .map(|s| s.0 as u64)
                     .unwrap_or(1),
-                crate::gdt::kernel_data_selector_fallback()
+                crate::gdt::kernel_data()
                     .as_ref()
                     .map(|s| s.0 as u64)
                     .unwrap_or(2),

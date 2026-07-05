@@ -108,7 +108,7 @@ pub fn setup_syscall() {
     // Set STAR MSR for CS/SS switching
     // Use fallback selectors if GDT not yet fully initialized
     let user_cs = crate::gdt::user_code_selector_checked().0 as u64;
-    let kernel_cs = crate::gdt::kernel_code_selector_checked().0 as u64;
+    let kernel_cs = crate::gdt::code_selector_checked().0 as u64;
     let star_value = (user_cs << 48) | (kernel_cs << 32);
     mem_debug!("Syscall: writing STAR\n");
     unsafe {

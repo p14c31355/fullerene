@@ -1,5 +1,3 @@
-use alloc::vec;
-
 use crate::map_handle;
 use petroleum::common::memory::UserSlice;
 

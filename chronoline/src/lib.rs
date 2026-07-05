@@ -3,7 +3,6 @@
 extern crate alloc;
 
 use alloc::collections::BinaryHeap;
-use alloc::vec::Vec;
 
 pub trait ClockSource {
     fn now_ticks(&self) -> u64;
@@ -115,20 +114,13 @@ impl ChronoLine {
         self.max_catch_up = limit;
     }
 
-    pub fn register_auto(
-        &mut self,
-        deadline: Deadline,
-    ) -> Result<TimerId, RegisterError> {
+    pub fn register_auto(&mut self, deadline: Deadline) -> Result<TimerId, RegisterError> {
         let id = TimerId(self.next_id);
         self.next_id += 1;
         self.register(deadline, id)
     }
 
-    pub fn register(
-        &mut self,
-        deadline: Deadline,
-        id: TimerId,
-    ) -> Result<TimerId, RegisterError> {
+    pub fn register(&mut self, deadline: Deadline, id: TimerId) -> Result<TimerId, RegisterError> {
         self.register_with_mode(deadline, id, TimerMode::OneShot)
     }
 
@@ -194,9 +186,7 @@ impl ChronoLine {
                         .ticks()
                         .saturating_add(interval_ticks.saturating_mul(missed)),
                 ),
-                TimerPolicy::FixedDelay => {
-                    Deadline::new(self.now.saturating_add(interval_ticks))
-                }
+                TimerPolicy::FixedDelay => Deadline::new(self.now.saturating_add(interval_ticks)),
             };
 
             self.timers.push(Timer {
@@ -231,10 +221,13 @@ impl ChronoLine {
     }
 
     pub fn cancel(&mut self, id: TimerId) -> bool {
-        let before = self.timers.len();
-        let keep: Vec<Timer> = self.timers.iter().filter(|t| t.id != id).copied().collect();
-        self.timers = BinaryHeap::from(keep);
-        self.timers.len() < before
+        // O(n) in-place cancellation using into_vec() + retain() + heapify.
+        // Avoids the O(n log n) old approach of alloc::vec + filter + BinaryHeap::from.
+        let len_before = self.timers.len();
+        let mut vec = core::mem::take(&mut self.timers).into_vec();
+        vec.retain(|t| t.id != id);
+        self.timers = BinaryHeap::from(vec);
+        self.timers.len() != len_before
     }
 
     pub fn next_deadline(&self) -> Option<Deadline> {
@@ -507,7 +500,6 @@ mod tests {
         assert_eq!(t.id, TimerId(1));
         assert_eq!(t.missed_ticks, 2);
         // FixedRate advances by interval * missed=5 = 50: deadline 10 + 50 = 60
-        // (skips the 3 unhandled ticks rather than cascading immediate expirations)
         assert_eq!(cl.next_deadline(), Some(Deadline(60)));
 
         cl.tick(60);

@@ -53,7 +53,8 @@ static HEAP_EXTEND_USED: Mutex<usize> = Mutex::new(0);
 
 /// # Safety
 /// Written once during boot by `MemoryDescriptorValidator`, then read-only.
-/// Single-core assumption.
+/// Single-core assumption. Only used in `cfg(target_os = "uefi")` boot path.
+#[cfg(target_os = "uefi")]
 #[unsafe(link_section = ".data")]
 pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {
