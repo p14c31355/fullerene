@@ -110,7 +110,6 @@ pub(crate) fn syscall_pipe_create(buf: *mut u64) -> SyscallResult {
             return Err(e);
         }
     };
-    let write_h = alloc_handle(KernelObject::Pipe(write_end))?;
 
     let slice = UserSlice::new(buf as *mut u8, 16, true)
         .map_err(|_| SyscallError::InvalidArgument)?;
