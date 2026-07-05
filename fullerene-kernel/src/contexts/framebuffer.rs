@@ -80,6 +80,44 @@ impl FramebufferContext {
         // setting.  Grey‑fill tests on InsydeH2O confirm that writes
         // through the identity‑mapped VA are visible on screen.
 
+        // The kernel's page-table init creates a 64 GB (0 – 0x10_0000_0000)
+        // identity + higher-half huge-page mapping.  If the framebuffer
+        // lives above that range, the identity mapping is incomplete and
+        // every pixel write will page-fault.
+        const IDENTITY_MAP_GB64: u64 = 0x10_0000_0000;
+        let fb_size_bytes = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+        let fb_end = self.fb_phys.saturating_add(fb_size_bytes);
+        if fb_end > IDENTITY_MAP_GB64 {
+            // FB extends beyond the 64 GB identity map.  Try to create a
+            // proper 4 KB WC mapping by splitting the covering huge page.
+            // This may break on InsydeH2O (see above), but is still better
+            // than silently writing to unmapped virtual memory.
+            petroleum::write_serial_bytes(
+                0x3F8, 0x3FD,
+                b"[fb] WARNING: FB above 64 GB identity map, creating 4 KB WC mapping\n",
+            );
+            let fb_pages = ((fb_size_bytes + 4095) / 4096) as usize;
+            if !crate::contexts::memory::with_memory_mut(|mem| {
+                // Split the covering 2 MB huge page and map the FB range as WC.
+                let flags = x86_64::structures::paging::PageTableFlags::NO_CACHE
+                    | x86_64::structures::paging::PageTableFlags::PRESENT
+                    | x86_64::structures::paging::PageTableFlags::WRITABLE
+                    | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+                let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+                let fb_va = self.fb_phys + off;
+                for page in 0..fb_pages {
+                    let vaddr = (fb_va + page as u64 * 4096) as usize;
+                    let paddr = (self.fb_phys + page as u64 * 4096) as usize;
+                    if mem.map_page(vaddr, paddr, flags).is_err() {
+                        return false;
+                    }
+                }
+                true
+            }).unwrap_or(false) {
+                return false; // mapping failed — bail out
+            }
+        }
+
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
         let fb_va = self.fb_phys + off;
 
