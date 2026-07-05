@@ -61,6 +61,8 @@ pub(crate) fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> 
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(buf as usize, max, false)?;
+    let slice = UserSlice::new(buf, max, true)
+        .map_err(|_| SyscallError::InvalidArgument)?;
 
     let msg: Option<Vec<u8>> = with_handle_mut(h, |obj| {
         let channel = map_handle!(obj, Channel, ch);
@@ -74,8 +76,6 @@ pub(crate) fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> 
 
     if let Some(msg) = msg {
         let copy_len = msg.len().min(max);
-        let slice = UserSlice::new(buf, max, true)
-            .map_err(|_| SyscallError::InvalidArgument)?;
         let mut kernel_buf = vec![0u8; max];
         kernel_buf[..copy_len].copy_from_slice(&msg[..copy_len]);
         unsafe { slice.copy_to_user(&kernel_buf) }
