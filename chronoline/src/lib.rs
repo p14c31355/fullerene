@@ -176,7 +176,7 @@ impl ChronoLine {
 
         if let TimerMode::Repeating { interval_ticks } = timer.mode {
             let elapsed = self.now.saturating_sub(timer.deadline.ticks());
-            let missed = elapsed / interval_ticks + 1;
+            let missed = (elapsed / interval_ticks).saturating_add(1);
             timer.missed_ticks = missed.min(timer.max_catch_up);
 
             let new_deadline = match timer.policy {
