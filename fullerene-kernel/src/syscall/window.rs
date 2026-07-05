@@ -92,9 +92,9 @@ pub(crate) fn syscall_get_window_event(handle: u64, buf: *mut u8, buf_size: usiz
 
         let has_event = kernel::with_kernel(|k| k.event.has_pending()).unwrap_or(false);
         if has_event {
-            let slice = UserSlice::new(buf, buf_size, true)
+            let slice = UserSlice::new(buf, 8, true)
                 .map_err(|_| SyscallError::InvalidArgument)?;
-            let kernel_buf = vec![0u8; buf_size];
+            let kernel_buf = [0u8; 8];
             unsafe { slice.copy_to_user(&kernel_buf) }
                 .map_err(|_| SyscallError::InvalidArgument)?;
             Ok(8)
