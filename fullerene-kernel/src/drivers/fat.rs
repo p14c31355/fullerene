@@ -312,8 +312,8 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
             return Err("buffer too small for multi-sector write");
         }
         let end_lba = (lba as u64) + (count as u64);
-        if end_lba > self.inner.total_sectors() {
-            return Err("LBA range exceeds device capacity");
+        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
+            return Err("LBA range exceeds device capacity or 32-bit limit");
         }
         for i in 0..count {
             let off = i * self.bps;
