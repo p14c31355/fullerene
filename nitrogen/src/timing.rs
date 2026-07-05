@@ -20,7 +20,7 @@ fn ticks_per_us() -> u64 {
     .or_else(|| {
         (max_leaf >= 0x16)
             .then(|| core::arch::x86_64::__cpuid(0x16).eax)
-            .and_then(|mhz| (mhz != 0).then_some(u64::from(mhz) * 1_000))
+            .and_then(|mhz| (mhz != 0).then_some(u64::from(mhz)))
     })
     .unwrap_or(5_000)
     .max(1);

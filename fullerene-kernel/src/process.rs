@@ -541,6 +541,11 @@ static IDLE_INIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 
 /// Initialize process management system
 pub fn init(heap_start: usize, heap_end: usize) {
+    // Check if already initialized
+    if IDLE_INIT.load(core::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+
     mem_debug!("Process: init start\n");
 
     let mut buf = [0u8; 16];
@@ -870,6 +875,11 @@ pub fn yield_current() {
 pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
     use crate::context_switch::switch_context;
 
+    // Early return if switching to the same process to avoid aliasing
+    if old_pid == Some(new_pid) {
+        return;
+    }
+
     // HeaplessVec never reallocates and Box<Process> elements live for the
     // process lifetime, so the `context` field address is stable while the
     // process exists.  We extract raw pointers within the lock, then use
@@ -888,7 +898,7 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
     });
     let pt = PROCESS_MANAGER.with_process(new_pid, |p| p.page_table_phys_addr).unwrap_or(PhysAddr::new(0));
 
-    if let (Some(old), Some(new)) = (old_ctx, new_ctx) {
+    if let Some(new) = new_ctx {
         if pt != PhysAddr::new(0) {
             let new_frame = PhysFrame::containing_address(pt);
             let (current_frame, _) = Cr3::read();
@@ -896,7 +906,8 @@ pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
                 unsafe { Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty()) };
             }
         }
-        unsafe { switch_context(Some(&mut *old), &*new) };
+        let old_ref = old_ctx.map(|ptr| unsafe { &mut *ptr });
+        unsafe { switch_context(old_ref, &*new) };
     }
 }
 

@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_port_context_default_all_usb2() {
-        // No bitmap → all ports default to USB 3.0
+        // No bitmap → all ports default to USB 2.0
         let ctx = PortContext::new(8, false, None);
         for p in &ctx.ports {
             assert!(!p.is_usb3, "unclassified ports must default to USB 2.0");
