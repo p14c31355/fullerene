@@ -91,72 +91,16 @@ pub unsafe extern "C" fn efi_main_stage2(
                 );
             } else {
                 // Framebuffer fields are garbage — args_ptr was not
-                // identity-mapped correctly.  Do NOT store the corrupted
-                // values; the kernel will fall back to PCI BAR0 probe.
-                debug_serial(b"S2: WARNING: KernelArgs FB fields invalid, skipping .data store (identity map mismatch?)\n");
-                // Update step marker
-                core::ptr::write_volatile(diag.add(1), 0x0004u16);
-
-                // ── PCI BAR fallback ────────────────────────────────
-                // If args_ptr was garbage, the identity huge-page mapping
-                // is broken.  Probe PCI config space via port I/O (0xCF8/
-                // 0xCFC) which needs zero memory-mapped registers, then
-                // store the discovered FB params directly.
-                //
-                // NOTE: On Intel GPUs (vendor 0x8086), BAR0 (offset 0x10)
-                // is the MMIO register space, NOT the framebuffer.  The
-                // framebuffer lives behind BAR2 (offset 0x18, GTT aperture).
-                // Other vendors (AMD, NVIDIA) typically put the framebuffer
-                // at BAR0.  We try BAR2 for Intel, BAR0 for others.
-                let mut fb_stored = false;
-                // Scan bus 0 only (VGA-class display is always on bus 0)
-                for dev in 0..=31u16 {
-                    let addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x00;
-                    x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(addr);
-                    let vendor = x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                    if (vendor & 0xFFFF) as u16 == 0xFFFF || (vendor & 0xFFFF) as u16 == 0x0000 {
-                        continue;
-                    }
-                    let class_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x08;
-                    x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(class_addr);
-                    let class_rev =
-                        x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                    let class = ((class_rev >> 24) & 0xFF) as u8;
-                    let subclass = ((class_rev >> 16) & 0xFF) as u8;
-                    if class == 0x03 && subclass == 0x00 {
-                        let vendor_id = (vendor & 0xFFFF) as u16;
-                        // Intel puts framebuffer at BAR2, most others at BAR0
-                        let fb_bar_offset = if vendor_id == 0x8086 { 0x18u32 } else { 0x10u32 };
-                        let upper_bar_offset = if vendor_id == 0x8086 { 0x1Cu32 } else { 0x14u32 };
-                        let bar_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | fb_bar_offset;
-                        x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar_addr);
-                        let bar_val =
-                            x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                        let fb_phys = if (bar_val & 0x6) == 0x4 {
-                            let bar1_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | upper_bar_offset;
-                            x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar1_addr);
-                            let bar1 =
-                                x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                            ((bar1 as u64) << 32) | ((bar_val & 0xFFFF_FFF0) as u64)
-                        } else {
-                            (bar_val & 0xFFFF_FFF0) as u64
-                        };
-                        if fb_phys >= 0x100_000 && fb_phys <= 0x10_0000_0000 {
-                            let stride = 1280u32 * 4;
-                            crate::graphics::discovery::store_boot_fb_params(
-                                fb_phys, 1280, 800, stride, 32, 1,
-                            );
-                            fb_stored = true;
-                            debug_serial(b"S2: PCI fallback FB stored\n");
-                            core::ptr::write_volatile(diag.add(1), 0x0005u16);
-                            break;
-                        }
-                    }
-                }
-                if !fb_stored {
-                    debug_serial(b"S2: PCI fallback: no VGA controller found\n");
-                    core::ptr::write_volatile(diag.add(1), 0x0006u16);
-                }
+                // identity-mapped correctly.  The .data globals were
+                // already populated correctly by uefi_entry.rs (which
+                // runs before the page-table switch and can still
+                // dereference the bootloader args safely).  Do NOT
+                // overwrite them with a PCI BAR heuristic — on Intel
+                // GPUs, BAR0 is MMIO registers (not the framebuffer)
+                // and even BAR2 (GTT aperture) gives us the aperture
+                // base, not the GOP scanout address.  Rely on the
+                // values saved earlier by uefi_entry.rs.
+                debug_serial(b"S2: WARNING: KernelArgs FB fields invalid, using .data globals from uefi_entry\n");
             }
         }
 
