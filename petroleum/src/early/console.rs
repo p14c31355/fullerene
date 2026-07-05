@@ -23,13 +23,13 @@ use spin::Mutex;
 
 // ── Serial port constants ──────────────────────────────────────────────
 const COM1_DATA: u16 = 0x3F8;
+#[cfg(not(any(feature = "std", test)))]
 const COM1_STATUS: u16 = 0x3FD;
 
 /// Write raw bytes to the serial port (blocking, with timeout).
 unsafe fn write_serial_raw(bytes: &[u8]) {
+    #[cfg(not(any(feature = "std", test)))]
     unsafe {
-        #[cfg(not(any(feature = "std", test)))]
-        {
             use x86_64::instructions::port::Port;
             let mut data = Port::<u8>::new(COM1_DATA);
             let mut status = Port::<u8>::new(COM1_STATUS);
@@ -40,12 +40,9 @@ unsafe fn write_serial_raw(bytes: &[u8]) {
                 }
                 data.write(b);
             }
-        }
-        #[cfg(any(feature = "std", test))]
-        {
-            let _ = bytes;
-        }
     }
+    #[cfg(any(feature = "std", test))]
+    let _ = bytes;
 }
 
 // ── VGA text buffer ────────────────────────────────────────────────────

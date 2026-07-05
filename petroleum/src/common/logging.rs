@@ -6,7 +6,7 @@
 // Note: log crate dependency removed to avoid std pull-in.
 // Re-export serial functions for logging.
 
-/// ── EARLY-ONLY GLOBAL STATE ─────────────────────────────────────────
+// ── EARLY-ONLY GLOBAL STATE ─────────────────────────────────────────
 // The logger is initialised during boot and its static state (`LOGGER`,
 // `LOGGER_INITIALIZED`) lives in the `.data` / `.bss` sections.
 // After the world-switch (CR3 reload), this state may become stale or

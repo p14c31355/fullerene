@@ -225,16 +225,6 @@ pub struct EfiFileInfo {
     _file_name: [u16; 1],
 }
 
-/// Structure to append framebuffer config to memory map for kernel
-#[repr(C)]
-pub struct ConfigWithMetadata {
-    pub descriptor_size: usize,
-    pub magic: u32,
-    pub config: FullereneFramebufferConfig,
-}
-
-pub const FRAMEBUFFER_CONFIG_MAGIC: u32 = 0x46424346; // "FBCF"
-
 #[repr(C)]
 pub struct EfiConfigurationTable {
     pub vendor_guid: [u8; 16],
@@ -463,69 +453,11 @@ pub fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
         }
     }
 }
-
 /// Helper function to write a string to VGA buffer at specified row
 pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
     for (i, &byte) in text.iter().enumerate() {
         if i < 80 {
             vga_buffer[row][i] = color | (byte as u16);
         }
-    }
-}
-
-pub fn find_gop_framebuffer(system_table: &EfiSystemTable) -> Option<FullereneFramebufferConfig> {
-    use core::ptr;
-
-    if system_table.boot_services.is_null() {
-        return None;
-    }
-
-    let boot_services = unsafe { &*system_table.boot_services };
-
-    // Use locate_protocol to find GOP (simpler than locate_handle)
-    let mut gop_handle: *mut EfiGraphicsOutputProtocol = ptr::null_mut();
-    let status = (boot_services.locate_protocol)(
-        EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),
-        core::ptr::null_mut(),
-        core::ptr::addr_of_mut!(gop_handle) as *mut *mut c_void,
-    );
-
-    if status != 0 {
-        return None;
-    }
-
-    if gop_handle.is_null() {
-        return None;
-    }
-
-    let gop = unsafe { &*gop_handle };
-    if gop.mode.is_null() {
-        return None;
-    }
-
-    let gop_mode = unsafe { &*gop.mode };
-    let address = gop_mode.frame_buffer_base;
-
-    if address == 0 {
-        return None;
-    }
-
-    // Get current mode info
-    if !gop_mode.info.is_null() {
-        let mode_info = unsafe { &*gop_mode.info };
-
-        Some(FullereneFramebufferConfig {
-            address,
-            width: mode_info.horizontal_resolution,
-            height: mode_info.vertical_resolution,
-            pixel_format: mode_info.pixel_format,
-            bpp: get_bpp_from_pixel_format(mode_info.pixel_format),
-            stride: (mode_info.pixels_per_scan_line as u64)
-                .checked_mul(get_bpp_from_pixel_format(mode_info.pixel_format) as u64 / 8)
-                .and_then(|s| u32::try_from(s).ok())
-                .unwrap_or(0),
-        })
-    } else {
-        None
     }
 }

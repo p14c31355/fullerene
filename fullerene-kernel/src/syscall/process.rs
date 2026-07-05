@@ -88,5 +88,5 @@ pub(crate) fn alloc_kernel_stack() -> Result<(*mut u8, VirtAddr), SyscallError> 
 
 pub(crate) fn free_kernel_stack(ptr: *mut u8) {
     let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-    petroleum::common::memory::deallocate_layout(ptr, layout);
+    unsafe { petroleum::common::memory::deallocate_layout(ptr, layout) };
 }

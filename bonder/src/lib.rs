@@ -11,7 +11,7 @@
 //!   ↓
 //! ethernet (Ethernet header)
 //!   ↓
-//! NetDevice trait → {VirtioNetDevice, E1000, LoopbackUdpDevice, ...}
+//! NetDevice trait → hardware drivers and test adapters
 //! ```
 //!
 //! Bonder does not control NICs directly.
@@ -33,10 +33,6 @@ pub mod wifi;
 pub mod wpa;
 
 /// Trait abstracting frame send/receive to a NIC.
-///
-/// Implementations:
-/// - `nitrogen::virtio::net::VirtioNetDevice` (real virtio-net hardware)
-/// - `LoopbackUdpDevice` in bonder's main (test helper using `std::net::UdpSocket`)
 ///
 /// Uses poll semantics instead of blocking recv because VirtIO RX queues are
 /// interrupt + poll hybrids. Returns `Ok(None)` when no packet is available.

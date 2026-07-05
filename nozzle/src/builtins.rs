@@ -427,7 +427,7 @@ pub fn cmd_grep(ctx: &mut CommandContext) -> bool {
 
 /// `sort` — sort lines of text
 pub fn cmd_sort(ctx: &mut CommandContext) -> bool {
-    let reverse = ctx.args.iter().any(|a| *a == "-r");
+    let reverse = ctx.args.contains(&"-r");
     // Try reading from stdin first (pipe input).
     if let Some(stdin) = ctx.terminal.take_stdin() {
         let mut lines: alloc::vec::Vec<&str> = stdin.lines().collect();

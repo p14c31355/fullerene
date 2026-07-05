@@ -20,6 +20,22 @@ pub mod process_memory;
 pub use manager::UnifiedMemoryManager;
 pub use process_memory::*;
 
+/// Reserve PAT slot 1 (PWT=1, PCD=0) for framebuffer write-combining.
+/// Bootstrap page tables use that slot only for the GOP mapping.
+pub fn configure_framebuffer_pat() -> bool {
+    if core::arch::x86_64::__cpuid(1).edx & (1 << 16) == 0 {
+        return false;
+    }
+    unsafe {
+        let mut pat_msr = x86_64::registers::model_specific::Msr::new(0x277);
+        let mut pat = pat_msr.read();
+        pat = (pat & !(0xFF << 8)) | (0x01 << 8);
+        pat_msr.write(pat);
+        x86_64::instructions::tlb::flush_all();
+    }
+    true
+}
+
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError {

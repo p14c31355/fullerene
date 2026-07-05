@@ -199,8 +199,12 @@ pub fn allocate_layout(layout: Layout) -> Result<*mut u8, SystemError> {
     }
 }
 
-/// Safe wrapper for deallocating memory with a given layout
-pub fn deallocate_layout(ptr: *mut u8, layout: Layout) {
+/// Deallocate memory returned by [`allocate_layout`].
+///
+/// # Safety
+/// `ptr` and `layout` must identify a currently allocated block from the
+/// active global allocator.
+pub unsafe fn deallocate_layout(ptr: *mut u8, layout: Layout) {
     unsafe { alloc::alloc::dealloc(ptr, layout) };
 }
 

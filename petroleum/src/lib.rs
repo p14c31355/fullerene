@@ -5,16 +5,13 @@ extern crate alloc;
 pub const FALLBACK_HEAP_START_ADDR: u64 = 0x100000;
 
 pub mod assembly;
-pub mod bare_metal_graphics_detection;
 pub mod bare_metal_pci;
 pub mod early;
 #[macro_use]
 pub mod common;
-pub mod boot;
 pub mod debug;
 pub mod filesystem;
 pub mod graphics;
-pub mod graphics_alternatives;
 pub mod hardware;
 pub mod initializer;
 pub mod page_table;
@@ -68,67 +65,6 @@ use spin::{Mutex, Once};
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
 
-/// Common QEMU framebuffer probe configurations.
-///
-/// Entries are ordered: higher-resolution variants first, then lower-resolution
-/// fallbacks.  Each address may appear twice (once per resolution); the probe
-/// loop returns the **first** match, so higher resolutions take priority.
-pub const QEMU_CONFIGS: [QemuConfig; 9] = [
-    QemuConfig {
-        address: 0xFC000000,
-        width: 1024,
-        height: 768,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xFD000000,
-        width: 1024,
-        height: 768,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xE0000000,
-        width: 1024,
-        height: 768,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xC0000000,
-        width: 1024,
-        height: 768,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xF0000000,
-        width: 1024,
-        height: 768,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xE0000000,
-        width: 800,
-        height: 600,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xF0000000,
-        width: 800,
-        height: 600,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xFD000000,
-        width: 800,
-        height: 600,
-        bpp: 32,
-    },
-    QemuConfig {
-        address: 0xC0000000,
-        width: 800,
-        height: 600,
-        bpp: 32,
-    },
-];
 
 #[derive(Clone, Copy)]
 pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);
@@ -219,12 +155,4 @@ macro_rules! get_memory_stats {
         let total = allocator.size();
         (used, total, total.saturating_sub(used))
     }};
-}
-
-#[derive(Clone, Copy)]
-pub struct QemuConfig {
-    pub address: u64,
-    pub width: u32,
-    pub height: u32,
-    pub bpp: u32,
 }

@@ -164,7 +164,7 @@ pub fn init(ctx: &dyn DriverContext) -> Option<VirtioGpuInitResult> {
     let avail_virt = ctx.phys_to_virt(avail_guard.phys()) as *mut VringAvail;
     let used_guard = ContiguousFrameGuard::allocate(ctx, 1)?;
     let used_virt = ctx.phys_to_virt(used_guard.phys()) as *mut VringUsed;
-    gpu.setup_queue(
+    unsafe { gpu.setup_queue(
         0,
         desc_virt,
         desc_guard.phys(),
@@ -172,7 +172,7 @@ pub fn init(ctx: &dyn DriverContext) -> Option<VirtioGpuInitResult> {
         avail_guard.phys(),
         used_virt,
         used_guard.phys(),
-    );
+    ) };
 
     cmd_guard.forget();
     resp_guard.forget();

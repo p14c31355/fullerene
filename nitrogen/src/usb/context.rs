@@ -43,7 +43,43 @@ impl ControllerManager {
 
     /// Scan the PCI bus and initialise every USB controller found.
     fn init_controllers(&mut self, ctx: &'static dyn DriverContext) {
-        use crate::pci::PciScanner;
+        use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
+
+        fn route_intel_ports_to_xhci(dev: &PciDevice) {
+            if dev.vendor_id != 0x8086 {
+                return;
+            }
+
+            // Panther/Wildcat Point can leave the shared physical ports routed
+            // to EHCI after the legacy semaphore hand-off. PORTSC.CCS then
+            // remains zero because xHCI does not own the wires. Route every
+            // firmware-declared switchable port before touching PORTSC.
+            const XUSB2PR: u8 = 0xD0;
+            const USB2PRM: u8 = 0xD4;
+            const USB3_PSSEN: u8 = 0xD8;
+            const USB3PRM: u8 = 0xDC;
+            let read = |offset| {
+                PciConfigSpace::read_config_dword(dev.bus, dev.device, dev.function, offset)
+            };
+            let usb2 = read(USB2PRM);
+            let usb3 = read(USB3PRM);
+            for (offset, value) in [(XUSB2PR, usb2), (USB3_PSSEN, usb3)] {
+                PciConfigSpace::write_config_dword_raw(
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    offset,
+                    value,
+                );
+            }
+            log::info!(
+                "USB: Intel routing USB2={:#x}/{:#x} USB3={:#x}/{:#x}",
+                read(XUSB2PR),
+                usb2,
+                read(USB3_PSSEN),
+                usb3,
+            );
+        }
         let mut scanner = PciScanner::new();
         let _ = scanner.scan_all_buses();
         for dev in scanner.get_devices() {
@@ -75,7 +111,7 @@ impl ControllerManager {
                         dev.device,
                         dev.function
                     );
-                    if let Some(mut hc) = EhciContext::new(mmio_virt, ctx) {
+                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx) } {
                         if hc.initialize().is_ok() {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
@@ -93,7 +129,8 @@ impl ControllerManager {
                         dev.device,
                         dev.function
                     );
-                    if let Some(mut hc) = XhciContext::new(mmio_virt, ctx) {
+                    route_intel_ports_to_xhci(dev);
+                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx) } {
                         if hc.init().is_ok() {
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));

@@ -46,12 +46,10 @@ impl TraceEvent {
         let mut message = [0u8; 32];
         let cat_bytes = cat.as_bytes();
         let msg_bytes = msg.as_bytes();
-        for i in 0..cat_bytes.len().min(8) {
-            category[i] = cat_bytes[i];
-        }
-        for i in 0..msg_bytes.len().min(32) {
-            message[i] = msg_bytes[i];
-        }
+        let category_len = cat_bytes.len().min(category.len());
+        category[..category_len].copy_from_slice(&cat_bytes[..category_len]);
+        let message_len = msg_bytes.len().min(message.len());
+        message[..message_len].copy_from_slice(&msg_bytes[..message_len]);
         Self {
             seq,
             tick,

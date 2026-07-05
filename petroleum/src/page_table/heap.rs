@@ -5,7 +5,7 @@
 //! exit_boot_services.
 
 use crate::page_table::memory_map::descriptor::MemoryMapDescriptor;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::AtomicBool;
 use x86_64::PhysAddr;
 
 /// Maximum number of memory map descriptors
@@ -60,9 +60,8 @@ pub fn is_heap_initialized() -> bool {
 /// * `ptr` - Pointer to the start of the heap memory region
 /// * `size` - Size of the heap memory region in bytes
 pub unsafe fn init_global_heap(ptr: *mut u8, size: usize) {
+    #[cfg(all(not(feature = "std"), not(test)))]
     unsafe {
-        #[cfg(all(not(feature = "std"), not(test)))]
-        {
             // Check if already initialized by testing if allocator is empty
             // (LockedHeap::empty() creates an allocator with size 0)
             if ALLOCATOR.lock().size() > 0 {
@@ -86,9 +85,10 @@ pub unsafe fn init_global_heap(ptr: *mut u8, size: usize) {
             // The heap range will be set in init_common after the world switch.
 
             // Mark as initialized
-            HEAP_INITIALIZED.store(true, Ordering::SeqCst);
-        }
+            HEAP_INITIALIZED.store(true, core::sync::atomic::Ordering::SeqCst);
     }
+    #[cfg(any(feature = "std", test))]
+    let _ = (ptr, size);
 }
 
 /// Allocate heap memory from EFI memory map
@@ -126,9 +126,8 @@ pub fn allocate_heap_from_map(start_addr: PhysAddr, heap_size: usize) -> PhysAdd
 ///
 /// Panics if the heap has not been initialized.
 pub unsafe fn extend_global_heap(additional: usize) {
+    #[cfg(all(not(feature = "std"), not(test)))]
     unsafe {
-        #[cfg(all(not(feature = "std"), not(test)))]
-        {
             let mut alloc = ALLOCATOR.lock();
             let old_top = alloc.top() as usize;
             alloc.extend(additional);
@@ -150,13 +149,9 @@ pub unsafe fn extend_global_heap(additional: usize) {
             let len = crate::serial::format_hex_to_buffer(new_top as u64, &mut buf, 16);
             crate::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
             crate::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-        }
-
-        #[cfg(any(feature = "std", test))]
-        {
-            let _ = additional;
-        }
     }
+    #[cfg(any(feature = "std", test))]
+    let _ = additional;
 }
 
 /// Return the current top address of the global heap.

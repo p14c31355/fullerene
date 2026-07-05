@@ -343,7 +343,7 @@ impl SlotManager {
 
     /// Get the input context for a slot (by converting phys→virt).
     pub fn input_ctx_mut(
-        &self,
+        &mut self,
         ctx: &dyn DriverContext,
         slot_id: u32,
     ) -> Option<&mut InputContext> {
@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_slot_manager_max() {
-        let mut mgr = SlotManager::new(1);
+        let mgr = SlotManager::new(1);
         // Cannot allocate in tests without a real DriverContext,
         // but we can check the limit.
         assert_eq!(mgr.max_slots, 1);

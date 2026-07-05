@@ -138,8 +138,7 @@ pub fn check_huge_conflict(
     virt: CanonicalVirtAddr,
     level: u8,
 ) -> Result<(), HugeError> {
-    let root_mut = unsafe { root.as_mut_for_walking() };
-    let entry = crate::page_table::raw::walker::walk(root_mut, virt, level)?;
+    let entry = crate::page_table::raw::walker::walk_read(root, virt, level)?;
 
     if entry.is_present() {
         return Err(HugeError::Conflict { level });

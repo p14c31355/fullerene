@@ -19,7 +19,7 @@
 
 pub mod discovery;
 
-use crate::contexts::kernel::{get_kernel, with_kernel, with_kernel_mut};
+use crate::contexts::kernel::{get_kernel, with_kernel_mut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 static GRAPHICS_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -49,13 +49,7 @@ pub fn init_graphics() {
     petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init_gfx] kernel lock released\n");
 
     // ── Discover framebuffer parameters ─────────────────────────
-    let probe = {
-        let devices_opt = with_kernel(|k| k.pci.devices().to_vec());
-        match devices_opt {
-            Some(devices) => discovery::FramebufferDiscovery::discover(&devices),
-            None => None,
-        }
-    };
+    let probe = discovery::FramebufferDiscovery::discover();
 
     if let Some(ref p) = probe {
         petroleum::serial::serial_log(format_args!(
@@ -88,39 +82,9 @@ pub fn init_graphics() {
         return;
     }
 
-    // VGA text mode fallback.
     petroleum::serial::serial_log(format_args!(
-        "[init_gfx] No GOP renderer available, falling back to VGA text mode.\n"
+        "[init_gfx] No valid GOP framebuffer; remaining headless.\n"
     ));
-    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let vga_phys = petroleum::page_table::constants::VGA_MEMORY_START;
-    let vga_virt = vga_phys + off;
-    if let Some(mem) = crate::contexts::memory::get_memory().lock().as_mut() {
-        let _ = mem.map_page(
-            vga_virt as usize,
-            vga_phys as usize,
-            x86_64::structures::paging::PageTableFlags::NO_CACHE
-                | x86_64::structures::paging::PageTableFlags::PRESENT
-                | x86_64::structures::paging::PageTableFlags::WRITABLE
-                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
-        );
-    } else {
-        let mut mm = crate::memory_management::get_memory_manager().lock();
-        let mm = mm.as_mut().unwrap();
-        let _ = mm.safe_map_page(
-            vga_virt as usize,
-            vga_phys as usize,
-            x86_64::structures::paging::PageTableFlags::NO_CACHE
-                | x86_64::structures::paging::PageTableFlags::PRESENT
-                | x86_64::structures::paging::PageTableFlags::WRITABLE
-                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
-        );
-    }
-    let mut vga = petroleum::graphics::text::VgaBuffer::with_address(vga_virt as usize);
-    vga.enable();
-    petroleum::graphics::Console::clear(&mut vga);
-    let _ = core::fmt::write(&mut vga, format_args!("fullerene kernel — VGA text mode\n"));
-    with_kernel_mut(|k| k.framebuffer.vga_console = Some(vga));
 }
 
 pub fn flush_gpu() {

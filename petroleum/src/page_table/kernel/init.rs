@@ -168,6 +168,8 @@ impl<'a> KernelMemoryOperations<'a> {
                 l2[indices.l2].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
             } else if l2[indices.l2].flags().contains(PageTableFlags::HUGE_PAGE) {
                 let huge_page_phys_base = l2[indices.l2].addr().as_u64();
+                let mut split_flags = l2[indices.l2].flags();
+                split_flags.remove(PageTableFlags::HUGE_PAGE);
                 let l1_phys = Self::allocate_zeroed_table_from(
                     frame_allocator,
                     page_table_access_offset,
@@ -175,8 +177,10 @@ impl<'a> KernelMemoryOperations<'a> {
                 )?;
                 let l1_ref = &mut *self.table_ptr(l1_phys);
                 for j in 0..ENTRIES_PER_TABLE {
-                    l1_ref[j as usize]
-                        .set_addr(PhysAddr::new(huge_page_phys_base + j * PAGE_SIZE_4K), flags);
+                    l1_ref[j as usize].set_addr(
+                        PhysAddr::new(huge_page_phys_base + j * PAGE_SIZE_4K),
+                        split_flags | PageTableFlags::PRESENT,
+                    );
                 }
                 l2[indices.l2].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
             }
@@ -303,6 +307,8 @@ pub struct InitAndJumpArgs {
     pub map_phys_addr: u64,
     pub map_size: u64,
     pub l4_phys_addr: u64,
+    pub framebuffer_phys: u64,
+    pub framebuffer_size: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -325,6 +331,8 @@ pub unsafe extern "C" fn init_and_jump(
         let map_phys_addr = args.map_phys_addr;
         let map_size = args.map_size;
         let l4_phys_addr = l4_phys_reg;
+        let framebuffer_phys = args.framebuffer_phys;
+        let framebuffer_size = args.framebuffer_size;
 
         crate::serial::_print(format_args!("IAJ: entered\n"));
         // Log the physical address of this function to verify it's within the identity map range
@@ -409,6 +417,31 @@ pub unsafe extern "C" fn init_and_jump(
             )
             .expect("full 64GB huge page higher-half map failed");
         crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
+
+        if framebuffer_phys != 0 && framebuffer_size != 0 {
+            let fb_start = framebuffer_phys & !(PAGE_SIZE_4K - 1);
+            let fb_offset = framebuffer_phys - fb_start;
+            let fb_pages = (fb_offset + framebuffer_size).div_ceil(PAGE_SIZE_4K);
+            let fb_flags = flags
+                | PageTableFlags::NO_EXECUTE
+                | PageTableFlags::WRITE_THROUGH;
+            memory_ops
+                .map_range_4k(
+                    VirtAddr::new(fb_start),
+                    PhysAddr::new(fb_start),
+                    fb_pages,
+                    fb_flags,
+                )
+                .expect("framebuffer identity map failed");
+            memory_ops
+                .map_range_4k(
+                    VirtAddr::new(physical_memory_offset.as_u64() + fb_start),
+                    PhysAddr::new(fb_start),
+                    fb_pages,
+                    fb_flags,
+                )
+                .expect("framebuffer higher-half map failed");
+        }
 
         // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
         // These replace the existing HUGE_PAGE entries with proper L1 tables.

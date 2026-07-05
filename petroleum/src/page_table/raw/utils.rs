@@ -25,8 +25,7 @@ pub fn read_cr3() -> u64 {
 }
 
 pub fn is_mapped(root: &PageTable, virt: CanonicalVirtAddr) -> bool {
-    let root_mut = unsafe { root.as_mut_for_walking() };
-    crate::page_table::raw::walker::walk(root_mut, virt, 1)
+    crate::page_table::raw::walker::walk_read(root, virt, 1)
         .map(|e| e.is_present())
         .unwrap_or(false)
 }
@@ -167,75 +166,6 @@ pub unsafe fn map_identity_range(
     }
 }
 
-#[deprecated(note = "use map_identity_range")]
-pub unsafe fn map_identity_range_checked(
-    m: &mut x86_64::structures::paging::OffsetPageTable,
-    a: &mut impl FrameAllocator<Size4KiB>,
-    p: u64,
-    n: u64,
-    f: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    unsafe { map_identity_range(m, a, p, n, f) }
-}
-
-#[deprecated(note = "use map_range_4kiB")]
-pub unsafe fn map_range_with_log_macro(
-    m: &mut x86_64::structures::paging::OffsetPageTable,
-    a: &mut impl FrameAllocator<Size4KiB>,
-    p: u64,
-    v: u64,
-    n: u64,
-    f: PageTableFlags,
-    b: &str,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    unsafe { map_range_4kiB(m, a, p, v, n, f, b) }
-}
-
-#[deprecated(note = "use map_to_higher_half_with_log")]
-pub unsafe fn map_to_higher_half_with_log_macro(
-    m: &mut x86_64::structures::paging::OffsetPageTable,
-    fa: &mut crate::page_table::constants::BootInfoFrameAllocator,
-    po: VirtAddr,
-    ps: u64,
-    np: u64,
-    fl: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    unsafe { map_to_higher_half_with_log(m, fa, po, ps, np, fl) }
-}
-
-#[deprecated(note = "use map_range_4kiB")]
-pub unsafe fn map_page_range(
-    m: &mut x86_64::structures::paging::OffsetPageTable,
-    a: &mut impl FrameAllocator<Size4KiB>,
-    p: u64,
-    v: u64,
-    n: u64,
-    f: PageTableFlags,
-) -> Result<(), x86_64::structures::paging::mapper::MapToError<Size4KiB>> {
-    unsafe { map_range_4kiB(m, a, p, v, n, f, "continue") }
-}
-
-#[deprecated(note = "use kernel::mapper::unmap_page")]
-pub fn unmap_page_range(
-    root: &mut crate::page_table::types::PageTable,
-    virt: crate::page_table::types::CanonicalVirtAddr,
-) -> Result<Option<crate::page_table::types::PhysFrame>, crate::page_table::raw::walker::WalkError>
-{
-    crate::page_table::kernel::mapper::unmap_page(
-        root,
-        virt,
-        &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator::new(0),
-    )
-}
-
-#[deprecated]
-pub fn get_memory_stats() -> (usize, usize, usize) {
-    let allocator = crate::page_table::ALLOCATOR.lock();
-    let used = allocator.used();
-    let total = allocator.size();
-    (used, total, total.saturating_sub(used))
-}
-
 #[deprecated(note = "use huge::map_range_with_huge_pages")]
 pub unsafe fn map_range_with_huge_pages(
     m: &mut x86_64::structures::paging::OffsetPageTable,
@@ -268,9 +198,10 @@ macro_rules! extract_frame_if_present {
 #[macro_export]
 macro_rules! safe_cr3_write {
     ($frame:expr) => {{
+        let frame = $frame;
         unsafe {
             x86_64::registers::control::Cr3::write(
-                $frame,
+                frame,
                 x86_64::registers::control::Cr3Flags::empty(),
             );
         }
@@ -298,20 +229,28 @@ macro_rules! flush_tlb_and_verify {
 macro_rules! with_temp_mapping {
     ($mapper:expr, $frame_allocator:expr, $temp_va:expr, $frame:expr, $body:block) => {{
         let page = x86_64::structures::paging::Page::<x86_64::structures::paging::Size4KiB>::containing_address($temp_va);
-        unsafe {
-            match $mapper.map_to(page, $frame,
+        let map_result = {
+            let mapper = &mut *$mapper;
+            let frame_allocator = &mut *$frame_allocator;
+            let frame = $frame;
+            unsafe { mapper.map_to(page, frame,
                 x86_64::structures::paging::PageTableFlags::PRESENT | x86_64::structures::paging::PageTableFlags::WRITABLE,
-                $frame_allocator,
-            ) {
-                Ok(flush) => flush.flush(),
-                Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
-                    x86_64::instructions::tlb::flush(page.start_address());
-                }
-                Err(_) => return Err($crate::common::logging::SystemError::MappingFailed),
+                frame_allocator,
+            ) }
+        };
+        match map_result {
+            Ok(flush) => flush.flush(),
+            Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                x86_64::instructions::tlb::flush(page.start_address());
             }
+            Err(_) => return Err($crate::common::logging::SystemError::MappingFailed),
         }
         let result = $body;
-        if let Ok((_frame, flush)) = $mapper.unmap(page) { flush.flush(); }
+        let unmap_result = {
+            let mapper = &mut *$mapper;
+            mapper.unmap(page)
+        };
+        if let Ok((_frame, flush)) = unmap_result { flush.flush(); }
         result
     }};
 }
