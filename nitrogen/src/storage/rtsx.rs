@@ -107,7 +107,7 @@ impl RtsxController {
             RTSX_HAIMR,
             HAIMR_START | (u32::from(address & 0x3FFF) << 16),
         );
-        for _ in 0..1024 {
+        for _ in 0..4096 {
             let value = self.mmio.read32(RTSX_HAIMR);
             if value & HAIMR_START == 0 {
                 return Ok(value as u8);
@@ -126,7 +126,7 @@ impl RtsxController {
                 | (u32::from(mask) << 8)
                 | u32::from(value),
         );
-        for _ in 0..1024 {
+        for _ in 0..4096 {
             let result = self.mmio.read32(RTSX_HAIMR);
             if result & HAIMR_START == 0 {
                 return (result as u8 == value)
@@ -197,7 +197,7 @@ impl RtsxController {
     }
 
     fn wait_transfer(&self, required: u8) -> Result<(), &'static str> {
-        for _ in 0..100_000 {
+        for _ in 0..500_000 {
             let state = self.read_reg(SD_TRANSFER)?;
             if state & SD_TRANSFER_ERR != 0 {
                 let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
@@ -292,7 +292,7 @@ impl RtsxController {
             .is_ok_and(|response| response & 0xFFF == 0x1AA);
         let argument = 0x00FF_8000 | if v2_card { 1 << 30 } else { 0 };
         let mut ocr = None;
-        for _ in 0..1000 {
+        for _ in 0..2000 {
             if let Ok(response) = self.app_command(0, ACMD41_SEND_OP_COND, argument, SD_RSP_R3) {
                 if response & (1 << 31) != 0 {
                     ocr = Some(response);
@@ -403,7 +403,7 @@ impl RtsxController {
             (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
         ])?;
         self.wait_transfer(SD_TRANSFER_END)?;
-        for _ in 0..1000 {
+        for _ in 0..2000 {
             if self
                 .command(CMD13_SEND_STATUS, u32::from(card.rca) << 16, SD_RSP_R1)
                 .is_ok_and(|status| status & (1 << 8) != 0)

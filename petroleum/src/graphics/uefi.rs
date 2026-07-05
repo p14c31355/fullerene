@@ -36,10 +36,16 @@ fn normalize_pixel_format(
     match format {
         EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor
         | EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor => Some(format),
+        // PixelBitMask allows arbitrary bit assignments per channel.
+        // Only 8-bit-per-channel 32bpp layouts with known channel order are
+        // handled here; unrecognised masks fall through to None so the
+        // system continues headless rather than rendering with wrong colours.
         EfiGraphicsPixelFormat::PixelBitMask => match masks {
+            // R at byte0, G at byte1, B at byte2 (common Intel GOP)
             [0x0000_00FF, 0x0000_FF00, 0x00FF_0000, _] => {
                 Some(EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)
             }
+            // B at byte0, G at byte1, R at byte2 (common AMD/NVIDIA GOP)
             [0x00FF_0000, 0x0000_FF00, 0x0000_00FF, _] => {
                 Some(EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor)
             }
