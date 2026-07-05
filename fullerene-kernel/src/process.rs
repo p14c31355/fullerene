@@ -106,7 +106,7 @@ impl FdTable {
 
 /// A slot entry in the per-process handle table.
 struct HandleEntry {
-    generation: u16,
+    generation: u8,
     permissions: u8,
     object: KernelObject,
 }
@@ -114,11 +114,12 @@ struct HandleEntry {
 /// A slot that retains its generation across free/alloc cycles for
 /// stale-handle (use-after-free) protection.
 struct HandleSlot {
-    generation: u16,
+    generation: u8,
     entry: Option<HandleEntry>,
 }
 
-/// Per-process handle table using slot-based allocation with generation counters.
+/// Per-process handle table using slot-based allocation with generation counters
+/// and cryptographically signed handles.
 pub struct HandleTable {
     slots: alloc::vec::Vec<HandleSlot>,
     #[allow(dead_code)]
@@ -152,7 +153,9 @@ impl HandleTable {
             permissions: perms,
             object,
         });
-        Handle::new(slot_idx, slot.generation, perms)
+        // Handle::new computes a cryptographic MAC over (slot, generation, perms)
+        // using the per-boot secret.  Only the kernel can produce a valid handle.
+        Handle::new(slot_idx as u8, slot.generation, perms)
     }
 
     fn find_free_slot(&mut self) -> u16 {
@@ -166,8 +169,13 @@ impl HandleTable {
         idx
     }
 
-    /// Look up a handle (mutable), validating generation counter.
+    /// Validate MAC and look up a handle (mutable).
+    /// First checks `handle.is_valid()` to reject forged or corrupted handles,
+    /// then verifies the generation counter prevents use-after-free.
     pub fn get_mut(&mut self, handle: Handle) -> Option<&mut KernelObject> {
+        if !handle.is_valid() {
+            return None;
+        }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
         self.slots.get_mut(slot)
@@ -176,8 +184,11 @@ impl HandleTable {
             .map(|e| &mut e.object)
     }
 
-    /// Look up a handle (immutable), validating generation counter.
+    /// Validate MAC and look up a handle (immutable).
     pub fn get(&self, handle: Handle) -> Option<&KernelObject> {
+        if !handle.is_valid() {
+            return None;
+        }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
         self.slots.get(slot)
@@ -186,8 +197,11 @@ impl HandleTable {
             .map(|e| &e.object)
     }
 
-    /// Remove a handle from the table, returning the object if it existed.
+    /// Remove a handle after MAC validation.
     pub fn remove(&mut self, handle: Handle) -> Option<KernelObject> {
+        if !handle.is_valid() {
+            return None;
+        }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
         let slot = self.slots.get_mut(slot)?;
@@ -199,9 +213,11 @@ impl HandleTable {
         None
     }
 
-    /// Check whether the handle has the required permission bits set.
-    /// Uses the stored permissions from the handle table (not the raw handle bits).
+    /// Check permissions after MAC validation.
     pub fn check_perm(&self, handle: Handle, required: HandlePerms) -> bool {
+        if !handle.is_valid() {
+            return false;
+        }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
         self.slots.get(slot)
@@ -225,7 +241,7 @@ impl HandleTable {
     ) -> impl Iterator<Item = (Handle, &KernelObject)> {
         self.slots.iter().enumerate().filter_map(|(i, slot)| {
             slot.entry.as_ref().map(|e| {
-                let h = Handle::new(i as u16, e.generation, e.permissions);
+                let h = Handle::new(i as u8, e.generation, e.permissions);
                 (h, &e.object)
             })
         })
@@ -237,7 +253,7 @@ impl HandleTable {
     ) -> impl Iterator<Item = (Handle, &mut KernelObject)> {
         self.slots.iter_mut().enumerate().filter_map(|(i, slot)| {
             slot.entry.as_mut().map(|e| {
-                let h = Handle::new(i as u16, e.generation, e.permissions);
+                let h = Handle::new(i as u8, e.generation, e.permissions);
                 (h, &mut e.object)
             })
         })
