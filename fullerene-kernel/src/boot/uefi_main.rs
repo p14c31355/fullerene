@@ -13,6 +13,46 @@ pub unsafe extern "C" fn efi_main_stage2(
     physical_memory_offset: VirtAddr,
 ) -> ! {
     unsafe {
+        // ════════════════════════════════════════════════════════════
+        // STAGE -1: Pre-args framebuffer test
+        //
+        // Write solid RED to the whole screen via the identity-mapped
+        // higher-half VA.  If you see RED, the kernel IS executing in
+        // efi_main_stage2 and the huge-page identity mapping works for
+        // writes at off + 0–4GB.  If you still see gray, the kernel
+        // triple-faults before reaching this line.
+        //
+        // We use 0xFFFF0000 (ARGB: A=FF, R=FF, G=00, B=00) which
+        // appears as full red regardless of BGR vs RGB pixel format.
+        // ════════════════════════════════════════════════════════════
+        let off_ = petroleum::common::memory::get_physical_memory_offset() as u64;
+        // Write to VGA framebuffer range (0xA0000–0xBFFFF) which is
+        // always covered by identity mapping and is harmless to write to
+        // even on UEFI (the memory exists, just not used for VGA).
+        // Also try the GOP framebuffer at common addresses:
+        //   0xE0000000 (common GOP address for Intel/AMD GPUs)
+        for candidate in &[0xE000_0000u64, 0xC000_0000u64, 0xD000_0000u64, 0x8000_0000u64] {
+            let fb_test = (*candidate + off_) as *mut u32;
+            // Write a distinctive pattern: first pixel = red
+            core::ptr::write_volatile(fb_test, 0xFFFF0000u32);
+            // Wait a tiny bit so the write has a chance to land
+            for _ in 0..100_000 { core::hint::spin_loop(); }
+        }
+        // Also fill the VGA text buffer with a red pattern
+        let vga_text = (0xB8000u64 + off_) as *mut u16;
+        for i in 0..80*25 {
+            core::ptr::write_volatile(vga_text.add(i), 0x0420u16); // red-on-black space
+        }
+
+        // ── Ultra-early diagnostic: write stage markers to physical 0x700 ──
+        // These survive triple-fault / reset and can be read via UEFI shell
+        // (`dmem 0x700 10`) or a mini-bootloader stub.  Values written:
+        //   0x700: magic "FS" (0x4653) — confirms efi_main_stage2 is reached
+        //   0x702: incremented on each major step
+        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+        let diag = (0x700u64 + off) as *mut u16;
+        core::ptr::write_volatile(diag, 0x4653u16);               // "FS" magic
+        core::ptr::write_volatile(diag.add(1), 0x0001u16);        // step = 1
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x44",
@@ -67,6 +107,60 @@ pub unsafe extern "C" fn efi_main_stage2(
                 // identity-mapped correctly.  Do NOT store the corrupted
                 // values; the kernel will fall back to PCI BAR0 probe.
                 debug_serial(b"S2: WARNING: KernelArgs FB fields invalid, skipping .data store (identity map mismatch?)\n");
+                // Update step marker
+                core::ptr::write_volatile(diag.add(1), 0x0004u16);
+
+                // ── PCI BAR0 fallback ──────────────────────────────
+                // If args_ptr was garbage, the identity huge-page mapping
+                // is broken.  Probe PCI config space via port I/O (0xCF8/
+                // 0xCFC) which needs zero memory-mapped registers, then
+                // store the discovered FB params directly.
+                let mut fb_stored = false;
+                // Scan bus 0 only (VGA-class display is always on bus 0)
+                for dev in 0..=31u16 {
+                    let addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x00;
+                    x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(addr);
+                    let vendor = x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
+                    if (vendor & 0xFFFF) as u16 == 0xFFFF || (vendor & 0xFFFF) as u16 == 0x0000 {
+                        continue;
+                    }
+                    let class_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x08;
+                    x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(class_addr);
+                    let class_rev =
+                        x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
+                    let class = ((class_rev >> 24) & 0xFF) as u8;
+                    let subclass = ((class_rev >> 16) & 0xFF) as u8;
+                    if class == 0x03 && subclass == 0x00 {
+                        // Read BAR0
+                        let bar_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x10;
+                        x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar_addr);
+                        let bar0 =
+                            x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
+                        let fb_phys = if (bar0 & 0x6) == 0x4 {
+                            let bar1_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x14;
+                            x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar1_addr);
+                            let bar1 =
+                                x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
+                            ((bar1 as u64) << 32) | ((bar0 & 0xFFFF_FFF0) as u64)
+                        } else {
+                            (bar0 & 0xFFFF_FFF0) as u64
+                        };
+                        if fb_phys >= 0x100_000 && fb_phys <= 0x10_0000_0000 {
+                            let stride = 1280u32 * 4;
+                            crate::graphics::discovery::store_boot_fb_params(
+                                fb_phys, 1280, 800, stride, 32, 1,
+                            );
+                            fb_stored = true;
+                            debug_serial(b"S2: PCI fallback FB stored\n");
+                            core::ptr::write_volatile(diag.add(1), 0x0005u16);
+                            break;
+                        }
+                    }
+                }
+                if !fb_stored {
+                    debug_serial(b"S2: PCI fallback: no VGA controller found\n");
+                    core::ptr::write_volatile(diag.add(1), 0x0006u16);
+                }
             }
         }
 

@@ -348,6 +348,37 @@ fn calibrate_tsc_with_pit() -> u64 {
         }
     };
 
+    // Early PIT stutter test: if the counter doesn't budge after ~500 µs,
+    // the 8254 is not running (no emulation / chipset quirk).  Bail fast
+    // rather than spin for 1 full second waiting for 20 ms of ticks.
+    let c1 = match pit_read_count() {
+        Some(c) => c,
+        None => return 3_000_000,
+    };
+    let mut stutter_ok = c0 != c1;
+    if !stutter_ok {
+        // Wait ~500 µs and retry once
+        let t_stutter = unsafe { core::arch::x86_64::_rdtsc() };
+        while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(t_stutter) < 500_000 {
+            core::hint::spin_loop();
+        }
+        let c2 = match pit_read_count() {
+            Some(c) => c,
+            None => return 3_000_000,
+        };
+        stutter_ok = c0 != c2;
+    }
+    if !stutter_ok {
+        // PIT counter is frozen — no PIT emulation on this platform.
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u8>::new(0x61).write(original_61);
+        }
+        petroleum::serial::serial_log(format_args!(
+            "TSC PIT calib: PIT stutter test failed (no 8254?), using 3 GHz fallback\n"
+        ));
+        return 3_000_000;
+    }
+
     // Measure 20 ms of PIT ticks (23864 counts at 1.193182 MHz).
     // This is more robust than waiting for a full wrap, which can be
     // missed if the VM or CPU is preempted for >55 ms.

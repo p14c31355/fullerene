@@ -7,6 +7,8 @@ use petroleum::write_serial_bytes;
 use x86_64::{PhysAddr, VirtAddr, structures::paging::PageTableFlags};
 
 /// Helper to write debug messages to serial port.
+/// Used by `uefi_main.rs` (cfg-gated by target_os = "uefi").
+#[cfg(target_os = "uefi")]
 #[inline(always)]
 pub(super) fn debug_serial(msg: &[u8]) {
     petroleum::write_serial_bytes(0x3F8, 0x3FD, msg);

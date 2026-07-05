@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::process;
@@ -16,34 +17,85 @@ bitflags! {
     }
 }
 
+/// Per-boot secret used for cryptographically signing handles.
+/// Initialised once during kernel init with entropy from the CPU or system timer.
+/// Never exposed to user space.  A leaked secret lets attackers forge handles.
+static HANDLE_SECRET: AtomicU64 = AtomicU64::new(0);
+
+/// Initialise the handle signing secret.  Called once during boot.
+/// `seed` should be derived from hardware entropy (RDRAND, TSC, etc.).
+pub fn init_handle_secret(seed: u64) {
+    // Mix the seed through a simple splitmix64-style avalanche to
+    // avoid degenerate states (e.g. all-zero seed → all-zero MAC).
+    let mut h = seed.wrapping_add(0x9E3779B97F4A7C15);
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xBF58476D1CE4E5B9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94D049BB133111EB);
+    h ^= h >> 31;
+    HANDLE_SECRET.store(h, Ordering::Relaxed);
+}
+
+/// Keyed hash for handle integrity.
+/// Maps (slot, generation, perms) → 40-bit MAC using the per-boot secret.
+/// The MAC is positioned at bits [63:24] of the 64-bit handle value.
+fn handle_mac(slot: u8, generation: u8, perms: u8) -> u64 {
+    let secret = HANDLE_SECRET.load(Ordering::Relaxed);
+    if secret == 0 {
+        return 0; // uninitialised — allow legacy handles during early boot
+    }
+    // Pack the non-secret data into a single 64-bit value.
+    let data = (slot as u64) << 16 | (generation as u64) << 8 | perms as u64;
+    // SplitMix64 mixing: two rounds with the secret as additive constant.
+    let mut h = data.wrapping_add(secret);
+    h ^= h >> 31;
+    h = h.wrapping_mul(0x9E3779B97F4A7C15);
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xBF58476D1CE4E5B9);
+    h ^= h >> 32;
+    // Return top 40 bits as MAC (bits 63..24).
+    h & 0xFFFFFFFFFF000000
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Handle(u64);
 
 impl Handle {
-    pub const SLOT_MASK: u64 = 0x0000_FFFF_0000_0000;
-    pub const GEN_MASK: u64 = 0xFFFF_0000_0000_0000;
-    pub const PERM_MASK: u64 = 0x0000_00FF_0000_0000;
-    pub const SLOT_SHIFT: u64 = 32;
-    pub const GEN_SHIFT: u64 = 48;
-    pub const PERM_SHIFT: u64 = 24;
+    const SLOT_SHIFT: u64 = 16;
+    const PERM_SHIFT: u64 = 8;
+    const MAC_MASK: u64 = 0xFFFF_FFFF_FF00_0000;
 
-    pub fn new(slot: u16, generation: u16, perms: u8) -> Self {
-        let val = (generation as u64) << 48
-            | (slot as u64) << 32
-            | (perms as u64) << 24;
+    /// Create a new signed handle.  The MAC is derived from the
+    /// slot index, generation counter, permissions, and the per-boot secret.
+    /// Only the kernel can create valid handles.
+    pub fn new(slot: u8, generation: u8, perms: u8) -> Self {
+        let mac = handle_mac(slot, generation, perms);
+        let val = mac
+            | (slot as u64) << Self::SLOT_SHIFT
+            | (perms as u64) << Self::PERM_SHIFT
+            | generation as u64;
         Handle(val)
     }
 
-    pub fn slot(&self) -> u16 {
-        ((self.0 >> 32) & 0xFFFF) as u16
+    pub fn slot(&self) -> u8 {
+        ((self.0 >> Self::SLOT_SHIFT) & 0xFF) as u8
     }
 
-    pub fn generation(&self) -> u16 {
-        ((self.0 >> 48) & 0xFFFF) as u16
+    pub fn generation(&self) -> u8 {
+        (self.0 & 0xFF) as u8
     }
 
     pub fn permissions(&self) -> u8 {
-        ((self.0 >> 24) & 0xFF) as u8
+        ((self.0 >> Self::PERM_SHIFT) & 0xFF) as u8
+    }
+
+    /// Validate the handle's MAC against the per-boot secret.
+    /// Returns true if the handle was created by the kernel and has not
+    /// been corrupted or forged.
+    pub fn is_valid(&self) -> bool {
+        let mac = self.0 & Self::MAC_MASK;
+        let expected = handle_mac(self.slot(), self.generation(), self.permissions());
+        mac == expected
     }
 
     pub fn raw(&self) -> u64 {
@@ -60,6 +112,8 @@ impl From<Handle> for u64 {
         h.0
     }
 }
+
+// ── Kernel object types ──────────────────────────────────────
 
 pub enum KernelObject {
     Event(EventState),

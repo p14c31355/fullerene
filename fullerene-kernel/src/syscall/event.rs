@@ -106,7 +106,7 @@ pub(crate) fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult 
 pub(crate) fn syscall_signal_event(handle: u64) -> SyscallResult {
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::SIGNAL)?;
-    let (pids_to_unblock, is_manual_reset): (Vec<process::ProcessId>, bool) = with_handle_mut(h, |obj| {
+    let (pids_to_unblock, _is_manual_reset): (Vec<process::ProcessId>, bool) = with_handle_mut(h, |obj| {
         let event = map_handle!(obj, Event, e);
         let mut inner = event.inner.lock();
         inner.signaled = true;

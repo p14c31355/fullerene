@@ -1,7 +1,7 @@
 use alloc::string::String;
-use alloc::vec;
 use petroleum::common::memory::UserSlice;
 
+#[cfg(test)]
 use fullerene_abi::syscall_errors;
 
 /// System call result type
@@ -98,7 +98,7 @@ pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String,
     let mut offset = 0;
 
     while offset < max_len {
-        let current = unsafe { ptr.wrapping_add(offset) };
+        let current = ptr.wrapping_add(offset);
 
         // Validate page on first access or when crossing a page boundary,
         // so a valid NUL-terminated string near an unmapped page works.

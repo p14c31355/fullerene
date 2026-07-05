@@ -326,11 +326,11 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         p.context.regs[7] = stack_top_vaddr_default; // RSP
 
         if p.is_user {
-            p.context.segments[0] = crate::gdt::user_code_selector_fallback()
+            p.context.segments[0] = crate::gdt::user_code()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(1);
-            p.context.segments[1] = crate::gdt::user_data_selector_fallback()
+            p.context.segments[1] = crate::gdt::user_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(2);

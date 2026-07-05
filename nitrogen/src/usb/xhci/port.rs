@@ -351,6 +351,94 @@ pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
     );
 }
 
+/// Power up a single port and kick-start link training.
+///
+/// Handles: PP toggle, Compliance exit, RxDetect, WPR, and CCS polling.
+/// This is the unified helper replacing duplicated logic in `init_ports`,
+/// `try_connect_port`, and `clear_hse_and_recover`.
+///
+/// - For USB 3.0 ports: toggles PP if needed, exits Compliance, forces RxDetect,
+///   waits for CCS up to ~2s, then tries WPR if CCS still 0.
+/// - For USB 2.0 ports: sets PP=1 (if PPC), waits for CCS up to ~2s.
+///   USB 2.0 ports DON'T need RxDetect/PLS writes.
+/// - Returns true if CCS=1 after all recovery attempts.
+pub fn ensure_port_ready(op: &OperationalRegisters, port_idx: u32, is_usb3: bool, ppc: bool, wpr_attempted: bool) -> bool {
+    let ps = op.portsc(port_idx);
+    if ps.ccs() && ps.ped() {
+        return true;
+    }
+
+    // Phase 1: Ensure Port Power
+    if ppc && !ps.pp() {
+        let raw = ps.0;
+        op.write_portsc(port_idx, (raw & !PORTSC_RW1C_MASK) | PORTSC_PP);
+        delay_ms(50);
+    }
+
+    // Clear stale RW1C bits that might block port state changes
+    let raw = op.portsc(port_idx).0;
+    if raw & PORTSC_RW1C_MASK != 0 {
+        op.write_portsc(port_idx, (raw & !PORTSC_RW1C_MASK) | (raw & PORTSC_RW1C_MASK));
+        delay_us(50);
+    }
+
+    // Phase 2: Exit Compliance mode (USB 3.0 only)
+    if is_usb3 {
+        let _ = exit_compliance(op, port_idx);
+    }
+
+    // Phase 3: Wait for CCS with RxDetect kick for USB 3.0
+    let mut ccs_seen = op.portsc(port_idx).ccs();
+    if is_usb3 && !ccs_seen {
+        force_rx_detect(op, port_idx);
+        for _ in 0..200 {
+            delay_ms(10);
+            if op.portsc(port_idx).ccs() {
+                ccs_seen = true;
+                break;
+            }
+        }
+    } else if !is_usb3 && !ccs_seen {
+        // USB 2.0: controller detects device autonomously when PP=1
+        for _ in 0..200 {
+            delay_ms(10);
+            if op.portsc(port_idx).ccs() {
+                ccs_seen = true;
+                break;
+            }
+        }
+    }
+    if ccs_seen && op.portsc(port_idx).ped() {
+        return true;
+    }
+
+    // Phase 4: Warm Port Reset for USB 3.0 (only once per connect attempt),
+    // Port Reset for CCS=1/PED=0
+    if is_usb3 && !ccs_seen && op.portsc(port_idx).pp() && !wpr_attempted {
+        let _ = warm_port_reset(op, port_idx);
+        ccs_seen = op.portsc(port_idx).ccs();
+    } else if ccs_seen && !op.portsc(port_idx).ped() {
+        let _ = port_reset(op, port_idx);
+    }
+
+    // Phase 5: PP toggle fallback (last resort for stubborn PHYs)
+    if !op.portsc(port_idx).ccs() && ppc {
+        power_cycle(op, port_idx);
+        if is_usb3 {
+            force_rx_detect(op, port_idx);
+        }
+        for _ in 0..200 {
+            delay_ms(10);
+            if op.portsc(port_idx).ccs() {
+                ccs_seen = true;
+                break;
+            }
+        }
+    }
+
+    ccs_seen && op.portsc(port_idx).ped()
+}
+
 /// Exit Compliance (PLS=15) mode by transitioning to a non-compliance link state.
 ///
 /// Some xHCI controllers enter Compliance mode instead of RxDetect after

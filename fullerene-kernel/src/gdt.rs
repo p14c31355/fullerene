@@ -1,17 +1,14 @@
 // SAFETY: This file uses static mut for GDT/TSS state which is accessed only during
 // single-threaded kernel initialization protected by GDT_INITIALIZED AtomicBool guard.
-// All accessor functions check initialization state before use. This is a common pattern
-// in low-level kernel code where the standard initialization sequence serializes all access.
-// The #[allow] is needed because Rust 2024 edition makes static_mut_refs a hard deny,
-// but this pattern is safe here due to the single-threaded boot phase.
+// All accessor functions check initialization state before use.
 #![allow(static_mut_refs)]
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::{debug_log_no_alloc, mem_debug};
-use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
+use x86_64::VirtAddr;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const TIMER_IST_INDEX: u16 = 1;
@@ -21,20 +18,10 @@ pub const PAGE_FAULT_IST_INDEX: u16 = 4;
 pub const NMI_IST_INDEX: u16 = 5;
 pub const MACHINE_CHECK_IST_INDEX: u16 = 6;
 
-/// Size of each IST stack (bytes).
-/// Each stack is 5 pages (20 KiB) to accommodate interrupt handling.
 pub const GDT_TSS_STACK_SIZE: usize = 4096 * 5;
-
-/// Number of IST stacks reserved.
 pub const GDT_TSS_STACK_COUNT: usize = 7;
-
-/// Total overhead for GDT initialization in bytes.
 pub const GDT_INIT_OVERHEAD: usize = GDT_TSS_STACK_COUNT * GDT_TSS_STACK_SIZE;
 
-// These statics are accessed only during GDT initialization.
-// Safety: They are protected by GDT_INITIALIZED AtomicBool guard, and all
-// accessors check initialization state before use. Access is serialized by
-// the kernel boot sequence (single-threaded during init).
 #[allow(static_mut_refs)]
 pub static mut TSS: Option<TaskStateSegment> = None;
 #[allow(static_mut_refs)]
@@ -60,32 +47,46 @@ pub fn init_early() {
     init(addr);
 }
 
+/// Unified selector accessor. Returns `None` if the selector is not yet initialized.
+macro_rules! sel {
+    ($static:ident) => {
+        unsafe { $static.as_ref().copied() }
+    };
+}
+
+pub fn code() -> Option<SegmentSelector> {
+    sel!(CODE_SELECTOR)
+}
+pub fn kernel_data() -> Option<SegmentSelector> {
+    sel!(KERNEL_DATA_SELECTOR)
+}
+pub fn user_code() -> Option<SegmentSelector> {
+    sel!(USER_CODE_SELECTOR)
+}
+pub fn user_data() -> Option<SegmentSelector> {
+    sel!(USER_DATA_SELECTOR)
+}
+
+/// Panicking accessors for callers that know the GDT is initialized.
 pub fn kernel_code_selector() -> SegmentSelector {
-    unsafe { CODE_SELECTOR.expect("CODE_SELECTOR not initialized") }
+    code().expect("CODE_SELECTOR not initialized")
 }
-
 pub fn kernel_data_selector() -> SegmentSelector {
-    unsafe { KERNEL_DATA_SELECTOR.expect("KERNEL_DATA_SELECTOR not initialized") }
+    kernel_data().expect("KERNEL_DATA_SELECTOR not initialized")
+}
+pub fn user_code_selector() -> SegmentSelector {
+    user_code().expect("USER_CODE_SELECTOR not initialized")
+}
+pub fn user_data_selector() -> SegmentSelector {
+    user_data().expect("USER_DATA_SELECTOR not initialized")
 }
 
-/// Public accessor for CODE_SELECTOR (for fallback in ProcessContext)
-pub fn code_selector() -> Option<SegmentSelector> {
-    unsafe { CODE_SELECTOR.as_ref().copied() }
+/// Checked accessors that return a fallback if the GDT is not yet initialized.
+pub fn code_selector_checked() -> SegmentSelector {
+    code().unwrap_or(SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0))
 }
-
-/// Public accessor for KERNEL_DATA_SELECTOR (for fallback in ProcessContext)
-pub fn kernel_data_selector_fallback() -> Option<SegmentSelector> {
-    unsafe { KERNEL_DATA_SELECTOR.as_ref().copied() }
-}
-
-/// Public accessor for USER_CODE_SELECTOR (for fallback in ProcessContext)
-pub fn user_code_selector_fallback() -> Option<SegmentSelector> {
-    unsafe { USER_CODE_SELECTOR.as_ref().copied() }
-}
-
-/// Public accessor for USER_DATA_SELECTOR (for fallback in ProcessContext)
-pub fn user_data_selector_fallback() -> Option<SegmentSelector> {
-    unsafe { USER_DATA_SELECTOR.as_ref().copied() }
+pub fn user_code_selector_checked() -> SegmentSelector {
+    user_code().unwrap_or(SegmentSelector::new(4, x86_64::PrivilegeLevel::Ring3))
 }
 
 pub fn load() {
@@ -122,7 +123,6 @@ pub struct TssStacks {
 }
 
 impl TssStacks {
-    /// Create a new TssStacks from a base address, allocating sequential IST stacks.
     pub const fn from_base(base: VirtAddr) -> Self {
         let sz = GDT_TSS_STACK_SIZE as u64;
         Self {
@@ -137,12 +137,7 @@ impl TssStacks {
     }
 }
 
-/// Build GDT with the given TSS and return (code, data, tss, user_data, user_code) selectors.
-///
-/// The TSS must be `'static` because the GDT holds a reference to it.
-/// We use `transmute` to convert the mutable reference to a static reference,
-/// since the TSS is stored in a static mutable variable and will live for the
-/// entire kernel lifetime.
+#[allow(static_mut_refs)]
 pub unsafe fn build_gdt(
     tss: &mut TaskStateSegment,
 ) -> (
@@ -157,8 +152,8 @@ pub unsafe fn build_gdt(
         let mut gdt = GlobalDescriptorTable::new();
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
-        let user_data_selector = gdt.append(Descriptor::user_data_segment());
-        let user_code_selector = gdt.append(Descriptor::user_code_segment());
+        let u_data_selector = gdt.append(Descriptor::user_data_segment());
+        let u_code_selector = gdt.append(Descriptor::user_code_segment());
         let tss_static: &'static TaskStateSegment = core::mem::transmute(tss);
         let tss_selector = gdt.append(Descriptor::tss_segment(tss_static));
         (
@@ -166,13 +161,13 @@ pub unsafe fn build_gdt(
             code_selector,
             data_selector,
             tss_selector,
-            user_data_selector,
-            user_code_selector,
+            u_data_selector,
+            u_code_selector,
         )
     }
 }
 
-/// Store built GDT and selectors into global state.
+#[allow(static_mut_refs)]
 pub unsafe fn store_gdt(
     gdt: GlobalDescriptorTable,
     code: SegmentSelector,
@@ -206,9 +201,7 @@ pub fn init_with_stacks(stacks: TssStacks) {
         TSS = Some(tss);
     }
 
-    mem_debug!("GDT: GDT built\n");
     GDT_INITIALIZED.store(true, Ordering::SeqCst);
-    mem_debug!("GDT: About to return\n");
 }
 
 pub fn init(heap_start: VirtAddr) -> VirtAddr {
@@ -219,11 +212,8 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     debug_log_no_alloc!("GDT: Initializing with heap at {}", heap_start.as_u64());
 
-    // Allocate IST stacks contiguously using the unified helper
     let stacks = TssStacks::from_base(heap_start);
     let new_heap_start = stacks.machine_check + GDT_TSS_STACK_SIZE as u64;
-
-    debug_log_no_alloc!("GDT: Stack addresses calculated\n");
 
     unsafe {
         let mut tss = TaskStateSegment::new();
@@ -236,8 +226,6 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
         tss.interrupt_stack_table[MACHINE_CHECK_IST_INDEX as usize] = stacks.machine_check;
         TSS = Some(tss);
     }
-
-    debug_log_no_alloc!("GDT: GDT built\n");
 
     #[cfg(not(target_os = "uefi"))]
     {
@@ -261,7 +249,6 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
                 FS::set_reg(data_sel);
                 GS::set_reg(data_sel);
             }
-            debug_log_no_alloc!("GDT: Data segment registers set\n");
         }
     }
     #[cfg(target_os = "uefi")]
@@ -270,23 +257,5 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
     }
 
     GDT_INITIALIZED.store(true, Ordering::SeqCst);
-    debug_log_no_alloc!("GDT: Init complete\n");
     new_heap_start
-}
-
-pub fn user_code_selector() -> SegmentSelector {
-    unsafe { USER_CODE_SELECTOR.expect("USER_CODE_SELECTOR not initialized") }
-}
-
-/// Safe version that returns a fallback selector if not yet initialized
-pub fn user_code_selector_checked() -> SegmentSelector {
-    unsafe { USER_CODE_SELECTOR.unwrap_or(SegmentSelector::new(4, x86_64::PrivilegeLevel::Ring3)) }
-}
-
-pub fn kernel_code_selector_checked() -> SegmentSelector {
-    unsafe { CODE_SELECTOR.unwrap_or(SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0)) }
-}
-
-pub fn user_data_selector() -> SegmentSelector {
-    unsafe { USER_DATA_SELECTOR.expect("USER_DATA_SELECTOR not initialized") }
 }
