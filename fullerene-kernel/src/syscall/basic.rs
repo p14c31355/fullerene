@@ -306,13 +306,11 @@ pub(crate) fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallR
             let name_bytes = process.name.as_bytes();
             let copy_len = name_bytes.len().min(size - 1);
 
-            let mut kernel_buf = vec![0u8; size];
+            let mut kernel_buf = vec![0u8; copy_len + 1];
             kernel_buf[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
-            if copy_len < size {
-                kernel_buf[copy_len] = b'\0';
-            }
+            kernel_buf[copy_len] = b'\0';
 
-            let slice = UserSlice::new(buffer, size, true)
+            let slice = UserSlice::new(buffer, copy_len + 1, true)
                 .map_err(|_| SyscallError::InvalidArgument)?;
             unsafe { slice.copy_to_user(&kernel_buf) }
                 .map_err(|_| SyscallError::InvalidArgument)?;

@@ -55,7 +55,7 @@ pub enum RegisterError {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct TimerId(pub u64);
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy)]
 pub struct Timer {
     pub deadline: Deadline,
     pub id: TimerId,
@@ -64,6 +64,14 @@ pub struct Timer {
     pub missed_ticks: u64,
     pub max_catch_up: u64,
 }
+
+impl PartialEq for Timer {
+    fn eq(&self, other: &Self) -> bool {
+        self.deadline == other.deadline && self.id == other.id
+    }
+}
+
+impl Eq for Timer {}
 
 impl Ord for Timer {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
