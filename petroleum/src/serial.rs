@@ -19,12 +19,12 @@ pub unsafe fn write_serial_bytes(port_addr: u16, status_port_addr: u16, bytes: &
     }
     #[cfg(any(feature = "std", test))]
     {
-        // Avoid direct port I/O in std environment or during tests to prevent SIGSEGV
+        let _ = (port_addr, status_port_addr, bytes);
     }
 }
 
 use crate::common::{EfiSimpleTextOutput, EfiStatus};
-use core::fmt::{self, Write};
+use core::fmt;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -78,7 +78,7 @@ impl<S: SerialPortOps> SerialPort<S> {
         }
         #[cfg(any(feature = "std", test))]
         {
-            // Avoid direct port I/O in std environment or during tests to prevent SIGSEGV
+            let _ = byte;
         }
     }
 
@@ -246,8 +246,11 @@ pub fn debug_print_str_to_com1(manager: &mut SerialManager, s: &str) {
 pub fn _print_with_manager(manager: &mut SerialManager, args: fmt::Arguments) {
     #[cfg(all(not(feature = "std"), not(test)))]
     {
+        use core::fmt::Write as _;
         manager.serial_port.write_fmt(args).ok();
     }
+    #[cfg(any(feature = "std", test))]
+    let _ = (manager, args);
 }
 
 /// Print directly to COM1 serial port without a SerialManager.
@@ -265,6 +268,8 @@ pub fn _print(args: fmt::Arguments) {
         let mut port = SerialPort::new(Com1Ports);
         let _ = port.write_fmt(args);
     }
+    #[cfg(any(feature = "std", test))]
+    let _ = args;
 }
 
 /// Initializes the serial port and returns a SerialManager capability.

@@ -82,7 +82,10 @@ impl XhciContext {
     ///
     /// This reads capability registers, performs legacy handoff,
     /// and allocates all required data structures (rings, DCBAA, ports).
-    pub fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
+    /// # Safety
+    /// `mmio_base` must reference a mapped xHCI register BAR for the lifetime
+    /// of the returned controller.
+    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
         // ── Step 1: Read capability registers ─────────────────
         let cap_regs = unsafe { CapabilityRegisters::read(mmio_base) };
         let caplength = cap_regs.caplength;
@@ -1128,20 +1131,6 @@ impl XhciContext {
         Ok(())
     }
 
-    // ── PCI creation ───────────────────────────────────────────
-
-    /// Create from a PCI device configuration.
-    pub fn from_pci(
-        device: &crate::pci::PciDevice,
-        ctx: &'static dyn DriverContext,
-    ) -> Option<Self> {
-        let mmio_phys = device.read_bar(0)?;
-        if mmio_phys == 0 {
-            return None;
-        }
-        let mmio_virt = ctx.phys_to_virt(mmio_phys) as *mut u8;
-        XhciContext::new(mmio_virt, ctx)
-    }
 }
 
 // ============================================================================

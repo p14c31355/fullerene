@@ -57,18 +57,18 @@ pub struct VdsoPage {
 
 impl VdsoPage {
     pub const fn new() -> Self {
-        const INIT: VdsoRequest = VdsoRequest {
-            syscall_num: UnsafeCell::new(0),
-            args: UnsafeCell::new([0; 6]),
-            state: AtomicU64::new(0),
-        };
-        const INIT_REQS: [VdsoRequest; VDSO_RING_SIZE] = [INIT; VDSO_RING_SIZE];
         VdsoPage {
             time_us: AtomicU64::new(0),
             uptime_us: AtomicU64::new(0),
             pid: 0,
             _pad: [0; 5],
-            requests: INIT_REQS,
+            requests: [const {
+                VdsoRequest {
+                    syscall_num: UnsafeCell::new(0),
+                    args: UnsafeCell::new([0; 6]),
+                    state: AtomicU64::new(0),
+                }
+            }; VDSO_RING_SIZE],
         }
     }
 

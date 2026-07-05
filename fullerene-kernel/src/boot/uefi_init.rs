@@ -1,9 +1,12 @@
-#![allow(static_mut_refs, unused_imports)]
+#![allow(static_mut_refs)]
 
+#[cfg(target_os = "uefi")]
 use core::ffi::c_void;
-use petroleum::common::{EfiSystemTable, write_vga_string};
+#[cfg(target_os = "uefi")]
+use petroleum::common::EfiSystemTable;
+#[cfg(target_os = "uefi")]
 use petroleum::page_table::MemoryMapDescriptor;
-use petroleum::write_serial_bytes;
+#[cfg(target_os = "uefi")]
 use x86_64::{PhysAddr, VirtAddr, structures::paging::PageTableFlags};
 
 /// Helper to write debug messages to serial port.
@@ -92,12 +95,6 @@ impl UefiInitContext {
     pub fn early_initialization(&mut self) -> PhysAddr {
         petroleum::serial::serial_init();
         debug_serial(b"Kernel: efi_main entered\n");
-
-        unsafe {
-            let vga_buffer = &mut *(crate::VGA_BUFFER_ADDRESS as *mut [[u16; 80]; 25]);
-            write_vga_string(vga_buffer, 0, b"Kernel boot (UEFI)", 0x1F00);
-            write_vga_string(vga_buffer, 1, b"Early init start", 0x1F00);
-        }
 
         let kernel_virt_addr = crate::boot::uefi_entry::efi_main as *const () as u64;
         let kernel_phys_addr = kernel_virt_addr

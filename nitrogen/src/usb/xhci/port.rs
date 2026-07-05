@@ -6,8 +6,7 @@
 //! - Reading/writing PORTSC with cache-line flush
 //! - Port reset (PR) with PED polling
 //! - Warm Port Reset (WPR) with timeout
-//! - Link state control (RxDetect, U0, etc.)
-//! - Power-on/power-cycle for PPC-capable controllers
+//! - Port power for PPC-capable controllers
 //!
 //! # Port register layout (xHCI spec §5.4.8)
 //!
@@ -17,10 +16,11 @@
 //! implemented.
 
 use super::register::{
-    OperationalRegisters, PORTSC_CCS, PORTSC_LWS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK,
-    PORTSC_PP, PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
+    OperationalRegisters, PORTSC_CCS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK, PORTSC_PP,
+    PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
 };
 use crate::usb::UsbSpeed;
+pub use crate::timing::{delay_ms, delay_us};
 
 /// Maximum consecutive port detection failures before marking the port as done.
 pub const MAX_PORT_RETRIES: u32 = 8;
@@ -114,7 +114,7 @@ impl PortContext {
     /// Create a new PortContext.
     ///
     /// `port_is_usb3` is an optional bitmask: bit N set means port N is USB 3.0.
-    /// When `None`, all ports are treated as USB 3.0 (legacy fallback).
+    /// When `None`, ports conservatively default to USB 2.0.
     pub fn new(n_ports: u32, ppc: bool, port_is_usb3: Option<&[u32]>) -> Self {
         let mut ports = alloc::vec::Vec::new();
         for i in 0..n_ports {
@@ -124,7 +124,7 @@ impl PortContext {
                     let bit = i as usize % 32;
                     bitmap.get(word).map(|w| (w >> bit) & 1 != 0)
                 })
-                .unwrap_or(true);
+                .unwrap_or(false);
             ports.push(Port::new(i, is_usb3));
         }
         Self {
@@ -187,61 +187,34 @@ impl PortContext {
 /// wait for PED.  The full wait is bounded to ~20 s per phase.
 pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static str> {
     let ps_raw = op.portsc(port).0;
-    let had_ccs = ps_raw & PORTSC_CCS != 0;
-    let had_change = (ps_raw & PORTSC_RW1C_MASK) != 0;
+    if ps_raw & PORTSC_CCS == 0 {
+        return Err("disconnected");
+    }
 
-    // Assert PR (Linux does this even when CCS=0)
     op.write_portsc(port, (ps_raw & !PORTSC_RW1C_MASK) | PORTSC_PR);
 
-    // Poll PR until cleared by hardware (xHCI spec §5.4.8)
-    let mut pr_cleared = false;
-    for _ in 0..200_000 {
+    // USB2 reset completes within 50 ms; allow 100 ms for slow hardware.
+    for _ in 0..1_000 {
         if op.portsc(port).0 & PORTSC_PR == 0 {
-            pr_cleared = true;
             break;
         }
         delay_us(100);
     }
-    if !pr_cleared {
+    if op.portsc(port).0 & PORTSC_PR != 0 {
         return Err("port reset timeout");
     }
 
-    // Always wait for CCS after PR clears — USB 3.0 link training
-    // momentarily drops CCS during re-training even when the device
-    // remains physically connected. Use a longer timeout when a device
-    // was known to be present or there was recent activity.
-    let max_iterations = if had_ccs {
-        50_000
-    } else if had_change {
-        50_000
-    } else {
-        1_000
-    };
-    let mut ccs_appeared = false;
-    for _ in 0..max_iterations {
-        if op.portsc(port).0 & PORTSC_CCS != 0 {
-            ccs_appeared = true;
-            break;
+    for _ in 0..1_000 {
+        let status = op.portsc(port).0;
+        if status & PORTSC_CCS == 0 {
+            return Err("disconnected");
+        }
+        if status & PORTSC_PED != 0 {
+            return Ok(());
         }
         delay_us(100);
     }
-    if !ccs_appeared {
-        return Err("disconnected");
-    }
-
-    // Wait for PED (only meaningful when CCS=1)
-    for _ in 0..200_000 {
-        if op.portsc(port).0 & PORTSC_PED != 0 {
-            break;
-        }
-        delay_us(100);
-    }
-
-    // If CCS=1 but PED never set, the reset did not complete normally
-    if op.portsc(port).0 & PORTSC_CCS == 0 {
-        return Err("disconnected");
-    }
-    Ok(())
+    Err("port enable timeout")
 }
 
 /// Issue a Warm Port Reset (WPR) on the given port.
@@ -252,33 +225,32 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
 /// is attempted as a fallback.  Returns the final PORTSC value on success.
 pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &'static str> {
     let ps_raw = op.portsc(port).0;
+    if ps_raw & PORTSC_CCS == 0 {
+        return Err("disconnected");
+    }
     let v = ps_raw & !PORTSC_RW1C_MASK;
     op.write_portsc(port, v | PORTSC_WPR);
 
     // Poll for WPR completion (WPR bit cleared by hardware)
-    let mut wpr_cleared = false;
-    for _ in 0..1_000_000 {
+    for _ in 0..1_000 {
         if op.portsc(port).0 & PORTSC_WPR == 0 {
-            wpr_cleared = true;
             break;
         }
         delay_us(100);
     }
-    if !wpr_cleared {
+    if op.portsc(port).0 & PORTSC_WPR != 0 {
         return Err("warm port reset timeout: WPR not cleared");
     }
 
     // Wait for PR (Port Reset) to clear — the xHC signals reset
     // completion by clearing both WPR and PR (xHCI 1.2 §5.4.8).
-    let mut pr_cleared = false;
-    for _ in 0..1_000_000 {
+    for _ in 0..1_000 {
         if op.portsc(port).0 & PORTSC_PR == 0 {
-            pr_cleared = true;
             break;
         }
         delay_us(100);
     }
-    if !pr_cleared {
+    if op.portsc(port).0 & PORTSC_PR != 0 {
         return Err("warm port reset timeout: PR not cleared");
     }
 
@@ -301,217 +273,58 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     // We poll CCS and PED for up to ~1.2 s.  If neither asserts, we try
     // a single explicit RxDetect kick (with LWS) as a fallback, but only
     // after giving the hardware a fair chance to finish on its own.
-    let mut trained = false;
-    for _ in 0..120 {
-        delay_ms(10);
+    for _ in 0..100 {
+        delay_ms(1);
         let ps = op.portsc(port);
-        if ps.ccs() {
-            trained = true;
+        if !ps.ccs() {
+            return Err("disconnected");
+        }
+        if ps.ped() {
+            return Ok(ps);
+        }
+    }
+    Err("warm port reset: enable timeout")
+}
+
+/// Power the port and reset an attached device if it is not yet enabled.
+pub fn ensure_port_ready(
+    op: &OperationalRegisters,
+    port_idx: u32,
+    is_usb3: bool,
+    ppc: bool,
+    wpr_attempted: bool,
+) -> bool {
+    let mut status = op.portsc(port_idx);
+    if ppc && !status.pp() {
+        op.write_portsc(port_idx, (status.0 & !PORTSC_RW1C_MASK) | PORTSC_PP);
+        delay_ms(20);
+    }
+
+    let raw = op.portsc(port_idx).0;
+    let changes = raw & PORTSC_RW1C_MASK;
+    if changes != 0 {
+        op.write_portsc(port_idx, (raw & !PORTSC_RW1C_MASK) | changes);
+    }
+
+    for _ in 0..100 {
+        status = op.portsc(port_idx);
+        if status.ccs() || !ppc {
             break;
         }
+        delay_ms(1);
     }
-    if !trained {
-        // Fallback: explicitly force RxDetect to re-start link training.
-        // Some older / quirky xHC implementations may need this extra
-        // kick after WPR when the automatic training stalls.
-        const PLS_RXDETECT: u32 = 5 << 5;
-        op.update_portsc(
-            port,
-            PLS_RXDETECT | PORTSC_LWS,
-            PORTSC_PLS_MASK | PORTSC_LWS,
-        );
-        for _ in 0..120 {
-            delay_ms(10);
-            if op.portsc(port).ccs() {
-                trained = true;
-                break;
-            }
-        }
-    }
-    if trained {
-        log::info!("xHCI: port {} WPR link trained successfully", port);
-    } else {
-        log::warn!(
-            "xHCI: port {} WPR link training did not complete (CCS still 0)",
-            port
-        );
-    }
-    Ok(op.portsc(port))
-}
-
-/// Force a port into RxDetect link state with LWS to kick-start link training.
-///
-/// Uses `update_portsc` to preserve all non-PLS register bits.
-pub fn force_rx_detect(op: &OperationalRegisters, port: u32) {
-    const PLS_RXDETECT: u32 = 5 << 5;
-    op.update_portsc(
-        port,
-        PLS_RXDETECT | PORTSC_LWS,
-        PORTSC_PLS_MASK | PORTSC_LWS,
-    );
-}
-
-/// Power up a single port and kick-start link training.
-///
-/// Handles: PP toggle, Compliance exit, RxDetect, WPR, and CCS polling.
-/// This is the unified helper replacing duplicated logic in `init_ports`,
-/// `try_connect_port`, and `clear_hse_and_recover`.
-///
-/// - For USB 3.0 ports: toggles PP if needed, exits Compliance, forces RxDetect,
-///   waits for CCS up to ~2s, then tries WPR if CCS still 0.
-/// - For USB 2.0 ports: sets PP=1 (if PPC), waits for CCS up to ~2s.
-///   USB 2.0 ports DON'T need RxDetect/PLS writes.
-/// - Returns true if CCS=1 after all recovery attempts.
-pub fn ensure_port_ready(op: &OperationalRegisters, port_idx: u32, is_usb3: bool, ppc: bool, wpr_attempted: bool) -> bool {
-    let ps = op.portsc(port_idx);
-    if ps.ccs() && ps.ped() {
-        return true;
-    }
-
-    // Phase 1: Ensure Port Power
-    if ppc && !ps.pp() {
-        let raw = ps.0;
-        op.write_portsc(port_idx, (raw & !PORTSC_RW1C_MASK) | PORTSC_PP);
-        delay_ms(50);
-    }
-
-    // Clear stale RW1C bits that might block port state changes
-    let raw = op.portsc(port_idx).0;
-    if raw & PORTSC_RW1C_MASK != 0 {
-        op.write_portsc(port_idx, (raw & !PORTSC_RW1C_MASK) | (raw & PORTSC_RW1C_MASK));
-        delay_us(50);
-    }
-
-    // Phase 2: Exit Compliance mode (USB 3.0 only)
-    if is_usb3 {
-        let _ = exit_compliance(op, port_idx);
-    }
-
-    // Phase 3: Wait for CCS with RxDetect kick for USB 3.0
-    let mut ccs_seen = op.portsc(port_idx).ccs();
-    if is_usb3 && !ccs_seen {
-        force_rx_detect(op, port_idx);
-        for _ in 0..200 {
-            delay_ms(10);
-            if op.portsc(port_idx).ccs() {
-                ccs_seen = true;
-                break;
-            }
-        }
-    } else if !is_usb3 && !ccs_seen {
-        // USB 2.0: controller detects device autonomously when PP=1
-        for _ in 0..200 {
-            delay_ms(10);
-            if op.portsc(port_idx).ccs() {
-                ccs_seen = true;
-                break;
-            }
-        }
-    }
-    if ccs_seen && op.portsc(port_idx).ped() {
-        return true;
-    }
-
-    // Phase 4: Warm Port Reset for USB 3.0 (only once per connect attempt),
-    // Port Reset for CCS=1/PED=0
-    if is_usb3 && !ccs_seen && op.portsc(port_idx).pp() && !wpr_attempted {
-        let _ = warm_port_reset(op, port_idx);
-        ccs_seen = op.portsc(port_idx).ccs();
-    } else if ccs_seen && !op.portsc(port_idx).ped() {
-        let _ = port_reset(op, port_idx);
-    }
-
-    // Phase 5: PP toggle fallback (last resort for stubborn PHYs)
-    if !op.portsc(port_idx).ccs() && ppc {
-        power_cycle(op, port_idx);
-        if is_usb3 {
-            force_rx_detect(op, port_idx);
-        }
-        for _ in 0..200 {
-            delay_ms(10);
-            if op.portsc(port_idx).ccs() {
-                ccs_seen = true;
-                break;
-            }
-        }
-    }
-
-    ccs_seen && op.portsc(port_idx).ped()
-}
-
-/// Exit Compliance (PLS=15) mode by transitioning to a non-compliance link state.
-///
-/// Some xHCI controllers enter Compliance mode instead of RxDetect after
-/// HCRST, and will never set CCS until explicitly told to leave.
-/// The procedure (per xHCI spec §5.4.8) is:
-///   1. Write PLS=U0 (0) + LWS=1
-///   2. If the port stays in Compliance, fall back to Port Reset
-pub fn exit_compliance(op: &OperationalRegisters, port: u32) -> bool {
-    let ps = op.portsc(port);
-    if ps.pls() != 15 {
+    if !status.ccs() {
         return false;
     }
-    log::info!(
-        "xHCI: port {} in Compliance mode (PLS=15), attempting exit",
-        port
-    );
-    const PLS_U0: u32 = 0 << 5;
-    op.update_portsc(port, PLS_U0 | PORTSC_LWS, PORTSC_PLS_MASK | PORTSC_LWS);
-    delay_ms(50);
-    let ps2 = op.portsc(port);
-    if ps2.pls() != 15 {
-        log::info!("xHCI: port {} exited Compliance → PLS={}", port, ps2.pls());
+    if status.ped() {
         return true;
     }
-    log::info!(
-        "xHCI: port {} still in Compliance after U0 write, trying Port Reset",
-        port
-    );
-    port_reset(op, port).is_ok()
-}
 
-/// Power-cycle a port (only valid when PPC is supported).
-pub fn power_cycle(op: &OperationalRegisters, port: u32) {
-    let ps_raw = op.portsc(port).0;
-    // Power off
-    op.write_portsc(port, ps_raw & !(PORTSC_PP | PORTSC_RW1C_MASK));
-    delay_ms(20);
-    // Power on
-    let v2 = op.portsc(port).0;
-    op.write_portsc(port, (v2 & !PORTSC_RW1C_MASK) | PORTSC_PP);
-    delay_ms(50);
-}
-
-// ============================================================================
-//  Utility: delay function
-// ============================================================================
-
-/// Busy-wait for approximately `us` microseconds using RDTSC.
-///
-/// Assumes TSC ≥ 1 GHz (≈1000 ticks/µs). On faster CPUs the wait is
-/// proportionally longer, which is harmless for USB timeouts.
-pub fn delay_us(us: u64) {
-    if us == 0 {
-        return;
+    if is_usb3 {
+        !wpr_attempted && warm_port_reset(op, port_idx).is_ok_and(|final_status| final_status.ped())
+    } else {
+        port_reset(op, port_idx).is_ok()
     }
-    let start = unsafe { core::arch::x86_64::_rdtsc() };
-    // 1 GHz → 1000 ticks/µs (conservative lower bound)
-    let target = us * 1000;
-    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
-        core::hint::spin_loop();
-    }
-}
-
-/// Convenience wrapper: busy-wait for `ms` milliseconds.
-pub fn delay_ms(ms: u64) {
-    delay_us(ms * 1000);
-}
-
-/// Legacy delay kept for ABI compatibility — delegates to `delay_us`.
-pub fn delay(iterations: u32) {
-    // Each port‑0x80 iteration took roughly 1–2 µs on real hardware.
-    // Map to microseconds conservatively.
-    delay_us(iterations as u64 * 2);
 }
 
 // ============================================================================
@@ -662,14 +475,11 @@ mod tests {
     }
 
     #[test]
-    fn test_port_context_default_all_usb3() {
+    fn test_port_context_default_all_usb2() {
         // No bitmap → all ports default to USB 3.0
         let ctx = PortContext::new(8, false, None);
         for p in &ctx.ports {
-            assert!(
-                p.is_usb3,
-                "all ports should default to USB 3.0 when no bitmap"
-            );
+            assert!(!p.is_usb3, "unclassified ports must default to USB 2.0");
         }
     }
 

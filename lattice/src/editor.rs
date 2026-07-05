@@ -135,7 +135,7 @@ impl EditorBuffer {
                 .char_indices()
                 .map(|(idx, _)| idx)
                 .filter(|&idx| idx < self.cursor_col)
-                .last()
+                .next_back()
                 .unwrap_or(0);
         } else if self.cursor_row > 0 {
             self.cursor_row -= 1;

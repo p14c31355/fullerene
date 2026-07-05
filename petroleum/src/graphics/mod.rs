@@ -36,14 +36,6 @@ impl<'a> FramebufferGuard<'a> {
     }
 }
 
-pub trait FramebufferBackend {
-    fn width(&self) -> usize;
-    fn height(&self) -> usize;
-    fn pitch(&self) -> usize;
-    fn buffer_mut(&mut self) -> &mut [u8];
-    fn flush(&mut self);
-}
-
 /// Renderer trait provides a generic interface for 2D graphics operations.
 pub trait Renderer {
     fn draw_pixel(&mut self, x: i32, y: i32, color: u32);
@@ -62,9 +54,6 @@ pub trait Console: core::fmt::Write {
     fn set_cursor(&mut self, x: usize, y: usize);
     fn scroll(&mut self);
 }
-
-pub mod virtio_gpu;
-pub use virtio_gpu::VirtioGpuFramebuffer;
 
 pub mod color;
 pub mod constants;

@@ -144,8 +144,8 @@ impl UnifiedMemoryManager {
         match mode {
             // Uncached: PCD=1 (NO_CACHE) + PWT=0 → UC- (or UC if MTRR says UC)
             CacheMode::Uncached => PageFlags::NO_CACHE,
-            // WriteCombining: PCD=0 + PWT=1 (WRITE_THROUGH) → WC via PAT default
-            // (PAT reset-default PA1 = 0b001 = WC).  Combined with MTRR UC on
+            // WriteCombining: PCD=0 + PWT=1 selects PAT slot 1.
+            // `configure_framebuffer_pat` programs PAT slot 1 to WC. Combined with MTRR UC on
             // PCI MMIO frames, the effective type is WC — safe for framebuffer
             // and won't #GP on InsydeH2O.
             CacheMode::WriteCombining => PageFlags::WRITE_THROUGH,

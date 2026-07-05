@@ -1395,8 +1395,7 @@ impl IwlWifiDevice {
                 let buf = &self.rx_bufs[desc_idx];
                 let frame_len = (desc.len as usize).min(buf.len());
                 // Use DmaRegion::read_into for cache-invalidate + copy
-                let mut frame_data = alloc::vec::Vec::with_capacity(frame_len);
-                unsafe { frame_data.set_len(frame_len); }
+                let mut frame_data = alloc::vec![0; frame_len];
                 buf.read_into(&mut frame_data);
                 self.process_rx_frame(&frame_data);
             }

@@ -57,7 +57,7 @@ fn register_nozzle_hooks() {
             } else {
                 "."
             };
-            let long_format = ctx.args.iter().any(|a| *a == "-l");
+            let long_format = ctx.args.contains(&"-l");
             match crate::vfs::readdir(path) {
                 Ok(entries) => {
                     for ent in entries {
@@ -525,7 +525,7 @@ fn register_nozzle_hooks() {
             }
         }
         "sort" => {
-            let reverse = ctx.args.iter().any(|a| *a == "-r");
+            let reverse = ctx.args.contains(&"-r");
             let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" { 2 } else { 1 };
             if path_idx >= ctx.args.len() {
                 return tstr!(ctx.terminal, "Usage: sort [-r] <file>");

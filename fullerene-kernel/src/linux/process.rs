@@ -104,7 +104,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             Some(f) => f,
             None => {
                 drop(fa_lock);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
                 crate::memory_management::deallocate_process_page_table(cloned_frame);
                 return errno_code(ENOMEM);
             }
@@ -114,7 +114,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         match vdso {
             Ok(v) => Some(v),
             Err(_) => {
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
                 crate::memory_management::deallocate_process_page_table(cloned_frame);
                 return errno_code(ENOMEM);
             }
@@ -145,7 +145,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         dispatch_mode: {
             let mut child_rt = super::runtime::LinuxRuntime::new(child_pid.0, rt.initial_break);
             child_rt.fd_table.entries = rt.fd_table.entries.clone();
-            Some(super::runtime::DispatchMode::Linux(child_rt))
+            Some(super::runtime::DispatchMode::Linux(alloc::boxed::Box::new(child_rt)))
         },
     };
 

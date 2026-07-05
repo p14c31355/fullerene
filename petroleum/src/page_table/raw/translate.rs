@@ -2,7 +2,7 @@
 //!
 //! Uses the unified walker for safe traversal.
 
-use crate::page_table::raw::walker::{WalkError, walk};
+use crate::page_table::raw::walker::{WalkError, walk_read};
 use crate::page_table::types::*;
 
 /// Translate a virtual address to a physical address.
@@ -10,10 +10,7 @@ use crate::page_table::types::*;
 /// Returns `Err` if the page table walk encounters a huge page conflict
 /// or an unused entry.
 pub fn translate(root: &PageTable, virt: CanonicalVirtAddr) -> Result<u64, WalkError> {
-    // We need a mutable reference for the walker, but we only read.
-    // This is safe because walk() never modifies entries.
-    let root_mut = unsafe { root.as_mut_for_walking() };
-    let entry = walk(root_mut, virt, 1)?;
+    let entry = walk_read(root, virt, 1)?;
 
     if !entry.is_present() {
         return Err(WalkError::OutOfMemory); // Entry not present
@@ -28,8 +25,7 @@ pub fn translate_frame(
     root: &PageTable,
     virt: CanonicalVirtAddr,
 ) -> Result<(PhysFrame, u16), WalkError> {
-    let root_mut = unsafe { root.as_mut_for_walking() };
-    let entry = walk(root_mut, virt, 1)?;
+    let entry = walk_read(root, virt, 1)?;
 
     if !entry.is_present() {
         return Err(WalkError::OutOfMemory);

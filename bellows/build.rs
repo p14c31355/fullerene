@@ -19,10 +19,6 @@ fn main() {
     let kernel_path = match env::var("KERNEL_BIN_PATH") {
         Ok(p) => PathBuf::from(p),
         Err(_) => {
-            println!(
-                "cargo:warning=KERNEL_BIN_PATH not set — creating empty kernel.bin for compilation check"
-            );
-            // Create an empty file for compilation checking
             fs::write(&dest, &[]).unwrap();
             return;
         }
@@ -38,9 +34,4 @@ fn main() {
             e
         );
     });
-
-    println!(
-        "cargo:warning=Embedding kernel from {}",
-        kernel_path.display()
-    );
 }

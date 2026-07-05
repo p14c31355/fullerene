@@ -111,7 +111,10 @@ unsafe impl Send for EhciContext {}
 
 impl EhciContext {
     /// Create a new EHCI context from the MMIO base address.
-    pub fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
+    /// # Safety
+    /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
+    /// of the returned controller.
+    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
         let registers = unsafe { EhciRegisterContext::new(mmio_base) };
         let hcsparams = unsafe { ptr::read_volatile(mmio_base.add(4) as *const u32) };
         let n_ports = (hcsparams & 0x0F).max(1);
@@ -681,18 +684,4 @@ impl EhciContext {
         Ok(len)
     }
 
-    // ── PCI creation ───────────────────────────────────────────
-
-    /// Create from a PCI device configuration.
-    pub fn from_pci(
-        device: &crate::pci::PciDevice,
-        ctx: &'static dyn DriverContext,
-    ) -> Option<Self> {
-        let mmio_phys = device.read_bar(0)?;
-        if mmio_phys == 0 {
-            return None;
-        }
-        let mmio_virt = ctx.phys_to_virt(mmio_phys) as *mut u8;
-        EhciContext::new(mmio_virt, ctx)
-    }
 }

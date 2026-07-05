@@ -2,7 +2,7 @@
 
 #![no_std]
 #![no_main]
-#![feature(alloc_error_handler)]
+#![cfg_attr(target_os = "uefi", feature(alloc_error_handler))]
 #![feature(never_type)]
 extern crate alloc;
 
@@ -14,7 +14,7 @@ static KERNEL_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.b
 mod loader;
 
 use loader::{exit_boot_services_and_jump, init_heap, load_efi_image};
-use petroleum::common::{EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebufferConfig};
+use petroleum::common::EfiSystemTable;
 
 #[unsafe(no_mangle)]
 pub unsafe extern "efiapi" fn efi_main(
@@ -54,12 +54,7 @@ pub unsafe extern "efiapi" fn efi_main(
             );
         }
         None => {
-            petroleum::bootloader_log!("No graphics protocols found, initializing VGA text mode.");
-            init_basic_vga_text_mode();
-            install_vga_framebuffer_config();
-            petroleum::bootloader_log!(
-                "VGA framebuffer config installed, continuing with kernel load."
-            );
+            petroleum::bootloader_log!("No directly addressable GOP mode; continuing headless.");
         }
     }
     petroleum::bootloader_log!("Graphics initialization complete.");
@@ -108,24 +103,4 @@ pub unsafe extern "efiapi" fn efi_main(
             panic!("Failed to exit boot services.");
         }
     }
-}
-
-fn init_basic_vga_text_mode() {
-    petroleum::println!("Basic VGA text mode initialization...");
-    petroleum::graphics::detect_and_init_vga_graphics();
-    petroleum::println!("Basic VGA text mode initialized as fallback.");
-}
-
-fn install_vga_framebuffer_config() {
-    petroleum::println!("Installing VGA framebuffer config for UEFI...");
-    let config = FullereneFramebufferConfig {
-        address: 0xB8000,
-        width: 80,
-        height: 25,
-        pixel_format: EfiGraphicsPixelFormat::PixelFormatMax,
-        bpp: 16,
-        stride: 80,
-    };
-    petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
-    petroleum::println!("VGA framebuffer config saved globally successfully.");
 }

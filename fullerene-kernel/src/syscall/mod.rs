@@ -44,7 +44,6 @@ mod support_matrix {
         Full,
         Partial,
         Stub,
-        NotSupported,
     }
 
     struct SyscallInfo {
@@ -123,5 +122,10 @@ mod support_matrix {
     fn count_full() {
         let full = SYSCALLS.iter().filter(|s| s.support == Support::Full).count();
         assert!(full > 20, "expected at least 20 fully implemented syscalls");
+        assert!(SYSCALLS.iter().all(|s| !s.name.is_empty()));
+        assert!(SYSCALLS
+            .iter()
+            .filter(|s| s.support != Support::Full)
+            .all(|s| !s.notes.is_empty()));
     }
 }

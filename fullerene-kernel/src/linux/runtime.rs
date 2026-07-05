@@ -8,6 +8,7 @@ use super::process as linux_proc;
 use super::signal as linux_signal;
 use super::time as linux_time;
 use super::types::*;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use petroleum::common::memory::UserSlice;
@@ -17,7 +18,7 @@ pub enum DispatchMode {
     /// Fullerene native syscalls (existing behavior)
     Fullerene,
     /// Linux ABI emulation
-    Linux(LinuxRuntime),
+    Linux(Box<LinuxRuntime>),
 }
 
 /// Linux process state.
@@ -338,8 +339,7 @@ pub unsafe fn copy_from_user(buf: u64, count: usize) -> Result<alloc::vec::Vec<u
         return Err(EFAULT);
     }
     let slice = UserSlice::new(buf as *mut u8, limit, false).map_err(|_| EFAULT)?;
-    let mut data = alloc::vec::Vec::with_capacity(limit);
-    data.resize(limit, 0);
+    let mut data = alloc::vec![0; limit];
     unsafe { slice.copy_from_user(&mut data) }.map_err(|_| EFAULT)?;
     Ok(data)
 }

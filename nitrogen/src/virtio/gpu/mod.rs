@@ -492,7 +492,10 @@ impl VirtioGpu {
             .expect("Type5 write failed");
     }
 
-    pub fn setup_queue(
+    /// # Safety
+    /// All queue pointers must reference distinct, DMA-accessible allocations
+    /// matching their associated physical addresses.
+    pub unsafe fn setup_queue(
         &mut self,
         idx: u32,
         desc: *mut VringDesc,

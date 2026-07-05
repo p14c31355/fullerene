@@ -620,7 +620,7 @@ pub fn create_process(
             Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
         let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout)
             .map_err(|e| {
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
                 e
             })?;
         process.user_stack =
@@ -631,8 +631,10 @@ pub fn create_process(
             Ok(pt) => pt,
             Err(e) => {
                 log::error!("Failed to create process page table: {:?}", e);
-                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                    petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                }
                 return Err(e);
             }
         };
@@ -642,8 +644,10 @@ pub fn create_process(
 
         let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
         let fa = fa_lock.as_mut().ok_or_else(|| {
-            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            unsafe {
+                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            }
             if let Some(ref page_table) = process.page_table {
                 if let Some(pml4_frame) = page_table.pml4_frame() {
                     crate::memory_management::deallocate_process_page_table(pml4_frame);
@@ -654,8 +658,10 @@ pub fn create_process(
         let pt: &mut petroleum::page_table::process::ProcessPageTable =
             process.page_table.as_mut().unwrap();
         let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
-            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            unsafe {
+                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            }
             if let Some(ref page_table) = process.page_table {
                 if let Some(pml4_frame) = page_table.pml4_frame() {
                     crate::memory_management::deallocate_process_page_table(pml4_frame);
@@ -671,7 +677,7 @@ pub fn create_process(
             Ok(pt) => pt,
             Err(e) => {
                 log::error!("Failed to create process page table: {:?}", e);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
                 return Err(e);
             }
         };
@@ -721,7 +727,9 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         let kernel_stack_base =
             process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
         let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
+        unsafe {
+            petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout)
+        };
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {

@@ -189,7 +189,9 @@ pub fn exit(code: i32) -> ! {
     unsafe {
         syscall(SyscallNumber::Exit as u64, code as u64, 0, 0, 0, 0, 0);
     }
-    loop {} // unreachable, but to make ! return type
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Get PID syscall wrapper

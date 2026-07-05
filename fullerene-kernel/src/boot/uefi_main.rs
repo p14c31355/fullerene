@@ -14,7 +14,7 @@ pub unsafe extern "C" fn efi_main_stage2(
 ) -> ! {
     unsafe {
         // ════════════════════════════════════════════════════════════
-        // STAGE -1: Ultra-early serial + VGA text diagnostic
+        // STAGE -1: Ultra-early serial diagnostic
         //
         // We do NOT write to speculative GOP FB addresses here because
         // on real hardware the identity-mapped physical addresses
@@ -22,14 +22,8 @@ pub unsafe extern "C" fn efi_main_stage2(
         // config space, SPI flash, PCH registers) and can cause
         // unpredictable system behavior or machine checks.
         //
-        // Instead we only write to the VGA text buffer at 0xB8000
-        // (always safe on x86 UEFI — the memory exists even if unused)
-        // and to the stage marker at physical 0x700.
-        let off_ = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let vga_text = (0xB8000u64 + off_) as *mut u16;
-        for i in 0..80*25 {
-            core::ptr::write_volatile(vga_text.add(i), 0x0420u16); // red-on-black space
-        }
+        // Legacy VGA memory is not guaranteed to be decoded on a pure UEFI
+        // machine, so early diagnostics stay on serial and reserved low RAM.
 
         // ── Ultra-early diagnostic: write stage markers to physical 0x700 ──
         // These survive triple-fault / reset and can be read via UEFI shell
@@ -47,64 +41,16 @@ pub unsafe extern "C" fn efi_main_stage2(
             options(nomem, preserves_flags)
         );
         debug_serial(b"S2: Entering efi_main_stage2\n");
-
-        // Store args_ptr where it survives register clobbers.
-        petroleum::transition::KERNEL_ARGS = args_ptr;
-
-        // ── Early framebuffer parameter capture ───────────────────
-        // Store raw integers NOW while args_ptr is valid.  Do NOT
-        // dereference args_ptr later — it may be corrupted by the
-        // world‑switch page‑table rebuild.
-        //
-        // VALIDATION: Before dereferencing args_ptr, verify the
-        // framebuffer fields are sane.  If args_ptr lies outside the
-        // identity huge-page range (0–64GB), the shallow clone_page_table
-        // will translate it to wrong physical memory and we'll read
-        // garbage.  Check that fb_width/height/stride/bpp/address are
-        // within plausible bounds.  If they aren't, skip the .data store
-        // and rely on the PCI BAR0 fallback later.
-        crate::graphics::discovery::store_args_va(args_ptr as u64);
-        {
-            let args = &*args_ptr;
-            // Sanity-check: are the framebuffer fields plausible?
-            // On real InsydeH2O firmware, garbage reads produce values like
-            // 1900544×4172873728 — these are clearly out of range.
-            let fb_valid = args.fb_address >= 0x100000
-                && args.fb_width > 0
-                && args.fb_width <= 16384
-                && args.fb_height > 0
-                && args.fb_height <= 16384
-                && args.fb_bpp == 32;
-            if fb_valid {
-                let stride_bytes = if args.fb_stride > 0 {
-                    args.fb_stride
-                } else {
-                    args.fb_width.saturating_mul(4)
-                };
-                crate::graphics::discovery::store_boot_fb_params(
-                    args.fb_address,
-                    args.fb_width,
-                    args.fb_height,
-                    stride_bytes,
-                    args.fb_bpp,
-                    args.fb_pixel_format,
-                );
-            } else {
-                // Framebuffer fields are garbage — args_ptr was not
-                // identity-mapped correctly.  The .data globals were
-                // already populated correctly by uefi_entry.rs (which
-                // runs before the page-table switch and can still
-                // dereference the bootloader args safely).  Do NOT
-                // overwrite them with a PCI BAR heuristic — on Intel
-                // GPUs, BAR0 is MMIO registers (not the framebuffer)
-                // and even BAR2 (GTT aperture) gives us the aperture
-                // base, not the GOP scanout address.  Rely on the
-                // values saved earlier by uefi_entry.rs.
-                debug_serial(b"S2: WARNING: KernelArgs FB fields invalid, using .data globals from uefi_entry\n");
-            }
+        if !crate::memory_management::configure_framebuffer_pat() {
+            debug_serial(b"S2: PAT unavailable; GOP framebuffer disabled\n");
+            crate::graphics::discovery::STORED_FB_PHYS = 0;
         }
 
-        // Signal '3': After early FB param capture
+        // Store args_ptr where it survives register clobbers.
+        petroleum::early::transition::KERNEL_ARGS = args_ptr;
+
+        // GOP parameters were copied into kernel-owned `.data` by uefi_entry
+        // before the page-table transition, while KernelArgs was authoritative.
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x33",
@@ -144,19 +90,7 @@ pub unsafe extern "C" fn efi_main_stage2(
     debug_serial(b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n");
     // Initialize LOCAL_APIC_ADDRESS and validate FB config (no 4KB mappings).
     crate::boot::uefi_init::UefiInitContext::map_mmio();
-    debug_serial(b"DEBUG: [uefi_main] APIC addr set, mapping GOP FB pages\n");
-
-    // On InsydeH2O firmware, explicitly creating 4 KB UC/WC page-table
-    // entries for the GOP framebuffer here **breaks** the boot-loader's
-    // identity huge-page mapping (WB via MTRR/PAT).  See README § "Real
-    // Hardware Compatibility" item 3.
-    //
-    // The boot‑time huge‑page mapping already covers the entire lower
-    // 4 GiB address space.  Even if the GOP FB is above 4 GiB, the
-    // kernel's init_graphics() creates a proper WC mapping via
-    // build_renderer_from_stored() later.  We rely on that instead of
-    // pre‑splitting the huge page here.
-    debug_serial(b"DEBUG: [uefi_main] skipping 4KB GOP FB remap (preserving huge page)\n");
+    debug_serial(b"DEBUG: [uefi_main] GOP WC mapping installed by bootstrap\n");
 
     // CRITICAL: On InsydeH2O firmware, VirtIO-GPU init_display() can trigger
     // MSI/MSI-X interrupts as soon as SET_SCANOUT completes. If the APIC LVTs
@@ -174,9 +108,7 @@ pub unsafe extern "C" fn efi_main_stage2(
 
     // NOTE: vga_puts (identity address 0xB8000) removed — after CR3 switch
     // identity VGA access can cause QEMU iothread lock re-entrancy.
-    // Framebuffer diagnostic writes also removed — huge-page WB mapping
-    // conflicts with InsydeH2O MTRR=UC on PCI MMIO → #GP triple fault.
-    // init_graphics() creates proper WC/UC mappings later.
+    // Framebuffer diagnostics are deferred until the validated graphics context.
     // Use only debug_serial for post-world-switch logging.
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset

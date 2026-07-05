@@ -466,7 +466,9 @@ pub fn parse_port_protocols(
 ) -> alloc::vec::Vec<u32> {
     let m = Mmio(mmio_base);
     let n_words = ((n_ports + 31) / 32).max(1) as usize;
-    let mut bitmap = alloc::vec![0xFFFFFFFFu32; n_words];
+    // Unknown ports conservatively default to USB2. Issuing WPR to an
+    // unclassified USB2 port can wedge its PHY.
+    let mut bitmap = alloc::vec![0u32; n_words];
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
     while off != 0 && off < 0x100000 {
@@ -690,47 +692,6 @@ mod tests {
         }
     }
 
-    /// Simulated DriverContext for test use.
-    struct TestDriver;
-    impl crate::DriverContext for TestDriver {
-        fn phys_to_virt(&self, _phys: u64) -> usize {
-            0
-        }
-        fn allocate_frame(&self) -> Result<u64, crate::DriverContextError> {
-            Ok(0x1000)
-        }
-        fn allocate_contiguous_frames(&self, _n: usize) -> Result<u64, crate::DriverContextError> {
-            Ok(0x1000)
-        }
-        fn map_mmio_region(
-            &self,
-            _phys: usize,
-            _virt: usize,
-            _size: usize,
-        ) -> Result<(), crate::DriverContextError> {
-            Ok(())
-        }
-        fn map_page(
-            &self,
-            _virt: usize,
-            _phys: usize,
-            _flags: crate::PageFlags,
-        ) -> Result<(), crate::DriverContextError> {
-            Ok(())
-        }
-        fn free_frame(&self, _phys: u64) {}
-        fn free_contiguous_frames(&self, _phys: u64, _count: usize) {}
-        fn dma_map(
-            &self,
-            _device_id: u16,
-            _phys: u64,
-            _size: usize,
-        ) -> Result<u64, crate::DriverContextError> {
-            Ok(_phys)
-        }
-        fn dma_unmap(&self, _iova: u64, _size: usize) {}
-    }
-
     #[test]
     fn test_register_read_write() {
         let op_base = 0x20usize;
@@ -768,7 +729,7 @@ mod tests {
         assert_eq!(ps.pls(), 5, "port 0 should be in RxDetect");
 
         // Simulate device connection: hardware sets CCS+PED after link training
-        let port0_off = op_base + OP_PORTSC_BASE + 0 * OP_PORTSC_STRIDE;
+        let port0_off = op_base + OP_PORTSC_BASE;
         let cur = sim.read_hw(port0_off);
         sim.write_hw(port0_off, cur | PORTSC_CCS | PORTSC_PED);
 

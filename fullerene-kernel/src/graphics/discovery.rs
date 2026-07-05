@@ -1,13 +1,10 @@
-//! Framebuffer discovery — probes hardware for GOP parameters.
+//! Validation of GOP parameters captured at the boot boundary.
 //!
-//! Three probe strategies in priority order:
-//! 1. `.data`-section globals (stored by `efi_main_stage2`)
-//! 2. `KernelArgs` struct via `STORED_ARGS_VA`
-//! 3. PCI BAR0 scan
+//! The bootloader owns GOP discovery. The kernel consumes that explicit
+//! contract instead of guessing scanout addresses from PCI BARs.
 
 use petroleum::common::EfiGraphicsPixelFormat;
 
-/// Raw probe result — physical address, dimensions, stride (bytes), pixel format.
 pub struct FramebufferProbeResult {
     pub phys: u64,
     pub width: u32,
@@ -16,54 +13,21 @@ pub struct FramebufferProbeResult {
     pub pixel_format: EfiGraphicsPixelFormat,
 }
 
-/// GOP parameters stored in `.data` during `efi_main_stage2`.
-/// Simple integers survive the world‑switch + shallow `clone_page_table`.
-///
-/// # Safety
-///
-/// This `static mut` is written exactly once during `efi_main_stage2` (boot phase)
-/// and read-only thereafter.  Access is serialised by the single‑core boot sequence.
-/// No concurrent readers or writers exist.
+// These values are written once by the single-core stage-2 boot path and are
+// read-only before secondary CPUs or interrupts are enabled.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_PHYS: u64 = 0;
-/// # Safety
-/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_WIDTH: u32 = 0;
-/// # Safety
-/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_HEIGHT: u32 = 0;
-/// # Safety
-/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_STRIDE: u32 = 0;
-/// # Safety
-/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_BPP: u32 = 0;
-/// # Safety
-/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
 #[unsafe(link_section = ".data")]
 pub static mut STORED_FB_PIXEL_FORMAT: u32 = 0;
 
-/// KernelArgs virtual address preserved in `.data`.
-///
-/// # Safety
-/// Written once during boot (`efi_main_stage2`), read-only after. Single-core.
-#[unsafe(link_section = ".data")]
-pub static mut STORED_ARGS_VA: u64 = 0;
-
-/// Store the virtual address of KernelArgs.  Called from `efi_main_stage2`.
-pub fn store_args_va(va: u64) {
-    unsafe {
-        STORED_ARGS_VA = va;
-    }
-    petroleum::serial::_print(format_args!("[store_args] va=0x{va:x}\n"));
-}
-
-/// Store GOP parameters from the bootloader's KernelArgs.
-/// Called from `efi_main_stage2` while `args_ptr` is valid.
 pub fn store_boot_fb_params(
     phys: u64,
     width: u32,
@@ -85,13 +49,11 @@ pub fn store_boot_fb_params(
     ));
 }
 
-/// Discovery engine — tries each probe strategy in order.
 pub struct FramebufferDiscovery;
 
 impl FramebufferDiscovery {
-    /// Probe `.data` globals saved by `efi_main_stage2`.
-    pub fn probe_data_globals() -> Option<FramebufferProbeResult> {
-        let (phys, w, h, stride, bpp, fmt_raw) = unsafe {
+    pub fn discover() -> Option<FramebufferProbeResult> {
+        let (phys, width, height, stride, bpp, format) = unsafe {
             (
                 STORED_FB_PHYS,
                 STORED_FB_WIDTH,
@@ -101,176 +63,31 @@ impl FramebufferDiscovery {
                 STORED_FB_PIXEL_FORMAT,
             )
         };
-        // Strict validation to reject garbage from a broken identity mapping.
-        // On InsydeH2O, if args_phys_addr ≥ 64GB, the shallow clone_page_table
-        // reads wrong physical memory, producing values like 1900544×4172873728.
-        //
-        // Checks:
-        //   1. phys must be in a plausible MMIO range (0x100000 .. 256 GiB)
-        //   2. width/height must be reasonable (80..16384 and 25..16384)
-        //   3. stride must be ≈ width×4, with up to 256 bytes of padding
-        //   4. bpp must be exactly 32
-        //   5. pixel_format must be 0 (RGB) or 1 (BGR)
-        if phys < 0x100000
-            || phys > 0x40_0000_0000 // 256 GiB — no PCI MMIO above this
-            || w < 80
-            || w > 16384
-            || h < 25
-            || h > 16384
+        let minimum_stride = width.checked_mul(4)?;
+        let framebuffer_bytes = u64::from(stride).checked_mul(u64::from(height))?;
+        if !(0x10_0000..1 << 52).contains(&phys)
+            || !(80..=16_384).contains(&width)
+            || !(25..=16_384).contains(&height)
             || bpp != 32
-            || fmt_raw > 1
+            || format > 1
+            || stride < minimum_stride
+            || stride % 4 != 0
+            || framebuffer_bytes > 1 << 30
         {
             return None;
         }
-        // Stride sanity: should be ≈ width×4, with up to 4096 bytes of padding
-        // (some GPU firmware reports stride aligned to 4KB or 64KB boundaries)
-        let expected_stride_min = w.saturating_mul(4);
-        let expected_stride_max = expected_stride_min.saturating_add(4096);
-        if stride < expected_stride_min || stride > expected_stride_max {
-            return None;
-        }
-        let pixel_format = match fmt_raw {
+        let pixel_format = match format {
             0 => EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
             1 => EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            _ => return None,
+            _ => unreachable!(),
         };
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] .data globals valid\n");
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] GOP contract valid\n");
         Some(FramebufferProbeResult {
             phys,
-            width: w,
-            height: h,
+            width,
+            height,
             stride,
             pixel_format,
         })
-    }
-
-    /// Probe `KernelArgs` via `STORED_ARGS_VA`.
-    pub fn probe_kernel_args() -> Option<FramebufferProbeResult> {
-        let args_va = unsafe { STORED_ARGS_VA };
-        if args_va < 0xFFFF_8000_0000_0000 {
-            return None;
-        }
-        let args = unsafe { &*(args_va as *const petroleum::assembly::KernelArgs) };
-        let mut buf = [0u8; 64];
-        let len = petroleum::serial::format_hex_to_buffer(args.fb_address, &mut buf, 16);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] KernelArgs fb=0x");
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
-        if args.fb_address < 0x100000
-            || args.fb_width == 0
-            || args.fb_width > 16384
-            || args.fb_height == 0
-            || args.fb_height > 16384
-            || args.fb_bpp != 32
-        {
-            return None;
-        }
-        let stride = if args.fb_stride > 0 {
-            args.fb_stride
-        } else {
-            args.fb_width.saturating_mul(4)
-        };
-        let pixel_format = match args.fb_pixel_format {
-            0 => EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            1 => EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            _ => EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-        };
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] KernelArgs valid\n");
-        Some(FramebufferProbeResult {
-            phys: args.fb_address,
-            width: args.fb_width,
-            height: args.fb_height,
-            stride,
-            pixel_format,
-        })
-    }
-
-    /// Probe PCI BAR for a VGA-compatible display controller.
-    ///
-    /// On Intel GPUs, BAR2 gives the GTT aperture base, but the actual
-    /// scanout buffer may start at a non-zero offset within the aperture.
-    /// We read the PLANE_SURF MMIO register to get the real GTT offset.
-    pub fn probe_pci(pci_devices: &[nitrogen::pci::PciDevice]) -> Option<FramebufferProbeResult> {
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] scanning PCI\n");
-        for dev in pci_devices {
-            let vendor = nitrogen::pci::PciConfigSpace::read_config_word(dev.bus, dev.device, 0, 0);
-            if vendor == 0xFFFF || vendor == 0x0000 {
-                continue;
-            }
-            let class =
-                nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0B);
-            let subclass =
-                nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
-            if class == 0x03 && subclass == 0x00 {
-                let fb_phys = if vendor == 0x8086 {
-                    // Intel GPU: read BAR0 (MMIO) and BAR2 (GTT aperture)
-                    let bar0_raw = nitrogen::pci::PciConfigSpace::read_config_dword(
-                        dev.bus, dev.device, 0, 0x10,
-                    );
-                    let bar0_phys = if (bar0_raw & 0x6) == 0x4 {
-                        let bar0_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
-                            dev.bus, dev.device, 0, 0x14,
-                        );
-                        ((bar0_upper as u64) << 32) | ((bar0_raw & 0xFFFFFFF0) as u64)
-                    } else {
-                        (bar0_raw & 0xFFFFFFF0) as u64
-                    };
-                    let bar2_raw = nitrogen::pci::PciConfigSpace::read_config_dword(
-                        dev.bus, dev.device, 0, 0x18,
-                    );
-                    let bar2_phys = if (bar2_raw & 0x6) == 0x4 {
-                        let bar2_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
-                            dev.bus, dev.device, 0, 0x1C,
-                        );
-                        ((bar2_upper as u64) << 32) | ((bar2_raw & 0xFFFFFFF0) as u64)
-                    } else {
-                        (bar2_raw & 0xFFFFFFF0) as u64
-                    };
-                    // Read PLANE_SURF register (Pipe A, Plane 1) at BAR0 + 0x7019C
-                    // via the identity mapping (WB huge page, but MTRR UC wins).
-                    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-                    let plane_reg_va = (bar0_phys + 0x7019Cu64 + off) as *mut u32;
-                    // SAFETY: bar0_phys is a valid MMIO address from PCI config.
-                    // The identity + higher-half mapping covers it.
-                    let plane_surf = unsafe { core::ptr::read_volatile(plane_reg_va) };
-                    // Bits [31:12] carry the GTT offset in 4KB pages.
-                    let gtt_offset = (((plane_surf >> 12) & 0xFFFFF) as u64) * 4096;
-                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] Intel PLANE_SURF GTT offset read\n");
-                    bar2_phys + gtt_offset
-                } else {
-                    // Non-Intel: framebuffer is typically at BAR0
-                    let bar0_raw = nitrogen::pci::PciConfigSpace::read_config_dword(
-                        dev.bus, dev.device, 0, 0x10,
-                    );
-                    if (bar0_raw & 0x6) == 0x4 {
-                        let bar0_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
-                            dev.bus, dev.device, 0, 0x14,
-                        );
-                        ((bar0_upper as u64) << 32) | ((bar0_raw & 0xFFFFFFF0) as u64)
-                    } else {
-                        (bar0_raw & 0xFFFFFFF0) as u64
-                    }
-                };
-                if fb_phys >= 0x100000 {
-                    // PCI BAR gives us the physical address but not the
-                    // actual panel resolution.  Fall back to a safe default.
-                    return Some(FramebufferProbeResult {
-                        phys: fb_phys,
-                        width: 1280,
-                        height: 800,
-                        stride: 1280 * 4,
-                        pixel_format: EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-                    });
-                }
-            }
-        }
-        None
-    }
-
-    /// Run all probe strategies in priority order.
-    pub fn discover(pci_devices: &[nitrogen::pci::PciDevice]) -> Option<FramebufferProbeResult> {
-        Self::probe_data_globals()
-            .or_else(|| Self::probe_kernel_args())
-            .or_else(|| Self::probe_pci(pci_devices))
     }
 }
