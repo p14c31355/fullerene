@@ -137,6 +137,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 }
 
 pub(crate) fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallResult {
+    let count = count.min(65536);
     if count == 0 {
         return Ok(0);
     }
