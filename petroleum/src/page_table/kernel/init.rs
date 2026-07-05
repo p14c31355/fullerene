@@ -294,6 +294,49 @@ pub unsafe fn map_page_4k_l1(
     }
 }
 
+/// Fallback: modify 2MB huge-page PDE entries to set cache-control flags
+/// without splitting the huge page.  This avoids the split that can crash
+/// on InsydeH2O firmware while still achieving the desired memory type.
+///
+/// # Safety
+/// `l4_ptr` must point to a valid mutable L4 table whose L3/L2 entries are
+/// accessible via identity mapping.  The virtual range `[virt, virt+size)`
+/// must already be mapped with 2MB huge pages.
+unsafe fn modify_huge_page_cache(
+    l4_ptr: *mut PageTable,
+    virt: u64,
+    size: u64,
+    cache: PageTableFlags,
+) -> Result<(), &'static str> {
+    let end = virt.checked_add(size).ok_or("huge_fb: overflow")?;
+    let start_2mb = virt & !(PAGE_SIZE_2M - 1);
+    let end_2mb = (end + PAGE_SIZE_2M - 1) & !(PAGE_SIZE_2M - 1);
+    let mut vaddr = start_2mb;
+    while vaddr < end_2mb {
+        let idx = PageTableIndices::new(VirtAddr::new(vaddr));
+        let l4 = unsafe { &mut *l4_ptr };
+        // L4 entry → L3 table (identity-mapped, phys_offset = 0 here)
+        let l3_phys = l4[idx.l4].addr();
+        let l3 = unsafe { &mut *(l3_phys.as_u64() as *mut PageTable) };
+        // L3 entry must not be 1GB huge page
+        if l3[idx.l3].flags().contains(PageTableFlags::HUGE_PAGE) {
+            return Err("huge_fb: unexpected 1GB page");
+        }
+        // L3 entry → L2 table (identity-mapped)
+        let l2_phys = l3[idx.l3].addr();
+        let l2 = unsafe { &mut *(l2_phys.as_u64() as *mut PageTable) };
+        // L2 entry must be a 2MB huge page
+        let pde = &mut l2[idx.l2];
+        if !pde.flags().contains(PageTableFlags::HUGE_PAGE) {
+            return Err("huge_fb: not a 2MB huge page");
+        }
+        let new_flags = pde.flags() | cache;
+        pde.set_flags(new_flags);
+        vaddr += PAGE_SIZE_2M;
+    }
+    Ok(())
+}
+
 /// Initialize page tables by creating a new L4 table and jumping to the kernel.
 #[repr(C)]
 pub struct InitAndJumpArgs {
@@ -418,31 +461,36 @@ pub unsafe extern "C" fn init_and_jump(
             .expect("full 64GB huge page higher-half map failed");
         crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
 
-        // Map the framebuffer with 4KB WC entries so the kernel can write to it
-        // with write-combining semantics.  On some firmware (InsydeH2O) this huge
-        // page split can break the mapping, so we treat failure as non-fatal.
+        // Set uncacheable attributes for the framebuffer range.
+        // On InsydeH2O firmware the huge-page split (4KB mapping) corrupts
+        // the page tables entirely, so we modify the existing 2MB huge-page
+        // PDEs directly instead.  This is safe on all hardware.
         if _framebuffer_phys != 0 && _framebuffer_size != 0 {
             let fb_start = _framebuffer_phys & !(PAGE_SIZE_4K - 1);
-            let fb_offset = _framebuffer_phys - fb_start;
-            let fb_pages = (fb_offset + _framebuffer_size).div_ceil(PAGE_SIZE_4K);
-            // UC (PCD=1, PWT=1 → PAT entry 3, default UC-) — always safe
+            // UC- (PCD=1, PWT=0 → PAT entry 2, default UC-) — always safe
             // with any MTRR, avoids #GP on Broadwell where WC can fault.
-            let fb_flags = flags
-                | PageTableFlags::NO_EXECUTE
-                | PageTableFlags::NO_CACHE
-                | PageTableFlags::WRITE_THROUGH;
-            let _ = memory_ops.map_range_4k(
-                VirtAddr::new(fb_start),
-                PhysAddr::new(fb_start),
-                fb_pages,
-                fb_flags,
-            );
-            let _ = memory_ops.map_range_4k(
-                VirtAddr::new(physical_memory_offset.as_u64() + fb_start),
-                PhysAddr::new(fb_start),
-                fb_pages,
-                fb_flags,
-            );
+            let pde_uc = PageTableFlags::NO_CACHE;
+            crate::serial::_print(format_args!(
+                "IAJ: setting FB uncacheable: phys=0x{:x} size={}\n",
+                fb_start, _framebuffer_size
+            ));
+            if modify_huge_page_cache(l4_ptr, fb_start, _framebuffer_size, pde_uc).is_err() {
+                crate::serial::_print(format_args!(
+                    "IAJ: FB identity PDE modify failed\n"
+                ));
+            }
+            if modify_huge_page_cache(
+                l4_ptr,
+                physical_memory_offset.as_u64() + fb_start,
+                _framebuffer_size,
+                pde_uc,
+            )
+            .is_err()
+            {
+                crate::serial::_print(format_args!(
+                    "IAJ: FB higher-half PDE modify failed\n"
+                ));
+            }
         }
 
         // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.

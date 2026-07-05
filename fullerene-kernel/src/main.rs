@@ -44,7 +44,7 @@ mod panic_screen {
         let h    = unsafe { crate::graphics::discovery::STORED_FB_HEIGHT };
         let stride_raw = unsafe { crate::graphics::discovery::STORED_FB_STRIDE };
 
-        if !(0x100_000..1 << 47).contains(&phys)
+        if !(0x100_000..1 << 52).contains(&phys)
             || !(80..=16_384).contains(&w)
             || !(25..=16_384).contains(&h)
             || stride_raw < w.saturating_mul(4)
