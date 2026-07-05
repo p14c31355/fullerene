@@ -122,9 +122,10 @@ impl FramebufferDiscovery {
         {
             return None;
         }
-        // Stride sanity: should be ≈ width×4, with up to 256 bytes of padding
+        // Stride sanity: should be ≈ width×4, with up to 4096 bytes of padding
+        // (some GPU firmware reports stride aligned to 4KB or 64KB boundaries)
         let expected_stride_min = w.saturating_mul(4);
-        let expected_stride_max = expected_stride_min.saturating_add(256);
+        let expected_stride_max = expected_stride_min.saturating_add(4096);
         if stride < expected_stride_min || stride > expected_stride_max {
             return None;
         }
@@ -184,7 +185,13 @@ impl FramebufferDiscovery {
         })
     }
 
-    /// Probe PCI BAR0 for a VGA-compatible display controller.
+    /// Probe PCI BAR for a VGA-compatible display controller.
+    ///
+    /// NOTE: On Intel GPUs (vendor 0x8086), BAR0 (offset 0x10) is MMIO
+    /// register space, NOT the framebuffer.  The framebuffer lives behind
+    /// BAR2 (offset 0x18, GTT aperture).  Other vendors (AMD, NVIDIA)
+    /// typically put the framebuffer at BAR0.  We try BAR2 for Intel,
+    /// BAR0 for others.
     pub fn probe_pci(pci_devices: &[nitrogen::pci::PciDevice]) -> Option<FramebufferProbeResult> {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] scanning PCI\n");
         for dev in pci_devices {
@@ -197,19 +204,21 @@ impl FramebufferDiscovery {
             let subclass =
                 nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
             if class == 0x03 && subclass == 0x00 {
-                let bar0 =
-                    nitrogen::pci::PciConfigSpace::read_config_dword(dev.bus, dev.device, 0, 0x10);
-                let fb_phys = if (bar0 & 0x6) == 0x4 {
-                    // 64-bit BAR: read BAR1 for upper 32 bits
-                    let bar1 = nitrogen::pci::PciConfigSpace::read_config_dword(
-                        dev.bus, dev.device, 0, 0x14,
+                let fb_bar_offset = if vendor == 0x8086 { 0x18u8 } else { 0x10u8 };
+                let upper_bar_offset = if vendor == 0x8086 { 0x1Cu8 } else { 0x14u8 };
+                let bar = nitrogen::pci::PciConfigSpace::read_config_dword(
+                    dev.bus, dev.device, 0, fb_bar_offset,
+                );
+                let fb_phys = if (bar & 0x6) == 0x4 {
+                    let bar_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
+                        dev.bus, dev.device, 0, upper_bar_offset,
                     );
-                    ((bar1 as u64) << 32) | ((bar0 & 0xFFFFFFF0) as u64)
+                    ((bar_upper as u64) << 32) | ((bar & 0xFFFFFFF0) as u64)
                 } else {
-                    (bar0 & 0xFFFFFFF0) as u64
+                    (bar & 0xFFFFFFF0) as u64
                 };
                 if fb_phys >= 0x100000 {
-                    // PCI BAR0 gives us the physical address but not the
+                    // PCI BAR gives us the physical address but not the
                     // actual panel resolution.  Fall back to a safe default.
                     return Some(FramebufferProbeResult {
                         phys: fb_phys,

@@ -14,31 +14,18 @@ pub unsafe extern "C" fn efi_main_stage2(
 ) -> ! {
     unsafe {
         // ════════════════════════════════════════════════════════════
-        // STAGE -1: Pre-args framebuffer test
+        // STAGE -1: Ultra-early serial + VGA text diagnostic
         //
-        // Write solid RED to the whole screen via the identity-mapped
-        // higher-half VA.  If you see RED, the kernel IS executing in
-        // efi_main_stage2 and the huge-page identity mapping works for
-        // writes at off + 0–4GB.  If you still see gray, the kernel
-        // triple-faults before reaching this line.
+        // We do NOT write to speculative GOP FB addresses here because
+        // on real hardware the identity-mapped physical addresses
+        // 0xE0000000 etc. may hit non-framebuffer MMIO regions (PCIe
+        // config space, SPI flash, PCH registers) and can cause
+        // unpredictable system behavior or machine checks.
         //
-        // We use 0xFFFF0000 (ARGB: A=FF, R=FF, G=00, B=00) which
-        // appears as full red regardless of BGR vs RGB pixel format.
-        // ════════════════════════════════════════════════════════════
+        // Instead we only write to the VGA text buffer at 0xB8000
+        // (always safe on x86 UEFI — the memory exists even if unused)
+        // and to the stage marker at physical 0x700.
         let off_ = petroleum::common::memory::get_physical_memory_offset() as u64;
-        // Write to VGA framebuffer range (0xA0000–0xBFFFF) which is
-        // always covered by identity mapping and is harmless to write to
-        // even on UEFI (the memory exists, just not used for VGA).
-        // Also try the GOP framebuffer at common addresses:
-        //   0xE0000000 (common GOP address for Intel/AMD GPUs)
-        for candidate in &[0xE000_0000u64, 0xC000_0000u64, 0xD000_0000u64, 0x8000_0000u64] {
-            let fb_test = (*candidate + off_) as *mut u32;
-            // Write a distinctive pattern: first pixel = red
-            core::ptr::write_volatile(fb_test, 0xFFFF0000u32);
-            // Wait a tiny bit so the write has a chance to land
-            for _ in 0..100_000 { core::hint::spin_loop(); }
-        }
-        // Also fill the VGA text buffer with a red pattern
         let vga_text = (0xB8000u64 + off_) as *mut u16;
         for i in 0..80*25 {
             core::ptr::write_volatile(vga_text.add(i), 0x0420u16); // red-on-black space
@@ -110,11 +97,17 @@ pub unsafe extern "C" fn efi_main_stage2(
                 // Update step marker
                 core::ptr::write_volatile(diag.add(1), 0x0004u16);
 
-                // ── PCI BAR0 fallback ──────────────────────────────
+                // ── PCI BAR fallback ────────────────────────────────
                 // If args_ptr was garbage, the identity huge-page mapping
                 // is broken.  Probe PCI config space via port I/O (0xCF8/
                 // 0xCFC) which needs zero memory-mapped registers, then
                 // store the discovered FB params directly.
+                //
+                // NOTE: On Intel GPUs (vendor 0x8086), BAR0 (offset 0x10)
+                // is the MMIO register space, NOT the framebuffer.  The
+                // framebuffer lives behind BAR2 (offset 0x18, GTT aperture).
+                // Other vendors (AMD, NVIDIA) typically put the framebuffer
+                // at BAR0.  We try BAR2 for Intel, BAR0 for others.
                 let mut fb_stored = false;
                 // Scan bus 0 only (VGA-class display is always on bus 0)
                 for dev in 0..=31u16 {
@@ -131,19 +124,22 @@ pub unsafe extern "C" fn efi_main_stage2(
                     let class = ((class_rev >> 24) & 0xFF) as u8;
                     let subclass = ((class_rev >> 16) & 0xFF) as u8;
                     if class == 0x03 && subclass == 0x00 {
-                        // Read BAR0
-                        let bar_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x10;
+                        let vendor_id = (vendor & 0xFFFF) as u16;
+                        // Intel puts framebuffer at BAR2, most others at BAR0
+                        let fb_bar_offset = if vendor_id == 0x8086 { 0x18u32 } else { 0x10u32 };
+                        let upper_bar_offset = if vendor_id == 0x8086 { 0x1Cu32 } else { 0x14u32 };
+                        let bar_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | fb_bar_offset;
                         x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar_addr);
-                        let bar0 =
+                        let bar_val =
                             x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                        let fb_phys = if (bar0 & 0x6) == 0x4 {
-                            let bar1_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x14;
+                        let fb_phys = if (bar_val & 0x6) == 0x4 {
+                            let bar1_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | upper_bar_offset;
                             x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar1_addr);
                             let bar1 =
                                 x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                            ((bar1 as u64) << 32) | ((bar0 & 0xFFFF_FFF0) as u64)
+                            ((bar1 as u64) << 32) | ((bar_val & 0xFFFF_FFF0) as u64)
                         } else {
-                            (bar0 & 0xFFFF_FFF0) as u64
+                            (bar_val & 0xFFFF_FFF0) as u64
                         };
                         if fb_phys >= 0x100_000 && fb_phys <= 0x10_0000_0000 {
                             let stride = 1280u32 * 4;
