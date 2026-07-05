@@ -465,12 +465,6 @@ fn register_nozzle_hooks() {
                 ctx.terminal.write_str("PCI scan failed.\n");
             }
         }
-        "badapple" => {
-            ctx.terminal
-                .write_str("Playing Bad Apple!! (press any key to stop)...\n");
-            crate::apps::badapple::play_badapple();
-            ctx.terminal.write_str("Bad Apple finished.\n");
-        }
         "date" => {
             let cb = solvent::SOLVENT_CALLBACKS.lock().wall_clock;
             match cb.and_then(|f| f()) {

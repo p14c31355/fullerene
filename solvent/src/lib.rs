@@ -141,7 +141,7 @@ const FRAME_INTERVAL_MS: u64 = 17;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
 pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
-const MAX_FB_PIXELS: usize = 3840 * 2160;
+const MAX_FB_PIXELS: usize = 3840 * 2160; // upper bound for overflow checks
 
 pub fn get_usb_drives() -> Vec<(String, String)> {
     SOLVENT_CALLBACKS
@@ -196,8 +196,8 @@ pub fn clock_string() -> String {
 }
 pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-// ── Static back‑buffer ───────────────────────────────────────
-static BACK_BUFFER: Mutex<[u32; MAX_FB_PIXELS]> = Mutex::new([0u32; MAX_FB_PIXELS]);
+// ── Back‑buffer (heap-allocated at runtime) ──────────────────
+static BACK_BUFFER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
 
 // ── Runtime state ────────────────────────────────────────────
 pub(crate) static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
@@ -763,7 +763,11 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             core::mem::replace(&mut *prev, false)
         };
         {
-            let mut back = BACK_BUFFER.lock();
+            let mut back_opt = BACK_BUFFER.lock();
+            let back = back_opt.get_or_insert_with(|| alloc::vec![0u32; back_len]);
+            if back.len() < back_len {
+                back.resize(back_len, 0);
+            }
             let mut back_target = FramebufferTarget {
                 pixels: &mut back[..back_len],
                 width: fb_width,

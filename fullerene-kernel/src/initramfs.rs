@@ -147,33 +147,29 @@ pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
             offset = next;
             continue;
         }
-        let abs_path = if path.starts_with('/') { path } else { &path };
         let ftype = header.mode & 0o170000;
         let perm = header.mode & 0o7777;
         if ftype == 0o040000 {
-            // Directory
-            let _ = crate::vfs::mkdir(abs_path);
+            let _ = crate::vfs::mkdir(path);
             count += 1;
         } else if ftype == 0o100000 {
-            // Regular file
             let body = &archive[body_start..body_start + header.filesize as usize];
-            if let Ok(parent) = parent_of(abs_path) {
+            if let Ok(parent) = parent_of(path) {
                 if !parent.is_empty() && !crate::vfs::exists(parent) {
                     let _ = crate::vfs::mkdir(parent);
                 }
             }
-            if crate::vfs::exists(abs_path) {
-                let _ = crate::fs::remove(abs_path);
+            if crate::vfs::exists(path) {
+                let _ = crate::fs::remove(path);
             }
-            if create_file_with_mode(abs_path).is_ok() {
-                let _ = write_file_mode(abs_path, body, perm);
+            if create_file_with_mode(path).is_ok() {
+                let _ = write_file_mode(path, body, perm);
             } else {
-                let _ = crate::fs::write_entire_file(abs_path, body);
+                let _ = crate::fs::write_entire_file(path, body);
             }
             count += 1;
         } else if ftype == 0o120000 {
-            // Symlink — not supported yet; record but skip.
-            log::debug!("initramfs: symlink {} skipped", abs_path);
+            log::debug!("initramfs: symlink {} skipped", path);
         }
         offset = next;
     }

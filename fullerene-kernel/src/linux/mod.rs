@@ -1,30 +1,17 @@
 //! Linux ABI emulation layer for Fullerene.
-//!
-//! This module implements a Linux x86_64 syscall ABI translation layer.
-//! Linux ELF binaries loaded through the loader get attached to a
-//! `LinuxRuntime` which translates Linux syscalls into Fullerene kernel
-//! operations.
-//!
-//! # Architecture
-//!
-//! ```text
-//! Linux ELF → Loader → Process + LinuxRuntime
-//!                          │
-//!                     syscall instruction
-//!                          │
-//!                     handle_syscall()
-//!                          │
-//!                     LinuxRuntime::dispatch()
-//!                          │
-//!                    ┌─────┴──────┐
-//!                    │  fs  │ mem │
-//!                    │ proc │ sig │
-//!                    │ time │ misc│
-//!                    └────────────┘
-//!                          │
-//!                    Kernel services
-//!                    (VFS, process, memory)
-//! ```
+
+#[macro_export]
+macro_rules! linux_stub {
+    ($name:ident, $ret:expr) => {
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { $ret }
+    };
+}
+#[macro_export]
+macro_rules! linux_stub_errno {
+    ($name:ident, $err:expr) => {
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { errno_code($err) }
+    };
+}
 
 pub mod fs;
 pub mod launch;

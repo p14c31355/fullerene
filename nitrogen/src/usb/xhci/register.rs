@@ -90,20 +90,14 @@ pub const CRCR_CRR: u32 = 1 << 3;
 struct Mmio(*mut u8);
 
 impl Mmio {
-    fn clflush(addr: *const u8) {
-        unsafe { core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags)) }
-    }
-
     fn read32(&self, off: usize) -> u32 {
         let p = unsafe { self.0.add(off) as *const u32 };
-        Self::clflush(p as *const u8);
         unsafe { ptr::read_volatile(p) }
     }
 
     fn write32(&self, off: usize, val: u32) {
         let p = unsafe { self.0.add(off) as *mut u32 };
         unsafe { ptr::write_volatile(p, val) };
-        Self::clflush(p as *const u8);
     }
 
     fn read64(&self, off: usize) -> u64 {

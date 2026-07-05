@@ -187,11 +187,9 @@ impl FramebufferDiscovery {
 
     /// Probe PCI BAR for a VGA-compatible display controller.
     ///
-    /// NOTE: On Intel GPUs (vendor 0x8086), BAR0 (offset 0x10) is MMIO
-    /// register space, NOT the framebuffer.  The framebuffer lives behind
-    /// BAR2 (offset 0x18, GTT aperture).  Other vendors (AMD, NVIDIA)
-    /// typically put the framebuffer at BAR0.  We try BAR2 for Intel,
-    /// BAR0 for others.
+    /// On Intel GPUs, BAR2 gives the GTT aperture base, but the actual
+    /// scanout buffer may start at a non-zero offset within the aperture.
+    /// We read the PLANE_SURF MMIO register to get the real GTT offset.
     pub fn probe_pci(pci_devices: &[nitrogen::pci::PciDevice]) -> Option<FramebufferProbeResult> {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] scanning PCI\n");
         for dev in pci_devices {
@@ -204,18 +202,54 @@ impl FramebufferDiscovery {
             let subclass =
                 nitrogen::pci::PciConfigSpace::read_config_byte(dev.bus, dev.device, 0, 0x0A);
             if class == 0x03 && subclass == 0x00 {
-                let fb_bar_offset = if vendor == 0x8086 { 0x18u8 } else { 0x10u8 };
-                let upper_bar_offset = if vendor == 0x8086 { 0x1Cu8 } else { 0x14u8 };
-                let bar = nitrogen::pci::PciConfigSpace::read_config_dword(
-                    dev.bus, dev.device, 0, fb_bar_offset,
-                );
-                let fb_phys = if (bar & 0x6) == 0x4 {
-                    let bar_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
-                        dev.bus, dev.device, 0, upper_bar_offset,
+                let fb_phys = if vendor == 0x8086 {
+                    // Intel GPU: read BAR0 (MMIO) and BAR2 (GTT aperture)
+                    let bar0_raw = nitrogen::pci::PciConfigSpace::read_config_dword(
+                        dev.bus, dev.device, 0, 0x10,
                     );
-                    ((bar_upper as u64) << 32) | ((bar & 0xFFFFFFF0) as u64)
+                    let bar0_phys = if (bar0_raw & 0x6) == 0x4 {
+                        let bar0_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
+                            dev.bus, dev.device, 0, 0x14,
+                        );
+                        ((bar0_upper as u64) << 32) | ((bar0_raw & 0xFFFFFFF0) as u64)
+                    } else {
+                        (bar0_raw & 0xFFFFFFF0) as u64
+                    };
+                    let bar2_raw = nitrogen::pci::PciConfigSpace::read_config_dword(
+                        dev.bus, dev.device, 0, 0x18,
+                    );
+                    let bar2_phys = if (bar2_raw & 0x6) == 0x4 {
+                        let bar2_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
+                            dev.bus, dev.device, 0, 0x1C,
+                        );
+                        ((bar2_upper as u64) << 32) | ((bar2_raw & 0xFFFFFFF0) as u64)
+                    } else {
+                        (bar2_raw & 0xFFFFFFF0) as u64
+                    };
+                    // Read PLANE_SURF register (Pipe A, Plane 1) at BAR0 + 0x7019C
+                    // via the identity mapping (WB huge page, but MTRR UC wins).
+                    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+                    let plane_reg_va = (bar0_phys + 0x7019Cu64 + off) as *mut u32;
+                    // SAFETY: bar0_phys is a valid MMIO address from PCI config.
+                    // The identity + higher-half mapping covers it.
+                    let plane_surf = unsafe { core::ptr::read_volatile(plane_reg_va) };
+                    // Bits [31:12] carry the GTT offset in 4KB pages.
+                    let gtt_offset = (((plane_surf >> 12) & 0xFFFFF) as u64) * 4096;
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] Intel PLANE_SURF GTT offset read\n");
+                    bar2_phys + gtt_offset
                 } else {
-                    (bar & 0xFFFFFFF0) as u64
+                    // Non-Intel: framebuffer is typically at BAR0
+                    let bar0_raw = nitrogen::pci::PciConfigSpace::read_config_dword(
+                        dev.bus, dev.device, 0, 0x10,
+                    );
+                    if (bar0_raw & 0x6) == 0x4 {
+                        let bar0_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
+                            dev.bus, dev.device, 0, 0x14,
+                        );
+                        ((bar0_upper as u64) << 32) | ((bar0_raw & 0xFFFFFFF0) as u64)
+                    } else {
+                        (bar0_raw & 0xFFFFFFF0) as u64
+                    }
                 };
                 if fb_phys >= 0x100000 {
                     // PCI BAR gives us the physical address but not the

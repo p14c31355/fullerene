@@ -20,8 +20,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs};
 use genome::fs::FsError;
+pub use genome::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs};
 
 // ── VfsContext ──────────────────────────────────────────────────────
 
@@ -442,8 +442,8 @@ pub fn change_directory(path: &str) -> Result<(), FsError> {
 /// the same locks after dropping this guard is safe in a panic handler.
 pub struct VfsAccessGuard {
     _kernel: spin::MutexGuard<'static, Option<super::kernel::KernelContext>>,
-    _inner: spin::MutexGuard<'static, crate::vfs::Vfs>,
-    _handle_table: spin::MutexGuard<'static, super::vfs::HandleTable>,
+    _inner: spin::MutexGuard<'static, Vfs>,
+    _handle_table: spin::MutexGuard<'static, HandleTable>,
 }
 
 // SAFETY: VfsAccessGuard is !Send + !Sync by construction (it holds
@@ -478,9 +478,9 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
 
     // SAFETY: inner_guard and handle_table_guard also borrow from global
     // statics inside KernelContext.vfs, which lives forever.
-    let inner_guard: spin::MutexGuard<'static, crate::vfs::Vfs> =
+    let inner_guard: spin::MutexGuard<'static, Vfs> =
         unsafe { core::mem::transmute(inner_guard) };
-    let handle_table_guard: spin::MutexGuard<'static, super::vfs::HandleTable> =
+    let handle_table_guard: spin::MutexGuard<'static, HandleTable> =
         unsafe { core::mem::transmute(handle_table_guard) };
 
     Some(VfsAccessGuard {

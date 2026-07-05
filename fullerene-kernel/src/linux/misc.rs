@@ -3,24 +3,6 @@ use super::numbers::*;
 use super::runtime::{LinuxRuntime, copy_to_user, copy_val_to_user, errno_code};
 use super::types::*;
 
-/// Define a stub Linux syscall that returns `ret`.
-macro_rules! linux_stub {
-    ($name:ident, $ret:expr) => {
-        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
-            $ret
-        }
-    };
-}
-
-/// Define a stub Linux syscall that returns `errno_code($err)`.
-macro_rules! linux_stub_errno {
-    ($name:ident, $err:expr) => {
-        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
-            errno_code($err)
-        }
-    };
-}
-
 pub fn sys_uname(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let buf = args[0];
     if buf == 0 {

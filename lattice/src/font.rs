@@ -326,3 +326,31 @@ pub fn glyph_fast(ch: u8) -> Glyph<'static> {
     }
     embedded_glyph(ch)
 }
+
+/// Render a string of 8-pixel-wide bitmap glyphs onto a framebuffer.
+///
+/// `glyph_height` is typically 12 (standard) or 14 (label).  Each glyph
+/// is 8 columns wide.  Characters outside the printable ASCII range
+/// (32..=126) are silently skipped.
+#[inline]
+pub fn render_text(
+    fb: &mut [u32], fb_width: u32, fb_height: u32,
+    x: u32, y: u32, text: &[u8], color: u32, glyph_height: u32,
+) {
+    for (i, &ch) in text.iter().enumerate() {
+        if ch < 32 || ch > 126 { continue; }
+        let gl = glyph_fast(ch);
+        let gx = x + (i as u32) * 8;
+        for row in 0..glyph_height {
+            let py = y + row;
+            if py >= fb_height { continue; }
+            for col in 0..8 {
+                let px = gx + col;
+                if px >= fb_width { continue; }
+                if gl.pixel(row, col) {
+                    fb[(py * fb_width + px) as usize] = color;
+                }
+            }
+        }
+    }
+}

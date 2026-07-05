@@ -5,7 +5,7 @@
 
 use petroleum::page_table::BootInfoFrameAllocator;
 
-pub const HEAP_SIZE: usize = 4 * 1024 * 1024; // 4MB heap
+pub const HEAP_SIZE: usize = 12 * 1024 * 1024; // 12MB heap (allows ~4MB back buffer + overhead)
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
 /// Maximum additional heap that can be requested via `extend_kernel_heap`.

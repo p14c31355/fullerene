@@ -106,7 +106,7 @@ pub(crate) unsafe fn set_schedule_trampoline(addr: x86_64::VirtAddr) {
 #[unsafe(no_mangle)]
 pub extern "C" fn exception_recovery_trampoline() -> ! {
     raw_log!("Recovery trampoline: cleaning up and scheduling next\n");
-    crate::process::cleanup_terminated_processes();
+    crate::process::PROCESS_MANAGER.cleanup();
     crate::process::schedule_next();
     let new_pid = crate::process::current_pid().expect("schedule_next failed after exception");
     raw_log!("Switching to process {}\n", new_pid);
@@ -238,7 +238,7 @@ pub extern "x86-interrupt" fn double_fault_handler(
                     p.exit_code = Some(1);
                 },
             );
-            crate::process::cleanup_terminated_processes();
+            crate::process::PROCESS_MANAGER.cleanup();
         }
     }
     safe_halt()

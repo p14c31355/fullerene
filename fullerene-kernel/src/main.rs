@@ -179,9 +179,6 @@ pub const VGA_BUFFER_ADDRESS: usize = 0xb8000;
 pub use heap::MEMORY_MAP;
 
 // Module declarations
-// ── Applications (user-visible programs, demos) ────────────────────
-pub mod apps;
-
 // ── Drivers (storage, GPU, network) ───────────────────────────────
 pub mod drivers;
 

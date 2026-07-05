@@ -17,17 +17,8 @@ pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
 }
 
 /// Launch a Linux ELF binary from raw bytes.
-pub fn launch_linux_from_slice(data: &[u8], name: &str) -> Result<ProcessId, LoadError> {
-    launch_linux_from_data(data, name)
-}
-
-/// Launch a Linux ELF binary from raw bytes, extracting filename from path.
-pub fn launch_linux_from_data(data: &[u8], name: &str) -> Result<ProcessId, LoadError> {
-    // Use the existing ELF loader with is_linux=true
-    let _ = name.rsplit('/').next().unwrap_or(name);
-    // We need a static name. Use a simple approach.
-    let static_name = "linux-app";
-    crate::loader::load_program_with_runtime(data, static_name, true)
+pub fn launch_linux_from_data(data: &[u8], _name: &str) -> Result<ProcessId, LoadError> {
+    crate::loader::load_program_with_runtime(data, "linux-app", true)
 }
 
 /// Launch BusyBox shell from embedded initramfs data.

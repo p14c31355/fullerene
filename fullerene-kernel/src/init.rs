@@ -218,12 +218,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::TaskManagerReady);
             Ok(())
         }),
-        petroleum::init_step!("app_runner", || {
-            crate::apps::app_runner::init();
-            petroleum::serial::serial_log(format_args!("App runner initialised\n"));
-            crate::boot_stage!(BootStage::AppRunnerReady);
-            Ok(())
-        }),
+
     ];
     InitSequence::new(&common_steps).run();
 
