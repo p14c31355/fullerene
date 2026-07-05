@@ -2,7 +2,7 @@
 use super::numbers::*;
 use super::runtime::{
     LinuxFileDesc, LinuxRuntime, copy_from_user, copy_to_user, copy_user_string, copy_val_to_user,
-    errno_code, errno_result,
+    errno_code, fs_errno_result,
 };
 use super::types::*;
 
@@ -83,7 +83,7 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 errno_code(EFAULT)
             }
         }
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -123,7 +123,7 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
             n as u64
         }
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -177,7 +177,7 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                                 let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
                                 return fd as u64;
                             }
-                            Err(e2) => return errno_result(e2),
+                            Err(e2) => return fs_errno_result(&e2),
                         }
                     }
                     // Try opening for read-write if it exists
@@ -185,7 +185,7 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                         let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
                         return fd as u64;
                     }
-                    return errno_result(e);
+                    return fs_errno_result(&e);
                 }
             }
         }
@@ -203,7 +203,7 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                 let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
                 fd as u64
             }
-            Err(e) => errno_result(e),
+            Err(e) => fs_errno_result(&e),
         }
     } else {
         errno_code(EINVAL)
@@ -223,7 +223,7 @@ pub fn sys_creat(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 .alloc(vfs_fd.fd, 0, O_WRONLY | O_CREAT | O_TRUNC);
             fd as u64
         }
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -241,8 +241,8 @@ pub fn sys_close(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 /// Return a LinuxStat for a given VFS path.
-fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), &'static str> {
-    let vfs_fd = crate::contexts::vfs::open(path, 0)?;
+fn fill_stat_from_path(path: &str, statbuf: u64) -> Result<(), i32> {
+    let vfs_fd = crate::contexts::vfs::open(path, 0).map_err(|_| ENOENT)?;
     let info = fill_stat_from_fd(vfs_fd.fd);
 
     // Check if path is a directory by trying to readdir
@@ -297,7 +297,7 @@ pub fn sys_stat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match fill_stat_from_path(&path, statbuf) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => errno_code(e),
     }
 }
 
@@ -310,7 +310,7 @@ pub fn sys_newfstatat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match fill_stat_from_path(&path, statbuf) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => errno_code(e),
     }
 }
 
@@ -603,7 +603,7 @@ pub fn sys_unlink(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match crate::contexts::vfs::unlink(&path) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -615,7 +615,7 @@ pub fn sys_unlinkat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match crate::contexts::vfs::unlink(&path) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -627,7 +627,7 @@ pub fn sys_mkdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match crate::contexts::vfs::mkdir(&path) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -639,7 +639,7 @@ pub fn sys_mkdirat(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match crate::contexts::vfs::mkdir(&path) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -651,7 +651,7 @@ pub fn sys_rmdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match crate::contexts::vfs::unlink(&path) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -666,7 +666,7 @@ pub fn sys_chdir(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
     match crate::contexts::vfs::change_directory(&path) {
         Ok(_) => 0,
-        Err(e) => errno_result(e),
+        Err(e) => fs_errno_result(&e),
     }
 }
 
@@ -675,7 +675,7 @@ pub fn sys_getcwd(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let size = args[1];
     let cwd = match crate::contexts::vfs::working_directory() {
         Ok(s) => s,
-        Err(e) => return errno_result(e),
+        Err(e) => return fs_errno_result(&e),
     };
     let bytes = cwd.as_bytes();
     if bytes.len() + 1 > size as usize {
@@ -690,8 +690,8 @@ pub fn sys_getcwd(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     buf
 }
 
-linux_stub!(sys_mount, 0);
-linux_stub!(sys_umount2, 0);
+linux_stub_errno!(sys_mount, ENOSYS);
+linux_stub_errno!(sys_umount2, ENOSYS);
 
 pub fn sys_dup(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let oldfd = args[0] as i32;
@@ -830,9 +830,9 @@ pub fn sys_pipe2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     sys_pipe(rt, &[args[0], 0, 0, 0, 0, 0])
 }
 
-linux_stub!(sys_truncate, 0);
-linux_stub!(sys_ftruncate, 0);
-linux_stub!(sys_fsync, 0);
-linux_stub!(sys_fdatasync, 0);
+linux_stub_errno!(sys_truncate, ENOSYS);
+linux_stub_errno!(sys_ftruncate, ENOSYS);
+linux_stub_errno!(sys_fsync, ENOSYS);
+linux_stub_errno!(sys_fdatasync, ENOSYS);
 linux_stub!(sys_fchmod, 0);
 linux_stub!(sys_fchmodat, 0);

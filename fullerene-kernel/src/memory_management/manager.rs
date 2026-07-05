@@ -47,7 +47,7 @@ impl UnifiedMemoryManager {
         let l4_virt = self.page_table_manager.current_page_table() as u64 + off;
         let l4 =
             unsafe { &mut *(l4_virt as *mut x86_64::structures::paging::page_table::PageTable) };
-        let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+        let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
         let phys_offset = x86_64::VirtAddr::new(off);
 
         unsafe {
@@ -194,20 +194,20 @@ impl UnifiedMemoryManager {
 
         self.page_table_manager.initialize_with_frame_allocator(
             phys_offset,
-            petroleum::page_table::constants::get_frame_allocator_mut(),
+            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
             kernel_phys,
         )?;
         self.kernel_pml4_phys = self.page_table_manager.current_page_table();
 
         let kernel_reserve_pages = (16 * 1024 * 1024) / 4096;
-        let _ = petroleum::page_table::constants::get_frame_allocator_mut()
+        let _ = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
             .reserve_frames(kernel_phys, kernel_reserve_pages);
         mem_debug!("UMM: Kernel memory reserved\n");
 
         mem_debug!("UMM: Mapping physical memory direct map\n");
         let phys_offset_virt =
             x86_64::VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
-        let frame_alloc = petroleum::page_table::constants::get_frame_allocator_mut();
+        let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
 
         for descriptor in memory_map {
             let phys_addr = descriptor.get_physical_start();
@@ -259,7 +259,7 @@ impl UnifiedMemoryManager {
         }
     }
     pub fn frame_allocator_mut(&mut self) -> &mut BitmapFrameAllocator {
-        petroleum::page_table::constants::get_frame_allocator_mut()
+        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
     }
     pub fn page_table_manager(&self) -> &ProcessPageTable {
         &self.page_table_manager
@@ -313,7 +313,7 @@ impl MemoryManager for UnifiedMemoryManager {
         )
         .ok_or(SystemError::MemOutOfMemory)?;
 
-        let frame_addr = petroleum::page_table::constants::get_frame_allocator_mut()
+        let frame_addr = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
             .allocate_contiguous_frames(count)? as usize;
         let data_virt_addr = virtual_addr_base + page_size;
         for i in 0..count {
@@ -413,7 +413,7 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
         let mut process_manager = ProcessMemoryManagerImpl::new(process_id);
         process_manager.init_page_table(
             &mut self.page_table_manager,
-            petroleum::page_table::constants::get_frame_allocator_mut(),
+            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
         )?;
         if self.process_managers.len() >= MAX_PROCESS_MANAGERS {
             return Err(SystemError::TooManyProcesses);
@@ -629,7 +629,7 @@ impl FrameAllocator for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        petroleum::page_table::constants::get_frame_allocator_mut()
+        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
             .allocate_frame()
             .map(|f| f.start_address().as_u64() as usize)
             .ok_or(SystemError::FrameAllocationFailed)
@@ -638,7 +638,7 @@ impl FrameAllocator for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        petroleum::page_table::constants::get_frame_allocator_mut().free_frame(
+        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }.free_frame(
             x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
                 frame_addr as u64,
             )),
@@ -649,7 +649,7 @@ impl FrameAllocator for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        petroleum::page_table::constants::get_frame_allocator_mut()
+        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
             .allocate_contiguous_frames(count)
             .map(|addr| addr as usize)
     }
@@ -657,7 +657,7 @@ impl FrameAllocator for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        petroleum::page_table::constants::get_frame_allocator_mut()
+        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
             .free_contiguous_frames(start_addr as u64, count);
         Ok(())
     }
@@ -671,22 +671,22 @@ impl FrameAllocator for UnifiedMemoryManager {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        petroleum::page_table::constants::get_frame_allocator_mut()
+        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
             .reserve_frames(start_addr as u64, count)
     }
     fn release_frames(&mut self, start_addr: usize, count: usize) -> SystemResult<()> {
         if !self.initialized {
             return Err(SystemError::InternalError);
         }
-        petroleum::page_table::constants::get_frame_allocator_mut()
+        unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
             .release_frames(start_addr as u64, count);
         Ok(())
     }
     fn is_frame_available(&self, frame_addr: usize) -> bool {
-        petroleum::page_table::constants::get_frame_allocator().is_frame_available(frame_addr)
+        unsafe { petroleum::page_table::constants::get_frame_allocator() }.is_frame_available(frame_addr)
     }
     fn frame_size(&self) -> usize {
-        petroleum::page_table::constants::get_frame_allocator().frame_size()
+        unsafe { petroleum::page_table::constants::get_frame_allocator() }.frame_size()
     }
 }
 
@@ -764,14 +764,14 @@ impl UnifiedMemoryManager {
                 .translate_address(virt_addr)
                 .is_err()
             {
-                let frame = petroleum::page_table::constants::get_frame_allocator_mut()
+                let frame = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
                     .allocate_frame()
                     .ok_or(SystemError::FrameAllocationFailed)?;
                 self.page_table_manager.map_page(
                     virt_addr,
                     frame.start_address().as_u64() as usize,
                     PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER_ACCESSIBLE,
-                    petroleum::page_table::constants::get_frame_allocator_mut(),
+                    unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
                 )?;
             }
             if let Ok(phys_addr) = self.page_table_manager.translate_address(virt_addr) {

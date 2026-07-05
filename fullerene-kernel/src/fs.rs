@@ -33,11 +33,11 @@ impl From<genome::vfs::FileDescriptor> for FileDesc {
 // ── Public file operations ────────────────────────────────────
 
 pub fn create_file(path: &str, data: &[u8]) -> Result<(), FsError> {
-    let fd_info = vfs::create(path).map_err(|e| map_vfs_error(e))?;
+    let fd_info = vfs::create(path)?;
     if !data.is_empty() {
         vfs::write(fd_info.fd, data).map_err(|e| {
             let _ = vfs::close(fd_info.fd);
-            map_vfs_error(e)
+            e
         })?;
     }
     let _ = vfs::close(fd_info.fd);
@@ -45,56 +45,50 @@ pub fn create_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn create_dir(path: &str) -> Result<(), FsError> {
-    vfs::mkdir(path).map_err(|e| map_vfs_error(e))
+    vfs::mkdir(path)
 }
 
 pub fn remove(path: &str) -> Result<(), FsError> {
-    vfs::unlink(path).map_err(|e| map_vfs_error(e))
+    vfs::unlink(path)
 }
 
 pub fn open_file(path: &str) -> Result<FileDesc, FsError> {
-    vfs::open(path, 0)
-        .map(FileDesc::from)
-        .map_err(|e| map_vfs_error(e))
+    vfs::open(path, 0).map(FileDesc::from)
 }
 
 pub fn close_file(fd: FileDesc) -> Result<(), FsError> {
-    vfs::close(fd.fd).map_err(|e| map_vfs_error(e))
+    vfs::close(fd.fd)
 }
 
 pub fn read_file(fd: &mut FileDesc, buffer: &mut [u8]) -> Result<usize, FsError> {
-    let n = vfs::read(fd.fd, buffer).map_err(|e| map_vfs_error(e))?;
+    let n = vfs::read(fd.fd, buffer)?;
     fd.offset += n;
     Ok(n)
 }
 
 pub fn write_file(fd: &mut FileDesc, data: &[u8]) -> Result<usize, FsError> {
-    let written = vfs::write(fd.fd, data).map_err(|e| map_vfs_error(e))?;
+    let written = vfs::write(fd.fd, data)?;
     fd.offset += written;
     Ok(written)
 }
 
 pub fn seek_file(fd: &mut FileDesc, position: usize) -> Result<(), FsError> {
-    vfs::seek(fd.fd, position)
-        .map(|_| {
-            fd.offset = position;
-        })
-        .map_err(|e| map_vfs_error(e))
+    vfs::seek(fd.fd, position).map(|_| {
+        fd.offset = position;
+    })
 }
 
 pub fn list_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
-    vfs::readdir(path)
-        .map(|entries| {
-            entries
-                .into_iter()
-                .map(|v| DirEntry {
-                    name: v.name,
-                    size: v.size,
-                    is_dir: v.is_dir,
-                })
-                .collect()
-        })
-        .map_err(|e| map_vfs_error(e))
+    vfs::readdir(path).map(|entries| {
+        entries
+            .into_iter()
+            .map(|v| DirEntry {
+                name: v.name,
+                size: v.size,
+                is_dir: v.is_dir,
+            })
+            .collect()
+    })
 }
 
 pub fn exists(path: &str) -> bool {
@@ -102,15 +96,15 @@ pub fn exists(path: &str) -> bool {
 }
 
 pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsError> {
-    vfs::mount(device, mount_point, fs_type).map_err(|e| map_vfs_error(e))
+    vfs::mount(device, mount_point, fs_type)
 }
 
 pub fn working_directory() -> Result<String, FsError> {
-    vfs::working_directory().map_err(|e| map_vfs_error(e))
+    vfs::working_directory()
 }
 
 pub fn change_directory(path: &str) -> Result<(), FsError> {
-    vfs::change_directory(path).map_err(|e| map_vfs_error(e))
+    vfs::change_directory(path)
 }
 
 pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
@@ -265,23 +259,4 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
     remove(&pkg_dir)
 }
 
-// ── Error mapping ─────────────────────────────────────────────
 
-fn map_vfs_error(e: &str) -> FsError {
-    match e {
-        "mount point not found" => FsError::FileNotFound,
-        "mount point not a directory" => FsError::InvalidPath,
-        "not found" => FsError::FileNotFound,
-        "bad fd" => FsError::InvalidFileDescriptor,
-        "inode not found" => FsError::FileNotFound,
-        "not a file" => FsError::IsADirectory,
-        "directory not empty" => FsError::DirectoryNotEmpty,
-        "only tmpfs is supported" => FsError::PermissionDenied,
-        "vfs not init" => FsError::PermissionDenied,
-        "create failed" => FsError::FileExists,
-        "open failed after create" => FsError::FileExists,
-        "invalid path" => FsError::InvalidPath,
-        "mkdir failed" => FsError::PermissionDenied,
-        _ => FsError::InvalidFileDescriptor,
-    }
-}

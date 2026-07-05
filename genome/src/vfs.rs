@@ -3,6 +3,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::fs::FsError;
+
 const MAX_SYMLINK_DEPTH: u32 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,14 +56,14 @@ pub struct VNode {
 
 pub trait FileSystem: Send {
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor>;
-    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str>;
-    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str>;
-    fn close(&mut self, fd: u32) -> Result<(), &'static str>;
-    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), &'static str>;
+    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError>;
+    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError>;
+    fn close(&mut self, fd: u32) -> Result<(), FsError>;
+    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError>;
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64>;
-    fn mkdir(&mut self, path: &str) -> Result<(), &'static str>;
-    fn unlink(&mut self, path: &str) -> Result<(), &'static str>;
-    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str>;
+    fn mkdir(&mut self, path: &str) -> Result<(), FsError>;
+    fn unlink(&mut self, path: &str) -> Result<(), FsError>;
+    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError>;
     fn exists(&mut self, path: &str) -> bool;
 }
 
@@ -182,11 +184,11 @@ impl FileSystem for MemFileSystem {
         Some(desc)
     }
 
-    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-        let desc = self.fds.get_mut(&fd).ok_or("bad fd")?;
-        let ino = self.inodes.get(&desc.ino).ok_or("inode not found")?;
+    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+        let desc = self.fds.get_mut(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let ino = self.inodes.get(&desc.ino).ok_or(FsError::FileNotFound)?;
         if ino.kind != InodeType::File {
-            return Err("not a file");
+            return Err(FsError::IsADirectory);
         }
         if desc.offset >= ino.data.len() {
             return Ok(0);
@@ -198,14 +200,14 @@ impl FileSystem for MemFileSystem {
         Ok(n)
     }
 
-    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
-        let desc = self.fds.get_mut(&fd).ok_or("bad fd")?;
-        let ino = self.inodes.get_mut(&desc.ino).ok_or("inode not found")?;
+    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
+        let desc = self.fds.get_mut(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let ino = self.inodes.get_mut(&desc.ino).ok_or(FsError::FileNotFound)?;
         if ino.kind != InodeType::File {
-            return Err("not a file");
+            return Err(FsError::IsADirectory);
         }
         let off = desc.offset;
-        let new_len = off.checked_add(data.len()).ok_or("integer overflow")?;
+        let new_len = off.checked_add(data.len()).ok_or(FsError::InvalidInput)?;
         if new_len > ino.data.len() {
             ino.data.resize(new_len, 0);
         }
@@ -215,13 +217,13 @@ impl FileSystem for MemFileSystem {
         Ok(data.len())
     }
 
-    fn close(&mut self, fd: u32) -> Result<(), &'static str> {
-        self.fds.remove(&fd).ok_or("bad fd")?;
+    fn close(&mut self, fd: u32) -> Result<(), FsError> {
+        self.fds.remove(&fd).ok_or(FsError::InvalidFileDescriptor)?;
         Ok(())
     }
 
-    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), &'static str> {
-        let desc = self.fds.get_mut(&fd).ok_or("bad fd")?;
+    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError> {
+        let desc = self.fds.get_mut(&fd).ok_or(FsError::InvalidFileDescriptor)?;
         desc.offset = pos;
         Ok(())
     }
@@ -245,22 +247,22 @@ impl FileSystem for MemFileSystem {
         Some(ino)
     }
 
-    fn mkdir(&mut self, path: &str) -> Result<(), &'static str> {
+    fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
         if path == "/" {
             return Ok(());
         }
-        let (_, _) = self.lookup_parent(path).ok_or("invalid path")?;
+        let (_, _) = self.lookup_parent(path).ok_or(FsError::InvalidPath)?;
         self.create(path, InodeType::Directory)
-            .ok_or("mkdir failed")?;
+            .ok_or(FsError::PermissionDenied)?;
         Ok(())
     }
 
-    fn unlink(&mut self, path: &str) -> Result<(), &'static str> {
-        let (parent_ino, name) = self.lookup_parent(path).ok_or("not found")?;
-        let child_ino = self.lookup_child(parent_ino, &name).ok_or("not found")?;
-        let child = self.inodes.get(&child_ino).ok_or("not found")?;
+    fn unlink(&mut self, path: &str) -> Result<(), FsError> {
+        let (parent_ino, name) = self.lookup_parent(path).ok_or(FsError::FileNotFound)?;
+        let child_ino = self.lookup_child(parent_ino, &name).ok_or(FsError::FileNotFound)?;
+        let child = self.inodes.get(&child_ino).ok_or(FsError::FileNotFound)?;
         if child.kind == InodeType::Directory && !child.children.is_empty() {
-            return Err("directory not empty");
+            return Err(FsError::DirectoryNotEmpty);
         }
         if let Some(parent) = self.inodes.get_mut(&parent_ino) {
             parent.children.retain(|&c| c != child_ino);
@@ -269,11 +271,11 @@ impl FileSystem for MemFileSystem {
         Ok(())
     }
 
-    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
-        let ino = self.lookup(path).ok_or("not found")?;
-        let inode = self.inodes.get(&ino).ok_or("not found")?;
+    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
+        let ino = self.lookup(path).ok_or(FsError::FileNotFound)?;
+        let inode = self.inodes.get(&ino).ok_or(FsError::FileNotFound)?;
         if inode.kind != InodeType::Directory {
-            return Err("not a directory");
+            return Err(FsError::NotADirectory);
         }
         let mut entries = Vec::new();
         for &c in &inode.children {
@@ -327,10 +329,10 @@ impl Vfs {
         &self.wd
     }
 
-    pub fn change_directory(&mut self, path: &str) -> Result<(), &'static str> {
+    pub fn change_directory(&mut self, path: &str) -> Result<(), FsError> {
         let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved).ok_or("not found")?;
-        let _entries = fs.readdir(&remaining).map_err(|_| "not a directory")?;
+        let (fs, remaining) = self.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
+        let _entries = fs.readdir(&remaining)?;
         self.wd = resolved;
         Ok(())
     }
@@ -339,16 +341,14 @@ impl Vfs {
         &mut self,
         mount_point: &str,
         fs: Box<dyn FileSystem>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), FsError> {
         let mp = normalize_path(mount_point);
         if mp != "/" {
-            let (target_fs, remaining) = self.find_fs(&mp).ok_or("mount point not found")?;
-            if let Err(error) = target_fs.readdir(&remaining) {
-                return Err(if error == "not found" {
-                    "mount point not found"
-                } else {
-                    "mount point not a directory"
-                });
+            let (target_fs, remaining) = self.find_fs(&mp).ok_or(FsError::FileNotFound)?;
+            match target_fs.readdir(&remaining) {
+                Ok(_) => {}
+                Err(FsError::NotADirectory) => return Err(FsError::NotADirectory),
+                Err(_) => return Err(FsError::FileNotFound),
             }
         }
         if let Some(entry) = self.mounts.iter_mut().find(|m| m.mount_point == mp) {
@@ -362,10 +362,10 @@ impl Vfs {
         Ok(())
     }
 
-    pub fn unmount(&mut self, mount_point: &str) -> Result<bool, &'static str> {
+    pub fn unmount(&mut self, mount_point: &str) -> Result<bool, FsError> {
         let mp = normalize_path(mount_point);
         if mp == "/" {
-            return Err("cannot unmount root");
+            return Err(FsError::InvalidInput);
         }
         let len_before = self.mounts.len();
         self.mounts.retain(|m| m.mount_point != mp);
@@ -435,10 +435,10 @@ impl Vfs {
         mount_idx: usize,
         fd: u32,
         buf: &mut [u8],
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, FsError> {
         self.mounts
             .get_mut(mount_idx)
-            .ok_or("bad mount index")?
+            .ok_or(FsError::InvalidFileDescriptor)?
             .fs
             .read(fd, buf)
     }
@@ -448,26 +448,26 @@ impl Vfs {
         mount_idx: usize,
         fd: u32,
         data: &[u8],
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, FsError> {
         self.mounts
             .get_mut(mount_idx)
-            .ok_or("bad mount index")?
+            .ok_or(FsError::InvalidFileDescriptor)?
             .fs
             .write(fd, data)
     }
 
-    pub fn close_at(&mut self, mount_idx: usize, fd: u32) -> Result<(), &'static str> {
+    pub fn close_at(&mut self, mount_idx: usize, fd: u32) -> Result<(), FsError> {
         self.mounts
             .get_mut(mount_idx)
-            .ok_or("bad mount index")?
+            .ok_or(FsError::InvalidFileDescriptor)?
             .fs
             .close(fd)
     }
 
-    pub fn seek_at(&mut self, mount_idx: usize, fd: u32, pos: usize) -> Result<(), &'static str> {
+    pub fn seek_at(&mut self, mount_idx: usize, fd: u32, pos: usize) -> Result<(), FsError> {
         self.mounts
             .get_mut(mount_idx)
-            .ok_or("bad mount index")?
+            .ok_or(FsError::InvalidFileDescriptor)?
             .fs
             .seek(fd, pos)
     }
@@ -478,21 +478,21 @@ impl Vfs {
         fs.create(&remaining, InodeType::File)
     }
 
-    pub fn mkdir(&mut self, path: &str) -> Result<(), &'static str> {
+    pub fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
         let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved).ok_or("not found")?;
+        let (fs, remaining) = self.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
         fs.mkdir(&remaining)
     }
 
-    pub fn unlink(&mut self, path: &str) -> Result<(), &'static str> {
+    pub fn unlink(&mut self, path: &str) -> Result<(), FsError> {
         let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved).ok_or("not found")?;
+        let (fs, remaining) = self.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
         fs.unlink(&remaining)
     }
 
-    pub fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
+    pub fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
         let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved).ok_or("not found")?;
+        let (fs, remaining) = self.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
         fs.readdir(&remaining)
     }
 
@@ -574,7 +574,7 @@ mod tests {
         let descriptor = fs.open("/documents", 0).unwrap();
         let mut data = [0; 1];
 
-        assert_eq!(fs.read(descriptor.fd, &mut data), Err("not a file"));
+        assert_eq!(fs.read(descriptor.fd, &mut data), Err(FsError::IsADirectory));
     }
 
     #[test]
@@ -585,11 +585,11 @@ mod tests {
 
         assert_eq!(
             vfs.mount("/missing", Box::new(MemFileSystem::new())),
-            Err("mount point not found")
+            Err(FsError::FileNotFound)
         );
         assert_eq!(
             vfs.mount("/file", Box::new(MemFileSystem::new())),
-            Err("mount point not a directory")
+            Err(FsError::NotADirectory)
         );
     }
 

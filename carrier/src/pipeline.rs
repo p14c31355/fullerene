@@ -66,3 +66,66 @@ impl fmt::Display for ParsedCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_simple_command() {
+        let pipeline = Pipeline::parse("echo hello");
+        assert!(!pipeline.commands.is_empty());
+        assert_eq!(pipeline.commands[0].name, "echo");
+        assert_eq!(pipeline.commands[0].args.len(), 1);
+        assert_eq!(pipeline.commands[0].args[0], "hello");
+    }
+
+    #[test]
+    fn test_parse_pipeline() {
+        let pipeline = Pipeline::parse("cat file | grep foo");
+        assert_eq!(pipeline.commands.len(), 2);
+        assert_eq!(pipeline.commands[0].name, "cat");
+        assert_eq!(pipeline.commands[1].name, "grep");
+    }
+
+    #[test]
+    fn test_parse_empty() {
+        let pipeline = Pipeline::parse("");
+        assert!(pipeline.commands.is_empty());
+    }
+
+    #[test]
+    fn test_is_simple() {
+        let simple = Pipeline::parse("echo hello");
+        assert!(simple.is_simple());
+        let multi = Pipeline::parse("cat | grep");
+        assert!(!multi.is_simple());
+    }
+
+    #[test]
+    fn test_args_slice() {
+        let pipeline = Pipeline::parse("ls -la /tmp");
+        let args = pipeline.commands[0].args_slice();
+        assert_eq!(args.len(), 3);
+        assert_eq!(args[0], "ls");
+        assert_eq!(args[1], "-la");
+        assert_eq!(args[2], "/tmp");
+    }
+
+    #[test]
+    fn test_parse_whitespace() {
+        let pipeline = Pipeline::parse("   echo   foo   ");
+        assert_eq!(pipeline.commands.len(), 1);
+        assert_eq!(pipeline.commands[0].name, "echo");
+        assert_eq!(pipeline.commands[0].args.len(), 1);
+        assert_eq!(pipeline.commands[0].args[0], "foo");
+    }
+
+    #[test]
+    fn test_parse_without_args() {
+        let pipeline = Pipeline::parse("ls");
+        assert_eq!(pipeline.commands.len(), 1);
+        assert_eq!(pipeline.commands[0].name, "ls");
+        assert!(pipeline.commands[0].args.is_empty());
+    }
+}

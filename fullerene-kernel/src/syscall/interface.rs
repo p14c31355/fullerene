@@ -1,6 +1,8 @@
 use alloc::string::String;
-use alloc::vec::Vec;
-use x86_64::VirtAddr;
+use alloc::vec;
+use petroleum::common::memory::UserSlice;
+
+use fullerene_abi::syscall_errors;
 
 /// System call result type
 pub type SyscallResult = Result<u64, SyscallError>;
@@ -76,57 +78,67 @@ impl From<petroleum::common::logging::SystemError> for SyscallError {
     }
 }
 
-/// Helper function to safely copy a null-terminated string from user space
-/// Returns the string if successful, or an error if validation fails
+/// Helper function to safely copy a null-terminated string from user space.
+///
+/// Uses `UserSlice` for validated access.  The entire max_len range is
+/// validated first, then bytes are scanned for a NUL terminator.
+///
+/// Returns the string if successful, or an error if validation fails.
 ///
 /// # Safety
 ///
-/// The caller must ensure that the pointer `ptr` is valid and the memory range
-/// being read does not violate any memory safety constraints.
+/// The caller must ensure the user pages are mapped.  Page faults during
+/// copy are caught by the kernel's page fault handler.
 pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
-    if ptr.is_null() {
+    if ptr.is_null() || max_len == 0 {
         return Err(SyscallError::InvalidArgument);
     }
 
-    // Validate that the initial pointer range is in user space
-    let start_addr = VirtAddr::new(ptr as u64);
-    if !petroleum::is_user_address(start_addr) {
-        return Err(SyscallError::InvalidArgument);
-    }
+    let mut buf = alloc::vec::Vec::with_capacity(max_len.min(256));
+    let mut offset = 0;
 
-    // Note: In a real implementation, we would need to handle page faults
-    // when accessing user memory from kernel mode. For now, assume the memory
-    // is mapped and accessible.
+    while offset < max_len {
+        let current = unsafe { ptr.wrapping_add(offset) };
 
-    let mut len = 0;
-    let mut buffer = Vec::new();
-
-    // Copy bytes one by one, validating each address
-    while len < max_len {
-        // Check if current pointer is in user space
-        if let Some(next_addr) = (ptr as u64).checked_add(len as u64) {
-            let addr = VirtAddr::new(next_addr);
-            if !petroleum::is_user_address(addr) {
-                return Err(SyscallError::InvalidArgument);
-            }
-        } else {
-            return Err(SyscallError::InvalidArgument);
+        // Validate page on first access or when crossing a page boundary,
+        // so a valid NUL-terminated string near an unmapped page works.
+        if offset == 0 || ((current as usize) & 0xFFF) == 0 {
+            let bytes_left_in_page = 4096 - ((current as usize) & 0xFFF);
+            let remaining = (max_len - offset).min(bytes_left_in_page);
+            let _ = UserSlice::new(current as *mut u8, remaining, false)
+                .map_err(|_| SyscallError::InvalidArgument)?;
         }
 
-        // Read the byte safely
-        let byte = unsafe { ptr.add(len).read() };
+        let byte = unsafe { core::ptr::read_volatile(current) };
         if byte == 0 {
-            break; // Null terminator found
+            break;
         }
-        buffer.push(byte);
-        len += 1;
-
-        // Prevent infinite loops on malformed strings
-        if len >= max_len {
-            return Err(SyscallError::InvalidArgument);
-        }
+        buf.push(byte);
+        offset += 1;
     }
 
-    // Convert bytes to string
-    String::from_utf8(buffer).map_err(|_| SyscallError::InvalidArgument)
+    String::from_utf8(buf).map_err(|_| SyscallError::InvalidArgument)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_syscall_error_values() {
+        assert_eq!(SyscallError::InvalidSyscall as i64, syscall_errors::INVALID_SYSCALL);
+        assert_eq!(SyscallError::FileNotFound as i64, syscall_errors::FILE_NOT_FOUND);
+        assert_eq!(SyscallError::NoSuchProcess as i64, syscall_errors::NO_SUCH_PROCESS);
+        assert_eq!(SyscallError::BadFileDescriptor as i64, syscall_errors::BAD_FILE_DESCRIPTOR);
+        assert_eq!(SyscallError::Again as i64, syscall_errors::AGAIN);
+        assert_eq!(SyscallError::OutOfMemory as i64, syscall_errors::OUT_OF_MEMORY);
+        assert_eq!(SyscallError::PermissionDenied as i64, syscall_errors::PERMISSION_DENIED);
+        assert_eq!(SyscallError::AlreadyExists as i64, syscall_errors::ALREADY_EXISTS);
+        assert_eq!(SyscallError::NoSuchDevice as i64, syscall_errors::NO_SUCH_DEVICE);
+        assert_eq!(SyscallError::InvalidArgument as i64, syscall_errors::INVALID_ARGUMENT);
+        assert_eq!(SyscallError::NotSupported as i64, syscall_errors::NOT_SUPPORTED);
+        assert_eq!(SyscallError::BadHandle as i64, syscall_errors::BAD_HANDLE);
+        assert_eq!(SyscallError::TimedOut as i64, syscall_errors::TIMED_OUT);
+        assert_eq!(SyscallError::WouldBlock as i64, syscall_errors::WOULD_BLOCK);
+    }
 }

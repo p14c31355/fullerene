@@ -14,6 +14,11 @@ use petroleum::mem_debug;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 // Global Interrupt Descriptor Table
+//
+// # Safety
+// The IDT is initialised once during boot (guarded by `IDT_INITIALIZED`)
+// and then never modified.  All access is serialised by the single‑core
+// boot sequence.  After `init()` the IDT is read-only via the CPU's IDTR.
 pub static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 
 /// Guard flag to prevent double initialization of the IDT.

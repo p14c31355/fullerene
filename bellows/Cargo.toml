@@ -12,7 +12,8 @@ debug_loader = []
 
 [dependencies]
 linked_list_allocator = "0.10.6"
-spin = "0.10.0"
+# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
+spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex"] }
 petroleum = { path = "../petroleum" }
-x86_64 = { version = "0.15.4", default-features = false, features = ["instructions"] }
-log = { version = "0.4.29", default-features = false }
+x86_64 = { workspace = true, features = ["instructions"] }
+log = { workspace = true }

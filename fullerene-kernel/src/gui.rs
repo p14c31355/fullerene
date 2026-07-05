@@ -20,11 +20,31 @@
 use petroleum::graphics::Renderer;
 use solvent;
 
+use genome::fs::FsError;
+
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
-    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, is_initialized, poll_mouse_state,
-    process_events, push_key_event, set_render_fn, write_terminal,
+    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, is_initialized,
+    poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core, write_terminal,
 };
+
+/// Convert an FsError to a static string for the solvent callback boundary.
+fn fs_err_str(e: FsError) -> &'static str {
+    match e {
+        FsError::FileNotFound => "file not found",
+        FsError::FileExists => "file exists",
+        FsError::PermissionDenied => "permission denied",
+        FsError::InvalidFileDescriptor => "bad fd",
+        FsError::InvalidSeek => "invalid seek",
+        FsError::DiskFull => "disk full",
+        FsError::NotADirectory => "not a directory",
+        FsError::DirectoryNotEmpty => "directory not empty",
+        FsError::IsADirectory => "is a directory",
+        FsError::InvalidPath => "invalid path",
+        FsError::NotSupported => "not supported",
+        FsError::InvalidInput => "invalid input",
+    }
+}
 
 /// Initialise the GUI subsystem via Solvent runtime.
 pub fn init() {
@@ -33,10 +53,7 @@ pub fn init() {
         heap_extend: Some(|additional| unsafe { crate::heap::extend_kernel_heap(additional) }),
         wall_clock: Some(read_cmos_time),
         vfs_readdir: Some(|path| {
-            let entries = crate::vfs::readdir(path).map_err(|e| {
-                // log::warn!("VFS readdir: {} → {}", path, e);
-                e
-            })?;
+            let entries = crate::vfs::readdir(path).map_err(fs_err_str)?;
             let mut result = alloc::vec::Vec::new();
             for vn in entries {
                 result.push(solvent::VfsEntry {
@@ -48,7 +65,7 @@ pub fn init() {
             Ok(result)
         }),
         vfs_read: Some(|path| {
-            let fd = crate::vfs::open(path, 0).map_err(|e| e)?;
+            let fd = crate::vfs::open(path, 0).map_err(fs_err_str)?;
             let mut buf = alloc::vec::Vec::new();
             let mut tmp = [0u8; 4096];
             loop {
@@ -57,7 +74,7 @@ pub fn init() {
                     Ok(n) => buf.extend_from_slice(&tmp[..n]),
                     Err(e) => {
                         let _ = crate::vfs::close(fd.fd);
-                        return Err(e);
+                        return Err(fs_err_str(e));
                     }
                 }
             }
@@ -66,17 +83,14 @@ pub fn init() {
         }),
         vfs_write: Some(|path, data| {
             // Open existing file, write, close
-            let fd = crate::vfs::open(path, 0).map_err(|e| e)?;
-            if crate::vfs::write(fd.fd, data).is_err() {
-                let _ = crate::vfs::close(fd.fd);
-                return Err("write failed");
-            }
+            let fd = crate::vfs::open(path, 0).map_err(fs_err_str)?;
+            crate::vfs::write(fd.fd, data).map_err(fs_err_str)?;
             let _ = crate::vfs::close(fd.fd);
             Ok(())
         }),
-        vfs_create: Some(|path| crate::vfs::create(path).map(|_| ())),
-        vfs_mkdir: Some(|path| crate::vfs::mkdir(path)),
-        vfs_unlink: Some(|path| crate::vfs::unlink(path)),
+        vfs_create: Some(|path| crate::vfs::create(path).map(|_| ()).map_err(fs_err_str)),
+        vfs_mkdir: Some(|path| crate::vfs::mkdir(path).map_err(fs_err_str)),
+        vfs_unlink: Some(|path| crate::vfs::unlink(path).map_err(fs_err_str)),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
             crate::process::PROCESS_MANAGER.with_list(|list| {
@@ -148,9 +162,15 @@ pub fn init() {
 /// Render the desktop onto the primary framebuffer.
 ///
 /// Bridged from solvent, providing kernel-owned framebuffer access.
+///
+/// Framebuffer access is obtained through the safe `with_framebuffer`
+/// closure API, which constrains the pixel slice lifetime to the
+/// closure scope — preventing `&'static mut` aliasing bugs.
 pub fn render() {
-    // Render via solvent with framebuffer access from kernel
-    solvent::render(get_framebuffer_slice);
+    // Render via solvent with kernel-owned framebuffer access
+    crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
+        solvent::render(fb);
+    });
 
     // Signal present & flush GPU (kernel-owned resource management)
     crate::contexts::kernel::with_kernel_mut(|k| {
@@ -163,38 +183,34 @@ pub fn render() {
 
 /// Perform one tick of the runtime loop with kernel framebuffer access.
 ///
-/// This wraps `solvent::runtime_tick` with the kernel framebuffer callback.
-pub fn runtime_tick(now: u64) {
-    solvent::runtime_tick(now, get_framebuffer_slice);
-
-    // Signal present & flush GPU
-    crate::contexts::kernel::with_kernel_mut(|k| {
-        if let Some(ref mut renderer) = k.framebuffer.renderer {
-            renderer.present();
-        }
-    });
-    crate::graphics::flush_gpu();
-}
-
-// ── Framebuffer access (kernel-internal) ─────────────────────
-
-/// Get a mutable slice of the framebuffer pixels, its dimensions,
-/// and the framebuffer stride in u32 pixels per scan line.
+/// The tick is split into two phases to avoid a deadlock with
+/// `spin::Mutex` (which is non-recursive):
 ///
-/// On real hardware (InsydeH2O / Intel GOP) the stride may be larger
-/// than `width`, so callers must use the stride for row-index arithmetic.
-fn get_framebuffer_slice() -> Option<(&'static mut [u32], u32, u32, u32)> {
-    let kernel_lock = crate::contexts::kernel::get_kernel();
-    let kg = kernel_lock.lock();
-    let kernel = kg.as_ref()?;
-    let info = kernel.framebuffer.renderer.as_ref()?.get_info();
-    let fb_ptr = info.address as *mut u32;
-    // stride is stored in bytes (pixels_per_scan_line * 4); convert to u32 pixels.
-    let stride_pixels = info.stride / 4;
-    let fb_len = (stride_pixels as usize) * (info.height as usize);
-    // Safety: the framebuffer is mapped for the entire kernel lifetime.
-    let fb_pixels = unsafe { core::slice::from_raw_parts_mut(fb_ptr, fb_len) };
-    Some((fb_pixels, info.width, info.height, stride_pixels))
+/// 1. **tick_core** — input polling, event processing, timer updates.
+///    This runs **without** the `KERNEL` lock so that event handlers
+///    (e.g. file manager opening, shell commands) can call back into
+///    VFS → `KERNEL.lock()` without self-deadlocking.
+///
+/// 2. **render** — framebuffer rendering under the `KERNEL` lock.
+///    Only started when `consume_frame_due()` returns `true`.
+pub fn runtime_tick(now: u64) {
+    // Phase 1: process input and events without the KERNEL lock.
+    solvent::tick_core(now);
+
+    // Phase 2: render only when a frame is actually due.
+    if solvent::consume_frame_due() {
+        crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
+            solvent::render(fb);
+        });
+
+        // Signal present & flush GPU
+        crate::contexts::kernel::with_kernel_mut(|k| {
+            if let Some(ref mut renderer) = k.framebuffer.renderer {
+                renderer.present();
+            }
+        });
+        crate::graphics::flush_gpu();
+    }
 }
 
 // ── Wall clock (CMOS RTC) ────────────────────────────────────

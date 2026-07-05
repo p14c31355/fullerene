@@ -172,7 +172,7 @@ impl AudioContext {
 
 fn alloc_dma(pages: usize) -> Option<DmaRegion> {
     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let phys = petroleum::page_table::constants::get_frame_allocator_mut()
+    let phys = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() }
         .allocate_contiguous_frames(pages)
         .ok()?;
     let virt = (phys + off) as *mut u8;

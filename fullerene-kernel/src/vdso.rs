@@ -6,7 +6,7 @@ use x86_64::VirtAddr;
 use x86_64::structures::paging::{FrameAllocator, PageTableFlags, PhysFrame, Size4KiB};
 
 use crate::process::PROCESS_MANAGER;
-use crate::syscall::handlers::handle_syscall;
+use crate::syscall::handle_syscall;
 
 pub struct VdsoPageRef {
     pub kernel_ptr: &'static VdsoPage,

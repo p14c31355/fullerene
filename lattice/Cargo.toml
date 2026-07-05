@@ -3,6 +3,7 @@ name = "lattice"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+license.workspace = true
 
 [dependencies]
-spin = "0.12.0"
+spin = { workspace = true, features = ["spin_mutex"] }

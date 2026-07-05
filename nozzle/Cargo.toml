@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 carrier = { path = "../carrier" }
+# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex"] }
 
 [lib]

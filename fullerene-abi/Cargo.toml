@@ -1,14 +1,9 @@
 [package]
-name = "chronoline"
+name = "fullerene-abi"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-
-[lib]
-path = "src/lib.rs"
+description = "Fullerene OS ABI definitions — syscall numbers, error codes, DTOs"
 
 [dependencies]
-
-[features]
-default = []

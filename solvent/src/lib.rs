@@ -205,7 +205,6 @@ static EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
 static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
-pub(crate) static LAST_FB: Mutex<(usize, u32, u32, u32)> = Mutex::new((0, 0, 0, 0));
 
 pub struct RuntimeState {
     pub desktop: Desktop,
@@ -248,7 +247,7 @@ pub fn init() {
     let mut dispatcher = Dispatcher::new();
     let mut chrono = ChronoLine::new();
 
-    chrono.register_with_mode(
+    let _ = chrono.register_with_mode(
         Deadline::new(CURSOR_BLINK_INTERVAL),
         CURSOR_TIMER_ID,
         TimerMode::Repeating {
@@ -263,7 +262,7 @@ pub fn init() {
     *EVENT_QUEUE.lock() = Some(EventQueue::new());
     *DISPATCHER.lock() = Some(dispatcher);
 
-    chrono.register_with_mode(
+    let _ = chrono.register_with_mode(
         Deadline::new(FRAME_INTERVAL_TICKS),
         FRAME_TIMER_ID,
         TimerMode::Repeating {
@@ -351,91 +350,6 @@ fn cursor_save_background(
     *save_x = cx;
     *save_y = cy;
     *save_valid = true;
-}
-
-pub(crate) fn cursor_lightweight_update(rt: &mut RuntimeState) {
-    let (fb_addr, fbw, fbh, fb_stride) = *LAST_FB.lock();
-    if fb_addr == 0 || fbh == 0 {
-        rt.frame_due = true;
-        return;
-    }
-    if !rt.desktop.cursor.visible {
-        // Cursor turned off: restore saved background and clear state
-        if rt.cursor_save_valid {
-            let fb_ptr = fb_addr as *mut u32;
-            let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-            let fbw_i = fbw as i32;
-            let stride_i = fb_stride as i32;
-            let fbh_i = fbh as i32;
-            let fb_len = (fb_stride as usize).saturating_mul(fbh as usize);
-            unsafe {
-                let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
-                let sx = rt.cursor_save_x;
-                let sy = rt.cursor_save_y;
-                for row in 0..cur_sz {
-                    let dy = sy + row;
-                    if dy < 0 || dy >= fbh_i {
-                        continue;
-                    }
-                    for col in 0..cur_sz {
-                        let dx = sx + col;
-                        if dx < 0 || dx >= fbw_i {
-                            continue;
-                        }
-                        let idx = (dy * stride_i + dx) as usize;
-                        if idx < fb_len {
-                            fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
-                        }
-                    }
-                }
-            }
-            rt.cursor_save_valid = false;
-        }
-        return;
-    }
-    let fb_ptr = fb_addr as *mut u32;
-
-    let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-    let fbw_i = fbw as i32;
-    let stride_i = fb_stride as i32;
-    let fbh_i = fbh as i32;
-    let fb_len = (fb_stride as usize).saturating_mul(fbh as usize);
-
-    unsafe {
-        let fb = core::slice::from_raw_parts_mut(fb_ptr, fb_len);
-        if rt.cursor_save_valid {
-            let sx = rt.cursor_save_x;
-            let sy = rt.cursor_save_y;
-            for row in 0..cur_sz {
-                let dy = sy + row;
-                if dy < 0 || dy >= fbh_i {
-                    continue;
-                }
-                for col in 0..cur_sz {
-                    let dx = sx + col;
-                    if dx < 0 || dx >= fbw_i {
-                        continue;
-                    }
-                    let idx = (dy * stride_i + dx) as usize;
-                    if idx < fb_len {
-                        fb[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
-                    }
-                }
-            }
-        }
-        cursor_save_background(
-            &rt.desktop.cursor,
-            &mut rt.cursor_save_buf,
-            &mut rt.cursor_save_x,
-            &mut rt.cursor_save_y,
-            &mut rt.cursor_save_valid,
-            fb,
-            fb_stride,
-            fbw,
-            fbh,
-        );
-        Compositor::draw_cursor_direct(fb, fb_stride, fbh, &rt.desktop.cursor);
-    }
 }
 
 // ── Input polling ────────────────────────────────────────────
@@ -750,10 +664,7 @@ impl RenderTarget for FramebufferTarget<'_> {
     }
 }
 
-pub fn render<F>(framebuffer_fn: F)
-where
-    F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
-{
+pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -784,7 +695,6 @@ where
 
     render_terminal(rt, rt.term_window);
 
-    // Detect editor surface-size mismatch (e.g. after maximize)
     if !rt.editor_dirty {
         if let Some(editor_id) = rt.editor_window {
             if let Some(w) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_id) {
@@ -808,17 +718,13 @@ where
     }
 
     let tb_changed = rt.desktop.update_taskbar();
-    let (fb_pixels, fb_width, fb_height, fb_stride_pixels) = match framebuffer_fn() {
-        Some(t) => t,
-        None => return,
-    };
+    let fb_width = fb.width();
+    let fb_height = fb.height();
+    let fb_stride_pixels = fb.stride();
+    let fb_pixels = fb.pixels_mut();
+    let fb_pixels_ptr = fb_pixels.as_mut_ptr();
+    let fb_pixels_len = fb_pixels.len();
     *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
-    *LAST_FB.lock() = (
-        fb_pixels.as_mut_ptr() as usize,
-        fb_width,
-        fb_height,
-        fb_stride_pixels,
-    );
 
     let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
     if rt.clock_changed || tb_changed {
@@ -899,7 +805,7 @@ where
                             unsafe {
                                 core::ptr::copy_nonoverlapping(
                                     back.as_ptr().add(src_off),
-                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                    fb_pixels_ptr.add(dst_off),
                                     copy_len,
                                 );
                             }
@@ -916,7 +822,7 @@ where
                             unsafe {
                                 core::ptr::copy_nonoverlapping(
                                     back.as_ptr().add(src_off),
-                                    fb_pixels.as_mut_ptr().add(dst_off),
+                                    fb_pixels_ptr.add(dst_off),
                                     len,
                                 );
                             }
@@ -956,26 +862,45 @@ where
                 .render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
         }
 
-        if rt.desktop.cursor.visible {
-            let (fb_addr, _, _, fb_stride) = *LAST_FB.lock();
-            if fb_addr != 0 {
-                let fb_ptr = fb_addr as *mut u32;
-                let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
-                unsafe {
-                    let fb = core::slice::from_raw_parts(fb_ptr, fb_len);
-                    cursor_save_background(
-                        &rt.desktop.cursor,
-                        &mut rt.cursor_save_buf,
-                        &mut rt.cursor_save_x,
-                        &mut rt.cursor_save_y,
-                        &mut rt.cursor_save_valid,
-                        fb,
-                        fb_stride,
-                        fb_width,
-                        fb_height,
-                    );
+        // Cursor handling: restore old cursor, save background, draw new cursor
+        // All access goes through the FramebufferGuard instead of raw addresses.
+        let cur_sz = lattice::cursor::Cursor::SIZE as i32;
+        if rt.cursor_save_valid {
+            let sx = rt.cursor_save_x;
+            let sy = rt.cursor_save_y;
+            let fbw_i = fb_width as i32;
+            let fbh_i = fb_height as i32;
+            for row in 0..cur_sz {
+                let dy = sy + row;
+                if dy < 0 || dy >= fbh_i {
+                    continue;
+                }
+                for col in 0..cur_sz {
+                    let dx = sx + col;
+                    if dx < 0 || dx >= fbw_i {
+                        continue;
+                    }
+                    let idx = (dy as usize) * fb_stride + (dx as usize);
+                    if idx < fb_pixels_len {
+                        fb_pixels[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
+                    }
                 }
             }
+            rt.cursor_save_valid = false;
+        }
+
+        if rt.desktop.cursor.visible {
+            cursor_save_background(
+                &rt.desktop.cursor,
+                &mut rt.cursor_save_buf,
+                &mut rt.cursor_save_x,
+                &mut rt.cursor_save_y,
+                &mut rt.cursor_save_valid,
+                fb_pixels,
+                fb_stride_pixels,
+                fb_width,
+                fb_height,
+            );
             Compositor::draw_cursor_direct(
                 fb_pixels,
                 fb_stride_pixels,
@@ -1179,7 +1104,14 @@ pub fn set_render_fn(f: fn()) {
     *RENDER_FN.lock() = Some(f);
 }
 
-fn tick_core(now: u64) {
+/// Run input polling, event processing, and timer logic **without** rendering.
+///
+/// This is the public entry point so the kernel can call it **before**
+/// acquiring the `KERNEL` lock for framebuffer rendering.  Keeping the
+/// two phases separate avoids a deadlock when `process_events()` handlers
+/// (e.g. file manager) re-enter the kernel VFS layer which also needs
+/// the `KERNEL` lock.
+pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
     poll_mouse_state();
     poll_keyboard();
@@ -1251,10 +1183,17 @@ fn runtime_tick_no_fb() {
     }
 }
 
-pub fn runtime_tick<F>(now: u64, framebuffer_fn: F)
-where
-    F: FnOnce() -> Option<(&'static mut [u32], u32, u32, u32)>,
-{
+/// Consume the `frame_due` flag from `RUNTIME` and return whether a frame
+/// should be rendered.  Must be called **after** `tick_core()`.
+pub fn consume_frame_due() -> bool {
+    RUNTIME.lock().as_mut().map_or(false, |r| {
+        let due = r.frame_due;
+        r.frame_due = false;
+        due
+    })
+}
+
+pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -1285,7 +1224,7 @@ where
     });
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
-        render(framebuffer_fn);
+        render(fb);
     }
 }
 

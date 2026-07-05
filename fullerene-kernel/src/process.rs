@@ -4,9 +4,11 @@
 //! capabilities for user-space programs.
 
 use alloc::boxed::Box;
+use alloc::collections::btree_map::BTreeMap;
+use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use heapless::Vec;
+use heapless::Vec as HeaplessVec;
 use petroleum::common::logging::SystemError;
 use petroleum::mem_debug;
 use petroleum::page_table::PageTableHelper as _;
@@ -15,6 +17,8 @@ use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::Ph
 
 use crate::linux::runtime::DispatchMode;
 use crate::vdso::{VdsoPageRef, create_vdso_page};
+
+use crate::syscall::{Handle, HandlePerms, KernelObject};
 
 /// Maximum number of processes managed by the system
 const MAX_PROCESSES: usize = 64;
@@ -85,6 +89,222 @@ impl Default for ProcessContext {
     }
 }
 
+/// Per-process file descriptor table.
+pub struct FdTable {
+    pub entries: BTreeMap<u32, crate::fs::FileDesc>,
+    pub next_fd: u32,
+}
+
+impl FdTable {
+    pub fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            next_fd: 3,
+        }
+    }
+}
+
+/// A slot entry in the per-process handle table.
+struct HandleEntry {
+    generation: u16,
+    permissions: u8,
+    object: KernelObject,
+}
+
+/// A slot that retains its generation across free/alloc cycles for
+/// stale-handle (use-after-free) protection.
+struct HandleSlot {
+    generation: u16,
+    entry: Option<HandleEntry>,
+}
+
+/// Per-process handle table using slot-based allocation with generation counters.
+pub struct HandleTable {
+    slots: alloc::vec::Vec<HandleSlot>,
+    #[allow(dead_code)]
+    free_head: Option<u16>,
+    #[allow(dead_code)]
+    capacity: u16,
+}
+
+impl HandleTable {
+    pub fn new() -> Self {
+        Self {
+            slots: alloc::vec::Vec::new(),
+            free_head: None,
+            capacity: 1024,
+        }
+    }
+
+    /// Allocate a new handle slot. Returns the Handle with owner-default permissions.
+    pub fn alloc(&mut self, object: KernelObject) -> Handle {
+        let slot_idx = self.find_free_slot();
+        let slot = &mut self.slots[slot_idx as usize];
+        slot.generation = slot.generation.wrapping_add(1);
+        let perms = (HandlePerms::READ
+            | HandlePerms::WRITE
+            | HandlePerms::SIGNAL
+            | HandlePerms::DUPLICATE
+            | HandlePerms::TRANSFER)
+            .bits();
+        slot.entry = Some(HandleEntry {
+            generation: slot.generation,
+            permissions: perms,
+            object,
+        });
+        Handle::new(slot_idx, slot.generation, perms)
+    }
+
+    fn find_free_slot(&mut self) -> u16 {
+        for i in 0..self.slots.len() {
+            if self.slots[i].entry.is_none() {
+                return i as u16;
+            }
+        }
+        let idx = self.slots.len() as u16;
+        self.slots.push(HandleSlot { generation: 0, entry: None });
+        idx
+    }
+
+    /// Look up a handle (mutable), validating generation counter.
+    pub fn get_mut(&mut self, handle: Handle) -> Option<&mut KernelObject> {
+        let slot = handle.slot() as usize;
+        let gen_val = handle.generation();
+        self.slots.get_mut(slot)
+            .and_then(|s| s.entry.as_mut())
+            .filter(|e| e.generation == gen_val)
+            .map(|e| &mut e.object)
+    }
+
+    /// Look up a handle (immutable), validating generation counter.
+    pub fn get(&self, handle: Handle) -> Option<&KernelObject> {
+        let slot = handle.slot() as usize;
+        let gen_val = handle.generation();
+        self.slots.get(slot)
+            .and_then(|s| s.entry.as_ref())
+            .filter(|e| e.generation == gen_val)
+            .map(|e| &e.object)
+    }
+
+    /// Remove a handle from the table, returning the object if it existed.
+    pub fn remove(&mut self, handle: Handle) -> Option<KernelObject> {
+        let slot = handle.slot() as usize;
+        let gen_val = handle.generation();
+        let slot = self.slots.get_mut(slot)?;
+        if let Some(entry) = &slot.entry {
+            if entry.generation == gen_val {
+                return slot.entry.take().map(|e| e.object);
+            }
+        }
+        None
+    }
+
+    /// Check whether the handle has the required permission bits set.
+    /// Uses the stored permissions from the handle table (not the raw handle bits).
+    pub fn check_perm(&self, handle: Handle, required: HandlePerms) -> bool {
+        let slot = handle.slot() as usize;
+        let gen_val = handle.generation();
+        self.slots.get(slot)
+            .and_then(|s| s.entry.as_ref())
+            .filter(|e| e.generation == gen_val)
+            .map_or(false, |e| (e.permissions & required.bits()) == required.bits())
+    }
+
+    /// Iterate over all handle objects mutably (for cleanup / thread exit).
+    pub fn iter_objects_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut KernelObject> {
+        self.slots
+            .iter_mut()
+            .filter_map(|slot| slot.entry.as_mut().map(|e| &mut e.object))
+    }
+
+    /// Get all handles with their objects.
+    pub fn entries(
+        &self,
+    ) -> impl Iterator<Item = (Handle, &KernelObject)> {
+        self.slots.iter().enumerate().filter_map(|(i, slot)| {
+            slot.entry.as_ref().map(|e| {
+                let h = Handle::new(i as u16, e.generation, e.permissions);
+                (h, &e.object)
+            })
+        })
+    }
+
+    /// Get all handles with mutable object references.
+    pub fn entries_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (Handle, &mut KernelObject)> {
+        self.slots.iter_mut().enumerate().filter_map(|(i, slot)| {
+            slot.entry.as_mut().map(|e| {
+                let h = Handle::new(i as u16, e.generation, e.permissions);
+                (h, &mut e.object)
+            })
+        })
+    }
+}
+
+/// Per-process resources: file descriptors, kernel object handles.
+pub struct ProcessResources {
+    pub fd_table: spin::Mutex<FdTable>,
+    pub handle_table: spin::Mutex<HandleTable>,
+}
+
+impl ProcessResources {
+    pub fn new() -> Self {
+        Self {
+            fd_table: spin::Mutex::new(FdTable::new()),
+            handle_table: spin::Mutex::new(HandleTable::new()),
+        }
+    }
+
+    /// Clean up all resources held by this process.
+    /// Returns PIDs of waiters that need unblocking (caller must unblock
+    /// outside the process-manager lock to avoid deadlock).
+    pub fn cleanup(&mut self) -> Vec<ProcessId> {
+        let mut to_unblock = Vec::new();
+
+        // Take all handle entries for cleanup.
+        let mut ht = self.handle_table.lock();
+        let handles: Vec<Handle> = ht.entries().map(|(h, _)| h).collect();
+        for handle in handles {
+            if let Some(obj) = ht.remove(handle) {
+                match obj {
+                    KernelObject::Event(e) => {
+                        let mut inner = e.inner.lock();
+                        to_unblock.append(&mut inner.waiters);
+                    }
+                    KernelObject::Thread(t) => {
+                        let mut inner = t.inner.lock();
+                        to_unblock.append(&mut inner.waiters);
+                    }
+                    KernelObject::Channel(ch) => {
+                        let mut inner = ch.inner.lock();
+                        to_unblock.append(&mut inner.waiters);
+                    }
+                    KernelObject::Window(w) => {
+                        // Notify compositor that window is gone
+                        crate::contexts::kernel::with_kernel_mut(|k| {
+                            if let Some(win) = k.window.windows.iter_mut().find(|win| win.id == w.window_id) {
+                                win.visible = false;
+                            }
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        drop(ht);
+
+        // Clear fd table
+        let mut ft = self.fd_table.lock();
+        ft.entries.clear();
+        drop(ft);
+
+        to_unblock
+    }
+}
+
 /// Process structure
 pub struct Process {
     /// Unique process ID
@@ -117,6 +337,8 @@ pub struct Process {
     pub dispatch_mode: Option<DispatchMode>,
     /// Per-process VDSO page for no-interrupt syscalls
     pub vdso_page: Option<VdsoPageRef>,
+    /// Per-process resources (fd table, handle table)
+    pub resources: ProcessResources,
 }
 
 impl Process {
@@ -140,6 +362,7 @@ impl Process {
             task_data: 0,
             dispatch_mode: None,
             vdso_page: None,
+            resources: ProcessResources::new(),
         }
     }
 
@@ -184,7 +407,7 @@ impl Process {
 /// Also owns the scheduler state (`next_pid`, `current_index`, `current_pid`)
 /// that was previously scattered as separate statics.
 pub struct ProcessManager {
-    processes: Mutex<Vec<(ProcessId, Box<Process>), MAX_PROCESSES>>,
+    processes: Mutex<HeaplessVec<(ProcessId, Box<Process>), MAX_PROCESSES>>,
     /// Next available process ID.
     next_pid: AtomicUsize,
     /// Round‑robin index into `processes`.
@@ -196,7 +419,7 @@ pub struct ProcessManager {
 impl ProcessManager {
     pub const fn new() -> Self {
         Self {
-            processes: Mutex::new(Vec::new()),
+            processes: Mutex::new(HeaplessVec::new()),
             next_pid: AtomicUsize::new(1),
             current_index: AtomicUsize::new(0),
             current_pid: AtomicUsize::new(0),
@@ -265,7 +488,7 @@ impl ProcessManager {
     /// Performs an operation on the entire process list
     pub fn with_list<F, R>(&self, f: F) -> R
     where
-        F: FnOnce(&mut Vec<(ProcessId, Box<Process>), MAX_PROCESSES>) -> R,
+        F: FnOnce(&mut HeaplessVec<(ProcessId, Box<Process>), MAX_PROCESSES>) -> R,
     {
         let mut processes = self.processes.lock();
         f(&mut *processes)
@@ -374,6 +597,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
             task_data: 0,
             dispatch_mode: None,
             vdso_page: None,
+            resources: ProcessResources::new(),
         });
 
         // Take ownership of static process via Box::from_raw
@@ -497,9 +721,13 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
-    PROCESS_MANAGER.with_process(pid, |process| {
+    let to_unblock = PROCESS_MANAGER.with_process(pid, |process| {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
+
+        // Clean up per-process resources (fd table, handle table)
+        // Collects waiters to unblock outside the process-manager lock.
+        let waiters = process.resources.cleanup();
 
         // Free resources
         let kernel_stack_base =
@@ -516,9 +744,14 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         }
 
         process.page_table = None;
-    });
 
-    // Unblock parent processes waiting for this child
+        waiters
+    }).unwrap_or_default();
+
+    // Unblock waiters (handles, parent) outside the process-manager lock.
+    for waiter in to_unblock {
+        unblock_process(waiter);
+    }
     unblock_waiting_parents(pid);
 
     // If current process is terminating, schedule next

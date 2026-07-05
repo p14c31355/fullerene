@@ -182,4 +182,40 @@ impl FramebufferContext {
     }
 }
 
+/// Execute a closure with safe, lifetime-limited access to the framebuffer.
+///
+/// The `FramebufferGuard` prevents the `&'static mut` aliasing bug by
+/// constraining the pixel slice lifetime to the closure scope.  Access
+/// is serialized through the kernel mutex.
+///
+/// This is intentionally named differently from the `define_context!`-generated
+/// `with_framebuffer` (which provides `&FramebufferContext` directly) to avoid
+/// name collisions.
+pub fn with_framebuffer_guard<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut petroleum::graphics::FramebufferGuard) -> R,
+{
+    crate::contexts::kernel::with_kernel_mut(|k| {
+        let renderer = k.framebuffer.renderer.as_mut()?;
+        let info = renderer.get_info();
+        if info.address == 0 {
+            return None;
+        }
+        let ptr = info.address as *mut u32;
+        let stride_pixels = info.stride / 4;
+        let len = (stride_pixels as usize) * info.height as usize;
+        // SAFETY: the framebuffer is mapped for the entire kernel lifetime,
+        // but the guard constrains access to this closure scope only.
+        let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+        let mut guard = petroleum::graphics::FramebufferGuard::new(
+            pixels,
+            info.width,
+            info.height,
+            stride_pixels,
+        );
+        Some(f(&mut guard))
+    })
+    .flatten()
+}
+
 crate::define_context!(FramebufferContext, framebuffer, FRAMEBUFFER);

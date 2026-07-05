@@ -3,6 +3,17 @@
 //! Records timestamped events (function entry/exit, IRQ, exception, syscall)
 //! in a fixed-size ring buffer accessible via the `trace` shell command.
 //!
+//! # Safety: single-core assumption
+//!
+//! The ring buffer uses a single `static mut TRACE_BUFFER` protected only
+//! by an atomic head index.  This is safe ONLY under the current
+//! single‑core / single‑CPU assumption.  On a multi‑CPU system, concurrent
+//! `record()` calls from different cores would race on both the head index
+//! and the buffer slots, causing lost/corrupted events.
+//!
+//! To add multi‑CPU support, replace `TRACE_BUFFER` with per‑CPU buffers
+//! or a lock‑free MPSC queue and make `TRACE_HEAD` per‑CPU.
+//!
 //! # Usage
 //!
 //! ```ignore
@@ -18,6 +29,8 @@ const TRACE_CAPACITY: usize = 1024;
 /// A single trace event.
 #[derive(Clone, Copy, Debug)]
 pub struct TraceEvent {
+    /// Monotonically increasing sequence number (for ordering / reorder detection).
+    pub seq: u64,
     /// System tick when the event was recorded.
     pub tick: u64,
     /// Category tag (max 8 chars, NUL-padded).
@@ -28,7 +41,7 @@ pub struct TraceEvent {
 
 impl TraceEvent {
     /// Create a new trace event with the given category and message.
-    pub fn new(tick: u64, cat: &str, msg: &str) -> Self {
+    pub fn new(seq: u64, tick: u64, cat: &str, msg: &str) -> Self {
         let mut category = [0u8; 8];
         let mut message = [0u8; 32];
         let cat_bytes = cat.as_bytes();
@@ -40,6 +53,7 @@ impl TraceEvent {
             message[i] = msg_bytes[i];
         }
         Self {
+            seq,
             tick,
             category,
             message,
@@ -51,6 +65,7 @@ impl TraceEvent {
 
 /// Pre-allocated trace buffer (BSS, zero initialised).
 static mut TRACE_BUFFER: [TraceEvent; TRACE_CAPACITY] = [TraceEvent {
+    seq: 0,
     tick: 0,
     category: [0u8; 8],
     message: [0u8; 32],
@@ -59,16 +74,21 @@ static mut TRACE_BUFFER: [TraceEvent; TRACE_CAPACITY] = [TraceEvent {
 /// Write index (atomic, monotonically increasing).
 static TRACE_HEAD: AtomicUsize = AtomicUsize::new(0);
 
+/// Global sequence counter (monotonically increasing, never wraps).
+static TRACE_SEQ: AtomicUsize = AtomicUsize::new(0);
+
 // ── Public API ────────────────────────────────────────────────────
 
 /// Record a trace event.
 ///
 /// This is lock-free and interruption-safe — suitable for use inside
-/// IRQ handlers and exception handlers.
+/// IRQ handlers and exception handlers.  The sequence number helps
+/// detect reorder or loss in a future multi‑CPU implementation.
 pub fn record(tick: u64, category: &str, message: &str) {
     let idx = TRACE_HEAD.fetch_add(1, Ordering::Relaxed) % TRACE_CAPACITY;
+    let seq = TRACE_SEQ.fetch_add(1, Ordering::Relaxed) as u64;
     unsafe {
-        TRACE_BUFFER[idx] = TraceEvent::new(tick, category, message);
+        TRACE_BUFFER[idx] = TraceEvent::new(seq, tick, category, message);
     }
 }
 

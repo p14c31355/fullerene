@@ -40,6 +40,10 @@ pub const MAX_DESCRIPTORS: usize = 2048;
 #[repr(align(4096))]
 pub struct TotalHeapBuffer(#[allow(dead_code)] pub(crate) [u8; HEAP_TOTAL]);
 
+/// # Safety
+/// The heap buffer is written once (zeroed at compile time, mapped by UEFI),
+/// and then used by the kernel allocator which serialises access via spinlock.
+/// Only accessed after single‑core boot init is complete.
 #[unsafe(link_section = ".data")]
 pub static mut TOTAL_HEAP_BUFFER: TotalHeapBuffer = TotalHeapBuffer([0; HEAP_TOTAL]);
 
@@ -47,6 +51,9 @@ pub static mut TOTAL_HEAP_BUFFER: TotalHeapBuffer = TotalHeapBuffer([0; HEAP_TOT
 /// `TOTAL_HEAP_BUFFER`) have already been passed to `extend_global_heap`.
 static HEAP_EXTEND_USED: Mutex<usize> = Mutex::new(0);
 
+/// # Safety
+/// Written once during boot by `MemoryDescriptorValidator`, then read-only.
+/// Single-core assumption.
 #[unsafe(link_section = ".data")]
 pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {

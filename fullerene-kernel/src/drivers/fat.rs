@@ -13,6 +13,7 @@ use core::str;
 
 use crate::klog_fmt;
 use crate::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
+use genome::fs::FsError;
 // Master Boot Record at LBA 0. Partition entries at offset 0x1BE.
 
 #[repr(C, packed)]
@@ -34,7 +35,7 @@ const PARTITION_EXFAT: u8 = 0x07; // exFAT often uses 0x07
 
 /// Detect whether LBA 0 contains an MBR and find the first FAT partition.
 /// Returns `Some(lba_start)` if found, or `None` if LBA 0 is already a FAT BPB.
-pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static str> {
+pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> {
     let mut boot = [0u8; 512];
     device.read_sectors(0, 1, &mut boot)?;
 
@@ -102,7 +103,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, &'static 
         return Ok(lba);
     }
     klog_fmt!("FAT: no FAT partition found in MBR\n");
-    Err("no FAT partition")
+    Err(FsError::FileNotFound)
 }
 
 // ── Block device registry ────────────────────────────────────
@@ -126,12 +127,12 @@ pub fn register_block_device(name: &'static str, device: Box<dyn BlockDevice>) {
 
 /// Open a registered block device by name and return a `FatFileSystem`
 /// mounted on it.
-pub fn open_block_device(name: &str) -> Result<FatFileSystem, &'static str> {
+pub fn open_block_device(name: &str) -> Result<FatFileSystem, FsError> {
     let mut devices = BLOCK_DEVICES.lock();
     let pos = devices
         .iter()
         .position(|(n, _)| *n == name)
-        .ok_or("block device not found")?;
+        .ok_or(FsError::FileNotFound)?;
     let (_, device) = devices.remove(pos);
     FatFileSystem::from_device(device)
 }
@@ -146,20 +147,35 @@ pub trait BlockDevice: Send {
     fn total_sectors(&self) -> u64;
 }
 
-/// A simple direct-mapped block cache for read-only workloads.
+/// Error type for block device and cache operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockError {
+    Device(&'static str),
+    BufferTooSmall { required: usize, provided: usize },
+    LbaOverflow,
+    SectorNotFound,
+}
+
+impl From<&'static str> for BlockError {
+    fn from(e: &'static str) -> Self {
+        BlockError::Device(e)
+    }
+}
+
+/// A simple direct-mapped block cache with round-robin eviction.
 ///
 /// Caches `CAP` sectors keyed by LBA.  Each entry holds a copy of the
-/// 512-byte (or larger) sector.  Writes are passed through to the
-/// underlying device and invalidate the matching cache line.
+/// sector data.  Writes are passed through to the underlying device and
+/// invalidate the matching cache line.
 ///
 /// This is the storage stack foundation mentioned in the architecture
 /// spec: `block cache → FAT32 → initramfs`.
 pub struct BlockCache<D: BlockDevice> {
     inner: D,
     bps: usize,
-    entries: Vec<(u32, Vec<u8>)>,
-    #[allow(dead_code)]
+    entries: Vec<(Option<u32>, Vec<u8>)>,
     capacity: usize,
+    next_victim: usize,
 }
 
 impl<D: BlockDevice> BlockCache<D> {
@@ -167,24 +183,36 @@ impl<D: BlockDevice> BlockCache<D> {
         let bps = inner.sector_size() as usize;
         let mut entries = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            entries.push((0xFFFF_FFFF, vec![0u8; bps]));
+            entries.push((None, vec![0u8; bps]));
         }
         Self {
             inner,
             bps,
             entries,
             capacity,
+            next_victim: 0,
         }
     }
 
     fn lookup(&self, lba: u32) -> Option<usize> {
-        self.entries.iter().position(|(l, _)| *l == lba)
+        self.entries.iter().position(|(l, _)| *l == Some(lba))
     }
 
-    /// Read a single sector into `buf`, returning the cached entry if
-    /// the same sector is already cached.  If the cache is full, the
-    /// slot is overwritten.
-    pub fn read_sector(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+    /// Read a single sector into `buf`.
+    ///
+    /// Checks buffer length and LBA validity before any I/O or cache
+    /// mutation, so that an error always leaves the cache and device
+    /// state unchanged.
+    pub fn read_sector(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        if buf.len() < self.bps {
+            return Err(BlockError::BufferTooSmall {
+                required: self.bps,
+                provided: buf.len(),
+            });
+        }
+        if (lba as u64) >= self.inner.total_sectors() {
+            return Err(BlockError::LbaOverflow);
+        }
         if let Some(idx) = self.lookup(lba) {
             buf[..self.bps].copy_from_slice(&self.entries[idx].1);
             return Ok(());
@@ -192,11 +220,7 @@ impl<D: BlockDevice> BlockCache<D> {
         let idx = self.evict_slot();
         let entry = &mut self.entries[idx];
         self.inner.read_sectors(lba, 1, &mut entry.1)?;
-        entry.0 = lba;
-        // The caller may have a smaller buffer; only copy what's needed.
-        if buf.len() < self.bps {
-            return Err("buffer too small");
-        }
+        entry.0 = Some(lba);
         buf[..self.bps].copy_from_slice(&entry.1);
         Ok(())
     }
@@ -204,33 +228,49 @@ impl<D: BlockDevice> BlockCache<D> {
     /// Read a single sector returning a reference to the cached buffer.
     /// The returned reference is invalidated by any subsequent cache
     /// operation.
-    pub fn get_sector(&mut self, lba: u32) -> Result<&[u8], &'static str> {
+    pub fn get_sector(&mut self, lba: u32) -> Result<&[u8], BlockError> {
+        if (lba as u64) >= self.inner.total_sectors() {
+            return Err(BlockError::LbaOverflow);
+        }
         if let Some(idx) = self.lookup(lba) {
             return Ok(&self.entries[idx].1);
         }
         let idx = self.evict_slot();
         let entry = &mut self.entries[idx];
         self.inner.read_sectors(lba, 1, &mut entry.1)?;
-        entry.0 = lba;
+        entry.0 = Some(lba);
         Ok(&self.entries[idx].1)
     }
 
-    fn evict_slot(&self) -> usize {
-        // Simple round-robin eviction: pick the first slot whose LBA is
-        // 0xFFFFFFFF (never used) or wrap around.  This is O(capacity) but
-        // capacity is small (~64).
-        if let Some(idx) = self.entries.iter().position(|(l, _)| *l == 0xFFFF_FFFF) {
+    fn evict_slot(&mut self) -> usize {
+        if self.capacity == 0 {
+            panic!("BlockCache capacity is 0");
+        }
+        // Check if there's a free slot (never used, or was invalidated)
+        if let Some(idx) = self.entries.iter().position(|(l, _)| l.is_none()) {
             return idx;
         }
-        0
+        // Round-robin: take the next victim and advance the pointer
+        let idx = self.next_victim;
+        self.next_victim = (self.next_victim + 1) % self.capacity;
+        idx
     }
 
     /// Write a single sector and invalidate its cache entry.
-    pub fn write_sector(&mut self, lba: u32, buf: &[u8]) -> Result<(), &'static str> {
-        if let Some(idx) = self.lookup(lba) {
-            self.entries[idx].0 = 0xFFFF_FFFF;
+    pub fn write_sector(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+        if (lba as u64) >= self.inner.total_sectors() {
+            return Err(BlockError::LbaOverflow);
         }
-        self.inner.write_sectors(lba, 1, buf)
+        if buf.len() < self.bps {
+            return Err(BlockError::BufferTooSmall {
+                required: self.bps,
+                provided: buf.len(),
+            });
+        }
+        if let Some(idx) = self.lookup(lba) {
+            self.entries[idx].0 = None;
+        }
+        self.inner.write_sectors(lba, 1, buf).map_err(BlockError::Device)
     }
 
     pub fn sector_size(&self) -> u32 {
@@ -245,17 +285,44 @@ impl<D: BlockDevice> BlockCache<D> {
 impl<D: BlockDevice> BlockDevice for BlockCache<D> {
     fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
         let count = count as usize;
+        let needed = count.checked_mul(self.bps).ok_or("count * bps overflow")?;
+        if buf.len() < needed {
+            return Err("buffer too small for multi-sector read");
+        }
+        let end_lba = (lba as u64) + (count as u64);
+        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
+            return Err("LBA range exceeds device capacity or 32-bit limit");
+        }
         for i in 0..count {
             let off = i * self.bps;
-            self.read_sector(lba + i as u32, &mut buf[off..off + self.bps])?;
+            let sector_buf = &mut buf[off..off + self.bps];
+            self.read_sector(lba + i as u32, sector_buf)
+                .map_err(|e| match e {
+                    BlockError::Device(s) => s,
+                    _ => "block cache error",
+                })?;
         }
         Ok(())
     }
 
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-        for i in 0..count as usize {
+        let count = count as usize;
+        let needed = count.checked_mul(self.bps).ok_or("count * bps overflow")?;
+        if buf.len() < needed {
+            return Err("buffer too small for multi-sector write");
+        }
+        let end_lba = (lba as u64) + (count as u64);
+        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
+            return Err("LBA range exceeds device capacity or 32-bit limit");
+        }
+        for i in 0..count {
             let off = i * self.bps;
-            self.write_sector(lba + i as u32, &buf[off..off + self.bps])?;
+            let sector_buf = &buf[off..off + self.bps];
+            self.write_sector(lba + i as u32, sector_buf)
+                .map_err(|e| match e {
+                    BlockError::Device(s) => s,
+                    _ => "block cache error",
+                })?;
         }
         Ok(())
     }
@@ -435,7 +502,7 @@ impl FatFileSystem {
     /// Create a FAT/exFAT filesystem from a block device, auto-detecting
     /// MBR partition tables and parsing the correct boot sector.
     /// Wraps the device in a [`BlockCache`] for repeated reads.
-    pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
+    pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
         let lba = find_fat_partition(&mut *device)?;
         if lba > 0 {
             // Repoint the device to read from partition start.
@@ -451,7 +518,7 @@ impl FatFileSystem {
         Self::new(Box::new(cached))
     }
 
-    pub fn new(mut device: Box<dyn BlockDevice>) -> Result<Self, &'static str> {
+    pub fn new(mut device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
         let mut boot = [0u8; 512];
         device.read_sectors(0, 1, &mut boot)?;
 
@@ -465,11 +532,11 @@ impl FatFileSystem {
 
             let bps_shift = ebpb.bytes_per_sector_shift as u32;
             if bps_shift < 9 || bps_shift > 12 {
-                return Err("invalid bytes_per_sector_shift");
+                return Err(FsError::InvalidInput);
             }
             let spc_shift = ebpb.sectors_per_cluster_shift as u32;
             if spc_shift > 25 {
-                return Err("invalid sectors_per_cluster_shift");
+                return Err(FsError::InvalidInput);
             }
             let bps = 1u32 << bps_shift;
             let spc = 1u32 << spc_shift;
@@ -503,10 +570,10 @@ impl FatFileSystem {
             let bps = bpb.bytes_per_sector as u32;
             let spc = bpb.sectors_per_cluster as u32;
             if bps < 512 || bps > 4096 || !bps.is_power_of_two() {
-                return Err("invalid bytes_per_sector");
+                return Err(FsError::InvalidInput);
             }
             if spc == 0 || !spc.is_power_of_two() {
-                return Err("invalid sectors_per_cluster");
+                return Err(FsError::InvalidInput);
             }
             let reserved = bpb.reserved_sector_count as u32;
             let num_fats = bpb.num_fats as u32;
@@ -1134,7 +1201,7 @@ impl FatFileSystem {
 
 impl FatFileSystem {
     /// Read all entries in a FAT32 directory cluster chain.
-    fn readdir_fat32_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, &'static str> {
+    fn readdir_fat32_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, FsError> {
         let mut entries = Vec::new();
         let mut cluster = dir_cluster;
         // LFN entries precede the main entry in reverse order
@@ -1211,7 +1278,7 @@ impl FatFileSystem {
     }
 
     /// Read all entries in an exFAT directory cluster chain.
-    fn readdir_exfat_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, &'static str> {
+    fn readdir_exfat_all(&mut self, dir_cluster: u32) -> Result<Vec<VNode>, FsError> {
         let mut entries = Vec::new();
         let mut cluster = dir_cluster;
         let mut current_size: u64 = 0;
@@ -1641,12 +1708,12 @@ impl FileSystem for FatFileSystem {
         })
     }
 
-    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+    fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         let pos = self
             .handles
             .iter()
             .position(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let cluster = self.handles[pos].1;
         let offset = self.handles[pos].2;
         let file_size = self.handles[pos].3;
@@ -1696,12 +1763,12 @@ impl FileSystem for FatFileSystem {
         Ok(dst_off)
     }
 
-    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
+    fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         let pos = self
             .handles
             .iter()
             .position(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let cluster = self.handles[pos].1;
         let offset = self.handles[pos].2;
         let mut new_cluster = cluster;
@@ -1713,12 +1780,12 @@ impl FileSystem for FatFileSystem {
         Ok(len)
     }
 
-    fn close(&mut self, fd: u32) -> Result<(), &'static str> {
+    fn close(&mut self, fd: u32) -> Result<(), FsError> {
         let pos = self
             .handles
             .iter()
             .position(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let cluster = self.handles[pos].1;
         let final_size = self.handles[pos].3;
         let path = self.handles[pos].4.clone();
@@ -1727,12 +1794,12 @@ impl FileSystem for FatFileSystem {
         Ok(())
     }
 
-    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), &'static str> {
+    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError> {
         let h = self
             .handles
             .iter_mut()
             .find(|h| h.0 == fd)
-            .ok_or("bad fd")?;
+            .ok_or(FsError::InvalidFileDescriptor)?;
         h.2 = pos as u32;
         Ok(())
     }
@@ -1761,15 +1828,15 @@ impl FileSystem for FatFileSystem {
         }
     }
 
-    fn mkdir(&mut self, _path: &str) -> Result<(), &'static str> {
-        Err("mkdir not implemented")
+    fn mkdir(&mut self, _path: &str) -> Result<(), FsError> {
+        Err(FsError::NotSupported)
     }
 
-    fn unlink(&mut self, _path: &str) -> Result<(), &'static str> {
-        Err("unlink not implemented")
+    fn unlink(&mut self, _path: &str) -> Result<(), FsError> {
+        Err(FsError::NotSupported)
     }
 
-    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, &'static str> {
+    fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
         let path = path.trim_matches('/');
         let cluster = if path.is_empty() {
             self.root_cluster
@@ -1782,11 +1849,11 @@ impl FileSystem for FatFileSystem {
                 match self.find_in_dir(cluster, component) {
                     Some((entry_cluster, _, is_dir)) => {
                         if !is_dir {
-                            return Err("not a directory");
+                            return Err(FsError::NotADirectory);
                         }
                         cluster = entry_cluster;
                     }
-                    None => return Err("not found"),
+                    None => return Err(FsError::FileNotFound),
                 }
             }
             cluster
@@ -1905,4 +1972,213 @@ fn lfn_checksum(short_name: &[u8; 11]) -> u8 {
         sum = ((sum & 1) << 7).wrapping_add(sum >> 1).wrapping_add(byte);
     }
     sum
+}
+
+// ── Fake block device for testing ──────────────────────────────
+
+/// A memory-backed block device for testing cache behaviour
+/// without real hardware.
+#[cfg(test)]
+pub struct FakeBlockDevice {
+    sectors: Vec<Vec<u8>>,
+    sector_size: u32,
+}
+
+#[cfg(test)]
+impl FakeBlockDevice {
+    pub fn new(sector_size: u32, total_sectors: u64) -> Self {
+        let buf = vec![0u8; sector_size as usize];
+        Self {
+            sectors: vec![buf; total_sectors as usize],
+            sector_size,
+        }
+    }
+
+    pub fn fill_sector(&mut self, lba: u32, data: &[u8]) {
+        if let Some(sector) = self.sectors.get_mut(lba as usize) {
+            let len = data.len().min(sector.len());
+            sector[..len].copy_from_slice(&data[..len]);
+        }
+    }
+}
+
+#[cfg(test)]
+impl BlockDevice for FakeBlockDevice {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        let end = (lba as usize)
+            .checked_add(count as usize)
+            .ok_or("LBA overflow")?;
+        if end > self.sectors.len() {
+            return Err("LBA exceeds device");
+        }
+        let bps = self.sector_size as usize;
+        let needed = (count as usize)
+            .checked_mul(bps)
+            .ok_or("count * bps overflow")?;
+        if buf.len() < needed {
+            return Err("buffer too small");
+        }
+        for i in 0..count as usize {
+            let off = i * bps;
+            buf[off..off + bps].copy_from_slice(&self.sectors[lba as usize + i][..bps]);
+        }
+        Ok(())
+    }
+
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        let end = (lba as usize)
+            .checked_add(count as usize)
+            .ok_or("LBA overflow")?;
+        if end > self.sectors.len() {
+            return Err("LBA exceeds device");
+        }
+        let bps = self.sector_size as usize;
+        let needed = (count as usize)
+            .checked_mul(bps)
+            .ok_or("count * bps overflow")?;
+        if buf.len() < needed {
+            return Err("buffer too small");
+        }
+        for i in 0..count as usize {
+            let off = i * bps;
+            self.sectors[lba as usize + i][..bps].copy_from_slice(&buf[off..off + bps]);
+        }
+        Ok(())
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.sector_size
+    }
+
+    fn total_sectors(&self) -> u64 {
+        self.sectors.len() as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_cache(sectors: u64) -> BlockCache<FakeBlockDevice> {
+        let inner = FakeBlockDevice::new(512, sectors);
+        let mut cache = BlockCache::new(inner, 4);
+        // Fill sector 0 with known pattern
+        let mut pat = [0u8; 512];
+        pat[..4].copy_from_slice(b"PAT0");
+        cache.inner.fill_sector(0, &pat);
+        // Fill sector 1
+        let mut pat1 = [0u8; 512];
+        pat1[..4].copy_from_slice(b"PAT1");
+        cache.inner.fill_sector(1, &pat1);
+        // Fill sector 2
+        let mut pat2 = [0u8; 512];
+        pat2[..4].copy_from_slice(b"PAT2");
+        cache.inner.fill_sector(2, &pat2);
+        cache
+    }
+
+    #[test]
+    fn test_cache_hit() {
+        let mut cache = make_cache(10);
+        let mut buf = vec![0u8; 512];
+        // First read (miss) populates the cache
+        cache.read_sector(0, &mut buf).unwrap();
+        assert_eq!(&buf[..4], b"PAT0");
+        // Second read (hit) returns from cache
+        let mut buf2 = vec![0u8; 512];
+        cache.read_sector(0, &mut buf2).unwrap();
+        assert_eq!(&buf2[..4], b"PAT0");
+    }
+
+    #[test]
+    fn test_cache_miss() {
+        let mut cache = make_cache(10);
+        let mut buf = vec![0u8; 512];
+        cache.read_sector(1, &mut buf).unwrap();
+        assert_eq!(&buf[..4], b"PAT1");
+    }
+
+    #[test]
+    fn test_buffer_too_small_read() {
+        let mut cache = make_cache(10);
+        let mut buf = [0u8; 256];
+        let err = cache.read_sector(0, &mut buf).unwrap_err();
+        assert_eq!(
+            err,
+            BlockError::BufferTooSmall {
+                required: 512,
+                provided: 256
+            }
+        );
+    }
+
+    #[test]
+    fn test_lba_overflow() {
+        let mut cache = make_cache(5);
+        let mut buf = vec![0u8; 512];
+        let err = cache.read_sector(10, &mut buf).unwrap_err();
+        assert_eq!(err, BlockError::LbaOverflow);
+    }
+
+    #[test]
+    fn test_write_invalidates_cache() {
+        let mut cache = make_cache(10);
+        let mut buf = vec![0u8; 512];
+        // Populate the cache
+        cache.read_sector(0, &mut buf).unwrap();
+        assert_eq!(&buf[..4], b"PAT0");
+        // Write to sector 0 — should invalidate cache entry
+        let write_buf = {
+            let mut w = vec![0u8; 512];
+            w[..4].copy_from_slice(b"NEW0");
+            w
+        };
+        cache.write_sector(0, &write_buf).unwrap();
+        // Now read back — should get the new data from device
+        let mut buf2 = vec![0u8; 512];
+        cache.read_sector(0, &mut buf2).unwrap();
+        assert_eq!(&buf2[..4], b"NEW0");
+    }
+
+    #[test]
+    fn test_round_robin_eviction() {
+        let mut cache = make_cache(10);
+        let mut buf = vec![0u8; 512];
+        // Fill all 4 cache slots with sectors 0..3
+        for i in 0..4 {
+            cache.read_sector(i, &mut buf).unwrap();
+        }
+        // Now all slots are full. next_victim should be 0.
+        // Reading sector 4 should evict slot 0 (which held sector 0).
+        cache.read_sector(4, &mut buf).unwrap();
+        // Reading sector 0 again should be a miss (it was evicted)
+        let mut buf0 = vec![0u8; 512];
+        cache.read_sector(0, &mut buf0).unwrap();
+        assert_eq!(&buf0[..4], b"PAT0");
+        // next_victim should now be 1. Reading sector 5 should evict slot 1.
+        cache.read_sector(5, &mut buf).unwrap();
+        let mut buf1 = vec![0u8; 512];
+        cache.read_sector(1, &mut buf1).unwrap();
+        assert_eq!(&buf1[..4], b"PAT1");
+    }
+
+    #[test]
+    fn test_multi_sector_buffer_check() {
+        let inner = FakeBlockDevice::new(512, 10);
+        let mut cache = BlockCache::new(inner, 4);
+        // Buffer too small for 2 sectors
+        let mut buf = vec![0u8; 512];
+        let err = cache.read_sectors(0, 2, &mut buf).unwrap_err();
+        assert_eq!(err, "buffer too small for multi-sector read");
+    }
+
+    #[test]
+    fn test_multi_sector_lba_overflow() {
+        let inner = FakeBlockDevice::new(512, 5);
+        let mut cache = BlockCache::new(inner, 4);
+        // LBA 4 + 2 = 6 > 5
+        let mut buf = vec![0u8; 1024];
+        let err = cache.read_sectors(4, 2, &mut buf).unwrap_err();
+        assert_eq!(err, "LBA range exceeds device capacity");
+    }
 }

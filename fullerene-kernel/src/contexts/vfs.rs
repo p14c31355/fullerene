@@ -21,6 +21,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs};
+use genome::fs::FsError;
 
 // ── VfsContext ──────────────────────────────────────────────────────
 
@@ -134,13 +135,13 @@ impl VfsContext {
         String::from(vfs.working_directory())
     }
 
-    pub fn change_directory(&self, path: &str) -> Result<(), &'static str> {
+    pub fn change_directory(&self, path: &str) -> Result<(), FsError> {
         self.inner.lock().change_directory(path)
     }
 
     // ── Mount management ────────────────────────────────────────
 
-    pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), &'static str> {
+    pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
         let replaced_index = vfs.mounted_fs_index(mount_point);
         vfs.mount(mount_point, fs)?;
@@ -161,7 +162,7 @@ impl VfsContext {
     /// Also updates the handle table: open file descriptors belonging to the
     /// unmounted filesystem are discarded, and indices of remaining mounts
     /// that shifted left are decremented.
-    pub fn unmount(&self, mount_point: &str) -> Result<bool, &'static str> {
+    pub fn unmount(&self, mount_point: &str) -> Result<bool, FsError> {
         let mut vfs = self.inner.lock();
         let mut handle_table = self.handle_table.lock();
         let target_idx = match vfs.mounted_fs_index(mount_point) {
@@ -200,68 +201,68 @@ impl VfsContext {
         self.register_handle(mount_index, fd)
     }
 
-    pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
+    pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or("bad fd")?;
+        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
         vfs.read_at(handle.mount_index, handle.local_fd, buf)
     }
 
-    pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, &'static str> {
+    pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or("bad fd")?;
+        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
         vfs.write_at(handle.mount_index, handle.local_fd, data)
     }
 
-    pub fn close(&self, fd: u32) -> Result<(), &'static str> {
+    pub fn close(&self, fd: u32) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().take(fd).ok_or("bad fd")?;
+        let handle = self.handle_table.lock().take(fd).ok_or(FsError::InvalidFileDescriptor)?;
         vfs.close_at(handle.mount_index, handle.local_fd)
     }
 
-    pub fn seek(&self, fd: u32, pos: usize) -> Result<(), &'static str> {
+    pub fn seek(&self, fd: u32, pos: usize) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or("bad fd")?;
+        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
         vfs.seek_at(handle.mount_index, handle.local_fd, pos)
     }
 
-    pub fn create(&self, path: &str) -> Result<FileDescriptor, &'static str> {
+    pub fn create(&self, path: &str) -> Result<FileDescriptor, FsError> {
         // Acquire inner first, do all FS work, drop inner…
         let (mount_index, fd) = {
             let mut vfs = self.inner.lock();
-            let mount_index = vfs.find_fs_index(path).ok_or("not found")?;
+            let mount_index = vfs.find_fs_index(path).ok_or(FsError::FileNotFound)?;
             let resolved = vfs.resolve_path(path);
             {
-                let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
+                let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
                 if !fs.exists(&remaining) {
                     fs.create(&remaining, InodeType::File)
-                        .ok_or("create failed")?;
+                        .ok_or(FsError::PermissionDenied)?;
                 }
             }
-            let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
-            let fd = fs.open(&remaining, 0).ok_or("open failed after create")?;
+            let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
+            let fd = fs.open(&remaining, 0).ok_or(FsError::FileNotFound)?;
             (mount_index, fd)
         };
         // …then acquire handle_table.
         self.register_handle(mount_index, fd)
-            .ok_or("file descriptor table full")
+            .ok_or(FsError::PermissionDenied)
     }
 
-    pub fn mkdir(&self, path: &str) -> Result<(), &'static str> {
+    pub fn mkdir(&self, path: &str) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
         let resolved = vfs.resolve_path(path);
-        let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
+        let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
         fs.mkdir(&remaining)
     }
 
-    pub fn unlink(&self, path: &str) -> Result<(), &'static str> {
+    pub fn unlink(&self, path: &str) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
         let resolved = vfs.resolve_path(path);
-        let (fs, remaining) = vfs.find_fs(&resolved).ok_or("not found")?;
+        let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
         fs.unlink(&remaining)
     }
 
-    pub fn readdir(&self, path: &str) -> Result<Vec<VNode>, &'static str> {
+    pub fn readdir(&self, path: &str) -> Result<Vec<VNode>, FsError> {
         self.inner.lock().readdir(path)
     }
 
@@ -339,7 +340,7 @@ where
 ///
 /// The `device` argument is the path to a block device that the kernel
 /// can open.  For `tmpfs`, `device` is ignored.
-pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), &'static str> {
+pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsError> {
     with_vfs(|vfs| match fs_type {
         "tmpfs" => {
             let memfs = Box::new(MemFileSystem::new());
@@ -358,61 +359,61 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), &'sta
             log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
             Ok(())
         }
-        _ => Err("unsupported filesystem type"),
+        _ => Err(FsError::NotSupported),
     })
-    .ok_or("vfs not init")?
+    .ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: unmount a filesystem at `mount_point`.
-pub fn unmount(mount_point: &str) -> Result<bool, &'static str> {
-    with_vfs(|vfs| vfs.unmount(mount_point)).ok_or("vfs not init")?
+pub fn unmount(mount_point: &str) -> Result<bool, FsError> {
+    with_vfs(|vfs| vfs.unmount(mount_point)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: open a file.
-pub fn open(path: &str, flags: u32) -> Result<FileDescriptor, &'static str> {
+pub fn open(path: &str, flags: u32) -> Result<FileDescriptor, FsError> {
     with_vfs(|vfs| vfs.open(path, flags))
-        .ok_or("vfs not init")?
-        .ok_or("not found")
+        .ok_or(FsError::PermissionDenied)?
+        .ok_or(FsError::FileNotFound)
 }
 
 /// Backward-compatible wrapper: read from fd.
-pub fn read(fd: u32, buf: &mut [u8]) -> Result<usize, &'static str> {
-    with_vfs(|vfs| vfs.read(fd, buf)).ok_or("vfs not init")?
+pub fn read(fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+    with_vfs(|vfs| vfs.read(fd, buf)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: write to fd.
-pub fn write(fd: u32, data: &[u8]) -> Result<usize, &'static str> {
-    with_vfs(|vfs| vfs.write(fd, data)).ok_or("vfs not init")?
+pub fn write(fd: u32, data: &[u8]) -> Result<usize, FsError> {
+    with_vfs(|vfs| vfs.write(fd, data)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: close fd.
-pub fn close(fd: u32) -> Result<(), &'static str> {
-    with_vfs(|vfs| vfs.close(fd)).ok_or("vfs not init")?
+pub fn close(fd: u32) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.close(fd)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: seek fd.
-pub fn seek(fd: u32, pos: usize) -> Result<(), &'static str> {
-    with_vfs(|vfs| vfs.seek(fd, pos)).ok_or("vfs not init")?
+pub fn seek(fd: u32, pos: usize) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.seek(fd, pos)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: readdir.
-pub fn readdir(path: &str) -> Result<Vec<VNode>, &'static str> {
-    with_vfs(|vfs| vfs.readdir(path)).ok_or("vfs not init")?
+pub fn readdir(path: &str) -> Result<Vec<VNode>, FsError> {
+    with_vfs(|vfs| vfs.readdir(path)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: create file.
-pub fn create(path: &str) -> Result<FileDescriptor, &'static str> {
-    with_vfs(|vfs| vfs.create(path)).ok_or("vfs not init")?
+pub fn create(path: &str) -> Result<FileDescriptor, FsError> {
+    with_vfs(|vfs| vfs.create(path)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: mkdir.
-pub fn mkdir(path: &str) -> Result<(), &'static str> {
-    with_vfs(|vfs| vfs.mkdir(path)).ok_or("vfs not init")?
+pub fn mkdir(path: &str) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.mkdir(path)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: unlink.
-pub fn unlink(path: &str) -> Result<(), &'static str> {
-    with_vfs(|vfs| vfs.unlink(path)).ok_or("vfs not init")?
+pub fn unlink(path: &str) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.unlink(path)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: exists.
@@ -421,13 +422,13 @@ pub fn exists(path: &str) -> bool {
 }
 
 /// Backward-compatible wrapper: working directory.
-pub fn working_directory() -> Result<String, &'static str> {
-    with_vfs(|vfs| vfs.working_directory()).ok_or("vfs not init")
+pub fn working_directory() -> Result<String, FsError> {
+    with_vfs(|vfs| vfs.working_directory()).ok_or(FsError::PermissionDenied)
 }
 
 /// Backward-compatible wrapper: change directory.
-pub fn change_directory(path: &str) -> Result<(), &'static str> {
-    with_vfs(|vfs| vfs.change_directory(path)).ok_or("vfs not init")?
+pub fn change_directory(path: &str) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.change_directory(path)).ok_or(FsError::PermissionDenied)?
 }
 
 // ── Panic-safe VFS access (for klog flush) ─────────────────────────
