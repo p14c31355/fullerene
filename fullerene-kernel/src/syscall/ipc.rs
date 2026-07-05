@@ -102,8 +102,14 @@ pub(crate) fn syscall_pipe_create(buf: *mut u64) -> SyscallResult {
         buffer: shared_buffer,
         is_read_end: false,
     };
-
     let read_h = alloc_handle(KernelObject::Pipe(read_end))?;
+    let write_h = match alloc_handle(KernelObject::Pipe(write_end)) {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = super::cap::syscall_handle_revoke(read_h);
+            return Err(e);
+        }
+    };
     let write_h = alloc_handle(KernelObject::Pipe(write_end))?;
 
     let slice = UserSlice::new(buf as *mut u8, 16, true)
