@@ -70,16 +70,24 @@ impl FramebufferContext {
             return false;
         }
 
-        // Use the bootstrap's direct mapping whenever possible. The old
-        // diagnostics and the boot splash already prove this exact alias on
-        // real hardware. Creating a second WC alias while the direct mapping
-        // remains present with another cache type is architecturally
-        // undefined on x86 and caused the desktop writes to disappear on
-        // physical Intel systems even though the grey fill was visible.
+        // Use the bootstrap's higher-half direct mapping whenever possible.
+        // It has the same effective cache type as the early identity alias,
+        // without creating a second WC mapping for the same physical pages.
+        // Unlike the lower-half identity address, this alias is copied into
+        // every process PML4 and remains valid while a user CR3 is active.
         let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
         const DIRECT_MAP_SIZE: u64 = 64 * 1024 * 1024 * 1024;
-        let fb_va = if self.fb_phys.saturating_add(fb_size) <= DIRECT_MAP_SIZE {
-            self.fb_phys
+        let fb_end = match self.fb_phys.checked_add(fb_size) {
+            Some(address) => address,
+            None => return false,
+        };
+        let fb_va = if fb_end <= DIRECT_MAP_SIZE {
+            let direct_map_offset =
+                petroleum::common::memory::get_physical_memory_offset() as u64;
+            match self.fb_phys.checked_add(direct_map_offset) {
+                Some(address) => address,
+                None => return false,
+            }
         } else {
             // Very high GOP apertures are outside the bootstrap identity map;
             // only those systems need a dedicated alias.
@@ -208,7 +216,7 @@ where
             return None;
         }
         // `info.address` is the single scan-out alias selected during
-        // renderer construction (normally the bootstrap identity mapping).
+        // renderer construction (normally the higher-half direct mapping).
         let ptr = info.address as *mut u32;
         let stride_pixels = info.stride / 4;
         let len = (stride_pixels as usize) * info.height as usize;

@@ -69,9 +69,9 @@ pub fn store_boot_fb_params(
 
 /// Return the framebuffer through the bootstrap's direct mapping.
 ///
-/// The initial page table maps the first 64 GiB both identity-wise and in the
-/// higher-half direct map. Real-hardware boot progress deliberately uses the
-/// identity alias, matching the transition diagnostics byte-for-byte.
+/// The initial page table maps the first 64 GiB into the higher-half direct
+/// map, which is shared by every process page table. Early Bellows diagnostics
+/// may use the identity alias, but kernel-owned rendering must not retain it.
 pub fn direct_boot_framebuffer() -> Option<BootFramebuffer> {
     let (phys, width, height, stride, bpp, format) = unsafe {
         (
@@ -87,7 +87,16 @@ pub fn direct_boot_framebuffer() -> Option<BootFramebuffer> {
     if phys.checked_add(size)? > 64 * 1024 * 1024 * 1024 {
         return None;
     }
-    BootFramebuffer::new(phys, width, height, stride, bpp, format)
+    let direct_map_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
+    let direct_map_address = phys.checked_add(direct_map_offset)?;
+    BootFramebuffer::new(
+        direct_map_address,
+        width,
+        height,
+        stride,
+        bpp,
+        format,
+    )
 }
 
 /// Discovery engine — tries each probe strategy in order.
