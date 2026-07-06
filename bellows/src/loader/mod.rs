@@ -383,6 +383,10 @@ pub fn exit_boot_services_and_jump(
                 l4_phys_addr: args_phys_addr as u64 + 4096,
                 framebuffer_phys: fb_addr,
                 framebuffer_size: u64::from(fb_stride).saturating_mul(u64::from(fb_height)),
+                framebuffer_width: fb_width,
+                framebuffer_height: fb_height,
+                framebuffer_stride: fb_stride,
+                framebuffer_pixel_format: fb_pixel_format,
             },
         );
     }

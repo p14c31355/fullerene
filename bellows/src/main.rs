@@ -15,6 +15,7 @@ mod loader;
 
 use loader::{exit_boot_services_and_jump, init_heap, load_efi_image};
 use petroleum::common::EfiSystemTable;
+use petroleum::graphics::boot_screen::{BootFramebuffer, KERNEL_STAGE_COUNT};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "efiapi" fn efi_main(
@@ -44,7 +45,7 @@ pub unsafe extern "efiapi" fn efi_main(
     petroleum::bootloader_log!("Heap initialized successfully.");
 
     petroleum::bootloader_log!("Attempting to initialize graphics protocols...");
-    match petroleum::init_graphics_protocols(st) {
+    let boot_framebuffer = match petroleum::init_graphics_protocols(st) {
         Some(config) => {
             petroleum::bootloader_log!(
                 "Graphics framebuffer initialized at {:#x} ({}x{}).",
@@ -52,11 +53,18 @@ pub unsafe extern "efiapi" fn efi_main(
                 config.width,
                 config.height
             );
+            if let Some(framebuffer) = BootFramebuffer::from_config(config) {
+                unsafe {
+                    framebuffer.draw_stage(0, KERNEL_STAGE_COUNT, b"LOADING KERNEL");
+                }
+            }
+            Some(config)
         }
         None => {
             petroleum::bootloader_log!("No directly addressable GOP mode; continuing headless.");
+            None
         }
-    }
+    };
     petroleum::bootloader_log!("Graphics initialization complete.");
 
     let efi_image_file = KERNEL_BINARY;
@@ -88,6 +96,11 @@ pub unsafe extern "efiapi" fn efi_main(
     };
     petroleum::println!("Bellows: EFI image loaded.");
     petroleum::println!("Bellows: Kernel loaded from embedded binary.");
+    if let Some(config) = boot_framebuffer.and_then(BootFramebuffer::from_config) {
+        unsafe {
+            config.draw_stage(0, KERNEL_STAGE_COUNT, b"ENTERING KERNEL");
+        }
+    }
     petroleum::println!("Exiting boot services and jumping to kernel...");
     petroleum::println!("Bellows: About to exit boot services and jump to kernel.");
     match exit_boot_services_and_jump(

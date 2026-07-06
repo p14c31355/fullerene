@@ -55,6 +55,7 @@ pub trait Console: core::fmt::Write {
     fn scroll(&mut self);
 }
 
+pub mod boot_screen;
 pub mod color;
 pub mod constants;
 pub mod framebuffer;

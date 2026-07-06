@@ -165,6 +165,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("PS2 Keyboard", || {
             nitrogen::ps2::keyboard::init_keyboard();
             petroleum::serial::serial_log(format_args!("PS/2 keyboard initialised\n"));
+            crate::boot_stage!(BootStage::InputReady);
             Ok(())
         }),
         petroleum::init_step!("process", || {

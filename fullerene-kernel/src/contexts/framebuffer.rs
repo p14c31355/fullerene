@@ -70,20 +70,36 @@ impl FramebufferContext {
             return false;
         }
 
-        // ── Create a dedicated WC mapping for the framebuffer ────
-        // Linux uses ioremap_wc() for this purpose.  We use the
-        // FramebufferMapper trait which allocates a free VA range and
-        // maps each 4KB page with WRITE_THROUGH (PWT=1, PCD=0).
-        // When configure_framebuffer_pat() has set PAT[1] = WC, this
-        // gives write-combining semantics — essential for PCI MMIO.
+        // Use the bootstrap's direct mapping whenever possible. The old
+        // diagnostics and the boot splash already prove this exact alias on
+        // real hardware. Creating a second WC alias while the direct mapping
+        // remains present with another cache type is architecturally
+        // undefined on x86 and caused the desktop writes to disappear on
+        // physical Intel systems even though the grey fill was visible.
         let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
-        let fb_va = match crate::memory_management::get_memory_manager().lock().as_mut() {
-            Some(mm) => mm.map_framebuffer(self.fb_phys, fb_size as usize, CacheMode::WriteCombining),
-            None => None,
-        }.unwrap_or(self.fb_phys); // fall back to identity map
+        const DIRECT_MAP_SIZE: u64 = 64 * 1024 * 1024 * 1024;
+        let fb_va = if self.fb_phys.saturating_add(fb_size) <= DIRECT_MAP_SIZE {
+            self.fb_phys
+        } else {
+            // Very high GOP apertures are outside the bootstrap identity map;
+            // only those systems need a dedicated alias.
+            match crate::memory_management::get_memory_manager()
+                .lock()
+                .as_mut()
+                .and_then(|mm| {
+                    mm.map_framebuffer(
+                        self.fb_phys,
+                        fb_size as usize,
+                        CacheMode::WriteCombining,
+                    )
+                }) {
+                Some(address) => address,
+                None => return false,
+            }
+        };
 
         petroleum::serial::serial_log(format_args!(
-            "[fb] WC mapping: phys=0x{:x} → va=0x{:x}\n",
+            "[fb] scanout mapping: phys=0x{:x} -> va=0x{:x}\n",
             self.fb_phys, fb_va
         ));
 
@@ -191,8 +207,8 @@ where
         if info.address == 0 {
             return None;
         }
-        // The framebuffer info.address is an identity-mapped VA
-        // (physical address, no higher-half offset).
+        // `info.address` is the single scan-out alias selected during
+        // renderer construction (normally the bootstrap identity mapping).
         let ptr = info.address as *mut u32;
         let stride_pixels = info.stride / 4;
         let len = (stride_pixels as usize) * info.height as usize;

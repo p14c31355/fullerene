@@ -14,65 +14,22 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
-// ── Framebuffer diagnostic pixel (written on each stage advance) ──
-//
-// Writes a single coloured pixel at column `stage × 8` on the top row
-// of the GOP framebuffer via the identity-mapped higher-half VA.
-// This is NOT a heartbeat — it's an immutable trace that persists once
-// written.  If the system hangs in a busy-wait, the last pixel tells
-// you the last stage that completed.
-//
-// No allocation, no locks, no heap access.  Safe to call from any
-// context including the panic handler.
-fn fb_stage_pixel(stage: u8) {
-    let phys = unsafe { petroleum::page_table::kernel::init::BOOT_FB_PHYS };
-    let stride_px = unsafe { petroleum::page_table::kernel::init::BOOT_FB_STRIDE_PX } as usize;
-    // Diagnostic: write a single bright-green pixel at (400, 0) using phys
-    // to confirm fb_stage_pixel is reached and BOOT_FB_PHYS is readable.
-    // Position 400 is right after the 200-red + 200-blue init_and_jump blocks.
-    if phys >= 0x100_000 && phys <= 0x10_0000_0000 {
-        let p = unsafe { &mut *(phys as *mut u32) };
-        *p = 0x0000FF00u32; // green
-        unsafe { core::arch::x86_64::_mm_sfence() };
-    }
-    if phys < 0x100_000 || phys > 0x10_0000_0000 || stride_px < 320 || stride_px > 16384 {
+/// Redraw the allocation-free splash through the bootstrap's direct mapping.
+fn draw_boot_stage(stage: BootStage) {
+    let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
         return;
-    }
-    let fb_va = phys;
-    if fb_va == 0 || fb_va >= 0x10000_0000_0000 {
-        return;
-    }
-    let fb_ptr = fb_va as *mut u32;
-    let color = stage_color(stage);
-    let x0 = ((stage as usize).saturating_mul(35)).min(stride_px.saturating_sub(30));
-    for dy in 0..16usize {
-        let row = dy.saturating_mul(stride_px);
-        for dx in 0..30usize {
-            unsafe { core::ptr::write_volatile(fb_ptr.add(row + x0 + dx), color) };
-        }
-    }
-    unsafe { core::arch::x86_64::_mm_sfence() };
-}
-
-fn stage_color(stage: u8) -> u32 {
-    match stage {
-        0  => 0x00_00_00_FF,
-        1  => 0x00_00_00_44,
-        2  => 0x00_00_00_88,
-        3  => 0x00_88_88_00,
-        4  => 0x00_00_44_00,
-        5  => 0x00_00_88_00,
-        6  => 0x00_00_88_44,
-        7  => 0x00_00_88_88,
-        8  => 0x00_00_44_88,
-        9  => 0x00_00_00_88,
-        10 => 0x00_00_00_AA,
-        11 => 0x00_00_00_55,
-        12 => 0x00_88_00_88,
-        13 => 0x00_44_00_88,
-        14 => 0x00_44_00_44,
-        15 => 0x00_55_55_55,
-        _  => 0x00_FF_00_FF,
+    };
+    let completed = if stage == BootStage::Panic {
+        petroleum::graphics::boot_screen::KERNEL_STAGE_COUNT
+    } else {
+        (stage as u8).min(petroleum::graphics::boot_screen::KERNEL_STAGE_COUNT)
+    };
+    unsafe {
+        framebuffer.draw_stage(
+            completed,
+            petroleum::graphics::boot_screen::KERNEL_STAGE_COUNT,
+            stage.screen_label(),
+        );
     }
 }
 
@@ -128,6 +85,29 @@ impl BootStage {
         }
     }
 
+    /// Short uppercase label that fits on the boot splash at low resolutions.
+    pub fn screen_label(self) -> &'static [u8] {
+        match self {
+            BootStage::KernelEntry => b"KERNEL ENTRY",
+            BootStage::MemoryMapped => b"MEMORY MAPPED",
+            BootStage::HeapReady => b"HEAP READY",
+            BootStage::InterruptsReady => b"INTERRUPTS READY",
+            BootStage::KernelContextReady => b"KERNEL CONTEXT",
+            BootStage::PciBarsReady => b"PCI DEVICES",
+            BootStage::GraphicsReady => b"GRAPHICS READY",
+            BootStage::InputReady => b"INPUT DEVICES",
+            BootStage::ProcessReady => b"PROCESS MANAGER",
+            BootStage::SyscallReady => b"SYSTEM CALLS",
+            BootStage::FilesystemReady => b"FILESYSTEM",
+            BootStage::LoaderReady => b"PROGRAM LOADER",
+            BootStage::GuiReady => b"DESKTOP SERVICES",
+            BootStage::TaskManagerReady => b"TASK MANAGER",
+            BootStage::AppRunnerReady => b"STARTING DESKTOP",
+            BootStage::ShellRunning => b"SHELL RUNNING",
+            BootStage::Panic => b"KERNEL PANIC",
+        }
+    }
+
     pub fn from_u8(v: u8) -> Option<Self> {
         match v {
             1 => Some(BootStage::KernelEntry),
@@ -163,8 +143,7 @@ pub fn set_boot_stage(stage: BootStage) {
     // Only log if we actually advanced (monotonic).
     if stage as u8 > prev {
         crate::klog::write_fmt(format_args!("[BOOT] {}\n", stage.label()));
-        // ── Diagnostic pixel on framebuffer (if available) ──
-        fb_stage_pixel(stage as u8);
+        draw_boot_stage(stage);
     }
 }
 

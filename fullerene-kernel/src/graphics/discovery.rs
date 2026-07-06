@@ -6,6 +6,7 @@
 //! 3. PCI BAR0 scan
 
 use petroleum::common::EfiGraphicsPixelFormat;
+use petroleum::graphics::boot_screen::BootFramebuffer;
 
 /// Raw probe result — physical address, dimensions, stride (bytes), pixel format.
 pub struct FramebufferProbeResult {
@@ -64,6 +65,29 @@ pub fn store_boot_fb_params(
     petroleum::serial::_print(format_args!(
         "[store_fb] {width}x{height} stride={stride} phys=0x{phys:x} bpp={bpp} fmt={pixel_format}\n"
     ));
+}
+
+/// Return the framebuffer through the bootstrap's direct mapping.
+///
+/// The initial page table maps the first 64 GiB both identity-wise and in the
+/// higher-half direct map. Real-hardware boot progress deliberately uses the
+/// identity alias, matching the transition diagnostics byte-for-byte.
+pub fn direct_boot_framebuffer() -> Option<BootFramebuffer> {
+    let (phys, width, height, stride, bpp, format) = unsafe {
+        (
+            STORED_FB_PHYS,
+            STORED_FB_WIDTH,
+            STORED_FB_HEIGHT,
+            STORED_FB_STRIDE,
+            STORED_FB_BPP,
+            STORED_FB_PIXEL_FORMAT,
+        )
+    };
+    let size = u64::from(stride).checked_mul(u64::from(height))?;
+    if phys.checked_add(size)? > 64 * 1024 * 1024 * 1024 {
+        return None;
+    }
+    BootFramebuffer::new(phys, width, height, stride, bpp, format)
 }
 
 /// Discovery engine — tries each probe strategy in order.
