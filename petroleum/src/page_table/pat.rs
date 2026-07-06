@@ -22,7 +22,7 @@
 //!  1    1    1      7     WT
 //! ```
 //!
-//! MSR value: `0x0407050106040706`
+//! MSR value: `0x0407050600070106`
 
 use x86_64::registers::model_specific::Msr;
 
