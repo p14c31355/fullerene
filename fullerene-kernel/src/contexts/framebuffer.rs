@@ -5,10 +5,13 @@ use nitrogen::virtio::gpu::VirtioGpu;
 use petroleum::common::EfiGraphicsPixelFormat;
 use petroleum::graphics::color::FramebufferInfo;
 use petroleum::graphics::framebuffer::UefiFramebufferWriter;
+use petroleum::graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
+use petroleum::graphics::text::VgaBuffer;
 
 pub struct FramebufferContext {
     pub renderer: Option<UefiFramebufferWriter>,
     pub gpu: Option<Box<VirtioGpu>>,
+    pub vga_console: Option<VgaBuffer>,
     pub bpp: u32,
     pub fb_phys: u64,
     pub fb_width_px: u32,
@@ -22,6 +25,7 @@ impl FramebufferContext {
         Self {
             renderer: None,
             gpu: None,
+            vga_console: None,
             bpp: 32,
             fb_phys: 0,
             fb_width_px: 0,
@@ -66,11 +70,20 @@ impl FramebufferContext {
             return false;
         }
 
-        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let fb_va = self.fb_phys + off;
+        // ── Create a dedicated WC mapping for the framebuffer ────
+        // Linux uses ioremap_wc() for this purpose.  We use the
+        // FramebufferMapper trait which allocates a free VA range and
+        // maps each 4KB page with WRITE_THROUGH (PWT=1, PCD=0).
+        // When configure_framebuffer_pat() has set PAT[1] = WC, this
+        // gives write-combining semantics — essential for PCI MMIO.
+        let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+        let fb_va = match crate::memory_management::get_memory_manager().lock().as_mut() {
+            Some(mm) => mm.map_framebuffer(self.fb_phys, fb_size as usize, CacheMode::WriteCombining),
+            None => None,
+        }.unwrap_or(self.fb_phys); // fall back to identity map
 
         petroleum::serial::serial_log(format_args!(
-            "[fb] write-combining mapping: phys=0x{:x} → va=0x{:x}\n",
+            "[fb] WC mapping: phys=0x{:x} → va=0x{:x}\n",
             self.fb_phys, fb_va
         ));
 
@@ -120,11 +133,17 @@ impl FramebufferContext {
             let _ = r.write_str(s);
             return;
         }
+        if let Some(ref mut v) = self.vga_console {
+            let _ = core::fmt::write(v, format_args!("{}", s));
+        }
     }
     pub fn write_fmt(&mut self, args: core::fmt::Arguments) {
         if let Some(ref mut r) = self.renderer {
             let _ = core::fmt::write(r, args);
             return;
+        }
+        if let Some(ref mut v) = self.vga_console {
+            let _ = core::fmt::write(v, args);
         }
     }
     pub fn flush(&mut self) {
@@ -135,8 +154,12 @@ impl FramebufferContext {
                 gpu.flush(w, h);
             }
         } else if self.renderer.is_some() {
-            // Drain write-combining buffers; flushing every cache line turns
-            // presentation into an O(framebuffer-size) operation.
+            // The framebuffer is in PCI MMIO space; the firmware MTRR
+            // override typically sets it to UC or WC.  In both cases
+            // writes bypass the CPU cache and SFENCE is sufficient to
+            // drain the write-combining or posted-write buffers.
+            // CLFLUSH is deliberately NOT used here — on some hardware
+            // it can trigger machine checks on UC/WC MMIO regions.
             unsafe { core::arch::x86_64::_mm_sfence() };
         }
         nitrogen::hda::HdaController::tick_vm_exit();
@@ -145,7 +168,7 @@ impl FramebufferContext {
         self.gpu.is_some()
     }
     pub fn is_available(&self) -> bool {
-        self.renderer.is_some()
+        self.renderer.is_some() || self.vga_console.is_some()
     }
 }
 
@@ -168,6 +191,8 @@ where
         if info.address == 0 {
             return None;
         }
+        // The framebuffer info.address is an identity-mapped VA
+        // (physical address, no higher-half offset).
         let ptr = info.address as *mut u32;
         let stride_pixels = info.stride / 4;
         let len = (stride_pixels as usize) * info.height as usize;

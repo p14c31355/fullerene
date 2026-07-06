@@ -45,8 +45,30 @@ pub unsafe extern "C" fn efi_main_stage2(
         // Store args_ptr where it survives register clobbers.
         petroleum::early::transition::KERNEL_ARGS = args_ptr;
 
-        // GOP parameters were copied into kernel-owned `.data` by uefi_entry
-        // before the page-table transition, while KernelArgs was authoritative.
+        // ── Early framebuffer parameter capture ───────────────────
+        // Store the raw args values to .data globals.
+        // Also write diagnostic pixels DIRECTLY from the args pointer
+        // to verify args_ptr + fb_address are correct at this point.
+        let fb_args = {
+            let args = &*args_ptr;
+            crate::graphics::discovery::store_boot_fb_params(
+                args.fb_address,
+                args.fb_width,
+                args.fb_height,
+                if args.fb_stride > 0 { args.fb_stride } else { args.fb_width.saturating_mul(4) },
+                args.fb_bpp,
+                args.fb_pixel_format,
+            );
+            (args.fb_address, args.fb_width, args.fb_stride)
+        };
+        // Diagnostic: write a cyan pixel at (400, 0) using the raw fb_address
+        // from the args struct — NO static globals involved.
+        if fb_args.0 >= 0x100000 && fb_args.0 < 0x100_0000_0000 {
+            let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+            let p = (fb_args.0 + off) as *mut u32;
+            unsafe { core::ptr::write_volatile(p.add(400), 0x00FFFF00u32) }; // cyan
+            unsafe { core::arch::x86_64::_mm_sfence() };
+        }
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x33",

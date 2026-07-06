@@ -20,18 +20,30 @@ pub mod process_memory;
 pub use manager::UnifiedMemoryManager;
 pub use process_memory::*;
 
-/// Reserve PAT slot 1 (PWT=1, PCD=0) for framebuffer write-combining.
-/// Bootstrap page tables use that slot only for the GOP mapping.
+/// Configure the PAT MSR with the OS-defined memory type table.
+///
+/// Corresponds to Linux `pat_bp_init()`.  Sets all eight PAT entries:
+///
+/// ```text
+/// Slot  PAT PCD PWT   Type
+///  0     0   0   0     WB   (default RAM)
+///  1     0   0   1     WC   (framebuffer write-combining)
+///  2     0   1   0     UC-
+///  3     0   1   1     UC
+///  4     1   0   0     WB
+///  5     1   0   1     WP
+///  6     1   1   0     UC-
+///  7     1   1   1     WT
+/// ```
+///
+/// This is the same full PAT table Linux uses on modern CPUs.
 pub fn configure_framebuffer_pat() -> bool {
-    if core::arch::x86_64::__cpuid(1).edx & (1 << 16) == 0 {
+    let pat_supported = core::arch::x86_64::__cpuid(1).edx & (1 << 16) != 0;
+    if !pat_supported {
         return false;
     }
     unsafe {
-        let mut pat_msr = x86_64::registers::model_specific::Msr::new(0x277);
-        let mut pat = pat_msr.read();
-        pat = (pat & !(0xFF << 8)) | (0x01 << 8);
-        pat_msr.write(pat);
-        x86_64::instructions::tlb::flush_all();
+        petroleum::page_table::pat::init_pat();
     }
     true
 }

@@ -25,53 +25,54 @@ use core::sync::atomic::{AtomicU8, Ordering};
 // No allocation, no locks, no heap access.  Safe to call from any
 // context including the panic handler.
 fn fb_stage_pixel(stage: u8) {
-    let phys = unsafe { crate::graphics::discovery::STORED_FB_PHYS };
-    let w    = unsafe { crate::graphics::discovery::STORED_FB_WIDTH };
-    let stride_raw = unsafe { crate::graphics::discovery::STORED_FB_STRIDE };
-
-    // FB not yet discovered (stage < GraphicsReady) — skip silently.
-    if phys < 0x100_000 || phys > 0x10_0000_0000 || w < 80 || stride_raw < 320 {
+    let phys = unsafe { petroleum::page_table::kernel::init::BOOT_FB_PHYS };
+    let stride_px = unsafe { petroleum::page_table::kernel::init::BOOT_FB_STRIDE_PX } as usize;
+    // Diagnostic: write a single bright-green pixel at (400, 0) using phys
+    // to confirm fb_stage_pixel is reached and BOOT_FB_PHYS is readable.
+    // Position 400 is right after the 200-red + 200-blue init_and_jump blocks.
+    if phys >= 0x100_000 && phys <= 0x10_0000_0000 {
+        let p = unsafe { &mut *(phys as *mut u32) };
+        *p = 0x0000FF00u32; // green
+        unsafe { core::arch::x86_64::_mm_sfence() };
+    }
+    if phys < 0x100_000 || phys > 0x10_0000_0000 || stride_px < 320 || stride_px > 16384 {
         return;
     }
-    let stride = usize::try_from(stride_raw).unwrap_or(w as usize * 4);
-
-    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let fb_va = phys + off;
+    let fb_va = phys;
     if fb_va == 0 || fb_va >= 0x10000_0000_0000 {
         return;
     }
-
-    let col = (stage as usize).saturating_mul(8);
-    // Draw a 2×2 block so it's visible even at low resolution.
-    for dy in 0..2usize {
-        let idx = dy * (stride / 4) + col;
-        let px = fb_va as *mut u32;
-        unsafe { core::ptr::write_volatile(px.add(idx), stage_color(stage)) };
-        let px2 = fb_va as *mut u32;
-        unsafe { core::ptr::write_volatile(px2.add(idx + 1), stage_color(stage)) };
+    let fb_ptr = fb_va as *mut u32;
+    let color = stage_color(stage);
+    let x0 = ((stage as usize).saturating_mul(35)).min(stride_px.saturating_sub(30));
+    for dy in 0..16usize {
+        let row = dy.saturating_mul(stride_px);
+        for dx in 0..30usize {
+            unsafe { core::ptr::write_volatile(fb_ptr.add(row + x0 + dx), color) };
+        }
     }
+    unsafe { core::arch::x86_64::_mm_sfence() };
 }
 
-/// Boot-stage colour (must match `main.rs` panic_screen colours).
 fn stage_color(stage: u8) -> u32 {
     match stage {
-        0   => 0x00_00_00_FF,  // bright red
-        1   => 0x00_00_00_44,  // dark blue
-        2   => 0x00_00_00_88,  // blue
-        3   => 0x00_88_88_00,  // cyan
-        4   => 0x00_00_44_00,  // dark green
-        5   => 0x00_00_88_00,  // green
-        6   => 0x00_00_88_44,  // yellow-green
-        7   => 0x00_00_88_88,  // yellow
-        8   => 0x00_00_44_88,  // orange
-        9   => 0x00_00_00_88,  // dark orange
-        10  => 0x00_00_00_AA,  // red
-        11  => 0x00_00_00_55,  // dark red
-        12  => 0x00_88_00_88,  // magenta
-        13  => 0x00_44_00_88,  // pink
-        14  => 0x00_44_00_44,  // purple
-        15  => 0x00_55_55_55,  // gray
-        _   => 0x00_FF_00_FF,  // bright magenta
+        0  => 0x00_00_00_FF,
+        1  => 0x00_00_00_44,
+        2  => 0x00_00_00_88,
+        3  => 0x00_88_88_00,
+        4  => 0x00_00_44_00,
+        5  => 0x00_00_88_00,
+        6  => 0x00_00_88_44,
+        7  => 0x00_00_88_88,
+        8  => 0x00_00_44_88,
+        9  => 0x00_00_00_88,
+        10 => 0x00_00_00_AA,
+        11 => 0x00_00_00_55,
+        12 => 0x00_88_00_88,
+        13 => 0x00_44_00_88,
+        14 => 0x00_44_00_44,
+        15 => 0x00_55_55_55,
+        _  => 0x00_FF_00_FF,
     }
 }
 

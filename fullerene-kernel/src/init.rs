@@ -126,16 +126,11 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("PAT", || {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PAT step start\n");
-            if !crate::memory_management::configure_framebuffer_pat() {
-                petroleum::write_serial_bytes(
-                    0x3F8,
-                    0x3FD,
-                    b"[init] PAT unavailable; GOP framebuffer disabled\n",
-                );
-                unsafe { crate::graphics::discovery::STORED_FB_PHYS = 0 };
-            }
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PAT step done\n");
+            // Configure PAT[1] = WC for framebuffer write-combining.
+            // This must run before Graphics init so that subsequent
+            // WC page-table mappings use the correct memory type.
+            let pat_ok = crate::memory_management::configure_framebuffer_pat();
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, if pat_ok { b"[init] PAT configured\n" } else { b"[init] PAT unavailable\n" });
             Ok(())
         }),
         petroleum::init_step!("Graphics", || {

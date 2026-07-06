@@ -12,6 +12,16 @@ static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static mut STORED_OFFSET: Option<VirtAddr> = None;
 static mut STORED_L4_PTR: Option<*mut PageTable> = None;
 
+/// Framebuffer physical address, stored after CR3 switch by init_and_jump.
+/// Read by fb_stage_pixel() in the kernel boot stage tracker.
+/// This is in the petroleum crate's .data section, which IS accessible from
+/// both init_and_jump and the kernel's init_common on the new page table.
+/// Framebuffer physical address, stored after CR3 switch by init_and_jump.
+/// Initialized to 1 (not 0) to ensure it lives in .data, not .bss.
+pub static mut BOOT_FB_PHYS: u64 = 1;
+/// Stride in pixels.  Initialized to 1 (not 0) for same reason.
+pub static mut BOOT_FB_STRIDE_PX: u32 = 1;
+
 const PAGE_SIZE_4K: u64 = 4096;
 const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
 const ENTRIES_PER_TABLE: u64 = 512;
@@ -294,48 +304,7 @@ pub unsafe fn map_page_4k_l1(
     }
 }
 
-/// Fallback: modify 2MB huge-page PDE entries to set cache-control flags
-/// without splitting the huge page.  This avoids the split that can crash
-/// on InsydeH2O firmware while still achieving the desired memory type.
-///
-/// # Safety
-/// `l4_ptr` must point to a valid mutable L4 table whose L3/L2 entries are
-/// accessible via identity mapping.  The virtual range `[virt, virt+size)`
-/// must already be mapped with 2MB huge pages.
-unsafe fn modify_huge_page_cache(
-    l4_ptr: *mut PageTable,
-    virt: u64,
-    size: u64,
-    cache: PageTableFlags,
-) -> Result<(), &'static str> {
-    let end = virt.checked_add(size).ok_or("huge_fb: overflow")?;
-    let start_2mb = virt & !(PAGE_SIZE_2M - 1);
-    let end_2mb = (end + PAGE_SIZE_2M - 1) & !(PAGE_SIZE_2M - 1);
-    let mut vaddr = start_2mb;
-    while vaddr < end_2mb {
-        let idx = PageTableIndices::new(VirtAddr::new(vaddr));
-        let l4 = unsafe { &mut *l4_ptr };
-        // L4 entry → L3 table (identity-mapped, phys_offset = 0 here)
-        let l3_phys = l4[idx.l4].addr();
-        let l3 = unsafe { &mut *(l3_phys.as_u64() as *mut PageTable) };
-        // L3 entry must not be 1GB huge page
-        if l3[idx.l3].flags().contains(PageTableFlags::HUGE_PAGE) {
-            return Err("huge_fb: unexpected 1GB page");
-        }
-        // L3 entry → L2 table (identity-mapped)
-        let l2_phys = l3[idx.l3].addr();
-        let l2 = unsafe { &mut *(l2_phys.as_u64() as *mut PageTable) };
-        // L2 entry must be a 2MB huge page
-        let pde = &mut l2[idx.l2];
-        if !pde.flags().contains(PageTableFlags::HUGE_PAGE) {
-            return Err("huge_fb: not a 2MB huge page");
-        }
-        let new_flags = pde.flags() | cache;
-        pde.set_flags(new_flags);
-        vaddr += PAGE_SIZE_2M;
-    }
-    Ok(())
-}
+
 
 /// Initialize page tables by creating a new L4 table and jumping to the kernel.
 #[repr(C)]
@@ -374,8 +343,8 @@ pub unsafe extern "C" fn init_and_jump(
         let map_phys_addr = args.map_phys_addr;
         let map_size = args.map_size;
         let l4_phys_addr = l4_phys_reg;
-        let _framebuffer_phys = args.framebuffer_phys;
-        let _framebuffer_size = args.framebuffer_size;
+        let fb_phys = args.framebuffer_phys;
+        let _fb_size = args.framebuffer_size;
 
         crate::serial::_print(format_args!("IAJ: entered\n"));
         // Log the physical address of this function to verify it's within the identity map range
@@ -461,44 +430,9 @@ pub unsafe extern "C" fn init_and_jump(
             .expect("full 64GB huge page higher-half map failed");
         crate::serial::_print(format_args!("IAJ: Full higher-half mapping done\n"));
 
-        // Set uncacheable attributes for the framebuffer range.
-        // On InsydeH2O firmware the huge-page split (4KB mapping) corrupts
-        // the page tables entirely, so we modify the existing 2MB huge-page
-        // PDEs directly instead.  This is safe on all hardware.
-        if _framebuffer_phys != 0 && _framebuffer_size != 0 {
-            let fb_start = _framebuffer_phys & !(PAGE_SIZE_4K - 1);
-            // UC- (PCD=1, PWT=0 → PAT entry 2, default UC-) — always safe
-            // with any MTRR, avoids #GP on Broadwell where WC can fault.
-            let pde_uc = PageTableFlags::NO_CACHE;
-            crate::serial::_print(format_args!(
-                "IAJ: setting FB uncacheable: phys=0x{:x} size={}\n",
-                fb_start, _framebuffer_size
-            ));
-            if modify_huge_page_cache(l4_ptr, fb_start, _framebuffer_size, pde_uc).is_err() {
-                crate::serial::_print(format_args!(
-                    "IAJ: FB identity PDE modify failed\n"
-                ));
-            }
-            if modify_huge_page_cache(
-                l4_ptr,
-                physical_memory_offset.as_u64() + fb_start,
-                _framebuffer_size,
-                pde_uc,
-            )
-            .is_err()
-            {
-                crate::serial::_print(format_args!(
-                    "IAJ: FB higher-half PDE modify failed\n"
-                ));
-            }
-        }
-
         // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
         // These replace the existing HUGE_PAGE entries with proper L1 tables.
         // The map_page_4k_l1 function handles HUGE_PAGE splitting automatically.
-        //
-        // NOTE: Do not split the framebuffer region into 4KB pages here.
-        // On InsydeH2O the huge-page split corrupts mappings / breaks scanout.
 
         // === Kernel mapping (higher-half + identity) ===
         crate::serial::_print(format_args!("IAJ: Mapping kernel...\n"));
@@ -513,34 +447,24 @@ pub unsafe extern "C" fn init_and_jump(
 
         // higher-half kernel mapping (splits higher-half huge pages)
         let kernel_virt = VirtAddr::new(physical_memory_offset.as_u64() + kernel_phys_start);
-        if !(_framebuffer_phys != 0
-            && _framebuffer_size != 0
-            && kernel_phys_start < (_framebuffer_phys & !(PAGE_SIZE_4K - 1)).saturating_add(_framebuffer_size))
-        {
-            memory_ops
-                .map_range_4k(
-                    kernel_virt,
-                    PhysAddr::new(kernel_phys_start),
-                    kernel_pages,
-                    flags,
-                )
-                .expect("kernel higher map");
-        }
+        memory_ops
+            .map_range_4k(
+                kernel_virt,
+                PhysAddr::new(kernel_phys_start),
+                kernel_pages,
+                flags,
+            )
+            .expect("kernel higher map");
 
         // identity kernel mapping (splits identity huge pages)
-        if !(_framebuffer_phys != 0
-            && _framebuffer_size != 0
-            && kernel_phys_start < (_framebuffer_phys & !(PAGE_SIZE_4K - 1)).saturating_add(_framebuffer_size))
-        {
-            memory_ops
-                .map_range_4k(
-                    VirtAddr::new(kernel_phys_start),
-                    PhysAddr::new(kernel_phys_start),
-                    kernel_pages,
-                    flags,
-                )
-                .expect("kernel identity");
-        }
+        memory_ops
+            .map_range_4k(
+                VirtAddr::new(kernel_phys_start),
+                PhysAddr::new(kernel_phys_start),
+                kernel_pages,
+                flags,
+            )
+            .expect("kernel identity");
         crate::serial::_print(format_args!("IAJ: Kernel mapped\n"));
 
         // === Stack mapping (identity + higher-half) ===
@@ -580,66 +504,23 @@ pub unsafe extern "C" fn init_and_jump(
 
         // Memory map (identity + higher-half)
         let map_pages = (map_size + 4095) / 4096;
-        // Avoid splitting framebuffer-adjacent regions into 4KiB if the
-        // platform is sensitive to huge-page splits.
-        // If the mapped range overlaps the framebuffer range, skip mapping
-        // and rely on the existing huge/direct mapping.
-        if _framebuffer_phys == 0 || _framebuffer_size == 0 {
-            memory_ops
-                .map_range_4k(
-                    VirtAddr::new(map_phys_addr),
-                    PhysAddr::new(map_phys_addr),
-                    map_pages,
-                    flags,
-                )
-                .expect("map identity");
-        } else {
-            // Overlap check (conservative): if the mapping touches the
-            // framebuffer range at all, skip remapping to avoid huge-page
-            // split / attribute churn.
-            let fb_start = _framebuffer_phys & !(PAGE_SIZE_4K - 1);
-            let fb_end = fb_start.saturating_add(_framebuffer_size);
-            let map_start = map_phys_addr;
-            let map_end = map_phys_addr.saturating_add(map_pages * 4096);
-            let overlaps = map_start < fb_end && map_end > fb_start;
-            if !overlaps {
-                memory_ops
-                    .map_range_4k(
-                        VirtAddr::new(map_phys_addr),
-                        PhysAddr::new(map_phys_addr),
-                        map_pages,
-                        flags,
-                    )
-                    .expect("map identity");
-            }
-        }
+        memory_ops
+            .map_range_4k(
+                VirtAddr::new(map_phys_addr),
+                PhysAddr::new(map_phys_addr),
+                map_pages,
+                flags,
+            )
+            .expect("map identity");
         let map_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + map_phys_addr);
-        if _framebuffer_phys == 0 || _framebuffer_size == 0 {
-            memory_ops
-                .map_range_4k(
-                    map_virt_higher,
-                    PhysAddr::new(map_phys_addr),
-                    map_pages,
-                    flags,
-                )
-                .expect("map higher");
-        } else {
-            let fb_start = _framebuffer_phys & !(PAGE_SIZE_4K - 1);
-            let fb_end = fb_start.saturating_add(_framebuffer_size);
-            let map_start = map_phys_addr;
-            let map_end = map_phys_addr.saturating_add(map_pages * 4096);
-            let overlaps = map_start < fb_end && map_end > fb_start;
-            if !overlaps {
-                memory_ops
-                    .map_range_4k(
-                        map_virt_higher,
-                        PhysAddr::new(map_phys_addr),
-                        map_pages,
-                        flags,
-                    )
-                    .expect("map higher");
-            }
-        }
+        memory_ops
+            .map_range_4k(
+                map_virt_higher,
+                PhysAddr::new(map_phys_addr),
+                map_pages,
+                flags,
+            )
+            .expect("map higher");
 
         // Store state BEFORE switching CR3, since after the switch we can't safely reference
         // Rust statics (they may be in unmapped higher-half addresses)
@@ -662,6 +543,40 @@ pub unsafe extern "C" fn init_and_jump(
         //
         // statics (PAGE_TABLE_INITIALIZED, STORED_OFFSET, STORED_L4_PTR) were set BEFORE the CR3 switch,
         // so we don't need to touch them now.
+
+        // ── Diagnostic: 200-pixel horizontal bars ──
+        // Two 200×8-pixel blocks using direct identity-map writes.
+        // Stride not known: write 200 sequential u32s per row = first row only.
+        // Red bar  (pixels 0-199): init_and_jump OK, identity map OK
+        // Blue bar (pixels 200-399): stride ≥ 400 pixels (safe assumption)
+        if fb_phys != 0 {
+            let fb = fb_phys as *mut u32;
+            for y in 0usize..8 {
+                let row = y.wrapping_mul(1920);
+                for x in 0usize..200 {
+                    let pix = row.wrapping_add(x);
+                    core::ptr::write_volatile(fb.wrapping_add(pix), 0x00FF0000u32);
+                }
+            }
+            for y in 0usize..8 {
+                let row = y.wrapping_mul(1920);
+                for x in 0usize..200 {
+                    let pix = row.wrapping_add(x).wrapping_add(200);
+                    core::ptr::write_volatile(fb.wrapping_add(pix), 0x000000FFu32);
+                }
+            }
+            // Magenta 30×16 block starting at row 8: stage2 jump target reached
+            for dy in 0usize..16 {
+                let row = (dy + 8).wrapping_mul(1920);
+                for dx in 0usize..30 {
+                    core::ptr::write_volatile(fb.wrapping_add(row.wrapping_add(dx)), 0x00FF00FFu32);
+                }
+            }
+            // Store fb_phys in petroleum's .data static for fb_stage_pixel.
+            BOOT_FB_PHYS = fb_phys;
+            BOOT_FB_STRIDE_PX = 1920;
+            core::arch::asm!("sfence");
+        }
 
         // Jump to kernel entry point.
         // arg1 = page-aligned base of KernelArgs, arg2 = offset within that page.
