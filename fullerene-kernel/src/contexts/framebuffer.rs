@@ -81,7 +81,7 @@ impl FramebufferContext {
             Some(address) => address,
             None => return false,
         };
-        let fb_va = if fb_end <= DIRECT_MAP_SIZE {
+        let mut fb_va = if fb_end <= DIRECT_MAP_SIZE {
             let direct_map_offset =
                 petroleum::common::memory::get_physical_memory_offset() as u64;
             match self.fb_phys.checked_add(direct_map_offset) {
@@ -110,6 +110,76 @@ impl FramebufferContext {
             "[fb] scanout mapping: phys=0x{:x} -> va=0x{:x}\n",
             self.fb_phys, fb_va
         ));
+
+        // Verify the calculated VA is actually mapped in the page table.
+        // On real hardware (e.g. InsydeH2O), the direct-map huge pages
+        // may not cover the FB aperture, or huge-page splitting may have
+        // been silently skipped.  Avoid a page-fault later by checking now.
+        {
+            let fb_va_x86 = x86_64::VirtAddr::new(fb_va);
+            match petroleum::common::memory::walk_page_table_for_flags(fb_va_x86) {
+                Some(flags)
+                    if flags.contains(x86_64::structures::paging::PageTableFlags::PRESENT)
+                        && flags.contains(x86_64::structures::paging::PageTableFlags::WRITABLE) =>
+                {
+                    // direct mapping is usable
+                }
+                Some(flags) => {
+                    petroleum::serial::serial_log(format_args!(
+                        "[fb] VA 0x{:x} mapped but not writable (flags={:?}); falling back to dynamic map\n",
+                        fb_va, flags
+                    ));
+                    // Try dynamic allocator-backed mapping
+                    let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+                    match crate::memory_management::get_memory_manager()
+                        .lock()
+                        .as_mut()
+                        .and_then(|mm| {
+                            mm.map_framebuffer(
+                                self.fb_phys,
+                                fb_size as usize,
+                                CacheMode::WriteCombining,
+                            )
+                        }) {
+                        Some(va) => {
+                            fb_va = va;
+                            petroleum::serial::serial_log(format_args!(
+                                "[fb] dynamic WC mapping: phys=0x{:x} -> va=0x{:x}\n",
+                                self.fb_phys, fb_va
+                            ));
+                        }
+                        None => return false,
+                    }
+                }
+                None => {
+                    // VA is not mapped at all — try dynamic mapping
+                    petroleum::serial::serial_log(format_args!(
+                        "[fb] VA 0x{:x} not mapped; falling back to dynamic map\n",
+                        fb_va
+                    ));
+                    let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+                    match crate::memory_management::get_memory_manager()
+                        .lock()
+                        .as_mut()
+                        .and_then(|mm| {
+                            mm.map_framebuffer(
+                                self.fb_phys,
+                                fb_size as usize,
+                                CacheMode::WriteCombining,
+                            )
+                        }) {
+                        Some(va) => {
+                            fb_va = va;
+                            petroleum::serial::serial_log(format_args!(
+                                "[fb] dynamic WC mapping: phys=0x{:x} -> va=0x{:x}\n",
+                                self.fb_phys, fb_va
+                            ));
+                        }
+                        None => return false,
+                    }
+                }
+            }
+        }
 
         let info = FramebufferInfo {
             address: fb_va,

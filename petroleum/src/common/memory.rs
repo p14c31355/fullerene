@@ -87,7 +87,7 @@ pub fn is_user_address(addr: VirtAddr) -> bool {
 ///
 /// Walks the full 4-level page table hierarchy. If a huge page (1 GiB or 2 MiB)
 /// is encountered at an intermediate level, the flags from that entry are returned.
-fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
+pub fn walk_page_table_for_flags(vaddr: VirtAddr) -> Option<PageTableFlags> {
     let offset = get_physical_memory_offset();
     let (p4_frame, _) = Cr3::read();
     let p4_ptr = (p4_frame.start_address().as_u64() as usize + offset) as *const PageTable;

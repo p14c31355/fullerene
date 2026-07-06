@@ -43,33 +43,16 @@ pub unsafe extern "C" fn efi_main_stage2(
         );
         debug_serial(b"S2: Entering efi_main_stage2\n");
 
-        // Store args_ptr where it survives register clobbers.
+        // Store args_ptr (may already be corrupted from world-switch,
+        // but we keep it as a best-effort reference).
         petroleum::early::transition::KERNEL_ARGS = args_ptr;
 
-        // ── Early framebuffer parameter capture ───────────────────
-        // Store the raw args values to .data globals.
-        // Also write diagnostic pixels DIRECTLY from the args pointer
-        // to verify args_ptr + fb_address are correct at this point.
-        let fb_args = {
-            let args = &*args_ptr;
-            crate::graphics::discovery::store_boot_fb_params(
-                args.fb_address,
-                args.fb_width,
-                args.fb_height,
-                if args.fb_stride > 0 { args.fb_stride } else { args.fb_width.saturating_mul(4) },
-                args.fb_bpp,
-                args.fb_pixel_format,
-            );
-            (args.fb_address, args.fb_width, args.fb_stride)
-        };
-        // Diagnostic: write a cyan pixel at (400, 0) using the raw fb_address
-        // from the args struct — NO static globals involved.
-        if fb_args.0 >= 0x100000 && fb_args.0 < 0x100_0000_0000 {
-            let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-            let p = (fb_args.0 + off) as *mut u32;
-            core::ptr::write_volatile(p.add(400), 0x00FFFF00u32); // cyan
-            core::arch::x86_64::_mm_sfence();
-        }
+        // Do NOT re-store framebuffer parameters here.
+        // efi_main_real_logic already saved the correct values to .data
+        // globals BEFORE the world-switch.  The `args_ptr` argument to
+        // this function may be corrupted by the transition assembly
+        // (RDI clobber), which is why the .data globals are used as the
+        // authoritative source throughout the kernel.
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x33",
