@@ -194,8 +194,8 @@ impl BootFramebuffer {
                     if bits & (1 << (4 - gx)) != 0 {
                         unsafe {
                             self.fill_rect(
-                                x + gx * scale,
-                                y + gy as u32 * scale,
+                                x.saturating_add(gx.saturating_mul(scale)),
+                                y.saturating_add((gy as u32).saturating_mul(scale)),
                                 scale,
                                 scale,
                                 color,
