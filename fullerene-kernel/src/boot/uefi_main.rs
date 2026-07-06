@@ -2,6 +2,7 @@
 #![cfg(target_os = "uefi")]
 
 use crate::MEMORY_MAP;
+use crate::boot_stage::BootStage;
 use x86_64::VirtAddr;
 
 // Re-export debug_serial helper from uefi_init (reduces repetitive port I/O in debug logging)
@@ -66,8 +67,8 @@ pub unsafe extern "C" fn efi_main_stage2(
         if fb_args.0 >= 0x100000 && fb_args.0 < 0x100_0000_0000 {
             let off = petroleum::common::memory::get_physical_memory_offset() as u64;
             let p = (fb_args.0 + off) as *mut u32;
-            unsafe { core::ptr::write_volatile(p.add(400), 0x00FFFF00u32) }; // cyan
-            unsafe { core::arch::x86_64::_mm_sfence() };
+            core::ptr::write_volatile(p.add(400), 0x00FFFF00u32); // cyan
+            core::arch::x86_64::_mm_sfence();
         }
         core::arch::asm!(
             "mov dx, 0x3f8",
@@ -77,6 +78,10 @@ pub unsafe extern "C" fn efi_main_stage2(
         );
         debug_serial(b"S2: Signals 1-3 sent\n");
     }
+
+    // The framebuffer parameters are now captured in the kernel image, so
+    // boot-stage rendering no longer depends on Bellows' separate statics.
+    crate::boot_stage!(BootStage::KernelEntry);
 
     // CRITICAL: Set physical memory offset BEFORE initializing the global memory manager
     // to avoid page faults when creating the OffsetPageTable in PageTableManager::init.
@@ -99,6 +104,7 @@ pub unsafe extern "C" fn efi_main_stage2(
         debug_serial(b"ERROR: MEMORY_MAP not initialized. Halting.\n");
         petroleum::halt_loop();
     }
+    crate::boot_stage!(BootStage::MemoryMapped);
 
     // ============ MMIO mapping BEFORE any graphics/device access ============
     // Map APIC, IOAPIC, VGA text buffer, and GOP framebuffer NOW so that
@@ -198,6 +204,7 @@ fn kernel_main_higher_half(
     }
 
     // 3. Enable interrupts and enter scheduler loop
+    crate::boot_stage!(BootStage::AppRunnerReady);
     log::info!("Enabling interrupts and starting scheduler...");
     debug_serial(b"Entering scheduler_loop\n");
     x86_64::instructions::interrupts::enable();

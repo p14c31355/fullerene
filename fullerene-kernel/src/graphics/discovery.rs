@@ -6,6 +6,7 @@
 //! 3. PCI BAR0 scan
 
 use petroleum::common::EfiGraphicsPixelFormat;
+use petroleum::graphics::boot_screen::BootFramebuffer;
 
 /// Raw probe result — physical address, dimensions, stride (bytes), pixel format.
 pub struct FramebufferProbeResult {
@@ -64,6 +65,38 @@ pub fn store_boot_fb_params(
     petroleum::serial::_print(format_args!(
         "[store_fb] {width}x{height} stride={stride} phys=0x{phys:x} bpp={bpp} fmt={pixel_format}\n"
     ));
+}
+
+/// Return the framebuffer through the bootstrap's direct mapping.
+///
+/// The initial page table maps the first 64 GiB into the higher-half direct
+/// map, which is shared by every process page table. Early Bellows diagnostics
+/// may use the identity alias, but kernel-owned rendering must not retain it.
+pub fn direct_boot_framebuffer() -> Option<BootFramebuffer> {
+    let (phys, width, height, stride, bpp, format) = unsafe {
+        (
+            STORED_FB_PHYS,
+            STORED_FB_WIDTH,
+            STORED_FB_HEIGHT,
+            STORED_FB_STRIDE,
+            STORED_FB_BPP,
+            STORED_FB_PIXEL_FORMAT,
+        )
+    };
+    let size = u64::from(stride).checked_mul(u64::from(height))?;
+    if phys.checked_add(size)? > 64 * 1024 * 1024 * 1024 {
+        return None;
+    }
+    let direct_map_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
+    let direct_map_address = phys.checked_add(direct_map_offset)?;
+    BootFramebuffer::new(
+        direct_map_address,
+        width,
+        height,
+        stride,
+        bpp,
+        format,
+    )
 }
 
 /// Discovery engine — tries each probe strategy in order.

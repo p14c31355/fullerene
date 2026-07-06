@@ -12,16 +12,6 @@ static PAGE_TABLE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static mut STORED_OFFSET: Option<VirtAddr> = None;
 static mut STORED_L4_PTR: Option<*mut PageTable> = None;
 
-/// Framebuffer physical address, stored after CR3 switch by init_and_jump.
-/// Read by fb_stage_pixel() in the kernel boot stage tracker.
-/// This is in the petroleum crate's .data section, which IS accessible from
-/// both init_and_jump and the kernel's init_common on the new page table.
-/// Framebuffer physical address, stored after CR3 switch by init_and_jump.
-/// Initialized to 1 (not 0) to ensure it lives in .data, not .bss.
-pub static mut BOOT_FB_PHYS: u64 = 1;
-/// Stride in pixels.  Initialized to 1 (not 0) for same reason.
-pub static mut BOOT_FB_STRIDE_PX: u32 = 1;
-
 const PAGE_SIZE_4K: u64 = 4096;
 const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
 const ENTRIES_PER_TABLE: u64 = 512;
@@ -321,6 +311,10 @@ pub struct InitAndJumpArgs {
     pub l4_phys_addr: u64,
     pub framebuffer_phys: u64,
     pub framebuffer_size: u64,
+    pub framebuffer_width: u32,
+    pub framebuffer_height: u32,
+    pub framebuffer_stride: u32,
+    pub framebuffer_pixel_format: u32,
 }
 
 #[unsafe(no_mangle)]
@@ -344,7 +338,11 @@ pub unsafe extern "C" fn init_and_jump(
         let map_size = args.map_size;
         let l4_phys_addr = l4_phys_reg;
         let fb_phys = args.framebuffer_phys;
-        let _fb_size = args.framebuffer_size;
+        let fb_size = args.framebuffer_size;
+        let fb_width = args.framebuffer_width;
+        let fb_height = args.framebuffer_height;
+        let fb_stride = args.framebuffer_stride;
+        let fb_pixel_format = args.framebuffer_pixel_format;
 
         crate::serial::_print(format_args!("IAJ: entered\n"));
         // Log the physical address of this function to verify it's within the identity map range
@@ -544,38 +542,25 @@ pub unsafe extern "C" fn init_and_jump(
         // statics (PAGE_TABLE_INITIALIZED, STORED_OFFSET, STORED_L4_PTR) were set BEFORE the CR3 switch,
         // so we don't need to touch them now.
 
-        // ── Diagnostic: 200-pixel horizontal bars ──
-        // Two 200×8-pixel blocks using direct identity-map writes.
-        // Stride not known: write 200 sequential u32s per row = first row only.
-        // Red bar  (pixels 0-199): init_and_jump OK, identity map OK
-        // Blue bar (pixels 200-399): stride ≥ 400 pixels (safe assumption)
-        if fb_phys != 0 {
-            let fb = fb_phys as *mut u32;
-            for y in 0usize..8 {
-                let row = y.wrapping_mul(1920);
-                for x in 0usize..200 {
-                    let pix = row.wrapping_add(x);
-                    core::ptr::write_volatile(fb.wrapping_add(pix), 0x00FF0000u32);
-                }
+        // Continue the splash through the exact direct/volatile path that
+        // proved reliable for the old red, blue and magenta diagnostics.
+        // Do not read petroleum statics here: Bellows and the kernel link
+        // separate copies of the petroleum crate.
+        if fb_phys != 0 && fb_phys.saturating_add(fb_size) <= 64 * 1024 * 1024 * 1024 {
+            if let Some(framebuffer) = crate::graphics::boot_screen::BootFramebuffer::new(
+                fb_phys,
+                fb_width,
+                fb_height,
+                fb_stride,
+                32,
+                fb_pixel_format,
+            ) {
+                framebuffer.draw_stage(
+                    0,
+                    crate::graphics::boot_screen::KERNEL_STAGE_COUNT,
+                    b"ENTERING KERNEL",
+                );
             }
-            for y in 0usize..8 {
-                let row = y.wrapping_mul(1920);
-                for x in 0usize..200 {
-                    let pix = row.wrapping_add(x).wrapping_add(200);
-                    core::ptr::write_volatile(fb.wrapping_add(pix), 0x000000FFu32);
-                }
-            }
-            // Magenta 30×16 block starting at row 8: stage2 jump target reached
-            for dy in 0usize..16 {
-                let row = (dy + 8).wrapping_mul(1920);
-                for dx in 0usize..30 {
-                    core::ptr::write_volatile(fb.wrapping_add(row.wrapping_add(dx)), 0x00FF00FFu32);
-                }
-            }
-            // Store fb_phys in petroleum's .data static for fb_stage_pixel.
-            BOOT_FB_PHYS = fb_phys;
-            BOOT_FB_STRIDE_PX = 1920;
-            core::arch::asm!("sfence");
         }
 
         // Jump to kernel entry point.
