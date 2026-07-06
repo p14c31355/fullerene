@@ -345,34 +345,4 @@ impl DmaEngine {
     }
 }
 
-// ── MMIO helpers (local copies for dma module) ────────────────────
-
-#[inline]
-unsafe fn mmio_read32(mmio: *mut u8, offset: usize) -> u32 {
-    // SAFETY: Caller guarantees mmio + offset is valid
-    unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u32) }
-}
-
-#[inline]
-unsafe fn mmio_read8(mmio: *mut u8, offset: usize) -> u8 {
-    // SAFETY: Caller guarantees mmio + offset is valid
-    unsafe { core::ptr::read_volatile(mmio.add(offset)) }
-}
-
-#[inline]
-unsafe fn mmio_write32(mmio: *mut u8, offset: usize, val: u32) {
-    // SAFETY: Caller guarantees mmio + offset is valid
-    unsafe { core::ptr::write_volatile(mmio.add(offset) as *mut u32, val) };
-}
-
-#[inline]
-unsafe fn mmio_write16(mmio: *mut u8, offset: usize, val: u16) {
-    // SAFETY: Caller guarantees mmio + offset is valid
-    unsafe { core::ptr::write_volatile(mmio.add(offset) as *mut u16, val) };
-}
-
-#[inline]
-unsafe fn mmio_write8(mmio: *mut u8, offset: usize, val: u8) {
-    // SAFETY: Caller guarantees mmio + offset is valid
-    unsafe { core::ptr::write_volatile(mmio.add(offset), val) };
-}
+crate::make_mmio_helpers!();

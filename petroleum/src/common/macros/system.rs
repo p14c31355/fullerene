@@ -176,9 +176,11 @@ macro_rules! init_step {
 
 #[macro_export]
 macro_rules! read_unaligned {
-    ($ptr:expr, $offset:expr, $ty:ty) => {
-        unsafe { core::ptr::read_unaligned(($ptr as *const u8).add($offset) as *const $ty) }
-    };
+    ($ptr:expr, $offset:expr, $ty:ty) => {{
+        let ptr = $ptr as *const u8;
+        let offset = $offset;
+        unsafe { core::ptr::read_unaligned(ptr.add(offset) as *const $ty) }
+    }};
 }
 
 #[macro_export]

@@ -142,6 +142,28 @@ pub fn walk<'a>(
     Ok(&mut table[idx])
 }
 
+/// Read-only page-table walk. Unlike [`walk`], this preserves shared-borrow
+/// semantics all the way through the hierarchy.
+pub fn walk_read<'a>(
+    root: &'a PageTable,
+    virt: CanonicalVirtAddr,
+    target_level: u8,
+) -> Result<&'a PageTableEntry, WalkError> {
+    assert!((1..=3).contains(&target_level));
+    let mut table = root;
+    for level in (target_level + 1..=4).rev() {
+        let entry = &table[virt.index(level)];
+        if entry.is_unused() {
+            return Err(WalkError::OutOfMemory);
+        }
+        if entry.is_huge() {
+            return Err(WalkError::HugePageConflict { level });
+        }
+        table = unsafe { &*(entry.addr() as *const PageTable) };
+    }
+    Ok(&table[virt.index(target_level)])
+}
+
 /// Walk to a specific level and return the **table** at that level.
 ///
 /// # Safety

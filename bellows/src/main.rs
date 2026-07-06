@@ -2,7 +2,7 @@
 
 #![no_std]
 #![no_main]
-#![feature(alloc_error_handler)]
+#![cfg_attr(target_os = "uefi", feature(alloc_error_handler))]
 #![feature(never_type)]
 extern crate alloc;
 
@@ -14,7 +14,8 @@ static KERNEL_BINARY: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.b
 mod loader;
 
 use loader::{exit_boot_services_and_jump, init_heap, load_efi_image};
-use petroleum::common::{EfiGraphicsPixelFormat, EfiSystemTable, FullereneFramebufferConfig};
+use petroleum::common::EfiSystemTable;
+use petroleum::graphics::boot_screen::{BootFramebuffer, KERNEL_STAGE_COUNT};
 
 #[unsafe(no_mangle)]
 pub unsafe extern "efiapi" fn efi_main(
@@ -44,7 +45,7 @@ pub unsafe extern "efiapi" fn efi_main(
     petroleum::bootloader_log!("Heap initialized successfully.");
 
     petroleum::bootloader_log!("Attempting to initialize graphics protocols...");
-    match petroleum::init_graphics_protocols(st) {
+    let boot_framebuffer = match petroleum::init_graphics_protocols(st) {
         Some(config) => {
             petroleum::bootloader_log!(
                 "Graphics framebuffer initialized at {:#x} ({}x{}).",
@@ -52,16 +53,18 @@ pub unsafe extern "efiapi" fn efi_main(
                 config.width,
                 config.height
             );
+            if let Some(framebuffer) = BootFramebuffer::from_config(config) {
+                unsafe {
+                    framebuffer.draw_stage(0, KERNEL_STAGE_COUNT, b"LOADING KERNEL");
+                }
+            }
+            Some(config)
         }
         None => {
-            petroleum::bootloader_log!("No graphics protocols found, initializing VGA text mode.");
-            init_basic_vga_text_mode();
-            install_vga_framebuffer_config();
-            petroleum::bootloader_log!(
-                "VGA framebuffer config installed, continuing with kernel load."
-            );
+            petroleum::bootloader_log!("No directly addressable GOP mode; continuing headless.");
+            None
         }
-    }
+    };
     petroleum::bootloader_log!("Graphics initialization complete.");
 
     let efi_image_file = KERNEL_BINARY;
@@ -93,6 +96,11 @@ pub unsafe extern "efiapi" fn efi_main(
     };
     petroleum::println!("Bellows: EFI image loaded.");
     petroleum::println!("Bellows: Kernel loaded from embedded binary.");
+    if let Some(config) = boot_framebuffer.and_then(BootFramebuffer::from_config) {
+        unsafe {
+            config.draw_stage(0, KERNEL_STAGE_COUNT, b"ENTERING KERNEL");
+        }
+    }
     petroleum::println!("Exiting boot services and jumping to kernel...");
     petroleum::println!("Bellows: About to exit boot services and jump to kernel.");
     match exit_boot_services_and_jump(
@@ -108,24 +116,4 @@ pub unsafe extern "efiapi" fn efi_main(
             panic!("Failed to exit boot services.");
         }
     }
-}
-
-fn init_basic_vga_text_mode() {
-    petroleum::println!("Basic VGA text mode initialization...");
-    petroleum::graphics::detect_and_init_vga_graphics();
-    petroleum::println!("Basic VGA text mode initialized as fallback.");
-}
-
-fn install_vga_framebuffer_config() {
-    petroleum::println!("Installing VGA framebuffer config for UEFI...");
-    let config = FullereneFramebufferConfig {
-        address: 0xB8000,
-        width: 80,
-        height: 25,
-        pixel_format: EfiGraphicsPixelFormat::PixelFormatMax,
-        bpp: 16,
-        stride: 80,
-    };
-    petroleum::FULLERENE_FRAMEBUFFER_CONFIG.call_once(|| spin::Mutex::new(Some(config)));
-    petroleum::println!("VGA framebuffer config saved globally successfully.");
 }

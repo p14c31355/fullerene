@@ -214,7 +214,7 @@ impl FramebufferManager {
     /// # Safety
     ///
     /// The returned slice must not outlive this `FramebufferManager`.
-    pub unsafe fn as_slice_mut(&self) -> &mut [u32] {
+    pub unsafe fn as_slice_mut(&mut self) -> &mut [u32] {
         let len = (self.fb_byte_size / 4) as usize;
         unsafe { core::slice::from_raw_parts_mut(self.fb_base, len) }
     }

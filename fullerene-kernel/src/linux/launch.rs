@@ -1,4 +1,6 @@
 // Linux binary launcher
+use alloc::boxed::Box;
+use alloc::string::ToString;
 use crate::loader::LoadError;
 use crate::process::ProcessId;
 
@@ -13,21 +15,14 @@ pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
         Ok(d) => d,
         Err(_) => return Err(LoadError::InvalidFormat),
     };
-    launch_linux_from_data(&data, path)
+    // Leak path string to create &'static str for process name
+    let static_name: &'static str = Box::leak(path.to_string().into_boxed_str());
+    launch_linux_from_data(&data, static_name)
 }
 
 /// Launch a Linux ELF binary from raw bytes.
-pub fn launch_linux_from_slice(data: &[u8], name: &str) -> Result<ProcessId, LoadError> {
-    launch_linux_from_data(data, name)
-}
-
-/// Launch a Linux ELF binary from raw bytes, extracting filename from path.
-pub fn launch_linux_from_data(data: &[u8], name: &str) -> Result<ProcessId, LoadError> {
-    // Use the existing ELF loader with is_linux=true
-    let _ = name.rsplit('/').next().unwrap_or(name);
-    // We need a static name. Use a simple approach.
-    let static_name = "linux-app";
-    crate::loader::load_program_with_runtime(data, static_name, true)
+pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<ProcessId, LoadError> {
+    crate::loader::load_program_with_runtime(data, name, true)
 }
 
 /// Launch BusyBox shell from embedded initramfs data.

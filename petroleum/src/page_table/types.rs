@@ -572,22 +572,6 @@ impl PageTable {
         self.entries.iter().all(|e| e.is_unused())
     }
 
-    /// Get a mutable reference to this table for read-only walking.
-    ///
-    /// # Safety
-    /// The caller must not modify any entries through this reference.
-    /// This is used by the page table walker which only reads entries.
-    #[inline]
-    pub unsafe fn as_mut_for_walking(&self) -> &mut PageTable {
-        unsafe {
-            // SAFETY: The caller guarantees no mutation occurs through this reference.
-            // This is required by the walker API which needs &mut for interior mutability
-            // of page table entries during mapping operations.
-            let ptr = self as *const PageTable;
-            let cell = &*(ptr as *const core::cell::UnsafeCell<PageTable>);
-            &mut *cell.get()
-        }
-    }
 }
 
 impl Default for PageTable {

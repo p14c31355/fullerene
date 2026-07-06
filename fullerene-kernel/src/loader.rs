@@ -62,7 +62,7 @@ fn load_program_inner(
         process::PROCESS_MANAGER.with_process(pid, |p| {
             let initial_break = 0x60000000u64;
             let rt = crate::linux::LinuxRuntime::new(p.id.0, initial_break);
-            p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(rt));
+            p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(rt)));
         });
     }
 

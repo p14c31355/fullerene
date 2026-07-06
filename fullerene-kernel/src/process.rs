@@ -536,15 +536,16 @@ pub static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
 
 // Use KERNEL_STACK_SIZE from crate::heap
 
-/// Static idle context storage (avoid heap allocation during early init)
-#[allow(static_mut_refs)]
-static mut IDLE_CONTEXT: core::mem::MaybeUninit<ProcessContext> = core::mem::MaybeUninit::uninit();
-/// Static idle process storage
-#[allow(static_mut_refs)]
-static mut IDLE_PROCESS: core::mem::MaybeUninit<Process> = core::mem::MaybeUninit::uninit();
+/// Marker used to track whether the idle process has been initialised.
+static IDLE_INIT: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 /// Initialize process management system
 pub fn init(heap_start: usize, heap_end: usize) {
+    // Check if already initialized
+    if IDLE_INIT.load(core::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+
     mem_debug!("Process: init start\n");
 
     let mut buf = [0u8; 16];
@@ -556,72 +557,48 @@ pub fn init(heap_start: usize, heap_end: usize) {
     petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
     petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
 
-    // Build idle process completely from static storage (no heap allocation at all).
-    // Process::new calls Box::new(ProcessContext) which would fail, so we
-    // construct everything manually using static storage.
+    // Idle process — heap allocator is already initialised (see init.rs),
+    // so we can safely use Box::new here.
     let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
     let pid = PROCESS_MANAGER.allocate_pid();
 
-    unsafe {
-        // Initialize static context
-        let ctx_ptr = core::ptr::addr_of_mut!(IDLE_CONTEXT).cast::<ProcessContext>();
-        ctx_ptr.write(ProcessContext {
-            regs: [0; 16],
-            rflags: 0x0202,
-            rip: idle_addr.as_u64(),
-            segments: [
-                crate::gdt::code()
-                    .as_ref()
-                    .map(|s| s.0 as u64)
-                    .unwrap_or(1),
-                crate::gdt::kernel_data()
-                    .as_ref()
-                    .map(|s| s.0 as u64)
-                    .unwrap_or(2),
-                0,
-                0,
-                0,
-                0,
-            ],
-            tss: 0,
-            is_user: false,
-        });
-        mem_debug!("Process: idle context RIP: 0x");
-        let mut buf = [0u8; 16];
-        let len = petroleum::serial::format_hex_to_buffer(idle_addr.as_u64(), &mut buf, 16);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf[..len]);
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"\n");
+    let ctx = ProcessContext {
+        regs: [0; 16],
+        rflags: 0x0202,
+        rip: idle_addr.as_u64(),
+        segments: [
+            crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1),
+            crate::gdt::kernel_data().as_ref().map(|s| s.0 as u64).unwrap_or(2),
+            0, 0, 0, 0,
+        ],
+        tss: 0,
+        is_user: false,
+    };
 
-        // Take ownership of static context via Box::from_raw (no heap allocation)
-        let ctx_box: Box<ProcessContext> = Box::from_raw(ctx_ptr);
+    let idle = Box::new(Process {
+        id: pid,
+        name: "idle",
+        state: ProcessState::Running,
+        context: Box::new(ctx),
+        page_table_phys_addr: PhysAddr::new(0),
+        page_table: None,
+        kernel_stack: VirtAddr::new(0),
+        user_stack: VirtAddr::new(0),
+        entry_point: idle_addr,
+        is_user: false,
+        exit_code: None,
+        parent_id: None,
+        task_data: 0,
+        dispatch_mode: None,
+        vdso_page: None,
+        resources: ProcessResources::new(),
+    });
 
-        // Initialize static process, reusing static storage
-        let proc_ptr = core::ptr::addr_of_mut!(IDLE_PROCESS).cast::<Process>();
-        proc_ptr.write(Process {
-            id: pid,
-            name: "idle",
-            state: ProcessState::Running,
-            context: ctx_box,
-            page_table_phys_addr: PhysAddr::new(0),
-            page_table: None,
-            kernel_stack: VirtAddr::new(0),
-            user_stack: VirtAddr::new(0),
-            entry_point: idle_addr,
-            is_user: false,
-            exit_code: None,
-            parent_id: None,
-            task_data: 0,
-            dispatch_mode: None,
-            vdso_page: None,
-            resources: ProcessResources::new(),
-        });
+    PROCESS_MANAGER
+        .add(idle)
+        .expect("Failed to add idle process");
 
-        // Take ownership of static process via Box::from_raw
-        let proc_box: Box<Process> = Box::from_raw(proc_ptr);
-        PROCESS_MANAGER
-            .add(proc_box)
-            .expect("Failed to add idle process");
-    }
+    IDLE_INIT.store(true, core::sync::atomic::Ordering::Release);
     PROCESS_MANAGER.set_current_pid(pid.0 as usize);
 
     mem_debug!("Process: init done\n");
@@ -648,7 +625,7 @@ pub fn create_process(
             Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
         let user_stack_ptr = petroleum::common::memory::allocate_layout(user_stack_layout)
             .map_err(|e| {
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
                 e
             })?;
         process.user_stack =
@@ -659,8 +636,10 @@ pub fn create_process(
             Ok(pt) => pt,
             Err(e) => {
                 log::error!("Failed to create process page table: {:?}", e);
-                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                    petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                }
                 return Err(e);
             }
         };
@@ -670,8 +649,10 @@ pub fn create_process(
 
         let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
         let fa = fa_lock.as_mut().ok_or_else(|| {
-            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            unsafe {
+                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            }
             if let Some(ref page_table) = process.page_table {
                 if let Some(pml4_frame) = page_table.pml4_frame() {
                     crate::memory_management::deallocate_process_page_table(pml4_frame);
@@ -682,8 +663,10 @@ pub fn create_process(
         let pt: &mut petroleum::page_table::process::ProcessPageTable =
             process.page_table.as_mut().unwrap();
         let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
-            petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-            petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            unsafe {
+                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+            }
             if let Some(ref page_table) = process.page_table {
                 if let Some(pml4_frame) = page_table.pml4_frame() {
                     crate::memory_management::deallocate_process_page_table(pml4_frame);
@@ -699,7 +682,7 @@ pub fn create_process(
             Ok(pt) => pt,
             Err(e) => {
                 log::error!("Failed to create process page table: {:?}", e);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
                 return Err(e);
             }
         };
@@ -749,7 +732,9 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         let kernel_stack_base =
             process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
         let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout);
+        unsafe {
+            petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout)
+        };
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {
@@ -890,43 +875,39 @@ pub fn yield_current() {
 pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
     use crate::context_switch::switch_context;
 
-    let (old_context_ptr, new_context_ptr, new_page_table) = PROCESS_MANAGER.with_list(|list| {
+    // Early return if switching to the same process to avoid aliasing
+    if old_pid == Some(new_pid) {
+        return;
+    }
+
+    // HeaplessVec never reallocates and Box<Process> elements live for the
+    // process lifetime, so the `context` field address is stable while the
+    // process exists.  We extract raw pointers within the lock, then use
+    // them after the lock drops — safe because no slot touched here will
+    // be freed during this window (terminated processes are skipped by the
+    // scheduler and the idle process is never removed).
+    let (old_ctx, new_ctx) = PROCESS_MANAGER.with_list(|list| {
         let old_ptr = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
-            .map(|(_, p)| p.as_mut() as *mut Process);
-
+            .map(|(_, p)| &mut *p.context as *mut ProcessContext);
         let new_ptr = list
             .iter()
             .find(|(id, _)| *id == new_pid)
-            .map(|(_, p)| p.as_ref() as *const Process);
-
-        if let Some(ptr) = new_ptr {
-            // Get pointers to the context field specifically to ensure proper alignment
-            let old_ctx =
-                old_ptr.map(|p| unsafe { (&mut *p).context.as_mut() as *mut ProcessContext });
-            let new_ctx = Some(unsafe { (&*ptr).context.as_ref() as *const ProcessContext });
-            let pt = unsafe { (*ptr).page_table_phys_addr };
-            (old_ctx, new_ctx, Some(pt))
-        } else {
-            (None, None, None)
-        }
+            .map(|(_, p)| &*p.context as *const ProcessContext);
+        (old_ptr, new_ptr)
     });
+    let pt = PROCESS_MANAGER.with_process(new_pid, |p| p.page_table_phys_addr).unwrap_or(PhysAddr::new(0));
 
-    if let (Some(old_ctx_ptr), Some(new_ctx_ptr), Some(pt)) =
-        (old_context_ptr, new_context_ptr, new_page_table)
-    {
-        unsafe {
+    if let Some(new) = new_ctx {
+        if pt != PhysAddr::new(0) {
             let new_frame = PhysFrame::containing_address(pt);
             let (current_frame, _) = Cr3::read();
             if new_frame != current_frame {
-                Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
+                unsafe { Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty()) };
             }
-            // Convert raw pointers to references
-            let old_ctx_ref = &mut *old_ctx_ptr;
-            let new_ctx_ref = &*new_ctx_ptr;
-            // Pass the old context as Some(&mut ProcessContext)
-            switch_context(Some(old_ctx_ref), new_ctx_ref);
         }
+        let old_ref = old_ctx.map(|ptr| unsafe { &mut *ptr });
+        unsafe { switch_context(old_ref, &*new) };
     }
 }
 
@@ -979,43 +960,20 @@ mod tests {
     fn test_process_counting() {
         // Initialize the process management system with dummy heap range
         init(0, 0);
-        assert!(get_process_count() > 0);
-        assert!(get_active_process_count() > 0);
+        assert!(PROCESS_MANAGER.count() > 0);
+        assert!(PROCESS_MANAGER.active_count() > 0);
     }
 }
 
-/// Get total number of processes in the system
-pub fn get_process_count() -> usize {
-    PROCESS_MANAGER.count()
-}
-
-/// Get number of active processes (ready or running)
-pub fn get_active_process_count() -> usize {
-    PROCESS_MANAGER.active_count()
-}
-
-/// Clean up terminated processes to free resources
-pub fn cleanup_terminated_processes() {
-    PROCESS_MANAGER.cleanup();
-}
-// Test process functions (only available in test builds)
-// Called by test infrastructure via entry point references.
 #[cfg(test)]
-#[allow(dead_code)]
 pub fn test_process_main() {
-    // Use syscall helpers for reduced code duplication
     let message = b"Hello from test user process!\n";
-    petroleum::write(1, message); // stdout fd = 1
-
-    // Get and print PID
+    petroleum::write(1, message);
     let pid = petroleum::getpid();
     petroleum::write(1, b"My PID is: ");
     let pid_str = alloc::format!("{}\n", pid);
     petroleum::write(1, pid_str.as_bytes());
-
-    // Yield twice for demonstration
     petroleum::sleep();
     petroleum::sleep();
-    // Exit process
     petroleum::exit(0);
 }

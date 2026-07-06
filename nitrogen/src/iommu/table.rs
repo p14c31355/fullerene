@@ -61,8 +61,7 @@ impl IommuPageTable {
         unsafe {
             core::ptr::write_bytes(root_virt, 0, 4096);
         }
-        let mut allocated = Vec::new();
-        allocated.push(root_phys);
+        let allocated = alloc::vec![root_phys];
         Ok(Self {
             root_phys,
             root_virt,

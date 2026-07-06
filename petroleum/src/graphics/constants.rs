@@ -1,6 +1,4 @@
-/// VGA mode 13h constants for graphics mode setup
-/// This module consolidates VGA mode 13h configuration constants
-/// for better code organization and reusability in the petroleum crate.
+//! VGA mode 13h constants for graphics mode setup.
 
 // VGA framebuffer address for mode 13h (320x200, 256 colors)
 pub const VGA_MODE13H_ADDRESS: u64 = 0xA0000;

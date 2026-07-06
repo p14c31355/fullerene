@@ -20,6 +20,34 @@ pub mod process_memory;
 pub use manager::UnifiedMemoryManager;
 pub use process_memory::*;
 
+/// Configure the PAT MSR with the OS-defined memory type table.
+///
+/// Corresponds to Linux `pat_bp_init()`.  Sets all eight PAT entries:
+///
+/// ```text
+/// Slot  PAT PCD PWT   Type
+///  0     0   0   0     WB   (default RAM)
+///  1     0   0   1     WC   (framebuffer write-combining)
+///  2     0   1   0     UC-
+///  3     0   1   1     UC
+///  4     1   0   0     WB
+///  5     1   0   1     WP
+///  6     1   1   0     UC-
+///  7     1   1   1     WT
+/// ```
+///
+/// This is the same full PAT table Linux uses on modern CPUs.
+pub fn configure_framebuffer_pat() -> bool {
+    let pat_supported = core::arch::x86_64::__cpuid(1).edx & (1 << 16) != 0;
+    if !pat_supported {
+        return false;
+    }
+    unsafe {
+        petroleum::page_table::pat::init_pat();
+    }
+    true
+}
+
 // Memory management error types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError {

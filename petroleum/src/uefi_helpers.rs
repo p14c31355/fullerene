@@ -131,7 +131,9 @@ pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
 
     // For QEMU debugging, halt the CPU
     crate::halt!();
-    loop {} // Panics must diverge
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
 /// Test harness for no_std environment
@@ -164,7 +166,7 @@ pub fn test_runner(tests: &[&dyn Testable]) {
 #[macro_export]
 macro_rules! serial_log {
     ($($arg:tt)*) => {{
-        crate::serial::serial_log(format_args!($($arg)*));
+        $crate::serial::serial_log(format_args!($($arg)*));
     }};
 }
 

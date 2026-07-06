@@ -57,7 +57,7 @@ fn register_nozzle_hooks() {
             } else {
                 "."
             };
-            let long_format = ctx.args.iter().any(|a| *a == "-l");
+            let long_format = ctx.args.contains(&"-l");
             match crate::vfs::readdir(path) {
                 Ok(entries) => {
                     for ent in entries {
@@ -465,12 +465,6 @@ fn register_nozzle_hooks() {
                 ctx.terminal.write_str("PCI scan failed.\n");
             }
         }
-        "badapple" => {
-            ctx.terminal
-                .write_str("Playing Bad Apple!! (press any key to stop)...\n");
-            crate::apps::badapple::play_badapple();
-            ctx.terminal.write_str("Bad Apple finished.\n");
-        }
         "date" => {
             let cb = solvent::SOLVENT_CALLBACKS.lock().wall_clock;
             match cb.and_then(|f| f()) {
@@ -531,7 +525,7 @@ fn register_nozzle_hooks() {
             }
         }
         "sort" => {
-            let reverse = ctx.args.iter().any(|a| *a == "-r");
+            let reverse = ctx.args.contains(&"-r");
             let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" { 2 } else { 1 };
             if path_idx >= ctx.args.len() {
                 return tstr!(ctx.terminal, "Usage: sort [-r] <file>");

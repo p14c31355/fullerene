@@ -5,6 +5,7 @@ use nitrogen::virtio::gpu::VirtioGpu;
 use petroleum::common::EfiGraphicsPixelFormat;
 use petroleum::graphics::color::FramebufferInfo;
 use petroleum::graphics::framebuffer::UefiFramebufferWriter;
+use petroleum::graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 use petroleum::graphics::text::VgaBuffer;
 
 pub struct FramebufferContext {
@@ -69,62 +70,116 @@ impl FramebufferContext {
             return false;
         }
 
-        // Use the bootloader's identity mapping (phys + offset) instead of
-        // creating new 4 KiB WC pages.  Creating a second mapping for the
-        // same physical memory with a conflicting cache type (WC vs WB) is
-        // architecturally undefined on Intel and causes stale-cache /
-        // read-modify-write corruption on real hardware like InsydeH2O.
-        //
-        // The boot‑time huge‑page WB mapping is preserved from
-        // efi_main_stage2 and works correctly with the firmware MTRR UC
-        // setting.  Grey‑fill tests on InsydeH2O confirm that writes
-        // through the identity‑mapped VA are visible on screen.
-
-        // The kernel's page-table init creates a 64 GB (0 – 0x10_0000_0000)
-        // identity + higher-half huge-page mapping.  If the framebuffer
-        // lives above that range, the identity mapping is incomplete and
-        // every pixel write will page-fault.
-        const IDENTITY_MAP_GB64: u64 = 0x10_0000_0000;
-        let fb_size_bytes = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
-        let fb_end = self.fb_phys.saturating_add(fb_size_bytes);
-        if fb_end > IDENTITY_MAP_GB64 {
-            // FB extends beyond the 64 GB identity map.  Try to create a
-            // proper 4 KB WC mapping by splitting the covering huge page.
-            // This may break on InsydeH2O (see above), but is still better
-            // than silently writing to unmapped virtual memory.
-            petroleum::write_serial_bytes(
-                0x3F8, 0x3FD,
-                b"[fb] WARNING: FB above 64 GB identity map, creating 4 KB WC mapping\n",
-            );
-            let fb_pages = ((fb_size_bytes + 4095) / 4096) as usize;
-            if !crate::contexts::memory::with_memory_mut(|mem| {
-                // Split the covering 2 MB huge page and map the FB range as WC.
-                let flags = x86_64::structures::paging::PageTableFlags::NO_CACHE
-                    | x86_64::structures::paging::PageTableFlags::PRESENT
-                    | x86_64::structures::paging::PageTableFlags::WRITABLE
-                    | x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-                let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-                let fb_va = self.fb_phys + off;
-                for page in 0..fb_pages {
-                    let vaddr = (fb_va + page as u64 * 4096) as usize;
-                    let paddr = (self.fb_phys + page as u64 * 4096) as usize;
-                    if mem.map_page(vaddr, paddr, flags).is_err() {
-                        return false;
-                    }
-                }
-                true
-            }).unwrap_or(false) {
-                return false; // mapping failed — bail out
+        // Use the bootstrap's higher-half direct mapping whenever possible.
+        // It has the same effective cache type as the early identity alias,
+        // without creating a second WC mapping for the same physical pages.
+        // Unlike the lower-half identity address, this alias is copied into
+        // every process PML4 and remains valid while a user CR3 is active.
+        let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+        const DIRECT_MAP_SIZE: u64 = 64 * 1024 * 1024 * 1024;
+        let fb_end = match self.fb_phys.checked_add(fb_size) {
+            Some(address) => address,
+            None => return false,
+        };
+        let mut fb_va = if fb_end <= DIRECT_MAP_SIZE {
+            let direct_map_offset =
+                petroleum::common::memory::get_physical_memory_offset() as u64;
+            match self.fb_phys.checked_add(direct_map_offset) {
+                Some(address) => address,
+                None => return false,
             }
-        }
-
-        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let fb_va = self.fb_phys + off;
+        } else {
+            // Very high GOP apertures are outside the bootstrap identity map;
+            // only those systems need a dedicated alias.
+            match crate::memory_management::get_memory_manager()
+                .lock()
+                .as_mut()
+                .and_then(|mm| {
+                    mm.map_framebuffer(
+                        self.fb_phys,
+                        fb_size as usize,
+                        CacheMode::WriteCombining,
+                    )
+                }) {
+                Some(address) => address,
+                None => return false,
+            }
+        };
 
         petroleum::serial::serial_log(format_args!(
-            "[fb] identity mapping: phys=0x{:x} → va=0x{:x}\n",
+            "[fb] scanout mapping: phys=0x{:x} -> va=0x{:x}\n",
             self.fb_phys, fb_va
         ));
+
+        // Verify the calculated VA is actually mapped in the page table.
+        // On real hardware (e.g. InsydeH2O), the direct-map huge pages
+        // may not cover the FB aperture, or huge-page splitting may have
+        // been silently skipped.  Avoid a page-fault later by checking now.
+        {
+            let fb_va_x86 = x86_64::VirtAddr::new(fb_va);
+            match petroleum::common::memory::walk_page_table_for_flags(fb_va_x86) {
+                Some(flags)
+                    if flags.contains(x86_64::structures::paging::PageTableFlags::PRESENT)
+                        && flags.contains(x86_64::structures::paging::PageTableFlags::WRITABLE) =>
+                {
+                    // direct mapping is usable
+                }
+                Some(flags) => {
+                    petroleum::serial::serial_log(format_args!(
+                        "[fb] VA 0x{:x} mapped but not writable (flags={:?}); falling back to dynamic map\n",
+                        fb_va, flags
+                    ));
+                    // Try dynamic allocator-backed mapping
+                    let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+                    match crate::memory_management::get_memory_manager()
+                        .lock()
+                        .as_mut()
+                        .and_then(|mm| {
+                            mm.map_framebuffer(
+                                self.fb_phys,
+                                fb_size as usize,
+                                CacheMode::WriteCombining,
+                            )
+                        }) {
+                        Some(va) => {
+                            fb_va = va;
+                            petroleum::serial::serial_log(format_args!(
+                                "[fb] dynamic WC mapping: phys=0x{:x} -> va=0x{:x}\n",
+                                self.fb_phys, fb_va
+                            ));
+                        }
+                        None => return false,
+                    }
+                }
+                None => {
+                    // VA is not mapped at all — try dynamic mapping
+                    petroleum::serial::serial_log(format_args!(
+                        "[fb] VA 0x{:x} not mapped; falling back to dynamic map\n",
+                        fb_va
+                    ));
+                    let fb_size = self.fb_stride_bytes as u64 * self.fb_height_px as u64;
+                    match crate::memory_management::get_memory_manager()
+                        .lock()
+                        .as_mut()
+                        .and_then(|mm| {
+                            mm.map_framebuffer(
+                                self.fb_phys,
+                                fb_size as usize,
+                                CacheMode::WriteCombining,
+                            )
+                        }) {
+                        Some(va) => {
+                            fb_va = va;
+                            petroleum::serial::serial_log(format_args!(
+                                "[fb] dynamic WC mapping: phys=0x{:x} -> va=0x{:x}\n",
+                                self.fb_phys, fb_va
+                            ));
+                        }
+                        None => return false,
+                    }
+                }
+            }
+        }
 
         let info = FramebufferInfo {
             address: fb_va,
@@ -192,23 +247,14 @@ impl FramebufferContext {
                 let (w, h) = (i.width, i.height);
                 gpu.flush(w, h);
             }
-        } else if let Some(ref r) = self.renderer {
-            // The framebuffer is accessed via the bootloader's identity
-            // mapping (WB huge-page).  CLFLUSH each cache line (64 B)
-            // to force writeback, then MFENCE to order subsequent writes.
-            // Safe even when MTRR sets UC (CLFLUSH is no‑op on UC lines).
-            let info = r.get_info();
-            let fb_ptr = info.address as *mut u8;
-            let fb_byte_len = info.stride as usize * info.height as usize;
-            unsafe {
-                let mut addr = fb_ptr;
-                let end = fb_ptr.add(fb_byte_len);
-                while addr < end {
-                    core::arch::x86_64::_mm_clflush(addr);
-                    addr = addr.add(64);
-                }
-                core::arch::x86_64::_mm_mfence();
-            }
+        } else if self.renderer.is_some() {
+            // The framebuffer is in PCI MMIO space; the firmware MTRR
+            // override typically sets it to UC or WC.  In both cases
+            // writes bypass the CPU cache and SFENCE is sufficient to
+            // drain the write-combining or posted-write buffers.
+            // CLFLUSH is deliberately NOT used here — on some hardware
+            // it can trigger machine checks on UC/WC MMIO regions.
+            unsafe { core::arch::x86_64::_mm_sfence() };
         }
         nitrogen::hda::HdaController::tick_vm_exit();
     }
@@ -239,6 +285,8 @@ where
         if info.address == 0 {
             return None;
         }
+        // `info.address` is the single scan-out alias selected during
+        // renderer construction (normally the higher-half direct mapping).
         let ptr = info.address as *mut u32;
         let stride_pixels = info.stride / 4;
         let len = (stride_pixels as usize) * info.height as usize;

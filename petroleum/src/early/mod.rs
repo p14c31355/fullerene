@@ -23,7 +23,7 @@
 //! - `allocator` — frame/page allocators for boot-time only
 //! - `console`   — serial + VGA text output (no framebuffer dependency)
 //! - `mapper`    — identity-mapped page table construction
-//! - `framebuffer` — UEFI GOP detection, VGA mode setting
+//! - `framebuffer` — UEFI GOP detection
 //!
 //! ## What does NOT belong here
 //!

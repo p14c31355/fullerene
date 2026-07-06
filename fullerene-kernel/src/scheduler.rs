@@ -35,41 +35,24 @@ pub fn request_shell_launch() {
 /// `gui::runtime_tick()`.  Shell (and future apps) are launched on
 /// demand.
 pub fn scheduler_loop() -> ! {
-    petroleum::serial::_print(format_args!("Scheduler loop started\n"));
+    let boot_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let tsc_per_ms = solvent::get_tsc_per_ms();
+    let boot_ms_est = if tsc_per_ms > 0 {
+        boot_tsc / tsc_per_ms
+    } else {
+        0
+    };
+    petroleum::serial::serial_log(format_args!(
+        "[boot] scheduler_loop at ~{} ms (TSC freq {} Hz)\n",
+        boot_ms_est,
+        tsc_per_ms * 1000,
+    ));
 
     // Render initial desktop frame.
     gui::render();
 
-    // Verify GOP framebuffer is operational (one-shot diagnostic).
-    let kernel_lock = crate::contexts::kernel::get_kernel();
-    let kg = kernel_lock.lock();
-    match kg.as_ref().and_then(|k| k.framebuffer.info()) {
-        Some(info) => match petroleum::graphics::verify_drawing_test(&info) {
-            petroleum::graphics::DrawingTestResult::Pass => {
-                petroleum::serial::serial_log(format_args!("=== GRAPHICS_TEST PASS ===\n"));
-            }
-            petroleum::graphics::DrawingTestResult::Fail(msg) => {
-                petroleum::serial::serial_log(format_args!(
-                    "=== GRAPHICS_TEST FAIL: {} ===\n",
-                    msg
-                ));
-            }
-        },
-        None => {
-            petroleum::serial::serial_log(format_args!(
-                "=== GRAPHICS_TEST FAIL: KernelContext.framebuffer has no renderer ===\n"
-            ));
-        }
-    }
-    drop(kg);
-
     // Wire kernel renderer into Solvent so runtime ticks can paint the display.
     gui::set_render_fn(gui::render);
-
-    // Report that the desktop is ready — a clear survival checkpoint.
-    petroleum::serial::_print(format_args!(
-        "Desktop idle loop — GOP/memory/interrupts/scheduler OK\n"
-    ));
 
     // Idle loop: drive runtime ticks without a shell.
     // Shell and other apps are launched via AppGrid or context menu.

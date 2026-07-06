@@ -36,6 +36,7 @@ pub mod pic;
 pub mod port;
 pub mod ps2;
 pub mod storage;
+pub mod timing;
 pub mod usb;
 pub mod virtio;
 
@@ -44,19 +45,11 @@ pub use driver_context::{DriverContext, DriverContextError, PageFlags};
 #[cfg(test)]
 mod tests {
     use crate::driver_context::{DriverContext, DriverContextError, PageFlags};
-    use alloc::collections::BTreeMap;
-
-    struct FakeDriverContext {
-        frames: BTreeMap<u64, bool>,
-        next_frame: u64,
-    }
+    struct FakeDriverContext;
 
     impl FakeDriverContext {
         fn new() -> Self {
-            Self {
-                frames: BTreeMap::new(),
-                next_frame: 0x1000,
-            }
+            Self
         }
     }
 

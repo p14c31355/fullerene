@@ -144,8 +144,8 @@ impl UnifiedMemoryManager {
         match mode {
             // Uncached: PCD=1 (NO_CACHE) + PWT=0 → UC- (or UC if MTRR says UC)
             CacheMode::Uncached => PageFlags::NO_CACHE,
-            // WriteCombining: PCD=0 + PWT=1 (WRITE_THROUGH) → WC via PAT default
-            // (PAT reset-default PA1 = 0b001 = WC).  Combined with MTRR UC on
+            // WriteCombining: PCD=0 + PWT=1 selects PAT slot 1.
+            // `configure_framebuffer_pat` programs PAT slot 1 to WC. Combined with MTRR UC on
             // PCI MMIO frames, the effective type is WC — safe for framebuffer
             // and won't #GP on InsydeH2O.
             CacheMode::WriteCombining => PageFlags::WRITE_THROUGH,
@@ -217,8 +217,7 @@ impl UnifiedMemoryManager {
 
             for i in 0..pages {
                 let page_size = self.page_size();
-                let i_usize = i as usize;
-                let virt = base_virt_addr + (i_usize * page_size);
+                let virt = base_virt_addr + (i as usize * page_size);
                 let phys = (phys_addr + (i * page_size as u64)) as usize;
                 let virt_addr = x86_64::VirtAddr::new(virt as u64);
                 let phys_addr_val = x86_64::PhysAddr::new(phys as u64);
@@ -238,6 +237,9 @@ impl UnifiedMemoryManager {
                     Ok(flush) => flush.flush(),
                     Err(x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage)
                     | Err(x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_)) => {
+                        // Page is already covered by a huge page from
+                        // the bootstrap mapping.  This is expected and
+                        // safe — the huge page provides PRESENT|WRITABLE.
                     }
                     Err(_) => return Err(SystemError::MappingFailed),
                 }

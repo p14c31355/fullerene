@@ -44,26 +44,25 @@ mod panic_screen {
         let h    = unsafe { crate::graphics::discovery::STORED_FB_HEIGHT };
         let stride_raw = unsafe { crate::graphics::discovery::STORED_FB_STRIDE };
 
-        if phys < 0x100_000 || phys > 0x10_0000_0000 || w < 80 || h < 25 || stride_raw < 320 {
-            // GOP params invalid – try VGA text-mode as fallback.
-            draw_vga_80x25();
+        if !(0x100_000..1 << 52).contains(&phys)
+            || !(80..=16_384).contains(&w)
+            || !(25..=16_384).contains(&h)
+            || stride_raw < w.saturating_mul(4)
+            || stride_raw % 4 != 0
+        {
             return;
         }
         let stride = usize::try_from(stride_raw).unwrap_or(w as usize * 4);
 
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let fb_va = phys + off;
-        if fb_va == 0 || fb_va >= 0x10000_0000_0000 {
-            return; // implausible VA, bail
-        }
+        let Some(fb_va) = phys.checked_add(off) else { return };
 
         // ── 2. Choose colour based on last boot stage ──
         let stage = crate::boot_stage::last_stage().map(|s| s as u8).unwrap_or(0);
         let color: u32 = stage_color(stage);
 
         // ── 3. Fill visible area ──
-        // SAFETY: fb_va is validated above; the 64 GB huge-page identity
-        // mapping is active at this point.  We write in 32-bit words.
+        // SAFETY: bootstrap installed a dedicated WC mapping for this range.
         let fb_ptr = fb_va as *mut u32;
         let total_pixels = stride / 4 * (h as usize);
         for i in 0..total_pixels {
@@ -93,6 +92,7 @@ mod panic_screen {
                 }
             }
         }
+        unsafe { core::arch::x86_64::_mm_sfence() };
     }
 
     /// Return a unique colour for each boot stage (0 = panic before any stage).
@@ -116,29 +116,6 @@ mod panic_screen {
             14  => 0x00_44_00_44, // purple
             15  => 0x00_55_55_55, // gray
             _   => 0x00_FF_00_FF, // bright magenta  – unknown stage
-        }
-    }
-
-    /// Fallback: write 0xDEAD to the VGA text buffer at 0xB8000 (identity or higher-half).
-    fn draw_vga_80x25() {
-        let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let vga_va = 0xB8000u64 + off;
-        if vga_va >= 0x10000_0000_0000 {
-            return;
-        }
-        // Fill screen with red-on-black spaces
-        let attr: u16 = 0x0400; // red on black
-        let mut v = vga_va as *mut u16;
-        for _ in 0..80 * 25 {
-            unsafe { core::ptr::write_volatile(v, attr | b' ' as u16) };
-            v = unsafe { v.add(1) };
-        }
-        // Write "KERNEL PANIC" at top-left
-        let msg = b"KERNEL PANIC";
-        v = vga_va as *mut u16;
-        for &ch in msg {
-            unsafe { core::ptr::write_volatile(v, attr | ch as u16) };
-            v = unsafe { v.add(1) };
         }
     }
 }
@@ -172,16 +149,10 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 
 petroleum::define_alloc_error_handler!();
 
-// Constants
-pub const VGA_BUFFER_ADDRESS: usize = 0xb8000;
-
 // Exported globals
 pub use heap::MEMORY_MAP;
 
 // Module declarations
-// ── Applications (user-visible programs, demos) ────────────────────
-pub mod apps;
-
 // ── Drivers (storage, GPU, network) ───────────────────────────────
 pub mod drivers;
 

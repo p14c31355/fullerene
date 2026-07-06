@@ -168,6 +168,8 @@ impl<'a> KernelMemoryOperations<'a> {
                 l2[indices.l2].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
             } else if l2[indices.l2].flags().contains(PageTableFlags::HUGE_PAGE) {
                 let huge_page_phys_base = l2[indices.l2].addr().as_u64();
+                let mut split_flags = l2[indices.l2].flags();
+                split_flags.remove(PageTableFlags::HUGE_PAGE);
                 let l1_phys = Self::allocate_zeroed_table_from(
                     frame_allocator,
                     page_table_access_offset,
@@ -175,8 +177,10 @@ impl<'a> KernelMemoryOperations<'a> {
                 )?;
                 let l1_ref = &mut *self.table_ptr(l1_phys);
                 for j in 0..ENTRIES_PER_TABLE {
-                    l1_ref[j as usize]
-                        .set_addr(PhysAddr::new(huge_page_phys_base + j * PAGE_SIZE_4K), flags);
+                    l1_ref[j as usize].set_addr(
+                        PhysAddr::new(huge_page_phys_base + j * PAGE_SIZE_4K),
+                        split_flags | PageTableFlags::PRESENT,
+                    );
                 }
                 l2[indices.l2].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
             }
@@ -290,6 +294,8 @@ pub unsafe fn map_page_4k_l1(
     }
 }
 
+
+
 /// Initialize page tables by creating a new L4 table and jumping to the kernel.
 #[repr(C)]
 pub struct InitAndJumpArgs {
@@ -303,6 +309,12 @@ pub struct InitAndJumpArgs {
     pub map_phys_addr: u64,
     pub map_size: u64,
     pub l4_phys_addr: u64,
+    pub framebuffer_phys: u64,
+    pub framebuffer_size: u64,
+    pub framebuffer_width: u32,
+    pub framebuffer_height: u32,
+    pub framebuffer_stride: u32,
+    pub framebuffer_pixel_format: u32,
 }
 
 #[unsafe(no_mangle)]
@@ -325,6 +337,12 @@ pub unsafe extern "C" fn init_and_jump(
         let map_phys_addr = args.map_phys_addr;
         let map_size = args.map_size;
         let l4_phys_addr = l4_phys_reg;
+        let fb_phys = args.framebuffer_phys;
+        let fb_size = args.framebuffer_size;
+        let fb_width = args.framebuffer_width;
+        let fb_height = args.framebuffer_height;
+        let fb_stride = args.framebuffer_stride;
+        let fb_pixel_format = args.framebuffer_pixel_format;
 
         crate::serial::_print(format_args!("IAJ: entered\n"));
         // Log the physical address of this function to verify it's within the identity map range
@@ -523,6 +541,27 @@ pub unsafe extern "C" fn init_and_jump(
         //
         // statics (PAGE_TABLE_INITIALIZED, STORED_OFFSET, STORED_L4_PTR) were set BEFORE the CR3 switch,
         // so we don't need to touch them now.
+
+        // Continue the splash through the exact direct/volatile path that
+        // proved reliable for the old red, blue and magenta diagnostics.
+        // Do not read petroleum statics here: Bellows and the kernel link
+        // separate copies of the petroleum crate.
+        if fb_phys != 0 && fb_phys.saturating_add(fb_size) <= 64 * 1024 * 1024 * 1024 {
+            if let Some(framebuffer) = crate::graphics::boot_screen::BootFramebuffer::new(
+                fb_phys,
+                fb_width,
+                fb_height,
+                fb_stride,
+                32,
+                fb_pixel_format,
+            ) {
+                framebuffer.draw_stage(
+                    0,
+                    crate::graphics::boot_screen::KERNEL_STAGE_COUNT,
+                    b"ENTERING KERNEL",
+                );
+            }
+        }
 
         // Jump to kernel entry point.
         // arg1 = page-aligned base of KernelArgs, arg2 = offset within that page.

@@ -125,6 +125,14 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");
             Ok(())
         }),
+        petroleum::init_step!("PAT", || {
+            // Configure PAT[1] = WC for framebuffer write-combining.
+            // This must run before Graphics init so that subsequent
+            // WC page-table mappings use the correct memory type.
+            let pat_ok = crate::memory_management::configure_framebuffer_pat();
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, if pat_ok { b"[init] PAT configured\n" } else { b"[init] PAT unavailable\n" });
+            Ok(())
+        }),
         petroleum::init_step!("Graphics", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Graphics step start\n");
             crate::graphics::init_graphics();
@@ -157,6 +165,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("PS2 Keyboard", || {
             nitrogen::ps2::keyboard::init_keyboard();
             petroleum::serial::serial_log(format_args!("PS/2 keyboard initialised\n"));
+            crate::boot_stage!(BootStage::InputReady);
             Ok(())
         }),
         petroleum::init_step!("process", || {
@@ -218,12 +227,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::TaskManagerReady);
             Ok(())
         }),
-        petroleum::init_step!("app_runner", || {
-            crate::apps::app_runner::init();
-            petroleum::serial::serial_log(format_args!("App runner initialised\n"));
-            crate::boot_stage!(BootStage::AppRunnerReady);
-            Ok(())
-        }),
+
     ];
     InitSequence::new(&common_steps).run();
 

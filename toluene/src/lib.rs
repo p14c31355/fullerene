@@ -31,10 +31,5 @@ pub mod exec;
 pub mod sys;
 pub mod ui;
 
-/// Simple add function for integrated testing (legacy).
-pub fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-
 /// SDK version string.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

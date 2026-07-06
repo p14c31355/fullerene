@@ -101,19 +101,19 @@ impl VirtualMemoryContext {
 
     // ── High-level mapping ───────────────────────────────────
 
-    /// Map a framebuffer (MMIO, uncacheable / write-combining).
+    /// Map a framebuffer (MMIO, write-combining).
     ///
     /// Returns the virtual address.
+    ///
+    /// Uses WRITE_THROUGH (PWT=1, PCD=0) which targets PAT slot 1.
+    /// After `init_pat()` has set PAT[1]=WC, this gives write-combining
+    /// semantics — essential for PCI MMIO framebuffer performance.
     pub fn map_framebuffer(
         &mut self,
         phys: u64,
         size_bytes: u64,
         preferred_virt: Option<u64>,
     ) -> Result<u64, &'static str> {
-        // On InsydeH2O the boot-phase huge-page (WB) mapping already covers
-        // the framebuffer region via the direct map.  Splitting it into 4 KiB
-        // WC pages breaks the mapping (see README Fix #3).  We therefore keep
-        // the direct-map identity mapping and do NOT remap.
         let va = preferred_virt.unwrap_or(phys + self.physical_offset);
 
         // Record the mapping.
@@ -125,7 +125,7 @@ impl VirtualMemoryContext {
             flags: PageTableFlags::PRESENT
                 | PageTableFlags::WRITABLE
                 | PageTableFlags::NO_EXECUTE
-                | PageTableFlags::NO_CACHE,
+                | PageTableFlags::WRITE_THROUGH,
             owned: false,
         });
 

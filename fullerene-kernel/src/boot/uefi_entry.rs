@@ -55,10 +55,7 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
     // provides a reliable fallback that does NOT depend on the
     // transition assembly passing the correct value.
     //
-    // NOTE: args.fb_stride is already in bytes (e.g. 5120 for 1280×4).
-    // Do NOT multiply it by 4 again — that would produce 20480, which
-    // fails probe_data_globals() stride validation (expects width×4 ..
-    // width×4+256, i.e. 5120..5376).
+    // `fb_stride` is already measured in bytes, not pixels.
     let stride_bytes = if args.fb_stride > 0 {
         args.fb_stride // already bytes — no mul needed
     } else {

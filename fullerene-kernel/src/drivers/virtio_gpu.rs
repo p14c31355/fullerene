@@ -61,6 +61,18 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
 
     // 3.5. Negotiate display (scanout + resource attach)
     let fb_size = (fb_config.stride * fb_config.height * (fb_config.bpp / 8)) as u32;
+
+    // Some code paths expect framebuffer parameters to be populated in the
+    // nitrogen init result. If virtio-gpu returns 0s here, renderer creation
+    // and/or debug probing can behave incorrectly.
+    result.fb_phys = fb_phys;
+    result.fb_width = fb_config.width;
+    result.fb_height = fb_config.height;
+    result.fb_stride = fb_config.stride;
+    result.fb_bpp = fb_config.bpp;
+    result.fb_virt_base = fb_virt;
+    result.fb_byte_size = fb_byte_size;
+
     result
         .gpu
         .init_display(fb_config.width, fb_config.height, fb_phys, fb_size)

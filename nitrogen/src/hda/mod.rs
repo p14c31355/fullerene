@@ -38,6 +38,44 @@ pub mod route;
 pub use controller::HdaController;
 pub use dma::DmaRegion;
 
+// ── Shared MMIO helpers (used by controller, corb, dma) ──────────
+
+#[macro_export]
+macro_rules! make_mmio_helpers {
+    () => {
+        #[allow(dead_code)]
+        #[inline]
+        unsafe fn mmio_read32(mmio: *mut u8, offset: usize) -> u32 {
+            unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u32) }
+        }
+        #[allow(dead_code)]
+        #[inline]
+        unsafe fn mmio_read16(mmio: *mut u8, offset: usize) -> u16 {
+            unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u16) }
+        }
+        #[allow(dead_code)]
+        #[inline]
+        unsafe fn mmio_read8(mmio: *mut u8, offset: usize) -> u8 {
+            unsafe { core::ptr::read_volatile(mmio.add(offset)) }
+        }
+        #[allow(dead_code)]
+        #[inline]
+        unsafe fn mmio_write32(mmio: *mut u8, offset: usize, val: u32) {
+            unsafe { core::ptr::write_volatile(mmio.add(offset) as *mut u32, val) }
+        }
+        #[allow(dead_code)]
+        #[inline]
+        unsafe fn mmio_write16(mmio: *mut u8, offset: usize, val: u16) {
+            unsafe { core::ptr::write_volatile(mmio.add(offset) as *mut u16, val) }
+        }
+        #[allow(dead_code)]
+        #[inline]
+        unsafe fn mmio_write8(mmio: *mut u8, offset: usize, val: u8) {
+            unsafe { core::ptr::write_volatile(mmio.add(offset), val) }
+        }
+    };
+}
+
 /// Widget types as defined by the HDA specification §7.3.4.
 pub mod widget_type {
     pub const AUDIO_OUTPUT: u32 = 0x0;

@@ -236,42 +236,9 @@ pub fn exit_boot_services_and_jump(
         }
     }
 
-    // Check if framebuffer config is available and append it to memory map for kernel
-    let mut final_map_size = map_size + core::mem::size_of::<usize>();
-    if let Some(config) = petroleum::FULLERENE_FRAMEBUFFER_CONFIG
-        .get()
-        .and_then(|mutex| *mutex.lock())
-    {
-        let config_with_metadata = petroleum::common::uefi::ConfigWithMetadata {
-            descriptor_size,
-            magic: petroleum::common::uefi::FRAMEBUFFER_CONFIG_MAGIC,
-            config,
-        };
-        let config_size = core::mem::size_of::<petroleum::common::uefi::ConfigWithMetadata>();
-
-        // The memory map data starts at map_ptr.
-        // The total size of the map data is map_size.
-        // We append the config immediately after the map data.
-        let config_offset = petroleum::common::utils::calculate_config_offset(map_size);
-        if petroleum::common::utils::check_buffer_overflow(
-            map_phys_addr,
-            config_offset,
-            config_size,
-            map_buffer_size,
-        ) {
-            unsafe {
-                let dest_ptr = (map_phys_addr as *mut u8).add(config_offset);
-                core::ptr::copy_nonoverlapping(
-                    &config_with_metadata as *const _ as *const u8,
-                    dest_ptr,
-                    config_size,
-                );
-            }
-            final_map_size += config_size;
-            #[cfg(feature = "debug_loader")]
-            petroleum::info_log!("Appended framebuffer config to memory map");
-        }
-    }
+    // Framebuffer fields travel in KernelArgs. Keeping the UEFI map descriptor-only
+    // is essential: the kernel divides this exact byte count by descriptor_size.
+    let final_map_size = map_size;
 
     // Note: The memory map buffer at `map_phys_addr` is intentionally not freed here
     // because after `exit_boot_services` is called, the boot services are no longer
@@ -414,6 +381,12 @@ pub fn exit_boot_services_and_jump(
                 map_phys_addr: map_phys_addr as u64,
                 map_size: final_map_size as u64,
                 l4_phys_addr: args_phys_addr as u64 + 4096,
+                framebuffer_phys: fb_addr,
+                framebuffer_size: u64::from(fb_stride).saturating_mul(u64::from(fb_height)),
+                framebuffer_width: fb_width,
+                framebuffer_height: fb_height,
+                framebuffer_stride: fb_stride,
+                framebuffer_pixel_format: fb_pixel_format,
             },
         );
     }

@@ -1,7 +1,6 @@
 use crate::common::{
     BellowsError, EFI_FILE_INFO_GUID, EfiBootServices, EfiFile, EfiFileInfo, EfiStatus,
 };
-use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::ptr;
 use log;
@@ -95,8 +94,7 @@ pub fn read_file_to_memory(
         return Err(BellowsError::FileIo("File info size is 0."));
     }
 
-    let mut file_info_buffer = Vec::new();
-    file_info_buffer.resize(file_info_buffer_size, 0);
+    let mut file_info_buffer = alloc::vec![0; file_info_buffer_size];
 
     let status = unsafe {
         ((*file.file).get_info)(

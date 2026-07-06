@@ -97,7 +97,7 @@ fn parse_entry(data: &[u8], offset: usize) -> Option<(CpioHeader, usize, usize)>
 
     // Body follows the aligned name and is aligned to 4 bytes.
     let body_start = name_end_aligned;
-    let body_end = body_start + filesize as usize;
+    let body_end = body_start.checked_add(filesize as usize)?;
     let next = align4(body_end);
 
     // Verify the body stays within the archive buffer.
@@ -147,33 +147,29 @@ pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
             offset = next;
             continue;
         }
-        let abs_path = if path.starts_with('/') { path } else { &path };
         let ftype = header.mode & 0o170000;
-        let perm = header.mode & 0o7777;
         if ftype == 0o040000 {
-            // Directory
-            let _ = crate::vfs::mkdir(abs_path);
+            let _ = crate::vfs::mkdir(path);
             count += 1;
         } else if ftype == 0o100000 {
-            // Regular file
-            let body = &archive[body_start..body_start + header.filesize as usize];
-            if let Ok(parent) = parent_of(abs_path) {
+            let body_end = body_start.checked_add(header.filesize as usize)
+                .filter(|&end| end <= archive.len())
+                .unwrap_or(body_start);
+            let body = archive.get(body_start..body_end).unwrap_or(&[]);
+            if let Ok(parent) = parent_of(path) {
                 if !parent.is_empty() && !crate::vfs::exists(parent) {
                     let _ = crate::vfs::mkdir(parent);
                 }
             }
-            if crate::vfs::exists(abs_path) {
-                let _ = crate::fs::remove(abs_path);
+            if crate::vfs::exists(path) {
+                let _ = crate::fs::remove(path);
             }
-            if create_file_with_mode(abs_path).is_ok() {
-                let _ = write_file_mode(abs_path, body, perm);
-            } else {
-                let _ = crate::fs::write_entire_file(abs_path, body);
-            }
+            // write_entire_file creates the file if needed, so no separate creation step.
+            // Mode/perm bits are not applied: tmpfs (MemFileSystem) does not support permissions.
+            let _ = crate::fs::write_entire_file(path, body);
             count += 1;
         } else if ftype == 0o120000 {
-            // Symlink — not supported yet; record but skip.
-            log::debug!("initramfs: symlink {} skipped", abs_path);
+            log::debug!("initramfs: symlink {} skipped", path);
         }
         offset = next;
     }
@@ -194,20 +190,4 @@ fn parent_of(path: &str) -> Result<&str, &'static str> {
         }
         None => Ok(""),
     }
-}
-
-/// Create a file via the VFS API without setting its content.
-fn create_file_with_mode(path: &str) -> Result<(), &'static str> {
-    let fd = crate::vfs::open(path, 0);
-    if fd.is_ok() {
-        return Ok(());
-    }
-    let _fd = crate::vfs::create(path).map_err(|_| "create failed")?;
-    Ok(())
-}
-
-/// Write `data` to a freshly created file. The mode argument is
-/// ignored on tmpfs (MemFileSystem does not support permissions).
-fn write_file_mode(_path: &str, _data: &[u8], _mode: u32) -> Result<(), &'static str> {
-    crate::fs::write_entire_file(_path, _data).map_err(|_| "write failed")
 }

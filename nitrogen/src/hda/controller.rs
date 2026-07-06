@@ -417,33 +417,4 @@ impl HdaController {
     }
 }
 
-// ── MMIO helpers (local) ──────────────────────────────────────────
-
-#[inline]
-unsafe fn mmio_read32(mmio: *mut u8, offset: usize) -> u32 {
-    unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u32) }
-}
-
-#[inline]
-unsafe fn mmio_read16(mmio: *mut u8, offset: usize) -> u16 {
-    unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u16) }
-}
-
-#[inline]
-unsafe fn mmio_read8(mmio: *mut u8, offset: usize) -> u8 {
-    unsafe { core::ptr::read_volatile(mmio.add(offset)) }
-}
-
-#[inline]
-unsafe fn mmio_write32(mmio: *mut u8, offset: usize, val: u32) {
-    unsafe {
-        core::ptr::write_volatile(mmio.add(offset) as *mut u32, val);
-    }
-}
-
-#[inline]
-unsafe fn mmio_write16(mmio: *mut u8, offset: usize, val: u16) {
-    unsafe {
-        core::ptr::write_volatile(mmio.add(offset) as *mut u16, val);
-    }
-}
+crate::make_mmio_helpers!();

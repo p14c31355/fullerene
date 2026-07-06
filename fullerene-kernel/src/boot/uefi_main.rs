@@ -2,6 +2,7 @@
 #![cfg(target_os = "uefi")]
 
 use crate::MEMORY_MAP;
+use crate::boot_stage::BootStage;
 use x86_64::VirtAddr;
 
 // Re-export debug_serial helper from uefi_init (reduces repetitive port I/O in debug logging)
@@ -14,35 +15,16 @@ pub unsafe extern "C" fn efi_main_stage2(
 ) -> ! {
     unsafe {
         // ════════════════════════════════════════════════════════════
-        // STAGE -1: Pre-args framebuffer test
+        // STAGE -1: Ultra-early serial diagnostic
         //
-        // Write solid RED to the whole screen via the identity-mapped
-        // higher-half VA.  If you see RED, the kernel IS executing in
-        // efi_main_stage2 and the huge-page identity mapping works for
-        // writes at off + 0–4GB.  If you still see gray, the kernel
-        // triple-faults before reaching this line.
+        // We do NOT write to speculative GOP FB addresses here because
+        // on real hardware the identity-mapped physical addresses
+        // 0xE0000000 etc. may hit non-framebuffer MMIO regions (PCIe
+        // config space, SPI flash, PCH registers) and can cause
+        // unpredictable system behavior or machine checks.
         //
-        // We use 0xFFFF0000 (ARGB: A=FF, R=FF, G=00, B=00) which
-        // appears as full red regardless of BGR vs RGB pixel format.
-        // ════════════════════════════════════════════════════════════
-        let off_ = petroleum::common::memory::get_physical_memory_offset() as u64;
-        // Write to VGA framebuffer range (0xA0000–0xBFFFF) which is
-        // always covered by identity mapping and is harmless to write to
-        // even on UEFI (the memory exists, just not used for VGA).
-        // Also try the GOP framebuffer at common addresses:
-        //   0xE0000000 (common GOP address for Intel/AMD GPUs)
-        for candidate in &[0xE000_0000u64, 0xC000_0000u64, 0xD000_0000u64, 0x8000_0000u64] {
-            let fb_test = (*candidate + off_) as *mut u32;
-            // Write a distinctive pattern: first pixel = red
-            core::ptr::write_volatile(fb_test, 0xFFFF0000u32);
-            // Wait a tiny bit so the write has a chance to land
-            for _ in 0..100_000 { core::hint::spin_loop(); }
-        }
-        // Also fill the VGA text buffer with a red pattern
-        let vga_text = (0xB8000u64 + off_) as *mut u16;
-        for i in 0..80*25 {
-            core::ptr::write_volatile(vga_text.add(i), 0x0420u16); // red-on-black space
-        }
+        // Legacy VGA memory is not guaranteed to be decoded on a pure UEFI
+        // machine, so early diagnostics stay on serial and reserved low RAM.
 
         // ── Ultra-early diagnostic: write stage markers to physical 0x700 ──
         // These survive triple-fault / reset and can be read via UEFI shell
@@ -61,110 +43,16 @@ pub unsafe extern "C" fn efi_main_stage2(
         );
         debug_serial(b"S2: Entering efi_main_stage2\n");
 
-        // Store args_ptr where it survives register clobbers.
-        petroleum::transition::KERNEL_ARGS = args_ptr;
+        // Store args_ptr (may already be corrupted from world-switch,
+        // but we keep it as a best-effort reference).
+        petroleum::early::transition::KERNEL_ARGS = args_ptr;
 
-        // ── Early framebuffer parameter capture ───────────────────
-        // Store raw integers NOW while args_ptr is valid.  Do NOT
-        // dereference args_ptr later — it may be corrupted by the
-        // world‑switch page‑table rebuild.
-        //
-        // VALIDATION: Before dereferencing args_ptr, verify the
-        // framebuffer fields are sane.  If args_ptr lies outside the
-        // identity huge-page range (0–64GB), the shallow clone_page_table
-        // will translate it to wrong physical memory and we'll read
-        // garbage.  Check that fb_width/height/stride/bpp/address are
-        // within plausible bounds.  If they aren't, skip the .data store
-        // and rely on the PCI BAR0 fallback later.
-        crate::graphics::discovery::store_args_va(args_ptr as u64);
-        {
-            let args = &*args_ptr;
-            // Sanity-check: are the framebuffer fields plausible?
-            // On real InsydeH2O firmware, garbage reads produce values like
-            // 1900544×4172873728 — these are clearly out of range.
-            let fb_valid = args.fb_address >= 0x100000
-                && args.fb_width > 0
-                && args.fb_width <= 16384
-                && args.fb_height > 0
-                && args.fb_height <= 16384
-                && args.fb_bpp == 32;
-            if fb_valid {
-                let stride_bytes = if args.fb_stride > 0 {
-                    args.fb_stride
-                } else {
-                    args.fb_width.saturating_mul(4)
-                };
-                crate::graphics::discovery::store_boot_fb_params(
-                    args.fb_address,
-                    args.fb_width,
-                    args.fb_height,
-                    stride_bytes,
-                    args.fb_bpp,
-                    args.fb_pixel_format,
-                );
-            } else {
-                // Framebuffer fields are garbage — args_ptr was not
-                // identity-mapped correctly.  Do NOT store the corrupted
-                // values; the kernel will fall back to PCI BAR0 probe.
-                debug_serial(b"S2: WARNING: KernelArgs FB fields invalid, skipping .data store (identity map mismatch?)\n");
-                // Update step marker
-                core::ptr::write_volatile(diag.add(1), 0x0004u16);
-
-                // ── PCI BAR0 fallback ──────────────────────────────
-                // If args_ptr was garbage, the identity huge-page mapping
-                // is broken.  Probe PCI config space via port I/O (0xCF8/
-                // 0xCFC) which needs zero memory-mapped registers, then
-                // store the discovered FB params directly.
-                let mut fb_stored = false;
-                // Scan bus 0 only (VGA-class display is always on bus 0)
-                for dev in 0..=31u16 {
-                    let addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x00;
-                    x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(addr);
-                    let vendor = x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                    if (vendor & 0xFFFF) as u16 == 0xFFFF || (vendor & 0xFFFF) as u16 == 0x0000 {
-                        continue;
-                    }
-                    let class_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x08;
-                    x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(class_addr);
-                    let class_rev =
-                        x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                    let class = ((class_rev >> 24) & 0xFF) as u8;
-                    let subclass = ((class_rev >> 16) & 0xFF) as u8;
-                    if class == 0x03 && subclass == 0x00 {
-                        // Read BAR0
-                        let bar_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x10;
-                        x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar_addr);
-                        let bar0 =
-                            x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                        let fb_phys = if (bar0 & 0x6) == 0x4 {
-                            let bar1_addr: u32 = 0x8000_0000u32 | ((dev as u32) << 11) | 0x14;
-                            x86_64::instructions::port::PortWriteOnly::new(0xCF8).write(bar1_addr);
-                            let bar1 =
-                                x86_64::instructions::port::PortReadOnly::<u32>::new(0xCFC).read();
-                            ((bar1 as u64) << 32) | ((bar0 & 0xFFFF_FFF0) as u64)
-                        } else {
-                            (bar0 & 0xFFFF_FFF0) as u64
-                        };
-                        if fb_phys >= 0x100_000 && fb_phys <= 0x10_0000_0000 {
-                            let stride = 1280u32 * 4;
-                            crate::graphics::discovery::store_boot_fb_params(
-                                fb_phys, 1280, 800, stride, 32, 1,
-                            );
-                            fb_stored = true;
-                            debug_serial(b"S2: PCI fallback FB stored\n");
-                            core::ptr::write_volatile(diag.add(1), 0x0005u16);
-                            break;
-                        }
-                    }
-                }
-                if !fb_stored {
-                    debug_serial(b"S2: PCI fallback: no VGA controller found\n");
-                    core::ptr::write_volatile(diag.add(1), 0x0006u16);
-                }
-            }
-        }
-
-        // Signal '3': After early FB param capture
+        // Do NOT re-store framebuffer parameters here.
+        // efi_main_real_logic already saved the correct values to .data
+        // globals BEFORE the world-switch.  The `args_ptr` argument to
+        // this function may be corrupted by the transition assembly
+        // (RDI clobber), which is why the .data globals are used as the
+        // authoritative source throughout the kernel.
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x33",
@@ -173,6 +61,10 @@ pub unsafe extern "C" fn efi_main_stage2(
         );
         debug_serial(b"S2: Signals 1-3 sent\n");
     }
+
+    // The framebuffer parameters are now captured in the kernel image, so
+    // boot-stage rendering no longer depends on Bellows' separate statics.
+    crate::boot_stage!(BootStage::KernelEntry);
 
     // CRITICAL: Set physical memory offset BEFORE initializing the global memory manager
     // to avoid page faults when creating the OffsetPageTable in PageTableManager::init.
@@ -195,6 +87,7 @@ pub unsafe extern "C" fn efi_main_stage2(
         debug_serial(b"ERROR: MEMORY_MAP not initialized. Halting.\n");
         petroleum::halt_loop();
     }
+    crate::boot_stage!(BootStage::MemoryMapped);
 
     // ============ MMIO mapping BEFORE any graphics/device access ============
     // Map APIC, IOAPIC, VGA text buffer, and GOP framebuffer NOW so that
@@ -204,19 +97,7 @@ pub unsafe extern "C" fn efi_main_stage2(
     debug_serial(b"DEBUG: [uefi_main] Mapping MMIO regions before init_common\n");
     // Initialize LOCAL_APIC_ADDRESS and validate FB config (no 4KB mappings).
     crate::boot::uefi_init::UefiInitContext::map_mmio();
-    debug_serial(b"DEBUG: [uefi_main] APIC addr set, mapping GOP FB pages\n");
-
-    // On InsydeH2O firmware, explicitly creating 4 KB UC/WC page-table
-    // entries for the GOP framebuffer here **breaks** the boot-loader's
-    // identity huge-page mapping (WB via MTRR/PAT).  See README § "Real
-    // Hardware Compatibility" item 3.
-    //
-    // The boot‑time huge‑page mapping already covers the entire lower
-    // 4 GiB address space.  Even if the GOP FB is above 4 GiB, the
-    // kernel's init_graphics() creates a proper WC mapping via
-    // build_renderer_from_stored() later.  We rely on that instead of
-    // pre‑splitting the huge page here.
-    debug_serial(b"DEBUG: [uefi_main] skipping 4KB GOP FB remap (preserving huge page)\n");
+    debug_serial(b"DEBUG: [uefi_main] GOP WC mapping installed by bootstrap\n");
 
     // CRITICAL: On InsydeH2O firmware, VirtIO-GPU init_display() can trigger
     // MSI/MSI-X interrupts as soon as SET_SCANOUT completes. If the APIC LVTs
@@ -234,9 +115,7 @@ pub unsafe extern "C" fn efi_main_stage2(
 
     // NOTE: vga_puts (identity address 0xB8000) removed — after CR3 switch
     // identity VGA access can cause QEMU iothread lock re-entrancy.
-    // Framebuffer diagnostic writes also removed — huge-page WB mapping
-    // conflicts with InsydeH2O MTRR=UC on PCI MMIO → #GP triple fault.
-    // init_graphics() creates proper WC/UC mappings later.
+    // Framebuffer diagnostics are deferred until the validated graphics context.
     // Use only debug_serial for post-world-switch logging.
 
     // Common initialization for both UEFI and BIOS with correct physical memory offset
@@ -308,6 +187,7 @@ fn kernel_main_higher_half(
     }
 
     // 3. Enable interrupts and enter scheduler loop
+    crate::boot_stage!(BootStage::AppRunnerReady);
     log::info!("Enabling interrupts and starting scheduler...");
     debug_serial(b"Entering scheduler_loop\n");
     x86_64::instructions::interrupts::enable();
