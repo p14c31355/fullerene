@@ -496,6 +496,9 @@ pub unsafe extern "C" fn init_and_jump(
         // STEP 2: Split specific 2MB regions into 4KB pages for fine-grained mappings.
         // These replace the existing HUGE_PAGE entries with proper L1 tables.
         // The map_page_4k_l1 function handles HUGE_PAGE splitting automatically.
+        //
+        // NOTE: Do not split the framebuffer region into 4KB pages here.
+        // On InsydeH2O the huge-page split corrupts mappings / breaks scanout.
 
         // === Kernel mapping (higher-half + identity) ===
         crate::serial::_print(format_args!("IAJ: Mapping kernel...\n"));
@@ -510,24 +513,34 @@ pub unsafe extern "C" fn init_and_jump(
 
         // higher-half kernel mapping (splits higher-half huge pages)
         let kernel_virt = VirtAddr::new(physical_memory_offset.as_u64() + kernel_phys_start);
-        memory_ops
-            .map_range_4k(
-                kernel_virt,
-                PhysAddr::new(kernel_phys_start),
-                kernel_pages,
-                flags,
-            )
-            .expect("kernel higher map");
+        if !(_framebuffer_phys != 0
+            && _framebuffer_size != 0
+            && kernel_phys_start < (_framebuffer_phys & !(PAGE_SIZE_4K - 1)).saturating_add(_framebuffer_size))
+        {
+            memory_ops
+                .map_range_4k(
+                    kernel_virt,
+                    PhysAddr::new(kernel_phys_start),
+                    kernel_pages,
+                    flags,
+                )
+                .expect("kernel higher map");
+        }
 
         // identity kernel mapping (splits identity huge pages)
-        memory_ops
-            .map_range_4k(
-                VirtAddr::new(kernel_phys_start),
-                PhysAddr::new(kernel_phys_start),
-                kernel_pages,
-                flags,
-            )
-            .expect("kernel identity");
+        if !(_framebuffer_phys != 0
+            && _framebuffer_size != 0
+            && kernel_phys_start < (_framebuffer_phys & !(PAGE_SIZE_4K - 1)).saturating_add(_framebuffer_size))
+        {
+            memory_ops
+                .map_range_4k(
+                    VirtAddr::new(kernel_phys_start),
+                    PhysAddr::new(kernel_phys_start),
+                    kernel_pages,
+                    flags,
+                )
+                .expect("kernel identity");
+        }
         crate::serial::_print(format_args!("IAJ: Kernel mapped\n"));
 
         // === Stack mapping (identity + higher-half) ===
@@ -567,23 +580,66 @@ pub unsafe extern "C" fn init_and_jump(
 
         // Memory map (identity + higher-half)
         let map_pages = (map_size + 4095) / 4096;
-        memory_ops
-            .map_range_4k(
-                VirtAddr::new(map_phys_addr),
-                PhysAddr::new(map_phys_addr),
-                map_pages,
-                flags,
-            )
-            .expect("map identity");
+        // Avoid splitting framebuffer-adjacent regions into 4KiB if the
+        // platform is sensitive to huge-page splits.
+        // If the mapped range overlaps the framebuffer range, skip mapping
+        // and rely on the existing huge/direct mapping.
+        if _framebuffer_phys == 0 || _framebuffer_size == 0 {
+            memory_ops
+                .map_range_4k(
+                    VirtAddr::new(map_phys_addr),
+                    PhysAddr::new(map_phys_addr),
+                    map_pages,
+                    flags,
+                )
+                .expect("map identity");
+        } else {
+            // Overlap check (conservative): if the mapping touches the
+            // framebuffer range at all, skip remapping to avoid huge-page
+            // split / attribute churn.
+            let fb_start = _framebuffer_phys & !(PAGE_SIZE_4K - 1);
+            let fb_end = fb_start.saturating_add(_framebuffer_size);
+            let map_start = map_phys_addr;
+            let map_end = map_phys_addr.saturating_add(map_pages * 4096);
+            let overlaps = map_start < fb_end && map_end > fb_start;
+            if !overlaps {
+                memory_ops
+                    .map_range_4k(
+                        VirtAddr::new(map_phys_addr),
+                        PhysAddr::new(map_phys_addr),
+                        map_pages,
+                        flags,
+                    )
+                    .expect("map identity");
+            }
+        }
         let map_virt_higher = VirtAddr::new(physical_memory_offset.as_u64() + map_phys_addr);
-        memory_ops
-            .map_range_4k(
-                map_virt_higher,
-                PhysAddr::new(map_phys_addr),
-                map_pages,
-                flags,
-            )
-            .expect("map higher");
+        if _framebuffer_phys == 0 || _framebuffer_size == 0 {
+            memory_ops
+                .map_range_4k(
+                    map_virt_higher,
+                    PhysAddr::new(map_phys_addr),
+                    map_pages,
+                    flags,
+                )
+                .expect("map higher");
+        } else {
+            let fb_start = _framebuffer_phys & !(PAGE_SIZE_4K - 1);
+            let fb_end = fb_start.saturating_add(_framebuffer_size);
+            let map_start = map_phys_addr;
+            let map_end = map_phys_addr.saturating_add(map_pages * 4096);
+            let overlaps = map_start < fb_end && map_end > fb_start;
+            if !overlaps {
+                memory_ops
+                    .map_range_4k(
+                        map_virt_higher,
+                        PhysAddr::new(map_phys_addr),
+                        map_pages,
+                        flags,
+                    )
+                    .expect("map higher");
+            }
+        }
 
         // Store state BEFORE switching CR3, since after the switch we can't safely reference
         // Rust statics (they may be in unmapped higher-half addresses)
