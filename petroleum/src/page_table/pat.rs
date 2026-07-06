@@ -37,7 +37,7 @@ pub const MSR_IA32_CR_PAT: u32 = 0x0277;
 pub unsafe fn init_pat() {
     // Same value Linux uses for modern CPUs with full PAT support.
     // PAT_VALUE(WB, WC, UC_MINUS, UC, WB, WP, UC_MINUS, WT)
-    let pat_value: u64 = 0x0407_0501_0604_0706;
+    let pat_value: u64 = 0x0407_0506_0007_0106;
     unsafe {
         Msr::new(MSR_IA32_CR_PAT).write(pat_value);
     }
