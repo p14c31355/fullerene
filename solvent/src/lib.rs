@@ -238,9 +238,9 @@ pub struct RuntimeState {
 }
 
 pub fn init() {
-    // Initialize WiFi subsystem
+    // Initialize WiFi subsystem (deferred to first tick_core to avoid
+    // blocking boot — firmware upload + alive wait can take many seconds).
     nitrogen::iwlwifi::init_wifi_manager();
-    nitrogen::iwlwifi::try_init_wifi_device();
 
     let desktop = Desktop::new(BG_COLOR);
     let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
@@ -1117,6 +1117,13 @@ pub fn set_render_fn(f: fn()) {
 /// the `KERNEL` lock.
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+
+    // Deferred WiFi device init (run once, after desktop is live).
+    if WIFI_INIT_DEFERRED.swap(false, core::sync::atomic::Ordering::AcqRel) {
+        log::info!("solvent: deferred WiFi init starting");
+        nitrogen::iwlwifi::try_init_wifi_device();
+    }
+
     poll_mouse_state();
     poll_keyboard();
     update_clock();
@@ -1240,6 +1247,11 @@ pub fn write_terminal(s: &str) {
 }
 
 // ── Rendering suspend / resume ───────────────────────────────
+
+/// Deferred WiFi device initialisation — set in `init()`, consumed on
+/// the first `tick_core()` so the boot process is not blocked by firmware
+/// upload + alive wait which can take many seconds on real hardware.
+static WIFI_INIT_DEFERRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
 
 static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
