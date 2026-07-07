@@ -813,6 +813,7 @@ impl IwlWifiDevice {
     ///
     /// `fw_data` is the complete firmware binary (.ucode file contents).
     pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+        crate::debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
             return Err("Firmware data too short");
         }
@@ -837,6 +838,7 @@ impl IwlWifiDevice {
             }
         }
 
+        crate::debug::print("iwlwifi", "fw: header_parse");
         let fw_ptr = fw_data.as_ptr();
 
         // zero field must be 0
@@ -928,6 +930,7 @@ impl IwlWifiDevice {
             return Err("No firmware sections uploaded");
         }
 
+        crate::debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
         // Kick the firmware CPU to start executing.
@@ -972,6 +975,7 @@ impl IwlWifiDevice {
         }
 
         // 5. Wait for the ALIVE interrupt (or MAC_SLEEP clearing)
+        crate::debug::print("iwlwifi", "fw: wait_alive");
         let alive = self.wait_for_alive();
         if alive.is_err() {
             // Diagnostic: dump key registers to understand hardware state
@@ -988,6 +992,7 @@ impl IwlWifiDevice {
         }
         alive?;
 
+        crate::debug::print("iwlwifi", "fw: alive_ok");
         // Restore full mask after alive
         unsafe {
             core::ptr::write_volatile(
@@ -997,10 +1002,13 @@ impl IwlWifiDevice {
         }
 
         self.fw_state = FwState::Ready;
+        crate::debug::print("iwlwifi", "fw: ready");
         log::info!("iwlwifi: firmware alive and ready");
 
         // Send initialization commands
+        crate::debug::print("iwlwifi", "fw: init_cmds");
         self.send_init_commands()?;
+        crate::debug::print("iwlwifi", "fw: init_cmds_done");
 
         Ok(())
     }
@@ -1846,11 +1854,13 @@ fn select_firmware_list(device_id: u16) -> &'static [FirmwareBlob] {
 /// Safe to call multiple times.  Requires that `set_wifi_driver_context()` has
 /// been called before (typically by the kernel's init sequence).
 pub fn try_init_wifi_device() {
+    crate::debug::print("iwlwifi", "try_init_wifi_device: start");
     let ctx_opt = WIFI_DRIVER_CTX.lock();
     let ctx = match *ctx_opt {
         Some(c) => c,
         None => {
             log::warn!("iwlwifi: driver context not set, cannot init");
+            crate::debug::print("iwlwifi", "ERR no_driver_ctx");
             return;
         }
     };
@@ -1858,13 +1868,18 @@ pub fn try_init_wifi_device() {
 
     let mut dev_guard = WIFI_DEVICE.lock();
     if dev_guard.is_some() {
+        crate::debug::print("iwlwifi", "already_inited");
         return;
     }
 
     // Use the PCI-probe-based registry to detect and init the WiFi card.
+    crate::debug::print("iwlwifi", "init_wifi_from_pci");
     let mut probe = match crate::wifi::init_wifi_from_pci(ctx) {
         Some(p) => p,
-        None => return,
+        None => {
+            crate::debug::print("iwlwifi", "ERR no_pci_device");
+            return;
+        }
     };
 
     // Select firmware candidates for this device
@@ -1874,6 +1889,7 @@ pub fn try_init_wifi_device() {
             "iwlwifi: no firmware available for device {:#06x}",
             probe.device_id
         );
+        crate::debug::print("iwlwifi", "ERR no_firmware");
         return;
     }
 
@@ -1885,23 +1901,28 @@ pub fn try_init_wifi_device() {
             fw.name,
             fw.data.len()
         );
+        crate::debug::print("iwlwifi", "load_firmware_start");
 
         match probe.driver.load_firmware(fw.data) {
             Ok(()) => {
                 log::info!("iwlwifi: firmware {} loaded successfully", fw.name);
+                crate::debug::print("iwlwifi", "load_firmware_ok");
                 fw_loaded = true;
                 break;
             }
             Err(e) => {
                 log::warn!("iwlwifi: firmware {} failed: {}", fw.name, e);
+                crate::debug::print("iwlwifi", "load_firmware_fail");
             }
         }
     }
 
     if fw_loaded {
         *dev_guard = Some(probe.driver);
+        crate::debug::print("iwlwifi", "init_done");
     } else {
         log::error!("iwlwifi: all firmware variants failed to load");
+        crate::debug::print("iwlwifi", "ERR all_fw_failed");
     }
 }
 

@@ -1266,14 +1266,12 @@ pub fn consume_frame_due() -> bool {
 }
 
 pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
-    // Register the framebuffer for immediate debug flushing (one-shot).
-    // Must happen before tick_core() so that WiFi init markers flush to screen.
-    static FB_REGISTERED: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    if !FB_REGISTERED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-        let virt = fb.pixels_mut().as_mut_ptr();
-        nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
-    }
+    // Register the framebuffer for immediate debug flushing every frame.
+    // FramebufferGuard may change between frames (different allocation),
+    // so we must update the pointer each time.  Must happen before
+    // tick_core() so that WiFi init markers flush to screen.
+    let virt = fb.pixels_mut().as_mut_ptr();
+    nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
 
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
