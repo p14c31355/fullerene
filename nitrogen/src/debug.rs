@@ -158,6 +158,10 @@ pub fn set_framebuffer(virt: *mut u32, width: u32, height: u32, stride: u32) {
     }
 }
 
+const TASKBAR_H: u32 = 28;
+const NET_ICON_W: u32 = 32;
+const CLOCK_ESTIMATE_W: u32 = 80; // rough estimate: "YYYY MMDD HHMM" ≈ 15 chars × 5 px + padding
+
 fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &str, msg: &str) {
     let text = if source.is_empty() {
         alloc::format!("[{}]", msg)
@@ -167,18 +171,45 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
 
     let char_w = 8u32;
     let char_h = 8u32;
-    let taskbar_h = 28u32;
-    let margin_x = 4u32;
     let margin_y = 6u32;
-    let fg = 0xCCCCCCu32;
+    let bar_padding = 4u32; // padding inside the bar
+    let bg = 0x0F0F1Au32;
+    let fg = 0xFF6644u32; // reddish-orange for visibility
 
-    let bar_y = height.saturating_sub(taskbar_h);
-    let x0 = margin_x;
+    let bar_y = height.saturating_sub(TASKBAR_H);
+
+    // Right edge = WiFi icon left edge minus a small gap
+    let right_edge = width
+        .saturating_sub(CLOCK_ESTIMATE_W + NET_ICON_W + 8);
+
+    // Compute how many chars fit between left padding and right_edge
+    let max_chars = right_edge.saturating_sub(bar_padding) / char_w;
+    let text_chars = (text.len() as u32).min(max_chars);
+
+    // Right-align the text before the WiFi icon
+    let text_width_px = text_chars * char_w;
+    let x0 = right_edge.saturating_sub(text_width_px);
     let y0 = bar_y + margin_y;
-    let max_chars = (width.saturating_sub(margin_x)) / char_w;
+
+    // Fill background behind the text area to avoid being clobbered by taskbar
+    // (keep this minimal: only the region we're about to draw into)
+    for row in 0..char_h {
+        let yr = y0 + row;
+        if yr >= height {
+            break;
+        }
+        let line_start = (yr as usize) * (stride as usize) + (x0 as usize);
+        for col in 0..text_width_px {
+            if x0 + col < width {
+                unsafe {
+                    core::ptr::write_volatile(fb.add(line_start + col as usize), bg);
+                }
+            }
+        }
+    }
 
     for (ci, ch) in text.bytes().enumerate() {
-        if (ci as u32) >= max_chars {
+        if (ci as u32) >= text_chars {
             break;
         }
         if ch < 0x20 || ch > 0x7E {
@@ -195,7 +226,7 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
             let line_start = ((y0 + row) as usize) * (stride as usize) + (bx as usize);
             for col in 0..char_w {
                 let px = bx + col;
-                if px >= width {
+                if px >= width || px >= right_edge {
                     continue;
                 }
                 if (bits >> col) & 1 != 0 {
