@@ -147,6 +147,26 @@ pub fn set_boot_stage(stage: BootStage) {
     }
 }
 
+/// Update just the label text on the boot screen without advancing the stage
+/// counter.  Use this for intermediate init steps (initramfs, USB, SD, WiFi)
+/// that perform real work but do not map to a BootStage value.
+///
+/// The progress bar stays at the last-committed stage position.
+pub fn draw_boot_label(label: &[u8]) {
+    let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
+        return;
+    };
+    let prev = LAST_STAGE.load(Ordering::Acquire);
+    let completed = prev.min(petroleum::graphics::boot_screen::KERNEL_STAGE_COUNT);
+    unsafe {
+        framebuffer.draw_stage(
+            completed as u8,
+            petroleum::graphics::boot_screen::KERNEL_STAGE_COUNT,
+            label,
+        );
+    }
+}
+
 /// Get the last boot stage reached.
 pub fn last_stage() -> Option<BootStage> {
     let raw = LAST_STAGE.load(Ordering::Acquire);
