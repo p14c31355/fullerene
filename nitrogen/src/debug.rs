@@ -84,13 +84,14 @@ impl DebugBuf {
 }
 
 fn str_into_fixed(s: &str, buf: &mut [u8]) {
+    let max_copy = buf.len() - 1;
     for (i, b) in s.bytes().enumerate() {
-        if i >= buf.len() - 1 {
+        if i >= max_copy {
             break;
         }
         buf[i] = b;
     }
-    buf[buf.len().min(s.len())] = 0;
+    buf[max_copy] = 0;
 }
 
 fn fixed_into_str(buf: &[u8]) -> String {
@@ -116,11 +117,10 @@ pub fn print(source: &str, msg: &str) {
 }
 
 fn flush_fb(source: &str, msg: &str) {
-    let fb_info = match *FB.lock() {
-        Some(ref f) => (f.virt, f.width, f.height, f.stride),
-        None => return,
-    };
-    draw_debug_text(fb_info.0, fb_info.1, fb_info.2, fb_info.3, source, msg);
+    let guard = FB.lock();
+    if let Some(ref f) = *guard {
+        draw_debug_text(f.virt, f.width, f.height, f.stride, source, msg);
+    }
 }
 
 /// Drain all pending debug messages for the compositor.
