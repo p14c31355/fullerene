@@ -1173,16 +1173,15 @@ pub fn set_render_fn(f: fn()) {
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
-    // Deferred WiFi device init — run once, after the desktop has had a
-    // chance to render at least one frame.  Firmware upload + alive wait can
-    // block for many seconds on real hardware; delaying it a little keeps
-    // the boot animation smooth.
-    if now >= 50
-        && FRAMES_RENDERED.load(core::sync::atomic::Ordering::Relaxed) > 0
-        && WIFI_INIT_DEFERRED.swap(false, core::sync::atomic::Ordering::AcqRel)
-    {
-        log::info!("solvent: deferred WiFi init starting");
-        nitrogen::iwlwifi::try_init_wifi_device();
+    // Deferred WiFi device init — run incrementally across multiple
+    // frames so the desktop render loop is never blocked for more than
+    // ~1 ms.  `try_init_wifi_device_step()` advances a state machine
+    // through PCI probe, MMIO init, DMA allocation, firmware upload,
+    // alive wait, and init commands — one small step per tick_core()
+    // call.  Once the state machine reaches Done/Failed, the flag stays
+    // cleared.
+    if WIFI_INIT_PENDING.load(core::sync::atomic::Ordering::Relaxed) {
+        nitrogen::iwlwifi::try_init_wifi_device_step();
     }
 
     poll_mouse_state();
@@ -1316,10 +1315,17 @@ pub fn write_terminal(s: &str) {
 
 // ── Rendering suspend / resume ───────────────────────────────
 
-/// Deferred WiFi device initialisation — set in `init()`, consumed on
-/// the first `tick_core()` so the boot process is not blocked by firmware
-/// upload + alive wait which can take many seconds on real hardware.
-static WIFI_INIT_DEFERRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// Deferred WiFi device initialisation — when `true`, `tick_core()` calls
+/// `try_init_wifi_device_step()` every frame until the init state machine
+/// reaches Done or Failed.  Cleared once init is complete.
+static WIFI_INIT_PENDING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(true);
+
+/// Set to `true` when WiFi init reaches Done or Failed so we stop calling
+/// `try_init_wifi_device_step()` every frame.
+pub fn mark_wifi_init_done() {
+    WIFI_INIT_PENDING.store(false, core::sync::atomic::Ordering::Release);
+}
 
 /// Counter tracking how many frames have been rendered, used to defer WiFi
 /// init until after the first visible frame is displayed.
