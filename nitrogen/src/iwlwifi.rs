@@ -433,11 +433,19 @@ impl IwlWifiDevice {
 
         // Allocate rings and buffers
         let mut tx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
-            .ok_or(IwlError::DmaAllocFailed)?;
-        tx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+            .ok_or(IwlError::DmaAllocFailed)
+            .and_then(|mut r| {
+                r.dma_map(ctx, device.device_id)
+                    .map_err(|_| { r.free(ctx); IwlError::DmaAllocFailed })
+                    .map(|_| r)
+            })?;
         let mut rx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE)
-            .ok_or(IwlError::DmaAllocFailed)?;
-        rx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+            .ok_or(IwlError::DmaAllocFailed)
+            .and_then(|mut r| {
+                r.dma_map(ctx, device.device_id)
+                    .map_err(|_| { r.free(ctx); tx_dma_ring.free(ctx); IwlError::DmaAllocFailed })
+                    .map(|_| r)
+            })?;
         let mut tx_bufs = Vec::new();
         let mut rx_bufs = Vec::new();
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
@@ -462,6 +470,7 @@ impl IwlWifiDevice {
                     (*rx_virt.add(i)).addr_lo = dma as u32;
                     (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
                     (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
+                    mmio::cache_flush(rx_virt.add(i) as *const u8);
                 }
                 rx_bufs.push(buf);
             }
@@ -575,11 +584,19 @@ impl IwlWifiDevice {
         }
 
         let mut tx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
-            .ok_or(IwlError::DmaAllocFailed)?;
-        tx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+            .ok_or(IwlError::DmaAllocFailed)
+            .and_then(|mut r| {
+                r.dma_map(ctx, device.device_id)
+                    .map_err(|_| { r.free(ctx); IwlError::DmaAllocFailed })
+                    .map(|_| r)
+            })?;
         let mut rx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE)
-            .ok_or(IwlError::DmaAllocFailed)?;
-        rx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+            .ok_or(IwlError::DmaAllocFailed)
+            .and_then(|mut r| {
+                r.dma_map(ctx, device.device_id)
+                    .map_err(|_| { r.free(ctx); tx_dma_ring.free(ctx); IwlError::DmaAllocFailed })
+                    .map(|_| r)
+            })?;
         let mut tx_bufs = Vec::new();
         let mut rx_bufs = Vec::new();
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
@@ -597,6 +614,7 @@ impl IwlWifiDevice {
                     (*rx_virt.add(i)).addr_lo = dma as u32;
                     (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
                     (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
+                    mmio::cache_flush(rx_virt.add(i) as *const u8);
                 }
                 rx_bufs.push(buf);
             }
@@ -1546,9 +1564,10 @@ impl IwlWifiDevice {
 
             // Check for RX
             if (int_cause & (1 << 18)) != 0 {
-                self.rx_head = unsafe {
+                let raw_rx_head = unsafe {
                     core::ptr::read_volatile(self.mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize))
-                } as usize;
+                };
+                self.rx_head = (raw_rx_head as usize) % RX_QUEUE_SIZE;
             }
             // Check for TX completion
             if (int_cause & (1 << 15)) != 0 {
@@ -1884,11 +1903,6 @@ pub fn update_wifi_manager(dev: &dyn super::wifi::WifiDriver) {
             ));
         } else {
             m.ip_address = None;
-        }
-            m.ip_address = Some(alloc::format!(
-                "{}.{}.{}.{}",
-                ip[0], ip[1], ip[2], ip[3]
-            ));
         }
     }
 }
