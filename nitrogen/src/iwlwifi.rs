@@ -1882,6 +1882,13 @@ pub fn update_wifi_manager(dev: &dyn super::wifi::WifiDriver) {
                 "{}.{}.{}.{}",
                 ip[0], ip[1], ip[2], ip[3]
             ));
+        } else {
+            m.ip_address = None;
+        }
+            m.ip_address = Some(alloc::format!(
+                "{}.{}.{}.{}",
+                ip[0], ip[1], ip[2], ip[3]
+            ));
         }
     }
 }
