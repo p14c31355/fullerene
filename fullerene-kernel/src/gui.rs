@@ -167,10 +167,36 @@ pub fn init() {
 /// closure API, which constrains the pixel slice lifetime to the
 /// closure scope — preventing `&'static mut` aliasing bugs.
 pub fn render() {
+    use petroleum::graphics::FramebufferGuard;
+
+    // Update boot screen to show current render progress
+    crate::boot_stage::draw_boot_label(b"RENDERING...");
+
     // Render via solvent with kernel-owned framebuffer access
-    crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
+    let rendered = crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
+        crate::boot_stage::draw_boot_label(b"RENDER via guard");
         solvent::render(fb);
     });
+
+    // Fallback: if the KernelContext renderer is not available (e.g. the
+    // GOP renderer build failed and we fell back to VGA text mode), render
+    // directly through the boot framebuffer's direct-map alias.  This alias
+    // is always accessible — the boot splash already draws through it.
+    if rendered.is_none() {
+        crate::boot_stage::draw_boot_label(b"RENDER: guard failed, fallback");
+        if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
+            crate::boot_stage::draw_boot_label(b"RENDER: fallback FB OK");
+            let ptr = bfb.address() as *mut u32;
+            let len = (bfb.stride_pixels() as usize) * bfb.height() as usize;
+            let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+            let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels() * 4);
+            crate::boot_stage::draw_boot_label(b"RENDER: calling solvent::render");
+            solvent::render(&mut fb);
+            crate::boot_stage::draw_boot_label(b"RENDER: solvent::render OK");
+        } else {
+            crate::boot_stage::draw_boot_label(b"RENDER: NO fallback FB");
+        }
+    }
 
     // Signal present & flush GPU (kernel-owned resource management)
     crate::contexts::kernel::with_kernel_mut(|k| {
@@ -194,14 +220,30 @@ pub fn render() {
 /// 2. **render** — framebuffer rendering under the `KERNEL` lock.
 ///    Only started when `consume_frame_due()` returns `true`.
 pub fn runtime_tick(now: u64) {
+    use petroleum::graphics::FramebufferGuard;
+
     // Phase 1: process input and events without the KERNEL lock.
     solvent::tick_core(now);
 
     // Phase 2: render only when a frame is actually due.
     if solvent::consume_frame_due() {
-        crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
+        let rendered = crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
             solvent::render(fb);
         });
+
+        // Same fallback as render(): use the boot framebuffer alias when
+        // the KernelContext renderer is unavailable.
+        if rendered.is_none() {
+            if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
+                let ptr = bfb.address() as *mut u32;
+                let len = (bfb.stride_pixels() as usize) * bfb.height() as usize;
+                let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+                let mut fb = FramebufferGuard::new(
+                    pixels, bfb.width(), bfb.height(), bfb.stride_pixels() * 4,
+                );
+                solvent::render(&mut fb);
+            }
+        }
 
         // Signal present & flush GPU
         crate::contexts::kernel::with_kernel_mut(|k| {

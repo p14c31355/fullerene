@@ -1118,8 +1118,11 @@ pub fn set_render_fn(f: fn()) {
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
-    // Deferred WiFi device init (run once, after desktop is live).
-    if WIFI_INIT_DEFERRED.swap(false, core::sync::atomic::Ordering::AcqRel) {
+    // Deferred WiFi device init — run once, after the desktop has had a
+    // chance to render a few frames.  Firmware upload + alive wait can
+    // block for many seconds on real hardware; delaying it a little keeps
+    // the boot animation smooth.
+    if now >= 50 && WIFI_INIT_DEFERRED.swap(false, core::sync::atomic::Ordering::AcqRel) {
         log::info!("solvent: deferred WiFi init starting");
         nitrogen::iwlwifi::try_init_wifi_device();
     }
