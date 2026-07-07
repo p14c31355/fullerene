@@ -212,11 +212,20 @@ pub static DRIVER_TABLE: &[DriverEntry] = &[
 
 // ── Public API ──────────────────────────────────────────────────────
 
+/// Result of PCI probe + driver creation, carrying back the hardware
+/// info needed for firmware selection.
+pub struct PciProbeResult {
+    pub driver: Box<dyn WifiDriver>,
+    pub device_id: u16,
+    pub hw_rev: u32,
+}
+
 /// Probe PCI, find a supported WiFi card, and initialise it.
 ///
-/// Returns the initialised driver on success, or `None` if no supported
-/// card is found or initialisation fails.
-pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<Box<dyn WifiDriver>> {
+/// Returns the initialised driver together with PCI device ID and HW
+/// revision on success, or `None` if no supported card is found or
+/// initialisation fails.
+pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeResult> {
     let (entry, info) = WifiRegistry::probe()?;
 
     // Map BAR0 MMIO
@@ -235,5 +244,11 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<Box<dyn Wif
     }
 
     // Let the matched driver create itself
-    (entry.create)(ctx, mmio_base, hw_rev)
+    let driver = (entry.create)(ctx, mmio_base, hw_rev)?;
+
+    Some(PciProbeResult {
+        driver,
+        device_id: info.device_id,
+        hw_rev,
+    })
 }

@@ -1731,13 +1731,50 @@ pub struct WifiManager {
     pub ip_address: Option<String>,
 }
 
-/// Embedded firmware binary: iwlwifi-7265D-29.ucode.
-/// Path relative to this file: ../../bonder/iwlwifi/iwlwifi-7265D-29.ucode
-const EMBEDDED_FW: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7265D-29.ucode");
+// ── Firmware registry ─────────────────────────────────────────────────
+//
+// Each chipset variant has its own firmware binary.  We embed the latest
+// versions and try them in order, falling back to an older version if the
+// device does not respond.
 
-/// Known-good CRC32 checksum of `EMBEDDED_FW`, used by [`IwlWifiDevice::load_firmware`]
-/// to reject a tampered or corrupted blob before any section is uploaded to the device.
-const EMBEDDED_FW_CRC32: u32 = 0xECB4_1451;
+struct FirmwareBlob {
+    data: &'static [u8],
+    name: &'static str,
+}
+
+// 7260 series (PCI 0x08B1, 0x08B2)
+const FW_7260_17: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7260-17.ucode");
+const FW_7260_16: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7260-16.ucode");
+
+// 7265 series, non-D stepping (PCI 0x095A, 0x095B)
+const FW_7265_17: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7265-17.ucode");
+const FW_7265_16: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7265-16.ucode");
+
+// 7265D series, D stepping (PCI 0x095A, 0x095B)
+const FW_7265D_29: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7265D-29.ucode");
+const FW_7265D_27: &[u8] = include_bytes!("../../bonder/iwlwifi/iwlwifi-7265D-27.ucode");
+
+/// Select firmware candidates for the given PCI device ID.
+///
+/// Returns a slice of [`FirmwareBlob`] entries in preference order.
+fn select_firmware_list(device_id: u16) -> &'static [FirmwareBlob] {
+    match device_id {
+        // 7260 series
+        0x08B1 | 0x08B2 => &[
+            FirmwareBlob { data: FW_7260_17, name: "iwlwifi-7260-17" },
+            FirmwareBlob { data: FW_7260_16, name: "iwlwifi-7260-16" },
+        ],
+        // 7265 / 7265D series — try D-step firmware first (newest),
+        // then fall back to non-D in case HW is an older stepping.
+        0x095A | 0x095B => &[
+            FirmwareBlob { data: FW_7265D_29, name: "iwlwifi-7265D-29" },
+            FirmwareBlob { data: FW_7265D_27, name: "iwlwifi-7265D-27" },
+            FirmwareBlob { data: FW_7265_17, name: "iwlwifi-7265-17" },
+            FirmwareBlob { data: FW_7265_16, name: "iwlwifi-7265-16" },
+        ],
+        _ => &[],
+    }
+}
 
 /// Probe for an Intel wireless device, load firmware and store it for periodic ticking.
 ///
@@ -1760,32 +1797,46 @@ pub fn try_init_wifi_device() {
     }
 
     // Use the PCI-probe-based registry to detect and init the WiFi card.
-    if let Some(mut driver) = crate::wifi::init_wifi_from_pci(ctx) {
-        log::info!("iwlwifi: loading embedded firmware ({} bytes)", EMBEDDED_FW.len());
+    let mut probe = match crate::wifi::init_wifi_from_pci(ctx) {
+        Some(p) => p,
+        None => return,
+    };
 
-        // Verify firmware integrity with CRC32
-        let crc_computed = IwlWifiDevice::crc32(EMBEDDED_FW);
-        let fw_ok = crc_computed == EMBEDDED_FW_CRC32;
+    // Select firmware candidates for this device
+    let candidates = select_firmware_list(probe.device_id);
+    if candidates.is_empty() {
+        log::warn!(
+            "iwlwifi: no firmware available for device {:#06x}",
+            probe.device_id
+        );
+        return;
+    }
 
-        if !fw_ok {
-            log::warn!(
-                "iwlwifi: firmware checksum mismatch (computed={:#010x}, expected={:#010x})",
-                crc_computed, EMBEDDED_FW_CRC32
-            );
-        } else {
-            match driver.load_firmware(EMBEDDED_FW) {
-                Ok(()) => {
-                    log::info!("iwlwifi: firmware loaded successfully");
-                }
-                Err(e) => {
-                    log::error!("iwlwifi: firmware load failed: {}", e);
-                }
+    // Try each firmware blob in order until one succeeds.
+    let mut fw_loaded = false;
+    for fw in candidates {
+        log::info!(
+            "iwlwifi: trying firmware {} ({} bytes)",
+            fw.name,
+            fw.data.len()
+        );
+
+        match probe.driver.load_firmware(fw.data) {
+            Ok(()) => {
+                log::info!("iwlwifi: firmware {} loaded successfully", fw.name);
+                fw_loaded = true;
+                break;
+            }
+            Err(e) => {
+                log::warn!("iwlwifi: firmware {} failed: {}", fw.name, e);
             }
         }
+    }
 
-        // Store the driver (via trait object) even if firmware partially failed,
-        // so the UI can report status.
-        *dev_guard = Some(driver);
+    if fw_loaded {
+        *dev_guard = Some(probe.driver);
+    } else {
+        log::error!("iwlwifi: all firmware variants failed to load");
     }
 }
 
