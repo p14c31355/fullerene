@@ -279,29 +279,24 @@ pub fn with_framebuffer_guard<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut petroleum::graphics::FramebufferGuard) -> R,
 {
-    crate::contexts::kernel::with_kernel_mut(|k| {
-        let renderer = k.framebuffer.renderer.as_mut()?;
-        let info = renderer.get_info();
-        if info.address == 0 {
-            return None;
-        }
-        // `info.address` is the single scan-out alias selected during
-        // renderer construction (normally the higher-half direct mapping).
-        let ptr = info.address as *mut u32;
-        let stride_pixels = info.stride / 4;
-        let len = (stride_pixels as usize) * info.height as usize;
-        // SAFETY: the framebuffer is mapped for the entire kernel lifetime,
-        // but the guard constrains access to this closure scope only.
-        let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-        let mut guard = petroleum::graphics::FramebufferGuard::new(
-            pixels,
-            info.width,
-            info.height,
-            stride_pixels,
-        );
-        Some(f(&mut guard))
-    })
-    .flatten()
+    // Use the boot framebuffer's direct-map alias for the pixel slice.
+    // On some real hardware, the renderer's stored virtual address may
+    // point to a dynamic WC mapping that triggers machine checks on bulk
+    // writes.  The boot framebuffer uses the well-known higher-half direct
+    // mapping, which is verified during probe and matches the UEFI GOP
+    // scanout address exactly.
+    let bfb = crate::graphics::discovery::direct_boot_framebuffer()?;
+    let ptr = bfb.address() as *mut u32;
+    let stride_pixels = bfb.stride_pixels();
+    let len = (stride_pixels as usize) * bfb.height() as usize;
+    let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    let mut guard = petroleum::graphics::FramebufferGuard::new(
+        pixels,
+        bfb.width(),
+        bfb.height(),
+        stride_pixels,
+    );
+    Some(f(&mut guard))
 }
 
 crate::define_context!(FramebufferContext, framebuffer, FRAMEBUFFER);

@@ -80,22 +80,101 @@ impl ControllerManager {
                 usb3,
             );
         }
+        log::info!("USB: scanning PCI for USB host controllers");
         let mut scanner = PciScanner::new();
-        let _ = scanner.scan_all_buses();
+        if let Err(e) = scanner.scan_all_buses() {
+            log::info!("USB: PCI scan failed: {:?}", e);
+            return;
+        }
+        let mut found_any = false;
         for dev in scanner.get_devices() {
             if dev.class_code != 0x0C || dev.subclass != 0x03 {
                 continue;
             }
+            found_any = true;
+            log::info!(
+                "USB: found controller at {:02x}:{:02x}.{} (vendor={:#06x} device={:#06x})",
+                dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id
+            );
+
             let mmio_base = match dev.read_bar(0) {
                 Some(addr) => addr,
-                None => continue,
+                None => {
+                    log::info!("USB: controller has no BAR0, skipping");
+                    continue;
+                }
             };
+
+            // Determine BAR size from PCI config space to map the correct region
+            let bar_size = dev
+                .get_bar_info(0)
+                .map(|info| info.size as usize)
+                .unwrap_or(0x1000);
+
             let mmio_virt = ctx.phys_to_virt(mmio_base) as *mut u8;
             if mmio_virt.is_null() {
+                log::info!("USB: phys_to_virt returned null for BAR0={:#x}", mmio_base);
                 continue;
             }
+
+            // ── Map the MMIO BAR before touching any registers ──────────
+            // Without this, MMIO reads to an unmapped page-table entry will
+            // page-fault and hang the CPU.  PCI MMIO aperture is NOT part of
+            // the direct physical-memory map, so phys_to_virt alone is
+            // insufficient.
+            log::info!(
+                "USB: mapping MMIO BAR0 {:#x} -> virt {:#p} ({} bytes)",
+                mmio_base, mmio_virt, bar_size
+            );
+            if ctx
+                .map_mmio_region(mmio_base as usize, mmio_virt as usize, bar_size)
+                .is_err()
+            {
+                log::info!(
+                    "USB: failed to map MMIO for {:02x}:{:02x}.{}, skipping",
+                    dev.bus, dev.device, dev.function
+                );
+                continue;
+            }
+
+            // ── Confirm device is safe to access before MMIO ─────────
+            // Even with MMIO mapped in page tables, a non-posted read to an
+            // unresponsive device (D3, link down, ASPM L1 wedge) can hang the
+            // CPU indefinitely.  PciHealth checks vendor ID, D0, and PCIe link
+            // status through PCI config space (port I/O, always safe), then
+            // disables ASPM — all before we issue a single MMIO read.
+            dev.disable_pcie_aspm();
             dev.enable_memory_access();
             dev.ensure_d0();
+
+            // Also disable ASPM on the upstream PCIe bridge (if any).
+            let upstream = scanner.get_devices().iter().find(|bridge| {
+                bridge.class_code == 0x06
+                    && bridge.subclass == 0x04
+                    && PciConfigSpace::read_config_byte(
+                        bridge.bus, bridge.device, bridge.function, 0x19,
+                    ) == dev.bus
+            });
+            if let Some(up) = upstream {
+                up.disable_pcie_aspm();
+            }
+
+            use crate::pci_health::PciHealth;
+            let mut health = upstream.map_or_else(
+                || PciHealth::new(dev),
+                |bridge| {
+                    PciHealth::new(dev)
+                        .with_upstream_bridge(bridge.bus, bridge.device, bridge.function)
+                },
+            );
+            if health.pre_mmio_access().is_err() {
+                log::info!(
+                    "USB: device at {:02x}:{:02x}.{} failed health check (not in D0 or link \
+                     down) — skipping",
+                    dev.bus, dev.device, dev.function
+                );
+                continue;
+            }
 
             let prog_if = crate::pci::PciConfigSpace::read_config_byte(
                 dev.bus,
@@ -106,7 +185,7 @@ impl ControllerManager {
             match prog_if {
                 0x20 => {
                     log::info!(
-                        "USB: EHCI at {:02x}:{:02x}.{}",
+                        "USB: EHCI at {:02x}:{:02x}.{} — initialising",
                         dev.bus,
                         dev.device,
                         dev.function
@@ -116,15 +195,17 @@ impl ControllerManager {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
                         } else {
-                            log::warn!("USB: EHCI init failed");
+                            log::info!("USB: EHCI init failed for {:02x}:{:02x}.{}",
+                                dev.bus, dev.device, dev.function);
                         }
                     } else {
-                        log::warn!("USB: EHCI new failed");
+                        log::info!("USB: EHCI new failed for {:02x}:{:02x}.{}",
+                            dev.bus, dev.device, dev.function);
                     }
                 }
                 0x30 => {
                     log::info!(
-                        "USB: xHCI at {:02x}:{:02x}.{}",
+                        "USB: xHCI at {:02x}:{:02x}.{} — initialising",
                         dev.bus,
                         dev.device,
                         dev.function
@@ -135,10 +216,12 @@ impl ControllerManager {
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));
                         } else {
-                            log::warn!("USB: xHCI init failed");
+                            log::info!("USB: xHCI init failed for {:02x}:{:02x}.{}",
+                                dev.bus, dev.device, dev.function);
                         }
                     } else {
-                        log::warn!("USB: xHCI new failed");
+                        log::info!("USB: xHCI new failed for {:02x}:{:02x}.{}",
+                            dev.bus, dev.device, dev.function);
                     }
                 }
                 _ => {
@@ -151,6 +234,9 @@ impl ControllerManager {
                     );
                 }
             }
+        }
+        if !found_any {
+            log::info!("USB: no host controllers found on PCI bus");
         }
     }
 

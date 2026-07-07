@@ -370,9 +370,25 @@ impl IwlWifiDevice {
 
         let bar0_addr = device.read_bar(0).ok_or(IwlError::BarNotAvailable)?;
         let mmio_virt = ctx.phys_to_virt(bar0_addr);
-        // If available here, also register the UC MMIO mapping:
-        // ctx.map_mmio_region(bar0_addr as usize, mmio_virt, IWL_BAR0_SIZE)
-        //     .map_err(|_| IwlError::BarNotAvailable)?;
+
+        // ── Map the MMIO BAR before touching any registers ──────────
+        // The PCI MMIO aperture is NOT covered by the higher-half direct
+        // physical-memory map, so phys_to_virt alone is insufficient.
+        // Without this, any read_volatile to the BAR will page-fault.
+        let bar0_size = device
+            .get_bar_info(0)
+            .map(|info| info.size as usize)
+            .unwrap_or(0x1000);
+        log::info!(
+            "iwlwifi: mapping BAR0 {:#x} -> virt {:#p} ({} bytes)",
+            bar0_addr, mmio_virt as *mut u8, bar0_size
+        );
+        ctx.map_mmio_region(bar0_addr as usize, mmio_virt, bar0_size)
+            .map_err(|_| {
+                log::info!("iwlwifi: failed to map BAR0 MMIO");
+                IwlError::BarNotAvailable
+            })?;
+
         // NOTE: CSR_* constants are u32-relative (offset/4).  We use raw u32
         // pointer arithmetic to access registers, matching the iwlwifi spec.
         let mmio = mmio_virt as *mut u32;

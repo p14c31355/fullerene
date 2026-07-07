@@ -188,6 +188,7 @@ fn kernel_main_higher_half(
 
     // 3. Enable interrupts and enter scheduler loop
     crate::boot_stage!(BootStage::AppRunnerReady);
+    crate::boot_stage::draw_boot_label(b"INIT APIC DONE, FLUSH OK, ENTERING SCHEDULER");
     log::info!("Enabling interrupts and starting scheduler...");
     debug_serial(b"Entering scheduler_loop\n");
     x86_64::instructions::interrupts::enable();

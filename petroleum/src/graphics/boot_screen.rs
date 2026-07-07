@@ -54,6 +54,11 @@ impl BootFramebuffer {
         })
     }
 
+    pub fn address(&self) -> u64 { self.address }
+    pub fn width(&self) -> u32 { self.width }
+    pub fn height(&self) -> u32 { self.height }
+    pub fn stride_pixels(&self) -> u32 { self.stride_pixels }
+
     pub fn from_config(config: FullereneFramebufferConfig) -> Option<Self> {
         Self::new(
             config.address,

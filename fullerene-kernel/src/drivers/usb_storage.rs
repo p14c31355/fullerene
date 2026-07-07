@@ -61,6 +61,7 @@ where
 }
 
 pub fn init() {
+    log::info!("USB: init start");
     let _ = crate::vfs::mkdir("/mnt");
 
     // Register the platform's FAT-mount callback.
@@ -71,9 +72,9 @@ pub fn init() {
         use crate::driver_context_impl::KernelDriverContext;
         let mut ctx = USBContext::new(&KernelDriverContext);
 
+        log::info!("USB: enabling context (PCI scan + controller init)");
         let init_ok = ctx.enable();
-        klog_fmt!("USB init: ctx.enable() = {:?}\n", init_ok);
-        // Log controller count from debug dump (already logged via log::info!)
+        log::info!("USB: ctx.enable() = {:?}", init_ok);
 
         // Retry polling multiple times — real xHCI hardware may need
         // extra time for port power-up, link training, and device enumeration.
@@ -81,24 +82,22 @@ pub fn init() {
             let count_before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
             let disk_count_before = ctx.disks().len();
 
+            log::info!("USB: poll #{}, drives before: count={}, disks={}",
+                i + 1, count_before, disk_count_before);
             ctx.poll();
 
             let count_after = USB_DRIVE_COUNT.load(Ordering::Relaxed);
             let disk_count_after = ctx.disks().len();
-            klog_fmt!(
-                "USB init: poll #{}, drives: USB_DRIVE_COUNT {}→{}, ctx.disks {}→{}\n",
-                i + 1,
-                count_before,
-                count_after,
-                disk_count_before,
-                disk_count_after
+            log::info!(
+                "USB: poll #{}, drives after: count={}, disks={}",
+                i + 1, count_after, disk_count_after
             );
 
             if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
-                klog_fmt!("USB init: device detected after {} retries\n", i + 1);
+                log::info!("USB: device detected after {} retries", i + 1);
                 for d in ctx.disks() {
-                    klog_fmt!(
-                        "  -> ctrl={} dev_addr={} block_size={} total_blocks={}\n",
+                    log::info!(
+                        "USB:   -> ctrl={} dev_addr={} block_size={} total_blocks={}",
                         d.ctrl_type,
                         d.dev_addr,
                         d.block_size,
@@ -116,9 +115,9 @@ pub fn init() {
 
     // Quick check: if a device was already mounted, log it.
     if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
-        klog_fmt!("USB init: device detected and mounted\n");
+        log::info!("USB: device detected and mounted");
     } else {
-        klog_fmt!("USB init: no device detected after 8 retries\n");
+        log::info!("USB: no device detected after 8 retries — continuing without USB storage");
     }
 }
 

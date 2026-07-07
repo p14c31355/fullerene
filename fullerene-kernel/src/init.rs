@@ -191,31 +191,37 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("initramfs", || {
+            crate::boot_stage::draw_boot_label(b"INITRAMFS");
             crate::linux::launch::init_initramfs();
             Ok(())
         }),
         petroleum::init_step!("device_manager", || {
+            crate::boot_stage::draw_boot_label(b"DEVICE MANAGER");
             crate::hardware::device_manager::init_device_manager()
                 .map_err(|_| "Failed to initialize device manager")?;
             petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
             Ok(())
         }),
         petroleum::init_step!("usb_storage", || {
+            crate::boot_stage::draw_boot_label(b"USB STORAGE");
             crate::drivers::usb_storage::init();
             petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
             Ok(())
         }),
         petroleum::init_step!("sd_card", || {
+            crate::boot_stage::draw_boot_label(b"SD CARD");
             crate::drivers::sd_card::init();
             petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
             Ok(())
         }),
         petroleum::init_step!("wifi", || {
+            crate::boot_stage::draw_boot_label(b"WIFI");
             nitrogen::iwlwifi::set_wifi_driver_context(&WIFI_DRIVER_CTX);
             petroleum::serial::serial_log(format_args!("WiFi driver context set\n"));
             Ok(())
         }),
         petroleum::init_step!("gui", || {
+            crate::boot_stage::draw_boot_label(b"DESKTOP SERVICES");
             crate::gui::init();
             petroleum::serial::serial_log(format_args!("GUI subsystem initialised\n"));
             crate::boot_stage!(BootStage::GuiReady);

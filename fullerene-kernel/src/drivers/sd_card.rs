@@ -56,13 +56,14 @@ impl BlockDevice for SdBlockDev {
 /// Phase 1: safe PCI-config probe (port I/O only).
 /// Called during kernel init.  Never touches MMIO.
 pub fn init() {
+    log::info!("SD: init start");
     use crate::driver_context_impl::KernelDriverContext;
     nitrogen::storage::rtsx::init(&KernelDriverContext);
 
     if nitrogen::storage::rtsx::is_present() {
-        klog_fmt!("SD card: controller found, card init deferred\n");
+        log::info!("SD: RTSX controller found, card init deferred to probe_and_mount");
     } else {
-        klog_fmt!("SD card: no controller found\n");
+        log::info!("SD: no RTSX controller found — continuing without SD card support");
     }
 }
 
