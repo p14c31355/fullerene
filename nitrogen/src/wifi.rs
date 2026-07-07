@@ -160,14 +160,10 @@ impl WifiRegistry {
                     continue;
                 }
 
-                // Read BAR0 (safe — PCI config space)
-                let bar_val = crate::pci::PciConfigSpace::read_config_dword(
-                    device.bus, device.device, device.function, 0x10,
-                );
-                let bar_upper = crate::pci::PciConfigSpace::read_config_dword(
-                    device.bus, device.device, device.function, 0x14,
-                );
-                let (phys, size) = Self::decode_bar(bar_val, bar_upper);
+                // Read BAR0 using the robust PciDevice API
+                let bar = device.get_bar_info(0)?;
+                let phys = bar.address;
+                let size = bar.size as usize;
 
                 // Read subsystem IDs
                 let subsys = crate::pci::PciConfigSpace::read_config_dword(
@@ -189,14 +185,6 @@ impl WifiRegistry {
         None
     }
 
-    /// Decode a 64-bit MMIO BAR from its two config-space dwords.
-    fn decode_bar(low: u32, high: u32) -> (u64, usize) {
-        let base = ((high as u64) << 32) | (low as u64 & 0xFFFF_FFF0);
-        // BAR size detection by writing 0xFFFF_FFFF and reading back
-        // is normally done here, but we compute from the size hint
-        // or assume a safe default for now.
-        (base, 0x2000) // default 8KB
-    }
 }
 
 // ── Driver table ────────────────────────────────────────────────────

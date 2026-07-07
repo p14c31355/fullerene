@@ -67,7 +67,9 @@ const CSR_RESET_BIT_STOP_MASTER: u32 = 1 << 9;
 const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3; // MAC_ACCESS_REQ = bit 3 = 0x08
 const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
 
-/// FH register for RX ring head index.
+/// FH register for RX ring base address (BADR).
+const FH_RSCSR_CHNL0_RBDCB_BASE: u32 = 0x0B8 / 4;
+/// FH register for RX ring read pointer (head index, updated by hardware).
 const FH_RSCSR_CHNL0_RBDCB_RPTR_REG: u32 = 0x0C0 / 4;
 /// FH register for TX ring head index (written by hardware on completion).
 const FH_TX_CHNL0_WPTR: u32 = 0x0A0 / 4;
@@ -305,6 +307,19 @@ pub struct IwlWifiDevice {
 
 unsafe impl Send for IwlWifiDevice {}
 
+impl Drop for IwlWifiDevice {
+    fn drop(&mut self) {
+        for mut buf in self.tx_bufs.drain(..) {
+            buf.free(self.ctx);
+        }
+        for mut buf in self.rx_bufs.drain(..) {
+            buf.free(self.ctx);
+        }
+        self.tx_dma_ring.free(self.ctx);
+        self.rx_dma_ring.free(self.ctx);
+    }
+}
+
 // ── Global driver context for DMA ───────────────────────────────
 
 static WIFI_DRIVER_CTX: Mutex<Option<&'static dyn DriverContext>> = Mutex::new(None);
@@ -489,6 +504,14 @@ impl IwlWifiDevice {
             return Err(e);
         }
 
+        let rx_phys = rx_dma_ring.dma_iova();
+
+        unsafe {
+            core::ptr::write_volatile(mmio.add(FH_TX_CHNL0_WPTR as usize), 0);
+            core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_BASE as usize), rx_phys as u32);
+            core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize), 0);
+        }
+
         log::info!("iwlwifi: hardware initialized (firmware not loaded)");
 
         Ok(Self {
@@ -633,7 +656,8 @@ impl IwlWifiDevice {
 
         unsafe {
             core::ptr::write_volatile(mmio.add(FH_TX_CHNL0_WPTR as usize), 0);
-            core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize), rx_phys as u32);
+            core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_BASE as usize), rx_phys as u32);
+            core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize), 0);
         }
 
         Ok(Self {
@@ -1037,7 +1061,10 @@ impl IwlWifiDevice {
 
             // Check CSR_INT bit 0 (ALIVE)
             let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
-            if int_cause != 0 && int_cause != 0xFFFF_FFFF {
+            if int_cause == 0xFFFF_FFFF {
+                return Err("Device unresponsive (PCI read returned 0xFFFFFFFF)");
+            }
+            if int_cause != 0 {
                 if (int_cause & 0x01) != 0 {
                     unsafe {
                         core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
@@ -1579,6 +1606,8 @@ impl IwlWifiDevice {
         }
 
         // Process any pending frames in the RX queue
+        // Invalidate cache so the CPU sees hardware-updated descriptor lengths
+        mmio::cache_flush_range(self.rx_dma_ring.virt(), core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE);
         while self.rx_tail != self.rx_head {
             let desc_idx = self.rx_tail;
             let desc = unsafe { &*(self.rx_dma_ring.virt() as *const RxDmaDesc).add(desc_idx) };
