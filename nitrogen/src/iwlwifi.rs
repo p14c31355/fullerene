@@ -581,8 +581,10 @@ impl IwlWifiDevice {
         device: PciDevice,
         health: PciHealth,
     ) -> Result<Self, IwlError> {
+        crate::debug::print("iwlwifi", "reset_device");
         Self::reset_device(mmio);
 
+        crate::debug::print("iwlwifi", "mac_clock_req");
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
@@ -597,15 +599,19 @@ impl IwlWifiDevice {
             core::hint::spin_loop();
         }
         if !clock_ready {
+            crate::debug::print("iwlwifi", "ERR clock_not_ready");
             return Err(IwlError::ClockNotReady);
         }
 
+        crate::debug::print("iwlwifi", "read_mac");
         let mac = Self::read_mac(mmio);
 
+        crate::debug::print("iwlwifi", "mask_ints");
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
         }
 
+        crate::debug::print("iwlwifi", "alloc_tx_ring");
         let mut tx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
             .ok_or(IwlError::DmaAllocFailed)
             .and_then(|mut r| {
@@ -613,6 +619,7 @@ impl IwlWifiDevice {
                     .map_err(|_| { r.free(ctx); IwlError::DmaAllocFailed })
                     .map(|_| r)
             })?;
+        crate::debug::print("iwlwifi", "alloc_rx_ring");
         let mut rx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE)
             .ok_or(IwlError::DmaAllocFailed)
             .and_then(|mut r| {
@@ -624,12 +631,14 @@ impl IwlWifiDevice {
         let mut rx_bufs = Vec::new();
         let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
+        crate::debug::print("iwlwifi", "alloc_tx_bufs");
         let init_result = (|| -> Result<(), IwlError> {
             for _ in 0..TX_QUEUE_SIZE {
                 let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 buf.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
                 tx_bufs.push(buf);
             }
+            crate::debug::print("iwlwifi", "alloc_rx_bufs");
             for i in 0..RX_QUEUE_SIZE {
                 let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 let dma = buf.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
@@ -645,6 +654,7 @@ impl IwlWifiDevice {
         })();
 
         if let Err(e) = init_result {
+            crate::debug::print("iwlwifi", "ERR init_result");
             for mut buf in tx_bufs { buf.free(ctx); }
             for mut buf in rx_bufs { buf.free(ctx); }
             tx_dma_ring.free(ctx);
@@ -652,6 +662,7 @@ impl IwlWifiDevice {
             return Err(e);
         }
 
+        crate::debug::print("iwlwifi", "program_fh");
         let rx_phys = rx_dma_ring.dma_iova();
 
         unsafe {

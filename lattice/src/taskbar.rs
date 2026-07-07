@@ -47,6 +47,9 @@ pub struct Taskbar {
     pub wifi_visible: bool,
     /// Signal level 0-100.
     pub wifi_signal: u8,
+    /// Live debug status messages from drivers (source, message).
+    /// Displayed to the left of the WiFi icon, newest last.
+    pub debug_msgs: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>,
 }
 
 impl Taskbar {
@@ -57,6 +60,7 @@ impl Taskbar {
             wifi_connected: false,
             wifi_visible: false,
             wifi_signal: 0,
+            debug_msgs: alloc::vec::Vec::new(),
         }
     }
 
@@ -105,8 +109,10 @@ impl Taskbar {
             fb[row_start..row_start + fb_w].fill(TASKBAR_BG);
         }
 
-        // Draw WiFi indicator icon (right side, before clock)
+        // WiFi icon X position (used both for icon and as right bound for debug text)
         let wifi_icon_x = self.wifi_icon_x(fb_width);
+
+        // Draw WiFi indicator icon (right side, before clock)
         crate::network_menu::render_wifi_icon(
             fb, fb_width, fb_height,
             wifi_icon_x, bar_y + 6,
@@ -165,6 +171,34 @@ impl Taskbar {
                 }
             }
             btn_x += btn_w + 4;
+        }
+
+        // Draw debug status messages (between window buttons and WiFi icon)
+        if !self.debug_msgs.is_empty() {
+            let (last_source, last_msg) = &self.debug_msgs[self.debug_msgs.len() - 1];
+            let debug_text = if last_source.is_empty() {
+                alloc::format!("[{}]", last_msg)
+            } else {
+                alloc::format!("{}: {}", last_source, last_msg)
+            };
+            let dx = btn_x + 4;
+            let dy = btn_y + 3;
+            for (i, ch) in debug_text.bytes().enumerate() {
+                if ch < 32 || ch > 126 {
+                    continue;
+                }
+                for row in 0..12 {
+                    for col in 0..8 {
+                        let x = dx + (i as u32) * 8 + col;
+                        let y = dy + row;
+                        if x < wifi_icon_x && y < fb_height {
+                            if crate::font::get_glyph_pixel(ch, row, col) {
+                                fb[(y as usize) * fb_w + x as usize] = TASKBAR_TEXT;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Draw clock on the right
