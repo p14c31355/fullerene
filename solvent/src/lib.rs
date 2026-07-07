@@ -884,8 +884,6 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             }
         }
 
-        render_progress(b"RENDER: copy done");
-
         match rt.shell_state {
             ShellState::TaskOverview => render_task_overview(
                 fb_pixels,
@@ -964,7 +962,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         }
     }
 
-    render_progress(b"RENDER: complete");
+    // Increment frame counter to signal that rendering has completed
+    FRAMES_RENDERED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     if rt.usb_poll_pending {
         rt.usb_poll_pending = false;
@@ -1171,10 +1170,13 @@ pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
     // Deferred WiFi device init — run once, after the desktop has had a
-    // chance to render a few frames.  Firmware upload + alive wait can
+    // chance to render at least one frame.  Firmware upload + alive wait can
     // block for many seconds on real hardware; delaying it a little keeps
     // the boot animation smooth.
-    if now >= 50 && WIFI_INIT_DEFERRED.swap(false, core::sync::atomic::Ordering::AcqRel) {
+    if now >= 50
+        && FRAMES_RENDERED.load(core::sync::atomic::Ordering::Relaxed) > 0
+        && WIFI_INIT_DEFERRED.swap(false, core::sync::atomic::Ordering::AcqRel)
+    {
         log::info!("solvent: deferred WiFi init starting");
         nitrogen::iwlwifi::try_init_wifi_device();
     }
@@ -1307,6 +1309,10 @@ pub fn write_terminal(s: &str) {
 /// the first `tick_core()` so the boot process is not blocked by firmware
 /// upload + alive wait which can take many seconds on real hardware.
 static WIFI_INIT_DEFERRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// Counter tracking how many frames have been rendered, used to defer WiFi
+/// init until after the first visible frame is displayed.
+static FRAMES_RENDERED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);

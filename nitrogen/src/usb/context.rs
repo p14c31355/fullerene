@@ -82,7 +82,10 @@ impl ControllerManager {
         }
         log::info!("USB: scanning PCI for USB host controllers");
         let mut scanner = PciScanner::new();
-        let _ = scanner.scan_all_buses();
+        if let Err(e) = scanner.scan_all_buses() {
+            log::info!("USB: PCI scan failed: {:?}", e);
+            return;
+        }
         let mut found_any = false;
         for dev in scanner.get_devices() {
             if dev.class_code != 0x0C || dev.subclass != 0x03 {
