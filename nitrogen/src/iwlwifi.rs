@@ -425,15 +425,23 @@ impl IwlWifiDevice {
         }
         // Barrier: ensure MAC clock request is visible before polling
         mmio::write_barrier();
-        let mut clock_ready = false;
-        for _ in 0..50_000 {
-            let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
-            if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
-                clock_ready = true;
-                break;
+        let clock_ready = health.is_device_present() && {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            let deadline = start.wrapping_add(1_000_000_000); // ~1 s @ 1 GHz
+            loop {
+                let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
+                if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
+                    break true;
+                }
+                if gp == 0xFFFF_FFFF {
+                    break false;
+                }
+                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                    break false;
+                }
+                core::hint::spin_loop();
             }
-            core::hint::spin_loop();
-        }
+        };
         if !clock_ready {
             return Err(IwlError::ClockNotReady);
         }
@@ -581,6 +589,12 @@ impl IwlWifiDevice {
         device: PciDevice,
         health: PciHealth,
     ) -> Result<Self, IwlError> {
+        crate::debug::print("iwlwifi", "init_after_mmio: enter");
+        if !health.is_device_present() {
+            crate::debug::print("iwlwifi", "ERR device_gone before reset");
+            return Err(IwlError::BarNotAvailable);
+        }
+
         crate::debug::print("iwlwifi", "reset_device");
         Self::reset_device(mmio);
 
@@ -589,15 +603,23 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
         mmio::write_barrier();
-        let mut clock_ready = false;
-        for _ in 0..50_000 {
-            let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
-            if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
-                clock_ready = true;
-                break;
+        let clock_ready = health.is_device_present() && {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            let deadline = start.wrapping_add(1_000_000_000); // ~1 s @ 1 GHz
+            loop {
+                let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
+                if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
+                    break true;
+                }
+                if gp == 0xFFFF_FFFF {
+                    break false;
+                }
+                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                    break false;
+                }
+                core::hint::spin_loop();
             }
-            core::hint::spin_loop();
-        }
+        };
         if !clock_ready {
             crate::debug::print("iwlwifi", "ERR clock_not_ready");
             return Err(IwlError::ClockNotReady);
