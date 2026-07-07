@@ -17,6 +17,7 @@
 //! Lattice / Nozzle / Resonance / ChronoLine
 //! ```
 
+use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::Renderer;
 use solvent;
 
@@ -155,9 +156,15 @@ pub fn init() {
     ));
     solvent::set_tsc_per_ms(tsc_per_ms);
 
+    solvent::set_render_progress_fn(crate::boot_stage::draw_boot_label);
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 }
+
+/// Once the first frame renders successfully, disable the boot-screen
+/// progress callback so `solvent::render` doesn't keep drawing labels
+/// over the desktop on every frame.
+static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 
 /// Render the desktop onto the primary framebuffer.
 ///
@@ -172,16 +179,30 @@ pub fn render() {
     // Update boot screen to show current render progress
     crate::boot_stage::draw_boot_label(b"RENDERING...");
 
-    // Render via solvent with kernel-owned framebuffer access
+    // Render via solvent with kernel-owned framebuffer access.
+    // The boot labels drawn before (RENDERING..., RENDER via guard) are
+    // overwritten by solvent::render which fills the full framebuffer.
+    // Once the desktop renders, no further boot labels should be drawn
+    // or they would persist as an overlay on the desktop.
     let rendered = crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
-        crate::boot_stage::draw_boot_label(b"RENDER via guard");
+        if !BOOT_PROGRESS_DONE.load(Ordering::Relaxed) {
+            crate::boot_stage::draw_boot_label(b"RENDER via guard");
+        }
         solvent::render(fb);
     });
+
+    // After the first successful render, disable boot-progress labels
+    // so they don't keep showing over the desktop on every frame.
+    if rendered.is_some() && !BOOT_PROGRESS_DONE.swap(true, Ordering::SeqCst) {
+        solvent::set_render_progress_fn(|_| {});
+    }
 
     // Fallback: if the KernelContext renderer is not available (e.g. the
     // GOP renderer build failed and we fell back to VGA text mode), render
     // directly through the boot framebuffer's direct-map alias.  This alias
     // is always accessible — the boot splash already draws through it.
+    // In the fallback path we still draw labels for diagnostic purposes
+    // since the user won't see a proper desktop anyway.
     if rendered.is_none() {
         crate::boot_stage::draw_boot_label(b"RENDER: guard failed, fallback");
         if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
@@ -189,7 +210,7 @@ pub fn render() {
             let ptr = bfb.address() as *mut u32;
             let len = (bfb.stride_pixels() as usize) * bfb.height() as usize;
             let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-            let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels() * 4);
+            let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels());
             crate::boot_stage::draw_boot_label(b"RENDER: calling solvent::render");
             solvent::render(&mut fb);
             crate::boot_stage::draw_boot_label(b"RENDER: solvent::render OK");
@@ -198,7 +219,8 @@ pub fn render() {
         }
     }
 
-    // Signal present & flush GPU (kernel-owned resource management)
+    // Signal present & flush GPU (kernel-owned resource management).
+    // No boot labels are drawn here because they would persist on the desktop.
     crate::contexts::kernel::with_kernel_mut(|k| {
         if let Some(ref mut renderer) = k.framebuffer.renderer {
             renderer.present();
@@ -239,7 +261,7 @@ pub fn runtime_tick(now: u64) {
                 let len = (bfb.stride_pixels() as usize) * bfb.height() as usize;
                 let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
                 let mut fb = FramebufferGuard::new(
-                    pixels, bfb.width(), bfb.height(), bfb.stride_pixels() * 4,
+                    pixels, bfb.width(), bfb.height(), bfb.stride_pixels(),
                 );
                 solvent::render(&mut fb);
             }

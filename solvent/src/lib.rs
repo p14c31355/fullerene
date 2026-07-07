@@ -664,6 +664,21 @@ impl RenderTarget for FramebufferTarget<'_> {
     }
 }
 
+/// Optional progress callback for boot-screen rendering during `render()`.
+/// Set by the kernel via `set_render_progress_fn()`.
+static RENDER_PROGRESS_FN: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
+
+pub fn set_render_progress_fn(f: fn(&[u8])) {
+    *RENDER_PROGRESS_FN.lock() = Some(f);
+}
+
+/// Call the progress callback (boot-screen label update) if set.
+fn render_progress(label: &[u8]) {
+    if let Some(f) = *RENDER_PROGRESS_FN.lock() {
+        f(label);
+    }
+}
+
 pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
@@ -707,6 +722,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         }
     }
 
+    render_progress(b"RENDER: pre-update");
+
     if rt.editor_dirty {
         editor_bridge::render_editor(rt);
     }
@@ -718,11 +735,11 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
 
     let tb_changed = rt.desktop.update_taskbar();
+    render_progress(b"RENDER: got fb dims");
     let fb_width = fb.width();
     let fb_height = fb.height();
     let fb_stride_pixels = fb.stride();
     let fb_pixels = fb.pixels_mut();
-    let fb_pixels_ptr = fb_pixels.as_mut_ptr();
     let fb_pixels_len = fb_pixels.len();
     *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
 
@@ -752,17 +769,41 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     let fb_len = fb_stride.saturating_mul(fb_height as usize);
     let back_len = (fb_width as usize) * (fb_height as usize);
     if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
+        render_progress(b"RENDER: skip (fb too large)");
         return;
     }
     rt.back_len = back_len;
 
     let has_dirty = rt.desktop.has_pending_dirty_rects();
     if has_dirty {
+        render_progress(b"RENDER: has dirty");
+        // Ensure heap has enough room for the back buffer allocation
+        // before attempting it, otherwise the alloc error handler will
+        // spin forever (visible as a hang on real hardware).
+        {
+            let back_needed = back_len.saturating_mul(4); // u32 → bytes
+            let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
+            if back_needed > reserve {
+                let additional = back_needed
+                    .saturating_sub(reserve)
+                    .next_multiple_of(4096);
+                match SOLVENT_CALLBACKS.lock().heap_extend {
+                    Some(f) if f(additional).is_ok() => {
+                        HEAP_EXTEND_RESERVE
+                            .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
+                    }
+                    _ => return,
+                }
+            }
+        }
+        render_progress(b"RENDER: heap ok");
+
         let was_transition = {
             let mut prev = PREV_TRANSITION.lock();
             core::mem::replace(&mut *prev, false)
         };
         {
+            render_progress(b"RENDER: alloc backbuf");
             let mut back_opt = BACK_BUFFER.lock();
             let back = back_opt.get_or_insert_with(|| alloc::vec![0u32; back_len]);
             if back.len() < back_len {
@@ -773,8 +814,10 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 width: fb_width,
                 height: fb_height,
             };
+            render_progress(b"RENDER: compositor");
             let scene = rt.desktop.scene();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
+            render_progress(b"RENDER: compositor done");
             let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
             if brightness < 100 && bw > 0 && bh > 0 {
                 let back_w = fb_width as usize;
@@ -800,17 +843,26 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             }
             if was_transition || (bw > 0 && bh > 0) {
                 let back_w = fb_width as usize;
+                render_progress(b"RENDER: copy to fb");
+                // Use pixel-by-pixel copy instead of copy_nonoverlapping/memcpy.
+                // On real hardware, bulk REP MOVSB/ERMSB to WC framebuffer memory
+                // can trigger CPU stalls or machine checks (the GPU may not respond
+                // to rapid-fire PCIe writes).  Individual MOV instructions through
+                // the &mut [u32] slice are safe and reliable on WC memory.
+                // Use volatile writes to the framebuffer (WC memory) to avoid
+                // ERMSB or vectorized store issues on real hardware. Each pixel
+                // is written individually through the FramebufferGuard slice.
+                let fb_base = fb_pixels.as_mut_ptr();
+                let fb_stride_u = fb_stride;
                 if was_transition {
                     for row in 0..fb_height as usize {
                         let src_off = row * back_w;
-                        let dst_off = row * fb_stride;
-                        let copy_len = back_w.min(back_len.saturating_sub(src_off));
-                        if copy_len > 0 {
+                        let dst_off = row * fb_stride_u;
+                        for col in 0..back_w {
                             unsafe {
-                                core::ptr::copy_nonoverlapping(
-                                    back.as_ptr().add(src_off),
-                                    fb_pixels_ptr.add(dst_off),
-                                    copy_len,
+                                core::ptr::write_volatile(
+                                    fb_base.add(dst_off + col),
+                                    back[src_off + col],
                                 );
                             }
                         }
@@ -818,16 +870,12 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 } else {
                     for row in 0..bh {
                         let src_off = ((by + row) as usize) * back_w + (bx as usize);
-                        let dst_off = ((by + row) as usize) * fb_stride + (bx as usize);
-                        let len = (bw as usize)
-                            .min(back_len.saturating_sub(src_off))
-                            .min(fb_len.saturating_sub(dst_off));
-                        if len > 0 {
+                        let dst_off = ((by + row) as usize) * fb_stride_u + (bx as usize);
+                        for col in 0..bw as usize {
                             unsafe {
-                                core::ptr::copy_nonoverlapping(
-                                    back.as_ptr().add(src_off),
-                                    fb_pixels_ptr.add(dst_off),
-                                    len,
+                                core::ptr::write_volatile(
+                                    fb_base.add(dst_off + col),
+                                    back[src_off + col],
                                 );
                             }
                         }
@@ -835,6 +883,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 }
             }
         }
+
+        render_progress(b"RENDER: copy done");
 
         match rt.shell_state {
             ShellState::TaskOverview => render_task_overview(
@@ -913,6 +963,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             );
         }
     }
+
+    render_progress(b"RENDER: complete");
 
     if rt.usb_poll_pending {
         rt.usb_poll_pending = false;
