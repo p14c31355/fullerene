@@ -511,6 +511,134 @@ impl IwlWifiDevice {
         })
     }
 
+    /// Initialize the device from an already-mapped MMIO base.
+    /// Called by the wifi registry after PCI probe.
+    pub fn init_from_mmio(
+        ctx: &'static dyn DriverContext,
+        mmio: *mut u32,
+        hw_rev: u32,
+    ) -> Option<Self> {
+        let device = PciDevice {
+            vendor_id: 0x8086,
+            device_id: 0,
+            class_code: 0x02,
+            subclass: 0x80,
+            bus: 0,
+            device: 0,
+            function: 0,
+            handle: 0,
+        };
+        let health = PciHealth::new(&device);
+        Self::init_after_mmio(ctx, mmio, hw_rev as u16, device, health).ok()
+    }
+
+    /// Common init after BAR0 is mapped and HW_REV is read.
+    fn init_after_mmio(
+        ctx: &'static dyn DriverContext,
+        mmio: *mut u32,
+        hw_rev: u16,
+        device: PciDevice,
+        health: PciHealth,
+    ) -> Result<Self, IwlError> {
+        Self::reset_device(mmio);
+
+        unsafe {
+            core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
+        }
+        mmio::write_barrier();
+        let mut clock_ready = false;
+        for _ in 0..50_000 {
+            let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
+            if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
+                clock_ready = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if !clock_ready {
+            return Err(IwlError::ClockNotReady);
+        }
+
+        let mac = Self::read_mac(mmio);
+
+        unsafe {
+            core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
+        }
+
+        let tx_dma_ring = Box::new([TxDmaDesc {
+            addr_lo: 0, addr_hi: 0, len: 0, flags: 0, reserved: [0; 2],
+        }; TX_QUEUE_SIZE]);
+        let mut rx_dma_ring = Box::new([RxDmaDesc {
+            addr_lo: 0, addr_hi: 0, len: 0, flags: 0,
+        }; RX_QUEUE_SIZE]);
+        let mut tx_bufs = Vec::new();
+        let mut rx_bufs = Vec::new();
+
+        let init_result = (|| -> Result<(), IwlError> {
+            for _ in 0..TX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                buf.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+                tx_bufs.push(buf);
+            }
+            for i in 0..RX_QUEUE_SIZE {
+                let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                let dma = buf.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+                rx_dma_ring[i].addr_lo = dma as u32;
+                rx_dma_ring[i].addr_hi = (dma >> 32) as u32;
+                rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
+                rx_bufs.push(buf);
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = init_result {
+            for mut buf in tx_bufs { buf.free(ctx); }
+            for mut buf in rx_bufs { buf.free(ctx); }
+            return Err(e);
+        }
+
+        let _tx_phys = ctx.dma_map(device.device_id, &*tx_dma_ring as *const _ as u64, 4096 * 2).unwrap_or(0);
+        let rx_phys = ctx.dma_map(device.device_id, &*rx_dma_ring as *const _ as u64, 4096 * 2).unwrap_or(0);
+
+        unsafe {
+            core::ptr::write_volatile(mmio.add(FH_TX_CHNL0_WPTR as usize), 0);
+            core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize), rx_phys as u32);
+        }
+
+        Ok(Self {
+            mac,
+            _pci_dev: device,
+            mmio,
+            hw_rev,
+            ctx,
+            health,
+            fw_state: FwState::NotLoaded,
+            fw_build: 0,
+            fw_api_ver: IWL_FW_API_VER,
+            iwl_state: IwlState::Init,
+            wifi_conn: wifi::WifiConnection::new(),
+            wpa: WpaSupplicant::new(),
+            dhcp: None,
+            scan_results: Vec::new(),
+            scan_channel: 1,
+            scan_pending: false,
+            tx_queue: VecDeque::new(),
+            rx_queue: VecDeque::new(),
+            tx_dma_ring,
+            rx_dma_ring,
+            tx_head: 0,
+            tx_tail: 0,
+            rx_head: 0,
+            rx_tail: 0,
+            tx_bufs,
+            rx_bufs,
+            ip_address: [0u8; 4],
+            subnet_mask: [0u8; 4],
+            gateway: [0u8; 4],
+            dns_server: [0u8; 4],
+        })
+    }
+
     /// Reset the device.
     fn reset_device(mmio: *mut u32) {
         unsafe {
@@ -859,9 +987,23 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    /// Wait for the firmware "alive" response.
+    /// Wait for the firmware "alive" response with a TSC-based timeout
+    /// (approximately 5 seconds) instead of a fixed iteration count.
+    /// On real hardware, 10 million MMIO reads can take 10-40 seconds
+    /// if the device is unresponsive, causing an apparent system hang.
     fn wait_for_alive(&mut self) -> Result<(), &'static str> {
-        for _ in 0..10_000_000 {
+        let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        // 5 second timeout at a conservative 1 GHz TSC frequency.
+        // On faster CPUs the effective timeout is proportionally shorter
+        // but still enough for normal firmware boot (typically <1 second).
+        let timeout_tsc: u64 = 5_000_000_000;
+
+        loop {
+            let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc);
+            if elapsed >= timeout_tsc {
+                break;
+            }
+
             // Check CSR_INT bit 0 (ALIVE)
             let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
             if int_cause != 0 && int_cause != 0xFFFF_FFFF {
@@ -896,6 +1038,7 @@ impl IwlWifiDevice {
             core::hint::spin_loop();
         }
 
+        self.fw_state = FwState::Error;
         Err("Timeout waiting for firmware alive")
     }
 
@@ -1491,13 +1634,93 @@ impl NetDevice for IwlWifiDevice {
     }
 }
 
+// ── WifiDriver trait implementation ───────────────────────────────
+
+impl super::wifi::WifiDriver for IwlWifiDevice {
+    fn create(
+        ctx: &'static dyn DriverContext,
+        mmio_base: *mut u32,
+        hw_rev: u32,
+    ) -> Option<Box<dyn super::wifi::WifiDriver>> {
+        // Reconstruct minimal PCI device info from the given parameters.
+        // The actual init works with MMIO + ctx; the PciDevice is only
+        // used for config-space operations which are no longer needed
+        // at this point.
+        //
+        // We defer to the internal init_path that starts from the point
+        // just after BAR0 mapping + HW_REV read.
+        // For simplicity, we call a variant of init that accepts
+        // (mmio, hw_rev, ctx) directly.
+        Self::init_from_mmio(ctx, mmio_base, hw_rev)
+            .map(|dev| Box::new(dev) as Box<dyn super::wifi::WifiDriver>)
+    }
+
+    fn tick(&mut self) {
+        self.tick();
+    }
+
+    fn get_status(&self) -> bonder::wifi::WifiStatus {
+        self.wifi_conn.status
+    }
+
+    fn start_scan(&mut self) -> bool {
+        self.start_scan().is_ok()
+    }
+
+    fn get_scan_results(&self) -> Vec<bonder::wifi::AccessPoint> {
+        self.scan_results.clone()
+    }
+
+    fn connect(&mut self, ssid: &bonder::wifi::Ssid, psk: Option<&str>) -> bool {
+        self.connect(ssid, psk).is_ok()
+    }
+
+    fn disconnect(&mut self) {
+        self.disconnect();
+    }
+
+    fn device_available(&self) -> bool {
+        self.fw_state == FwState::Ready
+    }
+
+    fn connected_ssid(&self) -> Option<&bonder::wifi::Ssid> {
+        self.wifi_conn.current_ssid.as_ref()
+    }
+
+    fn ip_address(&self) -> [u8; 4] {
+        self.ip_address
+    }
+
+    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+        IwlWifiDevice::load_firmware(self, fw_data)
+    }
+}
+
+/// Constructor called by the wifi registry after PCI probe.
+///
+/// `ctx` — kernel driver context (DMA, MMIO mapping)
+/// `mmio` — mapped BAR0 base
+/// `hw_rev` — hardware revision read from CSR_HW_REV
+///
+/// Returns a boxed driver on success, or `None` if the device does
+/// not respond or initialisation times out.
+pub fn try_create_iwl(
+    ctx: &'static dyn DriverContext,
+    mmio: *mut u32,
+    hw_rev: u32,
+) -> Option<Box<dyn super::wifi::WifiDriver>> {
+    IwlWifiDevice::init_from_mmio(ctx, mmio, hw_rev)
+        .map(|dev| Box::new(dev) as Box<dyn super::wifi::WifiDriver>)
+}
+
 // ── Stored wifi state for external access (via driver tick) ────────
 
 /// Global wifi manager state for UI polling.
 static WIFI_MANAGER: Mutex<Option<WifiManager>> = Mutex::new(None);
 
-/// Global IwlWifiDevice instance so other parts of the OS can tick it.
-static WIFI_DEVICE: Mutex<Option<IwlWifiDevice>> = Mutex::new(None);
+/// Global WiFi driver instance (trait-object based) so other parts of
+/// the OS can tick it.  The concrete type is determined by PCI probe.
+static WIFI_DEVICE: Mutex<Option<Box<dyn super::wifi::WifiDriver>>> = Mutex::new(None);
 
 #[derive(Clone)]
 pub struct WifiManager {
@@ -1535,32 +1758,34 @@ pub fn try_init_wifi_device() {
     if dev_guard.is_some() {
         return;
     }
-    if let Some(mut dev) = IwlWifiDevice::probe_and_init(ctx) {
+
+    // Use the PCI-probe-based registry to detect and init the WiFi card.
+    if let Some(mut driver) = crate::wifi::init_wifi_from_pci(ctx) {
         log::info!("iwlwifi: loading embedded firmware ({} bytes)", EMBEDDED_FW.len());
 
-        // Verify firmware integrity with CRC32 against the known-good checksum
+        // Verify firmware integrity with CRC32
         let crc_computed = IwlWifiDevice::crc32(EMBEDDED_FW);
-        if crc_computed != EMBEDDED_FW_CRC32 {
+        let fw_ok = crc_computed == EMBEDDED_FW_CRC32;
+
+        if !fw_ok {
             log::warn!(
                 "iwlwifi: firmware checksum mismatch (computed={:#010x}, expected={:#010x})",
                 crc_computed, EMBEDDED_FW_CRC32
             );
-            // Keep the device anyway so UI knows it exists
-            *dev_guard = Some(dev);
-            return;
+        } else {
+            match driver.load_firmware(EMBEDDED_FW) {
+                Ok(()) => {
+                    log::info!("iwlwifi: firmware loaded successfully");
+                }
+                Err(e) => {
+                    log::error!("iwlwifi: firmware load failed: {}", e);
+                }
+            }
         }
 
-        match dev.load_firmware(EMBEDDED_FW) {
-            Ok(()) => {
-                log::info!("iwlwifi: firmware loaded successfully");
-                *dev_guard = Some(dev);
-            }
-            Err(e) => {
-                log::error!("iwlwifi: firmware load failed: {}", e);
-                // Keep the device anyway so UI knows it exists
-                *dev_guard = Some(dev);
-            }
-        }
+        // Store the driver (via trait object) even if firmware partially failed,
+        // so the UI can report status.
+        *dev_guard = Some(driver);
     }
 }
 
@@ -1568,8 +1793,9 @@ pub fn try_init_wifi_device() {
 pub fn tick_wifi_device() {
     let mut dev_guard = WIFI_DEVICE.lock();
     if let Some(ref mut dev) = *dev_guard {
-        dev.tick();
-        update_wifi_manager(dev);
+        let dev_ref: &mut dyn super::wifi::WifiDriver = &mut **dev;
+        dev_ref.tick();
+        update_wifi_manager(dev_ref);
     }
 }
 
@@ -1586,18 +1812,18 @@ impl WifiManager {
 }
 
 /// Update global WiFi state from the driver (called from driver tick).
-pub fn update_wifi_manager(dev: &IwlWifiDevice) {
+pub fn update_wifi_manager(dev: &dyn super::wifi::WifiDriver) {
     let mut mgr = WIFI_MANAGER.lock();
     if let Some(ref mut m) = *mgr {
-        m.device_available = true;
-        m.scan_results = dev.scan_results.clone();
-        m.status = dev.wifi_conn.status;
-        m.connected_ssid = dev.wifi_conn.current_ssid.as_ref().map(|s| s.to_string());
-        if dev.ip_address != [0u8; 4] {
+        m.device_available = dev.device_available();
+        m.scan_results = dev.get_scan_results();
+        m.status = dev.get_status();
+        m.connected_ssid = dev.connected_ssid().map(|s| s.to_string());
+        let ip = dev.ip_address();
+        if ip != [0u8; 4] {
             m.ip_address = Some(alloc::format!(
                 "{}.{}.{}.{}",
-                dev.ip_address[0], dev.ip_address[1],
-                dev.ip_address[2], dev.ip_address[3]
+                ip[0], ip[1], ip[2], ip[3]
             ));
         }
     }
@@ -1619,7 +1845,8 @@ pub fn init_wifi_manager() {
 pub fn connect_to_ap(ssid: &bonder::wifi::Ssid, password: Option<&str>) {
     let mut dev_guard = WIFI_DEVICE.lock();
     if let Some(ref mut dev) = *dev_guard {
-        let _ = dev.connect(ssid, password);
+        let dev_ref: &mut dyn super::wifi::WifiDriver = &mut **dev;
+        let _ = dev_ref.connect(ssid, password);
     }
 }
 
