@@ -285,8 +285,8 @@ pub struct IwlWifiDevice {
     // ── TX/RX queues ──────────────────────────────────────
     tx_queue: VecDeque<Vec<u8>>,
     rx_queue: VecDeque<Vec<u8>>,
-    tx_dma_ring: Box<[TxDmaDesc; TX_QUEUE_SIZE]>,
-    rx_dma_ring: Box<[RxDmaDesc; RX_QUEUE_SIZE]>,
+    tx_dma_ring: DmaRegion,
+    rx_dma_ring: DmaRegion,
     tx_head: usize,
     tx_tail: usize,
     rx_head: usize,
@@ -432,14 +432,15 @@ impl IwlWifiDevice {
         }
 
         // Allocate rings and buffers
-        let tx_dma_ring = Box::new([TxDmaDesc {
-            addr_lo: 0, addr_hi: 0, len: 0, flags: 0, reserved: [0; 2],
-        }; TX_QUEUE_SIZE]);
-        let mut rx_dma_ring = Box::new([RxDmaDesc {
-            addr_lo: 0, addr_hi: 0, len: 0, flags: 0,
-        }; RX_QUEUE_SIZE]);
+        let mut tx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
+            .ok_or(IwlError::DmaAllocFailed)?;
+        tx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+        let mut rx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE)
+            .ok_or(IwlError::DmaAllocFailed)?;
+        rx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
         let mut tx_bufs = Vec::new();
         let mut rx_bufs = Vec::new();
+        let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
         // Pre-map all DMA buffers during initialisation so we reuse the
         // IOVA on every transaction instead of calling dma_map/dma_unmap
@@ -457,9 +458,11 @@ impl IwlWifiDevice {
                 let dma = buf
                     .dma_map(ctx, device.device_id)
                     .map_err(|_| IwlError::DmaAllocFailed)?;
-                rx_dma_ring[i].addr_lo = dma as u32;
-                rx_dma_ring[i].addr_hi = (dma >> 32) as u32;
-                rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
+                unsafe {
+                    (*rx_virt.add(i)).addr_lo = dma as u32;
+                    (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
+                    (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
+                }
                 rx_bufs.push(buf);
             }
             Ok(())
@@ -472,6 +475,8 @@ impl IwlWifiDevice {
             for mut buf in rx_bufs {
                 buf.free(ctx);
             }
+            tx_dma_ring.free(ctx);
+            rx_dma_ring.free(ctx);
             return Err(e);
         }
 
@@ -517,19 +522,23 @@ impl IwlWifiDevice {
         ctx: &'static dyn DriverContext,
         mmio: *mut u32,
         hw_rev: u32,
+        device: PciDevice,
     ) -> Option<Self> {
-        let device = PciDevice {
-            vendor_id: 0x8086,
-            device_id: 0,
-            class_code: 0x02,
-            subclass: 0x80,
-            bus: 0,
-            device: 0,
-            function: 0,
-            handle: 0,
-        };
         let health = PciHealth::new(&device);
         Self::init_after_mmio(ctx, mmio, hw_rev as u16, device, health).ok()
+    }
+
+    fn tx_desc_mut(&mut self, idx: usize) -> &mut TxDmaDesc {
+        unsafe { &mut *(self.tx_dma_ring.virt() as *mut TxDmaDesc).add(idx) }
+    }
+    fn tx_desc(&self, idx: usize) -> &TxDmaDesc {
+        unsafe { &*(self.tx_dma_ring.virt() as *const TxDmaDesc).add(idx) }
+    }
+    fn rx_desc_mut(&mut self, idx: usize) -> &mut RxDmaDesc {
+        unsafe { &mut *(self.rx_dma_ring.virt() as *mut RxDmaDesc).add(idx) }
+    }
+    fn rx_desc(&self, idx: usize) -> &RxDmaDesc {
+        unsafe { &*(self.rx_dma_ring.virt() as *const RxDmaDesc).add(idx) }
     }
 
     /// Common init after BAR0 is mapped and HW_REV is read.
@@ -565,14 +574,15 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
         }
 
-        let tx_dma_ring = Box::new([TxDmaDesc {
-            addr_lo: 0, addr_hi: 0, len: 0, flags: 0, reserved: [0; 2],
-        }; TX_QUEUE_SIZE]);
-        let mut rx_dma_ring = Box::new([RxDmaDesc {
-            addr_lo: 0, addr_hi: 0, len: 0, flags: 0,
-        }; RX_QUEUE_SIZE]);
+        let mut tx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
+            .ok_or(IwlError::DmaAllocFailed)?;
+        tx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
+        let mut rx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE)
+            .ok_or(IwlError::DmaAllocFailed)?;
+        rx_dma_ring.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
         let mut tx_bufs = Vec::new();
         let mut rx_bufs = Vec::new();
+        let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
 
         let init_result = (|| -> Result<(), IwlError> {
             for _ in 0..TX_QUEUE_SIZE {
@@ -583,9 +593,11 @@ impl IwlWifiDevice {
             for i in 0..RX_QUEUE_SIZE {
                 let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 let dma = buf.dma_map(ctx, device.device_id).map_err(|_| IwlError::DmaAllocFailed)?;
-                rx_dma_ring[i].addr_lo = dma as u32;
-                rx_dma_ring[i].addr_hi = (dma >> 32) as u32;
-                rx_dma_ring[i].len = MAX_FRAME_SIZE as u16;
+                unsafe {
+                    (*rx_virt.add(i)).addr_lo = dma as u32;
+                    (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
+                    (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
+                }
                 rx_bufs.push(buf);
             }
             Ok(())
@@ -594,11 +606,12 @@ impl IwlWifiDevice {
         if let Err(e) = init_result {
             for mut buf in tx_bufs { buf.free(ctx); }
             for mut buf in rx_bufs { buf.free(ctx); }
+            tx_dma_ring.free(ctx);
+            rx_dma_ring.free(ctx);
             return Err(e);
         }
 
-        let _tx_phys = ctx.dma_map(device.device_id, &*tx_dma_ring as *const _ as u64, 4096 * 2).unwrap_or(0);
-        let rx_phys = ctx.dma_map(device.device_id, &*rx_dma_ring as *const _ as u64, 4096 * 2).unwrap_or(0);
+        let rx_phys = rx_dma_ring.dma_iova();
 
         unsafe {
             core::ptr::write_volatile(mmio.add(FH_TX_CHNL0_WPTR as usize), 0);
@@ -1120,7 +1133,7 @@ impl IwlWifiDevice {
             return Err("TX ring full");
         }
         let desc_idx = self.tx_head % TX_QUEUE_SIZE;
-        let desc = &mut self.tx_dma_ring[desc_idx];
+        let desc = unsafe { &mut *(self.tx_dma_ring.virt() as *mut TxDmaDesc).add(desc_idx) };
         let cmd_buf = &mut self.tx_bufs[desc_idx];
 
         // Write header + data into the DMA buffer
@@ -1144,7 +1157,7 @@ impl IwlWifiDevice {
         desc.flags = 0;
 
         // Flush descriptor ring cache line before doorbell
-        let desc_addr = &self.tx_dma_ring[desc_idx] as *const TxDmaDesc as *const u8;
+        let desc_addr = desc as *const TxDmaDesc as *const u8;
         mmio::cache_flush(desc_addr);
 
         self.tx_head += 1;
@@ -1323,7 +1336,7 @@ impl IwlWifiDevice {
             // Write frame data and flush cache for DMA
             buf.write_from(&tx_frame);
 
-            let desc = &mut self.tx_dma_ring[desc_idx];
+            let desc = unsafe { &mut *(self.tx_dma_ring.virt() as *mut TxDmaDesc).add(desc_idx) };
             // Use the pre-mapped IOVA from init — no per-transaction
             // dma_map/dma_unmap needed, avoiding IOMMU mapping leaks.
             let dma_addr = buf.dma_iova();
@@ -1333,7 +1346,7 @@ impl IwlWifiDevice {
             desc.flags = 0;
 
             // Flush descriptor cache line so device sees correct values
-            let desc_addr = &self.tx_dma_ring[desc_idx] as *const TxDmaDesc as *const u8;
+            let desc_addr = desc as *const TxDmaDesc as *const u8;
             mmio::cache_flush(desc_addr);
 
             self.tx_head = self.tx_head.wrapping_add(1);
@@ -1549,7 +1562,7 @@ impl IwlWifiDevice {
         // Process any pending frames in the RX queue
         while self.rx_tail != self.rx_head {
             let desc_idx = self.rx_tail;
-            let desc = &self.rx_dma_ring[desc_idx];
+            let desc = unsafe { &*(self.rx_dma_ring.virt() as *const RxDmaDesc).add(desc_idx) };
             if desc.len > 0 && desc_idx < self.rx_bufs.len() {
                 let buf = &self.rx_bufs[desc_idx];
                 let frame_len = (desc.len as usize).min(buf.len());
@@ -1641,17 +1654,9 @@ impl super::wifi::WifiDriver for IwlWifiDevice {
         ctx: &'static dyn DriverContext,
         mmio_base: *mut u32,
         hw_rev: u32,
+        device: crate::pci::PciDevice,
     ) -> Option<Box<dyn super::wifi::WifiDriver>> {
-        // Reconstruct minimal PCI device info from the given parameters.
-        // The actual init works with MMIO + ctx; the PciDevice is only
-        // used for config-space operations which are no longer needed
-        // at this point.
-        //
-        // We defer to the internal init_path that starts from the point
-        // just after BAR0 mapping + HW_REV read.
-        // For simplicity, we call a variant of init that accepts
-        // (mmio, hw_rev, ctx) directly.
-        Self::init_from_mmio(ctx, mmio_base, hw_rev)
+        Self::init_from_mmio(ctx, mmio_base, hw_rev, device)
             .map(|dev| Box::new(dev) as Box<dyn super::wifi::WifiDriver>)
     }
 
@@ -1708,8 +1713,9 @@ pub fn try_create_iwl(
     ctx: &'static dyn DriverContext,
     mmio: *mut u32,
     hw_rev: u32,
+    device: crate::pci::PciDevice,
 ) -> Option<Box<dyn super::wifi::WifiDriver>> {
-    IwlWifiDevice::init_from_mmio(ctx, mmio, hw_rev)
+    IwlWifiDevice::init_from_mmio(ctx, mmio, hw_rev, device)
         .map(|dev| Box::new(dev) as Box<dyn super::wifi::WifiDriver>)
 }
 

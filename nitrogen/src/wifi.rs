@@ -38,6 +38,7 @@ pub trait WifiDriver: Send {
         ctx: &'static dyn DriverContext,
         mmio_base: *mut u32,
         hw_rev: u32,
+        device: crate::pci::PciDevice,
     ) -> Option<Box<dyn WifiDriver>>
     where
         Self: Sized;
@@ -97,7 +98,7 @@ pub struct PciWifiInfo {
 
 /// Type-erased constructor: given the driver context, MMIO base, and HW
 /// revision, returns a boxed driver or `None` on failure.
-type DriverCtor = fn(&'static dyn DriverContext, *mut u32, u32) -> Option<Box<dyn WifiDriver>>;
+type DriverCtor = fn(&'static dyn DriverContext, *mut u32, u32, crate::pci::PciDevice) -> Option<Box<dyn WifiDriver>>;
 
 /// A single entry in the WiFi driver registry.
 pub struct DriverEntry {
@@ -254,7 +255,7 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeRes
     }
 
     // Let the matched driver create itself
-    let driver = (entry.create)(ctx, mmio_base, hw_rev)?;
+    let driver = (entry.create)(ctx, mmio_base, hw_rev, pci_dev)?;
 
     Some(PciProbeResult {
         driver,
