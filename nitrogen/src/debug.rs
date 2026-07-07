@@ -237,6 +237,11 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
             }
         }
     }
+
+    // WC memory fence: ensure all writes are flushed to the GPU framebuffer.
+    // Without this, write_volatile may be buffered in the CPU's write-combining
+    // buffer and never reach the display controller on real hardware.
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 // ── 8x8 bitmap font (ASCII 0x20-0x7E) ────────────────────────────────
