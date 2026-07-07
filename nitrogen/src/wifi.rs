@@ -228,14 +228,24 @@ pub struct PciProbeResult {
 pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeResult> {
     let (entry, info) = WifiRegistry::probe()?;
 
+    // ── PCI config-space setup (NEVER hangs) ────────────────────────
+    // On real hardware, the device may be in D3 or have ASPM L1 enabled,
+    // either of which will cause ANY MMIO access (including the HW_REV
+    // read below) to hang the CPU indefinitely.  We must ensure D0,
+    // disable ASPM, and enable memory-space decoding *before* touching
+    // the BAR — all via PCI config space (port I/O, safe).
+    let pci_dev = crate::pci::PciDevice::new(info.bus, info.device, info.function)?;
+    pci_dev.ensure_d0();
+    pci_dev.disable_pcie_aspm();
+    pci_dev.enable_memory_access();
+
     // Map BAR0 MMIO
     let mmio_virt = ctx.phys_to_virt(info.bar0_phys);
     if ctx.map_mmio_region(info.bar0_phys as usize, mmio_virt, info.bar0_size).is_err() {
         return None;
     }
 
-    // Read HW revision (first MMIO touch — safe on supported hardware,
-    // but we already matched via PCI ID so this should work)
+    // Read HW revision (first MMIO touch)
     let mmio_base = mmio_virt as *mut u32;
     let hw_rev = unsafe { core::ptr::read_volatile(mmio_base.add(0x028 / 4)) };
 
