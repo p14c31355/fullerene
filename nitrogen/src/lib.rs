@@ -30,6 +30,7 @@ pub mod ioapic;
 pub mod iommu;
 pub mod iwlwifi;
 pub mod mmio;
+pub mod wifi;
 pub mod pci;
 pub mod pci_health;
 pub mod pic;
