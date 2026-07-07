@@ -734,6 +734,10 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         settings_bridge::render_settings(rt);
     }
 
+    let debug_msgs = nitrogen::debug::drain();
+    if !debug_msgs.is_empty() {
+        rt.desktop.taskbar.debug_msgs = debug_msgs;
+    }
     let tb_changed = rt.desktop.update_taskbar();
     render_progress(b"RENDER: got fb dims");
     let fb_width = fb.width();
@@ -1262,6 +1266,15 @@ pub fn consume_frame_due() -> bool {
 }
 
 pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
+    // Register the framebuffer for immediate debug flushing (one-shot).
+    // Must happen before tick_core() so that WiFi init markers flush to screen.
+    static FB_REGISTERED: core::sync::atomic::AtomicBool =
+        core::sync::atomic::AtomicBool::new(false);
+    if !FB_REGISTERED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+        let virt = fb.pixels_mut().as_mut_ptr();
+        nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
+    }
+
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }

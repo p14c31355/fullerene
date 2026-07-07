@@ -224,17 +224,22 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeRes
     // disable ASPM, and enable memory-space decoding *before* touching
     // the BAR — all via PCI config space (port I/O, safe).
     let pci_dev = crate::pci::PciDevice::new(info.bus, info.device, info.function)?;
+    crate::debug::print("wifi", "ensure_d0");
     pci_dev.ensure_d0();
+    crate::debug::print("wifi", "disable_aspm");
     pci_dev.disable_pcie_aspm();
+    crate::debug::print("wifi", "enable_mem");
     pci_dev.enable_memory_access();
 
     // Map BAR0 MMIO
+    crate::debug::print("wifi", "map_bar0");
     let mmio_virt = ctx.phys_to_virt(info.bar0_phys);
     if ctx.map_mmio_region(info.bar0_phys as usize, mmio_virt, info.bar0_size).is_err() {
         return None;
     }
 
     // Read HW revision (first MMIO touch)
+    crate::debug::print("wifi", "read_hw_rev");
     let mmio_base = mmio_virt as *mut u32;
     let hw_rev = unsafe { core::ptr::read_volatile(mmio_base.add(0x028 / 4)) };
 
@@ -243,6 +248,7 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeRes
     }
 
     // Let the matched driver create itself
+    crate::debug::print("wifi", "driver_create");
     let driver = (entry.create)(ctx, mmio_base, hw_rev, pci_dev)?;
 
     Some(PciProbeResult {
