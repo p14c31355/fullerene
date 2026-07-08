@@ -1,9 +1,11 @@
 //! Immediate debug output to framebuffer.
 //!
-//! Provides a lock-free ring buffer that the compositor drains for rendering.
-//! No Mutex is used — the buffer uses atomic indices for producer/consumer
-//! synchronization, preventing deadlocks on real hardware where interrupt
-//! handlers and the render loop may concurrently call [`print`] and [`drain`].
+//! Provides a lock-free SPSC (Single-Producer Single-Consumer) ring buffer
+//! that the compositor drains for rendering.  No Mutex is used — the buffer
+//! uses atomic indices for producer/consumer synchronization, preventing
+//! deadlocks on real hardware where the render loop calls [`print`] and
+//! [`drain`].  The producer is **not** re-entrant or concurrent safe; only
+//! one thread/context may call [`print`] at a time.
 //!
 //! The kernel must call [`set_framebuffer`] once during boot to enable
 //! immediate flush.  Without it the module degrades to a pure ring buffer.
@@ -83,7 +85,7 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Write a debug status message (lock-free, re-entrant safe).
+/// Write a debug status message (lock-free, single-producer only).
 pub fn print(source: &str, msg: &str) {
     // ── Reserve a slot ─────────────────────────────────────
     let slot = WRITE_POS.fetch_add(1, Ordering::Relaxed);
@@ -95,6 +97,9 @@ pub fn print(source: &str, msg: &str) {
     // the committed COUNT.
     let buf_ref = unsafe { &mut *BUF.0.get() };
     let e = &mut buf_ref.buf[idx];
+    // Clear the entry before writing to avoid stale bytes from previous use
+    e.source = [0; SOURCE_LEN];
+    e.msg = [0; MSG_LEN];
     str_into_fixed(source, &mut e.source);
     str_into_fixed(msg, &mut e.msg);
 
@@ -115,20 +120,26 @@ pub fn drain() -> Vec<(String, String)> {
     let buf_ref = unsafe { &*BUF.0.get() };
     let read_base = READ_POS.load(Ordering::Relaxed);
 
-    // Clamp to MAX_ENTRIES to prevent buffer overrun in edge cases
-    let to_read = if pending > MAX_ENTRIES { MAX_ENTRIES } else { pending };
+    // When pending > MAX_ENTRIES, we've overwritten slots; skip to the
+    // oldest valid entry (the write position minus MAX_ENTRIES).
+    let (corrected_base, to_read) = if pending > MAX_ENTRIES {
+        let write_pos = WRITE_POS.load(Ordering::Relaxed);
+        (write_pos - MAX_ENTRIES, MAX_ENTRIES)
+    } else {
+        (read_base, pending)
+    };
 
     let mut out = Vec::with_capacity(to_read);
     for i in 0..to_read {
-        let pos = (read_base + i) % MAX_ENTRIES;
+        let pos = (corrected_base + i) % MAX_ENTRIES;
         let e = &buf_ref.buf[pos];
         let source = fixed_into_str(&e.source);
         let msg = fixed_into_str(&e.msg);
         out.push((source, msg));
     }
 
-    // Advance read position
-    READ_POS.store(read_base + to_read, Ordering::Relaxed);
+    // Advance read position to the corrected boundary
+    READ_POS.store(corrected_base + to_read, Ordering::Relaxed);
 
     out
 }

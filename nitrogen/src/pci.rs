@@ -512,11 +512,14 @@ impl PciScanner {
                     continue;
                 }
                 crate::debug::print("pci", "b0_push");
-                if let Some(pci_device) = PciDevice::new(0, device, function) {
+                if let Some(mut pci_device) = PciDevice::new(0, device, function) {
                     let class =
                         PciConfigSpace::read_config_byte(0, device, function, 0x0B);
                     let subclass =
                         PciConfigSpace::read_config_byte(0, device, function, 0x0A);
+                    // Store the scanned class/subclass so they're available in the public device
+                    pci_device.class_code = class;
+                    pci_device.subclass = subclass;
 
                     self.devices.push(pci_device);
 
@@ -556,11 +559,14 @@ impl PciScanner {
                     if !device_exists(bus, device, function) {
                         continue;
                     }
-                    if let Some(pci_device) = PciDevice::new(bus, device, function) {
+                    if let Some(mut pci_device) = PciDevice::new(bus, device, function) {
                         let class =
                             PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
                         let subclass =
                             PciConfigSpace::read_config_byte(bus, device, function, 0x0A);
+                        // Store the scanned class/subclass so they're available in the public device
+                        pci_device.class_code = class;
+                        pci_device.subclass = subclass;
 
                         if class == 0x06 && subclass == 0x04 {
                             let secondary_bus =

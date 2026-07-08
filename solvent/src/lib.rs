@@ -1178,10 +1178,15 @@ pub fn tick_core(now: u64) {
     // ~1 ms.  `try_init_wifi_device_step()` advances a state machine
     // through PCI probe, MMIO init, DMA allocation, firmware upload,
     // alive wait, and init commands — one small step per tick_core()
-    // call.  Once the state machine reaches Done/Failed, the flag stays
-    // cleared.
+    // call.  Once the state machine reaches Done/Failed, clear the
+    // pending flag so we stop calling the init step.
     if WIFI_INIT_PENDING.load(core::sync::atomic::Ordering::Relaxed) {
-        nitrogen::iwlwifi::try_init_wifi_device_step();
+        // Check if nitrogen has completed init (Done or Failed)
+        if nitrogen::iwlwifi::wifi_init_completed() {
+            mark_wifi_init_done();
+        } else {
+            nitrogen::iwlwifi::try_init_wifi_device_step();
+        }
     }
 
     poll_mouse_state();
