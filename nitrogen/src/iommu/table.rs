@@ -23,20 +23,34 @@ pub const CTX_FPD: u64 = 1 << 1;
 #[repr(C)]
 pub struct ContextEntry(u64, u64);
 
+pub const CTX_TT_MASK: u64 = 0b11 << 2;
+
 impl ContextEntry {
     pub fn is_present(&self) -> bool {
         self.0 & 1 != 0
     }
 
+    pub fn translation_type(&self) -> u64 {
+        self.0 & CTX_TT_MASK
+    }
+
+    pub fn is_pass_through(&self) -> bool {
+        self.is_present() && self.translation_type() == TT_PASS_THROUGH
+    }
+
+    pub fn is_blocked(&self) -> bool {
+        self.is_present() && self.translation_type() == TT_HOST_WITH_STRUCTURES && self.1 == 0
+    }
+
     /// Host translation entry: TT=00b with valid second-level page table.
-    /// Used for devices after `dma_map()` sets up IOMMU page tables.
+    /// AW (Address Width) and Domain ID live in the high qword per VT-d spec.
     pub fn new_host(second_level_pt_phys: u64, address_width: u64) -> Self {
         let lo = (second_level_pt_phys & 0x000f_ffff_ffff_f000)
             | 1                 // Present
             | TT_HOST_WITH_STRUCTURES
-            | address_width
             | CTX_FPD;
-        Self(lo, 0)
+        let hi = address_width | 0;  // Domain ID = 0 for now
+        Self(lo, hi)
     }
 
     /// Blocked entry: present + TT=00b with zero page table → DMA fault.
@@ -45,7 +59,6 @@ impl ContextEntry {
     }
 
     /// Pass-through entry: TT=10b — DMA bypasses IOMMU translation.
-    /// Default for devices that haven't called `dma_map()`.
     pub fn new_pass_through() -> Self {
         Self(1 | TT_PASS_THROUGH, 0)
     }
@@ -108,11 +121,11 @@ impl IommuPageTable {
     }
 
     pub fn map_page(&mut self, ctx: &MemCallbacks, iova: u64, phys: u64) -> Result<(), ()> {
-        if iova & 0xFFF != 0 || phys & 0xFFF != 0 {
+        if iova & 0xFFF != 0 || phys & 0xFFF != 0 || iova >> 39 != 0 {
             return Err(());
         }
         let sl2_virt = self.root_virt;
-        let sl2_idx = (iova >> 30) as usize;
+        let sl2_idx = ((iova >> 30) & 0x1FF) as usize;
         let sl2_entry = unsafe { &mut *sl2_virt.add(sl2_idx) };
 
         let sl1_virt: *mut u64;
@@ -143,11 +156,11 @@ impl IommuPageTable {
     }
 
     pub fn unmap_page(&mut self, ctx: &MemCallbacks, iova: u64) {
-        if iova & 0xFFF != 0 {
+        if iova & 0xFFF != 0 || iova >> 39 != 0 {
             return;
         }
         let sl2_virt = self.root_virt;
-        let sl2_idx = (iova >> 30) as usize;
+        let sl2_idx = ((iova >> 30) & 0x1FF) as usize;
         let sl2_entry = unsafe { &*sl2_virt.add(sl2_idx) };
         if *sl2_entry & IOPTE_R == 0 {
             return;

@@ -12,7 +12,10 @@ pub struct PluginRegistry {
 
 impl PluginRegistry {
     pub fn register(name: &'static str) {
-        REGISTRY.lock().entries.push(PluginEntry { name });
+        let mut registry = REGISTRY.lock();
+        if !registry.entries.iter().any(|entry| entry.name == name) {
+            registry.entries.push(PluginEntry { name });
+        }
     }
 
     pub fn iter() -> alloc::vec::IntoIter<PluginEntry> {

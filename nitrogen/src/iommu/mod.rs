@@ -32,8 +32,10 @@ struct IovaAllocator {
 
 impl IovaAllocator {
     fn new(iova_bits: u8) -> Self {
+        // Cap at 39 bits (3-level page table limit)
+        let bits = iova_bits.min(39);
         let start: u64 = 1 << 12;
-        let max_addr: u64 = (1u64 << iova_bits) - 1;
+        let max_addr: u64 = (1u64 << bits) - 1;
         Self {
             free: alloc::vec![IovaInterval { start, end: max_addr }],
         }
@@ -47,12 +49,11 @@ impl IovaAllocator {
         for (i, iv) in self.free.iter().enumerate() {
             let avail = iv.end - iv.start + 1;
             if avail >= need {
-                let candidate = iv.start;
                 let fits = match best {
-                    Some((_, addr)) => candidate < addr,
+                    Some((_, addr)) => iv.start < addr,
                     None => true,
                 };
-                if fits { best = Some((i, candidate)); }
+                if fits { best = Some((i, iv.start)); }
             }
         }
         let (idx, addr) = best?;
@@ -67,28 +68,20 @@ impl IovaAllocator {
         if aligned == 0 { return; }
         let start = addr;
         let end = addr + aligned as u64 - 1;
-        let mut new_free: Vec<IovaInterval> = Vec::new();
-        let mut inserted = false;
-        for iv in self.free.iter() {
-            if !inserted && end < iv.start {
-                new_free.push(IovaInterval { start, end });
-                new_free.push(IovaInterval { start: iv.start, end: iv.end });
-                inserted = true;
-            } else if !inserted && start <= iv.end && end >= iv.start {
-                let merged_start = start.min(iv.start);
-                let merged_end = end.max(iv.end);
-                new_free.push(IovaInterval { start: merged_start, end: merged_end });
-                inserted = true;
-            } else if inserted && start <= iv.start && end >= iv.start {
-                if let Some(last) = new_free.last_mut() {
+        let mut intervals = core::mem::take(&mut self.free);
+        intervals.push(IovaInterval { start, end });
+        intervals.sort_by_key(|iv| iv.start);
+        let mut merged: Vec<IovaInterval> = Vec::new();
+        for iv in intervals {
+            if let Some(last) = merged.last_mut() {
+                if iv.start <= last.end.saturating_add(1) {
                     last.end = last.end.max(iv.end);
+                    continue;
                 }
-            } else {
-                new_free.push(IovaInterval { start: iv.start, end: iv.end });
             }
+            merged.push(iv);
         }
-        if !inserted { new_free.push(IovaInterval { start, end }); }
-        self.free = new_free;
+        self.free = merged;
     }
 }
 
@@ -112,12 +105,9 @@ impl IommuEngine {
     }
 
     /// Populate pass-through entries for all discovered PCI devices.
-    /// Pass-through (TT=10b) means DMA bypasses IOMMU — existing drivers
-    /// that don't call `dma_map()` continue to work.
-    /// When a driver calls `dma_map()`, the entry is upgraded to host
-    /// translation (TT=00b with valid SL page table).
     fn setup_pass_through_all(&mut self) -> Result<(), ()> {
-        let scanner = PciScanner::new();
+        let mut scanner = PciScanner::new();
+        scanner.scan_all_buses().map_err(|_| ())?;
         if scanner.get_devices().is_empty() {
             log::warn!("IOMMU: no PCI devices found, skipping pass-through setup");
             return Ok(());
@@ -131,20 +121,16 @@ impl IommuEngine {
         Ok(())
     }
 
-    /// Upgrade a device's context entry from pass-through to host translation
-    /// and map its DMA buffer through the IOMMU page table.
     fn dma_map(&mut self, device_id: u16, phys: u64, size: usize) -> Result<u64, ()> {
         let bus = (device_id >> 8) as u8;
         let device = ((device_id >> 3) & 0x1F) as u8;
         let function = (device_id & 0x7) as u8;
 
-        // Upgrade from pass-through → host translation
         {
             let mut cbs = MEM.lock();
             let ctx = cbs.as_mut().ok_or(())?;
             let entry = self.root_table.get_context_entry(ctx, bus, device, function)?;
-            // Only upgrade if currently pass-through (don't re-set blocked entries)
-            if entry.is_present() {
+            if !entry.is_blocked() {
                 *entry = table::ContextEntry::new_host(
                     self.page_table.root_phys(),
                     table::CTX_AW_3LEVEL,
@@ -234,17 +220,26 @@ pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
         log::info!("IOMMU: already enabled by firmware");
     }
 
-    engine.registers.write_buffer_flush();
+    if !engine.registers.write_buffer_flush() {
+        return Err("IOMMU: write buffer flush failed");
+    }
     engine.registers.set_rtaddr(engine.root_table.root_phys());
     engine.registers.set_root_table_ptr();
-    engine.registers.wait_for_root_table_ptr();
+    if !engine.registers.wait_for_root_table_ptr() {
+        return Err("IOMMU: root table pointer setup timed out");
+    }
 
     engine.registers.enable_translation();
-    engine.registers.wait_for_translation_enable();
+    if !engine.registers.wait_for_translation_enable() {
+        return Err("IOMMU: translation enable timed out");
+    }
 
+    // TODO: Support multiple DRHD remapping units. Currently only the first
+    // DRHD is initialized; devices behind other units will not get context
+    // setup and will fault on DMA. dmar.drhd_units.len() logged above.
     *GLOBAL_IOMMU.lock() = Some(engine);
     IOMMU_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
-    log::info!("IOMMU: initialized with pass-through for all devices (dma_map upgrades to host translation)");
+    log::info!("IOMMU: initialized with pass-through for all devices");
     Ok(())
 }
 

@@ -42,6 +42,7 @@ impl FileSystem for DevFs {
         }
         let registry = DEVICE_REGISTRY.lock();
         if registry.contains_key(path) {
+            drop(registry);
             let ino = stable_ino(path);
             let fd = next_fd();
             let name = path.to_string();
@@ -53,83 +54,117 @@ impl FileSystem for DevFs {
     }
 
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-        let entry_idx = FD_TABLE.lock().iter().position(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
-        let name = FD_TABLE.lock()[entry_idx].name.clone();
+        let (name, mut entry_offset) = {
+            let table = FD_TABLE.lock();
+            let entry = table.iter().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            (entry.name.clone(), entry.offset)
+        };
         let registry = DEVICE_REGISTRY.lock();
-        let driver = registry.get(&name).ok_or(FsError::FileNotFound)?;
-        let mut entry_offset = FD_TABLE.lock()[entry_idx].offset;
-        let result = match driver {
-            DriverBox::Storage(drv) => {
+        let (result, new_offset) = match registry.get(&name) {
+            Some(DriverBox::Storage(drv)) => {
                 let bs = drv.block_size() as usize;
-                let lba = entry_offset / bs;
-                let count = buf.len().div_ceil(bs).max(1);
-                let actual = count.min(64);
-                let read_bytes = actual * bs;
-                let mut tmp = alloc::vec![0u8; read_bytes];
-                drv.read_blocks(lba as u64, actual, &mut tmp).map_err(|_| FsError::NotSupported)?;
-                let n = buf.len().min(read_bytes);
-                buf[..n].copy_from_slice(&tmp[..n]);
-                entry_offset += n;
-                Ok(n)
+                if bs == 0 || buf.is_empty() { (Ok(0), entry_offset) }
+                else {
+                    let block_off = entry_offset % bs;
+                    let lba = entry_offset / bs;
+                    let count = (block_off + buf.len()).div_ceil(bs).max(1);
+                    let actual = count.min(64);
+                    let read_bytes = actual * bs;
+                    let mut tmp = alloc::vec![0u8; read_bytes];
+                    drop(registry);
+                    match drv.read_blocks(lba as u64, actual, &mut tmp) {
+                        Ok(_) => {
+                            let n = buf.len().min(read_bytes.saturating_sub(block_off));
+                            buf[..n].copy_from_slice(&tmp[block_off..block_off + n]);
+                            (Ok(n), entry_offset + n)
+                        }
+                        Err(_) => (Err(FsError::NotSupported), entry_offset),
+                    }
+                }
             }
-            DriverBox::Network(drv) => {
-                let n = drv.receive(buf).map_err(|_| FsError::NotSupported)?;
-                entry_offset += n;
-                Ok(n)
+            Some(DriverBox::Network(drv)) => {
+                drop(registry);
+                match drv.receive(buf) {
+                    Ok(n) => (Ok(n), entry_offset + n),
+                    Err(_) => (Err(FsError::NotSupported), entry_offset),
+                }
             }
-            DriverBox::Audio(_) => Err(FsError::NotSupported),
-            DriverBox::UsbHost(_) => Err(FsError::NotSupported),
-            DriverBox::Display(_) => Err(FsError::NotSupported),
-            DriverBox::None => Err(FsError::FileNotFound),
+            Some(DriverBox::Audio(_)) | Some(DriverBox::UsbHost(_)) |
+            Some(DriverBox::Display(_)) | Some(DriverBox::None) | None =>
+                (Err(FsError::NotSupported), entry_offset),
         };
         if result.is_ok() {
-            FD_TABLE.lock()[entry_idx].offset = entry_offset;
+            let mut table = FD_TABLE.lock();
+            if let Some(e) = table.iter_mut().find(|e| e.fd == fd) {
+                e.offset = new_offset;
+            }
         }
         result
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
-        let entry_idx = FD_TABLE.lock().iter().position(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
-        let name = FD_TABLE.lock()[entry_idx].name.clone();
+        let (name, entry_offset) = {
+            let table = FD_TABLE.lock();
+            let entry = table.iter().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            (entry.name.clone(), entry.offset)
+        };
         let registry = DEVICE_REGISTRY.lock();
-        let driver = registry.get(&name).ok_or(FsError::FileNotFound)?;
-        let mut entry_offset = FD_TABLE.lock()[entry_idx].offset;
-        let result = match driver {
-            DriverBox::Storage(drv) => {
+        let (result, new_offset) = match registry.get(&name) {
+            Some(DriverBox::Storage(drv)) => {
                 let bs = drv.block_size() as usize;
-                let lba = entry_offset / bs;
-                let count = data.len().div_ceil(bs).max(1);
-                let actual = count.min(64);
-                let write_bytes = actual * bs;
-                let mut tmp = alloc::vec![0u8; write_bytes];
-                tmp[..data.len().min(write_bytes)].copy_from_slice(&data[..data.len().min(write_bytes)]);
-                drv.write_blocks(lba as u64, actual, &tmp).map_err(|_| FsError::NotSupported)?;
-                entry_offset += data.len();
-                Ok(data.len())
+                if bs == 0 || data.is_empty() { (Ok(0), entry_offset) }
+                else {
+                    let block_off = entry_offset % bs;
+                    let lba = entry_offset / bs;
+                    let count = (block_off + data.len()).div_ceil(bs).max(1);
+                    let actual = count.min(64);
+                    let write_bytes = actual * bs;
+                    let n = data.len().min(write_bytes.saturating_sub(block_off));
+                    let mut tmp = alloc::vec![0u8; write_bytes];
+                    if block_off != 0 || n != write_bytes {
+                        if drv.read_blocks(lba as u64, actual, &mut tmp).is_err() {
+                            return Err(FsError::NotSupported);
+                        }
+                    }
+                    tmp[block_off..block_off + n].copy_from_slice(&data[..n]);
+                    drop(registry);
+                    match drv.write_blocks(lba as u64, actual, &tmp) {
+                        Ok(_) => (Ok(n), entry_offset + n),
+                        Err(_) => (Err(FsError::NotSupported), entry_offset),
+                    }
+                }
             }
-            DriverBox::Network(drv) => {
-                drv.send(data).map_err(|_| FsError::NotSupported)?;
-                entry_offset += data.len();
-                Ok(data.len())
+            Some(DriverBox::Network(drv)) => {
+                drop(registry);
+                match drv.send(data) {
+                    Ok(_) => (Ok(data.len()), entry_offset + data.len()),
+                    Err(_) => (Err(FsError::NotSupported), entry_offset),
+                }
             }
-            DriverBox::Audio(drv) => {
-                drv.play(data).map_err(|_| FsError::NotSupported)?;
-                entry_offset += data.len();
-                Ok(data.len())
+            Some(DriverBox::Audio(drv)) => {
+                drop(registry);
+                match drv.play(data) {
+                    Ok(_) => (Ok(data.len()), entry_offset + data.len()),
+                    Err(_) => (Err(FsError::NotSupported), entry_offset),
+                }
             }
-            DriverBox::UsbHost(_) => Err(FsError::NotSupported),
-            DriverBox::Display(_) => Err(FsError::NotSupported),
-            DriverBox::None => Err(FsError::FileNotFound),
+            Some(DriverBox::UsbHost(_)) | Some(DriverBox::Display(_)) |
+            Some(DriverBox::None) | None => (Err(FsError::NotSupported), entry_offset),
         };
         if result.is_ok() {
-            FD_TABLE.lock()[entry_idx].offset = entry_offset;
+            let mut table = FD_TABLE.lock();
+            if let Some(e) = table.iter_mut().find(|e| e.fd == fd) {
+                e.offset = new_offset;
+            }
         }
         result
     }
 
     fn close(&mut self, fd: u32) -> Result<(), FsError> {
-        FD_TABLE.lock().retain(|e| e.fd != fd);
-        Ok(())
+        let mut table = FD_TABLE.lock();
+        let before = table.len();
+        table.retain(|e| e.fd != fd);
+        if table.len() == before { Err(FsError::InvalidFileDescriptor) } else { Ok(()) }
     }
 
     fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError> {

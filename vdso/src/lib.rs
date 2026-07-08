@@ -15,17 +15,30 @@ pub struct VdsoEntry {
 
 pub const VDSO_BUFFER_SIZE: usize = 32768;
 
-pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> usize {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildError {
+    TooLarge,
+}
+
+pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<usize, BuildError> {
     let count = entries.len();
     let phnum = 1 + count;
+    let names_total = entries.iter().try_fold(0usize, |acc, e| acc.checked_add(e.name.len() + 1)).ok_or(BuildError::TooLarge)?;
 
     let phoff: u64 = 64;
     let ph_entry_size: u64 = 56;
     let ph_end = phoff + phnum as u64 * ph_entry_size;
 
     let symtab_off = ph_end as usize;
-    let mut str_off = symtab_off + (1 + count) * 24;
-    let strtab_off = str_off;
+    let strtab_off = symtab_off + (1 + count) * 24;
+    // Section headers go AFTER the string table
+    let shoff = strtab_off + names_total;
+    let shnum = 2;
+    let total_size = shoff + shnum * 56;
+
+    if total_size > VDSO_BUFFER_SIZE {
+        return Err(BuildError::TooLarge);
+    }
 
     unsafe fn put_u64(buf: &mut [u8; VDSO_BUFFER_SIZE], off: usize, val: u64) {
         unsafe {
@@ -63,13 +76,13 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> usize {
         put_u32(buf, 20, 1);
         put_u64(buf, 24, 0);
         put_u64(buf, 32, phoff);
-        put_u64(buf, 40, symtab_off as u64);
+        put_u64(buf, 40, shoff as u64);
         put_u32(buf, 48, 0);
         put_u16(buf, 52, 64);
         put_u16(buf, 54, 56);
         put_u16(buf, 56, phnum as u16);
-        put_u16(buf, 58, 24);
-        put_u16(buf, 60, (1 + count) as u16);
+        put_u16(buf, 58, 64);
+        put_u16(buf, 60, shnum as u16);
         put_u16(buf, 62, 1);
 
         let mut ph_off = phoff as usize;
@@ -121,6 +134,7 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> usize {
         put_u64(buf, sym_off + 16, 0);
         sym_off += 24;
 
+        let mut str_off = strtab_off;
         for (i, entry) in entries.iter().enumerate() {
             let name_off = (str_off - strtab_off) as u32;
             put_u32(buf, sym_off, name_off);
@@ -142,7 +156,7 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> usize {
             str_off += 1;
         }
 
-        let mut sh_off = symtab_off;
+        let mut sh_off = shoff;
         put_u32(buf, sh_off, str_off as u32 - strtab_off as u32 + 1);
         put_u32(buf, sh_off + 4, 2);
         put_u64(buf, sh_off + 8, 0);
@@ -164,7 +178,7 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> usize {
         put_u64(buf, sh_off + 48, 0);
     }
 
-    str_off
+    Ok(total_size)
 }
 
 pub fn slot_vaddr(index: usize) -> u64 {

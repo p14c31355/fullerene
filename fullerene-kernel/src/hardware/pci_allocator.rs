@@ -25,12 +25,19 @@ impl PciAllocator {
                 cmd_offset, original_command & !0x2,
             );
 
-            for bar_index in 0..6 {
-                if let Some(bar) = device.get_bar_info(bar_index) {
+            let mut bar_index = 0;
+            while bar_index < 6 {
+                let advance = if let Some(bar) = device.get_bar_info(bar_index) {
+                    let step = if bar.is_64bit { 2 } else { 1 };
                     log::info!(
                         "[PCI-Allocator] BAR {}: addr={:#x} size={:#x} io={} 64bit={}",
                         bar_index, bar.address, bar.size, bar.is_io, bar.is_64bit
                     );
+                    if bar.is_io {
+                        log::info!("[PCI-Allocator] BAR {} is I/O space; leaving unchanged", bar_index);
+                        bar_index += step;
+                        continue;
+                    }
                     if bar.address == 0 && bar.size > 0 {
                         let aligned_addr = (self.mmio_base + (bar.size as u64 - 1)) & !(bar.size as u64 - 1);
                         let offset = 0x10 + (bar_index * 4);
@@ -49,9 +56,12 @@ impl PciAllocator {
                     } else {
                         log::info!("[PCI-Allocator] BAR {} already assigned at {:#x}", bar_index, bar.address);
                     }
+                    step
                 } else {
                     log::info!("[PCI-Allocator] BAR {} not present", bar_index);
-                }
+                    1
+                };
+                bar_index += advance;
             }
             PciConfigSpace::write_config_word_raw(
                 device.bus, device.device, device.function,

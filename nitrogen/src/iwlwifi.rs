@@ -2409,6 +2409,7 @@ pub fn try_init_wifi_device_step() {
                         None => { /* cleanup below */ break; }
                     };
                     if buf.dma_map(driver_ctx, pci_dev.device_id).is_err() {
+                        buf.free(driver_ctx);
                         break;
                     }
                     tx_bufs.push(buf);
@@ -2430,7 +2431,7 @@ pub fn try_init_wifi_device_step() {
                     };
                     let dma = match buf.dma_map(driver_ctx, pci_dev.device_id) {
                         Ok(d) => d,
-                        Err(_) => { break; }
+                        Err(_) => { buf.free(driver_ctx); break; }
                     };
                     unsafe {
                         (*rx_virt.add(i)).addr_lo = dma as u32;

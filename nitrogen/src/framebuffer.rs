@@ -185,11 +185,9 @@ impl FramebufferManager {
 
     /// Copy a rectangular region from a source buffer into the framebuffer.
     ///
-    /// # Panics
-    ///
     /// Silently fails if `src` is too small for the rectangle.
     pub fn copy_rect(&self, x: u32, y: u32, w: u32, h: u32, src: &[u32]) {
-        if src.len() < (w as usize) * (h as usize) {
+        if self.fb_base.is_null() || src.len() < (w as usize) * (h as usize) {
             return;
         }
         let clip_w = w.min(self.width.saturating_sub(x));

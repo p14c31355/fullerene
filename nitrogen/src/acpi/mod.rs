@@ -126,14 +126,19 @@ pub fn find_table(rsdp_phys: u64, signature: &[u8; 4]) -> Option<u64> {
         return None;
     }
 
+    let sdt_bytes = unsafe { core::slice::from_raw_parts(sdt_ptr as *const u8, length as usize) };
+    if !checksum(sdt_bytes) {
+        return None;
+    }
+
     let entry_count = (length as usize - 36) / entry_size;
     let entries_virt = sdt_ptr as usize + 36;
 
     for i in 0..entry_count {
         let entry_phys = if entry_size == 8 {
-            unsafe { *(entries_virt as *const u64).add(i) }
+            unsafe { core::ptr::read_unaligned((entries_virt as *const u64).add(i)) }
         } else {
-            unsafe { *(entries_virt as *const u32).add(i) as u64 }
+            unsafe { core::ptr::read_unaligned((entries_virt as *const u32).add(i)) as u64 }
         };
         if entry_phys == 0 {
             continue;
@@ -151,13 +156,18 @@ pub fn find_table(rsdp_phys: u64, signature: &[u8; 4]) -> Option<u64> {
 }
 
 pub fn get_table_bytes(phys: u64) -> Option<&'static [u8]> {
+    use core::ptr::addr_of;
     let sdt = phys_to_virt::<SdtHeader>(phys);
     if sdt.is_null() {
         return None;
     }
-    let header = unsafe { &*sdt };
-    if header.length > 128 * 1024 || header.length < 36 {
+    let length = unsafe { core::ptr::read_unaligned(addr_of!((*sdt).length)) };
+    if length > 128 * 1024 || length < 36 {
         return None;
     }
-    Some(unsafe { core::slice::from_raw_parts(sdt as *const u8, header.length as usize) })
+    let bytes = unsafe { core::slice::from_raw_parts(sdt as *const u8, length as usize) };
+    if !checksum(bytes) {
+        return None;
+    }
+    Some(bytes)
 }
