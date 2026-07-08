@@ -147,8 +147,7 @@ impl ControllerManager {
             dev.enable_memory_access();
             dev.ensure_d0();
 
-            // Also disable ASPM and L1Sub on the upstream PCIe bridge (if any).
-            // Bridge ECAM is always safe.  Endpoint ECAM is NOT touched.
+            // Also disable ASPM on the upstream PCIe bridge (if any).
             let upstream = scanner.get_devices().iter().find(|bridge| {
                 bridge.class_code == 0x06
                     && bridge.subclass == 0x04
@@ -158,7 +157,6 @@ impl ControllerManager {
             });
             if let Some(up) = upstream {
                 up.disable_pcie_aspm();
-                PciDevice::disable_l1_substates(up.bus, up.device, up.function);
             }
 
             use crate::pci_health::PciHealth;

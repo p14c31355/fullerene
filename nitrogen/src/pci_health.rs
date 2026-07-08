@@ -189,9 +189,13 @@ impl PciHealth {
     /// 1. `ensure_d0()` on endpoint and bridge (port I/O, safe)
     /// 2. **Link retrain** on upstream bridge (port I/O, safe)
     /// 3. `disable_pcie_aspm()` on bridge — standard ASPM (port I/O, safe)
-    /// 4. `disable_l1_substates()` on bridge — L1Sub via ECAM to bridge (safe)
-    /// 5. `disable_pcie_aspm()` on endpoint — standard ASPM only, no ECAM (safe)
-    /// 6. `check()` — full health verification via port I/O (safe)
+    /// 4. `disable_pcie_aspm()` on endpoint — standard ASPM only (port I/O, safe)
+    /// 5. `check()` — full health verification via port I/O (safe)
+    ///
+    /// Does NOT touch L1 PM Substates (ECAM).  ECAM MMIO is inherently
+    /// unsafe on bare metal (MCFG base may be wrong, phys→virt mapping
+    /// may be incomplete).  Linux tolerates ASPM L1 + L1Sub enabled on
+    /// the same chipset without hangs, so L1Sub disable is unnecessary.
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
         // Step 1: Re-assert D0 on the device and bridge (port I/O, safe)
         self.ensure_d0();
@@ -211,21 +215,12 @@ impl PciHealth {
             }
         }
 
-        // Step 4: Disable L1Sub on the upstream bridge (ECAM to bridge, safe).
-        // L1Sub requires both bridge and endpoint to agree — disabling it
-        // on the bridge alone prevents the link from entering L1.1/L1.2.
-        // This avoids ECAM reads to the endpoint, which would hang if the
-        // link is stuck in L1.
-        if let Some((b, d, f)) = self.upstream_bridge {
-            PciDevice::disable_l1_substates(b, d, f);
-        }
-
-        // Step 5: Disable standard ASPM on the endpoint (port I/O, safe).
-        // `disable_pcie_aspm` no longer touches L1Sub — it only clears
-        // the ASPM bits in the PCIe Link Control register.
+        // Step 4: Disable standard ASPM on the endpoint (port I/O, safe).
+        // L1Sub is not touched — ECAM access is unsafe on bare metal
+        // (see above).  Linux tolerates L1Sub enabled on this chipset.
         self.disable_aspm();
 
-        // Step 6: Re-verify (port I/O, safe)
+        // Step 5: Re-verify (port I/O, safe)
         self.check()
     }
 

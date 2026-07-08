@@ -303,11 +303,8 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
                 up.bus, up.device, up.function
             );
             up.disable_pcie_aspm();
-            // L1Sub (L1.1 / L1.2) must be disabled on the upstream bridge.
-            // Bridge ECAM reads are always safe, unlike endpoint ECAM which
-            // hangs if the link is in L1.  Disabling L1Sub on the bridge
-            // alone is sufficient — L1Sub requires both ends to agree.
-            crate::pci::PciDevice::disable_l1_substates(up.bus, up.device, up.function);
+            // L1Sub is NOT disabled — ECAM MMIO is unsafe on bare metal.
+            // Linux tolerates ASPM L1 + L1Sub enabled on this chipset.
             // ── PCIe error recovery: Completion Timeout on endpoint + Root Port AER ──
             crate::pci_error::configure_completion_timeout(info.bus, info.device, info.function);
             crate::pci_error::configure_root_port_error_reporting(up.bus, up.device, up.function);

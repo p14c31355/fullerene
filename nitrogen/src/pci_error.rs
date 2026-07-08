@@ -78,26 +78,11 @@ pub fn configure_completion_timeout(bus: u8, dev: u8, func: u8) {
 
 /// Find the AER Extended Capability offset (ID 0x0001) on a device.
 ///
-/// Returns `None` if AER is not present or ECAM is not available.
-fn find_aer_cap(bus: u8, dev: u8, func: u8) -> Option<u16> {
-    let mut off: u16 = 0x100;
-    let mut iterations = 0;
-    const MAX_ITERATIONS: u8 = 48;
-    while off != 0 && iterations < MAX_ITERATIONS {
-        iterations += 1;
-        // Extended capabilities require ECAM (offset ≥ 0x100).
-        let cap_hdr = pci::read_ext_dword(bus, dev, func, off);
-        if cap_hdr == 0xFFFF_FFFF {
-            // ECAM not configured — no AER
-            return None;
-        }
-        let cap_id = (cap_hdr & 0xFFFF) as u16;
-        let next_off = ((cap_hdr >> 20) & 0xFFF) as u16;
-        if cap_id == 0x0001 {
-            return Some(off);
-        }
-        off = next_off;
-    }
+/// Returns `None` — AER requires ECAM MMIO which is not safe on bare metal
+/// (MCFG base may be wrong, phys→virt mapping incomplete).  Fall through to
+/// the port-I/O Root Control path in `configure_root_port_error_reporting`.
+fn find_aer_cap(_bus: u8, _dev: u8, _func: u8) -> Option<u16> {
+    // ECAM MMIO is unsafe on bare metal — skip AER path entirely.
     None
 }
 
