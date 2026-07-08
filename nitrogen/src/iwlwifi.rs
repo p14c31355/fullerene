@@ -1304,12 +1304,12 @@ impl IwlWifiDevice {
         crate::debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
-        // Re-verify device presence before the final MMIO sequence,
-        // since firmware upload may have taken significant time.
-        if !self.health.is_device_present() {
+        // Re-verify device health (D0, link, vendor) before the final MMIO
+        // sequence, since firmware upload may have taken significant time.
+        self.health.pre_mmio_access().map_err(|_| {
             self.fw_state = FwState::Error;
-            return Err("Device disappeared during firmware upload");
-        }
+            "Device not accessible after firmware upload"
+        })?;
 
         // Kick the firmware CPU (without waiting for alive)
         unsafe {
@@ -1359,17 +1359,11 @@ impl IwlWifiDevice {
             return Err("Timeout waiting for firmware alive");
         }
 
-        // Check device presence on every poll
-        let vendor = crate::pci::PciConfigSpace::read_config_word(
-            self._pci_dev.bus,
-            self._pci_dev.device,
-            self._pci_dev.function,
-            0,
-        );
-        if vendor == 0xFFFF {
+        // Full health check (vendor, D0, link status) before MMIO
+        self.health.pre_mmio_access().map_err(|_| {
             self.fw_state = FwState::Error;
-            return Err("Device disappeared from PCI bus");
-        }
+            "Device not accessible for MMIO"
+        })?;
 
         // Check for alive interrupt
         unsafe {
