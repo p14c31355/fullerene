@@ -1270,12 +1270,12 @@ pub fn consume_frame_due() -> bool {
 }
 
 pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
-    // Register the framebuffer for immediate debug flushing every frame.
-    // FramebufferGuard may change between frames (different allocation),
-    // so we must update the pointer each time.  Must happen before
-    // tick_core() so that WiFi init markers flush to screen.
-    let virt = fb.pixels_mut().as_mut_ptr();
-    nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
+    // Immediate framebuffer flushing is currently disabled.  Debug messages
+    // are delivered via the lock-free ring buffer and drained by the compositor.
+    // If re-enabled, set_framebuffer must be called here every frame because
+    // FramebufferGuard may change between frames.
+    // let virt = fb.pixels_mut().as_mut_ptr();
+    // nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
 
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;

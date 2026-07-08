@@ -762,7 +762,7 @@ impl IwlWifiDevice {
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
             loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 50_000 {
                     break;
                 }
                 core::hint::spin_loop();
@@ -776,7 +776,7 @@ impl IwlWifiDevice {
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
             loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 50_000 {
                     break;
                 }
                 core::hint::spin_loop();
@@ -1260,8 +1260,8 @@ impl IwlWifiDevice {
         let mut off = FW_HEADER_SIZE;
         let mut section_count = 0;
         while off + 8 <= fw_data.len() {
-            let tlv_len: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off) as *const u32) };
-            let tlv_type: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32) };
+            let tlv_type: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off) as *const u32) };
+            let tlv_len: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32) };
             let tlv_data_off = off + 8;
             let tlv_end = match tlv_data_off.checked_add(tlv_len as usize) {
                 Some(end) => end,
@@ -2362,6 +2362,7 @@ pub fn try_init_wifi_device_step() {
             crate::debug::print("iwlwifi", "step: init_done");
         }
         WifiInitPhase::Failed => {
+            let _ = WIFI_INIT_CTX.lock().mmio_device.take();
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
             crate::debug::print("iwlwifi", "step: init_failed");
         }
