@@ -40,27 +40,19 @@ const CFG_FIRST_PORT_TRANSLATION: u8 = 1 << 6;
 /// Wait for the PS/2 controller input buffer to be empty (bit 1 = 0).
 /// Returns `true` if ready within the timeout, `false` otherwise.
 fn wait_input_buffer_empty(status_port: &mut Port<u8>) -> bool {
-    for _ in 0..100_000 {
+    crate::timing::wait_timeout_us(100_000, || {
         let status: u8 = unsafe { status_port.read() };
-        if status & 0x02 == 0 {
-            return true;
-        }
-        core::hint::spin_loop();
-    }
-    false
+        status & 0x02 == 0
+    }).is_ok()
 }
 
 /// Wait for the PS/2 controller output buffer to be full (bit 0 = 1).
 /// Returns `true` if data available within the timeout, `false` otherwise.
 fn wait_output_buffer_full(status_port: &mut Port<u8>) -> bool {
-    for _ in 0..100_000 {
+    crate::timing::wait_timeout_us(100_000, || {
         let status: u8 = unsafe { status_port.read() };
-        if status & 0x01 != 0 {
-            return true;
-        }
-        core::hint::spin_loop();
-    }
-    false
+        status & 0x01 != 0
+    }).is_ok()
 }
 
 /// Send a command byte to the PS/2 controller and wait for it to be accepted.

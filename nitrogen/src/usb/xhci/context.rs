@@ -227,13 +227,9 @@ impl XhciContext {
             self.registers
                 .op
                 .set_usbcmd(self.registers.op.usbcmd() & !USBCMD_RS);
-            for _ in 0..200_000 {
-                if self.registers.op.usbsts() & USBSTS_HCH != 0 {
-                    break;
-                }
-                super::port::delay_us(100);
-            }
-            if self.registers.op.usbsts() & USBSTS_HCH == 0 {
+            if crate::timing::wait_timeout_us(500_000, || {
+                self.registers.op.usbsts() & USBSTS_HCH != 0
+            }).is_err() {
                 return Err("controller failed to halt before HCRST");
             }
         }
@@ -334,25 +330,17 @@ impl XhciContext {
         // Without this, register access may cause hangs on Intel controllers.
         super::port::delay_us(1000);
 
-        for _ in 0..200_000 {
-            if op.usbcmd() & USBCMD_HCRST == 0 {
-                break;
-            }
-            super::port::delay_us(100);
-        }
-        if op.usbcmd() & USBCMD_HCRST != 0 {
+        if crate::timing::wait_timeout_us(500_000, || {
+            op.usbcmd() & USBCMD_HCRST == 0
+        }).is_err() {
             log::warn!("xHCI: HCRST did not clear");
             return Err("HCRST timeout");
         }
 
         // Wait for HCHalted
-        for _ in 0..200_000 {
-            if op.usbsts() & USBSTS_HCH != 0 {
-                break;
-            }
-            super::port::delay_us(100);
-        }
-        if op.usbsts() & USBSTS_HCH == 0 {
+        if crate::timing::wait_timeout_us(500_000, || {
+            op.usbsts() & USBSTS_HCH != 0
+        }).is_err() {
             log::warn!("xHCI: controller did not halt after HCRST");
             return Err("HCHalted timeout");
         }
@@ -360,13 +348,9 @@ impl XhciContext {
         // Wait for CNR (Controller Not Ready) to clear
         // The xHC needs time to initialise its internal state
         // before accepting register writes (xHCI spec §5.4.2).
-        for _ in 0..200_000 {
-            if op.usbsts() & USBSTS_CNR == 0 {
-                break;
-            }
-            super::port::delay_us(100);
-        }
-        if op.usbsts() & USBSTS_CNR != 0 {
+        if crate::timing::wait_timeout_us(500_000, || {
+            op.usbsts() & USBSTS_CNR == 0
+        }).is_err() {
             log::warn!("xHCI: CNR did not clear after HCRST");
             return Err("CNR timeout");
         }
@@ -426,14 +410,9 @@ impl XhciContext {
         let op = &self.registers.op;
 
         op.set_usbcmd_bits(USBCMD_RS | USBCMD_HSEE);
-        for _ in 0..200_000 {
-            if op.usbsts() & USBSTS_HCH == 0 {
-                break;
-            }
-            super::port::delay_us(100);
-        }
-
-        if op.usbsts() & USBSTS_HCH != 0 {
+        if crate::timing::wait_timeout_us(500_000, || {
+            op.usbsts() & USBSTS_HCH == 0
+        }).is_err() {
             log::error!("xHCI: controller failed to start (HCHalted)");
             return Err("controller failed to start");
         }

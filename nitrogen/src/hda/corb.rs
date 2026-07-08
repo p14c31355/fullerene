@@ -148,9 +148,9 @@ impl CorbEngine {
 
             // Reset CORB read pointer (bit 15 = CORBRPRST)
             mmio_write16(mmio, CORBRP, 0x8000);
-            for _ in 0..200 {
-                core::hint::spin_loop();
-            }
+            // Short settling delay after reset assertion — CORBRPRST is
+            // self-clearing per HDA spec §4.4.1.
+            crate::timing::delay_us(50);
             mmio_write16(mmio, CORBRP, 0);
             mmio_write16(mmio, CORBWP, 0);
 
@@ -167,9 +167,8 @@ impl CorbEngine {
 
             // Reset RIRB write pointer
             mmio_write16(mmio, RIRBWP, 0x8000);
-            for _ in 0..200 {
-                core::hint::spin_loop();
-            }
+            // Short settling delay after RIRBWP reset assertion (self-clearing).
+            crate::timing::delay_us(50);
             if mmio_read16(mmio, RIRBWP) & 0x8000 != 0 {
                 mmio_write16(mmio, RIRBWP, 0);
             }
@@ -199,10 +198,8 @@ impl CorbEngine {
             );
             log::info!("HDA: CORB/RIRB enabled (size={} entries)", corb_entries);
 
-            // Short settling delay for Intel PCH controllers
-            for _ in 0..50000 {
-                core::hint::spin_loop();
-            }
+            // Short settling delay for Intel PCH controllers (50 ms).
+            crate::timing::delay_us(50_000);
             true
         }
     }
@@ -258,19 +255,19 @@ impl CorbEngine {
             let corb_byte_mask = (corb_n * 4 - 1) as u16;
             let rirb_byte_mask = (corb_n * 8 - 1) as u16;
 
-            // Wait for space in CORB
-            let mut has_space = false;
-            for _ in 0..1000 {
+            // Wait for space in CORB (1 ms deadline).
+            let has_space = crate::timing::poll_timeout_us(1_000, || {
                 let wp_byte = mmio_read16(mmio, CORBWP) & corb_byte_mask;
                 let rp_byte = mmio_read16(mmio, CORBRP) & corb_byte_mask;
                 let wp = (wp_byte / 4) as usize;
                 let rp = (rp_byte / 4) as usize;
                 if (wp + 1) % corb_n != rp {
-                    has_space = true;
-                    break;
+                    Some(true)
+                } else {
+                    None
                 }
-                core::hint::spin_loop();
-            }
+            })
+            .unwrap_or(false);
             if !has_space {
                 return 0xFFFF_FFFF;
             }
@@ -292,11 +289,11 @@ impl CorbEngine {
 
             mmio_write16(mmio, CORBWP, (next_wp * 4) as u16);
 
-            // Walk RIRB entries incrementally
+            // Walk RIRB entries incrementally (100 ms deadline).
             let rirb_n: usize = corb_n;
             let rirb_entry_mask = rirb_n - 1;
             let mut rp = curr_rp;
-            for _iter in 0..100_000 {
+            let verb_result = crate::timing::poll_timeout_us(100_000, || {
                 Self::tick_vm_exit();
                 let rirb_wp = ((mmio_read16(mmio, RIRBWP) & rirb_byte_mask) / 8) as usize;
                 while rp != rirb_wp {
@@ -314,13 +311,12 @@ impl CorbEngine {
                                 raw
                             );
                         }
-                        return raw;
+                        return Some(raw);
                     }
                 }
-                core::hint::spin_loop();
-            }
-
-            0xFFFF_FFFF
+                None
+            });
+            verb_result.unwrap_or(0xFFFF_FFFF)
         }
     }
 }

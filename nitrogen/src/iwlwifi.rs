@@ -1202,7 +1202,11 @@ impl IwlWifiDevice {
     /// Start firmware upload and CPU boot without waiting for alive.
     /// Returns Ok if upload succeeds; the caller must then poll check_alive_nonblocking.
     pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
-        self.health.pre_mmio_access().map_err(|_| "Device not accessible for firmware upload")?;
+        // `recover()` re-asserts D0, disables ASPM, and retrains the
+        // upstream bridge link — this is necessary because several
+        // frames may have elapsed since `MmioInit` and the PCIe link
+        // may have re-entered L1 by now.
+        self.health.recover().map_err(|_| "Device not accessible for firmware upload")?;
 
         crate::debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
@@ -1304,9 +1308,10 @@ impl IwlWifiDevice {
         crate::debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
-        // Re-verify device health (D0, link, vendor) before the final MMIO
-        // sequence, since firmware upload may have taken significant time.
-        self.health.pre_mmio_access().map_err(|_| {
+        // Re-verify device health and retrain link before the final MMIO
+        // sequence, since firmware upload may have taken significant time
+        // and the PCIe link may have re-entered L1.
+        self.health.recover().map_err(|_| {
             self.fw_state = FwState::Error;
             "Device not accessible after firmware upload"
         })?;
@@ -1470,8 +1475,11 @@ impl IwlWifiDevice {
             return Err("HCMD too large");
         }
 
-        // Verify device is accessible before DMA transactions
-        self.health.pre_mmio_access().map_err(|_| "device not accessible")?;
+        // Verify device is accessible before DMA transactions.
+        // Use recover() instead of pre_mmio_access() because this is
+        // the first MMIO read after firmware init — the PCIe link may
+        // have fallen back into L1 during the wait.
+        self.health.recover().map_err(|_| "device not accessible")?;
 
         // Build command header
         let hcmd_header = HcmdHeader {
@@ -2284,7 +2292,61 @@ pub fn try_init_wifi_device_step() {
                 return;
             }
             {
-                let health = PciHealth::new(&raw.pci_dev);
+                let mut health = PciHealth::new(&raw.pci_dev);
+                if let Some((bus, dev, func)) = raw.upstream_bridge {
+                    health = health.with_upstream_bridge(bus, dev, func);
+                    // Force the upstream link out of L1 by toggling the
+                    // Link Retrain bit.  This is necessary on some Intel
+                    // chipsets where the bridge may be stuck in L1 after
+                    // ASPM has been disabled.
+                    if let Some(_bridge) = crate::pci::PciDevice::new(bus, dev, func) {
+                        let lnk_ctl_offset = {
+                            // Walk the PCIe capability list to find the
+                            // Link Control register (offset 0x10 within
+                            // the PCIe cap structure).
+                            let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(
+                                bus, dev, func, 0x34,
+                            );
+                            let mut off = cap_ptr;
+                            let mut lnk_ctl = None;
+                            let mut visited = [false; 256];
+                            for _ in 0..48 {
+                                if off < 0x40 || off > 0xF8 { break; }
+                                if visited[off as usize] { break; }
+                                visited[off as usize] = true;
+                                let cap_id = crate::pci::PciConfigSpace::read_config_byte(
+                                    bus, dev, func, off,
+                                );
+                                if cap_id == 0x10 {
+                                    lnk_ctl = Some(off + 0x10);
+                                    break;
+                                }
+                                let next = crate::pci::PciConfigSpace::read_config_byte(
+                                    bus, dev, func, off + 1,
+                                );
+                                if next == 0 || next == off { break; }
+                                off = next;
+                            }
+                            lnk_ctl
+                        };
+                        if let Some(lnk_off) = lnk_ctl_offset {
+                            let ctl = crate::pci::PciConfigSpace::read_config_word(
+                                bus, dev, func, lnk_off,
+                            );
+                            // Bit 5 = Link Retrain.  Writing 1 triggers a retrain;
+                            // the hardware auto-clears this bit.
+                            crate::pci::PciConfigSpace::write_config_word_raw(
+                                bus, dev, func, lnk_off, ctl | (1 << 5),
+                            );
+                            log::info!(
+                                "WiFi: link retrain triggered on bridge {:02x}:{:02x}.{}",
+                                bus, dev, func,
+                            );
+                            // Give the link ~10 ms to come back up
+                            crate::timing::delay_us(10_000);
+                        }
+                    }
+                }
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.pci_dev = Some(raw.pci_dev);
                 ctx.mmio = raw.mmio;
@@ -2299,17 +2361,21 @@ pub fn try_init_wifi_device_step() {
         }
         WifiInitPhase::MmioInit => {
             // ── MMIO init: reset device, MAC clock, read MAC ──
+            // Use recover() instead of pre_mmio_access() to also retry
+            // D0 assertion, ASPM disable, and — on the upstream bridge —
+            // link retrain.  This is the last line of defense before the
+            // first MMIO read on real hardware.
             let (mmio, health_ok) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let mmio = ctx.mmio;
                 let ok = match ctx.health.as_mut() {
-                    Some(h) => h.pre_mmio_access().is_ok(),
+                    Some(h) => h.recover().is_ok(),
                     None => false,
                 };
                 (mmio, ok)
             };
             if !health_ok {
-                crate::debug::print("iwlwifi", "step: ERR health_check");
+                crate::debug::print("iwlwifi", "step: ERR health_recover");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }

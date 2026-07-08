@@ -195,29 +195,17 @@ impl HdaController {
         //   2) Write 1 → wait for CRST bit to read back as 1
         //   3) Wait for codec to signal presence on the link (STATESTS)
         const GCTL: usize = 0x0008;
-        let mut crst_ok = false;
         unsafe { mmio_write32(mmio, GCTL, 0) };
-        for _ in 0..50_000 {
-            if unsafe { mmio_read32(mmio, GCTL) } & 1 == 0 {
-                crst_ok = true;
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if !crst_ok {
+        if crate::timing::wait_timeout_us(50_000, || unsafe { mmio_read32(mmio, GCTL) } & 1 == 0)
+            .is_err()
+        {
             log::warn!("HDA: GCTL CRST=0 timeout");
             return false;
         }
         unsafe { mmio_write32(mmio, GCTL, 1) };
-        crst_ok = false;
-        for _ in 0..50_000 {
-            if unsafe { mmio_read32(mmio, GCTL) } & 1 != 0 {
-                crst_ok = true;
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if !crst_ok {
+        if crate::timing::wait_timeout_us(50_000, || unsafe { mmio_read32(mmio, GCTL) } & 1 != 0)
+            .is_err()
+        {
             log::warn!("HDA: GCTL CRST=1 timeout");
             return false;
         }
@@ -227,18 +215,17 @@ impl HdaController {
         // link.  Real codecs can take up to 1 ms.  On KVM each MMIO
         // read causes a VM exit, giving QEMU a chance to advance the
         // device model state.
-        crst_ok = false;
-        for _ in 0..200_000 {
+        if crate::timing::wait_timeout_us(200_000, || {
             let sts = unsafe { mmio_read16(mmio, STATESTS) };
-            if sts & 0x0001 != 0 {
-                crst_ok = true;
-                break;
+            let ready = sts & 0x0001 != 0;
+            if !ready {
+                // Force VM exit so QEMU/KVM can bring the codec online
+                HdaController::tick_vm_exit();
             }
-            // Force VM exit so QEMU/KVM can bring the codec online
-            HdaController::tick_vm_exit();
-            core::hint::spin_loop();
-        }
-        if !crst_ok {
+            ready
+        })
+        .is_err()
+        {
             log::warn!(
                 "HDA: codec not detected after CRST (STATESTS=0x{:04x})",
                 unsafe { mmio_read16(mmio, STATESTS) }

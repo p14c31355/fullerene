@@ -4,7 +4,87 @@
 //! for unified hardware management. No kernel or boot crate dependencies — only
 //! `x86_64`, `alloc`, and `log`.
 
+use core::sync::atomic::AtomicU64;
+
 use crate::port::PortWriter;
+
+// ── ECAM (Enhanced Configuration Access Mechanism) ──────────────
+//
+// PCIe Configuration Mechanism #1 (I/O ports 0xCF8/0xCFC) can only
+// address offsets 0x00..0xFC (256 bytes).  Extended capabilities
+// (L1Sub, AER, etc.) live at offsets ≥ 0x100 and require ECAM, which
+// maps the full 4 KiB per-device config space into MMIO.
+//
+// These statics are populated once by the kernel after it parses the
+// MCFG ACPI table.
+
+static ECAM_BASE: AtomicU64 = AtomicU64::new(0);
+static PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
+static ECAM_START_BUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Store the ECAM MMIO base (physical), the phys→virt offset, and the
+/// starting bus number for the ECAM segment.
+///
+/// Must be called once during boot, after the MCFG table is parsed.
+/// Without this, extended config space (offsets ≥ 0x100) cannot be
+/// accessed — L1Sub and AER configuration will be skipped.
+pub fn set_ecam_info(ecam_base: u64, phys_offset: u64, start_bus: u8) {
+    ECAM_BASE.store(ecam_base, core::sync::atomic::Ordering::Relaxed);
+    PHYS_OFFSET.store(phys_offset, core::sync::atomic::Ordering::Relaxed);
+    ECAM_START_BUS.store(start_bus, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Convert a physical address to a virtual pointer using the stored offset.
+fn ecam_phys_to_virt(phys: u64) -> usize {
+    let offset = PHYS_OFFSET.load(core::sync::atomic::Ordering::Relaxed);
+    (phys + offset) as usize
+}
+
+/// Return the virtual address for the ECAM register of `bus:dev.func` at `offset`.
+///
+/// Layout per the PCIe spec:
+///   offset = (bus << 20) | (device << 15) | (function << 12) | register_offset
+///
+/// The bus number is adjusted by subtracting the MCFG start_bus before computing
+/// the ECAM offset, so that bus addresses are relative to the ECAM window base.
+fn ecam_addr(bus: u8, device: u8, function: u8, offset: u16) -> usize {
+    let base = ECAM_BASE.load(core::sync::atomic::Ordering::Relaxed);
+    if base == 0 {
+        return 0;
+    }
+    let start_bus = ECAM_START_BUS.load(core::sync::atomic::Ordering::Relaxed);
+    // Subtract start_bus to get the bus offset within the ECAM window
+    let bus_offset = bus.saturating_sub(start_bus);
+    let phys = base
+        + ((bus_offset as u64 & 0xFF) << 20)
+        + ((device as u64 & 0x1F) << 15)
+        + ((function as u64 & 0x7) << 12)
+        + (offset as u64 & 0xFFF);
+    ecam_phys_to_virt(phys)
+}
+
+/// Read a DWORD from extended PCIe config space (offset ≥ 0x100) via ECAM.
+///
+/// Returns 0xFFFF_FFFF if ECAM is not configured (caller should treat
+/// this as "capability not present").
+pub fn read_ext_dword(bus: u8, device: u8, function: u8, offset: u16) -> u32 {
+    let va = ecam_addr(bus, device, function, offset);
+    if va == 0 {
+        return 0xFFFF_FFFF;
+    }
+    unsafe { core::ptr::read_volatile(va as *const u32) }
+}
+
+/// Write a DWORD to extended PCIe config space (offset ≥ 0x100) via ECAM.
+///
+/// No-op if ECAM is not configured.
+pub fn write_ext_dword(bus: u8, device: u8, function: u8, offset: u16, value: u32) {
+    let va = ecam_addr(bus, device, function, offset);
+    if va == 0 {
+        return;
+    }
+    unsafe { core::ptr::write_volatile(va as *mut u32, value) }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct PciBar {
@@ -263,17 +343,15 @@ impl PciDevice {
                         off + 4,
                         pmcsr & !0x3,
                     );
-                    for _ in 0..10000 {
+                    crate::timing::wait_timeout_us(10_000, || {
                         let cur = PciConfigSpace::read_config_word(
                             self.bus,
                             self.device,
                             self.function,
                             off + 4,
                         );
-                        if cur & 0x3 == 0 {
-                            break;
-                        }
-                    }
+                        cur & 0x3 == 0
+                    }).ok();
                 }
                 return;
             }
@@ -287,6 +365,11 @@ impl PciDevice {
     }
 
     /// Disable ASPM (Active State Power Management) on the PCIe link.
+    ///
+    /// This clears ASPM bits in the PCIe Link Control register **and**
+    /// disables L1 PM Substates (L1.1 / L1.2) via the Extended
+    /// Capability (ID 0x001E), which requires ECAM.  If ECAM has not
+    /// been configured, L1Sub will be silently skipped.
     pub fn disable_pcie_aspm(&self) {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
@@ -329,6 +412,11 @@ impl PciDevice {
                         lnk_ctrl & !0x3,
                     );
                 }
+                // ── Also disable L1 PM Substates (L1.1 / L1.2) ──
+                // Clearing ASPM L1 alone is insufficient — L1Sub
+                // is controlled by a separate Extended Capability
+                // (ID 0x001E) and survives ASPM disable.
+                Self::disable_l1_substates(self.bus, self.device, self.function);
                 return;
             }
             let next =
@@ -337,6 +425,54 @@ impl PciDevice {
                 break;
             }
             off = next;
+        }
+    }
+
+    /// Walk the PCIe Extended Capability list and disable L1 PM
+    /// Substates (ASPM L1.1 / L1.2) on the given device.
+    ///
+    /// Extended capabilities start at offset 0x100 in config space.
+    /// Each entry is 4 bytes: bits [15:0] = Capability ID,
+    /// bits [19:16] = Version, bits [31:20] = Next Capability Offset.
+    /// Offset 0 terminates the list.
+    ///
+    /// Requires ECAM (MMIO-based access) — silently no-ops if ECAM
+    /// has not been configured by the kernel.
+    pub fn disable_l1_substates(bus: u8, device: u8, function: u8) {
+        let mut off: u16 = 0x100;
+        let mut iterations = 0;
+        const MAX_ITERATIONS: u8 = 48;
+        while off != 0 && iterations < MAX_ITERATIONS {
+            iterations += 1;
+            // Extended capabilities live at offsets ≥ 0x100 — must use ECAM.
+            let cap_hdr = read_ext_dword(bus, device, function, off);
+            if cap_hdr == 0xFFFF_FFFF {
+                // ECAM not configured or device absent — skip
+                return;
+            }
+            let cap_id = (cap_hdr & 0xFFFF) as u16;
+            let next_off = ((cap_hdr >> 20) & 0xFFF) as u16;
+
+            if cap_id == 0x001E {
+                // L1 PM Substates Capability
+                // L1SubCtl1 is at offset cap+0x08 (2 dwords in).
+                let ctl1 = read_ext_dword(bus, device, function, off + 8);
+                // Bits [2:1]: ASPM L1.2 Enable (bit 2), ASPM L1.1 Enable (bit 1)
+                let l1sub_enabled = ctl1 & 0x6;
+                if l1sub_enabled != 0 {
+                    log::info!(
+                        "PCI: disabling L1Sub on {:02x}:{:02x}.{} (was {:#x})",
+                        bus, device, function, l1sub_enabled,
+                    );
+                    write_ext_dword(
+                        bus, device, function, off + 8,
+                        ctl1 & !0x6u32,
+                    );
+                }
+                return;
+            }
+
+            off = next_off;
         }
     }
 

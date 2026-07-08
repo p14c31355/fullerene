@@ -142,6 +142,26 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     log::warn!("IOMMU: VT-d may be disabled in firmware, or hardware does not support it");
                 }
             }
+            // ── ECAM setup via MCFG ─────────────────────────────
+            // Parse the MCFG ACPI table to find the ECAM MMIO base
+            // address.  This is required for extended PCIe config
+            // space (offsets ≥ 0x100), used by L1Sub disable and AER.
+            //
+            // Note: no explicit map_mmio_region is needed here.
+            // The bootloader already identity- and higher-half-maps
+            // 0-64 GB with 2 MiB huge pages.  ECAM resides well
+            // within this range (typically 0xB0000000–0xBFFFFFFF),
+            // so phys_to_virt(ecam_base) is directly accessible.
+            if let Some(mcfg) = nitrogen::acpi::mcfg::parse_mcfg(rsdp) {
+                let phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
+                log::info!(
+                    "MCFG: ECAM at phys={:#018x}, segment={}, buses {}-{}",
+                    mcfg.base_address, mcfg.segment, mcfg.start_bus, mcfg.end_bus,
+                );
+                nitrogen::pci::set_ecam_info(mcfg.base_address, phys_off, mcfg.start_bus);
+            } else {
+                log::warn!("MCFG: table not found — extended PCIe config space unavailable");
+            }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");
             Ok(())
         }),

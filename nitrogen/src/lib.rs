@@ -35,6 +35,7 @@ pub mod iwlwifi;
 pub mod mmio;
 pub mod wifi;
 pub mod pci;
+pub mod pci_error;
 pub mod pci_health;
 pub mod pic;
 pub mod port;
