@@ -66,16 +66,42 @@ pub static FS_HOOKS: Mutex<FsHooks> = Mutex::new(FsHooks::none());
 // ── Dispatchers ────────────────────────────────────────────────
 // Each function reads the single `FS_HOOKS` lock once and forwards.
 
-pub fn list_directory(ctx: &mut CommandContext) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.list {
-        drop(hooks);
-        f(ctx);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("(no filesystem mounted)\n");
-    }
+macro_rules! fs_dispatch {
+    ($name:ident, $field:ident, $err:expr) => {
+        pub fn $name(ctx: &mut CommandContext) {
+            let hooks = FS_HOOKS.lock();
+            if let Some(f) = hooks.$field { drop(hooks); f(ctx); }
+            else { drop(hooks); ctx.terminal.write_str($err); }
+        }
+    };
+    ($name:ident, $field:ident, $err:expr, $arg:ident: &str) => {
+        pub fn $name(ctx: &mut CommandContext, $arg: &str) {
+            let hooks = FS_HOOKS.lock();
+            if let Some(f) = hooks.$field { drop(hooks); f(ctx, $arg); }
+            else { drop(hooks); ctx.terminal.write_str($err); }
+        }
+    };
+    ($name:ident, $field:ident, $err:expr, $a:ident: &str, $b:ident: &str) => {
+        pub fn $name(ctx: &mut CommandContext, $a: &str, $b: &str) {
+            let hooks = FS_HOOKS.lock();
+            if let Some(f) = hooks.$field { drop(hooks); f(ctx, $a, $b); }
+            else { drop(hooks); ctx.terminal.write_str($err); }
+        }
+    };
 }
+
+fs_dispatch!(list_directory, list, "(no filesystem mounted)\n");
+fs_dispatch!(print_working_directory, pwd, "/\n");
+fs_dispatch!(change_directory, cd, "cd: no filesystem\n", path: &str);
+fs_dispatch!(tree_directory, tree, "tree: no filesystem\n", path: &str);
+fs_dispatch!(find_files, find, "find: no filesystem\n", path: &str, pattern: &str);
+fs_dispatch!(copy_file, cp, "cp: no filesystem\n", src: &str, dst: &str);
+fs_dispatch!(move_file, mv, "mv: no filesystem\n", src: &str, dst: &str);
+fs_dispatch!(write_file, write, "write: no filesystem\n", path: &str, content: &str);
+fs_dispatch!(remove_file, rm, "rm: no filesystem\n", path: &str);
+fs_dispatch!(make_directory, mkdir, "mkdir: no filesystem\n", path: &str);
+fs_dispatch!(touch_file, touch, "touch: no filesystem\n", path: &str);
+fs_dispatch!(disk_usage, df, "df: no filesystem\n");
 
 pub fn read_file(ctx: &mut CommandContext, path: &str) {
     let hooks = FS_HOOKS.lock();
@@ -87,126 +113,5 @@ pub fn read_file(ctx: &mut CommandContext, path: &str) {
         ctx.terminal.write_str("(no filesystem mounted: ");
         ctx.terminal.write_str(path);
         ctx.terminal.write_str(")\n");
-    }
-}
-
-pub fn print_working_directory(ctx: &mut CommandContext) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.pwd {
-        drop(hooks);
-        f(ctx);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("/\n");
-    }
-}
-
-pub fn change_directory(ctx: &mut CommandContext, path: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.cd {
-        drop(hooks);
-        f(ctx, path);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("cd: no filesystem\n");
-    }
-}
-
-pub fn tree_directory(ctx: &mut CommandContext, path: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.tree {
-        drop(hooks);
-        f(ctx, path);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("tree: no filesystem\n");
-    }
-}
-
-pub fn find_files(ctx: &mut CommandContext, path: &str, pattern: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.find {
-        drop(hooks);
-        f(ctx, path, pattern);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("find: no filesystem\n");
-    }
-}
-
-pub fn copy_file(ctx: &mut CommandContext, src: &str, dst: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.cp {
-        drop(hooks);
-        f(ctx, src, dst);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("cp: no filesystem\n");
-    }
-}
-
-pub fn move_file(ctx: &mut CommandContext, src: &str, dst: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.mv {
-        drop(hooks);
-        f(ctx, src, dst);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("mv: no filesystem\n");
-    }
-}
-
-pub fn write_file(ctx: &mut CommandContext, path: &str, content: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.write {
-        drop(hooks);
-        f(ctx, path, content);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("write: no filesystem\n");
-    }
-}
-
-pub fn remove_file(ctx: &mut CommandContext, path: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.rm {
-        drop(hooks);
-        f(ctx, path);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("rm: no filesystem\n");
-    }
-}
-
-pub fn make_directory(ctx: &mut CommandContext, path: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.mkdir {
-        drop(hooks);
-        f(ctx, path);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("mkdir: no filesystem\n");
-    }
-}
-
-pub fn touch_file(ctx: &mut CommandContext, path: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.touch {
-        drop(hooks);
-        f(ctx, path);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("touch: no filesystem\n");
-    }
-}
-
-pub fn disk_usage(ctx: &mut CommandContext) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.df {
-        drop(hooks);
-        f(ctx);
-    } else {
-        drop(hooks);
-        ctx.terminal.write_str("df: no filesystem\n");
     }
 }

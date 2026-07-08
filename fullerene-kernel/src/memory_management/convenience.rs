@@ -1,52 +1,37 @@
 //! Convenience Functions for Memory Management
-//!
-//! This module provides high-level convenience functions for common memory management operations.
 
 use super::*;
 
+fn with_manager<T>(f: impl FnOnce(&mut UnifiedMemoryManager) -> SystemResult<T>) -> SystemResult<T> {
+    MEMORY_MANAGER.lock().as_mut().ok_or(SystemError::InternalError).and_then(f)
+}
+
 /// Allocate kernel memory pages
 pub fn allocate_kernel_pages(count: usize) -> SystemResult<usize> {
-    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-        manager.allocate_pages(count)
-    } else {
-        Err(SystemError::InternalError)
-    }
+    with_manager(|m| m.allocate_pages(count))
 }
 
 /// Free kernel memory pages
 pub fn free_kernel_pages(address: usize, count: usize) -> SystemResult<()> {
-    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-        manager.free_pages(address, count)
-    } else {
-        Err(SystemError::InternalError)
-    }
+    with_manager(|m| m.free_pages(address, count))
 }
 
 /// Map memory for device I/O
 pub fn map_mmio(physical_addr: usize, size: usize) -> SystemResult<usize> {
-    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+    with_manager(|manager| {
         let frame_count = (size + 4095) / 4096;
         let virtual_addr = manager.allocate_pages(frame_count)?;
-
         for i in 0..frame_count {
-            let phys_addr = physical_addr + (i * 4096);
-            let virt_addr = virtual_addr + (i * 4096);
-
-            manager.map_address(virt_addr, phys_addr, 1)?;
+            manager.map_address(virtual_addr + i * 4096, physical_addr + i * 4096, 1)?;
         }
-
         Ok(virtual_addr)
-    } else {
-        Err(SystemError::InternalError)
-    }
+    })
 }
 
 /// Unmap memory-mapped I/O
 pub fn unmap_mmio(virtual_addr: usize, size: usize) -> SystemResult<()> {
-    if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
+    with_manager(|manager| {
         let frame_count = (size + 4095) / 4096;
         manager.unmap_address(virtual_addr, frame_count)
-    } else {
-        Err(SystemError::InternalError)
-    }
+    })
 }

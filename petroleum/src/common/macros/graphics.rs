@@ -83,7 +83,7 @@ macro_rules! vga_stat_line {
 macro_rules! init_vga_palette_registers {
     () => {{
         for i in 0u8..16u8 {
-            nitrogen::port::write_vga_attribute_register(i, i);
+            $crate::io::write_vga_attribute_register(i, i);
         }
     }};
 }
@@ -92,7 +92,7 @@ macro_rules! init_vga_palette_registers {
 macro_rules! set_vga_attribute_registers {
     ($($index:expr => $value:expr),* $(,)?) => {{
         $(
-            nitrogen::port::write_vga_attribute_register($index, $value);
+            $crate::io::write_vga_attribute_register($index, $value);
         )*
     }};
 }
@@ -108,7 +108,7 @@ macro_rules! enable_vga_video {
 #[macro_export]
 macro_rules! vga_write_registers {
     ($configs:expr, $index_port:expr, $data_port:expr) => {
-        let mut ops = nitrogen::port::VgaPortOps::new($index_port, $data_port);
+        let mut ops = $crate::io::VgaPortOps::new($index_port, $data_port);
         ops.write_sequence($configs);
     };
 }
@@ -117,23 +117,23 @@ macro_rules! vga_write_registers {
 macro_rules! init_vga_text_mode_3 {
     () => {{
         // Write misc register
-        $crate::port_write!(nitrogen::port::HardwarePorts::MISC_OUTPUT, 0x67u8);
+        $crate::port_write!($crate::io::HardwarePorts::MISC_OUTPUT, 0x67u8);
 
         // Sequencer, CRTC, Graphics registers using helper macro
         $crate::vga_write_registers!(
             $crate::graphics::registers::SEQUENCER_TEXT_CONFIG,
-            nitrogen::port::HardwarePorts::SEQUENCER_INDEX,
-            nitrogen::port::HardwarePorts::SEQUENCER_DATA
+            $crate::io::HardwarePorts::SEQUENCER_INDEX,
+            $crate::io::HardwarePorts::SEQUENCER_DATA
         );
         $crate::vga_write_registers!(
             $crate::graphics::registers::CRTC_TEXT_CONFIG,
-            nitrogen::port::HardwarePorts::CRTC_INDEX,
-            nitrogen::port::HardwarePorts::CRTC_DATA
+            $crate::io::HardwarePorts::CRTC_INDEX,
+            $crate::io::HardwarePorts::CRTC_DATA
         );
         $crate::vga_write_registers!(
             $crate::graphics::registers::GRAPHICS_TEXT_CONFIG,
-            nitrogen::port::HardwarePorts::GRAPHICS_INDEX,
-            nitrogen::port::HardwarePorts::GRAPHICS_DATA
+            $crate::io::HardwarePorts::GRAPHICS_INDEX,
+            $crate::io::HardwarePorts::GRAPHICS_DATA
         );
 
         // Attribute controller
@@ -155,19 +155,19 @@ macro_rules! init_vga_text_mode_3 {
 macro_rules! update_vga_cursor {
     ($pos:expr) => {{
         $crate::port_write!(
-            nitrogen::port::HardwarePorts::CRTC_INDEX,
-            nitrogen::port::HardwarePorts::CURSOR_POS_LOW_REG
+            $crate::io::HardwarePorts::CRTC_INDEX,
+            $crate::io::HardwarePorts::CURSOR_POS_LOW_REG
         );
         $crate::port_write!(
-            nitrogen::port::HardwarePorts::CRTC_DATA,
+            $crate::io::HardwarePorts::CRTC_DATA,
             (($pos & 0xFFusize) as u8)
         );
         $crate::port_write!(
-            nitrogen::port::HardwarePorts::CRTC_INDEX,
-            nitrogen::port::HardwarePorts::CURSOR_POS_HIGH_REG
+            $crate::io::HardwarePorts::CRTC_INDEX,
+            $crate::io::HardwarePorts::CURSOR_POS_HIGH_REG
         );
         $crate::port_write!(
-            nitrogen::port::HardwarePorts::CRTC_DATA,
+            $crate::io::HardwarePorts::CRTC_DATA,
             ((($pos >> 8) & 0xFFusize) as u8)
         );
     }};

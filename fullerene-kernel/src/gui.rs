@@ -205,12 +205,12 @@ pub fn render() {
         crate::boot_stage::draw_boot_label(b"RENDER: guard failed, fallback");
         if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
             crate::boot_stage::draw_boot_label(b"RENDER: fallback FB OK");
-            let ptr = bfb.address() as *mut u32;
-            let len = (bfb.stride_pixels() as usize) * bfb.height() as usize;
-            let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-            let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels());
-            crate::boot_stage::draw_boot_label(b"RENDER: calling solvent::render");
-            solvent::render(&mut fb);
+            if bfb.address() != 0 {
+                let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
+                let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
+                let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels());
+                solvent::render(&mut fb);
+            }
             crate::boot_stage::draw_boot_label(b"RENDER: solvent::render OK");
         } else {
             crate::boot_stage::draw_boot_label(b"RENDER: NO fallback FB");
@@ -255,13 +255,12 @@ pub fn runtime_tick(now: u64) {
         // the KernelContext renderer is unavailable.
         if rendered.is_none() {
             if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
-                let ptr = bfb.address() as *mut u32;
-                let len = (bfb.stride_pixels() as usize) * bfb.height() as usize;
-                let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-                let mut fb = FramebufferGuard::new(
-                    pixels, bfb.width(), bfb.height(), bfb.stride_pixels(),
-                );
-                solvent::render(&mut fb);
+                if bfb.address() != 0 {
+                    let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
+                    let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
+                    let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels());
+                    solvent::render(&mut fb);
+                }
             }
         }
 

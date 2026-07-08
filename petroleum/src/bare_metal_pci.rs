@@ -1,6 +1,6 @@
 //! Minimal legacy PCI configuration access used by VGA detection.
 
-use nitrogen::port::PortWriter;
+use crate::io::PortWriter;
 
 const PCI_CONFIG_ADDR: u16 = 0xCF8;
 const PCI_CONFIG_DATA: u16 = 0xCFC;

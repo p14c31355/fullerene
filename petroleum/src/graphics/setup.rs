@@ -3,7 +3,7 @@ use super::registers::{
     GRAPHICS_TEXT_CONFIG, SEQUENCER_CONFIG, SEQUENCER_TEXT_CONFIG,
 };
 use crate::write_port_sequence;
-use nitrogen::port::{HardwarePorts, PortWriter, VgaPortOps};
+use crate::io::{HardwarePorts, PortWriter, VgaPortOps};
 
 /// Write RGB triples for palette setup (DRY helper).
 fn write_rgb(writer: &mut PortWriter<u8>, val: u8) {
@@ -28,7 +28,7 @@ fn attr_ops() -> VgaPortOps {
 }
 
 /// Write attribute registers and enable video output.
-fn write_attr(config: &[nitrogen::port::RegisterConfig]) {
+fn write_attr(config: &[crate::io::RegisterConfig]) {
     let mut ops = attr_ops();
     for reg in config {
         ops.write_register(reg.index, reg.value);
@@ -105,7 +105,7 @@ pub fn setup_vga_text_mode() {
     PortWriter::new(HardwarePorts::MISC_OUTPUT).write_safe(0x63u8);
     write_port_sequence!(
         SEQUENCER_TEXT_CONFIG, HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA;
-        &[nitrogen::port::RegisterConfig { index: 0x11, value: 0x0E }], HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA;
+        &[crate::io::RegisterConfig { index: 0x11, value: 0x0E }], HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA;
         CRTC_TEXT_CONFIG, HardwarePorts::CRTC_INDEX, HardwarePorts::CRTC_DATA;
         GRAPHICS_TEXT_CONFIG, HardwarePorts::GRAPHICS_INDEX, HardwarePorts::GRAPHICS_DATA
     );

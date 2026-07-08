@@ -1,4 +1,4 @@
-use nitrogen::port::RegisterConfig;
+use crate::io::RegisterConfig;
 
 macro_rules! reg {
     ($index:expr, $value:expr) => {

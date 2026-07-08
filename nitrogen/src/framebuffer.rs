@@ -166,16 +166,15 @@ impl FramebufferManager {
 
     /// Write a single pixel at (x, y).  Bounds are checked.
     pub fn write_pixel(&self, x: u32, y: u32, color: u32) {
-        if x < self.width && y < self.height {
+        if !self.fb_base.is_null() && x < self.width && y < self.height {
             let offset = (y * self.stride + x) as usize;
-            unsafe {
-                core::ptr::write_volatile(self.fb_base.add(offset), color);
-            }
+            unsafe { core::ptr::write_volatile(self.fb_base.add(offset), color); }
         }
     }
 
     /// Fill the entire framebuffer with a single color.
     pub fn fill(&self, color: u32) {
+        if self.fb_base.is_null() { return; }
         let pixels = (self.fb_byte_size / 4) as usize;
         for i in 0..pixels {
             unsafe {
