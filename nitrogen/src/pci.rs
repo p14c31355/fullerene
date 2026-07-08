@@ -515,11 +515,14 @@ impl PciScanner {
         let mut buses_to_scan: [bool; 256] = [false; 256];
         buses_to_scan[0] = true; // Always scan bus 0
 
+        crate::debug::print("pci", "scan_bus0_start");
         // First pass: scan bus 0 to discover PCI-to-PCI bridges
         for device in 0..=31u8 {
+            crate::debug::print("pci", "b0_dev_check");
             if !device_exists(0, device, 0) {
                 continue;
             }
+            crate::debug::print("pci", "b0_dev_found");
             for function in 0..=7u8 {
                 if function > 0 {
                     let header_type_fn0 = PciConfigSpace::read_config_byte(0, device, 0, 0x0E);

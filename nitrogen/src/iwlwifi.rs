@@ -1897,30 +1897,46 @@ static WIFI_INIT_COMPLETED: core::sync::atomic::AtomicBool =
 // frame from `tick_core()` and advances through the phases.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 enum WifiInitPhase {
     /// Not yet started.
-    Idle,
+    Idle = 0,
     /// PCI probe + D0/ASPM setup.
-    PciProbe,
+    PciProbe = 1,
     /// MMIO init: map BAR, reset_device, MAC clock.
-    MmioInit,
+    MmioInit = 2,
     /// DMA ring / buffer allocation.
-    DmaAlloc,
+    DmaAlloc = 3,
     /// Firmware header parse + TLV upload.
-    FwUpload,
+    FwUpload = 4,
     /// Wait for alive (polls CSR_INT with timeout).
-    FwWaitAlive,
+    FwWaitAlive = 5,
     /// Send init commands.
-    FwInitCmds,
+    FwInitCmds = 6,
     /// Initialisation complete (success).
-    Done,
+    Done = 7,
     /// Initialisation failed (retry-able on next reboot/scan).
-    Failed,
+    Failed = 8,
+}
+
+impl From<u8> for WifiInitPhase {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Idle,
+            1 => Self::PciProbe,
+            2 => Self::MmioInit,
+            3 => Self::DmaAlloc,
+            4 => Self::FwUpload,
+            5 => Self::FwWaitAlive,
+            6 => Self::FwInitCmds,
+            7 => Self::Done,
+            _ => Self::Failed,
+        }
+    }
 }
 
 /// Persistent state carried across incremental init steps.
 struct WifiInitContext {
-    phase: WifiInitPhase,
     /// Boxed driver after MMIO init (before firmware).
     mmio_device: Option<Box<dyn super::wifi::WifiDriver>>,
     /// Firmware blob being loaded (index into candidates).
@@ -1931,23 +1947,36 @@ struct WifiInitContext {
     alive_start_tsc: u64,
 }
 
+/// Lock-free phase of the WiFi init state machine.
+/// Updated with atomic stores (no Mutex needed), so the render loop
+/// can poll the current phase without any lock contention.
+static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+
 static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
-    phase: WifiInitPhase::Idle,
     mmio_device: None,
     fw_candidate_idx: 0,
     fw_candidates: &[],
     alive_start_tsc: 0,
 });
 
+/// Helper: set the init phase (lock-free).
+fn set_init_phase(phase: WifiInitPhase) {
+    WIFI_INIT_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
+}
+
+/// Helper: read the current init phase (lock-free).
+fn get_init_phase() -> WifiInitPhase {
+    let raw = WIFI_INIT_PHASE.load(core::sync::atomic::Ordering::Acquire);
+    WifiInitPhase::from(raw)
+}
+
 /// Call once per frame from `tick_core()` to incrementally initialise
 /// the WiFi device.  Each call performs a small, bounded amount of work
 /// so the desktop render loop is never blocked for more than ~1 ms.
 pub fn try_init_wifi_device_step() {
-    // ── Snapshot current phase ────────────────────────────
-    let phase = {
-        let ctx = WIFI_INIT_CTX.lock();
-        ctx.phase
-    };
+    // ── Snapshot current phase (lock-free) ────────────────
+    let phase = get_init_phase();
 
     match phase {
         WifiInitPhase::Idle => {
@@ -1956,7 +1985,7 @@ pub fn try_init_wifi_device_step() {
             let _driver_ctx = match *driver_ctx_opt {
                 Some(c) => c,
                 None => {
-                    WIFI_INIT_CTX.lock().phase = WifiInitPhase::Failed;
+                    set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
             };
@@ -1965,35 +1994,39 @@ pub fn try_init_wifi_device_step() {
             let dev_guard = WIFI_DEVICE.lock();
             if dev_guard.is_some() {
                 crate::debug::print("iwlwifi", "step: already_inited");
-                WIFI_INIT_CTX.lock().phase = WifiInitPhase::Done;
+                set_init_phase(WifiInitPhase::Done);
                 return;
             }
             drop(dev_guard);
 
             crate::debug::print("iwlwifi", "step: start pci_probe");
-            WIFI_INIT_CTX.lock().phase = WifiInitPhase::PciProbe;
+            set_init_phase(WifiInitPhase::PciProbe);
         }
         WifiInitPhase::PciProbe => {
             // ── PCI probe (config space only, never hangs) ──
+            crate::debug::print("iwlwifi", "step: pci_probe_enter");
             let driver_ctx = match *WIFI_DRIVER_CTX.lock() {
                 Some(c) => c,
                 None => {
-                    WIFI_INIT_CTX.lock().phase = WifiInitPhase::Failed;
+                    crate::debug::print("iwlwifi", "step: ERR no_driver_ctx");
+                    set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
             };
+            crate::debug::print("iwlwifi", "step: call init_wifi_from_pci");
             let probe = match crate::wifi::init_wifi_from_pci(driver_ctx) {
                 Some(p) => p,
                 None => {
                     crate::debug::print("iwlwifi", "step: no_pci_device");
-                    WIFI_INIT_CTX.lock().phase = WifiInitPhase::Failed;
+                    set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
             };
+            crate::debug::print("iwlwifi", "step: init_wifi_from_pci_ok");
             let candidates = select_firmware_list(probe.device_id);
             if candidates.is_empty() {
                 crate::debug::print("iwlwifi", "step: no_fw");
-                WIFI_INIT_CTX.lock().phase = WifiInitPhase::Failed;
+                set_init_phase(WifiInitPhase::Failed);
                 return;
             }
             {
@@ -2001,8 +2034,8 @@ pub fn try_init_wifi_device_step() {
                 ctx.mmio_device = Some(probe.driver);
                 ctx.fw_candidates = candidates;
                 ctx.fw_candidate_idx = 0;
-                ctx.phase = WifiInitPhase::FwUpload;
             }
+            set_init_phase(WifiInitPhase::FwUpload);
             crate::debug::print("iwlwifi", "step: pci_probe_done");
         }
         WifiInitPhase::FwUpload => {
@@ -2012,13 +2045,13 @@ pub fn try_init_wifi_device_step() {
                 let _dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
                     None => {
-                        ctx.phase = WifiInitPhase::Failed;
+                        set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
                 };
                 if ctx.fw_candidate_idx >= ctx.fw_candidates.len() {
                     crate::debug::print("iwlwifi", "step: all_fw_failed");
-                    ctx.phase = WifiInitPhase::Failed;
+                    set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
                 let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
@@ -2036,7 +2069,7 @@ pub fn try_init_wifi_device_step() {
                 let dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
                     None => {
-                        ctx.phase = WifiInitPhase::Failed;
+                        set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
                 };
@@ -2048,7 +2081,7 @@ pub fn try_init_wifi_device_step() {
                 Ok(()) => {
                     log::info!("iwlwifi: step: firmware {} loaded", fw_name);
                     crate::debug::print("iwlwifi", "step: fw_ok");
-                    ctx.phase = WifiInitPhase::Done;
+                    set_init_phase(WifiInitPhase::Done);
                 }
                 Err(e) => {
                     log::warn!("iwlwifi: step: firmware {} failed: {}", fw_name, e);
@@ -2076,7 +2109,7 @@ pub fn try_init_wifi_device_step() {
         // Legacy phases not used in step-based init:
         WifiInitPhase::MmioInit | WifiInitPhase::DmaAlloc
         | WifiInitPhase::FwWaitAlive | WifiInitPhase::FwInitCmds => {
-            WIFI_INIT_CTX.lock().phase = WifiInitPhase::Failed;
+            set_init_phase(WifiInitPhase::Failed);
         }
     }
 }
