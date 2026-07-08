@@ -106,6 +106,14 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     if let Some(m) = mgr.as_mut() { let _ = m.free_frame(phys as usize); }
                 },
                 phys_to_virt: |phys| (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize,
+                map_mmio: |phys, size| {
+                    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+                    let virt = (phys as u64 + off) as usize;
+                    let mut mgr = crate::memory_management::get_memory_manager().lock();
+                    let m = mgr.as_mut().ok_or(())?;
+                    m.map_mmio_region(phys, virt, size).map_err(|_| ())?;
+                    Ok(virt)
+                },
             });
             // Try UEFI Configuration Table RSDP first, then BootContext, then legacy scan
             let uefi_rsdp =

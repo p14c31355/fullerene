@@ -15,6 +15,7 @@ pub struct MemCallbacks {
     pub alloc_frame: fn() -> Option<u64>,
     pub free_frame: fn(u64),
     pub phys_to_virt: fn(u64) -> usize,
+    pub map_mmio: fn(phys: usize, size: usize) -> Result<usize, ()>,
 }
 
 static MEM: Mutex<Option<MemCallbacks>> = Mutex::new(None);
@@ -210,7 +211,9 @@ pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
     let mmio_virt = {
         let guard = MEM.lock();
         let cbs = guard.as_ref().ok_or("IOMMU: MemCallbacks not set")?;
-        (cbs.phys_to_virt)(mmio_base) as *mut u8
+        // Map VT-d MMIO region as uncached (required by VT-d spec)
+        let virt = (cbs.map_mmio)(mmio_base as usize, 4096).map_err(|_| "IOMMU: MMIO mapping failed")?;
+        virt as *mut u8
     };
     let regs = VtdRegisters::new(mmio_virt);
     let ver = regs.version();
