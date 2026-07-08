@@ -1,4 +1,4 @@
-use nitrogen::pci::{PciBar, PciConfigSpace, PciDevice};
+use nitrogen::pci::{PciConfigSpace, PciDevice};
 
 /// Policy-level PCI BAR allocator.
 pub struct PciAllocator {
