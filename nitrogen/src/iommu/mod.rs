@@ -1,416 +1,263 @@
-pub mod acpi;
 pub mod table;
 pub mod vtd;
 
 use alloc::vec::Vec;
+use core::sync::atomic::AtomicBool;
 use spin::Mutex;
 
-use crate::DriverContext;
-use crate::DriverContextError;
+use crate::acpi;
 use crate::pci::PciScanner;
 use table::{IommuPageTable, IommuRootTable};
 use vtd::VtdRegisters;
 
-// ── IOVA Allocator ──────────────────────────────────────────────────
-
-struct IovaInterval {
-    start: u64,
-    end: u64,
+#[derive(Clone, Copy)]
+pub struct MemCallbacks {
+    pub alloc_frame: fn() -> Option<u64>,
+    pub free_frame: fn(u64),
+    pub phys_to_virt: fn(u64) -> usize,
+    pub map_mmio: fn(phys: usize, size: usize) -> Result<usize, ()>,
 }
 
-/// Simple interval-based IOVA allocator.
+static MEM: Mutex<Option<MemCallbacks>> = Mutex::new(None);
+
+pub fn set_mem_callbacks(cbs: MemCallbacks) {
+    *MEM.lock() = Some(cbs);
+}
+
+struct IovaInterval { start: u64, end: u64 }
+
 struct IovaAllocator {
     free: Vec<IovaInterval>,
 }
 
 impl IovaAllocator {
     fn new(iova_bits: u8) -> Self {
-        // IOVA space: start at 1MB to avoid conflicts with low DMA
-        // Max is based on the address width, capped at 512GB
-        let max_addr = (1u64 << iova_bits.min(48)) - 1;
-        let start = 0x10_0000u64; // 1MB
+        // Cap at 39 bits (3-level page table limit) and ensure at least 12 bits
+        let bits = iova_bits.clamp(12, 39);
+        let start: u64 = 1 << 12;
+        let max_addr: u64 = (1u64 << bits) - 1;
         Self {
-            free: alloc::vec![IovaInterval {
-                start,
-                end: max_addr
-            }],
+            free: alloc::vec![IovaInterval { start, end: max_addr }],
         }
     }
 
     fn alloc(&mut self, size: usize) -> Option<u64> {
-        let aligned_size = (size as u64 + 4095) & !4095;
-        for i in 0..self.free.len() {
-            let iv = &self.free[i];
-            let range = iv.end - iv.start;
-            if range >= aligned_size {
-                let addr = iv.start;
-                let new_start = iv.start + aligned_size;
-                if new_start < iv.end {
-                    self.free[i].start = new_start;
-                } else {
-                    self.free.remove(i);
-                }
-                return Some(addr);
+        let aligned = (size + 4095) & !4095;
+        if aligned == 0 { return None; }
+        let need = aligned as u64;
+        let mut best: Option<(usize, u64)> = None;
+        for (i, iv) in self.free.iter().enumerate() {
+            let avail = iv.end - iv.start + 1;
+            if avail >= need {
+                let fits = match best {
+                    Some((_, addr)) => iv.start < addr,
+                    None => true,
+                };
+                if fits { best = Some((i, iv.start)); }
             }
         }
-        None
+        let (idx, addr) = best?;
+        let iv = &mut self.free[idx];
+        iv.start += need;
+        if iv.start > iv.end { self.free.remove(idx); }
+        Some(addr)
     }
 
     fn free(&mut self, addr: u64, size: usize) {
-        let aligned_size = (size as u64 + 4095) & !4095;
+        let aligned = (size + 4095) & !4095;
+        if aligned == 0 { return; }
         let start = addr;
-        let end = addr + aligned_size;
-        let mut new_free = Vec::new();
-        let mut inserted = false;
-
-        for iv in self.free.iter() {
-            if !inserted && end < iv.start {
-                new_free.push(IovaInterval { start, end });
-                new_free.push(IovaInterval {
-                    start: iv.start,
-                    end: iv.end,
-                });
-                inserted = true;
-            } else if !inserted && start <= iv.end && end >= iv.start {
-                // Merge adjacent
-                let merged_start = start.min(iv.start);
-                let merged_end = end.max(iv.end);
-                new_free.push(IovaInterval {
-                    start: merged_start,
-                    end: merged_end,
-                });
-                inserted = true;
-            } else if inserted && start <= iv.start && end >= iv.start {
-                // If the last merged entry overlaps the next one, coalesce
-                if let Some(last) = new_free.last_mut() {
-                    if last.end >= iv.start {
-                        last.end = last.end.max(iv.end);
-                        continue;
-                    }
+        let end = addr + aligned as u64 - 1;
+        let mut intervals = core::mem::take(&mut self.free);
+        intervals.push(IovaInterval { start, end });
+        intervals.sort_by_key(|iv| iv.start);
+        let mut merged: Vec<IovaInterval> = Vec::new();
+        for iv in intervals {
+            if let Some(last) = merged.last_mut() {
+                if iv.start <= last.end.saturating_add(1) {
+                    last.end = last.end.max(iv.end);
+                    continue;
                 }
-                new_free.push(IovaInterval {
-                    start: iv.start,
-                    end: iv.end,
-                });
-            } else {
-                new_free.push(IovaInterval {
-                    start: iv.start,
-                    end: iv.end,
-                });
             }
+            merged.push(iv);
         }
-        if !inserted {
-            new_free.push(IovaInterval { start, end });
-        }
-        // Sort by start (should already be sorted but be safe)
-        new_free.sort_by_key(|iv| iv.start);
-        self.free = new_free;
+        self.free = merged;
     }
 }
 
-// ── IOMMU Engine ────────────────────────────────────────────────────
-
-pub struct IommuEngine {
+struct IommuEngine {
     registers: VtdRegisters,
     root_table: IommuRootTable,
     page_table: IommuPageTable,
     iova: IovaAllocator,
 }
 
+unsafe impl Send for IommuEngine {}
+
 impl IommuEngine {
-    fn new(
-        mmio_base: *mut u8,
-        ctx: &dyn DriverContext,
-        iova_bits: u8,
-    ) -> Result<Self, DriverContextError> {
-        let registers = VtdRegisters::new(mmio_base);
-
-        // Build root table
+    fn new(regs: VtdRegisters, iova_bits: u8) -> Result<Self, ()> {
+        let cbs = MEM.lock();
+        let ctx = cbs.as_ref().ok_or(())?;
         let root_table = IommuRootTable::new(ctx)?;
-
-        // Build IOMMU page table for domain 0
         let page_table = IommuPageTable::new(ctx, 0)?;
-
-        // IOVA allocator
         let iova = IovaAllocator::new(iova_bits);
-
-        Ok(Self {
-            registers,
-            root_table,
-            page_table,
-            iova,
-        })
+        Ok(Self { registers: regs, root_table, page_table, iova })
     }
 
-    pub fn set_device_context(
-        &mut self,
-        ctx: &dyn DriverContext,
-        bus: u8,
-        device: u8,
-        function: u8,
-    ) -> Result<(), DriverContextError> {
-        let entry = self
-            .root_table
-            .get_context_entry(ctx, bus, device, function)?;
-        let aw_bits = table::CTX_AW_3LEVEL;
-        *entry = table::ContextEntry::new_host(
-            self.page_table.root_phys(),
-            aw_bits,
-            self.page_table.domain_id(),
-        );
-        Ok(())
-    }
-
-    pub fn enable(&self) -> Result<(), &'static str> {
-        let regs = &self.registers;
-
-        // 1. Set root table address
-        regs.set_root_table(self.root_table.root_table_phys());
-        regs.set_root_table_ptr();
-        if !regs.wait_for_root_table_ptr() {
-            return Err("IOMMU: root table pointer not set");
+    /// Populate pass-through entries for all discovered PCI devices.
+    fn setup_pass_through_all(&mut self) -> Result<(), ()> {
+        let mut scanner = PciScanner::new();
+        scanner.scan_all_buses().map_err(|_| ())?;
+        if scanner.get_devices().is_empty() {
+            log::warn!("IOMMU: no PCI devices found, skipping pass-through setup");
+            return Ok(());
         }
-
-        // 2. Flush write buffer
-        if !regs.write_buffer_flush() {
-            return Err("IOMMU: write buffer flush failed");
-        }
-
-        // 3. Enable DMA remapping
-        regs.enable_translation();
-        if !regs.wait_for_translation_enable() {
-            return Err("IOMMU: translation enable failed");
+        let mut cbs = MEM.lock();
+        let ctx = cbs.as_mut().ok_or(())?;
+        for dev_info in scanner.get_devices() {
+            let entry = self.root_table.get_context_entry(ctx, dev_info.bus, dev_info.device, dev_info.function)?;
+            *entry = table::ContextEntry::new_pass_through();
         }
         Ok(())
     }
 
-    pub fn dma_map(
-        &mut self,
-        ctx: &dyn DriverContext,
-        device_id: u16,
-        phys: u64,
-        size: usize,
-    ) -> Result<u64, DriverContextError> {
-        if size == 0 {
-            return Err(DriverContextError::InvalidArgument);
-        }
-        if phys & 0xFFF != 0 {
-            return Err(DriverContextError::InvalidArgument);
-        }
-        if phys.checked_add(size as u64).is_none() {
-            return Err(DriverContextError::InvalidArgument);
-        }
-
-        // Validate before mutating state
-        let iova = self
-            .iova
-            .alloc(size)
-            .ok_or(DriverContextError::OutOfMemory)?;
-        let pages = (size + 4095) / 4096;
-
-        // Map pages with rollback on failure
-        let mut mapped = 0usize;
-        let result = (|| -> Result<(), DriverContextError> {
-            for i in 0..pages {
-                let iova_page = iova + (i as u64) * 4096;
-                let phys_page = phys + (i as u64) * 4096;
-                self.page_table.map_page(ctx, iova_page, phys_page)?;
-                mapped = i + 1;
-            }
-            Ok(())
-        })();
-        if result.is_err() {
-            // Rollback: unmap any pages that were already mapped
-            for i in 0..mapped {
-                let iova_page = iova + (i as u64) * 4096;
-                self.page_table.unmap_page(ctx, iova_page);
-            }
-            self.iova.free(iova, size);
-            return Err(result.unwrap_err());
-        }
-
-        // Switch this device's context entry from pass-through to host translation.
-        // Defer until after mapping succeeds so the device never sees an
-        // incomplete page table.
+    fn dma_map(&mut self, device_id: u16, phys: u64, size: usize) -> Result<u64, ()> {
         let bus = (device_id >> 8) as u8;
-        let dev = ((device_id >> 3) & 0x1f) as u8;
-        let func = (device_id & 7) as u8;
-        let entry = match self.root_table.get_context_entry(ctx, bus, dev, func) {
-            Ok(e) => e,
-            Err(e) => {
-                for i in 0..mapped {
-                    let iova_page = iova + (i as u64) * 4096;
-                    self.page_table.unmap_page(ctx, iova_page);
+        let device = ((device_id >> 3) & 0x1F) as u8;
+        let function = (device_id & 0x7) as u8;
+
+        {
+            let mut cbs = MEM.lock();
+            let ctx = cbs.as_mut().ok_or(())?;
+            let entry = self.root_table.get_context_entry(ctx, bus, device, function)?;
+            if !entry.is_blocked() {
+                *entry = table::ContextEntry::new_host(
+                    self.page_table.root_phys(),
+                    table::CTX_AW_3LEVEL,
+                );
+            }
+        }
+
+        let iova = self.iova.alloc(size).ok_or(())?;
+        let pages = (size + 4095) / 4096;
+        let mut cbs = MEM.lock();
+        let ctx = cbs.as_mut().ok_or(())?;
+
+        for i in 0..pages {
+            let iova_page = iova + (i as u64) * 4096;
+            let phys_page = phys + (i as u64) * 4096;
+            if self.page_table.map_page(ctx, iova_page, phys_page).is_err() {
+                for j in 0..i {
+                    self.page_table.unmap_page(ctx, iova + (j as u64) * 4096);
                 }
                 self.iova.free(iova, size);
-                return Err(e);
+                return Err(());
             }
-        };
-        *entry = table::ContextEntry::new_host(
-            self.page_table.root_phys(),
-            table::CTX_AW_3LEVEL,
-            self.page_table.domain_id(),
-        );
+        }
 
-        // Ensure page table and context entry writes are committed before invalidating caches
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release);
-
-        // Flush context cache and IOTLB
-        self.registers
-            .context_cache_invalidate_domain(self.page_table.domain_id());
-        self.registers
-            .iotlb_domain_invalidate(self.page_table.domain_id());
+        self.registers.context_cache_invalidate_domain(self.page_table.domain_id());
+        self.registers.iotlb_domain_invalidate(self.page_table.domain_id());
         Ok(iova)
     }
 
-    pub fn dma_unmap(&mut self, ctx: &dyn DriverContext, iova: u64, size: usize) {
+    fn dma_unmap(&mut self, iova: u64, size: usize) {
+        let mut guard = MEM.lock();
+        let Some(ctx) = guard.as_mut() else {
+            log::warn!("IOMMU: dma_unmap called but MemCallbacks not set");
+            return;
+        };
         let pages = (size + 4095) / 4096;
         for i in 0..pages {
             let iova_page = iova + (i as u64) * 4096;
             self.page_table.unmap_page(ctx, iova_page);
         }
         self.iova.free(iova, size);
-        self.registers
-            .iotlb_domain_invalidate(self.page_table.domain_id());
-    }
-
-    /// Set up pass-through context entries for all devices found by a PCI scan.
-    /// This ensures existing (non-IOMMU-aware) drivers can keep working after
-    /// translation is enabled.
-    pub fn setup_pass_through_all(
-        &mut self,
-        ctx: &dyn DriverContext,
-    ) -> Result<(), DriverContextError> {
-        let mut scanner = PciScanner::new();
-        if scanner.scan_all_buses().is_err() {
-            // Fall back to bus 0 only if scan fails
-            for dev in 0..32 {
-                for func in 0..8 {
-                    let entry = self.root_table.get_context_entry(ctx, 0, dev, func)?;
-                    *entry = table::ContextEntry::new_pass_through();
-                }
-            }
-            return Ok(());
-        }
-        for dev_info in scanner.get_devices() {
-            let entry = self.root_table.get_context_entry(
-                ctx,
-                dev_info.bus,
-                dev_info.device,
-                dev_info.function,
-            )?;
-            *entry = table::ContextEntry::new_pass_through();
-        }
-        Ok(())
-    }
-
-    pub fn is_enabled(&self) -> bool {
-        self.registers.is_enabled()
+        self.registers.iotlb_domain_invalidate(self.page_table.domain_id());
     }
 }
 
-// ── Global singleton ────────────────────────────────────────────────
-
 static GLOBAL_IOMMU: Mutex<Option<IommuEngine>> = Mutex::new(None);
+static IOMMU_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Physical-to-virtual mapping function set by [`init`] and used by ACPI parsing.
-/// Defaults to the hardcoded offset for backward compatibility.
-pub(crate) static PHYS_TO_VIRT: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0xFFFF_8000_0000_0000);
-
-/// Initialize IOMMU from ACPI DMAR table.
-///
-/// `rsdp_phys` — physical address of the ACPI RSDP (0 = auto-detect).
-/// `phys_to_virt` — function to convert physical to virtual addresses.
-/// `ctx` — DriverContext for frame allocation and MMIO mapping.
-pub fn init(
-    rsdp_phys: u64,
-    phys_to_virt_fn: fn(u64) -> usize,
-    ctx: &dyn DriverContext,
-) -> Result<(), &'static str> {
-    // Set PHYS_TO_VIRT before any ACPI parsing so the mapping is consistent.
-    let mapper_offset = (phys_to_virt_fn)(0) as u64;
-    PHYS_TO_VIRT.store(mapper_offset, core::sync::atomic::Ordering::Relaxed);
-
-    let rsdp = if rsdp_phys != 0 {
-        if !acpi::find_rsdp_from_addr(rsdp_phys) {
-            return Err("Invalid RSDP address");
-        }
-        rsdp_phys
-    } else {
-        acpi::find_rsdp().ok_or("RSDP not found")?
-    };
-
-    let (xsdt_phys, rsdt_phys) = acpi::get_sdt_addresses(rsdp).ok_or("XSDT/RSDT not found")?;
-    let dmar_phys = acpi::find_table(xsdt_phys, b"DMAR")
-        .or_else(|| {
-            // Some UEFI firmware only includes DMAR in the RSDT (32-bit entries).
-            // Fall back to RSDT if DMAR not found in XSDT.
-            rsdt_phys.and_then(|p| acpi::find_table(p, b"DMAR"))
-        })
-        .ok_or("DMAR table not found")?;
-    let dmar = acpi::parse_dmar_from_phys(dmar_phys).ok_or("Failed to parse DMAR table")?;
-
-    let drhd = dmar.drhd_units.first().ok_or("No DRHD entries")?;
-
-    let bar_phys = drhd.phys_base;
-    if bar_phys == 0 {
-        return Err("Invalid DRHD register base");
+pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
+    if IOMMU_INITIALIZED.load(core::sync::atomic::Ordering::Relaxed) {
+        log::info!("IOMMU: already initialized, re-init skipped");
+        return Ok(());
     }
-    let bar_size = (1 << 12) as usize; // VT-d MMIO is typically 4KB
 
-    // Map the MMIO region
-    let mmio_virt = (phys_to_virt_fn)(bar_phys);
-    ctx.map_mmio_region(bar_phys as usize, mmio_virt, bar_size)
-        .map_err(|_| "IOMMU BAR MMIO mapping failed")?;
+    let dmar = acpi::dmar::parse_dmar(rsdp_phys).ok_or("failed to parse DMAR table")?;
+    if dmar.drhd_units.is_empty() {
+        return Err("IOMMU: no DRHD units found");
+    }
 
-    let mut engine = IommuEngine::new(mmio_virt as *mut u8, ctx, dmar.host_address_width)
-        .map_err(|_| "IOMMU engine init failed")?;
+    let drhd = &dmar.drhd_units[0];
+    let mmio_base = drhd.phys_base;
+    let iova_bits = dmar.host_address_width;
 
-    // Set up pass-through context entries for all enumerated PCI devices
-    // before enabling translation, so non-IOMMU-aware drivers keep working.
-    engine
-        .setup_pass_through_all(ctx)
+    log::info!("IOMMU: mmio_base={:#x} host_addr_width={} drhd_units={}",
+        mmio_base, iova_bits, dmar.drhd_units.len());
+
+    let mmio_virt = {
+        let guard = MEM.lock();
+        let cbs = guard.as_ref().ok_or("IOMMU: MemCallbacks not set")?;
+        // Map VT-d MMIO region as uncached (required by VT-d spec)
+        let virt = (cbs.map_mmio)(mmio_base as usize, 4096).map_err(|_| "IOMMU: MMIO mapping failed")?;
+        virt as *mut u8
+    };
+    let regs = VtdRegisters::new(mmio_virt);
+    let ver = regs.version();
+    let cap = regs.cap();
+    let ecap = regs.ecap();
+    log::info!("IOMMU: version={:#x} cap={:#x} ecap={:#x} domains={} mgaw={} sagaw={}",
+        ver, cap, ecap,
+        vtd::cap_num_domains(cap),
+        vtd::cap_mgaw(cap),
+        vtd::cap_sagaw(cap));
+
+    let mut engine = IommuEngine::new(regs, iova_bits)
+        .map_err(|_| "IOMMU engine creation failed")?;
+    engine.setup_pass_through_all()
         .map_err(|_| "IOMMU pass-through setup failed")?;
 
-    // Check if hardware is already enabled by firmware
-    if engine.is_enabled() {
-        log::warn!("IOMMU already enabled by firmware");
+    if engine.registers.gsts() & vtd::GSTS_TES != 0 {
+        log::info!("IOMMU: already enabled by firmware");
     }
 
-    // Enable the IOMMU
-    engine.enable().map_err(|_| "IOMMU enable failed")?;
+    if !engine.registers.write_buffer_flush() {
+        return Err("IOMMU: write buffer flush failed");
+    }
+    engine.registers.set_rtaddr(engine.root_table.root_phys());
+    engine.registers.set_root_table_ptr();
+    if !engine.registers.wait_for_root_table_ptr() {
+        return Err("IOMMU: root table pointer setup timed out");
+    }
 
+    engine.registers.enable_translation();
+    if !engine.registers.wait_for_translation_enable() {
+        return Err("IOMMU: translation enable timed out");
+    }
+
+    // TODO: Support multiple DRHD remapping units. Currently only the first
+    // DRHD is initialized; devices behind other units will not get context
+    // setup and will fault on DMA. dmar.drhd_units.len() logged above.
     *GLOBAL_IOMMU.lock() = Some(engine);
-
-    log::info!("IOMMU initialized successfully");
+    IOMMU_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
+    log::info!("IOMMU: initialized with pass-through for all devices");
     Ok(())
 }
 
-/// Check if IOMMU has been successfully initialized.
-pub fn is_initialized() -> bool {
-    GLOBAL_IOMMU.lock().is_some()
-}
-
-/// Map a DMA buffer through the IOMMU. Falls back to identity mapping.
-pub fn dma_map_with_ctx(
-    ctx: &dyn DriverContext,
-    device_id: u16,
-    phys: u64,
-    size: usize,
-) -> Result<u64, DriverContextError> {
+pub fn dma_map(device_id: u16, phys: u64, size: usize) -> Result<u64, ()> {
     let mut guard = GLOBAL_IOMMU.lock();
     if let Some(ref mut engine) = *guard {
-        engine.dma_map(ctx, device_id, phys, size)
+        engine.dma_map(device_id, phys, size)
     } else {
-        Ok(phys)
+        Ok(phys) // identity fallback when no IOMMU
     }
 }
 
-/// Unmap a previously mapped DMA buffer. No-op if no IOMMU.
-pub fn dma_unmap(ctx: &dyn DriverContext, iova: u64, size: usize) {
+pub fn dma_unmap(iova: u64, size: usize) {
     let mut guard = GLOBAL_IOMMU.lock();
     if let Some(ref mut engine) = *guard {
-        engine.dma_unmap(ctx, iova, size);
+        engine.dma_unmap(iova, size);
     }
 }

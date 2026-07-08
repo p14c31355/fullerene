@@ -11,6 +11,7 @@
 
 use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
+use petroleum::initializer::FrameAllocator;
 
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
@@ -85,7 +86,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::serial::serial_log(format_args!("Initializing PCI BARs...\n"));
             let mut scanner = nitrogen::pci::PciScanner::new();
             if scanner.scan_all_buses().is_ok() {
-                let mut allocator = petroleum::hardware::pci::PciAllocator::new(0x40000000);
+                let mut allocator = crate::hardware::pci_allocator::PciAllocator::new(0x40000000);
                 allocator.assign_bars(scanner.get_devices());
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PCI BARs step done\n");
@@ -94,6 +95,26 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("IOMMU", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step start\n");
+            // Install memory callbacks before init
+            nitrogen::iommu::set_mem_callbacks(nitrogen::iommu::MemCallbacks {
+                alloc_frame: || {
+                    let mut mgr = crate::memory_management::get_memory_manager().lock();
+                    mgr.as_mut().and_then(|m| m.allocate_frame().ok().map(|p| p as u64))
+                },
+                free_frame: |phys| {
+                    let mut mgr = crate::memory_management::get_memory_manager().lock();
+                    if let Some(m) = mgr.as_mut() { let _ = m.free_frame(phys as usize); }
+                },
+                phys_to_virt: |phys| (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize,
+                map_mmio: |phys, size| {
+                    let off = petroleum::common::memory::get_physical_memory_offset() as u64;
+                    let virt = (phys as u64 + off) as usize;
+                    let mut mgr = crate::memory_management::get_memory_manager().lock();
+                    let m = mgr.as_mut().ok_or(())?;
+                    m.map_mmio_region(phys, virt, size).map_err(|_| ())?;
+                    Ok(virt)
+                },
+            });
             // Try UEFI Configuration Table RSDP first, then BootContext, then legacy scan
             let uefi_rsdp =
                 crate::boot::UEFI_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
@@ -102,10 +123,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             } else {
                 crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0)
             };
-            let phys_to_virt = |phys: u64| -> usize {
-                (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize
-            };
-            let ctx = super::driver_context_impl::KernelDriverContext;
             let rsdp_source = if uefi_rsdp != 0 {
                 "UEFI config table"
             } else if crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0) != 0 {
@@ -113,13 +130,16 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             } else {
                 "ACPI scan"
             };
-            match nitrogen::iommu::init(rsdp, phys_to_virt, &ctx) {
+            // Set ACPI phys_to_virt offset for the new acpi module
+            let acpi_phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
+            nitrogen::acpi::set_phys_to_virt_offset(acpi_phys_off);
+            // Fall back to legacy ACPI scan if no RSDP from boot
+            let rsdp = if rsdp != 0 { rsdp } else { nitrogen::acpi::find_rsdp().unwrap_or(0) };
+            match nitrogen::iommu::init(rsdp) {
                 Ok(()) => log::info!("IOMMU initialized (RSDP from {})", rsdp_source),
                 Err(e) => {
                     log::warn!("IOMMU not available: {e} (RSDP={rsdp:#018x} from {rsdp_source})");
-                    log::warn!(
-                        "IOMMU: VT-d may be disabled in firmware, or hardware does not support it"
-                    );
+                    log::warn!("IOMMU: VT-d may be disabled in firmware, or hardware does not support it");
                 }
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");

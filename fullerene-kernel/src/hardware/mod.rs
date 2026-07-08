@@ -8,3 +8,4 @@
 //! while keeping the higher-level device-manager policy here.
 
 pub mod device_manager;
+pub mod pci_allocator;

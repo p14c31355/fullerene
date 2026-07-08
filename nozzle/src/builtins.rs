@@ -65,35 +65,19 @@ pub fn cmd_pwd(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `mem` — display memory information (replaces `meminfo` stub)
-///
-/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
-pub fn cmd_mem(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "mem");
-    true
+macro_rules! sys_info_cmd {
+    ($name:ident, $action:expr) => {
+        pub fn $name(ctx: &mut CommandContext) -> bool {
+            crate::sys_hooks::call_sys_info_hook(ctx, $action);
+            true
+        }
+    };
 }
 
-/// `tasks` — list processes (replaces `ps` stub)
-///
-/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
-pub fn cmd_tasks(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "tasks");
-    true
-}
-
-/// `windows` — list all windows on the desktop
-///
-/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
-pub fn cmd_windows(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "windows");
-    true
-}
-
-/// `dmesg` — display kernel message buffer
-pub fn cmd_dmesg(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "dmesg");
-    true
-}
+sys_info_cmd!(cmd_mem, "mem");
+sys_info_cmd!(cmd_tasks, "tasks");
+sys_info_cmd!(cmd_windows, "windows");
+sys_info_cmd!(cmd_dmesg, "dmesg");
 
 /// `hexdump` — show hex dump of provided string
 pub fn cmd_hexdump(ctx: &mut CommandContext) -> bool {
@@ -137,13 +121,7 @@ pub fn cmd_shutdown(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `pci` — list PCI devices
-///
-/// Dispatches to the kernel-provided `SYS_INFO_FN` hook.
-pub fn cmd_pci(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "pci");
-    true
-}
+sys_info_cmd!(cmd_pci, "pci");
 
 /// `calc` — simple arithmetic calculator
 pub fn cmd_calc(ctx: &mut CommandContext) -> bool {
@@ -168,17 +146,8 @@ pub fn cmd_run(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `taskmon` — detailed task/process monitor
-pub fn cmd_taskmon(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "taskmon");
-    true
-}
-
-/// `devices` — list registered hardware devices
-pub fn cmd_devices(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "devices");
-    true
-}
+sys_info_cmd!(cmd_taskmon, "taskmon");
+sys_info_cmd!(cmd_devices, "devices");
 
 /// `theme` — show or change the desktop theme
 pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
@@ -208,8 +177,7 @@ pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
 
 /// `badapple` — play Bad Apple!! on PC speaker with framebuffer animation
 pub fn cmd_badapple(ctx: &mut CommandContext) -> bool {
-    ctx.terminal
-        .write_str("Bad Apple!! playing... (press any key to stop)\n");
+    ctx.terminal.write_str("Bad Apple!! playing... (press any key to stop)\n");
     crate::sys_hooks::call_sys_info_hook(ctx, "badapple");
     true
 }
@@ -276,11 +244,7 @@ pub fn cmd_write(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `usb_info` — display USB device status
-pub fn cmd_usb_info(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "usb_info");
-    true
-}
+sys_info_cmd!(cmd_usb_info, "usb_info");
 
 /// `sd_mount` — probe SD card
 pub fn cmd_sd_mount(ctx: &mut CommandContext) -> bool {
@@ -293,23 +257,9 @@ pub fn cmd_sd_mount(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `hello_linux` — launch the built-in Linux test binary
-pub fn cmd_hello_linux(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "hello_linux");
-    true
-}
-
-/// `linux_run` — launch a Linux ELF binary from the filesystem
-pub fn cmd_linux_run(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "linux_run");
-    true
-}
-
-/// `run_busybox` — launch BusyBox shell
-pub fn cmd_run_busybox(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "run_busybox");
-    true
-}
+sys_info_cmd!(cmd_hello_linux, "hello_linux");
+sys_info_cmd!(cmd_linux_run, "linux_run");
+sys_info_cmd!(cmd_run_busybox, "run_busybox");
 
 /// `rm` — remove a file or directory
 pub fn cmd_rm(ctx: &mut CommandContext) -> bool {
@@ -353,17 +303,8 @@ pub fn cmd_df(ctx: &mut CommandContext) -> bool {
     true
 }
 
-/// `date` — show current date and time
-pub fn cmd_date(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "date");
-    true
-}
-
-/// `uptime` — show system uptime
-pub fn cmd_uptime(ctx: &mut CommandContext) -> bool {
-    crate::sys_hooks::call_sys_info_hook(ctx, "uptime");
-    true
-}
+sys_info_cmd!(cmd_date, "date");
+sys_info_cmd!(cmd_uptime, "uptime");
 
 /// `whoami` — print current user name
 pub fn cmd_whoami(ctx: &mut CommandContext) -> bool {

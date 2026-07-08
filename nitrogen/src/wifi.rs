@@ -224,23 +224,26 @@ pub struct PciProbeResult {
     pub hw_rev: u32,
 }
 
-/// Probe PCI, find a supported WiFi card, and initialise it.
-///
-/// Returns the initialised driver together with PCI device ID and HW
-/// revision on success, or `None` if no supported card is found or
-/// initialisation fails.
-pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeResult> {
+/// Raw result of a lightweight PCI probe (without driver creation).
+/// Used by the step-based init to accumulate state across phases.
+pub struct RawPciProbeResult {
+    pub entry: &'static DriverEntry,
+    pub pci_dev: crate::pci::PciDevice,
+    pub mmio: *mut u32,
+    pub hw_rev: u16,
+    pub device_id: u16,
+    pub driver_ctx: &'static dyn DriverContext,
+}
+
+/// Lightweight PCI probe: scan bus, configure D0/ASPM/enable-mem,
+/// map BAR0.  No MMIO access — only PCI config space (port I/O).
+/// Returns raw state that can be used by subsequent init phases.
+pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResult> {
     crate::debug::print("wifi", "start_pci_probe");
     let (entry, info) = WifiRegistry::probe()?;
-
     crate::debug::print("wifi", "probe_ok");
 
-    // ── PCI config-space setup (NEVER hangs) ────────────────────────
-    // On real hardware, the device may be in D3 or have ASPM L1 enabled,
-    // either of which will cause ANY MMIO access (including the HW_REV
-    // read below) to hang the CPU indefinitely.  We must ensure D0,
-    // disable ASPM, and enable memory-space decoding *before* touching
-    // the BAR — all via PCI config space (port I/O, safe).
+    // PCI config-space setup (NEVER hangs)
     let pci_dev = crate::pci::PciDevice::new(info.bus, info.device, info.function)?;
     crate::debug::print("wifi", "ensure_d0");
     pci_dev.ensure_d0();
@@ -249,20 +252,12 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeRes
     crate::debug::print("wifi", "enable_mem");
     pci_dev.enable_memory_access();
 
-    // ── Read HW revision from PCI config space (port I/O, NEVER hangs) ─
-    // Instead of a non-posted MMIO read_volatile(CSR_HW_REV) which can
-    // hang the CPU forever on real hardware when the device is not fully
-    // responding, we use the PCI Revision ID at config offset 0x08.
-    // This is a port-I/O read, not MMIO, so it cannot hang.
+    // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");
     let pci_revision = crate::pci::PciConfigSpace::read_config_byte(
         info.bus, info.device, info.function, 0x08,
     );
-    // Convert PCI revision (u8) to a u32 hw_rev for the driver API.
-    // The driver only uses hw_rev for logging; the actual HW revision
-    // is re-read from CSR_HW_REV inside init_after_mmio() when (and if)
-    // the device becomes responsive.
-    let hw_rev: u32 = pci_revision as u32;
+    let hw_rev: u16 = pci_revision as u16;
 
     // Map BAR0 MMIO
     crate::debug::print("wifi", "map_bar0");
@@ -284,14 +279,33 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeRes
         }
     }
 
+    crate::debug::print("wifi", "probe_done");
+    Some(RawPciProbeResult {
+        entry,
+        pci_dev,
+        mmio: mmio_base,
+        hw_rev,
+        device_id: info.device_id,
+        driver_ctx: ctx,
+    })
+}
+
+/// Probe PCI, find a supported WiFi card, and initialise it.
+///
+/// Returns the initialised driver together with PCI device ID and HW
+/// revision on success, or `None` if no supported card is found or
+/// initialisation fails.
+pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeResult> {
+    let raw = probe_pci_only(ctx)?;
+
+    let hw_rev_32 = raw.hw_rev as u32;
     crate::debug::print("wifi", "driver_create");
-    // Let the matched driver create itself
-    let driver = (entry.create)(ctx, mmio_base, hw_rev, pci_dev)?;
+    let driver = (raw.entry.create)(ctx, raw.mmio, hw_rev_32, raw.pci_dev)?;
 
     crate::debug::print("wifi", "driver_ok");
     Some(PciProbeResult {
         driver,
-        device_id: info.device_id,
-        hw_rev,
+        device_id: raw.device_id,
+        hw_rev: hw_rev_32,
     })
 }

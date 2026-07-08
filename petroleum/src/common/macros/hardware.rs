@@ -32,11 +32,9 @@ macro_rules! init_serial_port {
         let (dlab, divisor_low, irq, line_ctrl, fifo, modem) =
             ($dlab, $divisor_low, $irq, $line_ctrl, $fifo, $modem);
         unsafe {
-            use nitrogen::port::HardwarePorts;
-
             $crate::write_serial_bytes(
-                HardwarePorts::SERIAL_DATA_PORT,
-                HardwarePorts::SERIAL_LINE_STATUS_PORT,
+                $crate::io::HardwarePorts::SERIAL_DATA_PORT,
+                $crate::io::HardwarePorts::SERIAL_LINE_STATUS_PORT,
                 b"DEBUG: init_serial_port start\n",
             );
 
@@ -48,8 +46,8 @@ macro_rules! init_serial_port {
             modem_ctrl_port.write(modem);
 
             $crate::write_serial_bytes(
-                HardwarePorts::SERIAL_DATA_PORT,
-                HardwarePorts::SERIAL_LINE_STATUS_PORT,
+                $crate::io::HardwarePorts::SERIAL_DATA_PORT,
+                $crate::io::HardwarePorts::SERIAL_LINE_STATUS_PORT,
                 b"DEBUG: init_serial_port end\n",
             );
         }

@@ -34,7 +34,6 @@ bitfield = "0.19"
 addr2line = { version = "0.26.1", default-features = false }
 gimli = { version = "0.33.0", default-features = false }
 goblin = { workspace = true, features = ["pe32", "pe64"] }
-nitrogen = { path = "../nitrogen" }
 embassy-futures = { version = "0.1", default-features = false }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 
