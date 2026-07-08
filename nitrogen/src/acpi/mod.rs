@@ -1,4 +1,5 @@
 pub mod dmar;
+pub mod mcfg;
 
 use core::sync::atomic::AtomicU64;
 

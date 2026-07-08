@@ -14,12 +14,12 @@
 //! After this configuration, a timeout MMIO read returns 0xFFFFFFFF
 //! (which the iwlwifi driver already treats as "device unresponsive").
 
-use crate::pci::PciConfigSpace;
+use crate::pci::{self, PciConfigSpace};
 
 /// Find the PCIe capability offset (ID 0x10) for a device.
 ///
 /// Returns `None` if the device does not have a PCI Express capability.
-fn find_pcie_cap(bus: u8, dev: u8, func: u8) -> Option<u8> {
+pub(crate) fn find_pcie_cap(bus: u8, dev: u8, func: u8) -> Option<u8> {
     let cap_ptr = PciConfigSpace::read_config_byte(bus, dev, func, 0x34);
     if cap_ptr == 0 {
         return None;
@@ -77,14 +77,19 @@ pub fn configure_completion_timeout(bus: u8, dev: u8, func: u8) {
 
 /// Find the AER Extended Capability offset (ID 0x0001) on a device.
 ///
-/// Returns `None` if AER is not present.
+/// Returns `None` if AER is not present or ECAM is not available.
 fn find_aer_cap(bus: u8, dev: u8, func: u8) -> Option<u16> {
     let mut off: u16 = 0x100;
     let mut iterations = 0;
     const MAX_ITERATIONS: u8 = 48;
     while off != 0 && iterations < MAX_ITERATIONS {
         iterations += 1;
-        let cap_hdr = PciConfigSpace::read_config_dword(bus, dev, func, off as u8);
+        // Extended capabilities require ECAM (offset ≥ 0x100).
+        let cap_hdr = pci::read_ext_dword(bus, dev, func, off);
+        if cap_hdr == 0xFFFF_FFFF {
+            // ECAM not configured — no AER
+            return None;
+        }
         let cap_id = (cap_hdr & 0xFFFF) as u16;
         let next_off = ((cap_hdr >> 20) & 0xFFF) as u16;
         if cap_id == 0x0001 {
@@ -125,34 +130,35 @@ pub fn configure_root_port_error_reporting(
 ) {
     if let Some(aer_off) = find_aer_cap(upstream_bus, upstream_dev, upstream_func) {
         // ── AER path ───────────────────────────────────────
+        // AER registers live in extended config space → must use ECAM.
         // Uncorrectable Error Status (read-to-clear)
-        let _ = PciConfigSpace::read_config_dword(upstream_bus, upstream_dev, upstream_func, (aer_off + 4) as u8);
+        let _ = pci::read_ext_dword(upstream_bus, upstream_dev, upstream_func, aer_off + 4);
 
         // Uncorrectable Error Mask: unmask Completion Timeout (bit 14)
         const CT_BIT: u32 = 1 << 14;
-        let uem = PciConfigSpace::read_config_dword(upstream_bus, upstream_dev, upstream_func, (aer_off + 8) as u8);
+        let uem = pci::read_ext_dword(upstream_bus, upstream_dev, upstream_func, aer_off + 8);
         if uem & CT_BIT != 0 {
             log::info!(
                 "PCIe AER: unmasking Completion Timeout on Root Port {:02x}:{:02x}.{}",
                 upstream_bus, upstream_dev, upstream_func,
             );
-            PciConfigSpace::write_config_dword_raw(
+            pci::write_ext_dword(
                 upstream_bus, upstream_dev, upstream_func,
-                (aer_off + 8) as u8,
+                aer_off + 8,
                 uem & !CT_BIT,
             );
         }
 
         // Uncorrectable Error Severity: set Completion Timeout to Non-Fatal (clear bit)
-        let ues = PciConfigSpace::read_config_dword(upstream_bus, upstream_dev, upstream_func, (aer_off + 0xC) as u8);
+        let ues = pci::read_ext_dword(upstream_bus, upstream_dev, upstream_func, aer_off + 0xC);
         if ues & CT_BIT != 0 {
             log::info!(
                 "PCIe AER: setting Completion Timeout severity to Non-Fatal on Root Port {:02x}:{:02x}.{}",
                 upstream_bus, upstream_dev, upstream_func,
             );
-            PciConfigSpace::write_config_dword_raw(
+            pci::write_ext_dword(
                 upstream_bus, upstream_dev, upstream_func,
-                (aer_off + 0xC) as u8,
+                aer_off + 0xC,
                 ues & !CT_BIT,
             );
         }
