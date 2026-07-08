@@ -762,7 +762,7 @@ impl IwlWifiDevice {
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
             loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 50_000 {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
                     break;
                 }
                 core::hint::spin_loop();
@@ -776,7 +776,7 @@ impl IwlWifiDevice {
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
             loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 50_000 {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
                     break;
                 }
                 core::hint::spin_loop();
@@ -1359,11 +1359,14 @@ impl IwlWifiDevice {
             return Err("Timeout waiting for firmware alive");
         }
 
-        // Full health check (vendor, D0, link status) before MMIO
-        self.health.pre_mmio_access().map_err(|_| {
+        // Quick vendor check (single config-space read, never hangs).
+        // Full pre_mmio_access() is too expensive per-frame on real HW
+        // (capability-list walk + ASPM recovery) and was already done
+        // during init and after firmware upload.
+        if !self.health.is_device_present() {
             self.fw_state = FwState::Error;
-            "Device not accessible for MMIO"
-        })?;
+            return Err("Device not accessible for MMIO");
+        }
 
         // Check for alive interrupt
         unsafe {
