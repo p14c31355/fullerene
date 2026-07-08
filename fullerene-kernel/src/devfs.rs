@@ -117,7 +117,7 @@ impl FileSystem for DevFs {
                     else {
                         let block_off = entry_offset % bs;
                         let lba = entry_offset / bs;
-                        let count = (block_off + data.len()).div_ceil(bs).max(1);
+                        let count = block_off.checked_add(data.len()).map(|sum| sum.div_ceil(bs).max(1)).unwrap_or(1);
                         let actual = count.min(64);
                         let write_bytes = actual * bs;
                         let n = data.len().min(write_bytes.saturating_sub(block_off));
