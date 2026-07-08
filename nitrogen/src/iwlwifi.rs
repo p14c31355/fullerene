@@ -1202,6 +1202,8 @@ impl IwlWifiDevice {
     /// Start firmware upload and CPU boot without waiting for alive.
     /// Returns Ok if upload succeeds; the caller must then poll check_alive_nonblocking.
     pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+        self.health.pre_mmio_access().map_err(|_| "Device not accessible for firmware upload")?;
+
         crate::debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
             return Err("Firmware data too short");
@@ -1301,6 +1303,13 @@ impl IwlWifiDevice {
 
         crate::debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
+
+        // Re-verify device presence before the final MMIO sequence,
+        // since firmware upload may have taken significant time.
+        if !self.health.is_device_present() {
+            self.fw_state = FwState::Error;
+            return Err("Device disappeared during firmware upload");
+        }
 
         // Kick the firmware CPU (without waiting for alive)
         unsafe {
