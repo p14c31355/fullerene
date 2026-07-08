@@ -47,7 +47,7 @@ pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
 
             if scope_off + 6 <= offset + slen {
                 let scope_len = unsafe { core::ptr::read_unaligned(p.add(scope_off + 1) as *const u8) } as usize;
-                if scope_off + scope_len <= offset + slen {
+                if scope_len >= 6 && scope_off + scope_len <= offset + slen {
                     bus = unsafe { core::ptr::read_unaligned(p.add(scope_off + 5) as *const u8) };
                     let mut po = scope_off + 6;
                     while po + 2 <= scope_off + scope_len {
