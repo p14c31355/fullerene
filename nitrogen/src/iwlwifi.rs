@@ -1379,11 +1379,6 @@ impl IwlWifiDevice {
                 );
                 self.fw_state = FwState::Alive;
                 crate::debug::print("iwlwifi", "fw: alive_ok");
-                if let Err(_) = self.send_init_commands() {
-                    self.fw_state = FwState::Error;
-                    return Err("Failed to send init commands");
-                }
-                self.fw_state = FwState::Ready;
                 return Ok(true);
             }
             if (int_cause & (1 << 25)) != 0 {
@@ -1409,11 +1404,6 @@ impl IwlWifiDevice {
             }
             self.fw_state = FwState::Alive;
             crate::debug::print("iwlwifi", "fw: alive_ok");
-            if let Err(_) = self.send_init_commands() {
-                self.fw_state = FwState::Error;
-                return Err("Failed to send init commands");
-            }
-            self.fw_state = FwState::Ready;
             return Ok(true);
         }
 
@@ -2075,6 +2065,10 @@ impl super::wifi::WifiDriver for IwlWifiDevice {
     fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str> {
         IwlWifiDevice::check_alive_nonblocking(self, start_tsc)
     }
+
+    fn send_init_commands(&mut self) -> Result<(), &'static str> {
+        IwlWifiDevice::send_init_commands(self)
+    }
 }
 
 /// Constructor called by the wifi registry after PCI probe.
@@ -2340,7 +2334,7 @@ pub fn try_init_wifi_device_step() {
             match alive_result {
                 Ok(true) => {
                     crate::debug::print("iwlwifi", "step: fw_alive");
-                    set_init_phase(WifiInitPhase::Done);
+                    set_init_phase(WifiInitPhase::FwInitCmds);
                 }
                 Ok(false) => {
                     // Still waiting, will poll again next frame
@@ -2352,6 +2346,30 @@ pub fn try_init_wifi_device_step() {
                     let mut ctx = WIFI_INIT_CTX.lock();
                     ctx.fw_candidate_idx += 1;
                     set_init_phase(WifiInitPhase::FwUpload);
+                }
+            }
+        }
+        WifiInitPhase::FwInitCmds => {
+            // ── Send post-boot init commands ──────────────
+            let result = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                let dev = match ctx.mmio_device.as_mut() {
+                    Some(d) => d,
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                };
+                dev.send_init_commands()
+            };
+            match result {
+                Ok(()) => {
+                    crate::debug::print("iwlwifi", "step: fw_init_cmds_ok");
+                    set_init_phase(WifiInitPhase::Done);
+                }
+                Err(e) => {
+                    log::warn!("iwlwifi: step: init commands failed: {}", e);
+                    set_init_phase(WifiInitPhase::Failed);
                 }
             }
         }
@@ -2373,7 +2391,7 @@ pub fn try_init_wifi_device_step() {
             crate::debug::print("iwlwifi", "step: init_failed");
         }
         // Legacy phases not used in step-based init:
-        WifiInitPhase::MmioInit | WifiInitPhase::DmaAlloc | WifiInitPhase::FwInitCmds => {
+        WifiInitPhase::MmioInit | WifiInitPhase::DmaAlloc => {
             set_init_phase(WifiInitPhase::Failed);
         }
     }

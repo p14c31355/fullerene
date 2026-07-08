@@ -101,69 +101,66 @@ impl PciHealth {
 
         // 2. Walk capabilities to find PM (0x01) and PCIe (0x10)
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, 0x34);
-        // On real hardware, some chipsets and bridge configurations may not
-        // expose PM or PCIe capabilities in the expected way.  Missing
-        // capabilities are downgraded to warnings rather than fatal errors
-        // — we still have the vendor check above as the primary gate.
+        if cap_ptr == 0 {
+            return Err(PciHealthError::NoPmCap);
+        }
+
+        let mut off = cap_ptr;
         let mut found_pm = false;
         let mut found_pcie = false;
+        let mut visited = [false; 256];
 
-        if cap_ptr != 0 {
-            let mut off = cap_ptr;
-            let mut visited = [false; 256];
-
-            for _ in 0..48 {
-                if off < 0x40 || off > 0xED {
-                    break;
-                }
-                if visited[off as usize] {
-                    log::warn!("PCI health: capability list cycle at offset {:#x}", off);
-                    break;
-                }
-                visited[off as usize] = true;
-
-                match PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, off) {
-                    0x01 => {
-                        found_pm = true;
-                        let pmcsr =
-                            PciConfigSpace::read_config_word(self.bus, self.dev, self.func, off + 4);
-                        let pstate = pmcsr & 0x3;
-                        if pstate != 0 {
-                            return Err(PciHealthError::NotD0);
-                        }
-                    }
-                    0x10 => {
-                        found_pcie = true;
-                        let lnk_sts = PciConfigSpace::read_config_word(
-                            self.bus, self.dev, self.func, off + 0x12,
-                        );
-                        let speed = lnk_sts & 0xF;
-                        if speed == 0 {
-                            return Err(PciHealthError::LinkDown);
-                        }
-                    }
-                    _ => {}
-                }
-
-                let next = PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, off + 1);
-                if next == 0 || next == off {
-                    break;
-                }
-                off = next;
+        for _ in 0..48 {
+            if off < 0x40 || off > 0xED {
+                break;
             }
+            if visited[off as usize] {
+                // Capability list cycle — log and break instead of fatal
+                // error, since the device may still be usable.
+                log::warn!("PCI health: capability list cycle at offset {:#x}", off);
+                break;
+            }
+            visited[off as usize] = true;
+
+            match PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, off) {
+                0x01 => {
+                    found_pm = true;
+                    let pmcsr =
+                        PciConfigSpace::read_config_word(self.bus, self.dev, self.func, off + 4);
+                    let pstate = pmcsr & 0x3;
+                    if pstate != 0 {
+                        return Err(PciHealthError::NotD0);
+                    }
+                }
+                0x10 => {
+                    found_pcie = true;
+                    let lnk_sts = PciConfigSpace::read_config_word(
+                        self.bus, self.dev, self.func, off + 0x12,
+                    );
+                    let speed = lnk_sts & 0xF;
+                    if speed == 0 {
+                        return Err(PciHealthError::LinkDown);
+                    }
+                }
+                _ => {}
+            }
+
+            if found_pm && found_pcie {
+                break;
+            }
+
+            let next = PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, off + 1);
+            if next == 0 || next == off {
+                break;
+            }
+            off = next;
         }
 
         if !found_pm {
-            log::warn!(
-                "PCI health: PM capability not found for {:02x}:{:02x}.{}",
-                self.bus, self.dev, self.func
-            );
+            return Err(PciHealthError::NoPmCap);
         }
         if !found_pcie {
-            log::warn!(
-                "PCI health: PCIe capability not found for {:02x}:{:02x}.{}",
-                self.bus, self.dev, self.func
-            );
+            return Err(PciHealthError::NoPcieCap);
         }
 
         self.last_check_ok = 0; // Would use RDTSC in practice
@@ -214,10 +211,15 @@ impl PciHealth {
     /// device has disappeared — in which case the caller MUST NOT
     /// perform non-posted MMIO reads (they could hang the CPU).
     pub fn pre_mmio_access(&mut self) -> Result<(), PciHealthError> {
+        // Always assert D0 before any MMIO — this is a config-space write
+        // (port I/O), never hangs, and is required even when the capability
+        // list walk below can't find the PM cap on certain chipsets.
+        self.ensure_d0();
+
         // Full health check
         match self.check() {
             Ok(()) => {
-                // On success, also recover ASPM if not done yet
+                // On success, also disable ASPM if not done yet
                 if !self.aspm_disabled {
                     self.disable_aspm();
                     self.aspm_disabled = true;
