@@ -1202,7 +1202,11 @@ impl IwlWifiDevice {
     /// Start firmware upload and CPU boot without waiting for alive.
     /// Returns Ok if upload succeeds; the caller must then poll check_alive_nonblocking.
     pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
-        self.health.pre_mmio_access().map_err(|_| "Device not accessible for firmware upload")?;
+        // `recover()` re-asserts D0, disables ASPM, and retrains the
+        // upstream bridge link — this is necessary because several
+        // frames may have elapsed since `MmioInit` and the PCIe link
+        // may have re-entered L1 by now.
+        self.health.recover().map_err(|_| "Device not accessible for firmware upload")?;
 
         crate::debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
@@ -1304,9 +1308,10 @@ impl IwlWifiDevice {
         crate::debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
-        // Re-verify device health (D0, link, vendor) before the final MMIO
-        // sequence, since firmware upload may have taken significant time.
-        self.health.pre_mmio_access().map_err(|_| {
+        // Re-verify device health and retrain link before the final MMIO
+        // sequence, since firmware upload may have taken significant time
+        // and the PCIe link may have re-entered L1.
+        self.health.recover().map_err(|_| {
             self.fw_state = FwState::Error;
             "Device not accessible after firmware upload"
         })?;
@@ -1470,8 +1475,11 @@ impl IwlWifiDevice {
             return Err("HCMD too large");
         }
 
-        // Verify device is accessible before DMA transactions
-        self.health.pre_mmio_access().map_err(|_| "device not accessible")?;
+        // Verify device is accessible before DMA transactions.
+        // Use recover() instead of pre_mmio_access() because this is
+        // the first MMIO read after firmware init — the PCIe link may
+        // have fallen back into L1 during the wait.
+        self.health.recover().map_err(|_| "device not accessible")?;
 
         // Build command header
         let hcmd_header = HcmdHeader {

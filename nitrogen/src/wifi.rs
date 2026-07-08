@@ -22,6 +22,7 @@ use alloc::vec::Vec;
 
 use bonder::wifi::{Ssid, AccessPoint, WifiStatus};
 use crate::pci::PciScanner;
+use crate::pci_health::PciHealth;
 use crate::DriverContext;
 
 // ── WifiDriver trait ─────────────────────────────────────────────────
@@ -184,10 +185,35 @@ impl WifiRegistry {
                 let subsys = crate::pci::PciConfigSpace::read_config_dword(
                     device.bus, device.device, device.function, 0x2C,
                 );
+                let subsys_vendor = (subsys & 0xFFFF) as u16;
+                let subsys_device = (subsys >> 16) as u16;
+
+                // ── Phantom / stub device filter ──
+                // Some BIOSes leave PCI config-space entries for
+                // unpopulated M.2 slots (vendor=8086, device=095b
+                // but subsys=0000:0000 or FFFF:FFFF).  A non-posted
+                // MMIO read to such a "device" hangs the CPU forever.
+                if subsys_vendor == 0x0000 || subsys_vendor == 0xFFFF {
+                    log::warn!(
+                        "WiFi: ignoring phantom device {:04x}:{:04x} subsys={:04x}:{:04x} at {:02x}:{:02x}.{}",
+                        device.vendor_id, device.device_id,
+                        subsys_vendor, subsys_device,
+                        device.bus, device.device, device.function,
+                    );
+                    continue;
+                }
+                // BAR0 must be a reasonable MMIO region (not 0, not > 64 MiB)
+                if phys == 0 || size == 0 || size > 0x0400_0000 {
+                    log::warn!(
+                        "WiFi: ignoring device with invalid BAR0 phys={:#x} size={:#x}",
+                        phys, size,
+                    );
+                    continue;
+                }
 
                 let final_info = PciWifiInfo {
-                    subsystem_vendor: (subsys & 0xFFFF) as u16,
-                    subsystem_device: (subsys >> 16) as u16,
+                    subsystem_vendor: subsys_vendor,
+                    subsystem_device: subsys_device,
                     bar0_phys: phys,
                     bar0_size: size,
                     ..info
@@ -305,6 +331,32 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         );
         if vendor == 0xFFFF || vendor == 0x0000 || vendor != info.vendor_id {
             crate::debug::print("wifi", "ERR device_gone_before_mmio");
+            return None;
+        }
+    }
+
+    // ── Final sanity: full PciHealth check ──
+    // Even with valid vendor/device/subsystem IDs and a non-zero BAR0,
+    // the device may be a BIOS stub with no actual hardware behind it.
+    // A non-posted MMIO read to such a device hangs the CPU forever.
+    // PciHealth::check() verifies D0 state and PCIe link status via
+    // PCI config space (port I/O, never hangs).  If the link reports
+    // speed=0, the physical device is absent — bail out immediately.
+    crate::debug::print("wifi", "pci_health_check");
+    {
+        let mut health = if let Some((bus, dev, func)) = upstream_bridge {
+            PciHealth::new(&pci_dev).with_upstream_bridge(bus, dev, func)
+        } else {
+            PciHealth::new(&pci_dev)
+        };
+        if health.pre_mmio_access().is_err() {
+            log::warn!(
+                "WiFi: device {:04x}:{:04x} at {:02x}:{:02x}.{} failed PciHealth check — \
+                 not in D0 or PCIe link down (phantom device?)",
+                info.vendor_id, info.device_id,
+                info.bus, info.device, info.function,
+            );
+            crate::debug::print("wifi", "ERR health_check_failed");
             return None;
         }
     }
