@@ -167,79 +167,104 @@ impl PciHealth {
         Ok(())
     }
 
-    /// Ensure D0, disable ASPM, and retrain the upstream bridge link.
+    /// Ensure D0, retrain the upstream link, then disable ASPM.
     ///
     /// This is the last line of defence before a non-posted MMIO read.
-    /// On real hardware the PCIe link may be stuck in L1 even after ASPM
-    /// is disabled — retraining the link forces it back to L0 so the
-    /// endpoint can complete MMIO reads.
+    /// On real hardware the PCIe link may be stuck in L1 — retraining
+    /// the link forces it back to L0 so the endpoint can complete MMIO
+    /// reads.
+    ///
+    /// # Ordering
+    ///
+    /// 1. `ensure_d0()` on the endpoint and bridge (config space, safe)
+    /// 2. **Link retrain** on the upstream bridge — brings the link to L0
+    /// 3. `disable_aspm()` on the bridge (ECAM reads to bridge are safe
+    ///    because they reach the bridge directly, not through the endpoint
+    ///    link)
+    /// 4. `disable_aspm()` on the endpoint — now safe because the link
+    ///    is in L0 and ECAM reads to the endpoint will complete
+    /// 5. `check()` — full health verification via config space
+    ///
+    /// The critical change from the previous ordering: the link retrain
+    /// now happens BEFORE the endpoint ASPM disable, because the endpoint
+    /// ASPM disable requires an ECAM MMIO read (for L1Sub) which can hang
+    /// if the link is in L1.
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
-        // Re-assert D0 on the device
+        // Step 1: Re-assert D0 on the device and bridge
         self.ensure_d0();
-
-        // Disable ASPM on the device
-        self.disable_aspm();
-
-        // Disable ASPM on the upstream bridge + retrain the link
         if let Some((b, d, f)) = self.upstream_bridge {
             if let Some(bridge) = PciDevice::new(b, d, f) {
                 bridge.ensure_d0();
-                bridge.disable_pcie_aspm();
-
-                // ── Retrain the upstream link ──
-                // Even after ASPM is cleared, the bridge may still
-                // have the endpoint's link in L1.  Toggling the Link
-                // Retrain bit (bit 5 in Link Control) forces the
-                // LTSSM to transition through Recovery back to L0.
-                // All accesses are via PCI config space (port I/O),
-                // so they never hang.
-                let cap_ptr =
-                    PciConfigSpace::read_config_byte(b, d, f, 0x34);
-                let mut off = cap_ptr;
-                let mut lnk_ctl = None;
-                let mut visited = [false; 256];
-                for _ in 0..48 {
-                    if off < 0x40 || off > 0xF8 {
-                        break;
-                    }
-                    if visited[off as usize] {
-                        break;
-                    }
-                    visited[off as usize] = true;
-                    let cap_id =
-                        PciConfigSpace::read_config_byte(b, d, f, off);
-                    if cap_id == 0x10 {
-                        // PCIe Capability
-                        lnk_ctl = Some(off + 0x10);
-                        break;
-                    }
-                    let next = PciConfigSpace::read_config_byte(
-                        b, d, f, off + 1,
-                    );
-                    if next == 0 || next == off {
-                        break;
-                    }
-                    off = next;
-                }
-                if let Some(lnk_off) = lnk_ctl {
-                    let ctl =
-                        PciConfigSpace::read_config_word(b, d, f, lnk_off);
-                    PciConfigSpace::write_config_word_raw(
-                        b, d, f, lnk_off,
-                        ctl | (1 << 5), // Set Link Retrain
-                    );
-                    log::info!(
-                        "PciHealth: link retrain on bridge {:02x}:{:02x}.{}",
-                        b, d, f,
-                    );
-                    // Give the link ~10 ms to train back to L0
-                    crate::timing::delay_us(10_000);
-                }
             }
         }
 
-        // Re-verify
+        // Step 2: Retrain the upstream link BEFORE any endpoint ECAM access.
+        // This forces the link out of L1 so subsequent non-posted reads
+        // (ECAM or BAR MMIO) will complete instead of hanging.
+        let link_retrained = self.retrain_upstream_link();
+
+        // Step 3: Disable ASPM on the upstream bridge (ECAM to bridge is safe)
+        if let Some((b, d, f)) = self.upstream_bridge {
+            if let Some(bridge) = PciDevice::new(b, d, f) {
+                bridge.disable_pcie_aspm();
+            }
+        }
+
+        // Step 4: Now safe to disable ASPM on the endpoint (link is L0)
+        if link_retrained {
+            // After link retrain, give the link extra time to stabilise
+            // before hitting the endpoint with ECAM reads.
+            crate::timing::delay_us(5_000);
+        }
+        self.disable_aspm();
+
+        // Step 5: Re-verify
         self.check()
+    }
+
+    /// Retrain the upstream bridge link. Returns true if retrain was attempted.
+    /// All accesses are via PCI config space (port I/O), never hang.
+    fn retrain_upstream_link(&self) -> bool {
+        let (b, d, f) = match self.upstream_bridge {
+            Some(x) => x,
+            None => return false,
+        };
+        // Verify the bridge exists via config space (port I/O, safe)
+        if PciConfigSpace::read_config_word(b, d, f, 0) == 0xFFFF {
+            return false;
+        }
+        let cap_ptr = PciConfigSpace::read_config_byte(b, d, f, 0x34);
+        let mut off = cap_ptr;
+        let mut lnk_ctl = None;
+        let mut visited = [false; 256];
+        for _ in 0..48 {
+            if off < 0x40 || off > 0xF8 { break; }
+            if visited[off as usize] { break; }
+            visited[off as usize] = true;
+            let cap_id = PciConfigSpace::read_config_byte(b, d, f, off);
+            if cap_id == 0x10 {
+                lnk_ctl = Some(off + 0x10);
+                break;
+            }
+            let next = PciConfigSpace::read_config_byte(b, d, f, off + 1);
+            if next == 0 || next == off { break; }
+            off = next;
+        }
+        if let Some(lnk_off) = lnk_ctl {
+            let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off);
+            PciConfigSpace::write_config_word_raw(
+                b, d, f, lnk_off,
+                ctl | (1 << 5), // Set Link Retrain
+            );
+            log::info!(
+                "PciHealth: link retrain on bridge {:02x}:{:02x}.{}",
+                b, d, f,
+            );
+            crate::timing::delay_us(10_000);
+            true
+        } else {
+            false
+        }
     }
 
     /// Ensure the device is in D0 power state.

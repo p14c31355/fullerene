@@ -63,13 +63,28 @@ fn ecam_addr(bus: u8, device: u8, function: u8, offset: u16) -> usize {
     ecam_phys_to_virt(phys)
 }
 
+/// Pre-flight check: is the device present on the PCI bus?
+///
+/// Uses port I/O (CF8/CFC) which always completes, even for unresponsive
+/// devices.  Returns `true` if the vendor ID is valid (> 0x0000 and < 0xFFFF).
+fn ext_dev_present(bus: u8, device: u8, function: u8) -> bool {
+    let vendor = PciConfigSpace::read_config_word(bus, device, function, 0);
+    vendor != 0xFFFF && vendor != 0x0000
+}
+
 /// Read a DWORD from extended PCIe config space (offset ≥ 0x100) via ECAM.
 ///
-/// Returns 0xFFFF_FFFF if ECAM is not configured (caller should treat
-/// this as "capability not present").
+/// Returns 0xFFFF_FFFF if ECAM is not configured, the device is absent,
+/// or the capability is not present.
+///
+/// # Safety
+///
+/// Before the ECAM MMIO read, a port-I/O presence check is performed.
+/// ECAM reads to absent or unresponsive devices can hang the CPU forever
+/// (non-posted MMIO read with no completion).
 pub fn read_ext_dword(bus: u8, device: u8, function: u8, offset: u16) -> u32 {
     let va = ecam_addr(bus, device, function, offset);
-    if va == 0 {
+    if va == 0 || !ext_dev_present(bus, device, function) {
         return 0xFFFF_FFFF;
     }
     unsafe { core::ptr::read_volatile(va as *const u32) }
@@ -77,7 +92,8 @@ pub fn read_ext_dword(bus: u8, device: u8, function: u8, offset: u16) -> u32 {
 
 /// Write a DWORD to extended PCIe config space (offset ≥ 0x100) via ECAM.
 ///
-/// No-op if ECAM is not configured.
+/// Writes are posted transactions and never hang, so no pre-flight check
+/// is needed.  No-op if ECAM is not configured.
 pub fn write_ext_dword(bus: u8, device: u8, function: u8, offset: u16, value: u32) {
     let va = ecam_addr(bus, device, function, offset);
     if va == 0 {

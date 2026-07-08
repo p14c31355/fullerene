@@ -32,7 +32,7 @@ use bonder::dhcp::DhcpClient;
 
 use crate::pci::{PciDevice, PciScanner};
 use crate::pci_health::PciHealth;
-use crate::mmio::{self, DmaRegion};
+use crate::mmio::{self, DmaRegion, SafeReadResult};
 use crate::DriverContext;
 
 // ── PCI identifiers ───────────────────────────────────────────────────
@@ -411,8 +411,14 @@ impl IwlWifiDevice {
         // Re-verify health after enabling memory access
         health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
 
-        // Read hardware revision
-        let hw_rev_raw = unsafe { core::ptr::read_volatile(mmio.add(CSR_HW_REV as usize)) };
+        // Read hardware revision (safe: pre-check + master-abort detection)
+        let hw_rev_raw = match mmio::checked_read_u32(
+            unsafe { mmio.add(CSR_HW_REV as usize) } as *const u32,
+            Some(&health),
+        ) {
+            mmio::SafeReadResult::Value(v) => v,
+            _ => return Err(IwlError::BarNotAvailable),
+        };
         let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
         log::info!("iwlwifi: HW_REV={:#06x}", hw_rev);
 
@@ -448,7 +454,7 @@ impl IwlWifiDevice {
 
         // Read MAC address from NVM (first non-posted MMIO read after
         // reset + clock + link recovery)
-        let mac = Self::read_mac(mmio);
+        let mac = Self::read_mac(mmio, Some(&health));
 
         // Mask all interrupts
         unsafe {
@@ -630,7 +636,7 @@ impl IwlWifiDevice {
         })?;
 
         crate::debug::print("iwlwifi", "read_mac");
-        let mac = Self::read_mac(mmio);
+        let mac = Self::read_mac(mmio, Some(&health));
 
         crate::debug::print("iwlwifi", "mask_ints");
         unsafe {
@@ -791,6 +797,22 @@ impl IwlWifiDevice {
         }
     }
 
+    /// Safety-checked volatile read from the device's MMIO region.
+    ///
+    /// Combines:
+    /// 1. Pre-read PCI config-space presence check via `self.health`
+    /// 2. Post-read `0xFFFF_FFFF` master-abort detection
+    ///
+    /// Returns `None` if the device is gone or unresponsive.
+    #[inline]
+    fn safe_read32(&self, reg: u32) -> Option<u32> {
+        let addr = unsafe { self.mmio.add(reg as usize) } as *const u32;
+        match mmio::checked_read_u32(addr, Some(&self.health)) {
+            SafeReadResult::Value(v) => Some(v),
+            _ => None,
+        }
+    }
+
     /// Read MAC address from the NVM (non-volatile memory) via CSR registers.
     ///
     /// Intel WiFi NICs store the MAC address in the OTP/EEPROM NVM.  The
@@ -798,57 +820,70 @@ impl IwlWifiDevice {
     /// command or by reading the APMG_DRAM_INFO / CSR_EEPROM_AND_OTG registers
     /// at offsets 0x0D0-0x0D4 (OTP shadow).  We read from the OTP shadow
     /// region, which is loaded into CSR space after reset.
-    fn read_mac(mmio: *mut u32) -> [u8; 6] {
-        unsafe {
-            // OTP shadow for MAC address is typically at CSR offsets 0x0D0-0x0D4
-            // (OTP_DEVICE_SEL bit 0 must be set in CSR_EEPROM_GP register)
-            // This follows the Linux iwlwifi pattern for 7265 series.
-            let eeprom_gp = core::ptr::read_volatile(mmio.add(CSR_EEPROM_GP as usize));
+    ///
+    /// `health` is optional — when `Some`, a PCI config-space presence check
+    /// is performed before each MMIO read to avoid hanging on unresponsive HW.
+    fn read_mac(mmio: *mut u32, health: Option<&PciHealth>) -> [u8; 6] {
+        // Helper for checked reads within this static function
+        let checked_read = |reg: u32| -> Option<u32> {
+            let addr = unsafe { mmio.add(reg as usize) } as *const u32;
+            match mmio::checked_read_u32(addr, health) {
+                SafeReadResult::Value(v) => Some(v),
+                _ => None,
+            }
+        };
 
-            // Check OTP is valid (bit 1 = OTP, bit 3 = OTP valid)
-            if eeprom_gp != 0xFFFF_FFFF && (eeprom_gp & 0x08) != 0 {
-                // OTP is valid: read MAC from the OTP shadow registers
-                // CSR_OTP_GP at 0x030 contains the OTP shadow base
-                let otp_gp = core::ptr::read_volatile(mmio.add(CSR_OTP_GP as usize));
-                let mac_addr_shadow = if (otp_gp & 0x01) != 0 {
-                    // OTP shadow is available, read from CSR_DRAM_INT_TBL region
-                    0x0A0usize
-                } else {
-                    // Fallback: NVM shadow at CSR_EEPROM_AND_OTG (0x0D4)
-                    0x0D4usize
-                };
+        // OTP shadow for MAC address is typically at CSR offsets 0x0D0-0x0D4
+        // (OTP_DEVICE_SEL bit 0 must be set in CSR_EEPROM_GP register)
+        // This follows the Linux iwlwifi pattern for 7265 series.
+        let eeprom_gp = match checked_read(CSR_EEPROM_GP) {
+            Some(v) => v,
+            None => return [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+        };
 
-                let mac_lo = core::ptr::read_volatile(mmio.add(mac_addr_shadow / 4));
-                let mac_hi = core::ptr::read_volatile(mmio.add(mac_addr_shadow / 4 + 1));
+        // Check OTP is valid (bit 1 = OTP, bit 3 = OTP valid)
+        if (eeprom_gp & 0x08) != 0 {
+            // OTP is valid: read MAC from the OTP shadow registers
+            // CSR_OTP_GP at 0x030 contains the OTP shadow base
+            let otp_gp = match checked_read(CSR_OTP_GP) {
+                Some(v) => v,
+                None => return [0x02, 0x00, 0x00, 0x00, 0x00, 0x01],
+            };
+            let mac_addr_shadow = if (otp_gp & 0x01) != 0 {
+                // OTP shadow is available, read from CSR_DRAM_INT_TBL region
+                0x0A0 / 4
+            } else {
+                // Fallback: NVM shadow at CSR_EEPROM_AND_OTG (0x0D4)
+                0x0D4 / 4
+            };
+
+            if let (Some(mac_lo), Some(mac_hi)) = (checked_read(mac_addr_shadow), checked_read(mac_addr_shadow + 1)) {
                 let mac = [
                     mac_lo as u8, (mac_lo >> 8) as u8,
                     (mac_lo >> 16) as u8, (mac_lo >> 24) as u8,
                     mac_hi as u8, (mac_hi >> 8) as u8,
                 ];
-
                 // Validate: MAC must not be all-zero or broadcast
                 if mac != [0; 6] && mac != [0xFF; 6] {
                     return mac;
                 }
             }
+        }
 
-            // Final fallback: read from OTP access registers directly
-            // CSR_EEPROM_AND_OTG at 0x0D4 contains the MAC in the lower
-            // two dwords when OTP_ACCESS_MODE is set.
-            let mac_lo = core::ptr::read_volatile(mmio.add(0x0D4 / 4));
-            let mac_hi = core::ptr::read_volatile(mmio.add(0x0D8 / 4));
+        // Final fallback: read from OTP access registers directly
+        if let (Some(mac_lo), Some(mac_hi)) = (checked_read(0x0D4 / 4), checked_read(0x0D8 / 4)) {
             let fallback = [
                 mac_lo as u8, (mac_lo >> 8) as u8,
                 (mac_lo >> 16) as u8, (mac_lo >> 24) as u8,
                 mac_hi as u8, (mac_hi >> 8) as u8,
             ];
             if fallback != [0; 6] && fallback != [0xFF; 6] {
-                fallback
-            } else {
-                // Hardcoded fallback for QEMU
-                [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
+                return fallback;
             }
         }
+
+        // Hardcoded fallback for QEMU
+        [0x02, 0x00, 0x00, 0x00, 0x00, 0x01]
     }
 
     /// Compute CRC32 checksum for firmware verification.
@@ -882,9 +917,8 @@ impl IwlWifiDevice {
         self.fw_state = FwState::Loading;
 
         // Hold the CPU in reset while we upload sections
+        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
         unsafe {
-            // Clear INIT_DONE first
-            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
                 gp & !0x04, // clear INIT_DONE (bit 2)
@@ -996,8 +1030,8 @@ impl IwlWifiDevice {
 
         // Kick the firmware CPU to start executing.
         // 1. Clear any pending interrupts first
+        let _pending = self.safe_read32(CSR_INT).unwrap_or(0);
         unsafe {
-            let _pending = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
             core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), _pending);
         }
 
@@ -1019,8 +1053,8 @@ impl IwlWifiDevice {
 
         // 4. Set INIT_DONE to release the CPU from reset
         //    (bit 2 of CSR_GP_CNTRL, alongside MAC_ACCESS_EN bit 4)
+        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
         unsafe {
-            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
                 gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | 0x04, // INIT_DONE
@@ -1040,16 +1074,14 @@ impl IwlWifiDevice {
         let alive = self.wait_for_alive();
         if alive.is_err() {
             // Diagnostic: dump key registers to understand hardware state
-            unsafe {
-                let csr_int = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
-                let csr_gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
-                let csr_ucode = core::ptr::read_volatile(self.mmio.add(CSR_UCODE_GP1 as usize));
-                let csr_reset = core::ptr::read_volatile(self.mmio.add(CSR_RESET as usize));
-                log::info!(
-                    "iwlwifi: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x}",
-                    csr_int, csr_gp, csr_ucode, csr_reset
-                );
-            }
+            let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+            let csr_gp = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
+            let csr_ucode = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
+            let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
+            log::info!(
+                "iwlwifi: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x}",
+                csr_int, csr_gp, csr_ucode, csr_reset
+            );
         }
         alive?;
 
@@ -1166,10 +1198,10 @@ impl IwlWifiDevice {
             }
 
             // Check CSR_INT bit 0 (ALIVE)
-            let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
-            if int_cause == 0xFFFF_FFFF {
-                return Err("Device unresponsive (PCI read returned 0xFFFFFFFF)");
-            }
+            let int_cause = match self.safe_read32(CSR_INT) {
+                Some(v) => v,
+                None => return Err("Device unresponsive (PCI master abort)"),
+            };
             if int_cause != 0 {
                 if (int_cause & 0x01) != 0 {
                     unsafe {
@@ -1190,8 +1222,9 @@ impl IwlWifiDevice {
             }
 
             // Alternative alive check: MAC_SLEEP cleared by firmware
-            let ucode_gp1 = unsafe {
-                core::ptr::read_volatile(self.mmio.add(CSR_UCODE_GP1 as usize))
+            let ucode_gp1 = match self.safe_read32(CSR_UCODE_GP1) {
+                Some(v) => v,
+                None => return Err("Device unresponsive (PCI master abort)"),
             };
             if (ucode_gp1 & 0x01) == 0 {
                 // MAC_SLEEP cleared = firmware booted and woke the MAC
@@ -1223,8 +1256,8 @@ impl IwlWifiDevice {
         self.fw_state = FwState::Loading;
 
         // Hold the CPU in reset while we upload sections
+        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
         unsafe {
-            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
                 gp & !0x04,
@@ -1324,11 +1357,9 @@ impl IwlWifiDevice {
         })?;
 
         // Kick the firmware CPU (without waiting for alive)
+        let _pending = self.safe_read32(CSR_INT).unwrap_or(0);
         unsafe {
-            let _pending = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
             core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), _pending);
-        }
-        unsafe {
             core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
         }
         for _ in 0..200 {
@@ -1340,8 +1371,8 @@ impl IwlWifiDevice {
                 0x00000001,
             );
         }
+        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
         unsafe {
-            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
                 gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | 0x04,
@@ -1381,31 +1412,39 @@ impl IwlWifiDevice {
         }
 
         // Check for alive interrupt
-        unsafe {
-            let int_cause = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
-            if (int_cause & (1 << 0)) != 0 {
+        let int_cause = match self.safe_read32(CSR_INT) {
+            Some(v) => v,
+            None => return Err("Device unresponsive (PCI master abort)"),
+        };
+        if (int_cause & (1 << 0)) != 0 {
+            unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
                 core::ptr::write_volatile(
                     self.mmio.add(CSR_INT_MASK as usize),
                     0xFFFFFFFFu32,
                 );
-                self.fw_state = FwState::Alive;
-                crate::debug::print("iwlwifi", "fw: alive_ok");
-                return Ok(true);
             }
-            if (int_cause & (1 << 25)) != 0 {
+            self.fw_state = FwState::Alive;
+            crate::debug::print("iwlwifi", "fw: alive_ok");
+            return Ok(true);
+        }
+        if (int_cause & (1 << 25)) != 0 {
+            unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
-                self.fw_state = FwState::Error;
-                return Err("Firmware error");
             }
-            if int_cause != 0 {
+            self.fw_state = FwState::Error;
+            return Err("Firmware error");
+        }
+        if int_cause != 0 {
+            unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
         }
 
         // Alternative alive check: MAC_SLEEP cleared
-        let ucode_gp1 = unsafe {
-            core::ptr::read_volatile(self.mmio.add(CSR_UCODE_GP1 as usize))
+        let ucode_gp1 = match self.safe_read32(CSR_UCODE_GP1) {
+            Some(v) => v,
+            None => return Err("Device unresponsive (PCI master abort)"),
         };
         if (ucode_gp1 & 0x01) == 0 {
             unsafe {
@@ -1907,8 +1946,11 @@ impl IwlWifiDevice {
         }
 
         // Poll firmware for events
-        let int_cause = unsafe { core::ptr::read_volatile(self.mmio.add(CSR_INT as usize)) };
-        if int_cause != 0 && int_cause != 0xFFFF_FFFF {
+        let int_cause = match self.safe_read32(CSR_INT) {
+            Some(v) => v,
+            None => return,
+        };
+        if int_cause != 0 {
             // Write-back to acknowledge (write to clear)
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
@@ -1916,15 +1958,17 @@ impl IwlWifiDevice {
 
             // Check for RX
             if (int_cause & (1 << 18)) != 0 {
-                let raw_rx_head = unsafe {
-                    core::ptr::read_volatile(self.mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize))
+                let raw_rx_head = match self.safe_read32(FH_RSCSR_CHNL0_RBDCB_RPTR_REG) {
+                    Some(v) => v,
+                    None => return,
                 };
                 self.rx_head = (raw_rx_head as usize) % RX_QUEUE_SIZE;
             }
             // Check for TX completion
             if (int_cause & (1 << 15)) != 0 {
-                self.tx_tail = unsafe {
-                    core::ptr::read_volatile(self.mmio.add(FH_TX_CHNL0_WPTR as usize))
+                self.tx_tail = match self.safe_read32(FH_TX_CHNL0_WPTR) {
+                    Some(v) => v,
+                    None => return,
                 } as usize;
                 self.process_tx_queue();
             }
@@ -2440,7 +2484,12 @@ pub fn try_init_wifi_device_step() {
             }
             // Read MAC address — this is the first non-posted MMIO read
             // after reset + clock + link recovery.
-            let mac = IwlWifiDevice::read_mac(mmio);
+            let health_ref = {
+                let ctx = WIFI_INIT_CTX.lock();
+                ctx.health.as_ref().map(|h| h as *const PciHealth)
+            };
+            let _health = health_ref.and_then(|p| unsafe { p.as_ref() });
+            let mac = IwlWifiDevice::read_mac(mmio, _health);
             // Mask all interrupts (posted write)
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
