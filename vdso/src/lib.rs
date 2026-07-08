@@ -160,8 +160,8 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
         put_u32(buf, sh_off, str_off as u32 - strtab_off as u32 + 1);
         put_u32(buf, sh_off + 4, 2);
         put_u64(buf, sh_off + 8, 0);
-        put_u64(buf, sh_off + 16, symtab_off as u64);
-        put_u64(buf, sh_off + 24, 0);
+        put_u64(buf, sh_off + 16, 0);
+        put_u64(buf, sh_off + 24, symtab_off as u64);
         put_u64(buf, sh_off + 32, (1 + count) as u64 * 24);
         put_u32(buf, sh_off + 40, 2);
         put_u32(buf, sh_off + 44, 1);
