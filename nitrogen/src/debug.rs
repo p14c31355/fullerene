@@ -32,11 +32,6 @@ impl Entry {
             msg: [0; MSG_LEN],
         }
     }
-
-    fn clear(&mut self) {
-        self.source = [0; SOURCE_LEN];
-        self.msg = [0; MSG_LEN];
-    }
 }
 
 struct DebugBuf {
@@ -177,6 +172,7 @@ fn fixed_into_str(buf: &[u8]) -> String {
 // delivered via the lock-free ring buffer and drained by the compositor.
 
 /// Framebuffer parameters set by the kernel.
+#[allow(dead_code)]
 struct FbInfo {
     virt: *mut u32,
     width: u32,
@@ -202,10 +198,14 @@ macro_rules! debug_status {
     };
 }
 
+#[allow(dead_code)]
 const TASKBAR_H: u32 = 28;
+#[allow(dead_code)]
 const NET_ICON_W: u32 = 32;
+#[allow(dead_code)]
 const CLOCK_ESTIMATE_W: u32 = 80;
 
+#[allow(dead_code)]
 fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &str, msg: &str) {
     let text = if source.is_empty() {
         alloc::format!("[{}]", msg)
@@ -277,6 +277,7 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
 
 // ── 8x8 bitmap font (ASCII 0x20-0x7E) ────────────────────────────────
 
+#[allow(dead_code)]
 const FONT8X8: [u8; 760] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x08, 0x00,
