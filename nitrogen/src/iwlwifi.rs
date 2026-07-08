@@ -416,36 +416,35 @@ impl IwlWifiDevice {
         let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
         log::info!("iwlwifi: HW_REV={:#06x}", hw_rev);
 
-        // Stop and reset device
+        // Stop and reset device (posted writes only, never hangs)
         Self::reset_device(mmio);
 
-        // Enable MAC clock
+        // Request MAC clock (posted write, never hangs)
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
-        // Barrier: ensure MAC clock request is visible before polling
         mmio::write_barrier();
-        let clock_ready = health.is_device_present() && {
+        // Verify device is still on the bus via safe config-space I/O.
+        if !health.is_device_present() {
+            return Err(IwlError::ClockNotReady);
+        }
+        // Fixed delay ~10 ms for MAC clock to stabilise.
+        {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
             loop {
-                let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
-                if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
-                    break true;
-                }
-                if gp == 0xFFFF_FFFF {
-                    break false;
-                }
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
-                    break false;
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
+                    break;
                 }
                 core::hint::spin_loop();
             }
-        };
-        if !clock_ready {
+        }
+        // Final check before first non-posted MMIO read.
+        if !health.is_device_present() {
             return Err(IwlError::ClockNotReady);
         }
 
-        // Read MAC address from NVM
+        // Read MAC address from NVM (first non-posted MMIO read after
+        // reset + clock stabilisation)
         let mac = Self::read_mac(mmio);
 
         // Mask all interrupts
@@ -598,28 +597,29 @@ impl IwlWifiDevice {
         Self::reset_device(mmio);
 
         crate::debug::print("iwlwifi", "mac_clock_req");
+        // Request MAC clock (posted write, never hangs)
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
         mmio::write_barrier();
-        let clock_ready = health.is_device_present() && {
+        // Verify device presence via safe config-space I/O.
+        if !health.is_device_present() {
+            crate::debug::print("iwlwifi", "ERR device_gone_before_clock");
+            return Err(IwlError::ClockNotReady);
+        }
+        // Fixed delay ~10 ms for MAC clock to stabilise.
+        {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
             loop {
-                let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
-                if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
-                    break true;
-                }
-                if gp == 0xFFFF_FFFF {
-                    break false;
-                }
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
-                    break false;
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
+                    break;
                 }
                 core::hint::spin_loop();
             }
-        };
-        if !clock_ready {
-            crate::debug::print("iwlwifi", "ERR clock_not_ready");
+        }
+        // Final check before first non-posted MMIO read.
+        if !health.is_device_present() {
+            crate::debug::print("iwlwifi", "ERR device_gone_after_clock_delay");
             return Err(IwlError::ClockNotReady);
         }
 
@@ -725,37 +725,38 @@ impl IwlWifiDevice {
         })
     }
 
-    /// Reset the device with TSC-based timeouts.
+    /// Reset the device with posted-write + pure TSC delays.
     ///
-    /// Each polling loop is bounded by a TSC deadline rather than a fixed
-    /// iteration count, so real hardware with slower or unresponsive PCIe
-    /// links won't hang the CPU indefinitely.
+    /// **IMPORTANT**: This function must NEVER issue a non-posted MMIO
+    /// read to poll a register.  On real hardware a PCIe endpoint in
+    /// ASPM L1 (or a buggy bridge that silently drops completions) will
+    /// stall the CPU indefinitely — the TSC timeout check only runs
+    /// *after* the read returns, so it provides no protection.
+    ///
+    /// Instead we use only posted writes (which never hang) and
+    /// TSC-based delay loops.
     fn reset_device(mmio: *mut u32) {
-        // ── 1. STOP_MASTER ──────────────────────────────────
+        // ── 1. STOP_MASTER (posted write, no response needed) ──
         unsafe {
             core::ptr::write_volatile(
                 mmio.add(CSR_RESET as usize),
                 CSR_RESET_BIT_STOP_MASTER,
             );
         }
+        // Busy-wait ~10 ms for the PCIe packet to reach the device and
+        // the internal state machine to settle.  No read — the device
+        // may not be able to complete a non-posted read right now.
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
             loop {
-                let r = unsafe { core::ptr::read_volatile(mmio.add(CSR_RESET as usize)) };
-                if (r & CSR_RESET_BIT_MASTER_DISABLED) != 0 {
-                    break;
-                }
-                if r == 0xFFFF_FFFF {
-                    break; // device unresponsive
-                }
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
                     break;
                 }
                 core::hint::spin_loop();
             }
         }
 
-        // ── 2. SW_RESET ─────────────────────────────────────
+        // ── 2. SW_RESET (posted write) ──────────────────────
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), CSR_RESET_BIT_SW);
         }
@@ -769,7 +770,7 @@ impl IwlWifiDevice {
             }
         }
 
-        // ── 3. Clear reset ──────────────────────────────────
+        // ── 3. Clear reset (posted write) ───────────────────
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), 0);
         }
@@ -2379,41 +2380,58 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            // reset_device and mac_clock are safe even on unresponsive hardware
-            // due to TSC-based timeouts inside each poll loop.
+            // reset_device() now uses only posted writes + TSC delays,
+            // so it is safe even on unresponsive hardware.
             IwlWifiDevice::reset_device(mmio);
-            // Request MAC clock
+            // Request MAC clock (posted write, never hangs)
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
             }
             mmio::write_barrier();
-            // Poll for clock ready
-            let clock_ready = {
+            // Instead of polling CSR_GP_CNTRL with non-posted reads
+            // (which can hang the CPU if the endpoint doesn't respond),
+            // check device presence via safe config-space I/O and then
+            // wait a fixed delay for the MAC clock to stabilise.
+            let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 match ctx.health.as_mut() {
                     Some(h) => h.is_device_present(),
                     None => false,
                 }
-            } && {
-                let start = unsafe { core::arch::x86_64::_rdtsc() };
-                let mut ready = false;
-                loop {
-                    let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
-                    if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 { ready = true; break; }
-                    if gp == 0xFFFF_FFFF { break; }
-                    if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 { break; }
-                    core::hint::spin_loop();
-                }
-                ready
             };
-            if !clock_ready {
-                crate::debug::print("iwlwifi", "step: ERR clock_not_ready");
+            if !device_present {
+                crate::debug::print("iwlwifi", "step: ERR device_gone_before_clock");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            // Read MAC address
+            // Fixed delay ~10 ms for MAC clock to stabilise.
+            {
+                let start = unsafe { core::arch::x86_64::_rdtsc() };
+                loop {
+                    if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
+                        break;
+                    }
+                    core::hint::spin_loop();
+                }
+            }
+            // Re-verify device presence after delay before touching MMIO.
+            {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                let ok = match ctx.health.as_mut() {
+                    Some(h) => h.is_device_present(),
+                    None => false,
+                };
+                if !ok {
+                    crate::debug::print("iwlwifi", "step: ERR device_gone_after_clock_delay");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            }
+            // Read MAC address (the first non-posted MMIO read after reset +
+            // clock stabilisation — is_device_present passed twice, so the
+            // device should be operational).
             let mac = IwlWifiDevice::read_mac(mmio);
-            // Mask all interrupts
+            // Mask all interrupts (posted write)
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
             }
