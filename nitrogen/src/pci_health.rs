@@ -167,7 +167,12 @@ impl PciHealth {
         Ok(())
     }
 
-    /// Ensure D0 and disable ASPM on this device and its upstream bridge.
+    /// Ensure D0, disable ASPM, and retrain the upstream bridge link.
+    ///
+    /// This is the last line of defence before a non-posted MMIO read.
+    /// On real hardware the PCIe link may be stuck in L1 even after ASPM
+    /// is disabled — retraining the link forces it back to L0 so the
+    /// endpoint can complete MMIO reads.
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
         // Re-assert D0 on the device
         self.ensure_d0();
@@ -175,11 +180,61 @@ impl PciHealth {
         // Disable ASPM on the device
         self.disable_aspm();
 
-        // Disable ASPM on the upstream bridge
+        // Disable ASPM on the upstream bridge + retrain the link
         if let Some((b, d, f)) = self.upstream_bridge {
             if let Some(bridge) = PciDevice::new(b, d, f) {
                 bridge.ensure_d0();
                 bridge.disable_pcie_aspm();
+
+                // ── Retrain the upstream link ──
+                // Even after ASPM is cleared, the bridge may still
+                // have the endpoint's link in L1.  Toggling the Link
+                // Retrain bit (bit 5 in Link Control) forces the
+                // LTSSM to transition through Recovery back to L0.
+                // All accesses are via PCI config space (port I/O),
+                // so they never hang.
+                let cap_ptr =
+                    PciConfigSpace::read_config_byte(b, d, f, 0x34);
+                let mut off = cap_ptr;
+                let mut lnk_ctl = None;
+                let mut visited = [false; 256];
+                for _ in 0..48 {
+                    if off < 0x40 || off > 0xF8 {
+                        break;
+                    }
+                    if visited[off as usize] {
+                        break;
+                    }
+                    visited[off as usize] = true;
+                    let cap_id =
+                        PciConfigSpace::read_config_byte(b, d, f, off);
+                    if cap_id == 0x10 {
+                        // PCIe Capability
+                        lnk_ctl = Some(off + 0x10);
+                        break;
+                    }
+                    let next = PciConfigSpace::read_config_byte(
+                        b, d, f, off + 1,
+                    );
+                    if next == 0 || next == off {
+                        break;
+                    }
+                    off = next;
+                }
+                if let Some(lnk_off) = lnk_ctl {
+                    let ctl =
+                        PciConfigSpace::read_config_word(b, d, f, lnk_off);
+                    PciConfigSpace::write_config_word_raw(
+                        b, d, f, lnk_off,
+                        ctl | (1 << 5), // Set Link Retrain
+                    );
+                    log::info!(
+                        "PciHealth: link retrain on bridge {:02x}:{:02x}.{}",
+                        b, d, f,
+                    );
+                    // Give the link ~10 ms to train back to L0
+                    crate::timing::delay_us(10_000);
+                }
             }
         }
 

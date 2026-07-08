@@ -438,13 +438,16 @@ impl IwlWifiDevice {
                 core::hint::spin_loop();
             }
         }
-        // Final check before first non-posted MMIO read.
-        if !health.is_device_present() {
-            return Err(IwlError::ClockNotReady);
-        }
+        // ── Link recovery before first MMIO read ──────────
+        // reset_device() + clock delay took ~30 ms total.
+        // On real hardware the PCIe link may have re-entered
+        // ASPM L1 during that time.  recover() re-asserts D0,
+        // disables ASPM on endpoint+bridge, and retrains the
+        // upstream link — all via config space (never hangs).
+        health.recover().map_err(|_| IwlError::ClockNotReady)?;
 
         // Read MAC address from NVM (first non-posted MMIO read after
-        // reset + clock stabilisation)
+        // reset + clock + link recovery)
         let mac = Self::read_mac(mmio);
 
         // Mask all interrupts
@@ -585,7 +588,7 @@ impl IwlWifiDevice {
         mmio: *mut u32,
         hw_rev: u16,
         device: PciDevice,
-        health: PciHealth,
+        mut health: PciHealth,
     ) -> Result<Self, IwlError> {
         crate::debug::print("iwlwifi", "init_after_mmio: enter");
         if !health.is_device_present() {
@@ -617,11 +620,14 @@ impl IwlWifiDevice {
                 core::hint::spin_loop();
             }
         }
-        // Final check before first non-posted MMIO read.
-        if !health.is_device_present() {
-            crate::debug::print("iwlwifi", "ERR device_gone_after_clock_delay");
-            return Err(IwlError::ClockNotReady);
-        }
+        // ── Link recovery before first MMIO read ──────────
+        // Same pattern as init(): after 30 ms of reset + clock
+        // delay the PCIe link may be in L1.  recover() retrains
+        // the upstream bridge link — all config space, never hangs.
+        health.recover().map_err(|_| {
+            crate::debug::print("iwlwifi", "ERR recover_before_read_mac");
+            IwlError::ClockNotReady
+        })?;
 
         crate::debug::print("iwlwifi", "read_mac");
         let mac = Self::read_mac(mmio);
@@ -2414,22 +2420,26 @@ pub fn try_init_wifi_device_step() {
                     core::hint::spin_loop();
                 }
             }
-            // Re-verify device presence after delay before touching MMIO.
+            // ── Last-chance PCIe link recovery before first MMIO read ──
+            // is_device_present() only checks config space via port I/O
+            // (never hangs), but the MMIO BAR may still be in L1 substate.
+            // recover() re-asserts D0, disables ASPM on endpoint+bridge,
+            // and retrains the upstream link.  If this fails we bail out
+            // immediately rather than risking a non-posted MMIO read hang.
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let ok = match ctx.health.as_mut() {
-                    Some(h) => h.is_device_present(),
+                    Some(h) => h.recover().is_ok(),
                     None => false,
                 };
                 if !ok {
-                    crate::debug::print("iwlwifi", "step: ERR device_gone_after_clock_delay");
+                    crate::debug::print("iwlwifi", "step: ERR recover_before_read_mac");
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
             }
-            // Read MAC address (the first non-posted MMIO read after reset +
-            // clock stabilisation — is_device_present passed twice, so the
-            // device should be operational).
+            // Read MAC address — this is the first non-posted MMIO read
+            // after reset + clock + link recovery.
             let mac = IwlWifiDevice::read_mac(mmio);
             // Mask all interrupts (posted write)
             unsafe {
