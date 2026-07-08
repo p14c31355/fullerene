@@ -49,7 +49,7 @@ impl ContextEntry {
             | 1                 // Present
             | TT_HOST_WITH_STRUCTURES
             | CTX_FPD;
-        let hi = address_width | 0;  // Domain ID = 0 for now
+        let hi = address_width >> 8;
         Self(lo, hi)
     }
 
