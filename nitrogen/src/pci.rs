@@ -225,11 +225,6 @@ impl PciDevice {
     }
 
     /// Ensure the PCI Power Management capability is set to D0.
-    ///
-    /// Some BIOS/firmware leave the xHCI controller in D3hot,
-    /// which disables the USB PHY and prevents CCS from being set.
-    /// This method finds the PM capability (cap ID = 0x01) and
-    /// writes 0 to the PMCSR power state field (bits 1:0).
     pub fn ensure_d0(&self) {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
@@ -241,7 +236,6 @@ impl PciDevice {
             if off < 0x40 || off > 0xF8 {
                 break;
             }
-            // Check for cycles
             if visited[off as usize] {
                 log::warn!("PCI: capability list cycle detected at offset {:#x}", off);
                 break;
@@ -293,12 +287,6 @@ impl PciDevice {
     }
 
     /// Disable ASPM (Active State Power Management) on the PCIe link.
-    ///
-    /// When ASPM L1 is enabled, the PCIe link may enter a deep sleep
-    /// state.  MMIO access to a device behind a sleeping link can hang
-    /// the CPU if the link does not wake correctly.  This method finds
-    /// the PCI Express capability (cap ID = 0x10) and clears the ASPM
-    /// control bits (bits 1:0) in the Link Control register.
     pub fn disable_pcie_aspm(&self) {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
@@ -318,8 +306,6 @@ impl PciDevice {
             let cap_id =
                 PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off);
             if cap_id == 0x10 {
-                // PCI Express capability found
-                // Link Control register is at cap_offset + 0x10
                 let lnk_ctrl = PciConfigSpace::read_config_word(
                     self.bus,
                     self.device,
@@ -359,7 +345,6 @@ impl PciDevice {
         let original_value =
             PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
 
-        // Disable memory and I/O decoding while probing to avoid address conflicts.
         let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
         PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd & !0x3);
 
@@ -373,7 +358,6 @@ impl PciDevice {
         let size_mask =
             PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
 
-        // Restore BAR value and re-enable decoding
         PciConfigSpace::write_config_dword_raw(
             self.bus,
             self.device,
@@ -388,10 +372,8 @@ impl PciDevice {
         }
 
         if (size_mask & 0x1) != 0 {
-            // I/O
             !(size_mask & 0xFFFFFFFC) + 1
         } else {
-            // Memory
             !(size_mask & 0xFFFFFFF0) + 1
         }
     }
@@ -406,16 +388,26 @@ struct PrivatePciDevice {
 
 impl PrivatePciDevice {
     pub fn new(bus: u8, device: u8, function: u8) -> Option<Self> {
-        if let Some(config) = PciConfigSpace::read_from_device(bus, device, function) {
-            Some(Self {
-                bus,
-                device,
-                function,
-                config,
-            })
-        } else {
-            None
+        // CRITICAL: Do NOT call read_config_space() here.
+        // On real hardware (InsydeH2O), reading all 16 config bytes
+        // in sequence can cause master aborts on certain offsets,
+        // hanging the CPU.  We only read the vendor/device ID to
+        // confirm presence, and leave the rest to the caller.
+        let vendor = PciConfigSpace::read_config_word(bus, device, function, 0);
+        if vendor == 0xFFFF || vendor == 0x0000 {
+            return None;
         }
+        let device_id = PciConfigSpace::read_config_word(bus, device, function, 2);
+        // Build minimal config — other fields will be read on demand.
+        let mut config = PciConfigSpace::new();
+        config.vendor_id = vendor;
+        config.device_id = device_id;
+        Some(Self {
+            bus,
+            device,
+            function,
+            config,
+        })
     }
 
     pub fn to_public(self) -> PciDevice {
@@ -486,16 +478,7 @@ impl PciScanner {
     pub fn scan_all_buses(&mut self) -> Result<(), ()> {
         self.devices.clear();
 
-        // CRITICAL: On real hardware (InsydeH2O), accessing non-existent PCI
-        // buses/devices can cause master aborts → SERR# → system hang or
-        // triple fault.  We must detect and skip invalid bus numbers early.
-
-        /// Check if a PCI bus actually exists by probing device 0 function 0.
-        /// Returns false if bus is absent (returns 0xFFFF on all reads) or
-        /// if probing triggers a master abort that locks up the machine.
         fn bus_exists(bus: u8) -> bool {
-            // Try to read vendor ID of device 0, function 0 on this bus.
-            // 0xFFFF means no device present (or bus doesn't exist).
             let vendor = PciConfigSpace::read_config_word(bus, 0, 0, 0);
             if vendor == 0xFFFF || vendor == 0x0000 {
                 return false;
@@ -503,47 +486,41 @@ impl PciScanner {
             true
         }
 
-        /// Check if a specific device/function exists
         fn device_exists(bus: u8, device: u8, function: u8) -> bool {
             let vendor = PciConfigSpace::read_config_word(bus, device, function, 0);
             vendor != 0xFFFF && vendor != 0x0000
         }
 
-        // BFS-like bus scan: start with bus 0, then scan child buses found
-        // on PCI-to-PCI bridges.  This avoids probing non-existent buses
-        // that can cause hangs on real hardware.
         let mut buses_to_scan: [bool; 256] = [false; 256];
-        buses_to_scan[0] = true; // Always scan bus 0
+        buses_to_scan[0] = true;
 
         crate::debug::print("pci", "scan_bus0_start");
-        // First pass: scan bus 0 to discover PCI-to-PCI bridges
         for device in 0..=31u8 {
-            crate::debug::print("pci", "b0_dev_check");
             if !device_exists(0, device, 0) {
                 continue;
             }
             crate::debug::print("pci", "b0_dev_found");
             for function in 0..=7u8 {
                 if function > 0 {
-                    let header_type_fn0 = PciConfigSpace::read_config_byte(0, device, 0, 0x0E);
+                    let header_type_fn0 =
+                        PciConfigSpace::read_config_byte(0, device, 0, 0x0E);
                     if (header_type_fn0 & 0x80) == 0 {
-                        // Multi-function bit not set; skip functions 1-7
                         break;
                     }
                 }
                 if !device_exists(0, device, function) {
                     continue;
                 }
+                crate::debug::print("pci", "b0_push");
                 if let Some(pci_device) = PciDevice::new(0, device, function) {
-                    // Check if this is a PCI-to-PCI bridge (class 0x06, subclass 0x04)
-                    let _header_type = PciConfigSpace::read_config_byte(0, device, function, 0x0E);
-                    let class = PciConfigSpace::read_config_byte(0, device, function, 0x0B);
-                    let subclass = PciConfigSpace::read_config_byte(0, device, function, 0x0A);
+                    let class =
+                        PciConfigSpace::read_config_byte(0, device, function, 0x0B);
+                    let subclass =
+                        PciConfigSpace::read_config_byte(0, device, function, 0x0A);
 
                     self.devices.push(pci_device);
 
                     if class == 0x06 && subclass == 0x04 {
-                        // PCI-to-PCI bridge: read secondary bus number
                         let secondary_bus =
                             PciConfigSpace::read_config_byte(0, device, function, 0x19);
                         if secondary_bus > 0 && secondary_bus < 255 {
@@ -553,13 +530,13 @@ impl PciScanner {
                 }
             }
         }
+        crate::debug::print("pci", "scan_bus0_done");
 
         // Second pass: scan discovered child buses
         for bus in 1..=255u8 {
             if !buses_to_scan[bus as usize] {
                 continue;
             }
-            // Verify the bus actually exists before scanning
             if !bus_exists(bus) {
                 buses_to_scan[bus as usize] = false;
                 continue;
@@ -570,7 +547,8 @@ impl PciScanner {
                 }
                 for function in 0..=7u8 {
                     if function > 0 {
-                        let header_type = PciConfigSpace::read_config_byte(bus, device, 0, 0x0E);
+                        let header_type =
+                            PciConfigSpace::read_config_byte(bus, device, 0, 0x0E);
                         if (header_type & 0x80) == 0 {
                             break;
                         }
@@ -579,8 +557,8 @@ impl PciScanner {
                         continue;
                     }
                     if let Some(pci_device) = PciDevice::new(bus, device, function) {
-                        // Check for nested PCI bridges
-                        let class = PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
+                        let class =
+                            PciConfigSpace::read_config_byte(bus, device, function, 0x0B);
                         let subclass =
                             PciConfigSpace::read_config_byte(bus, device, function, 0x0A);
 
@@ -597,6 +575,7 @@ impl PciScanner {
             }
         }
 
+        crate::debug::print("pci", "scan_done");
         Ok(())
     }
 
