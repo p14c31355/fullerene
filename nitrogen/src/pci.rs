@@ -398,10 +398,18 @@ impl PrivatePciDevice {
             return None;
         }
         let device_id = PciConfigSpace::read_config_word(bus, device, function, 2);
+
+        // Read the class code, subclass, prog_if, and revision_id in a single safe read
+        let class_rev = PciConfigSpace::read_config_dword(bus, device, function, 8);
+
         // Build minimal config — other fields will be read on demand.
         let mut config = PciConfigSpace::new();
         config.vendor_id = vendor;
         config.device_id = device_id;
+        config.revision_id = class_rev as u8;
+        config.prog_if = (class_rev >> 8) as u8;
+        config.subclass = (class_rev >> 16) as u8;
+        config.class_code = (class_rev >> 24) as u8;
         Some(Self {
             bus,
             device,

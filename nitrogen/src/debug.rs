@@ -88,13 +88,12 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Write a debug status message (lock-free, single-producer only).
 pub fn print(source: &str, msg: &str) {
     // ── Reserve a slot ─────────────────────────────────────
-    let slot = WRITE_POS.fetch_add(1, Ordering::Relaxed);
+    let slot = WRITE_POS.load(Ordering::Relaxed);
     let idx = slot % MAX_ENTRIES;
 
     // SAFETY: buf is UnsafeCell; we have exclusive access to slot `idx`
-    // because the producer never yields between reserving and committing,
-    // and the consumer only reads slots up to READ_POS which is behind
-    // the committed COUNT.
+    // because the producer is single-threaded and non-reentrant, and
+    // we only commit the write by updating WRITE_POS and COUNT afterwards.
     let buf_ref = unsafe { &mut *BUF.0.get() };
     let e = &mut buf_ref.buf[idx];
     // Clear the entry before writing to avoid stale bytes from previous use
@@ -105,6 +104,7 @@ pub fn print(source: &str, msg: &str) {
 
     // ── Commit: make the entry visible to the consumer ─────
     // Use Release so the consumer (Acquire) sees the data write.
+    WRITE_POS.store(slot + 1, Ordering::Release);
     COUNT.fetch_add(1, Ordering::Release);
 }
 

@@ -427,7 +427,6 @@ impl IwlWifiDevice {
         mmio::write_barrier();
         let clock_ready = health.is_device_present() && {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
-            let deadline = start.wrapping_add(1_000_000_000); // ~1 s @ 1 GHz
             loop {
                 let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
                 if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
@@ -436,7 +435,7 @@ impl IwlWifiDevice {
                 if gp == 0xFFFF_FFFF {
                     break false;
                 }
-                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
                     break false;
                 }
                 core::hint::spin_loop();
@@ -605,7 +604,6 @@ impl IwlWifiDevice {
         mmio::write_barrier();
         let clock_ready = health.is_device_present() && {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
-            let deadline = start.wrapping_add(1_000_000_000); // ~1 s @ 1 GHz
             loop {
                 let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
                 if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
@@ -614,7 +612,7 @@ impl IwlWifiDevice {
                 if gp == 0xFFFF_FFFF {
                     break false;
                 }
-                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
                     break false;
                 }
                 core::hint::spin_loop();
@@ -742,7 +740,6 @@ impl IwlWifiDevice {
         }
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
-            let deadline = start.wrapping_add(1_000_000_000); // ~1 s @ 1 GHz
             loop {
                 let r = unsafe { core::ptr::read_volatile(mmio.add(CSR_RESET as usize)) };
                 if (r & CSR_RESET_BIT_MASTER_DISABLED) != 0 {
@@ -751,7 +748,7 @@ impl IwlWifiDevice {
                 if r == 0xFFFF_FFFF {
                     break; // device unresponsive
                 }
-                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
                     break;
                 }
                 core::hint::spin_loop();
@@ -764,9 +761,8 @@ impl IwlWifiDevice {
         }
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
-            let deadline = start.wrapping_add(1_000_000_000);
             loop {
-                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
                     break;
                 }
                 core::hint::spin_loop();
@@ -779,9 +775,8 @@ impl IwlWifiDevice {
         }
         {
             let start = unsafe { core::arch::x86_64::_rdtsc() };
-            let deadline = start.wrapping_add(1_000_000_000);
             loop {
-                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
                     break;
                 }
                 core::hint::spin_loop();
@@ -1355,19 +1350,16 @@ impl IwlWifiDevice {
             return Err("Timeout waiting for firmware alive");
         }
 
-        // Check device presence periodically (every ~100 ms TSC)
-        const PCI_CHECK_INTERVAL: u64 = 100_000_000;
-        if elapsed % PCI_CHECK_INTERVAL < 10000 {
-            let vendor = crate::pci::PciConfigSpace::read_config_word(
-                self._pci_dev.bus,
-                self._pci_dev.device,
-                self._pci_dev.function,
-                0,
-            );
-            if vendor == 0xFFFF {
-                self.fw_state = FwState::Error;
-                return Err("Device disappeared from PCI bus");
-            }
+        // Check device presence on every poll
+        let vendor = crate::pci::PciConfigSpace::read_config_word(
+            self._pci_dev.bus,
+            self._pci_dev.device,
+            self._pci_dev.function,
+            0,
+        );
+        if vendor == 0xFFFF {
+            self.fw_state = FwState::Error;
+            return Err("Device disappeared from PCI bus");
         }
 
         // Check for alive interrupt
@@ -1381,6 +1373,11 @@ impl IwlWifiDevice {
                 );
                 self.fw_state = FwState::Alive;
                 crate::debug::print("iwlwifi", "fw: alive_ok");
+                if let Err(_) = self.send_init_commands() {
+                    self.fw_state = FwState::Error;
+                    return Err("Failed to send init commands");
+                }
+                self.fw_state = FwState::Ready;
                 return Ok(true);
             }
             if (int_cause & (1 << 25)) != 0 {
@@ -1406,6 +1403,11 @@ impl IwlWifiDevice {
             }
             self.fw_state = FwState::Alive;
             crate::debug::print("iwlwifi", "fw: alive_ok");
+            if let Err(_) = self.send_init_commands() {
+                self.fw_state = FwState::Error;
+                return Err("Failed to send init commands");
+            }
+            self.fw_state = FwState::Ready;
             return Ok(true);
         }
 
@@ -2331,33 +2333,8 @@ pub fn try_init_wifi_device_step() {
 
             match alive_result {
                 Ok(true) => {
-                    // Firmware is alive, send init commands
                     crate::debug::print("iwlwifi", "step: fw_alive");
-                    let init_result: Result<(), &str> = {
-                        let mut ctx = WIFI_INIT_CTX.lock();
-                        let dev = match ctx.mmio_device.as_mut() {
-                            Some(d) => d,
-                            None => {
-                                set_init_phase(WifiInitPhase::Failed);
-                                return;
-                            }
-                        };
-                        // SAFETY: send_init_commands is a method on IwlWifiDevice.
-                        // We need to downcast or expose it via the trait.
-                        // For now, skip init commands and mark as Done.
-                        // TODO: Add send_init_commands to WifiDriver trait or handle separately.
-                        Ok(())
-                    };
-                    match init_result {
-                        Ok(()) => {
-                            crate::debug::print("iwlwifi", "step: fw_init_cmds_ok");
-                            set_init_phase(WifiInitPhase::Done);
-                        }
-                        Err(e) => {
-                            log::warn!("iwlwifi: init commands failed: {}", e);
-                            set_init_phase(WifiInitPhase::Failed);
-                        }
-                    }
+                    set_init_phase(WifiInitPhase::Done);
                 }
                 Ok(false) => {
                     // Still waiting, will poll again next frame
