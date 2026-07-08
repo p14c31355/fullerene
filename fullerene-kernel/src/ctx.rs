@@ -52,11 +52,9 @@ pub(crate) fn free_contiguous(phys: u64, count: usize) {
 }
 
 pub(crate) fn iommu_dma_map(device_id: u16, phys: u64, size: usize) -> Result<u64, ()> {
-    let ctx = crate::driver_context_impl::KernelDriverContext;
-    nitrogen::iommu::dma_map_with_ctx(&ctx, device_id, phys, size).map_err(|_| ())
+    nitrogen::iommu::dma_map(device_id, phys, size)
 }
 
 pub(crate) fn iommu_dma_unmap(iova: u64, size: usize) {
-    let ctx = crate::driver_context_impl::KernelDriverContext;
-    nitrogen::iommu::dma_unmap(&ctx, iova, size);
+    nitrogen::iommu::dma_unmap(iova, size);
 }
