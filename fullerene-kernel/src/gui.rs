@@ -176,9 +176,6 @@ static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 pub fn render() {
     use petroleum::graphics::FramebufferGuard;
 
-    // Update boot screen to show current render progress
-    crate::boot_stage::draw_boot_label(b"RENDERING...");
-
     // Render via solvent with kernel-owned framebuffer access.
     // The boot labels drawn before (RENDERING..., RENDER via guard) are
     // overwritten by solvent::render which fills the full framebuffer.
@@ -186,6 +183,7 @@ pub fn render() {
     // or they would persist as an overlay on the desktop.
     let rendered = crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
         if !BOOT_PROGRESS_DONE.load(Ordering::Relaxed) {
+            crate::boot_stage::draw_boot_label(b"RENDERING...");
             crate::boot_stage::draw_boot_label(b"RENDER via guard");
         }
         solvent::render(fb);

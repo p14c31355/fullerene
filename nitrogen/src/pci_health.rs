@@ -115,7 +115,10 @@ impl PciHealth {
                 break;
             }
             if visited[off as usize] {
-                return Err(PciHealthError::CapCycle);
+                // Capability list cycle — log and break instead of fatal
+                // error, since the device may still be usable.
+                log::warn!("PCI health: capability list cycle at offset {:#x}", off);
+                break;
             }
             visited[off as usize] = true;
 
@@ -131,8 +134,9 @@ impl PciHealth {
                 }
                 0x10 => {
                     found_pcie = true;
-                    let lnk_sts =
-                        PciConfigSpace::read_config_word(self.bus, self.dev, self.func, off + 0x12);
+                    let lnk_sts = PciConfigSpace::read_config_word(
+                        self.bus, self.dev, self.func, off + 0x12,
+                    );
                     let speed = lnk_sts & 0xF;
                     if speed == 0 {
                         return Err(PciHealthError::LinkDown);
@@ -207,10 +211,15 @@ impl PciHealth {
     /// device has disappeared — in which case the caller MUST NOT
     /// perform non-posted MMIO reads (they could hang the CPU).
     pub fn pre_mmio_access(&mut self) -> Result<(), PciHealthError> {
+        // Always assert D0 before any MMIO — this is a config-space write
+        // (port I/O), never hangs, and is required even when the capability
+        // list walk below can't find the PM cap on certain chipsets.
+        self.ensure_d0();
+
         // Full health check
         match self.check() {
             Ok(()) => {
-                // On success, also recover ASPM if not done yet
+                // On success, also disable ASPM if not done yet
                 if !self.aspm_disabled {
                     self.disable_aspm();
                     self.aspm_disabled = true;

@@ -425,15 +425,22 @@ impl IwlWifiDevice {
         }
         // Barrier: ensure MAC clock request is visible before polling
         mmio::write_barrier();
-        let mut clock_ready = false;
-        for _ in 0..50_000 {
-            let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
-            if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
-                clock_ready = true;
-                break;
+        let clock_ready = health.is_device_present() && {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            loop {
+                let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
+                if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
+                    break true;
+                }
+                if gp == 0xFFFF_FFFF {
+                    break false;
+                }
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
+                    break false;
+                }
+                core::hint::spin_loop();
             }
-            core::hint::spin_loop();
-        }
+        };
         if !clock_ready {
             return Err(IwlError::ClockNotReady);
         }
@@ -581,6 +588,12 @@ impl IwlWifiDevice {
         device: PciDevice,
         health: PciHealth,
     ) -> Result<Self, IwlError> {
+        crate::debug::print("iwlwifi", "init_after_mmio: enter");
+        if !health.is_device_present() {
+            crate::debug::print("iwlwifi", "ERR device_gone before reset");
+            return Err(IwlError::BarNotAvailable);
+        }
+
         crate::debug::print("iwlwifi", "reset_device");
         Self::reset_device(mmio);
 
@@ -589,15 +602,22 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
         }
         mmio::write_barrier();
-        let mut clock_ready = false;
-        for _ in 0..50_000 {
-            let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
-            if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
-                clock_ready = true;
-                break;
+        let clock_ready = health.is_device_present() && {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            loop {
+                let gp = unsafe { core::ptr::read_volatile(mmio.add(CSR_GP_CNTRL as usize)) };
+                if (gp & CSR_GP_CNTRL_MAC_CLOCK_READY) != 0 {
+                    break true;
+                }
+                if gp == 0xFFFF_FFFF {
+                    break false;
+                }
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
+                    break false;
+                }
+                core::hint::spin_loop();
             }
-            core::hint::spin_loop();
-        }
+        };
         if !clock_ready {
             crate::debug::print("iwlwifi", "ERR clock_not_ready");
             return Err(IwlError::ClockNotReady);
@@ -705,26 +725,60 @@ impl IwlWifiDevice {
         })
     }
 
-    /// Reset the device.
+    /// Reset the device with TSC-based timeouts.
+    ///
+    /// Each polling loop is bounded by a TSC deadline rather than a fixed
+    /// iteration count, so real hardware with slower or unresponsive PCIe
+    /// links won't hang the CPU indefinitely.
     fn reset_device(mmio: *mut u32) {
+        // ── 1. STOP_MASTER ──────────────────────────────────
         unsafe {
             core::ptr::write_volatile(
                 mmio.add(CSR_RESET as usize),
                 CSR_RESET_BIT_STOP_MASTER,
             );
-            for _ in 0..100_000 {
-                let r = core::ptr::read_volatile(mmio.add(CSR_RESET as usize));
+        }
+        {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            loop {
+                let r = unsafe { core::ptr::read_volatile(mmio.add(CSR_RESET as usize)) };
                 if (r & CSR_RESET_BIT_MASTER_DISABLED) != 0 {
+                    break;
+                }
+                if r == 0xFFFF_FFFF {
+                    break; // device unresponsive
+                }
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 1_000_000_000 {
                     break;
                 }
                 core::hint::spin_loop();
             }
+        }
+
+        // ── 2. SW_RESET ─────────────────────────────────────
+        unsafe {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), CSR_RESET_BIT_SW);
-            for _ in 0..200_000 {
+        }
+        {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            loop {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
+        }
+
+        // ── 3. Clear reset ──────────────────────────────────
+        unsafe {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), 0);
-            for _ in 0..200_000 {
+        }
+        {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            loop {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
         }
@@ -813,6 +867,7 @@ impl IwlWifiDevice {
     ///
     /// `fw_data` is the complete firmware binary (.ucode file contents).
     pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+        crate::debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
             return Err("Firmware data too short");
         }
@@ -837,6 +892,7 @@ impl IwlWifiDevice {
             }
         }
 
+        crate::debug::print("iwlwifi", "fw: header_parse");
         let fw_ptr = fw_data.as_ptr();
 
         // zero field must be 0
@@ -928,6 +984,7 @@ impl IwlWifiDevice {
             return Err("No firmware sections uploaded");
         }
 
+        crate::debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
         // Kick the firmware CPU to start executing.
@@ -972,6 +1029,7 @@ impl IwlWifiDevice {
         }
 
         // 5. Wait for the ALIVE interrupt (or MAC_SLEEP clearing)
+        crate::debug::print("iwlwifi", "fw: wait_alive");
         let alive = self.wait_for_alive();
         if alive.is_err() {
             // Diagnostic: dump key registers to understand hardware state
@@ -988,6 +1046,7 @@ impl IwlWifiDevice {
         }
         alive?;
 
+        crate::debug::print("iwlwifi", "fw: alive_ok");
         // Restore full mask after alive
         unsafe {
             core::ptr::write_volatile(
@@ -997,10 +1056,13 @@ impl IwlWifiDevice {
         }
 
         self.fw_state = FwState::Ready;
+        crate::debug::print("iwlwifi", "fw: ready");
         log::info!("iwlwifi: firmware alive and ready");
 
         // Send initialization commands
+        crate::debug::print("iwlwifi", "fw: init_cmds");
         self.send_init_commands()?;
+        crate::debug::print("iwlwifi", "fw: init_cmds_done");
 
         Ok(())
     }
@@ -1057,17 +1119,43 @@ impl IwlWifiDevice {
     /// (approximately 5 seconds) instead of a fixed iteration count.
     /// On real hardware, 10 million MMIO reads can take 10-40 seconds
     /// if the device is unresponsive, causing an apparent system hang.
+    ///
+    /// # Safety
+    ///
+    /// Before every non-posted MMIO read we first check that the PCI
+    /// device is still visible on the bus (vendor ID != 0xFFFF in config
+    /// space).  A missing or unresponsive device can cause a non-posted
+    /// MMIO read to hang the CPU forever — the TSC timeout alone is not
+    /// sufficient because the CPU never returns from the read itself.
     fn wait_for_alive(&mut self) -> Result<(), &'static str> {
         let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
         // 5 second timeout at a conservative 1 GHz TSC frequency.
         // On faster CPUs the effective timeout is proportionally shorter
         // but still enough for normal firmware boot (typically <1 second).
         let timeout_tsc: u64 = 5_000_000_000;
+        let mut last_pci_check: u64 = 0;
+        // Re-check device presence via PCI config space every ~100 ms TSC
+        // to avoid a non-posted MMIO read on a disappeared device.
+        let pci_check_interval: u64 = 100_000_000;
 
         loop {
-            let elapsed = unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc);
+            let now = unsafe { core::arch::x86_64::_rdtsc() };
+            let elapsed = now.wrapping_sub(start_tsc);
             if elapsed >= timeout_tsc {
                 break;
+            }
+
+            // ── Periodic PCI config-space presence check ─────
+            // If the device disappeared from the bus (e.g. after a
+            // firmware crash or power-state transition on real HW),
+            // any subsequent MMIO read may hang permanently.
+            // Checking via port I/O (vendor ID at offset 0) is always
+            // safe and never hangs.
+            if now.wrapping_sub(last_pci_check) >= pci_check_interval {
+                last_pci_check = now;
+                if !self.health.is_device_present() {
+                    return Err("Device disappeared from PCI bus during alive wait");
+                }
             }
 
             // Check CSR_INT bit 0 (ALIVE)
@@ -1109,6 +1197,217 @@ impl IwlWifiDevice {
 
         self.fw_state = FwState::Error;
         Err("Timeout waiting for firmware alive")
+    }
+
+    /// Start firmware upload and CPU boot without waiting for alive.
+    /// Returns Ok if upload succeeds; the caller must then poll check_alive_nonblocking.
+    pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+        self.health.pre_mmio_access().map_err(|_| "Device not accessible for firmware upload")?;
+
+        crate::debug::print("iwlwifi", "fw: check_header");
+        if fw_data.len() < FW_HEADER_SIZE {
+            return Err("Firmware data too short");
+        }
+
+        self.fw_state = FwState::Loading;
+
+        // Hold the CPU in reset while we upload sections
+        unsafe {
+            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp & !0x04,
+            );
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_RESET as usize),
+                0x00000080,
+            );
+            for _ in 0..500 {
+                core::hint::spin_loop();
+            }
+        }
+
+        crate::debug::print("iwlwifi", "fw: header_parse");
+        let fw_ptr = fw_data.as_ptr();
+
+        let zero: u32 = unsafe { core::ptr::read_unaligned(fw_ptr as *const u32) };
+        if zero != 0 {
+            return Err("Invalid firmware header (zero != 0)");
+        }
+
+        let magic: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(4) as *const u32) };
+        if magic != IWL_FW_MAGIC {
+            return Err("Invalid firmware magic");
+        }
+
+        log::info!("iwlwifi: loading firmware payload...");
+
+        let mut desc_buf = [0u8; 64];
+        unsafe {
+            core::ptr::copy_nonoverlapping(fw_ptr.add(8), desc_buf.as_mut_ptr(), 64);
+        }
+        let build_str = core::ffi::CStr::from_bytes_until_nul(&desc_buf)
+            .map(|c| c.to_str().unwrap_or("<invalid>"))
+            .unwrap_or("<unknown>");
+        log::info!("iwlwifi: firmware build: {}", build_str);
+
+        self.fw_api_ver = unsafe { core::ptr::read_unaligned(fw_ptr.add(72) as *const u32) };
+        self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
+        log::info!(
+            "iwlwifi: firmware API v{}, build {}",
+            self.fw_api_ver, self.fw_build
+        );
+
+        // Parse TLV entries and upload sections
+        let mut off = FW_HEADER_SIZE;
+        let mut section_count = 0;
+        while off + 8 <= fw_data.len() {
+            let tlv_type: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off) as *const u32) };
+            let tlv_len: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32) };
+            let tlv_data_off = off + 8;
+            let tlv_end = match tlv_data_off.checked_add(tlv_len as usize) {
+                Some(end) => end,
+                None => break,
+            };
+            if tlv_end > fw_data.len() {
+                break;
+            }
+            match tlv_type {
+                TLV_INST | TLV_DATA | TLV_INIT | TLV_INIT_DATA => {
+                    if tlv_len < 4 {
+                        off = tlv_end;
+                        continue;
+                    }
+                    let target: u32 = unsafe {
+                        core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
+                    };
+                    let data_size = tlv_len - 4;
+                    if data_size > 0 {
+                        let section_data = &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
+                        self.upload_section(target, section_data)?;
+                        section_count += 1;
+                        log::info!(
+                            "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
+                            section_count, target, data_size
+                        );
+                    }
+                }
+                _ => {}
+            }
+            off = tlv_end;
+        }
+
+        if section_count == 0 {
+            return Err("No firmware sections uploaded");
+        }
+
+        crate::debug::print("iwlwifi", "fw: upload_done");
+        log::info!("iwlwifi: firmware upload complete, starting CPU...");
+
+        // Re-verify device health (D0, link, vendor) before the final MMIO
+        // sequence, since firmware upload may have taken significant time.
+        self.health.pre_mmio_access().map_err(|_| {
+            self.fw_state = FwState::Error;
+            "Device not accessible after firmware upload"
+        })?;
+
+        // Kick the firmware CPU (without waiting for alive)
+        unsafe {
+            let _pending = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
+            core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), _pending);
+        }
+        unsafe {
+            core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
+        }
+        for _ in 0..200 {
+            core::hint::spin_loop();
+        }
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_UCODE_GP1 as usize),
+                0x00000001,
+            );
+        }
+        unsafe {
+            let gp = core::ptr::read_volatile(self.mmio.add(CSR_GP_CNTRL as usize));
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | 0x04,
+            );
+        }
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_INT_MASK as usize),
+                !(1u32 << 0),
+            );
+        }
+
+        crate::debug::print("iwlwifi", "fw: cpu_started");
+        Ok(())
+    }
+
+    /// Check if firmware has signaled alive (non-blocking poll).
+    /// Returns Ok(true) if alive, Ok(false) if still waiting, Err if error/timeout.
+    /// The timeout is checked against start_tsc passed by the caller.
+    pub fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str> {
+        let now = unsafe { core::arch::x86_64::_rdtsc() };
+        let elapsed = now.wrapping_sub(start_tsc);
+        const TIMEOUT_TSC: u64 = 5_000_000_000;
+
+        if elapsed >= TIMEOUT_TSC {
+            self.fw_state = FwState::Error;
+            return Err("Timeout waiting for firmware alive");
+        }
+
+        // Quick vendor check (single config-space read, never hangs).
+        // Full pre_mmio_access() is too expensive per-frame on real HW
+        // (capability-list walk + ASPM recovery) and was already done
+        // during init and after firmware upload.
+        if !self.health.is_device_present() {
+            self.fw_state = FwState::Error;
+            return Err("Device not accessible for MMIO");
+        }
+
+        // Check for alive interrupt
+        unsafe {
+            let int_cause = core::ptr::read_volatile(self.mmio.add(CSR_INT as usize));
+            if (int_cause & (1 << 0)) != 0 {
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+                core::ptr::write_volatile(
+                    self.mmio.add(CSR_INT_MASK as usize),
+                    0xFFFFFFFFu32,
+                );
+                self.fw_state = FwState::Alive;
+                crate::debug::print("iwlwifi", "fw: alive_ok");
+                return Ok(true);
+            }
+            if (int_cause & (1 << 25)) != 0 {
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+                self.fw_state = FwState::Error;
+                return Err("Firmware error");
+            }
+            if int_cause != 0 {
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+            }
+        }
+
+        // Alternative alive check: MAC_SLEEP cleared
+        let ucode_gp1 = unsafe {
+            core::ptr::read_volatile(self.mmio.add(CSR_UCODE_GP1 as usize))
+        };
+        if (ucode_gp1 & 0x01) == 0 {
+            unsafe {
+                core::ptr::write_volatile(
+                    self.mmio.add(CSR_INT_MASK as usize),
+                    0xFFFFFFFFu32,
+                );
+            }
+            self.fw_state = FwState::Alive;
+            crate::debug::print("iwlwifi", "fw: alive_ok");
+            return Ok(true);
+        }
+
+        Ok(false)
     }
 
     /// Send post-boot initialization commands to firmware.
@@ -1758,6 +2057,18 @@ impl super::wifi::WifiDriver for IwlWifiDevice {
     fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
         IwlWifiDevice::load_firmware(self, fw_data)
     }
+
+    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+        IwlWifiDevice::start_firmware(self, fw_data)
+    }
+
+    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str> {
+        IwlWifiDevice::check_alive_nonblocking(self, start_tsc)
+    }
+
+    fn send_init_commands(&mut self) -> Result<(), &'static str> {
+        IwlWifiDevice::send_init_commands(self)
+    }
 }
 
 /// Constructor called by the wifi registry after PCI probe.
@@ -1786,6 +2097,305 @@ static WIFI_MANAGER: Mutex<Option<WifiManager>> = Mutex::new(None);
 /// Global WiFi driver instance (trait-object based) so other parts of
 /// the OS can tick it.  The concrete type is determined by PCI probe.
 static WIFI_DEVICE: Mutex<Option<Box<dyn super::wifi::WifiDriver>>> = Mutex::new(None);
+
+/// Set to `true` once `try_init_wifi_device()` has completed (success or
+/// failure).  Used by `tick_wifi_device()` to skip the Mutex lock+check
+/// on every tick before WiFi is initialised.
+static WIFI_INIT_COMPLETED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Check if WiFi initialization has completed (either Done or Failed).
+pub fn wifi_init_completed() -> bool {
+    WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
+}
+
+// ── Incremental WiFi init state machine ───────────────────────────
+//
+// On real hardware the full initialisation sequence (PCI probe, MMIO
+// init, DMA allocation, firmware upload, alive wait, init commands)
+// can block for many seconds — hanging the desktop render loop.
+//
+// The state machine below splits the work into small steps that each
+// return quickly.  `try_init_wifi_device_step()` is called once per
+// frame from `tick_core()` and advances through the phases.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum WifiInitPhase {
+    /// Not yet started.
+    Idle = 0,
+    /// PCI probe + D0/ASPM setup.
+    PciProbe = 1,
+    /// MMIO init: map BAR, reset_device, MAC clock.
+    MmioInit = 2,
+    /// DMA ring / buffer allocation.
+    DmaAlloc = 3,
+    /// Firmware header parse + TLV upload.
+    FwUpload = 4,
+    /// Wait for alive (polls CSR_INT with timeout).
+    FwWaitAlive = 5,
+    /// Send init commands.
+    FwInitCmds = 6,
+    /// Initialisation complete (success).
+    Done = 7,
+    /// Initialisation failed (retry-able on next reboot/scan).
+    Failed = 8,
+}
+
+impl From<u8> for WifiInitPhase {
+    fn from(v: u8) -> Self {
+        match v {
+            0 => Self::Idle,
+            1 => Self::PciProbe,
+            2 => Self::MmioInit,
+            3 => Self::DmaAlloc,
+            4 => Self::FwUpload,
+            5 => Self::FwWaitAlive,
+            6 => Self::FwInitCmds,
+            7 => Self::Done,
+            _ => Self::Failed,
+        }
+    }
+}
+
+/// Persistent state carried across incremental init steps.
+struct WifiInitContext {
+    /// Boxed driver after MMIO init (before firmware).
+    mmio_device: Option<Box<dyn super::wifi::WifiDriver>>,
+    /// Firmware blob being loaded (index into candidates).
+    fw_candidate_idx: usize,
+    /// Firmware candidates for this device.
+    fw_candidates: &'static [FirmwareBlob],
+    /// Start TSC for alive timeout.
+    alive_start_tsc: u64,
+}
+
+/// Lock-free phase of the WiFi init state machine.
+/// Updated with atomic stores (no Mutex needed), so the render loop
+/// can poll the current phase without any lock contention.
+static WIFI_INIT_PHASE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(WifiInitPhase::Idle as u8);
+
+static WIFI_INIT_CTX: Mutex<WifiInitContext> = Mutex::new(WifiInitContext {
+    mmio_device: None,
+    fw_candidate_idx: 0,
+    fw_candidates: &[],
+    alive_start_tsc: 0,
+});
+
+/// Helper: set the init phase (lock-free).
+fn set_init_phase(phase: WifiInitPhase) {
+    WIFI_INIT_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
+}
+
+/// Helper: read the current init phase (lock-free).
+fn get_init_phase() -> WifiInitPhase {
+    let raw = WIFI_INIT_PHASE.load(core::sync::atomic::Ordering::Acquire);
+    WifiInitPhase::from(raw)
+}
+
+/// Call once per frame from `tick_core()` to incrementally initialise
+/// the WiFi device.  Each call performs a small, bounded amount of work
+/// so the desktop render loop is never blocked for more than ~1 ms.
+pub fn try_init_wifi_device_step() {
+    // ── Snapshot current phase (lock-free) ────────────────
+    let phase = get_init_phase();
+
+    match phase {
+        WifiInitPhase::Idle => {
+            // ── Start initialisation ──────────────────────
+            let driver_ctx_opt = WIFI_DRIVER_CTX.lock();
+            let _driver_ctx = match *driver_ctx_opt {
+                Some(c) => c,
+                None => {
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            };
+            drop(driver_ctx_opt);
+
+            let dev_guard = WIFI_DEVICE.lock();
+            if dev_guard.is_some() {
+                crate::debug::print("iwlwifi", "step: already_inited");
+                set_init_phase(WifiInitPhase::Done);
+                return;
+            }
+            drop(dev_guard);
+
+            crate::debug::print("iwlwifi", "step: start pci_probe");
+            set_init_phase(WifiInitPhase::PciProbe);
+        }
+        WifiInitPhase::PciProbe => {
+            // ── PCI probe (config space only, never hangs) ──
+            crate::debug::print("iwlwifi", "step: pci_probe_enter");
+            let driver_ctx = match *WIFI_DRIVER_CTX.lock() {
+                Some(c) => c,
+                None => {
+                    crate::debug::print("iwlwifi", "step: ERR no_driver_ctx");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            };
+            crate::debug::print("iwlwifi", "step: call init_wifi_from_pci");
+            let probe = match crate::wifi::init_wifi_from_pci(driver_ctx) {
+                Some(p) => p,
+                None => {
+                    crate::debug::print("iwlwifi", "step: no_pci_device");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            };
+            crate::debug::print("iwlwifi", "step: init_wifi_from_pci_ok");
+            let candidates = select_firmware_list(probe.device_id);
+            if candidates.is_empty() {
+                crate::debug::print("iwlwifi", "step: no_fw");
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            }
+            {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                ctx.mmio_device = Some(probe.driver);
+                ctx.fw_candidates = candidates;
+                ctx.fw_candidate_idx = 0;
+            }
+            set_init_phase(WifiInitPhase::FwUpload);
+            crate::debug::print("iwlwifi", "step: pci_probe_done");
+        }
+        WifiInitPhase::FwUpload => {
+            // ── Upload one firmware blob (non-blocking) ────
+            let (fw_data, fw_name) = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                let _dev = match ctx.mmio_device.as_mut() {
+                    Some(d) => d,
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                };
+                if ctx.fw_candidate_idx >= ctx.fw_candidates.len() {
+                    crate::debug::print("iwlwifi", "step: all_fw_failed");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+                let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
+                (fw.data, fw.name)
+            };
+
+            log::info!(
+                "iwlwifi: step: trying firmware {} ({} bytes)",
+                fw_name, fw_data.len()
+            );
+
+            // start_firmware uploads and starts CPU without blocking on alive
+            let start_result = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                let dev = match ctx.mmio_device.as_mut() {
+                    Some(d) => d,
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                };
+                dev.start_firmware(fw_data)
+            };
+
+            match start_result {
+                Ok(()) => {
+                    log::info!("iwlwifi: step: firmware {} upload complete, waiting for alive", fw_name);
+                    crate::debug::print("iwlwifi", "step: fw_uploaded");
+                    // Record start time for alive timeout
+                    let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+                    WIFI_INIT_CTX.lock().alive_start_tsc = now_tsc;
+                    set_init_phase(WifiInitPhase::FwWaitAlive);
+                }
+                Err(e) => {
+                    log::warn!("iwlwifi: step: firmware {} upload failed: {}", fw_name, e);
+                    let mut ctx = WIFI_INIT_CTX.lock();
+                    ctx.fw_candidate_idx += 1;
+                    // Stay in FwUpload phase; next frame tries the next blob.
+                }
+            }
+        }
+        WifiInitPhase::FwWaitAlive => {
+            // ── Poll for firmware alive (non-blocking) ─────
+            let start_tsc = WIFI_INIT_CTX.lock().alive_start_tsc;
+            let alive_result = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                let dev = match ctx.mmio_device.as_mut() {
+                    Some(d) => d,
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                };
+                dev.check_alive_nonblocking(start_tsc)
+            };
+
+            match alive_result {
+                Ok(true) => {
+                    crate::debug::print("iwlwifi", "step: fw_alive");
+                    set_init_phase(WifiInitPhase::FwInitCmds);
+                }
+                Ok(false) => {
+                    // Still waiting, will poll again next frame
+                    crate::debug::print("iwlwifi", "step: fw_wait_alive_poll");
+                }
+                Err(e) => {
+                    // Timeout or error, try next firmware
+                    log::warn!("iwlwifi: step: firmware alive failed: {}", e);
+                    let mut ctx = WIFI_INIT_CTX.lock();
+                    ctx.fw_candidate_idx += 1;
+                    set_init_phase(WifiInitPhase::FwUpload);
+                }
+            }
+        }
+        WifiInitPhase::FwInitCmds => {
+            // ── Send post-boot init commands ──────────────
+            let result = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                let dev = match ctx.mmio_device.as_mut() {
+                    Some(d) => d,
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                };
+                dev.send_init_commands()
+            };
+            match result {
+                Ok(()) => {
+                    crate::debug::print("iwlwifi", "step: fw_init_cmds_ok");
+                    set_init_phase(WifiInitPhase::Done);
+                }
+                Err(e) => {
+                    log::warn!("iwlwifi: step: init commands failed: {}", e);
+                    set_init_phase(WifiInitPhase::Failed);
+                }
+            }
+        }
+        WifiInitPhase::Done => {
+            // ── Commit the driver to the global slot ───────
+            let dev_opt = WIFI_INIT_CTX.lock().mmio_device.take();
+            if let Some(dev) = dev_opt {
+                let mut dev_guard = WIFI_DEVICE.lock();
+                if dev_guard.is_none() {
+                    *dev_guard = Some(dev);
+                }
+            }
+            WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+            crate::debug::print("iwlwifi", "step: init_done");
+        }
+        WifiInitPhase::Failed => {
+            let _ = WIFI_INIT_CTX.lock().mmio_device.take();
+            WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+            crate::debug::print("iwlwifi", "step: init_failed");
+        }
+        // Legacy phases not used in step-based init:
+        WifiInitPhase::MmioInit | WifiInitPhase::DmaAlloc => {
+            set_init_phase(WifiInitPhase::Failed);
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct WifiManager {
@@ -1846,11 +2456,13 @@ fn select_firmware_list(device_id: u16) -> &'static [FirmwareBlob] {
 /// Safe to call multiple times.  Requires that `set_wifi_driver_context()` has
 /// been called before (typically by the kernel's init sequence).
 pub fn try_init_wifi_device() {
+    crate::debug::print("iwlwifi", "try_init_wifi_device: start");
     let ctx_opt = WIFI_DRIVER_CTX.lock();
     let ctx = match *ctx_opt {
         Some(c) => c,
         None => {
             log::warn!("iwlwifi: driver context not set, cannot init");
+            crate::debug::print("iwlwifi", "ERR no_driver_ctx");
             return;
         }
     };
@@ -1858,13 +2470,18 @@ pub fn try_init_wifi_device() {
 
     let mut dev_guard = WIFI_DEVICE.lock();
     if dev_guard.is_some() {
+        crate::debug::print("iwlwifi", "already_inited");
         return;
     }
 
     // Use the PCI-probe-based registry to detect and init the WiFi card.
+    crate::debug::print("iwlwifi", "init_wifi_from_pci");
     let mut probe = match crate::wifi::init_wifi_from_pci(ctx) {
         Some(p) => p,
-        None => return,
+        None => {
+            crate::debug::print("iwlwifi", "ERR no_pci_device");
+            return;
+        }
     };
 
     // Select firmware candidates for this device
@@ -1874,6 +2491,7 @@ pub fn try_init_wifi_device() {
             "iwlwifi: no firmware available for device {:#06x}",
             probe.device_id
         );
+        crate::debug::print("iwlwifi", "ERR no_firmware");
         return;
     }
 
@@ -1885,28 +2503,40 @@ pub fn try_init_wifi_device() {
             fw.name,
             fw.data.len()
         );
+        crate::debug::print("iwlwifi", "load_firmware_start");
 
         match probe.driver.load_firmware(fw.data) {
             Ok(()) => {
                 log::info!("iwlwifi: firmware {} loaded successfully", fw.name);
+                crate::debug::print("iwlwifi", "load_firmware_ok");
                 fw_loaded = true;
                 break;
             }
             Err(e) => {
                 log::warn!("iwlwifi: firmware {} failed: {}", fw.name, e);
+                crate::debug::print("iwlwifi", "load_firmware_fail");
             }
         }
     }
 
     if fw_loaded {
         *dev_guard = Some(probe.driver);
+        crate::debug::print("iwlwifi", "init_done");
     } else {
         log::error!("iwlwifi: all firmware variants failed to load");
+        crate::debug::print("iwlwifi", "ERR all_fw_failed");
     }
+    WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
 }
 
 /// Tick the stored device and update the global wifi manager snapshot.
+///
+/// Returns immediately (without acquiring any lock) if WiFi initialisation
+/// has not yet completed, avoiding unnecessary contention on every frame.
 pub fn tick_wifi_device() {
+    if !WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     let mut dev_guard = WIFI_DEVICE.lock();
     if let Some(ref mut dev) = *dev_guard {
         let dev_ref: &mut dyn super::wifi::WifiDriver = &mut **dev;

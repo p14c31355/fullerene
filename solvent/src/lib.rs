@@ -1173,16 +1173,20 @@ pub fn set_render_fn(f: fn()) {
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
-    // Deferred WiFi device init — run once, after the desktop has had a
-    // chance to render at least one frame.  Firmware upload + alive wait can
-    // block for many seconds on real hardware; delaying it a little keeps
-    // the boot animation smooth.
-    if now >= 50
-        && FRAMES_RENDERED.load(core::sync::atomic::Ordering::Relaxed) > 0
-        && WIFI_INIT_DEFERRED.swap(false, core::sync::atomic::Ordering::AcqRel)
-    {
-        log::info!("solvent: deferred WiFi init starting");
-        nitrogen::iwlwifi::try_init_wifi_device();
+    // Deferred WiFi device init — run incrementally across multiple
+    // frames so the desktop render loop is never blocked for more than
+    // ~1 ms.  `try_init_wifi_device_step()` advances a state machine
+    // through PCI probe, MMIO init, DMA allocation, firmware upload,
+    // alive wait, and init commands — one small step per tick_core()
+    // call.  Once the state machine reaches Done/Failed, clear the
+    // pending flag so we stop calling the init step.
+    if WIFI_INIT_PENDING.load(core::sync::atomic::Ordering::Relaxed) {
+        // Check if nitrogen has completed init (Done or Failed)
+        if nitrogen::iwlwifi::wifi_init_completed() {
+            mark_wifi_init_done();
+        } else {
+            nitrogen::iwlwifi::try_init_wifi_device_step();
+        }
     }
 
     poll_mouse_state();
@@ -1266,14 +1270,12 @@ pub fn consume_frame_due() -> bool {
 }
 
 pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
-    // Register the framebuffer for immediate debug flushing (one-shot).
-    // Must happen before tick_core() so that WiFi init markers flush to screen.
-    static FB_REGISTERED: core::sync::atomic::AtomicBool =
-        core::sync::atomic::AtomicBool::new(false);
-    if !FB_REGISTERED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-        let virt = fb.pixels_mut().as_mut_ptr();
-        nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
-    }
+    // Immediate framebuffer flushing is currently disabled.  Debug messages
+    // are delivered via the lock-free ring buffer and drained by the compositor.
+    // If re-enabled, set_framebuffer must be called here every frame because
+    // FramebufferGuard may change between frames.
+    // let virt = fb.pixels_mut().as_mut_ptr();
+    // nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
 
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
@@ -1318,10 +1320,17 @@ pub fn write_terminal(s: &str) {
 
 // ── Rendering suspend / resume ───────────────────────────────
 
-/// Deferred WiFi device initialisation — set in `init()`, consumed on
-/// the first `tick_core()` so the boot process is not blocked by firmware
-/// upload + alive wait which can take many seconds on real hardware.
-static WIFI_INIT_DEFERRED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+/// Deferred WiFi device initialisation — when `true`, `tick_core()` calls
+/// `try_init_wifi_device_step()` every frame until the init state machine
+/// reaches Done or Failed.  Cleared once init is complete.
+static WIFI_INIT_PENDING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(true);
+
+/// Set to `true` when WiFi init reaches Done or Failed so we stop calling
+/// `try_init_wifi_device_step()` every frame.
+pub fn mark_wifi_init_done() {
+    WIFI_INIT_PENDING.store(false, core::sync::atomic::Ordering::Release);
+}
 
 /// Counter tracking how many frames have been rendered, used to defer WiFi
 /// init until after the first visible frame is displayed.

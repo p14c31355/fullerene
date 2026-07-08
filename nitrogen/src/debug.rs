@@ -1,87 +1,164 @@
 //! Immediate debug output to framebuffer.
 //!
-//! Provides a ring buffer that the compositor drains for normal rendering,
-//! PLUS direct framebuffer writes so messages appear instantly even during
-//! hangs that prevent the render loop from running.
+//! Provides a lock-free SPSC (Single-Producer Single-Consumer) ring buffer
+//! that the compositor drains for rendering.  No Mutex is used — the buffer
+//! uses atomic indices for producer/consumer synchronization, preventing
+//! deadlocks on real hardware where the render loop calls [`print`] and
+//! [`drain`].  The producer is **not** re-entrant or concurrent safe; only
+//! one thread/context may call [`print`] at a time.
 //!
 //! The kernel must call [`set_framebuffer`] once during boot to enable
 //! immediate flush.  Without it the module degrades to a pure ring buffer.
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
-// ── Ring buffer ──────────────────────────────────────────────────────
+// ── Lock-free ring buffer ────────────────────────────────────────────
 
 const MAX_ENTRIES: usize = 32;
 const SOURCE_LEN: usize = 20;
 const MSG_LEN: usize = 64;
 
+#[derive(Clone, Copy)]
 struct Entry {
     source: [u8; SOURCE_LEN],
     msg: [u8; MSG_LEN],
 }
 
 impl Entry {
-    fn clear(&mut self) {
-        self.source = [0; SOURCE_LEN];
-        self.msg = [0; MSG_LEN];
+    const fn empty() -> Self {
+        Self {
+            source: [0; SOURCE_LEN],
+            msg: [0; MSG_LEN],
+        }
     }
 }
 
 struct DebugBuf {
     buf: [Entry; MAX_ENTRIES],
-    head: usize,
-    count: usize,
 }
 
 impl DebugBuf {
     const fn new() -> Self {
-        const ENTRY: Entry = Entry { source: [0; SOURCE_LEN], msg: [0; MSG_LEN] };
         Self {
-            buf: [ENTRY; MAX_ENTRIES],
-            head: 0,
-            count: 0,
+            buf: [Entry::empty(); MAX_ENTRIES],
         }
-    }
-
-    fn push(&mut self, source: &str, msg: &str) {
-        let idx = (self.head + self.count) % MAX_ENTRIES;
-        let e = &mut self.buf[idx];
-        str_into_fixed(source, &mut e.source);
-        str_into_fixed(msg, &mut e.msg);
-        if self.count < MAX_ENTRIES {
-            self.count += 1;
-        } else {
-            self.head = (self.head + 1) % MAX_ENTRIES;
-        }
-    }
-
-    fn drain(&mut self) -> Vec<(String, String)> {
-        let mut out = Vec::with_capacity(self.count);
-        for i in 0..self.count {
-            let e = &self.buf[(self.head + i) % MAX_ENTRIES];
-            let source = fixed_into_str(&e.source);
-            let msg = fixed_into_str(&e.msg);
-            out.push((source, msg));
-        }
-        for e in self.buf.iter_mut() {
-            e.clear();
-        }
-        self.head = 0;
-        self.count = 0;
-        out
-    }
-
-    fn latest(&self) -> Option<(String, String)> {
-        if self.count == 0 {
-            return None;
-        }
-        let i = (self.head + self.count - 1) % MAX_ENTRIES;
-        let e = &self.buf[i];
-        Some((fixed_into_str(&e.source), fixed_into_str(&e.msg)))
     }
 }
+
+/// Newtype wrapper that provides `Sync` for `UnsafeCell<DebugBuf>`.
+/// SAFETY: This is a bare-metal kernel with no preemption; all access
+/// to the buffer is coordinated through atomic indices.
+struct SyncBuf(UnsafeCell<DebugBuf>);
+unsafe impl Sync for SyncBuf {}
+
+// ── Atomic indices for lock-free SPSC ring buffer ───────────────────
+//
+// ┌─────── Producer (print) ───────┐   ┌──── Consumer (drain) ──────┐
+// │ WRITE_POS  = next write slot   │   │ READ_POS = next read slot  │
+// │ COUNT      = entries available │   │                            │
+// └────────────────────────────────┘   └────────────────────────────┘
+//
+// Producer:
+//   1. Atomic add 1 to WRITE_POS → get slot index
+//   2. Write entry data into buf[slot % MAX_ENTRIES]
+//   3. Atomic add 1 to COUNT
+//
+// Consumer:
+//   1. Atomic swap COUNT with 0 → get pending count
+//   2. For i in 0..pending: read buf[(READ_POS + i) % MAX_ENTRIES]
+//   3. Atomic add pending to READ_POS
+
+static BUF: SyncBuf = SyncBuf(UnsafeCell::new(DebugBuf::new()));
+
+/// Next slot to be written (monotonically increasing, mod MAX_ENTRIES gives index).
+static WRITE_POS: AtomicUsize = AtomicUsize::new(0);
+
+/// Next slot to be read.
+static READ_POS: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of entries available for draining.
+/// Updated by the producer after data is committed.
+static COUNT: AtomicUsize = AtomicUsize::new(0);
+
+// ── Public API ──────────────────────────────────────────────────────
+
+/// Write a debug status message (lock-free, single-producer only).
+pub fn print(source: &str, msg: &str) {
+    // ── Reserve a slot ─────────────────────────────────────
+    let slot = WRITE_POS.load(Ordering::Relaxed);
+    let idx = slot % MAX_ENTRIES;
+
+    // SAFETY: buf is UnsafeCell; we have exclusive access to slot `idx`
+    // because the producer is single-threaded and non-reentrant, and
+    // we only commit the write by updating WRITE_POS and COUNT afterwards.
+    let buf_ref = unsafe { &mut *BUF.0.get() };
+    let e = &mut buf_ref.buf[idx];
+    // Clear the entry before writing to avoid stale bytes from previous use
+    e.source = [0; SOURCE_LEN];
+    e.msg = [0; MSG_LEN];
+    str_into_fixed(source, &mut e.source);
+    str_into_fixed(msg, &mut e.msg);
+
+    // ── Commit: make the entry visible to the consumer ─────
+    // Use Release so the consumer (Acquire) sees the data write.
+    WRITE_POS.store(slot + 1, Ordering::Release);
+    COUNT.fetch_add(1, Ordering::Release);
+}
+
+/// Drain all pending debug messages for the compositor.
+/// Lock-free; returns an empty vec if no messages are pending.
+pub fn drain() -> Vec<(String, String)> {
+    // Acquire: ensures we see all data written by the producer(s)
+    let pending = COUNT.swap(0, Ordering::Acquire);
+    if pending == 0 {
+        return Vec::new();
+    }
+
+    let buf_ref = unsafe { &*BUF.0.get() };
+    let read_base = READ_POS.load(Ordering::Relaxed);
+
+    // When pending > MAX_ENTRIES, we've overwritten slots; skip to the
+    // oldest valid entry (the write position minus MAX_ENTRIES).
+    let (corrected_base, to_read) = if pending > MAX_ENTRIES {
+        let write_pos = WRITE_POS.load(Ordering::Relaxed);
+        (write_pos - MAX_ENTRIES, MAX_ENTRIES)
+    } else {
+        (read_base, pending)
+    };
+
+    let mut out = Vec::with_capacity(to_read);
+    for i in 0..to_read {
+        let pos = (corrected_base + i) % MAX_ENTRIES;
+        let e = &buf_ref.buf[pos];
+        let source = fixed_into_str(&e.source);
+        let msg = fixed_into_str(&e.msg);
+        out.push((source, msg));
+    }
+
+    // Advance read position to the corrected boundary
+    READ_POS.store(corrected_base + to_read, Ordering::Relaxed);
+
+    out
+}
+
+/// Look at the most recent entry without draining.
+pub fn latest() -> Option<(String, String)> {
+    let count = COUNT.load(Ordering::Acquire);
+    if count == 0 {
+        return None;
+    }
+    let write_pos = WRITE_POS.load(Ordering::Relaxed);
+    // The most recently written entry is at write_pos - 1
+    let idx = (write_pos - 1) % MAX_ENTRIES;
+    let buf_ref = unsafe { &*BUF.0.get() };
+    let e = &buf_ref.buf[idx];
+    Some((fixed_into_str(&e.source), fixed_into_str(&e.msg)))
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
 
 fn str_into_fixed(s: &str, buf: &mut [u8]) {
     let max_copy = buf.len() - 1;
@@ -99,45 +176,14 @@ fn fixed_into_str(buf: &[u8]) -> String {
     String::from_utf8_lossy(&buf[..len]).into_owned()
 }
 
-static DEBUG: Mutex<DebugBuf> = Mutex::new(DebugBuf::new());
-
-/// Write a debug status message from a driver.
-pub fn print(source: &str, msg: &str) {
-    {
-        let mut dbg = DEBUG.lock();
-        dbg.push(source, msg);
-        let latest = dbg.latest();
-        drop(dbg);
-        if let Some((s, m)) = latest {
-            flush_fb(&s, &m);
-            return;
-        }
-    }
-    flush_fb(source, msg);
-}
-
-fn flush_fb(source: &str, msg: &str) {
-    let guard = FB.lock();
-    if let Some(ref f) = *guard {
-        draw_debug_text(f.virt, f.width, f.height, f.stride, source, msg);
-    }
-}
-
-/// Drain all pending debug messages for the compositor.
-pub fn drain() -> Vec<(String, String)> {
-    DEBUG.lock().drain()
-}
-
-#[macro_export]
-macro_rules! debug_status {
-    ($source:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
-        $crate::debug::print($source, &alloc::format!($fmt $(, $arg)*));
-    };
-}
-
 // ── Immediate framebuffer flush ──────────────────────────────────────
+//
+// Currently disabled because direct framebuffer writes via write_volatile
+// to WC memory regions can hang on real hardware.  Debug messages are
+// delivered via the lock-free ring buffer and drained by the compositor.
 
 /// Framebuffer parameters set by the kernel.
+#[allow(dead_code)]
 struct FbInfo {
     virt: *mut u32,
     width: u32,
@@ -147,17 +193,30 @@ struct FbInfo {
 
 unsafe impl Send for FbInfo {}
 
+use spin::Mutex;
+
 static FB: Mutex<Option<FbInfo>> = Mutex::new(None);
 
-/// Register the linear framebuffer so debug messages are flushed
-/// immediately to the screen.
+/// Register the linear framebuffer.
 pub fn set_framebuffer(virt: *mut u32, width: u32, height: u32, stride: u32) {
     *FB.lock() = Some(FbInfo { virt, width, height, stride });
-    if let Some((s, m)) = DEBUG.lock().latest() {
-        flush_fb(&s, &m);
-    }
 }
 
+#[macro_export]
+macro_rules! debug_status {
+    ($source:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
+        $crate::debug::print($source, &alloc::format!($fmt $(, $arg)*));
+    };
+}
+
+#[allow(dead_code)]
+const TASKBAR_H: u32 = 28;
+#[allow(dead_code)]
+const NET_ICON_W: u32 = 32;
+#[allow(dead_code)]
+const CLOCK_ESTIMATE_W: u32 = 80;
+
+#[allow(dead_code)]
 fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &str, msg: &str) {
     let text = if source.is_empty() {
         alloc::format!("[{}]", msg)
@@ -167,18 +226,36 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
 
     let char_w = 8u32;
     let char_h = 8u32;
-    let taskbar_h = 28u32;
-    let margin_x = 4u32;
     let margin_y = 6u32;
-    let fg = 0xCCCCCCu32;
+    let bar_padding = 4u32;
+    let bg = 0x0F0F1Au32;
+    let fg = 0xFF6644u32;
 
-    let bar_y = height.saturating_sub(taskbar_h);
-    let x0 = margin_x;
+    let bar_y = height.saturating_sub(TASKBAR_H);
+    let right_edge = width.saturating_sub(CLOCK_ESTIMATE_W + NET_ICON_W + 8);
+    let max_chars = right_edge.saturating_sub(bar_padding) / char_w;
+    let text_chars = (text.len() as u32).min(max_chars);
+    let text_width_px = text_chars * char_w;
+    let x0 = right_edge.saturating_sub(text_width_px);
     let y0 = bar_y + margin_y;
-    let max_chars = (width.saturating_sub(margin_x)) / char_w;
+
+    for row in 0..char_h {
+        let yr = y0 + row;
+        if yr >= height {
+            break;
+        }
+        let line_start = (yr as usize) * (stride as usize) + (x0 as usize);
+        for col in 0..text_width_px {
+            if x0 + col < width {
+                unsafe {
+                    core::ptr::write_volatile(fb.add(line_start + col as usize), bg);
+                }
+            }
+        }
+    }
 
     for (ci, ch) in text.bytes().enumerate() {
-        if (ci as u32) >= max_chars {
+        if (ci as u32) >= text_chars {
             break;
         }
         if ch < 0x20 || ch > 0x7E {
@@ -186,7 +263,6 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
         }
         let glyph = &FONT8X8[(ch as usize - 0x20) * 8..][..8];
         let bx = x0 + (ci as u32) * char_w;
-
         for row in 0..char_h {
             if y0 + row >= height {
                 break;
@@ -195,7 +271,7 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
             let line_start = ((y0 + row) as usize) * (stride as usize) + (bx as usize);
             for col in 0..char_w {
                 let px = bx + col;
-                if px >= width {
+                if px >= width || px >= right_edge {
                     continue;
                 }
                 if (bits >> col) & 1 != 0 {
@@ -206,10 +282,13 @@ fn draw_debug_text(fb: *mut u32, width: u32, height: u32, stride: u32, source: &
             }
         }
     }
+
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
 }
 
 // ── 8x8 bitmap font (ASCII 0x20-0x7E) ────────────────────────────────
 
+#[allow(dead_code)]
 const FONT8X8: [u8; 760] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x08, 0x08, 0x08, 0x08, 0x08, 0x00, 0x08, 0x00,

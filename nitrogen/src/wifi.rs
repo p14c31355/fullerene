@@ -74,6 +74,18 @@ pub trait WifiDriver: Send {
     /// Load firmware blob into the device.
     /// Returns `Ok(())` on success.
     fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str>;
+
+    /// Start firmware upload and CPU boot without waiting for alive.
+    /// Used by the step-based init to avoid blocking the render loop.
+    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str>;
+
+    /// Non-blocking check if firmware has signaled alive.
+    /// Returns Ok(true) if alive, Ok(false) if still waiting, Err on error/timeout.
+    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str>;
+
+    /// Send post-boot init commands (TX antenna config, RXON, queue setup).
+    /// Called by the step-based init after firmware alive is confirmed.
+    fn send_init_commands(&mut self) -> Result<(), &'static str>;
 }
 
 // ── Hardware info (from PCI config space, always safe) ───────────────
@@ -129,8 +141,11 @@ impl WifiRegistry {
     /// Only reads PCI configuration space — no MMIO, no DMA.
     /// Returns `None` gracefully if no supported card is found.
     pub fn probe() -> Option<(&'static DriverEntry, PciWifiInfo)> {
+        crate::debug::print("wifi", "probe_registry_enter");
         let mut scanner = PciScanner::new();
+        crate::debug::print("wifi", "probe_scan_start");
         let _ = scanner.scan_all_buses();
+        crate::debug::print("wifi", "probe_scan_done");
 
         for device in scanner.get_devices() {
             // Network controller (class 0x02), wireless (subclass 0x80)
@@ -215,7 +230,10 @@ pub struct PciProbeResult {
 /// revision on success, or `None` if no supported card is found or
 /// initialisation fails.
 pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeResult> {
+    crate::debug::print("wifi", "start_pci_probe");
     let (entry, info) = WifiRegistry::probe()?;
+
+    crate::debug::print("wifi", "probe_ok");
 
     // ── PCI config-space setup (NEVER hangs) ────────────────────────
     // On real hardware, the device may be in D3 or have ASPM L1 enabled,
@@ -231,6 +249,21 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeRes
     crate::debug::print("wifi", "enable_mem");
     pci_dev.enable_memory_access();
 
+    // ── Read HW revision from PCI config space (port I/O, NEVER hangs) ─
+    // Instead of a non-posted MMIO read_volatile(CSR_HW_REV) which can
+    // hang the CPU forever on real hardware when the device is not fully
+    // responding, we use the PCI Revision ID at config offset 0x08.
+    // This is a port-I/O read, not MMIO, so it cannot hang.
+    crate::debug::print("wifi", "read_hw_rev_pci");
+    let pci_revision = crate::pci::PciConfigSpace::read_config_byte(
+        info.bus, info.device, info.function, 0x08,
+    );
+    // Convert PCI revision (u8) to a u32 hw_rev for the driver API.
+    // The driver only uses hw_rev for logging; the actual HW revision
+    // is re-read from CSR_HW_REV inside init_after_mmio() when (and if)
+    // the device becomes responsive.
+    let hw_rev: u32 = pci_revision as u32;
+
     // Map BAR0 MMIO
     crate::debug::print("wifi", "map_bar0");
     let mmio_virt = ctx.phys_to_virt(info.bar0_phys);
@@ -238,19 +271,24 @@ pub fn init_wifi_from_pci(ctx: &'static dyn DriverContext) -> Option<PciProbeRes
         return None;
     }
 
-    // Read HW revision (first MMIO touch)
-    crate::debug::print("wifi", "read_hw_rev");
+    // Sanity-check: verify the device is still present before any MMIO
     let mmio_base = mmio_virt as *mut u32;
-    let hw_rev = unsafe { core::ptr::read_volatile(mmio_base.add(0x028 / 4)) };
-
-    if hw_rev == 0 || hw_rev == 0xFFFF_FFFF {
-        return None;
+    crate::debug::print("wifi", "check_device_present");
+    {
+        let vendor = crate::pci::PciConfigSpace::read_config_word(
+            info.bus, info.device, info.function, 0,
+        );
+        if vendor == 0xFFFF || vendor == 0x0000 || vendor != info.vendor_id {
+            crate::debug::print("wifi", "ERR device_gone_before_mmio");
+            return None;
+        }
     }
 
-    // Let the matched driver create itself
     crate::debug::print("wifi", "driver_create");
+    // Let the matched driver create itself
     let driver = (entry.create)(ctx, mmio_base, hw_rev, pci_dev)?;
 
+    crate::debug::print("wifi", "driver_ok");
     Some(PciProbeResult {
         driver,
         device_id: info.device_id,
