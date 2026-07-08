@@ -77,11 +77,20 @@ fn ext_dev_present(bus: u8, device: u8, function: u8) -> bool {
 /// Returns 0xFFFF_FFFF if ECAM is not configured, the device is absent,
 /// or the capability is not present.
 ///
-/// # Safety
+/// # ⚠️ Hang risk for endpoint devices
 ///
-/// Before the ECAM MMIO read, a port-I/O presence check is performed.
-/// ECAM reads to absent or unresponsive devices can hang the CPU forever
-/// (non-posted MMIO read with no completion).
+/// `ext_dev_present` uses port I/O (CF8/CFC) to check the vendor ID, which
+/// always completes even when the device is in L1.  However, a device in
+/// ASPM L1 **cannot** complete ECAM MMIO reads — the CPU will hang forever.
+///
+/// **This function must only be called for upstream bridge devices**, whose
+/// ECAM reads always complete because the bridge is never in L1 relative to
+/// the CPU.  Calling this for an endpoint that may be in L1 will cause a
+/// system hang.
+///
+/// For endpoint extended config access, L1 must first be disabled on the
+/// upstream bridge so the link returns to L0.  Prefer `PciDevice` methods
+/// that use port I/O (standard config space, offset < 0x100) for endpoints.
 pub fn read_ext_dword(bus: u8, device: u8, function: u8, offset: u16) -> u32 {
     let va = ecam_addr(bus, device, function, offset);
     if va == 0 || !ext_dev_present(bus, device, function) {
@@ -382,10 +391,15 @@ impl PciDevice {
 
     /// Disable ASPM (Active State Power Management) on the PCIe link.
     ///
-    /// This clears ASPM bits in the PCIe Link Control register **and**
-    /// disables L1 PM Substates (L1.1 / L1.2) via the Extended
-    /// Capability (ID 0x001E), which requires ECAM.  If ECAM has not
-    /// been configured, L1Sub will be silently skipped.
+    /// Clears ASPM bits in the PCIe Link Control register using **port I/O only**
+    /// (standard config space, offset < 0x100).  This is always safe — port I/O
+    /// never hangs even when the endpoint is in L1.
+    ///
+    /// Does NOT touch L1 PM Substates (L1.1 / L1.2).  L1Sub lives in extended
+    /// config space (offset ≥ 0x100) which requires ECAM MMIO — a non-posted
+    /// ECAM read to an endpoint in L1 hangs the CPU forever.  L1Sub must be
+    /// disabled on the **upstream bridge** instead (bridge ECAM reads are always
+    /// safe because the bridge is never in L1 relative to the CPU).
     pub fn disable_pcie_aspm(&self) {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
@@ -428,11 +442,9 @@ impl PciDevice {
                         lnk_ctrl & !0x3,
                     );
                 }
-                // ── Also disable L1 PM Substates (L1.1 / L1.2) ──
-                // Clearing ASPM L1 alone is insufficient — L1Sub
-                // is controlled by a separate Extended Capability
-                // (ID 0x001E) and survives ASPM disable.
-                Self::disable_l1_substates(self.bus, self.device, self.function);
+                // L1Sub is NOT disabled on the endpoint — that would
+                // require ECAM MMIO which hangs if the link is in L1.
+                // L1Sub must be disabled on the upstream bridge instead.
                 return;
             }
             let next =
@@ -452,8 +464,18 @@ impl PciDevice {
     /// bits [19:16] = Version, bits [31:20] = Next Capability Offset.
     /// Offset 0 terminates the list.
     ///
-    /// Requires ECAM (MMIO-based access) — silently no-ops if ECAM
-    /// has not been configured by the kernel.
+    /// # ⚠️ Caller responsibility
+    ///
+    /// This function uses ECAM MMIO.  It is **only safe to call for
+    /// upstream bridge devices**.  Calling it for an endpoint that may
+    /// be in ASPM L1 will cause a permanent CPU hang because the endpoint
+    /// cannot complete a non-posted ECAM read while in L1.
+    ///
+    /// L1Sub is negotiated between the bridge and endpoint — disabling
+    /// it on the bridge alone is sufficient to prevent the link from
+    /// entering L1.1/L1.2.  There is no need to call this on the endpoint.
+    ///
+    /// Silently no-ops if ECAM has not been configured by the kernel.
     pub fn disable_l1_substates(bus: u8, device: u8, function: u8) {
         let mut off: u16 = 0x100;
         let mut iterations = 0;

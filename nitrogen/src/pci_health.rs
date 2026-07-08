@@ -174,23 +174,26 @@ impl PciHealth {
     /// the link forces it back to L0 so the endpoint can complete MMIO
     /// reads.
     ///
+    /// # ⚠️ Hang-proof design
+    ///
+    /// All operations use port I/O (CF8/CFC) except L1Sub disable on
+    /// the upstream bridge, which uses ECAM MMIO.  Bridge ECAM reads
+    /// are always safe because the bridge is never in L1 relative to
+    /// the CPU.  Endpoint ECAM reads are **never** performed — port I/O
+    /// is used for standard config space and L1Sub is disabled only
+    /// on the bridge (L1Sub requires both ends to agree, so bridge-only
+    /// disable is sufficient).
+    ///
     /// # Ordering
     ///
-    /// 1. `ensure_d0()` on the endpoint and bridge (config space, safe)
-    /// 2. **Link retrain** on the upstream bridge — brings the link to L0
-    /// 3. `disable_aspm()` on the bridge (ECAM reads to bridge are safe
-    ///    because they reach the bridge directly, not through the endpoint
-    ///    link)
-    /// 4. `disable_aspm()` on the endpoint — now safe because the link
-    ///    is in L0 and ECAM reads to the endpoint will complete
-    /// 5. `check()` — full health verification via config space
-    ///
-    /// The critical change from the previous ordering: the link retrain
-    /// now happens BEFORE the endpoint ASPM disable, because the endpoint
-    /// ASPM disable requires an ECAM MMIO read (for L1Sub) which can hang
-    /// if the link is in L1.
+    /// 1. `ensure_d0()` on endpoint and bridge (port I/O, safe)
+    /// 2. **Link retrain** on upstream bridge (port I/O, safe)
+    /// 3. `disable_pcie_aspm()` on bridge — standard ASPM (port I/O, safe)
+    /// 4. `disable_l1_substates()` on bridge — L1Sub via ECAM to bridge (safe)
+    /// 5. `disable_pcie_aspm()` on endpoint — standard ASPM only, no ECAM (safe)
+    /// 6. `check()` — full health verification via port I/O (safe)
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
-        // Step 1: Re-assert D0 on the device and bridge
+        // Step 1: Re-assert D0 on the device and bridge (port I/O, safe)
         self.ensure_d0();
         if let Some((b, d, f)) = self.upstream_bridge {
             if let Some(bridge) = PciDevice::new(b, d, f) {
@@ -198,27 +201,31 @@ impl PciHealth {
             }
         }
 
-        // Step 2: Retrain the upstream link BEFORE any endpoint ECAM access.
-        // This forces the link out of L1 so subsequent non-posted reads
-        // (ECAM or BAR MMIO) will complete instead of hanging.
-        let link_retrained = self.retrain_upstream_link();
+        // Step 2: Retrain the upstream link (port I/O, safe)
+        self.retrain_upstream_link();
 
-        // Step 3: Disable ASPM on the upstream bridge (ECAM to bridge is safe)
+        // Step 3: Disable standard ASPM on the bridge (port I/O, safe)
         if let Some((b, d, f)) = self.upstream_bridge {
             if let Some(bridge) = PciDevice::new(b, d, f) {
                 bridge.disable_pcie_aspm();
             }
         }
 
-        // Step 4: Now safe to disable ASPM on the endpoint (link is L0)
-        if link_retrained {
-            // After link retrain, give the link extra time to stabilise
-            // before hitting the endpoint with ECAM reads.
-            crate::timing::delay_us(5_000);
+        // Step 4: Disable L1Sub on the upstream bridge (ECAM to bridge, safe).
+        // L1Sub requires both bridge and endpoint to agree — disabling it
+        // on the bridge alone prevents the link from entering L1.1/L1.2.
+        // This avoids ECAM reads to the endpoint, which would hang if the
+        // link is stuck in L1.
+        if let Some((b, d, f)) = self.upstream_bridge {
+            PciDevice::disable_l1_substates(b, d, f);
         }
+
+        // Step 5: Disable standard ASPM on the endpoint (port I/O, safe).
+        // `disable_pcie_aspm` no longer touches L1Sub — it only clears
+        // the ASPM bits in the PCIe Link Control register.
         self.disable_aspm();
 
-        // Step 5: Re-verify
+        // Step 6: Re-verify (port I/O, safe)
         self.check()
     }
 
