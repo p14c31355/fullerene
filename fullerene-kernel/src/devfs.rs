@@ -68,7 +68,7 @@ impl FileSystem for DevFs {
                     else {
                         let block_off = entry_offset % bs;
                         let lba = entry_offset / bs;
-                        let count = (block_off + buf.len()).div_ceil(bs).max(1);
+                        let count = block_off.checked_add(buf.len()).map(|sum| sum.div_ceil(bs).max(1)).unwrap_or(1);
                         let actual = count.min(64);
                         let read_bytes = actual * bs;
                         let mut tmp = alloc::vec![0u8; read_bytes];
