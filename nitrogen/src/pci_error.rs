@@ -65,7 +65,8 @@ pub fn configure_completion_timeout(bus: u8, dev: u8, func: u8) {
     let devctl2 = PciConfigSpace::read_config_word(bus, dev, func, devctl2_off);
     let cto_field = devctl2 & 0xF;
     let new_cto = 0x2u16; // Range B: 1 ms – 10 ms
-    let new_devctl2 = (devctl2 & !0xFu16) | new_cto;
+    // Clear both the CTO value field (bits [3:0]) and the Completion Timeout Disable bit (bit 4)
+    let new_devctl2 = (devctl2 & !0x1Fu16) | new_cto;
     if new_devctl2 != devctl2 {
         log::info!(
             "PCIe: set Completion Timeout on {:02x}:{:02x}.{} from {:#x} to {:#x}",

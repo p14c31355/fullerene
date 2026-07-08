@@ -20,15 +20,18 @@ use crate::port::PortWriter;
 
 static ECAM_BASE: AtomicU64 = AtomicU64::new(0);
 static PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
+static ECAM_START_BUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
-/// Store the ECAM MMIO base (physical) and the phys→virt offset.
+/// Store the ECAM MMIO base (physical), the phys→virt offset, and the
+/// starting bus number for the ECAM segment.
 ///
 /// Must be called once during boot, after the MCFG table is parsed.
 /// Without this, extended config space (offsets ≥ 0x100) cannot be
 /// accessed — L1Sub and AER configuration will be skipped.
-pub fn set_ecam_info(ecam_base: u64, phys_offset: u64) {
+pub fn set_ecam_info(ecam_base: u64, phys_offset: u64, start_bus: u8) {
     ECAM_BASE.store(ecam_base, core::sync::atomic::Ordering::Relaxed);
     PHYS_OFFSET.store(phys_offset, core::sync::atomic::Ordering::Relaxed);
+    ECAM_START_BUS.store(start_bus, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Convert a physical address to a virtual pointer using the stored offset.
@@ -41,13 +44,19 @@ fn ecam_phys_to_virt(phys: u64) -> usize {
 ///
 /// Layout per the PCIe spec:
 ///   offset = (bus << 20) | (device << 15) | (function << 12) | register_offset
+///
+/// The bus number is adjusted by subtracting the MCFG start_bus before computing
+/// the ECAM offset, so that bus addresses are relative to the ECAM window base.
 fn ecam_addr(bus: u8, device: u8, function: u8, offset: u16) -> usize {
     let base = ECAM_BASE.load(core::sync::atomic::Ordering::Relaxed);
     if base == 0 {
         return 0;
     }
+    let start_bus = ECAM_START_BUS.load(core::sync::atomic::Ordering::Relaxed);
+    // Subtract start_bus to get the bus offset within the ECAM window
+    let bus_offset = bus.saturating_sub(start_bus);
     let phys = base
-        + ((bus as u64 & 0xFF) << 20)
+        + ((bus_offset as u64 & 0xFF) << 20)
         + ((device as u64 & 0x1F) << 15)
         + ((function as u64 & 0x7) << 12)
         + (offset as u64 & 0xFFF);
