@@ -110,35 +110,46 @@ impl IommuEngine {
         Ok(Self { registers: regs, root_table, page_table, iova })
     }
 
-    fn set_device_context(&mut self, bus: u8, device: u8, function: u8) -> Result<(), ()> {
-        let mut cbs = MEM.lock();
-        let ctx = cbs.as_mut().ok_or(())?;
-        let entry = self.root_table.get_context_entry(ctx, bus, device, function)?;
-        *entry = table::ContextEntry::new_host(self.page_table.root_phys(), table::CTX_AW_3LEVEL);
-        Ok(())
-    }
-
-    fn setup_default_blocked_all(&mut self) -> Result<(), ()> {
+    /// Populate pass-through entries for all discovered PCI devices.
+    /// Pass-through (TT=10b) means DMA bypasses IOMMU — existing drivers
+    /// that don't call `dma_map()` continue to work.
+    /// When a driver calls `dma_map()`, the entry is upgraded to host
+    /// translation (TT=00b with valid SL page table).
+    fn setup_pass_through_all(&mut self) -> Result<(), ()> {
         let scanner = PciScanner::new();
         if scanner.get_devices().is_empty() {
-            log::warn!("IOMMU: no PCI devices found, skipping default-blocked setup");
+            log::warn!("IOMMU: no PCI devices found, skipping pass-through setup");
             return Ok(());
         }
         let mut cbs = MEM.lock();
         let ctx = cbs.as_mut().ok_or(())?;
         for dev_info in scanner.get_devices() {
             let entry = self.root_table.get_context_entry(ctx, dev_info.bus, dev_info.device, dev_info.function)?;
-            *entry = table::ContextEntry::new_blocked();
+            *entry = table::ContextEntry::new_pass_through();
         }
         Ok(())
     }
 
+    /// Upgrade a device's context entry from pass-through to host translation
+    /// and map its DMA buffer through the IOMMU page table.
     fn dma_map(&mut self, device_id: u16, phys: u64, size: usize) -> Result<u64, ()> {
         let bus = (device_id >> 8) as u8;
         let device = ((device_id >> 3) & 0x1F) as u8;
         let function = (device_id & 0x7) as u8;
 
-        self.set_device_context(bus, device, function)?;
+        // Upgrade from pass-through → host translation
+        {
+            let mut cbs = MEM.lock();
+            let ctx = cbs.as_mut().ok_or(())?;
+            let entry = self.root_table.get_context_entry(ctx, bus, device, function)?;
+            // Only upgrade if currently pass-through (don't re-set blocked entries)
+            if entry.is_present() {
+                *entry = table::ContextEntry::new_host(
+                    self.page_table.root_phys(),
+                    table::CTX_AW_3LEVEL,
+                );
+            }
+        }
 
         let iova = self.iova.alloc(size).ok_or(())?;
         let pages = (size + 4095) / 4096;
@@ -196,7 +207,6 @@ pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
     log::info!("IOMMU: mmio_base={:#x} host_addr_width={} drhd_units={}",
         mmio_base, iova_bits, dmar.drhd_units.len());
 
-    // Map the MMIO region using phys_to_virt callback
     let mmio_virt = {
         let guard = MEM.lock();
         let cbs = guard.as_ref().ok_or("IOMMU: MemCallbacks not set")?;
@@ -214,8 +224,8 @@ pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
 
     let mut engine = IommuEngine::new(regs, iova_bits)
         .map_err(|_| "IOMMU engine creation failed")?;
-    engine.setup_default_blocked_all()
-        .map_err(|_| "IOMMU default-blocked setup failed")?;
+    engine.setup_pass_through_all()
+        .map_err(|_| "IOMMU pass-through setup failed")?;
 
     if engine.registers.gsts() & vtd::GSTS_TES != 0 {
         log::info!("IOMMU: already enabled by firmware");
@@ -231,14 +241,17 @@ pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
 
     *GLOBAL_IOMMU.lock() = Some(engine);
     IOMMU_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
-    log::info!("IOMMU: initialized with DMA blocked for all devices by default");
+    log::info!("IOMMU: initialized with pass-through for all devices (dma_map upgrades to host translation)");
     Ok(())
 }
 
 pub fn dma_map(device_id: u16, phys: u64, size: usize) -> Result<u64, ()> {
     let mut guard = GLOBAL_IOMMU.lock();
-    let engine = guard.as_mut().ok_or(())?;
-    engine.dma_map(device_id, phys, size)
+    if let Some(ref mut engine) = *guard {
+        engine.dma_map(device_id, phys, size)
+    } else {
+        Ok(phys) // identity fallback when no IOMMU
+    }
 }
 
 pub fn dma_unmap(iova: u64, size: usize) {

@@ -10,12 +10,14 @@ fn iopte_addr(entry: u64) -> u64 {
     entry & IOPTE_ADDR_MASK
 }
 
-pub const CTX_TT_NO_TRANSLATION: u64 = 0;
-pub const CTX_TT_HOST: u64 = 2;
-pub const CTX_TT_GUEST: u64 = 3;
+/// TT field values (bits 3:2 of ContextEntry.lo)
+pub const TT_HOST_WITH_STRUCTURES: u64 = 0 << 2;  // 00b — host translation with SL page tables
+pub const TT_PASS_THROUGH: u64 = 2 << 2;           // 10b — pass-through, no translation
+pub const TT_GUEST: u64 = 3 << 2;                  // 11b — guest translation
+
 pub const CTX_AW_3LEVEL: u64 = 2 << 8;
 pub const CTX_AW_4LEVEL: u64 = 3 << 8;
-pub const CTX_FPD: u64 = 1 << 3;
+pub const CTX_FPD: u64 = 1 << 1;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -26,15 +28,26 @@ impl ContextEntry {
         self.0 & 1 != 0
     }
 
+    /// Host translation entry: TT=00b with valid second-level page table.
+    /// Used for devices after `dma_map()` sets up IOMMU page tables.
     pub fn new_host(second_level_pt_phys: u64, address_width: u64) -> Self {
-        Self(
-            second_level_pt_phys | 1 | CTX_TT_HOST | address_width | CTX_FPD,
-            0,
-        )
+        let lo = (second_level_pt_phys & 0x000f_ffff_ffff_f000)
+            | 1                 // Present
+            | TT_HOST_WITH_STRUCTURES
+            | address_width
+            | CTX_FPD;
+        Self(lo, 0)
     }
 
+    /// Blocked entry: present + TT=00b with zero page table → DMA fault.
     pub fn new_blocked() -> Self {
         Self(1, 0)
+    }
+
+    /// Pass-through entry: TT=10b — DMA bypasses IOMMU translation.
+    /// Default for devices that haven't called `dma_map()`.
+    pub fn new_pass_through() -> Self {
+        Self(1 | TT_PASS_THROUGH, 0)
     }
 }
 
