@@ -32,8 +32,8 @@ struct IovaAllocator {
 
 impl IovaAllocator {
     fn new(iova_bits: u8) -> Self {
-        // Cap at 39 bits (3-level page table limit)
-        let bits = iova_bits.min(39);
+        // Cap at 39 bits (3-level page table limit) and ensure at least 12 bits
+        let bits = iova_bits.clamp(12, 39);
         let start: u64 = 1 << 12;
         let max_addr: u64 = (1u64 << bits) - 1;
         Self {
@@ -161,8 +161,11 @@ impl IommuEngine {
     }
 
     fn dma_unmap(&mut self, iova: u64, size: usize) {
-        let mut cbs = MEM.lock();
-        let ctx = cbs.as_mut().ok_or(()).unwrap();
+        let mut guard = MEM.lock();
+        let Some(ctx) = guard.as_mut() else {
+            log::warn!("IOMMU: dma_unmap called but MemCallbacks not set");
+            return;
+        };
         let pages = (size + 4095) / 4096;
         for i in 0..pages {
             let iova_page = iova + (i as u64) * 4096;

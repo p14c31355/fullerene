@@ -59,6 +59,8 @@ impl FileSystem for DevFs {
             let entry = table.iter().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
             (entry.name.clone(), entry.offset)
         };
+        // TODO: registry lock held during I/O blocks other registry ops.
+        // Refactor to use ref-counted driver handles so the lock is dropped before I/O.
         let (result, new_offset) = {
             let registry = DEVICE_REGISTRY.lock();
             match registry.get(&name) {

@@ -146,13 +146,9 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
             sym_off += 24;
 
             let name_bytes = entry.name.as_bytes();
-            let mut si = 0;
-            while si < name_bytes.len() {
-                *buf.get_unchecked_mut(str_off) = name_bytes[si];
-                str_off += 1;
-                si += 1;
-            }
-            *buf.get_unchecked_mut(str_off) = 0;
+            buf[str_off..str_off + name_bytes.len()].copy_from_slice(name_bytes);
+            str_off += name_bytes.len();
+            buf[str_off] = 0;
             str_off += 1;
         }
 
