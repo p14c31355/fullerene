@@ -159,6 +159,15 @@ pub mod drivers;
 // ── DriverContext bridge (kernel → nitrogen) ──────────────────────
 pub mod driver_context_impl;
 
+// ── Plugin registry ───────────────────────────────────────────────
+pub mod plugin;
+
+// ── Kernel context helpers ────────────────────────────────────────
+pub mod ctx;
+
+// ── DevFs ─────────────────────────────────────────────────────────
+pub mod devfs;
+
 // ── Kernel core ────────────────────────────────────────────────────
 pub mod boot;
 pub mod boot_stage;
