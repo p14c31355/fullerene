@@ -327,6 +327,11 @@ impl PciDevice {
                         lnk_ctrl & !0x3,
                     );
                 }
+                // ── Also disable L1 PM Substates (L1.1 / L1.2) ──
+                // Clearing ASPM L1 alone is insufficient — L1Sub
+                // is controlled by a separate Extended Capability
+                // (ID 0x001E) and survives ASPM disable.
+                Self::disable_l1_substates(self.bus, self.device, self.function);
                 return;
             }
             let next =
@@ -335,6 +340,48 @@ impl PciDevice {
                 break;
             }
             off = next;
+        }
+    }
+
+    /// Walk the PCIe Extended Capability list and disable L1 PM
+    /// Substates (ASPM L1.1 / L1.2) on the given device.
+    ///
+    /// Extended capabilities start at offset 0x100 in config space.
+    /// Each entry is 4 bytes: bits [15:0] = Capability ID,
+    /// bits [19:16] = Version, bits [31:20] = Next Capability Offset.
+    /// Offset 0 terminates the list.
+    pub fn disable_l1_substates(bus: u8, device: u8, function: u8) {
+        let mut off: u16 = 0x100;
+        let mut iterations = 0;
+        const MAX_ITERATIONS: u8 = 48;
+        while off != 0 && iterations < MAX_ITERATIONS {
+            iterations += 1;
+            let cap_hdr = PciConfigSpace::read_config_dword(bus, device, function, off as u8);
+            let cap_id = (cap_hdr & 0xFFFF) as u16;
+            let next_off = ((cap_hdr >> 20) & 0xFFF) as u16;
+
+            if cap_id == 0x001E {
+                // L1 PM Substates Capability
+                // L1SubCtl1 is at offset cap+0x08 (2 dwords in).
+                let ctl1 = PciConfigSpace::read_config_dword(
+                    bus, device, function, (off + 8) as u8,
+                );
+                // Bits [2:1]: ASPM L1.2 Enable (bit 2), ASPM L1.1 Enable (bit 1)
+                let l1sub_enabled = ctl1 & 0x6;
+                if l1sub_enabled != 0 {
+                    log::info!(
+                        "PCI: disabling L1Sub on {:02x}:{:02x}.{} (was {:#x})",
+                        bus, device, function, l1sub_enabled,
+                    );
+                    PciConfigSpace::write_config_dword_raw(
+                        bus, device, function, (off + 8) as u8,
+                        ctl1 & !0x6u32,
+                    );
+                }
+                return;
+            }
+
+            off = next_off;
         }
     }
 

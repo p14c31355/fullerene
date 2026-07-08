@@ -280,6 +280,30 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     crate::debug::print("wifi", "enable_mem");
     pci_dev.enable_memory_access();
 
+    // ── PCIe error recovery: Completion Timeout + Root Port AER ──
+    // Even after disabling ASPM and L1Sub, a non-posted MMIO read to
+    // an unresponsive device can still cause a completion timeout
+    // that hangs the CPU.  These settings ensure the endpoint aborts
+    // after ~10 ms and the Root Port reports the error as Non-Fatal
+    // instead of escalating to MCE.
+    {
+        crate::pci_error::configure_completion_timeout(info.bus, info.device, info.function);
+        // Find upstream Root Port
+        let mut scanner = crate::pci::PciScanner::new();
+        let _ = scanner.scan_all_buses();
+        if let Some(rp) = scanner.get_devices().iter().find(|bridge| {
+            bridge.class_code == 0x06
+                && bridge.subclass == 0x04
+                && crate::pci::PciConfigSpace::read_config_byte(
+                    bridge.bus, bridge.device, bridge.function, 0x19,
+                ) == info.bus
+        }) {
+            crate::pci_error::configure_root_port_error_reporting(
+                rp.bus, rp.device, rp.function,
+            );
+        }
+    }
+
     // ── Disable ASPM on upstream PCIe bridge ──
     // If the upstream bridge has ASPM enabled, the endpoint can enter
     // L1 substates even after its own ASPM is disabled.  A non-posted
