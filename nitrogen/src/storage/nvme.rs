@@ -114,12 +114,9 @@ impl NvmeController {
         };
 
         ctrl.w32(NVME_CC, 0);
-        for _ in 0..1_000_000 {
-            if (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
+        crate::timing::wait_timeout_us(500_000, || {
+            (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0
+        }).ok();
 
         let q_phys = ctx.allocate_contiguous_frames(2).ok()?;
         ctrl.queue_phys = q_phys;
@@ -143,13 +140,9 @@ impl NvmeController {
         ctrl.w32(NVME_ACQ + 4, (ctrl.acq_phys >> 32) as u32);
 
         ctrl.w32(NVME_CC, CC_EN | CC_IOCQES | CC_IOSQES);
-        for _ in 0..1_000_000 {
-            if (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0 {
+        if crate::timing::wait_timeout_us(500_000, || {
+            (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0
+        }).is_err() {
             log::info!("NVMe: controller failed to become ready");
             return None;
         }

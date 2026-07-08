@@ -233,6 +233,8 @@ pub struct RawPciProbeResult {
     pub hw_rev: u16,
     pub device_id: u16,
     pub driver_ctx: &'static dyn DriverContext,
+    /// Upstream PCIe bridge coordinates (if found) for ASPM control.
+    pub upstream_bridge: Option<(u8, u8, u8)>,
 }
 
 /// Lightweight PCI probe: scan bus, configure D0/ASPM/enable-mem,
@@ -251,6 +253,34 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     pci_dev.disable_pcie_aspm();
     crate::debug::print("wifi", "enable_mem");
     pci_dev.enable_memory_access();
+
+    // ── Disable ASPM on upstream PCIe bridge ──
+    // If the upstream bridge has ASPM enabled, the endpoint can enter
+    // L1 substates even after its own ASPM is disabled.  A non-posted
+    // MMIO read to a device whose upstream link is in L1 will cause a
+    // PCIe completion timeout — the CPU never returns from the read.
+    crate::debug::print("wifi", "scan_bridge");
+    let upstream_bridge: Option<(u8, u8, u8)> = {
+        let mut scanner = PciScanner::new();
+        let _ = scanner.scan_all_buses();
+        let upstream = scanner.get_devices().iter().find(|bridge| {
+            bridge.class_code == 0x06
+                && bridge.subclass == 0x04
+                && crate::pci::PciConfigSpace::read_config_byte(
+                    bridge.bus, bridge.device, bridge.function, 0x19,
+                ) == info.bus
+        });
+        if let Some(up) = upstream {
+            log::info!(
+                "WiFi: disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
+                up.bus, up.device, up.function
+            );
+            up.disable_pcie_aspm();
+            Some((up.bus, up.device, up.function))
+        } else {
+            None
+        }
+    };
 
     // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");
@@ -279,6 +309,20 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         }
     }
 
+    // ── Log whether this is a real WiFi card or a phantom device ──
+    // Some machines have a PCI device at the expected BDF that reports
+    // the right vendor/device IDs but has no actual hardware behind it
+    // (e.g. BIOS-configured stub, unpopulated M.2 slot with ASPM enabled).
+    // We log the subsystem IDs so we can distinguish a real card from a
+    // phantom entry on buggy firmware.
+    let subsys = crate::pci::PciConfigSpace::read_config_dword(
+        info.bus, info.device, info.function, 0x2C,
+    );
+    log::info!(
+        "WiFi: probe_pci_only done — vendor={:#06x} device={:#06x} subsys={:#010x} bus={:02x}:{:02x}.{}",
+        info.vendor_id, info.device_id, subsys,
+        info.bus, info.device, info.function,
+    );
     crate::debug::print("wifi", "probe_done");
     Some(RawPciProbeResult {
         entry,
@@ -287,6 +331,7 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         hw_rev,
         device_id: info.device_id,
         driver_ctx: ctx,
+        upstream_bridge,
     })
 }
 

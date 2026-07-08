@@ -143,12 +143,9 @@ impl EhciContext {
     pub fn reset(&mut self) -> Result<(), &'static str> {
         let op = &self.registers.op;
         op.set_usbcmd(USBCMD_HCRESET);
-        for _ in 0..250_000 {
-            if op.usbcmd() & USBCMD_HCRESET == 0 {
-                break;
-            }
-        }
-        if op.usbcmd() & USBCMD_HCRESET != 0 {
+        if crate::timing::wait_timeout_us(500_000, || {
+            op.usbcmd() & USBCMD_HCRESET == 0
+        }).is_err() {
             return Err("HCRESET timeout");
         }
         Ok(())
@@ -163,12 +160,9 @@ impl EhciContext {
         op.set_usbcmd(cmd | USBCMD_RS | USBCMD_ASSE);
 
         // Wait for HCHalted to clear
-        for _ in 0..100_000 {
-            if op.usbsts() & USBSTS_HCH == 0 {
-                break;
-            }
-        }
-        if op.usbsts() & USBSTS_HCH != 0 {
+        if crate::timing::wait_timeout_us(200_000, || {
+            op.usbsts() & USBSTS_HCH == 0
+        }).is_err() {
             return Err("EHCI start timeout (HCH still set)");
         }
 
@@ -221,26 +215,18 @@ impl EhciContext {
 
             // Port reset (EHCI spec §4.2.4: PR must be cleared by HC, not by driver)
             op.write_portsc(port_idx, portsc | PORTSC_RESET);
-            let mut pr_cleared = false;
-            for _ in 0..200_000 {
-                if op.portsc(port_idx) & PORTSC_RESET == 0 {
-                    pr_cleared = true;
-                    break;
-                }
-                core::hint::spin_loop();
-            }
+            let pr_cleared = crate::timing::wait_timeout_us(200_000, || {
+                op.portsc(port_idx) & PORTSC_RESET == 0
+            }).is_ok();
             if !pr_cleared {
                 self.ports.mark_processed(port_idx);
                 continue;
             }
 
             // Wait for PE
-            for _ in 0..10_000 {
-                if op.portsc(port_idx) & PORTSC_PE != 0 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
+            crate::timing::wait_timeout_us(10_000, || {
+                op.portsc(port_idx) & PORTSC_PE != 0
+            }).ok();
 
             // Check CCS survived
             if op.portsc(port_idx) & PORTSC_CCS == 0 {
@@ -328,15 +314,17 @@ impl EhciContext {
         // Clear any stale AAINT before ringing IAAD
         op.write_usbsts(USBSTS_AAINT);
         op.set_usbcmd_bits(USBCMD_IAAD);
-        for _ in 0..1_000_000 {
+        if crate::timing::wait_timeout_us(1_000_000, || {
             let sts = op.usbsts();
-            if sts & USBSTS_AAINT != 0 {
+            let ready = sts & USBSTS_AAINT != 0;
+            if ready {
                 op.write_usbsts(USBSTS_AAINT);
-                return Ok(());
             }
-            core::hint::spin_loop();
+            ready
+        }).is_err() {
+            return Err("async advance timeout");
         }
-        Err("async advance timeout")
+        Ok(())
     }
 
     // ── Control transfer ───────────────────────────────────────

@@ -2284,7 +2284,61 @@ pub fn try_init_wifi_device_step() {
                 return;
             }
             {
-                let health = PciHealth::new(&raw.pci_dev);
+                let mut health = PciHealth::new(&raw.pci_dev);
+                if let Some((bus, dev, func)) = raw.upstream_bridge {
+                    health = health.with_upstream_bridge(bus, dev, func);
+                    // Force the upstream link out of L1 by toggling the
+                    // Link Retrain bit.  This is necessary on some Intel
+                    // chipsets where the bridge may be stuck in L1 after
+                    // ASPM has been disabled.
+                    if let Some(_bridge) = crate::pci::PciDevice::new(bus, dev, func) {
+                        let lnk_ctl_offset = {
+                            // Walk the PCIe capability list to find the
+                            // Link Control register (offset 0x10 within
+                            // the PCIe cap structure).
+                            let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(
+                                bus, dev, func, 0x34,
+                            );
+                            let mut off = cap_ptr;
+                            let mut lnk_ctl = None;
+                            let mut visited = [false; 256];
+                            for _ in 0..48 {
+                                if off < 0x40 || off > 0xF8 { break; }
+                                if visited[off as usize] { break; }
+                                visited[off as usize] = true;
+                                let cap_id = crate::pci::PciConfigSpace::read_config_byte(
+                                    bus, dev, func, off,
+                                );
+                                if cap_id == 0x10 {
+                                    lnk_ctl = Some(off + 0x10);
+                                    break;
+                                }
+                                let next = crate::pci::PciConfigSpace::read_config_byte(
+                                    bus, dev, func, off + 1,
+                                );
+                                if next == 0 || next == off { break; }
+                                off = next;
+                            }
+                            lnk_ctl
+                        };
+                        if let Some(lnk_off) = lnk_ctl_offset {
+                            let ctl = crate::pci::PciConfigSpace::read_config_word(
+                                bus, dev, func, lnk_off,
+                            );
+                            // Bit 5 = Link Retrain.  Writing 1 triggers a retrain;
+                            // the hardware auto-clears this bit.
+                            crate::pci::PciConfigSpace::write_config_word_raw(
+                                bus, dev, func, lnk_off, ctl | (1 << 5),
+                            );
+                            log::info!(
+                                "WiFi: link retrain triggered on bridge {:02x}:{:02x}.{}",
+                                bus, dev, func,
+                            );
+                            // Give the link ~10 ms to come back up
+                            crate::timing::delay_us(10_000);
+                        }
+                    }
+                }
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.pci_dev = Some(raw.pci_dev);
                 ctx.mmio = raw.mmio;
@@ -2299,17 +2353,21 @@ pub fn try_init_wifi_device_step() {
         }
         WifiInitPhase::MmioInit => {
             // ── MMIO init: reset device, MAC clock, read MAC ──
+            // Use recover() instead of pre_mmio_access() to also retry
+            // D0 assertion, ASPM disable, and — on the upstream bridge —
+            // link retrain.  This is the last line of defense before the
+            // first MMIO read on real hardware.
             let (mmio, health_ok) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let mmio = ctx.mmio;
                 let ok = match ctx.health.as_mut() {
-                    Some(h) => h.pre_mmio_access().is_ok(),
+                    Some(h) => h.recover().is_ok(),
                     None => false,
                 };
                 (mmio, ok)
             };
             if !health_ok {
-                crate::debug::print("iwlwifi", "step: ERR health_check");
+                crate::debug::print("iwlwifi", "step: ERR health_recover");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }

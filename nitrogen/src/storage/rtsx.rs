@@ -107,14 +107,17 @@ impl RtsxController {
             RTSX_HAIMR,
             HAIMR_START | (u32::from(address & 0x3FFF) << 16),
         );
-        for _ in 0..4096 {
+        match crate::timing::poll_timeout_us(10_000, || {
             let value = self.mmio.read32(RTSX_HAIMR);
             if value & HAIMR_START == 0 {
-                return Ok(value as u8);
+                Some(value as u8)
+            } else {
+                None
             }
-            core::hint::spin_loop();
+        }) {
+            Some(v) => Ok(v),
+            None => Err("RTSX internal register read timed out"),
         }
-        Err("RTSX internal register read timed out")
     }
 
     fn write_reg(&self, address: u16, mask: u8, value: u8) -> Result<(), &'static str> {
@@ -126,16 +129,23 @@ impl RtsxController {
                 | (u32::from(mask) << 8)
                 | u32::from(value),
         );
-        for _ in 0..4096 {
+        match crate::timing::poll_timeout_us(10_000, || {
             let result = self.mmio.read32(RTSX_HAIMR);
             if result & HAIMR_START == 0 {
-                return (result as u8 == value)
-                    .then_some(())
-                    .ok_or("RTSX internal register write failed");
+                Some(result)
+            } else {
+                None
             }
-            core::hint::spin_loop();
+        }) {
+            Some(result) => {
+                if result as u8 == value {
+                    Ok(())
+                } else {
+                    Err("RTSX internal register write failed")
+                }
+            }
+            None => Err("RTSX internal register write timed out"),
         }
-        Err("RTSX internal register write timed out")
     }
 
     fn write_regs(&self, writes: &[(u16, u8, u8)]) -> Result<(), &'static str> {
@@ -197,19 +207,30 @@ impl RtsxController {
     }
 
     fn wait_transfer(&self, required: u8) -> Result<(), &'static str> {
-        for _ in 0..500_000 {
-            let state = self.read_reg(SD_TRANSFER)?;
-            if state & SD_TRANSFER_ERR != 0 {
+        match crate::timing::poll_timeout_us(500_000, || {
+            match self.read_reg(SD_TRANSFER) {
+                Ok(state) => {
+                    if state & SD_TRANSFER_ERR != 0 {
+                        Some(Err("SD transfer failed"))
+                    } else if state & required == required {
+                        Some(Ok(()))
+                    } else {
+                        None
+                    }
+                }
+                Err(_) => Some(Err("SD transfer register read error")),
+            }
+        }) {
+            Some(Ok(())) => Ok(()),
+            Some(Err(e)) => {
                 let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
-                return Err("SD transfer failed");
+                Err(e)
             }
-            if state & required == required {
-                return Ok(());
+            None => {
+                let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
+                Err("SD transfer timed out")
             }
-            core::hint::spin_loop();
         }
-        let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
-        Err("SD transfer timed out")
     }
 
     fn command(&self, command: u8, argument: u32, response: u8) -> Result<u32, &'static str> {
@@ -291,17 +312,13 @@ impl RtsxController {
             .command(CMD8_SEND_IF_COND, 0x1AA, SD_RSP_R1)
             .is_ok_and(|response| response & 0xFFF == 0x1AA);
         let argument = 0x00FF_8000 | if v2_card { 1 << 30 } else { 0 };
-        let mut ocr = None;
-        for _ in 0..2000 {
-            if let Ok(response) = self.app_command(0, ACMD41_SEND_OP_COND, argument, SD_RSP_R3) {
-                if response & (1 << 31) != 0 {
-                    ocr = Some(response);
-                    break;
-                }
+        let ocr = crate::timing::poll_timeout_us(2_000_000, || {
+            match self.app_command(0, ACMD41_SEND_OP_COND, argument, SD_RSP_R3) {
+                Ok(response) if response & (1 << 31) != 0 => Some(response),
+                _ => None,
             }
-            delay_ms(1);
-        }
-        let block_addressed = ocr.ok_or("ACMD41 timed out")? & (1 << 30) != 0;
+        }).ok_or("ACMD41 timed out")?;
+        let block_addressed = ocr & (1 << 30) != 0;
 
         self.command(CMD2_ALL_SEND_CID, 0, SD_RSP_R2)?;
         let cid = self.long_response()?;
@@ -403,14 +420,12 @@ impl RtsxController {
             (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
         ])?;
         self.wait_transfer(SD_TRANSFER_END)?;
-        for _ in 0..2000 {
-            if self
-                .command(CMD13_SEND_STATUS, u32::from(card.rca) << 16, SD_RSP_R1)
-                .is_ok_and(|status| status & (1 << 8) != 0)
-            {
-                return Ok(());
-            }
-            delay_ms(1);
+        if crate::timing::poll_timeout_us(2_000_000, || {
+            self.command(CMD13_SEND_STATUS, u32::from(card.rca) << 16, SD_RSP_R1)
+                .ok()
+                .filter(|status| status & (1 << 8) != 0)
+        }).is_some() {
+            return Ok(());
         }
         Err("card programming timed out")
     }

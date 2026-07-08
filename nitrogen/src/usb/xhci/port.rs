@@ -194,27 +194,25 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
     op.write_portsc(port, (ps_raw & !PORTSC_RW1C_MASK) | PORTSC_PR);
 
     // USB2 reset completes within 50 ms; allow 100 ms for slow hardware.
-    for _ in 0..1_000 {
-        if op.portsc(port).0 & PORTSC_PR == 0 {
-            break;
-        }
-        delay_us(100);
-    }
-    if op.portsc(port).0 & PORTSC_PR != 0 {
+    if crate::timing::wait_timeout_us(100_000, || {
+        op.portsc(port).0 & PORTSC_PR == 0
+    }).is_err() {
         return Err("port reset timeout");
     }
 
-    for _ in 0..1_000 {
+    match crate::timing::poll_timeout_us(100_000, || {
         let status = op.portsc(port).0;
         if status & PORTSC_CCS == 0 {
-            return Err("disconnected");
+            Some(false)
+        } else if status & PORTSC_PED != 0 {
+            Some(true)
+        } else {
+            None
         }
-        if status & PORTSC_PED != 0 {
-            return Ok(());
-        }
-        delay_us(100);
+    }) {
+        Some(true) => Ok(()),
+        Some(false) | None => Err("port enable timeout"),
     }
-    Err("port enable timeout")
 }
 
 /// Issue a Warm Port Reset (WPR) on the given port.
@@ -232,25 +230,17 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     op.write_portsc(port, v | PORTSC_WPR);
 
     // Poll for WPR completion (WPR bit cleared by hardware)
-    for _ in 0..1_000 {
-        if op.portsc(port).0 & PORTSC_WPR == 0 {
-            break;
-        }
-        delay_us(100);
-    }
-    if op.portsc(port).0 & PORTSC_WPR != 0 {
+    if crate::timing::wait_timeout_us(100_000, || {
+        op.portsc(port).0 & PORTSC_WPR == 0
+    }).is_err() {
         return Err("warm port reset timeout: WPR not cleared");
     }
 
     // Wait for PR (Port Reset) to clear — the xHC signals reset
     // completion by clearing both WPR and PR (xHCI 1.2 §5.4.8).
-    for _ in 0..1_000 {
-        if op.portsc(port).0 & PORTSC_PR == 0 {
-            break;
-        }
-        delay_us(100);
-    }
-    if op.portsc(port).0 & PORTSC_PR != 0 {
+    if crate::timing::wait_timeout_us(100_000, || {
+        op.portsc(port).0 & PORTSC_PR == 0
+    }).is_err() {
         return Err("warm port reset timeout: PR not cleared");
     }
 
@@ -273,17 +263,20 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     // We poll CCS and PED for up to ~1.2 s.  If neither asserts, we try
     // a single explicit RxDetect kick (with LWS) as a fallback, but only
     // after giving the hardware a fair chance to finish on its own.
-    for _ in 0..100 {
-        delay_ms(1);
+    if let Some(result) = crate::timing::poll_timeout_us(1_200_000, || {
         let ps = op.portsc(port);
         if !ps.ccs() {
-            return Err("disconnected");
+            Some(Err("disconnected"))
+        } else if ps.ped() {
+            Some(Ok(ps))
+        } else {
+            None
         }
-        if ps.ped() {
-            return Ok(ps);
-        }
+    }) {
+        result
+    } else {
+        Err("warm port reset: enable timeout")
     }
-    Err("warm port reset: enable timeout")
 }
 
 /// Power the port and reset an attached device if it is not yet enabled.
@@ -306,13 +299,14 @@ pub fn ensure_port_ready(
         op.write_portsc(port_idx, (raw & !PORTSC_RW1C_MASK) | changes);
     }
 
-    for _ in 0..100 {
-        status = op.portsc(port_idx);
-        if status.ccs() || !ppc {
-            break;
+    status = crate::timing::poll_timeout_us(100_000, || {
+        let s = op.portsc(port_idx);
+        if s.ccs() || !ppc {
+            Some(s)
+        } else {
+            None
         }
-        delay_ms(1);
-    }
+    }).unwrap_or_else(|| op.portsc(port_idx));
     if !status.ccs() {
         return false;
     }

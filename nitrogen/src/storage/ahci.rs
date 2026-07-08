@@ -146,15 +146,9 @@ impl AhciController {
         let ghc = ctrl.r32(HBA_GHC);
         ctrl.w32(HBA_GHC, ghc | GHC_AE);
         ctrl.w32(HBA_GHC, ghc | GHC_AE | GHC_HR);
-        let mut reset_ok = false;
-        for _ in 0..2_000_000 {
-            if (ctrl.r32(HBA_GHC) & GHC_HR) == 0 {
-                reset_ok = true;
-                break;
-            }
-            core::hint::spin_loop();
-        }
-        if !reset_ok {
+        if crate::timing::wait_timeout_us(500_000, || {
+            (ctrl.r32(HBA_GHC) & GHC_HR) == 0
+        }).is_err() {
             log::warn!("AHCI: HBA reset timed out — controller may be unresponsive");
             ctrl.w32(HBA_GHC, ctrl.r32(HBA_GHC) & !GHC_HR);
         }
@@ -186,13 +180,10 @@ impl AhciController {
 
         let cmd = self.r32_port(port_mmio, PXCMD);
         self.w32_port(port_mmio, PXCMD, cmd & !(PXCMD_ST | PXCMD_FRE));
-        for _ in 0..1_000_000 {
+        crate::timing::wait_timeout_us(500_000, || {
             let c = self.r32_port(port_mmio, PXCMD);
-            if (c & (PXCMD_CR | PXCMD_FR)) == 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
+            (c & (PXCMD_CR | PXCMD_FR)) == 0
+        }).ok();
 
         let ssts = self.r32_port(port_mmio, PXSSTS);
         let det = ssts & SSTS_DET_MASK;

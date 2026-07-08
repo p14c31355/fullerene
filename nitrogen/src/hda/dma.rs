@@ -119,27 +119,27 @@ impl DmaEngine {
             // SAFETY: mmio is valid HDA MMIO base, sd offset within valid range
             // Stop and reset stream
             mmio_write32(mmio, sd + SD_CTL, 0);
-            for _ in 0..2000 {
-                core::hint::spin_loop();
-            }
+            // Short settling delay (50 μs) to let the hardware quiesce.
+            crate::timing::delay_us(50);
             mmio_write8(mmio, sd + SD_STS, 0xFF); // clear all status bits (WC)
 
             // SRST handshake: set SRST and poll until it reads back as 1
             mmio_write32(mmio, sd + SD_CTL, 0x01); // SRST
-            for _ in 0..50000 {
-                if mmio_read32(mmio, sd + SD_CTL) & 0x01 != 0 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
+            let srst_ok = crate::timing::wait_timeout_us(50_000, || {
+                mmio_read32(mmio, sd + SD_CTL) & 0x01 != 0
+            })
+            .is_ok();
 
             // Clear SRST and poll until it reads back as 0
             mmio_write32(mmio, sd + SD_CTL, 0);
-            for _ in 0..50000 {
-                if mmio_read32(mmio, sd + SD_CTL) & 0x01 == 0 {
-                    break;
-                }
-                core::hint::spin_loop();
+            let srst_clr_ok = crate::timing::wait_timeout_us(50_000, || {
+                mmio_read32(mmio, sd + SD_CTL) & 0x01 == 0
+            })
+            .is_ok();
+
+            if !srst_ok || !srst_clr_ok {
+                log::warn!("HDA: SRST handshake timed out on stream {} (tag={})", sd, stream_tag);
+                return;
             }
 
             // Clear status again, program format / BDL / stream params

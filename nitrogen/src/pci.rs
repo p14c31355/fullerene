@@ -263,17 +263,15 @@ impl PciDevice {
                         off + 4,
                         pmcsr & !0x3,
                     );
-                    for _ in 0..10000 {
+                    crate::timing::wait_timeout_us(10_000, || {
                         let cur = PciConfigSpace::read_config_word(
                             self.bus,
                             self.device,
                             self.function,
                             off + 4,
                         );
-                        if cur & 0x3 == 0 {
-                            break;
-                        }
-                    }
+                        cur & 0x3 == 0
+                    }).ok();
                 }
                 return;
             }

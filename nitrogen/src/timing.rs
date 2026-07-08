@@ -39,3 +39,59 @@ pub fn delay_us(microseconds: u64) {
 pub fn delay_ms(milliseconds: u64) {
     delay_us(milliseconds.saturating_mul(1_000));
 }
+
+/// Poll `condition_fn` in a spin-loop until it returns `Ok(value)` or the
+/// deadline (TSC) expires.
+///
+/// Each iteration calls `core::hint::spin_loop()` to avoid starving
+/// hyper-threads.
+///
+/// # Arguments
+///
+/// * `timeout_us` - Microsecond deadline.  `0` means **no timeout** (poll
+///   forever — use sparingly on real hardware).
+/// * `condition_fn` - Closure that returns `Some(value)` when the condition
+///   is satisfied, or `None` to keep polling.
+///
+/// # Returns
+///
+/// `Some(value)` on success, `None` on timeout.
+pub fn poll_timeout_us<F, T>(timeout_us: u64, mut condition_fn: F) -> Option<T>
+where
+    F: FnMut() -> Option<T>,
+{
+    if timeout_us == 0 {
+        // Poll forever — caller is responsible for ensuring termination.
+        loop {
+            if let Some(v) = condition_fn() {
+                return Some(v);
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    let deadline = unsafe { core::arch::x86_64::_rdtsc() }
+        .wrapping_add(timeout_us.saturating_mul(ticks_per_us()));
+    loop {
+        if let Some(v) = condition_fn() {
+            return Some(v);
+        }
+        if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+            return None;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Poll `condition_fn` until it returns `Ok(value)` or the deadline (TSC)
+/// expires, then return `Ok(value)` on success or `Err(())` on timeout.
+///
+/// Convenience wrapper around [`poll_timeout_us`] for the common pattern
+/// where a boolean condition is polled.
+pub fn wait_timeout_us<F>(timeout_us: u64, mut condition_fn: F) -> Result<(), ()>
+where
+    F: FnMut() -> bool,
+{
+    poll_timeout_us(timeout_us, || condition_fn().then_some(()))
+        .ok_or(())
+}
