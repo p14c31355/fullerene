@@ -47,10 +47,10 @@ fn ecam_addr(bus: u8, device: u8, function: u8, offset: u16) -> usize {
         return 0;
     }
     let phys = base
-        | ((bus as u64) << 20)
-        | ((device as u64 & 0x1F) << 15)
-        | ((function as u64 & 0x7) << 12)
-        | (offset as u64 & 0xFFF);
+        + ((bus as u64 & 0xFF) << 20)
+        + ((device as u64 & 0x1F) << 15)
+        + ((function as u64 & 0x7) << 12)
+        + (offset as u64 & 0xFFF);
     ecam_phys_to_virt(phys)
 }
 

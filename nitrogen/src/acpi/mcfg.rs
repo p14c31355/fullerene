@@ -32,7 +32,8 @@ pub fn parse_mcfg(rsdp_phys: u64) -> Option<McfgEntry> {
     // MCFG header: 36-byte SDT header + 8 bytes reserved = 44 bytes,
     // then entries of 16 bytes each.
     let total_len = bytes.len();
-    if total_len < 44 {
+    // MCFG table: 44-byte header + N × 16-byte entries.
+    if total_len < 44 || (total_len - 44) % 16 != 0 {
         return None;
     }
 

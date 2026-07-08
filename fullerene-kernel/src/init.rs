@@ -146,6 +146,12 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             // Parse the MCFG ACPI table to find the ECAM MMIO base
             // address.  This is required for extended PCIe config
             // space (offsets ≥ 0x100), used by L1Sub disable and AER.
+            //
+            // Note: no explicit map_mmio_region is needed here.
+            // The bootloader already identity- and higher-half-maps
+            // 0-64 GB with 2 MiB huge pages.  ECAM resides well
+            // within this range (typically 0xB0000000–0xBFFFFFFF),
+            // so phys_to_virt(ecam_base) is directly accessible.
             if let Some(mcfg) = nitrogen::acpi::mcfg::parse_mcfg(rsdp) {
                 let phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
                 log::info!(
