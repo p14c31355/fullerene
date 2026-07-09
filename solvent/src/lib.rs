@@ -1184,12 +1184,20 @@ pub fn tick_core(now: u64) {
     // alive wait, and init commands — one small step per tick_core()
     // call.  Once the state machine reaches Done/Failed, clear the
     // pending flag so we stop calling the init step.
-    if WIFI_INIT_PENDING.load(core::sync::atomic::Ordering::Relaxed) {
-        // Check if nitrogen has completed init (Done or Failed)
-        if nitrogen::iwlwifi::wifi_init_completed() {
+    let _wifi_pending = WIFI_INIT_PENDING.load(core::sync::atomic::Ordering::Relaxed);
+    nitrogen::debug::print("trace", if _wifi_pending { "pending=Y" } else { "pending=N" });
+    if _wifi_pending {
+        let _wifi_done = nitrogen::iwlwifi::wifi_init_completed();
+        nitrogen::debug::print("trace", if _wifi_done { "done=Y" } else { "done=N" });
+        if _wifi_done {
             mark_wifi_init_done();
         } else {
+            nitrogen::debug::print("wifi", "calling_step");
             nitrogen::iwlwifi::try_init_wifi_device_step();
+        }
+        // Force a frame to flush debug messages to the taskbar during init.
+        if let Some(ref mut rt) = *RUNTIME.lock() {
+            rt.frame_due = true;
         }
     }
 

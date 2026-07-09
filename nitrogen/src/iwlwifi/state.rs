@@ -97,6 +97,7 @@ fn select_firmware_list(device_id: u16) -> &'static [FirmwareBlob] {
 
 pub fn try_init_wifi_device_step() {
     let phase = get_init_phase();
+    debug::print("iwlwifi", &alloc::format!("step: phase={}", phase as u8));
 
     match phase {
         WifiInitPhase::Idle => {
@@ -166,6 +167,11 @@ pub fn try_init_wifi_device_step() {
                             );
                             timing::delay_us(10_000);
                         }
+                        crate::pci::PciDevice::disable_l1_substates(bus, dev, func);
+                        log::info!(
+                            "WiFi: L1Substates disabled on bridge {:02x}:{:02x}.{}",
+                            bus, dev, func,
+                        );
                     }
                 }
                 let mut ctx = WIFI_INIT_CTX.lock();
@@ -181,6 +187,7 @@ pub fn try_init_wifi_device_step() {
             debug::print("iwlwifi", "step: pci_probe_done");
         }
         WifiInitPhase::MmioInit => {
+            debug::print("iwlwifi", "step: mmio_enter");
             let mmio = WIFI_INIT_CTX.lock().mmio;
             let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();
@@ -194,11 +201,14 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            debug::print("iwlwifi", "step: mmio_reset");
             IwlWifiDevice::reset_device(mmio);
+            debug::print("iwlwifi", "step: mmio_clock_req");
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
             }
             mmio::write_barrier();
+            debug::print("iwlwifi", "step: mmio_check_clock");
             let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 match ctx.health.as_mut() {
@@ -211,7 +221,9 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            debug::print("iwlwifi", "step: mmio_clock_wait");
             crate::timing::delay_us(10_000);
+            debug::print("iwlwifi", "step: mmio_recover");
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let ok = match ctx.health.as_mut() {
@@ -224,11 +236,13 @@ pub fn try_init_wifi_device_step() {
                     return;
                 }
             }
+            debug::print("iwlwifi", "step: mmio_read_mac");
             let mac = {
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
                 IwlWifiDevice::read_mac(mmio, health)
             };
+            debug::print("iwlwifi", "step: mmio_mask_ints");
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
             }
