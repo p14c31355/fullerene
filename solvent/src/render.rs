@@ -187,8 +187,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     let fb_stride = fb_stride_pixels as usize;
     let fb_len = fb_stride.saturating_mul(fb_height as usize);
     let back_len = (fb_width as usize) * (fb_height as usize);
-    if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
-        render_progress(b"RENDER: skip (fb too large)");
+    if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS || fb_pixels_len < fb_len {
+        render_progress(b"RENDER: skip (fb too large or invalid)");
         return;
     }
     rt.back_len = back_len;
