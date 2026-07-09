@@ -208,15 +208,7 @@ impl IwlWifiDevice {
         if !health.is_device_present() {
             return Err(IwlError::ClockNotReady);
         }
-        {
-            let start = unsafe { core::arch::x86_64::_rdtsc() };
-            loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-        }
+        crate::timing::delay_us(10_000);
         health.recover().map_err(|_| IwlError::ClockNotReady)?;
 
         let mac = Self::read_mac(mmio, Some(&health));
@@ -367,15 +359,7 @@ impl IwlWifiDevice {
             debug::print("iwlwifi", "ERR device_gone_before_clock");
             return Err(IwlError::ClockNotReady);
         }
-        {
-            let start = unsafe { core::arch::x86_64::_rdtsc() };
-            loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-        }
+        crate::timing::delay_us(10_000);
         health.recover().map_err(|_| {
             debug::print("iwlwifi", "ERR recover_before_read_mac");
             IwlError::ClockNotReady
@@ -504,39 +488,15 @@ impl IwlWifiDevice {
                 CSR_RESET_BIT_STOP_MASTER,
             );
         }
-        {
-            let start = unsafe { core::arch::x86_64::_rdtsc() };
-            loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-        }
+        crate::timing::delay_us(10_000);
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), CSR_RESET_BIT_SW);
         }
-        {
-            let start = unsafe { core::arch::x86_64::_rdtsc() };
-            loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-        }
+        crate::timing::delay_us(10_000);
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), 0);
         }
-        {
-            let start = unsafe { core::arch::x86_64::_rdtsc() };
-            loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-        }
+        crate::timing::delay_us(10_000);
     }
 
     /// Read MAC address from the NVM (non-volatile memory) via CSR registers.
@@ -630,15 +590,7 @@ impl IwlWifiDevice {
                 0x00000080,
             );
         }
-        {
-            let start = unsafe { core::arch::x86_64::_rdtsc() };
-            loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-        }
+        crate::timing::delay_us(10_000);
 
         debug::print("iwlwifi", "fw: header_parse");
         let fw_ptr = fw_data.as_ptr();
@@ -731,15 +683,7 @@ impl IwlWifiDevice {
         unsafe {
             core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
         }
-        {
-            let start = unsafe { core::arch::x86_64::_rdtsc() };
-            loop {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-        }
+        crate::timing::delay_us(10_000);
 
         unsafe {
             core::ptr::write_volatile(

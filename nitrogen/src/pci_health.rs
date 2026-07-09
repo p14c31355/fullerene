@@ -285,10 +285,7 @@ impl PciHealth {
 
         // Full health check
         match self.check() {
-            Ok(()) => {
-                // On success, run recovery to ensure link retrain and ASPM disable
-                self.recover()
-            }
+            Ok(()) => Ok(()),
             Err(_e) => {
                 // Attempt recovery once
                 match self.recover() {

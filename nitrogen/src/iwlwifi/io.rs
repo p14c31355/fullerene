@@ -63,7 +63,7 @@ impl IwlWifiDevice {
         let desc_addr = desc as *const TxDmaDesc as *const u8;
         mmio::cache_flush(desc_addr);
 
-        self.tx_head += 1;
+        self.tx_head = self.tx_head.wrapping_add(1);
 
         mmio::write_barrier();
         unsafe {

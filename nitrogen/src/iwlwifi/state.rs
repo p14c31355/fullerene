@@ -151,32 +151,8 @@ pub fn try_init_wifi_device_step() {
                 if let Some((bus, dev, func)) = raw.upstream_bridge {
                     health = health.with_upstream_bridge(bus, dev, func);
                     if let Some(_bridge) = crate::pci::PciDevice::new(bus, dev, func) {
-                        let lnk_ctl_offset = {
-                            let cap_ptr = crate::pci::PciConfigSpace::read_config_byte(
-                                bus, dev, func, 0x34,
-                            );
-                            let mut off = cap_ptr;
-                            let mut lnk_ctl = None;
-                            let mut visited = [false; 256];
-                            for _ in 0..48 {
-                                if off < 0x40 || off > 0xF8 { break; }
-                                if visited[off as usize] { break; }
-                                visited[off as usize] = true;
-                                let cap_id = crate::pci::PciConfigSpace::read_config_byte(
-                                    bus, dev, func, off,
-                                );
-                                if cap_id == 0x10 {
-                                    lnk_ctl = Some(off + 0x10);
-                                    break;
-                                }
-                                let next = crate::pci::PciConfigSpace::read_config_byte(
-                                    bus, dev, func, off + 1,
-                                );
-                                if next == 0 || next == off { break; }
-                                off = next;
-                            }
-                            lnk_ctl
-                        };
+                        let lnk_ctl_offset = crate::pci_error::find_pcie_cap(bus, dev, func)
+                            .map(|off| off + 0x10);
                         if let Some(lnk_off) = lnk_ctl_offset {
                             let ctl = crate::pci::PciConfigSpace::read_config_word(
                                 bus, dev, func, lnk_off,
