@@ -55,11 +55,15 @@ pub fn preinit_apic_controller(lapic_virt: u64) {
 }
 
 /// Send End-Of-Interrupt to the Local APIC.
+///
+/// # Safety
+/// Interrupt handlers run with IF=0 (interrupt gate), so the APIC controller
+/// lock can never be contended (non-interrupt code that holds the lock runs
+/// with IF=1 but cannot be preempted by an interrupt handler on UP).
+/// A blocking `lock()` is safe here — `try_lock()` would silently lose EOIs.
 pub fn send_eoi() {
-    if let Some(guard) = APIC_CONTROLLER.try_lock() {
-        if let Some(ref ctrl) = *guard {
-            ctrl.send_eoi();
-        }
+    if let Some(ref ctrl) = *APIC_CONTROLLER.lock() {
+        ctrl.send_eoi();
     }
 }
 
@@ -147,16 +151,19 @@ pub fn init_apic() {
 
         petroleum::serial::serial_log(format_args!("APIC LVT entries masked.\n"));
 
-        // Configure timer: one-shot, MASKED initially, divide-by-16, 1M initial count.
+        // Configure timer: periodic, unmasked, divide-by-16, ~1ms initial count.
+        // Note: on real hardware the actual frequency depends on the bus clock;
+        // the scheduler hlt() loop is interrupt-driven so precise timing isn't
+        // critical — any periodic tick prevents the permanent hang.
         ctrl.configure_timer(
             TIMER_INTERRUPT_INDEX,
-            ApicFlags::TIMER_ONESHOT | ApicFlags::TIMER_MASKED,
+            ApicFlags::TIMER_PERIODIC,
             1_000_000,
             0x3,
         );
 
         petroleum::serial::serial_log(format_args!(
-            "APIC timer configured (one-shot, div=16, initial_count=1000000).\n"
+            "APIC timer configured (periodic, div=16, initial_count=1000000).\n"
         ));
 
         // Configure I/O APIC for legacy IRQs.

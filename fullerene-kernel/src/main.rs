@@ -165,9 +165,6 @@ pub mod driver_context_impl;
 // ── Plugin registry ───────────────────────────────────────────────
 pub mod plugin;
 
-// ── Kernel context helpers ────────────────────────────────────────
-pub mod ctx;
-
 // ── DevFs ─────────────────────────────────────────────────────────
 pub mod devfs;
 
@@ -196,6 +193,5 @@ pub mod syscall;
 pub mod task;
 // tracing.rs is now a thin re-export of resonance::tracing
 pub mod linux;
-pub mod tracing;
 pub mod vdso;
 pub mod vfs;

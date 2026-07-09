@@ -699,15 +699,12 @@ impl RenderTarget for FramebufferTarget<'_> {
     }
 }
 
-/// Optional progress callback for boot-screen rendering during `render()`.
-/// Set by the kernel via `set_render_progress_fn()`.
 static RENDER_PROGRESS_FN: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
 
 pub fn set_render_progress_fn(f: fn(&[u8])) {
     *RENDER_PROGRESS_FN.lock() = Some(f);
 }
 
-/// Call the progress callback (boot-screen label update) if set.
 fn render_progress(label: &[u8]) {
     if let Some(f) = *RENDER_PROGRESS_FN.lock() {
         f(label);

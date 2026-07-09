@@ -30,25 +30,10 @@ pub use idt::init;
 pub use input::{keyboard_handler, mouse_handler, timer_handler};
 pub use syscall::setup_syscall;
 
-/// Send End-Of-Interrupt to APIC
-pub fn send_eoi() {
-    crate::interrupts::apic::send_eoi();
-}
-
-/// Disable interrupts
-pub fn disable_interrupts() {
-    interrupts::disable();
-}
-
-/// Enable interrupts
-pub fn enable_interrupts() {
-    interrupts::enable();
-}
-
-/// Wait for interrupt (using pause for QEMU-friendliness instead of hlt)
+/// Wait for interrupt (actually halts the CPU instead of busy-waiting)
 pub fn hlt_loop() -> ! {
     loop {
-        petroleum::cpu_pause();
+        x86_64::instructions::hlt();
     }
 }
 
