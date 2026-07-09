@@ -159,6 +159,13 @@ pub fn init() {
     solvent::set_render_progress_fn(crate::boot_stage::draw_boot_label);
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
+
+    // Register WiFi service — drives iwlwifi init and tick, bridges
+    // driver state to the desktop UI through shared statics.
+    // Solvent itself knows nothing about WiFi.
+    // The driver context was set by the `wifi` init step earlier.
+    crate::wifi_service::init_and_register();
+    petroleum::serial::serial_log(format_args!("wifi_service registered\n"));
 }
 
 /// Once the first frame renders successfully, disable the boot-screen

@@ -24,6 +24,8 @@ genome = { path = "../genome" }
 petroleum = { path = "../petroleum" }
 nitrogen = { path = "../nitrogen" }
 nozzle = { path = "../nozzle" }
+bonder = { path = "../bonder" }
+lattice = { path = "../lattice" }
 solvent = { path = "../solvent" }
 resonance = { path = "../resonance" }
 rle_player = { path = "../toluene/rle_player" }

@@ -196,6 +196,47 @@ pub fn clock_string() -> String {
 }
 pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+// ── Service registry ─────────────────────────────────────────
+/// A service that can be registered with the runtime.
+/// Services are ticked every frame during `tick_core()`.
+/// Solvent knows nothing about specific services — it only calls `tick()`.
+pub trait Service: Send {
+    fn tick(&mut self, now: u64);
+}
+
+pub(crate) static SERVICES: spin::Mutex<alloc::vec::Vec<Box<dyn Service>>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
+pub fn register_service(service: Box<dyn Service>) {
+    SERVICES.lock().push(service);
+}
+
+// ── WiFi action queue ────────────────────────────────────────
+/// Actions queued by the UI (network menu) and consumed by an
+/// external WifiService.  Solvent itself knows nothing about WiFi
+/// drivers — it only provides the communication channel.
+#[allow(dead_code)]
+pub enum WifiAction {
+    Connect(bonder::wifi::Ssid, Option<alloc::string::String>),
+}
+
+pub static WIFI_ACTION_QUEUE: spin::Mutex<alloc::vec::Vec<WifiAction>> =
+    spin::Mutex::new(alloc::vec::Vec::new());
+
+// ── Shared network state for the desktop UI ──────────────────
+/// Written by an external WifiService, read by `tick_core()` to
+/// update the desktop's AP list.
+pub struct NetworkSnapshot {
+    pub aps: alloc::vec::Vec<lattice::network_menu::ApDisplay>,
+    pub status: lattice::network_menu::NetStatus,
+}
+
+pub static NETWORK_SNAPSHOT: spin::Mutex<NetworkSnapshot> =
+    spin::Mutex::new(NetworkSnapshot {
+        aps: alloc::vec::Vec::new(),
+        status: lattice::network_menu::NetStatus::NoDevice,
+    });
+
 // ── Back‑buffer (heap-allocated at runtime) ──────────────────
 static BACK_BUFFER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
 
@@ -234,14 +275,9 @@ pub struct RuntimeState {
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
     pub usb_poll_pending: bool,
-    pub net_manager: network_manager::NetworkManager,
 }
 
 pub fn init() {
-    // Initialize WiFi subsystem (deferred to first tick_core to avoid
-    // blocking boot — firmware upload + alive wait can take many seconds).
-    nitrogen::iwlwifi::init_wifi_manager();
-
     let desktop = Desktop::new(BG_COLOR);
     let term_buf = TerminalBuffer::new(DEFAULT_COLS, DEFAULT_ROWS);
     let mut dispatcher = Dispatcher::new();
@@ -298,7 +334,6 @@ pub fn init() {
         settings_window: None,
         settings_dirty: false,
         usb_poll_pending: false,
-        net_manager: network_manager::NetworkManager::new(),
     });
 }
 
@@ -970,9 +1005,6 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         }
     }
 
-    // Increment frame counter to signal that rendering has completed
-    FRAMES_RENDERED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
     if rt.usb_poll_pending {
         rt.usb_poll_pending = false;
         drop(rt_lock);
@@ -1177,45 +1209,26 @@ pub fn set_render_fn(f: fn()) {
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
-    // Deferred WiFi device init — run incrementally across multiple
-    // frames so the desktop render loop is never blocked for more than
-    // ~1 ms.  `try_init_wifi_device_step()` advances a state machine
-    // through PCI probe, MMIO init, DMA allocation, firmware upload,
-    // alive wait, and init commands — one small step per tick_core()
-    // call.  Once the state machine reaches Done/Failed, clear the
-    // pending flag so we stop calling the init step.
-    let _wifi_pending = WIFI_INIT_PENDING.load(core::sync::atomic::Ordering::Relaxed);
-    nitrogen::debug::print("trace", if _wifi_pending { "pending=Y" } else { "pending=N" });
-    if _wifi_pending {
-        let _wifi_done = nitrogen::iwlwifi::wifi_init_completed();
-        nitrogen::debug::print("trace", if _wifi_done { "done=Y" } else { "done=N" });
-        if _wifi_done {
-            mark_wifi_init_done();
-        } else {
-            nitrogen::debug::print("wifi", "calling_step");
-            nitrogen::iwlwifi::try_init_wifi_device_step();
-        }
-    }
-    // Always flush debug messages every frame during wifi debugging.
-    if let Some(ref mut rt) = *RUNTIME.lock() {
-        rt.frame_due = true;
-    }
-
     poll_mouse_state();
     poll_keyboard();
     update_clock();
     chrono_tick(now);
 
-    // Tick WiFi hardware and update the UI snapshot.
-    nitrogen::iwlwifi::tick_wifi_device();
+    // Tick all registered services (WiFi, audio, USB, etc.).
+    // Services are registered externally and Solvent knows nothing
+    // about them — it only provides the tick dispatch mechanism.
+    for service in SERVICES.lock().iter_mut() {
+        service.tick(now);
+    }
 
-    // Poll network state every ~20 ticks
+    // Sync network state to the desktop every ~20 ticks.
+    // The state snapshot is written by an external WifiService.
     if now % 20 == 0 {
+        let snap = NETWORK_SNAPSHOT.lock();
+        let aps = snap.aps.clone();
+        let status = snap.status.clone();
+        drop(snap);
         if let Some(ref mut rt) = *RUNTIME.lock() {
-            rt.net_manager.tick();
-            // Sync AP list to desktop
-            let aps = rt.net_manager.get_aps().to_vec();
-            let status = rt.net_manager.get_status().clone();
             if rt.desktop.update_ap_list(aps, status) {
                 rt.frame_due = true;
             }
@@ -1331,22 +1344,6 @@ pub fn write_terminal(s: &str) {
 }
 
 // ── Rendering suspend / resume ───────────────────────────────
-
-/// Deferred WiFi device initialisation — when `true`, `tick_core()` calls
-/// `try_init_wifi_device_step()` every frame until the init state machine
-/// reaches Done or Failed.  Cleared once init is complete.
-static WIFI_INIT_PENDING: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(true);
-
-/// Set to `true` when WiFi init reaches Done or Failed so we stop calling
-/// `try_init_wifi_device_step()` every frame.
-pub fn mark_wifi_init_done() {
-    WIFI_INIT_PENDING.store(false, core::sync::atomic::Ordering::Release);
-}
-
-/// Counter tracking how many frames have been rendered, used to defer WiFi
-/// init until after the first visible frame is displayed.
-static FRAMES_RENDERED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
