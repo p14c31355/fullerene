@@ -66,6 +66,11 @@ pub fn force_init_failed() {
     // Clean up any partially-initialised resources.
     let mut ctx = WIFI_INIT_CTX.lock();
     let _ = ctx.mmio_device.take();
+    // Disable PCI bus-mastering before freeing DMA regions
+    if let Some(ref pci) = ctx.pci_dev {
+        let cmd = crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
+        crate::pci::PciConfigSpace::write_config_word_raw(pci.bus, pci.device, pci.function, 4, cmd & !0x04);
+    }
     let drv = ctx.driver_ctx;
     for mut buf in ctx.tx_bufs.drain(..) {
         if let Some(c) = drv {
@@ -309,14 +314,16 @@ pub fn try_init_wifi_device_step() {
                                 false
                             } else {
                                 // Recovery succeeded — now verify MAC_CLOCK_READY is actually set.
-                                drop(ctx);
-                                match mmio::checked_read_u32(
+                                let health = ctx.health.as_ref();
+                                let clock_ready = match mmio::checked_read_u32(
                                     unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
-                                    WIFI_INIT_CTX.lock().health.as_ref(),
+                                    health,
                                 ) {
                                     mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                                     _ => false,
-                                }
+                                };
+                                drop(ctx);
+                                clock_ready
                             }
                         } else {
                             // Not ready yet, not timed out: try again next tick.

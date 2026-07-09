@@ -80,7 +80,7 @@ impl solvent::Service for WifiService {
                             _ => 0,
                         };
                         let is_connected =
-                            wifi_state.connected_ssid.as_deref() == Some(&ssid);
+                            wifi_state.connected_ssid.as_ref() == Some(&ssid);
                         lattice::network_menu::ApDisplay {
                             ssid,
                             signal_bars,
