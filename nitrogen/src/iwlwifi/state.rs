@@ -87,6 +87,7 @@ pub fn force_init_failed() {
             ring.free(c);
         }
     }
+    set_init_phase(WifiInitPhase::Failed);
     drop(ctx);
     WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
     debug::print("iwlwifi", "step: force_init_failed (timeout)");
@@ -205,11 +206,7 @@ pub fn try_init_wifi_device_step() {
                             );
                             timing::delay_us(10_000);
                         }
-                        crate::pci::PciDevice::disable_l1_substates(bus, dev, func);
-                        log::info!(
-                            "WiFi: L1Substates disabled on bridge {:02x}:{:02x}.{}",
-                            bus, dev, func,
-                        );
+
                     }
                 }
                 let mut ctx = WIFI_INIT_CTX.lock();
@@ -271,8 +268,10 @@ pub fn try_init_wifi_device_step() {
         }
         WifiInitPhase::MmioPollMacClock => {
             debug::print("iwlwifi", "step: mmio_poll_mac");
-            let mmio = WIFI_INIT_CTX.lock().mmio;
-            let start_tsc = WIFI_INIT_CTX.lock().alive_start_tsc;
+            let (mmio, start_tsc) = {
+                let ctx = WIFI_INIT_CTX.lock();
+                (ctx.mmio, ctx.alive_start_tsc)
+            };
             const TIMEOUT_CYCLES: u64 = 4_000_000_000;
             let mac_acquired = {
                 let ctx = WIFI_INIT_CTX.lock();
