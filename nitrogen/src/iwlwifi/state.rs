@@ -290,7 +290,7 @@ pub fn try_init_wifi_device_step() {
                     }
                     _ => {
                         // Not ready yet — check timeout.
-                        if unsafe { core::arch::x86_64::_rdtsc() } >= timeout {
+                        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= TIMEOUT_CYCLES {
                             drop(ctx);
                             debug::print("iwlwifi", "step: mmio_force_mac");
                             unsafe {
