@@ -91,6 +91,7 @@ impl IwlWifiDevice {
             .map_err(|_| "RXON config failed")?;
         log::info!("iwlwifi: RXON config sent");
 
+        self.fw_state = FwState::Ready;
         log::info!("iwlwifi: init commands complete, device operational");
         Ok(())
     }

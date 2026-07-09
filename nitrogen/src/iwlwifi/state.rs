@@ -181,17 +181,16 @@ pub fn try_init_wifi_device_step() {
             debug::print("iwlwifi", "step: pci_probe_done");
         }
         WifiInitPhase::MmioInit => {
-            let (mmio, health_ok) = {
+            let mmio = WIFI_INIT_CTX.lock().mmio;
+            let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                let mmio = ctx.mmio;
-                let ok = match ctx.health.as_mut() {
-                    Some(h) => h.recover().is_ok(),
+                match ctx.health.as_mut() {
+                    Some(h) => h.is_device_present(),
                     None => false,
-                };
-                (mmio, ok)
+                }
             };
-            if !health_ok {
-                debug::print("iwlwifi", "step: ERR health_recover");
+            if !device_present {
+                debug::print("iwlwifi", "step: ERR device_gone_before_reset");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
@@ -212,15 +211,7 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            {
-                let start = unsafe { core::arch::x86_64::_rdtsc() };
-                loop {
-                    if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                        break;
-                    }
-                    core::hint::spin_loop();
-                }
-            }
+            crate::timing::delay_us(10_000);
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let ok = match ctx.health.as_mut() {
