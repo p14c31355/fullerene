@@ -152,7 +152,7 @@ pub fn try_init_wifi_device_step() {
                     health = health.with_upstream_bridge(bus, dev, func);
                     if let Some(_bridge) = crate::pci::PciDevice::new(bus, dev, func) {
                         let lnk_ctl_offset = crate::pci_error::find_pcie_cap(bus, dev, func)
-                            .map(|off| off + 0x10);
+                            .and_then(|off| off.checked_add(0x10));
                         if let Some(lnk_off) = lnk_ctl_offset {
                             let ctl = crate::pci::PciConfigSpace::read_config_word(
                                 bus, dev, func, lnk_off,
