@@ -20,7 +20,7 @@ static WIFI_INIT_PENDING: AtomicBool = AtomicBool::new(true);
 /// This prevents a permanent hang when real-hardware MMIO accesses
 /// do not return (PCIe completion timeout, ASPM L1, D3hot, etc.).
 static WIFI_INIT_TICK_COUNT: AtomicU64 = AtomicU64::new(0);
-const WIFI_INIT_TIMEOUT_TICKS: u64 = 300; // ~5 seconds at 60 fps
+const WIFI_INIT_TIMEOUT_TICKS: u64 = 5000; // ~5 seconds at 1000 Hz
 
 /// Service that drives Intel Wireless 7265 init, periodic hardware tick,
 /// and UI state synchronisation.
