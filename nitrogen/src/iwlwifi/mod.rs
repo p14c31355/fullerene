@@ -25,6 +25,7 @@ pub use state::{
     force_init_failed,
     init_wifi_manager,
     set_wifi_driver_context,
+    start_scan_if_idle,
     tick_wifi_device,
     try_init_wifi_device,
     try_init_wifi_device_step,
