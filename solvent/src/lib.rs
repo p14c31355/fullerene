@@ -1195,10 +1195,10 @@ pub fn tick_core(now: u64) {
             nitrogen::debug::print("wifi", "calling_step");
             nitrogen::iwlwifi::try_init_wifi_device_step();
         }
-        // Force a frame to flush debug messages to the taskbar during init.
-        if let Some(ref mut rt) = *RUNTIME.lock() {
-            rt.frame_due = true;
-        }
+    }
+    // Always flush debug messages every frame during wifi debugging.
+    if let Some(ref mut rt) = *RUNTIME.lock() {
+        rt.frame_due = true;
     }
 
     poll_mouse_state();

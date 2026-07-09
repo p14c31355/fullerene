@@ -17,7 +17,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 // ── Lock-free ring buffer ────────────────────────────────────────────
 
-const MAX_ENTRIES: usize = 32;
+const MAX_ENTRIES: usize = 128;
 const SOURCE_LEN: usize = 20;
 const MSG_LEN: usize = 64;
 

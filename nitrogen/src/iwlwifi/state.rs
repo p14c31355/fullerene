@@ -221,20 +221,55 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            debug::print("iwlwifi", "step: mmio_clock_wait");
-            crate::timing::delay_us(10_000);
-            debug::print("iwlwifi", "step: mmio_recover");
-            {
-                let mut ctx = WIFI_INIT_CTX.lock();
-                let ok = match ctx.health.as_mut() {
-                    Some(h) => h.recover().is_ok(),
-                    None => false,
-                };
-                if !ok {
-                    debug::print("iwlwifi", "step: ERR recover_before_read_mac");
-                    set_init_phase(WifiInitPhase::Failed);
-                    return;
+            debug::print("iwlwifi", "step: mmio_poll_mac");
+            let mac_acquired = {
+                let ctx = WIFI_INIT_CTX.lock();
+                let health = ctx.health.as_ref();
+                let start = unsafe { core::arch::x86_64::_rdtsc() };
+                let timeout = start.wrapping_add(4_000_000_000u64);
+                let mut forced = false;
+                loop {
+                    match mmio::checked_read_u32(
+                        unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
+                        health,
+                    ) {
+                        mmio::SafeReadResult::Value(v) => {
+                            if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    if unsafe { core::arch::x86_64::_rdtsc() } >= timeout {
+                        forced = true;
+                        break;
+                    }
+                    core::hint::spin_loop();
                 }
+                if forced {
+                    drop(ctx);
+                    debug::print("iwlwifi", "step: mmio_force_mac");
+                    unsafe {
+                        core::ptr::write_volatile(
+                            mmio.add(CSR_GP_CNTRL as usize),
+                            CSR_GP_CNTRL_MAC_ACCESS_REQ | (1 << 1),
+                        );
+                    }
+                    mmio::write_barrier();
+                    crate::timing::delay_us(10_000);
+                    let mut ctx = WIFI_INIT_CTX.lock();
+                    match ctx.health.as_mut() {
+                        Some(h) => h.recover().is_ok(),
+                        None => false,
+                    }
+                } else {
+                    true
+                }
+            };
+            if !mac_acquired {
+                debug::print("iwlwifi", "step: ERR mac_not_ready");
+                set_init_phase(WifiInitPhase::Failed);
+                return;
             }
             debug::print("iwlwifi", "step: mmio_read_mac");
             let mac = {
