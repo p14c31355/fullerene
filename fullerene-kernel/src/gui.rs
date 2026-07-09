@@ -178,7 +178,7 @@ fn render_fallback(label: &[u8]) {
     crate::boot_stage::draw_boot_label(label);
     if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
         if bfb.address() != 0 {
-            let len = (bfb.stride_pixels() as usize).saturating_mul(bfb.height() as usize);
+            let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
             let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
             solvent::render(&mut petroleum::graphics::FramebufferGuard::new(
                 pixels, bfb.width(), bfb.height(), bfb.stride_pixels(),
