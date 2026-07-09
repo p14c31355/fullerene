@@ -735,9 +735,13 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
 
     let debug_msgs = nitrogen::debug::drain();
-    if !debug_msgs.is_empty() {
+    let debug_changed = if !debug_msgs.is_empty() {
+        let changed = rt.desktop.taskbar.debug_msgs != debug_msgs;
         rt.desktop.taskbar.debug_msgs = debug_msgs;
-    }
+        changed
+    } else {
+        false
+    };
     let tb_changed = rt.desktop.update_taskbar();
     render_progress(b"RENDER: got fb dims");
     let fb_width = fb.width();
@@ -748,7 +752,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
 
     let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
-    if rt.clock_changed || tb_changed {
+    if rt.clock_changed || tb_changed || debug_changed {
         rt.desktop.push_dirty_rect(lattice::scene::DirtyRect::new(
             0,
             fb_height.saturating_sub(bar_h),

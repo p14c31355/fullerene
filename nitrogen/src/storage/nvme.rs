@@ -154,7 +154,14 @@ impl NvmeController {
     }
 
     fn r32(&self, off: usize) -> u32 {
-        unsafe { ptr::read_volatile(self.mmio.add(off / 4)) }
+        let val = unsafe { ptr::read_volatile(self.mmio.add(off / 4)) };
+        if val == 0xFFFF_FFFF {
+            log::warn!(
+                "NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF",
+                off
+            );
+        }
+        val
     }
     fn w32(&self, off: usize, v: u32) {
         unsafe {

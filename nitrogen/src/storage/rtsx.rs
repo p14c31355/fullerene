@@ -518,6 +518,7 @@ pub fn init(context: &dyn DriverContext) {
         || PciHealth::new(&device),
         |bridge| {
             bridge.disable_pcie_aspm();
+            // L1Sub is NOT disabled — ECAM MMIO is unsafe on bare metal.
             PciHealth::new(&device).with_upstream_bridge(bridge.bus, bridge.device, bridge.function)
         },
     );

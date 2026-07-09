@@ -167,24 +167,91 @@ impl PciHealth {
         Ok(())
     }
 
-    /// Ensure D0 and disable ASPM on this device and its upstream bridge.
+    /// Ensure D0, retrain the upstream link, then disable ASPM.
+    ///
+    /// This is the last line of defence before a non-posted MMIO read.
+    /// On real hardware the PCIe link may be stuck in L1 — retraining
+    /// the link forces it back to L0 so the endpoint can complete MMIO
+    /// reads.
+    ///
+    /// # ⚠️ Hang-proof design
+    ///
+    /// All operations use port I/O (CF8/CFC) exclusively. Bridge and endpoint
+    /// ECAM reads are **never** performed — port I/O is used for standard
+    /// config space access only. L1 PM Substates are not modified and are
+    /// intentionally left enabled (see below).
+    ///
+    /// # Ordering
+    ///
+    /// 1. `ensure_d0()` on endpoint and bridge (port I/O, safe)
+    /// 2. **Link retrain** on upstream bridge (port I/O, safe)
+    /// 3. `disable_pcie_aspm()` on bridge — standard ASPM only (port I/O, safe)
+    /// 4. `disable_pcie_aspm()` on endpoint — standard ASPM only (port I/O, safe)
+    /// 5. `check()` — full health verification via port I/O (safe)
+    ///
+    /// L1 PM Substates (L1.1/L1.2) are not modified. While bridge-side ECAM
+    /// access would be permissible for L1Sub configuration (bridges are never
+    /// in L1 relative to the CPU), ECAM MMIO is inherently unsafe on bare metal
+    /// (MCFG base may be wrong, phys→virt mapping may be incomplete). Linux
+    /// tolerates ASPM L1 + L1Sub enabled on the same chipset without hangs,
+    /// so L1Sub disable is unnecessary.
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
-        // Re-assert D0 on the device
+        // Step 1: Re-assert D0 on the device and bridge (port I/O, safe)
         self.ensure_d0();
-
-        // Disable ASPM on the device
-        self.disable_aspm();
-
-        // Disable ASPM on the upstream bridge
         if let Some((b, d, f)) = self.upstream_bridge {
             if let Some(bridge) = PciDevice::new(b, d, f) {
                 bridge.ensure_d0();
+            }
+        }
+
+        // Step 2: Retrain the upstream link (port I/O, safe)
+        self.retrain_upstream_link();
+
+        // Step 3: Disable standard ASPM on the bridge (port I/O, safe)
+        if let Some((b, d, f)) = self.upstream_bridge {
+            if let Some(bridge) = PciDevice::new(b, d, f) {
                 bridge.disable_pcie_aspm();
             }
         }
 
-        // Re-verify
+        // Step 4: Disable standard ASPM on the endpoint (port I/O, safe).
+        // L1Sub is not touched — ECAM access is unsafe on bare metal
+        // (see above).  Linux tolerates L1Sub enabled on this chipset.
+        self.disable_aspm();
+
+        // Step 5: Re-verify (port I/O, safe)
         self.check()
+    }
+
+    /// Retrain the upstream bridge link. Returns true if retrain was attempted.
+    /// All accesses are via PCI config space (port I/O), never hang.
+    fn retrain_upstream_link(&self) -> bool {
+        let (b, d, f) = match self.upstream_bridge {
+            Some(x) => x,
+            None => return false,
+        };
+        // Verify the bridge exists via config space (port I/O, safe)
+        if PciConfigSpace::read_config_word(b, d, f, 0) == 0xFFFF {
+            return false;
+        }
+        let lnk_ctl = crate::pci_error::find_pcie_cap(b, d, f)
+            .and_then(|off| off.checked_add(0x10))
+            .filter(|&off| off <= 0xFC);
+        if let Some(lnk_off) = lnk_ctl {
+            let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off as u8);
+            PciConfigSpace::write_config_word_raw(
+                b, d, f, lnk_off as u8,
+                ctl | (1 << 5), // Set Link Retrain
+            );
+            log::info!(
+                "PciHealth: link retrain on bridge {:02x}:{:02x}.{}",
+                b, d, f,
+            );
+            crate::timing::delay_us(10_000);
+            true
+        } else {
+            false
+        }
     }
 
     /// Ensure the device is in D0 power state.
@@ -218,14 +285,7 @@ impl PciHealth {
 
         // Full health check
         match self.check() {
-            Ok(()) => {
-                // On success, also disable ASPM if not done yet
-                if !self.aspm_disabled {
-                    self.disable_aspm();
-                    self.aspm_disabled = true;
-                }
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(_e) => {
                 // Attempt recovery once
                 match self.recover() {

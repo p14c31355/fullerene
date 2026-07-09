@@ -92,7 +92,11 @@ struct Mmio(*mut u8);
 impl Mmio {
     fn read32(&self, off: usize) -> u32 {
         let p = unsafe { self.0.add(off) as *const u32 };
-        unsafe { ptr::read_volatile(p) }
+        let val = unsafe { ptr::read_volatile(p) };
+        if val == 0xFFFF_FFFF {
+            log::warn!("xHCI: MMIO read at offset {:#x} returned 0xFFFF_FFFF (master abort?)", off);
+        }
+        val
     }
 
     fn write32(&self, off: usize, val: u32) {

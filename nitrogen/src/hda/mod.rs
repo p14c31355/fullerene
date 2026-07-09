@@ -46,17 +46,29 @@ macro_rules! make_mmio_helpers {
         #[allow(dead_code)]
         #[inline]
         unsafe fn mmio_read32(mmio: *mut u8, offset: usize) -> u32 {
-            unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u32) }
+            let val = unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u32) };
+            if val == 0xFFFF_FFFF {
+                crate::debug::print("hda", "MMIO read returned 0xFFFF_FFFF (master abort?)");
+            }
+            val
         }
         #[allow(dead_code)]
         #[inline]
         unsafe fn mmio_read16(mmio: *mut u8, offset: usize) -> u16 {
-            unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u16) }
+            let val = unsafe { core::ptr::read_volatile(mmio.add(offset) as *const u16) };
+            if val as u32 == 0xFFFF {
+                crate::debug::print("hda", "MMIO read16 returned 0xFFFF (master abort?)");
+            }
+            val
         }
         #[allow(dead_code)]
         #[inline]
         unsafe fn mmio_read8(mmio: *mut u8, offset: usize) -> u8 {
-            unsafe { core::ptr::read_volatile(mmio.add(offset)) }
+            let val = unsafe { core::ptr::read_volatile(mmio.add(offset)) };
+            if val as u32 == 0xFF {
+                crate::debug::print("hda", "MMIO read8 returned 0xFF (master abort?)");
+            }
+            val
         }
         #[allow(dead_code)]
         #[inline]

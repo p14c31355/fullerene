@@ -253,7 +253,14 @@ impl AhciController {
     }
 
     fn r32(&self, off: usize) -> u32 {
-        unsafe { ptr::read_volatile(self.hba_mmio.add(off / 4)) }
+        let val = unsafe { ptr::read_volatile(self.hba_mmio.add(off / 4)) };
+        if val == 0xFFFF_FFFF {
+            log::warn!(
+                "AHCI: MMIO read at {:#x} returned 0xFFFF_FFFF",
+                off
+            );
+        }
+        val
     }
     fn w32(&self, off: usize, v: u32) {
         unsafe {
@@ -261,7 +268,14 @@ impl AhciController {
         }
     }
     fn r32_port(&self, base: *mut u32, off: usize) -> u32 {
-        unsafe { ptr::read_volatile(base.add(off / 4)) }
+        let val = unsafe { ptr::read_volatile(base.add(off / 4)) };
+        if val == 0xFFFF_FFFF {
+            log::warn!(
+                "AHCI: port MMIO read at {:#x} returned 0xFFFF_FFFF",
+                off
+            );
+        }
+        val
     }
     fn w32_port(&self, base: *mut u32, off: usize, v: u32) {
         unsafe {

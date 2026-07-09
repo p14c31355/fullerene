@@ -63,13 +63,44 @@ fn ecam_addr(bus: u8, device: u8, function: u8, offset: u16) -> usize {
     ecam_phys_to_virt(phys)
 }
 
+/// Pre-flight check: is the device present on the PCI bus?
+///
+/// Uses port I/O (CF8/CFC) which always completes, even for unresponsive
+/// devices.  Returns `true` if the vendor ID is valid (> 0x0000 and < 0xFFFF).
+fn ext_dev_present(bus: u8, device: u8, function: u8) -> bool {
+    let vendor = PciConfigSpace::read_config_word(bus, device, function, 0);
+    vendor != 0xFFFF && vendor != 0x0000
+}
+
 /// Read a DWORD from extended PCIe config space (offset ≥ 0x100) via ECAM.
 ///
-/// Returns 0xFFFF_FFFF if ECAM is not configured (caller should treat
-/// this as "capability not present").
+/// Returns 0xFFFF_FFFF if ECAM is not configured, the device is absent,
+/// or the capability is not present.
+///
+/// # ⚠️ Hang risk for endpoint devices
+///
+/// `ext_dev_present` uses port I/O (CF8/CFC) to check the vendor ID, which
+/// always completes even when the device is in L1.  However, a device in
+/// ASPM L1 **cannot** complete ECAM MMIO reads — the CPU will hang forever.
+///
+/// **This function must only be called for upstream bridge devices**, whose
+/// ECAM reads always complete because the bridge is never in L1 relative to
+/// the CPU.  Calling this for an endpoint that may be in L1 will cause a
+/// system hang.
+///
+/// For endpoint extended config access, L1 must first be disabled on the
+/// upstream bridge so the link returns to L0.  Prefer `PciDevice` methods
+/// that use port I/O (standard config space, offset < 0x100) for endpoints.
 pub fn read_ext_dword(bus: u8, device: u8, function: u8, offset: u16) -> u32 {
     let va = ecam_addr(bus, device, function, offset);
-    if va == 0 {
+    if va == 0 || !ext_dev_present(bus, device, function) {
+        return 0xFFFF_FFFF;
+    }
+    // Only allow ECAM reads for bridge devices (class 0x06, subclass 0x04)
+    let class_rev = PciConfigSpace::read_config_dword(bus, device, function, 8);
+    let class_code = (class_rev >> 24) as u8;
+    let subclass = (class_rev >> 16) as u8;
+    if class_code != 0x06 || subclass != 0x04 {
         return 0xFFFF_FFFF;
     }
     unsafe { core::ptr::read_volatile(va as *const u32) }
@@ -77,7 +108,8 @@ pub fn read_ext_dword(bus: u8, device: u8, function: u8, offset: u16) -> u32 {
 
 /// Write a DWORD to extended PCIe config space (offset ≥ 0x100) via ECAM.
 ///
-/// No-op if ECAM is not configured.
+/// Writes are posted transactions and never hang, so no pre-flight check
+/// is needed.  No-op if ECAM is not configured.
 pub fn write_ext_dword(bus: u8, device: u8, function: u8, offset: u16, value: u32) {
     let va = ecam_addr(bus, device, function, offset);
     if va == 0 {
@@ -366,10 +398,17 @@ impl PciDevice {
 
     /// Disable ASPM (Active State Power Management) on the PCIe link.
     ///
-    /// This clears ASPM bits in the PCIe Link Control register **and**
-    /// disables L1 PM Substates (L1.1 / L1.2) via the Extended
-    /// Capability (ID 0x001E), which requires ECAM.  If ECAM has not
-    /// been configured, L1Sub will be silently skipped.
+    /// Clears ASPM bits in the PCIe Link Control register using **port I/O only**
+    /// (standard config space, offset < 0x100).  This is always safe — port I/O
+    /// never hangs even when the endpoint is in L1.
+    ///
+    /// Does NOT touch L1 PM Substates (L1.1 / L1.2).  L1Sub lives in extended
+    /// config space (offset ≥ 0x100) which requires ECAM MMIO — a non-posted
+    /// ECAM read to an endpoint in L1 hangs the CPU forever.  While bridge-side
+    /// ECAM access would be permissible for L1Sub configuration (bridges are
+    /// never in L1 relative to the CPU), the WiFi/RTSX/PciHealth recovery paths
+    /// intentionally leave L1Sub enabled, as Linux tolerates ASPM L1 + L1Sub
+    /// on the same chipset without hangs.
     pub fn disable_pcie_aspm(&self) {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
@@ -412,11 +451,10 @@ impl PciDevice {
                         lnk_ctrl & !0x3,
                     );
                 }
-                // ── Also disable L1 PM Substates (L1.1 / L1.2) ──
-                // Clearing ASPM L1 alone is insufficient — L1Sub
-                // is controlled by a separate Extended Capability
-                // (ID 0x001E) and survives ASPM disable.
-                Self::disable_l1_substates(self.bus, self.device, self.function);
+                // L1Sub is NOT disabled on the endpoint — that would
+                // require ECAM MMIO which hangs if the link is in L1.
+                // While bridge-side ECAM would be permissible, L1Sub is
+                // intentionally left enabled per the WiFi/PciHealth policy.
                 return;
             }
             let next =
@@ -436,8 +474,23 @@ impl PciDevice {
     /// bits [19:16] = Version, bits [31:20] = Next Capability Offset.
     /// Offset 0 terminates the list.
     ///
-    /// Requires ECAM (MMIO-based access) — silently no-ops if ECAM
-    /// has not been configured by the kernel.
+    /// # ⚠️ Caller responsibility
+    ///
+    /// This function uses ECAM MMIO.  It is **only safe to call for
+    /// upstream bridge devices**.  Calling it for an endpoint that may
+    /// be in ASPM L1 will cause a permanent CPU hang because the endpoint
+    /// cannot complete a non-posted ECAM read while in L1.
+    ///
+    /// L1Sub is negotiated between the bridge and endpoint — disabling
+    /// it on the bridge alone is sufficient to prevent the link from
+    /// entering L1.1/L1.2.  There is no need to call this on the endpoint.
+    ///
+    /// Note: The WiFi/RTSX/PciHealth recovery paths intentionally leave
+    /// L1Sub enabled, as Linux tolerates ASPM L1 + L1Sub on the same
+    /// chipset without hangs. This function is provided for explicit
+    /// bridge-side L1Sub control when needed.
+    ///
+    /// Silently no-ops if ECAM has not been configured by the kernel.
     pub fn disable_l1_substates(bus: u8, device: u8, function: u8) {
         let mut off: u16 = 0x100;
         let mut iterations = 0;
