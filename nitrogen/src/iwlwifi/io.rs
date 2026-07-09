@@ -352,9 +352,10 @@ impl IwlWifiDevice {
                     }
                 }
             }
-            (2, _) => {
-                if frame.len() > 24 {
-                    let llc_offset = 24;
+            (2, subtype) => {
+                let header_len = if subtype & 0x08 != 0 { 26 } else { 24 };
+                if frame.len() > header_len {
+                    let llc_offset = header_len;
                     if frame.len() > llc_offset + 8 {
                         let ether_type = u16::from_be_bytes([
                             frame[llc_offset + 6],
@@ -472,6 +473,11 @@ impl IwlWifiDevice {
                 buf.read_into(&mut frame_data);
                 self.process_rx_frame(&frame_data);
             }
+
+            let desc_mut = self.rx_desc_mut(desc_idx);
+            desc_mut.len = MAX_FRAME_SIZE as u16;
+            mmio::cache_flush(desc_mut as *const RxDmaDesc as *const u8);
+
             self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
         }
 
