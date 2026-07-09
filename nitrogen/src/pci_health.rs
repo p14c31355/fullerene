@@ -235,23 +235,7 @@ impl PciHealth {
         if PciConfigSpace::read_config_word(b, d, f, 0) == 0xFFFF {
             return false;
         }
-        let cap_ptr = PciConfigSpace::read_config_byte(b, d, f, 0x34);
-        let mut off = cap_ptr;
-        let mut lnk_ctl = None;
-        let mut visited = [false; 256];
-        for _ in 0..48 {
-            if off < 0x40 || off > 0xF8 { break; }
-            if visited[off as usize] { break; }
-            visited[off as usize] = true;
-            let cap_id = PciConfigSpace::read_config_byte(b, d, f, off);
-            if cap_id == 0x10 {
-                lnk_ctl = Some(off + 0x10);
-                break;
-            }
-            let next = PciConfigSpace::read_config_byte(b, d, f, off + 1);
-            if next == 0 || next == off { break; }
-            off = next;
-        }
+        let lnk_ctl = crate::pci_error::find_pcie_cap(b, d, f).map(|off| off + 0x10);
         if let Some(lnk_off) = lnk_ctl {
             let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off);
             PciConfigSpace::write_config_word_raw(
