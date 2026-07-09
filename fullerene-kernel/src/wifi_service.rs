@@ -91,7 +91,7 @@ impl solvent::Service for WifiService {
                     .collect();
 
                 // Put connected AP first
-                aps.sort_by(|a, b| {
+                aps.sort_unstable_by(|a, b| {
                     match (a.connected, b.connected) {
                         (true, false) => core::cmp::Ordering::Less,
                         (false, true) => core::cmp::Ordering::Greater,

@@ -273,7 +273,7 @@ pub fn try_init_wifi_device_step() {
             debug::print("iwlwifi", "step: mmio_poll_mac");
             let mmio = WIFI_INIT_CTX.lock().mmio;
             let start_tsc = WIFI_INIT_CTX.lock().alive_start_tsc;
-            let timeout = start_tsc.wrapping_add(4_000_000_000u64);
+            const TIMEOUT_CYCLES: u64 = 4_000_000_000;
             let mac_acquired = {
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
@@ -290,7 +290,7 @@ pub fn try_init_wifi_device_step() {
                     }
                     _ => {
                         // Not ready yet — check timeout.
-                        if unsafe { core::arch::x86_64::_rdtsc() } >= timeout {
+                        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= TIMEOUT_CYCLES {
                             drop(ctx);
                             debug::print("iwlwifi", "step: mmio_force_mac");
                             unsafe {
