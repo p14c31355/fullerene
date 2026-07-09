@@ -57,6 +57,7 @@ pub struct PciHealth {
     /// Upstream bridge coordinates for ASPM control.
     upstream_bridge: Option<(u8, u8, u8)>,
     // ── Health cache ──
+    #[allow(dead_code)]
     aspm_disabled: bool,
     /// Timestamp (TSC ticks) of last successful health check.
     last_check_ok: u64,
