@@ -42,8 +42,16 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
     let cur_rows = rt.term_buf.rows();
 
     if new_cols != cur_cols || new_rows != cur_rows {
-        let needed = ((new_cols * new_rows * GLYPH_W * GLYPH_H) as usize * 4)
-            .saturating_add((new_cols * new_rows) as usize * 12);
+        let needed = (new_cols as usize)
+            .saturating_mul(new_rows as usize)
+            .saturating_mul(GLYPH_W as usize)
+            .saturating_mul(GLYPH_H as usize)
+            .saturating_mul(4)
+            .saturating_add(
+                (new_cols as usize)
+                    .saturating_mul(new_rows as usize)
+                    .saturating_mul(12),
+            );
         let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
         if needed > reserve {
             let additional = needed.saturating_sub(reserve).next_multiple_of(4096);
