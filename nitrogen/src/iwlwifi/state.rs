@@ -302,9 +302,22 @@ pub fn try_init_wifi_device_step() {
                             mmio::write_barrier();
                             crate::timing::delay_us(10_000);
                             let mut ctx = WIFI_INIT_CTX.lock();
-                            match ctx.health.as_mut() {
+                            let recovery_ok = match ctx.health.as_mut() {
                                 Some(h) => h.recover().is_ok(),
                                 None => false,
+                            };
+                            if !recovery_ok {
+                                false
+                            } else {
+                                // Recovery succeeded — now verify MAC_CLOCK_READY is actually set.
+                                drop(ctx);
+                                match mmio::checked_read_u32(
+                                    unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
+                                    WIFI_INIT_CTX.lock().health.as_ref(),
+                                ) {
+                                    mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
+                                    _ => false,
+                                }
                             }
                         } else {
                             // Not ready yet, not timed out: try again next tick.
@@ -717,5 +730,17 @@ pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
     if let Some(ref mut dev) = *dev_guard {
         let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
         let _ = dev_ref.connect(ssid, password);
+    }
+}
+
+pub fn start_scan_if_idle() {
+    let mut dev_guard = WIFI_DEVICE.lock();
+    if let Some(ref mut dev) = *dev_guard {
+        let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
+        // Only start a scan if the device is ready and not already busy.
+        if dev_ref.device_available()
+            && dev_ref.get_status() == bonder::wifi::WifiStatus::Disconnected {
+            let _ = dev_ref.start_scan();
+        }
     }
 }

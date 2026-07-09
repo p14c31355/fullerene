@@ -47,6 +47,13 @@ impl solvent::Service for WifiService {
         // ── Phase 2: periodic hardware tick (after init) ──────
         nitrogen::iwlwifi::tick_wifi_device();
 
+        // ── Phase 2b: periodic scan initiation ────────────────
+        // Trigger a scan every ~10 seconds (600 ticks at 60fps) if
+        // the device is ready and not currently scanning/connecting.
+        if nitrogen::iwlwifi::wifi_init_completed() && now % 600 == 0 {
+            nitrogen::iwlwifi::start_scan_if_idle();
+        }
+
         // ── Phase 3: consume queued UI actions ────────────────
         let actions = core::mem::take(&mut *WIFI_ACTION_QUEUE.lock());
         for action in actions {

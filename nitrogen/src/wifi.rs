@@ -283,9 +283,10 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     // ── Find upstream PCIe bridge (once, used for error reporting + ASPM) ──
     // The upstream bridge controls ASPM and error routing for the endpoint.
     // We find it via a single PCI scan and then:
-    //   1. Disable standard ASPM on the bridge (L1Sub is left enabled)
-    //   2. Configure Completion Timeout on the endpoint
-    //   3. Set up AER / Root Control error reporting on the bridge
+    //   1. Disable standard ASPM on the bridge
+    //   2. Disable L1 PM Substates on the bridge to prevent endpoint hangs
+    //   3. Configure Completion Timeout on the endpoint
+    //   4. Set up AER / Root Control error reporting on the bridge
     crate::debug::print("wifi", "scan_bridge");
     let upstream_bridge: Option<(u8, u8, u8)> = {
         let mut scanner = PciScanner::new();
