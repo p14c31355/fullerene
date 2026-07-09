@@ -24,7 +24,7 @@ impl IwlWifiDevice {
             return Err("HCMD too large");
         }
 
-        self.health.recover().map_err(|_| "device not accessible")?;
+        self.health.pre_mmio_access().map_err(|_| "device not accessible")?;
 
         let hcmd_header = HcmdHeader {
             opcode,
