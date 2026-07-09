@@ -187,12 +187,13 @@ pub enum WifiInitPhase {
     Idle = 0,
     PciProbe = 1,
     MmioInit = 2,
-    DmaAlloc = 3,
-    FwUpload = 4,
-    FwWaitAlive = 5,
-    FwInitCmds = 6,
-    Done = 7,
-    Failed = 8,
+    MmioPollMacClock = 3,
+    DmaAlloc = 4,
+    FwUpload = 5,
+    FwWaitAlive = 6,
+    FwInitCmds = 7,
+    Done = 8,
+    Failed = 9,
 }
 
 impl From<u8> for WifiInitPhase {
@@ -201,11 +202,12 @@ impl From<u8> for WifiInitPhase {
             0 => Self::Idle,
             1 => Self::PciProbe,
             2 => Self::MmioInit,
-            3 => Self::DmaAlloc,
-            4 => Self::FwUpload,
-            5 => Self::FwWaitAlive,
-            6 => Self::FwInitCmds,
-            7 => Self::Done,
+            3 => Self::MmioPollMacClock,
+            4 => Self::DmaAlloc,
+            5 => Self::FwUpload,
+            6 => Self::FwWaitAlive,
+            7 => Self::FwInitCmds,
+            8 => Self::Done,
             _ => Self::Failed,
         }
     }

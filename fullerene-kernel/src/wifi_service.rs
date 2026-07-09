@@ -7,12 +7,20 @@
 
 use alloc::string::ToString;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use solvent::{WifiAction, NETWORK_SNAPSHOT, WIFI_ACTION_QUEUE};
 
 /// Incremental WiFi init state — owned by the WifiService instead of
 /// by Solvent so the runtime stays device-agnostic.
 static WIFI_INIT_PENDING: AtomicBool = AtomicBool::new(true);
+
+/// Tick-based timeout counter for WiFi init.
+/// Each tick of WifiService increments this by 1; when the counter
+/// exceeds WIFI_INIT_TIMEOUT_TICKS the init is forcibly cancelled.
+/// This prevents a permanent hang when real-hardware MMIO accesses
+/// do not return (PCIe completion timeout, ASPM L1, D3hot, etc.).
+static WIFI_INIT_TICK_COUNT: AtomicU64 = AtomicU64::new(0);
+const WIFI_INIT_TIMEOUT_TICKS: u64 = 300; // ~5 seconds at 60 fps
 
 /// Service that drives Intel Wireless 7265 init, periodic hardware tick,
 /// and UI state synchronisation.
@@ -22,7 +30,14 @@ impl solvent::Service for WifiService {
     fn tick(&mut self, now: u64) {
         // ── Phase 1: incremental device init ──────────────────
         if WIFI_INIT_PENDING.load(Ordering::Relaxed) {
-            if nitrogen::iwlwifi::wifi_init_completed() {
+            let tick = WIFI_INIT_TICK_COUNT.fetch_add(1, Ordering::Relaxed);
+            if tick > WIFI_INIT_TIMEOUT_TICKS {
+                // Init hung — forcibly mark as completed so the idle
+                // loop is not blocked by an unresponsive PCIe device.
+                WIFI_INIT_PENDING.store(false, Ordering::Release);
+                // Also tell the driver to stop trying.
+                nitrogen::iwlwifi::force_init_failed();
+            } else if nitrogen::iwlwifi::wifi_init_completed() {
                 WIFI_INIT_PENDING.store(false, Ordering::Release);
             } else {
                 nitrogen::iwlwifi::try_init_wifi_device_step();
