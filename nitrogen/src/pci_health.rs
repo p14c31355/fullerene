@@ -176,26 +176,25 @@ impl PciHealth {
     ///
     /// # ⚠️ Hang-proof design
     ///
-    /// All operations use port I/O (CF8/CFC) except L1Sub disable on
-    /// the upstream bridge, which uses ECAM MMIO.  Bridge ECAM reads
-    /// are always safe because the bridge is never in L1 relative to
-    /// the CPU.  Endpoint ECAM reads are **never** performed — port I/O
-    /// is used for standard config space and L1Sub is disabled only
-    /// on the bridge (L1Sub requires both ends to agree, so bridge-only
-    /// disable is sufficient).
+    /// All operations use port I/O (CF8/CFC) exclusively. Bridge and endpoint
+    /// ECAM reads are **never** performed — port I/O is used for standard
+    /// config space access only. L1 PM Substates are not modified and are
+    /// intentionally left enabled (see below).
     ///
     /// # Ordering
     ///
     /// 1. `ensure_d0()` on endpoint and bridge (port I/O, safe)
     /// 2. **Link retrain** on upstream bridge (port I/O, safe)
-    /// 3. `disable_pcie_aspm()` on bridge — standard ASPM (port I/O, safe)
+    /// 3. `disable_pcie_aspm()` on bridge — standard ASPM only (port I/O, safe)
     /// 4. `disable_pcie_aspm()` on endpoint — standard ASPM only (port I/O, safe)
     /// 5. `check()` — full health verification via port I/O (safe)
     ///
-    /// Does NOT touch L1 PM Substates (ECAM).  ECAM MMIO is inherently
-    /// unsafe on bare metal (MCFG base may be wrong, phys→virt mapping
-    /// may be incomplete).  Linux tolerates ASPM L1 + L1Sub enabled on
-    /// the same chipset without hangs, so L1Sub disable is unnecessary.
+    /// L1 PM Substates (L1.1/L1.2) are not modified. While bridge-side ECAM
+    /// access would be permissible for L1Sub configuration (bridges are never
+    /// in L1 relative to the CPU), ECAM MMIO is inherently unsafe on bare metal
+    /// (MCFG base may be wrong, phys→virt mapping may be incomplete). Linux
+    /// tolerates ASPM L1 + L1Sub enabled on the same chipset without hangs,
+    /// so L1Sub disable is unnecessary.
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
         // Step 1: Re-assert D0 on the device and bridge (port I/O, safe)
         self.ensure_d0();
@@ -235,11 +234,13 @@ impl PciHealth {
         if PciConfigSpace::read_config_word(b, d, f, 0) == 0xFFFF {
             return false;
         }
-        let lnk_ctl = crate::pci_error::find_pcie_cap(b, d, f).map(|off| off + 0x10);
+        let lnk_ctl = crate::pci_error::find_pcie_cap(b, d, f)
+            .and_then(|off| off.checked_add(0x10))
+            .filter(|&off| off <= 0xFC);
         if let Some(lnk_off) = lnk_ctl {
-            let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off);
+            let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off as u8);
             PciConfigSpace::write_config_word_raw(
-                b, d, f, lnk_off,
+                b, d, f, lnk_off as u8,
                 ctl | (1 << 5), // Set Link Retrain
             );
             log::info!(
@@ -285,12 +286,8 @@ impl PciHealth {
         // Full health check
         match self.check() {
             Ok(()) => {
-                // On success, also disable ASPM if not done yet
-                if !self.aspm_disabled {
-                    self.disable_aspm();
-                    self.aspm_disabled = true;
-                }
-                Ok(())
+                // On success, run recovery to ensure link retrain and ASPM disable
+                self.recover()
             }
             Err(_e) => {
                 // Attempt recovery once

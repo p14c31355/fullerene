@@ -96,6 +96,13 @@ pub fn read_ext_dword(bus: u8, device: u8, function: u8, offset: u16) -> u32 {
     if va == 0 || !ext_dev_present(bus, device, function) {
         return 0xFFFF_FFFF;
     }
+    // Only allow ECAM reads for bridge devices (class 0x06, subclass 0x04)
+    let class_rev = PciConfigSpace::read_config_dword(bus, device, function, 8);
+    let class_code = (class_rev >> 24) as u8;
+    let subclass = (class_rev >> 16) as u8;
+    if class_code != 0x06 || subclass != 0x04 {
+        return 0xFFFF_FFFF;
+    }
     unsafe { core::ptr::read_volatile(va as *const u32) }
 }
 
@@ -397,9 +404,11 @@ impl PciDevice {
     ///
     /// Does NOT touch L1 PM Substates (L1.1 / L1.2).  L1Sub lives in extended
     /// config space (offset ≥ 0x100) which requires ECAM MMIO — a non-posted
-    /// ECAM read to an endpoint in L1 hangs the CPU forever.  L1Sub must be
-    /// disabled on the **upstream bridge** instead (bridge ECAM reads are always
-    /// safe because the bridge is never in L1 relative to the CPU).
+    /// ECAM read to an endpoint in L1 hangs the CPU forever.  While bridge-side
+    /// ECAM access would be permissible for L1Sub configuration (bridges are
+    /// never in L1 relative to the CPU), the WiFi/RTSX/PciHealth recovery paths
+    /// intentionally leave L1Sub enabled, as Linux tolerates ASPM L1 + L1Sub
+    /// on the same chipset without hangs.
     pub fn disable_pcie_aspm(&self) {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
@@ -444,7 +453,8 @@ impl PciDevice {
                 }
                 // L1Sub is NOT disabled on the endpoint — that would
                 // require ECAM MMIO which hangs if the link is in L1.
-                // L1Sub must be disabled on the upstream bridge instead.
+                // While bridge-side ECAM would be permissible, L1Sub is
+                // intentionally left enabled per the WiFi/PciHealth policy.
                 return;
             }
             let next =
@@ -474,6 +484,11 @@ impl PciDevice {
     /// L1Sub is negotiated between the bridge and endpoint — disabling
     /// it on the bridge alone is sufficient to prevent the link from
     /// entering L1.1/L1.2.  There is no need to call this on the endpoint.
+    ///
+    /// Note: The WiFi/RTSX/PciHealth recovery paths intentionally leave
+    /// L1Sub enabled, as Linux tolerates ASPM L1 + L1Sub on the same
+    /// chipset without hangs. This function is provided for explicit
+    /// bridge-side L1Sub control when needed.
     ///
     /// Silently no-ops if ECAM has not been configured by the kernel.
     pub fn disable_l1_substates(bus: u8, device: u8, function: u8) {

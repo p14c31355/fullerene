@@ -33,7 +33,7 @@ macro_rules! volatile_read_safe {
     ($addr:expr, $ty:ty) => {{
         let address = $addr as *const $ty;
         let val = unsafe { core::ptr::read_volatile(address) };
-        if val as usize == 0xFFFF_FFFFusize {
+        if val == <$ty>::MAX {
             None
         } else {
             Some(val)
@@ -48,7 +48,7 @@ macro_rules! volatile_read_safe {
                 }
             }
             let val = unsafe { core::ptr::read_volatile(address) };
-            if val as usize == 0xFFFF_FFFFusize {
+            if val == <$ty>::MAX {
                 None
             } else {
                 Some(val)

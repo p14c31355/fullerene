@@ -163,6 +163,16 @@ impl XhciContext {
 
         let db_stream = {
             let slot = self.device.slots.get_mut(slot_id).unwrap();
+
+            // Verify endpoint direction matches the requested direction
+            let ep_is_in = (endpoint & 0x80) != 0;
+            let dir_is_in = dir == UsbDirection::In;
+            if ep_is_in != dir_is_in {
+                self.driver_ctx
+                    .free_contiguous_frames(staging_phys, staging_pages);
+                return Err("endpoint direction mismatch");
+            }
+
             let ring = match dir {
                 UsbDirection::In => slot.bulk_in_ring.as_mut().unwrap(),
                 UsbDirection::Out => slot.bulk_out_ring.as_mut().unwrap(),
@@ -181,8 +191,7 @@ impl XhciContext {
             );
 
             let ep_num = (endpoint & 0x0F) as u32;
-            let is_in = (endpoint & 0x80) != 0;
-            ep_num * 2 + u32::from(is_in)
+            ep_num * 2 + u32::from(ep_is_in)
         };
 
         crate::mmio::write_barrier();

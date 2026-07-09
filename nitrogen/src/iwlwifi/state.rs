@@ -257,12 +257,11 @@ pub fn try_init_wifi_device_step() {
                     return;
                 }
             }
-            let health_ref = {
+            let mac = {
                 let ctx = WIFI_INIT_CTX.lock();
-                ctx.health.as_ref().map(|h| h as *const PciHealth)
+                let health = ctx.health.as_ref();
+                IwlWifiDevice::read_mac(mmio, health)
             };
-            let _health = health_ref.and_then(|p| unsafe { p.as_ref() });
-            let mac = IwlWifiDevice::read_mac(mmio, _health);
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
             }

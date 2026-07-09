@@ -261,7 +261,17 @@ impl MemRegion {
     /// Read a u64 from an offset with PCIe hang-safety checks.
     #[inline]
     pub fn checked_read64(&self, offset: usize, health: Option<&PciHealth>) -> SafeReadResult<u64> {
-        checked_read_u64(self.reg_ptr::<u32>(offset) as *const u32, health)
+        let lo = match self.checked_read32(offset, health) {
+            SafeReadResult::Value(v) => v,
+            SafeReadResult::DeviceGone => return SafeReadResult::DeviceGone,
+            SafeReadResult::MasterAbort => return SafeReadResult::MasterAbort,
+        };
+        let hi = match self.checked_read32(offset + 4, health) {
+            SafeReadResult::Value(v) => v,
+            SafeReadResult::DeviceGone => return SafeReadResult::DeviceGone,
+            SafeReadResult::MasterAbort => return SafeReadResult::MasterAbort,
+        };
+        SafeReadResult::Value((lo as u64) | ((hi as u64) << 32))
     }
 
     /// Write a u32 to an offset within this region.

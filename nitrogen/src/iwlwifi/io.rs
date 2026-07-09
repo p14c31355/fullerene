@@ -209,13 +209,14 @@ impl IwlWifiDevice {
             let _ = self.send_raw_80211_frame(&deauth);
         }
 
-        self.wifi_conn.disconnect();
-        self.iwl_state = IwlState::Disconnected;
-
         if let Some(ref mut dhcp) = self.dhcp {
-            let _release = dhcp.build_release();
+            let release = dhcp.build_release();
+            let _ = self.send_raw_80211_frame(&release);
         }
         self.dhcp = None;
+
+        self.wifi_conn.disconnect();
+        self.iwl_state = IwlState::Disconnected;
 
         log::info!("iwlwifi: disconnected");
     }
@@ -299,8 +300,8 @@ impl IwlWifiDevice {
                         if status_code == 0 {
                             self.iwl_state = IwlState::AssocSent;
                             let bssid = [
-                                frame[4], frame[5], frame[6],
-                                frame[7], frame[8], frame[9],
+                                frame[10], frame[11], frame[12],
+                                frame[13], frame[14], frame[15],
                             ];
                             let ap_ssid = self.wifi_conn.current_ssid.clone()
                                 .unwrap_or(Ssid::new(b""));
@@ -332,8 +333,8 @@ impl IwlWifiDevice {
                             self.iwl_state = IwlState::Connected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Connected;
                             self.wifi_conn.current_bssid = Some([
-                                frame[4], frame[5], frame[6],
-                                frame[7], frame[8], frame[9],
+                                frame[10], frame[11], frame[12],
+                                frame[13], frame[14], frame[15],
                             ]);
 
                             self.dhcp = Some(bonder::dhcp::DhcpClient::new(self.mac));

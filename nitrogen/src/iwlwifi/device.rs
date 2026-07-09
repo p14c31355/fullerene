@@ -609,8 +609,9 @@ impl IwlWifiDevice {
 
     // ── Firmware loading ──────────────────────────
 
-    /// Load firmware binary into the device.
-    pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+    /// Common firmware upload and CPU start sequence shared by load_firmware and start_firmware.
+    /// Does NOT wait for alive signal - caller must handle that if needed.
+    fn upload_firmware_and_start_cpu(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
         debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
             return Err("Firmware data too short");
@@ -628,7 +629,13 @@ impl IwlWifiDevice {
                 self.mmio.add(CSR_RESET as usize),
                 0x00000080,
             );
-            for _ in 0..500 {
+        }
+        {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            loop {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
+                    break;
+                }
                 core::hint::spin_loop();
             }
         }
@@ -724,8 +731,14 @@ impl IwlWifiDevice {
         unsafe {
             core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
         }
-        for _ in 0..200 {
-            core::hint::spin_loop();
+        {
+            let start = unsafe { core::arch::x86_64::_rdtsc() };
+            loop {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
         }
 
         unsafe {
@@ -749,6 +762,13 @@ impl IwlWifiDevice {
                 !(1u32 << 0),
             );
         }
+
+        Ok(())
+    }
+
+    /// Load firmware binary into the device.
+    pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+        self.upload_firmware_and_start_cpu(fw_data)?;
 
         debug::print("iwlwifi", "fw: wait_alive");
         let alive = self.wait_for_alive();
@@ -885,136 +905,12 @@ impl IwlWifiDevice {
     pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
         self.health.recover().map_err(|_| "Device not accessible for firmware upload")?;
 
-        debug::print("iwlwifi", "fw: check_header");
-        if fw_data.len() < FW_HEADER_SIZE {
-            return Err("Firmware data too short");
-        }
-
-        self.fw_state = FwState::Loading;
-
-        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_GP_CNTRL as usize),
-                gp & !0x04,
-            );
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_RESET as usize),
-                0x00000080,
-            );
-            for _ in 0..500 {
-                core::hint::spin_loop();
-            }
-        }
-
-        debug::print("iwlwifi", "fw: header_parse");
-        let fw_ptr = fw_data.as_ptr();
-
-        let zero: u32 = unsafe { core::ptr::read_unaligned(fw_ptr as *const u32) };
-        if zero != 0 {
-            return Err("Invalid firmware header (zero != 0)");
-        }
-
-        let magic: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(4) as *const u32) };
-        if magic != IWL_FW_MAGIC {
-            return Err("Invalid firmware magic");
-        }
-
-        log::info!("iwlwifi: loading firmware payload...");
-
-        let mut desc_buf = [0u8; 64];
-        unsafe {
-            core::ptr::copy_nonoverlapping(fw_ptr.add(8), desc_buf.as_mut_ptr(), 64);
-        }
-        let build_str = core::ffi::CStr::from_bytes_until_nul(&desc_buf)
-            .map(|c| c.to_str().unwrap_or("<invalid>"))
-            .unwrap_or("<unknown>");
-        log::info!("iwlwifi: firmware build: {}", build_str);
-
-        self.fw_api_ver = unsafe { core::ptr::read_unaligned(fw_ptr.add(72) as *const u32) };
-        self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
-        log::info!(
-            "iwlwifi: firmware API v{}, build {}",
-            self.fw_api_ver, self.fw_build
-        );
-
-        let mut off = FW_HEADER_SIZE;
-        let mut section_count = 0;
-        while off + 8 <= fw_data.len() {
-            let tlv_type: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off) as *const u32) };
-            let tlv_len: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32) };
-            let tlv_data_off = off + 8;
-            let tlv_end = match tlv_data_off.checked_add(tlv_len as usize) {
-                Some(end) => end,
-                None => break,
-            };
-            if tlv_end > fw_data.len() {
-                break;
-            }
-            match tlv_type {
-                TLV_INST | TLV_DATA | TLV_INIT | TLV_INIT_DATA => {
-                    if tlv_len < 4 {
-                        off = tlv_end;
-                        continue;
-                    }
-                    let target: u32 = unsafe {
-                        core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
-                    };
-                    let data_size = tlv_len - 4;
-                    if data_size > 0 {
-                        let section_data = &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
-                        self.upload_section(target, section_data)?;
-                        section_count += 1;
-                        log::info!(
-                            "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
-                            section_count, target, data_size
-                        );
-                    }
-                }
-                _ => {}
-            }
-            off = tlv_end;
-        }
-
-        if section_count == 0 {
-            return Err("No firmware sections uploaded");
-        }
-
-        debug::print("iwlwifi", "fw: upload_done");
-        log::info!("iwlwifi: firmware upload complete, starting CPU...");
+        self.upload_firmware_and_start_cpu(fw_data)?;
 
         self.health.recover().map_err(|_| {
             self.fw_state = FwState::Error;
             "Device not accessible after firmware upload"
         })?;
-
-        let _pending = self.safe_read32(CSR_INT).unwrap_or(0);
-        unsafe {
-            core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), _pending);
-            core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
-        }
-        for _ in 0..200 {
-            core::hint::spin_loop();
-        }
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_UCODE_GP1 as usize),
-                0x00000001,
-            );
-        }
-        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_GP_CNTRL as usize),
-                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | 0x04,
-            );
-        }
-        unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_INT_MASK as usize),
-                !(1u32 << 0),
-            );
-        }
 
         debug::print("iwlwifi", "fw: cpu_started");
         Ok(())
