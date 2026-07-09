@@ -18,24 +18,31 @@
 extern crate alloc;
 
 // ── Modules ──────────────────────────────────────────────────
+mod clock;
 mod editor_bridge;
 mod explorer;
 mod handlers;
 mod menu_actions;
 mod network_manager;
+mod render;
 mod settings_bridge;
+mod terminal;
 mod viewers;
+
+// ── Sub-module re-exports ─────────────────────────────────────
+pub use clock::clock_string;
+pub use render::{cursor_save_background, render, set_render_progress_fn};
+pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
 
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
-use lattice::compositor::{Compositor, RenderTarget};
 use lattice::desktop::{Desktop, DesktopAction};
 use lattice::editor::EditorBuffer;
-use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
-use lattice::terminal_surface::{self, Cell as LatticeCell};
+use lattice::shell_overlay::ShellState;
+use lattice::terminal_surface::Cell as LatticeCell;
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, Event, EventQueue, InputEvent, MouseButton};
@@ -141,7 +148,6 @@ const FRAME_INTERVAL_MS: u64 = 17;
 const FRAME_TIMER_ID: TimerId = TimerId(2);
 pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
-const MAX_FB_PIXELS: usize = 3840 * 2160; // upper bound for overflow checks
 
 pub fn get_usb_drives() -> Vec<(String, String)> {
     SOLVENT_CALLBACKS
@@ -190,55 +196,40 @@ pub struct DeviceEntry {
     pub enabled: bool,
 }
 
-static CLOCK_STRING: Mutex<String> = Mutex::new(String::new());
-pub fn clock_string() -> String {
-    CLOCK_STRING.lock().clone()
-}
 pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // ── Service registry ─────────────────────────────────────────
-/// A service that can be registered with the runtime.
-/// Services are ticked every frame during `tick_core()`.
-/// Solvent knows nothing about specific services — it only calls `tick()`.
 pub trait Service: Send {
     fn tick(&mut self, now: u64);
 }
 
-pub(crate) static SERVICES: spin::Mutex<alloc::vec::Vec<Box<dyn Service>>> =
-    spin::Mutex::new(alloc::vec::Vec::new());
+pub(crate) static SERVICES: spin::Mutex<Vec<Box<dyn Service>>> = spin::Mutex::new(Vec::new());
 
 pub fn register_service(service: Box<dyn Service>) {
     SERVICES.lock().push(service);
 }
 
 // ── WiFi action queue ────────────────────────────────────────
-/// Actions queued by the UI (network menu) and consumed by an
-/// external WifiService.  Solvent itself knows nothing about WiFi
-/// drivers — it only provides the communication channel.
 #[allow(dead_code)]
 pub enum WifiAction {
-    Connect(bonder::wifi::Ssid, Option<alloc::string::String>),
+    Connect(bonder::wifi::Ssid, Option<String>),
 }
 
-pub static WIFI_ACTION_QUEUE: spin::Mutex<alloc::vec::Vec<WifiAction>> =
-    spin::Mutex::new(alloc::vec::Vec::new());
+pub static WIFI_ACTION_QUEUE: spin::Mutex<Vec<WifiAction>> = spin::Mutex::new(Vec::new());
 
-// ── Shared network state for the desktop UI ──────────────────
-/// Written by an external WifiService, read by `tick_core()` to
-/// update the desktop's AP list.
+// ── Shared network state ─────────────────────────────────────
 pub struct NetworkSnapshot {
-    pub aps: alloc::vec::Vec<lattice::network_menu::ApDisplay>,
+    pub aps: Vec<lattice::network_menu::ApDisplay>,
     pub status: lattice::network_menu::NetStatus,
 }
 
-pub static NETWORK_SNAPSHOT: spin::Mutex<NetworkSnapshot> =
-    spin::Mutex::new(NetworkSnapshot {
-        aps: alloc::vec::Vec::new(),
-        status: lattice::network_menu::NetStatus::NoDevice,
-    });
+pub static NETWORK_SNAPSHOT: spin::Mutex<NetworkSnapshot> = spin::Mutex::new(NetworkSnapshot {
+    aps: Vec::new(),
+    status: lattice::network_menu::NetStatus::NoDevice,
+});
 
-// ── Back‑buffer (heap-allocated at runtime) ──────────────────
-static BACK_BUFFER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
+// ── Back‑buffer ──────────────────────────────────────────────
+pub(crate) static BACK_BUFFER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
 
 // ── Runtime state ────────────────────────────────────────────
 pub(crate) static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
@@ -260,8 +251,8 @@ pub struct RuntimeState {
     pub shell_state: ShellState,
     pub shell_launch_pending: bool,
     pub clock_changed: bool,
-    pub cursor_save_buf:
-        [u32; lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
+    pub cursor_save_buf: [u32;
+        lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
     pub cursor_save_x: i32,
     pub cursor_save_y: i32,
     pub cursor_save_valid: bool,
@@ -341,52 +332,6 @@ pub fn is_initialized() -> bool {
     RUNTIME.lock().is_some()
 }
 
-// ── Cursor helpers ────────────────────────────────────────────
-
-fn cursor_save_background(
-    cursor: &lattice::cursor::Cursor,
-    buf: &mut [u32; lattice::cursor::Cursor::SIZE as usize
-             * lattice::cursor::Cursor::SIZE as usize],
-    save_x: &mut i32,
-    save_y: &mut i32,
-    save_valid: &mut bool,
-    fb: &[u32],
-    fb_stride: u32,
-    fb_width: u32,
-    fb_height: u32,
-) {
-    if !cursor.visible {
-        return;
-    }
-    let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-    let cx = cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
-    let cy = cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
-    let stride_i = fb_stride as i32;
-    let fbw_i = fb_width as i32;
-    let fbh_i = fb_height as i32;
-    let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
-    for row in 0..cur_sz {
-        let sy = cy + row;
-        for col in 0..cur_sz {
-            let val = if sy >= 0 && sy < fbh_i {
-                let sx = cx + col;
-                if sx >= 0 && sx < fbw_i {
-                    let idx = (sy * stride_i + sx) as usize;
-                    if idx < fb_len { fb[idx] } else { 0 }
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            buf[(row * cur_sz + col) as usize] = val;
-        }
-    }
-    *save_x = cx;
-    *save_y = cy;
-    *save_valid = true;
-}
-
 // ── Input polling ────────────────────────────────────────────
 
 #[repr(C)]
@@ -458,7 +403,6 @@ pub fn poll_keyboard() {
         };
         let mut rt = RUNTIME.lock();
         if let Some(ref mut r) = *rt {
-            // Password dialog keyboard input
             if r.desktop.pwd_dialog_open {
                 handle_password_dialog_key(r, scancode, pressed);
                 continue;
@@ -501,33 +445,29 @@ fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
     resonance::scancode::from_scancode(scancode)
 }
 
-/// Handle keyboard input when the password dialog is open.
 fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
     let action = match scancode {
         0x1C => {
             if !pressed { return; }
-            DesktopAction::SubmitPassword // Enter
+            DesktopAction::SubmitPassword
         }
         0x01 => {
             if !pressed { return; }
-            DesktopAction::DismissPasswordDialog // Escape
+            DesktopAction::DismissPasswordDialog
         }
         0x0E => {
             if !pressed { return; }
-            DesktopAction::PasswordBackspace // Backspace
+            DesktopAction::PasswordBackspace
         }
-        // Shift keys
         0x2A | 0x36 => {
             rt.desktop.shift_held = pressed;
             return;
         }
-        // Alphanumeric and symbol keys
         _ => {
             if !pressed { return; }
             let mut ch = scancode_to_ascii(scancode);
             if ch != 0 {
                 if rt.desktop.shift_held {
-                    // Shifted symbol mapping
                     let shifted = match ch {
                         b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$',
                         b'5' => b'%', b'6' => b'^', b'7' => b'&', b'8' => b'*',
@@ -542,7 +482,7 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool
                 }
                 DesktopAction::PasswordChar(ch)
             } else {
-                return; // ignore unmapped scancodes
+                return;
             }
         }
     };
@@ -550,9 +490,7 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool
     rt.frame_due = true;
 }
 
-/// Convert PS/2 scancode to ASCII (simple mapping for password entry).
 fn scancode_to_ascii(scancode: u8) -> u8 {
-    // Scancode set 1 alphanumeric mapping (lowercase)
     match scancode {
         0x10 => b'q', 0x11 => b'w', 0x12 => b'e', 0x13 => b'r',
         0x14 => b't', 0x15 => b'y', 0x16 => b'u', 0x17 => b'i',
@@ -567,7 +505,7 @@ fn scancode_to_ascii(scancode: u8) -> u8 {
         0x2B => b'\\', 0x0C => b'-', 0x0D => b'=', 0x1A => b'[',
         0x1B => b']', 0x27 => b';', 0x28 => b'\'', 0x29 => b'`',
         0x33 => b',', 0x34 => b'.', 0x35 => b'/',
-        0x39 => b' ', // Space
+        0x39 => b' ',
         _ => 0,
     }
 }
@@ -615,580 +553,8 @@ pub fn process_events() {
     }
 }
 
-// ── Clock update ─────────────────────────────────────────────
+// ── Rendering runtime ────────────────────────────────────────
 
-pub(crate) static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
-    core::sync::atomic::AtomicI8::new(9);
-
-const DAYS_IN_MONTH: [i16; 13] = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-fn days_in_month(month: i16, year: i16) -> i16 {
-    if month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) {
-        29
-    } else if (1..=12).contains(&month) {
-        DAYS_IN_MONTH[month as usize]
-    } else {
-        31
-    }
-}
-
-pub fn update_clock() {
-    let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-    let time_str = if let Some(get_time) = SOLVENT_CALLBACKS.lock().wall_clock {
-        if let Some((year, month, day, hour, minute, _second)) = get_time() {
-            let mut local_hour = hour as i16 + offset as i16;
-            let mut local_day = day as i16;
-            let mut local_month = month as i16;
-            let mut local_year = year as i16;
-            while local_hour < 0 {
-                local_hour += 24;
-                local_day -= 1;
-            }
-            while local_hour >= 24 {
-                local_hour -= 24;
-                local_day += 1;
-            }
-            if local_day > days_in_month(local_month, local_year) {
-                local_day = 1;
-                local_month += 1;
-                if local_month > 12 {
-                    local_month = 1;
-                    local_year += 1;
-                }
-            } else if local_day < 1 {
-                local_month -= 1;
-                if local_month < 1 {
-                    local_month = 12;
-                    local_year -= 1;
-                }
-                local_day = days_in_month(local_month, local_year) + local_day;
-            }
-            format!(
-                "{} {:02}{:02} {:02}{:02}",
-                local_year as u16, local_month as u8, local_day as u8, local_hour as u8, minute
-            )
-        } else {
-            String::from("---- ---- ----")
-        }
-    } else {
-        String::from("---- ---- ----")
-    };
-    let mut rt = RUNTIME.lock();
-    if let Some(ref mut r) = *rt {
-        if r.desktop.clock_text != time_str {
-            r.clock_changed = true;
-            r.desktop.clock_text = time_str.clone();
-            r.desktop.top_panel.clock_text = time_str.clone();
-        }
-    }
-    *CLOCK_STRING.lock() = time_str;
-}
-
-// ── Rendering ────────────────────────────────────────────────
-
-struct FramebufferTarget<'a> {
-    pixels: &'a mut [u32],
-    width: u32,
-    height: u32,
-}
-impl RenderTarget for FramebufferTarget<'_> {
-    fn buffer(&mut self) -> &mut [u32] {
-        self.pixels
-    }
-    fn dimensions(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-}
-
-static RENDER_PROGRESS_FN: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
-
-pub fn set_render_progress_fn(f: fn(&[u8])) {
-    *RENDER_PROGRESS_FN.lock() = Some(f);
-}
-
-fn render_progress(label: &[u8]) {
-    if let Some(f) = *RENDER_PROGRESS_FN.lock() {
-        f(label);
-    }
-}
-
-pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
-    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
-        return;
-    }
-    struct SuspendGuard;
-    impl Drop for SuspendGuard {
-        fn drop(&mut self) {
-            RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    let _guard = SuspendGuard;
-
-    let mut rt_lock = RUNTIME.lock();
-    let rt = match rt_lock.as_mut() {
-        Some(r) => r,
-        None => return,
-    };
-
-    static PREV_SHELL_STATE: Mutex<ShellState> = Mutex::new(ShellState::Desktop);
-    static PREV_TRANSITION: Mutex<bool> = Mutex::new(false);
-    {
-        let prev = *PREV_SHELL_STATE.lock();
-        if rt.shell_state != prev {
-            rt.desktop.force_full_redraw();
-            *PREV_SHELL_STATE.lock() = rt.shell_state;
-            *PREV_TRANSITION.lock() = true;
-        }
-    }
-
-    render_terminal(rt, rt.term_window);
-
-    if !rt.editor_dirty {
-        if let Some(editor_id) = rt.editor_window {
-            if let Some(w) = rt.desktop.wm.windows().iter().find(|w| w.id == editor_id) {
-                if w.surface.width() != (w.width / GLYPH_W).max(1) * GLYPH_W
-                    || w.surface.height() != (w.height / GLYPH_H).max(1) * GLYPH_H
-                {
-                    rt.editor_dirty = true;
-                }
-            }
-        }
-    }
-
-    render_progress(b"RENDER: pre-update");
-
-    if rt.editor_dirty {
-        editor_bridge::render_editor(rt);
-    }
-    if rt.explorer_dirty {
-        render_explorer(rt);
-    }
-    if rt.settings_dirty {
-        settings_bridge::render_settings(rt);
-    }
-
-    let debug_msgs = nitrogen::debug::drain();
-    let debug_changed = if !debug_msgs.is_empty() {
-        let changed = rt.desktop.taskbar.debug_msgs != debug_msgs;
-        rt.desktop.taskbar.debug_msgs = debug_msgs;
-        changed
-    } else {
-        false
-    };
-    let tb_changed = rt.desktop.update_taskbar();
-    render_progress(b"RENDER: got fb dims");
-    let fb_width = fb.width();
-    let fb_height = fb.height();
-    let fb_stride_pixels = fb.stride();
-    let fb_pixels = fb.pixels_mut();
-    let fb_pixels_len = fb_pixels.len();
-    *FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
-
-    let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
-    if rt.clock_changed || tb_changed || debug_changed {
-        rt.desktop.push_dirty_rect(lattice::scene::DirtyRect::new(
-            0,
-            fb_height.saturating_sub(bar_h),
-            fb_width,
-            bar_h,
-        ));
-    }
-    if rt.clock_changed {
-        if lattice::top_panel::is_top_panel_enabled() {
-            rt.desktop.push_dirty_rect(lattice::scene::DirtyRect::new(
-                0,
-                0,
-                fb_width,
-                lattice::top_panel::TOP_PANEL_HEIGHT,
-            ));
-        }
-    }
-    rt.clock_changed = false;
-
-    rt.desktop.prepare_frame(fb_width, fb_height);
-    let fb_stride = fb_stride_pixels as usize;
-    let fb_len = fb_stride.saturating_mul(fb_height as usize);
-    let back_len = (fb_width as usize) * (fb_height as usize);
-    if fb_len > MAX_FB_PIXELS || back_len > MAX_FB_PIXELS {
-        render_progress(b"RENDER: skip (fb too large)");
-        return;
-    }
-    rt.back_len = back_len;
-
-    let has_dirty = rt.desktop.has_pending_dirty_rects();
-    if has_dirty {
-        render_progress(b"RENDER: has dirty");
-        // Ensure heap has enough room for the back buffer allocation
-        // before attempting it, otherwise the alloc error handler will
-        // spin forever (visible as a hang on real hardware).
-        {
-            let back_needed = back_len.saturating_mul(4); // u32 → bytes
-            let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
-            if back_needed > reserve {
-                let additional = back_needed
-                    .saturating_sub(reserve)
-                    .next_multiple_of(4096);
-                match SOLVENT_CALLBACKS.lock().heap_extend {
-                    Some(f) if f(additional).is_ok() => {
-                        HEAP_EXTEND_RESERVE
-                            .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
-                    }
-                    _ => return,
-                }
-            }
-        }
-        render_progress(b"RENDER: heap ok");
-
-        let was_transition = {
-            let mut prev = PREV_TRANSITION.lock();
-            core::mem::replace(&mut *prev, false)
-        };
-        {
-            render_progress(b"RENDER: alloc backbuf");
-            let mut back_opt = BACK_BUFFER.lock();
-            let back = back_opt.get_or_insert_with(|| alloc::vec![0u32; back_len]);
-            if back.len() < back_len {
-                back.resize(back_len, 0);
-            }
-            let mut back_target = FramebufferTarget {
-                pixels: &mut back[..back_len],
-                width: fb_width,
-                height: fb_height,
-            };
-            render_progress(b"RENDER: compositor");
-            let scene = rt.desktop.scene();
-            let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
-            render_progress(b"RENDER: compositor done");
-            let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
-            if brightness < 100 && bw > 0 && bh > 0 {
-                let back_w = fb_width as usize;
-                let rows: core::ops::Range<usize> = if was_transition {
-                    0..fb_height as usize
-                } else {
-                    (by as usize)..((by + bh) as usize)
-                };
-                let cols: core::ops::Range<usize> = if was_transition {
-                    0..fb_width as usize
-                } else {
-                    (bx as usize)..((bx + bw) as usize)
-                };
-                for row in rows {
-                    for col in cols.clone() {
-                        let idx = row * back_w + col;
-                        if idx < back_len {
-                            back[idx] =
-                                lattice::compositor::apply_brightness(back[idx], brightness);
-                        }
-                    }
-                }
-            }
-            if was_transition || (bw > 0 && bh > 0) {
-                let back_w = fb_width as usize;
-                render_progress(b"RENDER: copy to fb");
-                // Use pixel-by-pixel copy instead of copy_nonoverlapping/memcpy.
-                // On real hardware, bulk REP MOVSB/ERMSB to WC framebuffer memory
-                // can trigger CPU stalls or machine checks (the GPU may not respond
-                // to rapid-fire PCIe writes).  Individual MOV instructions through
-                // the &mut [u32] slice are safe and reliable on WC memory.
-                // Use volatile writes to the framebuffer (WC memory) to avoid
-                // ERMSB or vectorized store issues on real hardware. Each pixel
-                // is written individually through the FramebufferGuard slice.
-                let fb_base = fb_pixels.as_mut_ptr();
-                let fb_stride_u = fb_stride;
-                if was_transition {
-                    for row in 0..fb_height as usize {
-                        let src_off = row * back_w;
-                        let dst_off = row * fb_stride_u;
-                        for col in 0..back_w {
-                            unsafe {
-                                core::ptr::write_volatile(
-                                    fb_base.add(dst_off + col),
-                                    back[src_off + col],
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    for row in 0..bh {
-                        let src_off = ((by + row) as usize) * back_w + (bx as usize);
-                        let dst_off = ((by + row) as usize) * fb_stride_u + (bx as usize);
-                        for col in 0..bw as usize {
-                            unsafe {
-                                core::ptr::write_volatile(
-                                    fb_base.add(dst_off + col),
-                                    back[src_off + col],
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        match rt.shell_state {
-            ShellState::TaskOverview => render_task_overview(
-                fb_pixels,
-                fb_width,
-                fb_height,
-                fb_stride_pixels,
-                rt.desktop.wm.windows(),
-            ),
-            ShellState::AppGrid => {
-                render_app_grid(fb_pixels, fb_width, fb_height, fb_stride_pixels)
-            }
-            ShellState::TimeZoneSelector => {
-                let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-                lattice::shell_overlay::render_timezone_selector(
-                    fb_pixels,
-                    fb_width,
-                    fb_height,
-                    fb_stride_pixels,
-                    offset,
-                );
-            }
-            ShellState::Desktop => {}
-        }
-
-        if rt.shell_state == ShellState::Desktop && lattice::top_panel::is_top_panel_enabled() {
-            rt.desktop
-                .top_panel
-                .render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
-        }
-
-        // Cursor handling: restore old cursor, save background, draw new cursor
-        // All access goes through the FramebufferGuard instead of raw addresses.
-        let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-        if rt.cursor_save_valid {
-            let sx = rt.cursor_save_x;
-            let sy = rt.cursor_save_y;
-            let fbw_i = fb_width as i32;
-            let fbh_i = fb_height as i32;
-            for row in 0..cur_sz {
-                let dy = sy + row;
-                if dy < 0 || dy >= fbh_i {
-                    continue;
-                }
-                for col in 0..cur_sz {
-                    let dx = sx + col;
-                    if dx < 0 || dx >= fbw_i {
-                        continue;
-                    }
-                    let idx = (dy as usize) * fb_stride + (dx as usize);
-                    if idx < fb_pixels_len {
-                        fb_pixels[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
-                    }
-                }
-            }
-            rt.cursor_save_valid = false;
-        }
-
-        if rt.desktop.cursor.visible {
-            cursor_save_background(
-                &rt.desktop.cursor,
-                &mut rt.cursor_save_buf,
-                &mut rt.cursor_save_x,
-                &mut rt.cursor_save_y,
-                &mut rt.cursor_save_valid,
-                fb_pixels,
-                fb_stride_pixels,
-                fb_width,
-                fb_height,
-            );
-            Compositor::draw_cursor_direct(
-                fb_pixels,
-                fb_stride_pixels,
-                fb_height,
-                &rt.desktop.cursor,
-            );
-        }
-    }
-
-    if rt.usb_poll_pending {
-        rt.usb_poll_pending = false;
-        drop(rt_lock);
-        let poll_fn = {
-            let cb_guard = SOLVENT_CALLBACKS.lock();
-            cb_guard.usb_poll
-        };
-        if let Some(f) = poll_fn {
-            let _ = f();
-        }
-        if let Some(ref mut rt) = *RUNTIME.lock() {
-            if let Some(ref mut explorer) = rt.explorer {
-                explorer.refresh_sidebar();
-                rt.explorer_dirty = true;
-                rt.frame_due = true;
-            }
-        }
-    }
-}
-
-fn render_terminal(rt: &mut RuntimeState, term_window: Option<WindowId>) {
-    if !rt.term_dirty {
-        return;
-    }
-    let term_window = match term_window {
-        Some(id) => id,
-        None => return,
-    };
-    let window = match rt
-        .desktop
-        .wm
-        .windows_mut()
-        .iter_mut()
-        .find(|w| w.id == term_window)
-    {
-        Some(w) => w,
-        None => return,
-    };
-    let new_cols = (window.width / GLYPH_W).max(1);
-    let new_rows = (window.height / GLYPH_H).max(1);
-    let cur_cols = rt.term_buf.cols();
-    let cur_rows = rt.term_buf.rows();
-
-    if new_cols != cur_cols || new_rows != cur_rows {
-        let needed = ((new_cols * new_rows * GLYPH_W * GLYPH_H) as usize * 4)
-            .saturating_add((new_cols * new_rows) as usize * 12);
-        let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
-        if needed > reserve {
-            let additional = needed.saturating_sub(reserve).next_multiple_of(4096);
-            match SOLVENT_CALLBACKS.lock().heap_extend {
-                Some(f) if f(additional).is_ok() => {
-                    HEAP_EXTEND_RESERVE
-                        .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
-                }
-                _ => return,
-            }
-        }
-        let old_cur_col = rt.term_buf.cursor_col();
-        let old_cur_row = rt.term_buf.cursor_row();
-        let new_buf = TerminalBuffer::new(new_cols, new_rows);
-        let old_buf = core::mem::replace(&mut rt.term_buf, new_buf);
-        {
-            let src_cells = old_buf.cells();
-            let src_cols = cur_cols as usize;
-            for row in 0..(cur_rows as usize).min(new_rows as usize) {
-                for col in 0..(cur_cols as usize).min(new_cols as usize) {
-                    let src_idx = row * src_cols + col;
-                    if src_idx < src_cells.len() {
-                        if let Some(dst) = rt.term_buf.cell_mut(col as u32, row as u32) {
-                            *dst = nozzle::terminal_buffer::Cell {
-                                ch: src_cells[src_idx].ch,
-                                fg: src_cells[src_idx].fg,
-                                bg: src_cells[src_idx].bg,
-                            };
-                        }
-                    }
-                }
-            }
-        }
-        rt.term_buf.set_cursor(
-            old_cur_col.min(new_cols.saturating_sub(1)),
-            old_cur_row.min(new_rows.saturating_sub(1)),
-        );
-        drop(old_buf);
-        window.surface = lattice::surface::Surface::new(
-            new_cols * GLYPH_W,
-            new_rows * GLYPH_H,
-            window.surface.get_pixel(0, 0).unwrap_or(0x000000),
-        );
-        rt.term_cells.clear();
-        rt.term_cells.resize(
-            (new_cols * new_rows) as usize,
-            LatticeCell {
-                ch: b' ',
-                fg: 0,
-                bg: 0,
-            },
-        );
-    }
-
-    let total = (rt.term_buf.cols() * rt.term_buf.rows()) as usize;
-    if rt.term_cells.len() != total {
-        rt.term_cells.resize(
-            total,
-            LatticeCell {
-                ch: b' ',
-                fg: 0,
-                bg: 0,
-            },
-        );
-    }
-    let visible = rt.term_buf.visible_cells();
-    rt.term_cells.resize(
-        visible.len(),
-        LatticeCell {
-            ch: b' ',
-            fg: 0,
-            bg: 0,
-        },
-    );
-    for (i, c) in visible.iter().enumerate() {
-        if i < rt.term_cells.len() {
-            rt.term_cells[i] = LatticeCell {
-                ch: c.ch,
-                fg: c.fg,
-                bg: c.bg,
-            };
-        }
-    }
-    terminal_surface::render(terminal_surface::RenderParams {
-        surface: &mut window.surface,
-        cells: &rt.term_cells,
-        cols: rt.term_buf.cols(),
-        cursor_col: Some(rt.term_buf.cursor_col()),
-        cursor_row: Some(rt.term_buf.cursor_row()),
-        cursor_visible: rt.cursor_visible,
-    });
-    rt.desktop.invalidate_window(term_window);
-    rt.term_dirty = false;
-}
-
-// ── LatticeTerminal ──────────────────────────────────────────
-
-pub struct LatticeTerminal;
-
-impl carrier::terminal::Terminal for LatticeTerminal {
-    fn write_str(&mut self, s: &str) {
-        if let Some(ref mut out) = *PIPE_STDOUT.lock() {
-            out.push_str(s);
-        } else {
-            let mut rt = RUNTIME.lock();
-            if let Some(ref mut r) = *rt {
-                r.term_buf.put_str(s);
-                r.term_dirty = true;
-            }
-        }
-    }
-    fn read_byte(&mut self) -> Option<u8> {
-        loop {
-            if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
-                return Some(ch);
-            }
-            runtime_tick_no_fb();
-        }
-    }
-    fn input_available(&self) -> bool {
-        nitrogen::ps2::keyboard::input_available()
-    }
-    fn set_stdin(&mut self, data: String) {
-        *PIPE_STDIN.lock() = Some(data);
-    }
-    fn take_stdout(&mut self) -> Option<String> {
-        PIPE_STDOUT.lock().take()
-    }
-    fn take_stdin(&mut self) -> Option<String> {
-        PIPE_STDIN.lock().take()
-    }
-    fn arm_pipe_stdout(&mut self) {
-        *PIPE_STDOUT.lock() = Some(String::new());
-    }
-    fn clear_pipe_stdin(&mut self) {
-        *PIPE_STDIN.lock() = None;
-    }
-}
-
-static PIPE_STDIN: Mutex<Option<String>> = Mutex::new(None);
-static PIPE_STDOUT: Mutex<Option<String>> = Mutex::new(None);
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 
@@ -1196,30 +562,18 @@ pub fn set_render_fn(f: fn()) {
     *RENDER_FN.lock() = Some(f);
 }
 
-/// Run input polling, event processing, and timer logic **without** rendering.
-///
-/// This is the public entry point so the kernel can call it **before**
-/// acquiring the `KERNEL` lock for framebuffer rendering.  Keeping the
-/// two phases separate avoids a deadlock when `process_events()` handlers
-/// (e.g. file manager) re-enter the kernel VFS layer which also needs
-/// the `KERNEL` lock.
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
     poll_mouse_state();
     poll_keyboard();
-    update_clock();
+    clock::update_clock();
     chrono_tick(now);
 
-    // Tick all registered services (WiFi, audio, USB, etc.).
-    // Services are registered externally and Solvent knows nothing
-    // about them — it only provides the tick dispatch mechanism.
     for service in SERVICES.lock().iter_mut() {
         service.tick(now);
     }
 
-    // Sync network state to the desktop every ~20 ticks.
-    // The state snapshot is written by an external WifiService.
     if now % 20 == 0 {
         let snap = NETWORK_SNAPSHOT.lock();
         let aps = snap.aps.clone();
@@ -1250,7 +604,7 @@ pub fn tick_core(now: u64) {
     }
 }
 
-fn runtime_tick_no_fb() {
+pub fn runtime_tick_no_fb() {
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -1273,6 +627,9 @@ fn runtime_tick_no_fb() {
         }
         due
     });
+    // Release RENDERING_SUSPENDED before calling render_fn, otherwise
+    // render() will see it as already-suspended and early-return,
+    // causing the display to hang permanently (e.g. during shell input).
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         if let Some(render_fn) = *RENDER_FN.lock() {
@@ -1281,8 +638,6 @@ fn runtime_tick_no_fb() {
     }
 }
 
-/// Consume the `frame_due` flag from `RUNTIME` and return whether a frame
-/// should be rendered.  Must be called **after** `tick_core()`.
 pub fn consume_frame_due() -> bool {
     RUNTIME.lock().as_mut().map_or(false, |r| {
         let due = r.frame_due;
@@ -1292,13 +647,6 @@ pub fn consume_frame_due() -> bool {
 }
 
 pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
-    // Immediate framebuffer flushing is currently disabled.  Debug messages
-    // are delivered via the lock-free ring buffer and drained by the compositor.
-    // If re-enabled, set_framebuffer must be called here every frame because
-    // FramebufferGuard may change between frames.
-    // let virt = fb.pixels_mut().as_mut_ptr();
-    // nitrogen::debug::set_framebuffer(virt, fb.width(), fb.height(), fb.stride());
-
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
@@ -1327,6 +675,8 @@ pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
         r.frame_due = false;
         due
     });
+    // Release RENDERING_SUSPENDED before calling render(), otherwise
+    // render() will see it as already-suspended and early-return.
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         render(fb);
@@ -1342,7 +692,7 @@ pub fn write_terminal(s: &str) {
 
 // ── Rendering suspend / resume ───────────────────────────────
 
-static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
+pub(crate) static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 pub fn suspend_rendering() {
     RENDERING_SUSPENDED.store(true, core::sync::atomic::Ordering::SeqCst);
@@ -1436,11 +786,10 @@ pub fn ensure_terminal_window() -> Option<WindowId> {
     Some(id)
 }
 
-// ── Editor / Settings bridge (re-exports from submodules) ────
+// ── Editor / Settings bridge ─────────────────────────────────
 pub use editor_bridge::editor_handle_key;
 pub use settings_bridge::settings_handle_key;
 
-/// Ensure an editor window exists.
 pub fn ensure_editor_window() -> Option<WindowId> {
     RUNTIME
         .lock()
@@ -1450,7 +799,7 @@ pub fn ensure_editor_window() -> Option<WindowId> {
 
 // ── Explorer ─────────────────────────────────────────────────
 
-fn render_explorer(rt: &mut RuntimeState) {
+pub(crate) fn render_explorer(rt: &mut RuntimeState) {
     let explorer = match rt.explorer.as_mut() {
         Some(e) => e,
         None => return,
@@ -1485,26 +834,9 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
     let ext_lower = ext.to_lowercase();
     let is_text = matches!(
         ext_lower.as_str(),
-        "txt"
-            | "md"
-            | "log"
-            | "toml"
-            | "rs"
-            | "c"
-            | "h"
-            | "py"
-            | "js"
-            | "json"
-            | "xml"
-            | "yml"
-            | "yaml"
-            | "ini"
-            | "cfg"
-            | "sh"
-            | "bat"
-            | "env"
-            | "gitignore"
-            | "lock"
+        "txt" | "md" | "log" | "toml" | "rs" | "c" | "h" | "py" | "js"
+            | "json" | "xml" | "yml" | "yaml" | "ini" | "cfg" | "sh" | "bat"
+            | "env" | "gitignore" | "lock"
     );
 
     if is_text {
@@ -1542,61 +874,31 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
     }
 
     match ext_lower.as_str() {
-        "bmp" => {
-            crate::viewers::open_bmp(rt, path, name);
-            return;
-        }
+        "bmp" => { crate::viewers::open_bmp(rt, path, name); return; }
         #[cfg(feature = "minipng")]
-        "png" => {
-            crate::viewers::open_png(rt, path, name);
-            return;
-        }
-        "wav" => {
-            crate::viewers::open_wav(rt, path, name);
-            return;
-        }
+        "png" => { crate::viewers::open_png(rt, path, name); return; }
+        "wav" => { crate::viewers::open_wav(rt, path, name); return; }
         #[cfg(feature = "rmp3")]
-        "mp3" => {
-            crate::viewers::open_mp3(rt, path, name);
-            return;
-        }
+        "mp3" => { crate::viewers::open_mp3(rt, path, name); return; }
         #[cfg(feature = "shiguredo_mp4")]
-        "mp4" => {
-            crate::viewers::open_mp4(rt, path, name);
-            return;
-        }
-        "tar" | "gz" | "xz" => {
-            crate::viewers::open_tar(rt, path, name);
-            return;
-        }
+        "mp4" => { crate::viewers::open_mp4(rt, path, name); return; }
+        "tar" | "gz" | "xz" => { crate::viewers::open_tar(rt, path, name); return; }
         _ => {}
     }
 
     let app_name = app.unwrap_or("Unknown");
     let msg = alloc::format!(
         "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
-        name,
-        ext,
-        app_name,
-        app_name
+        name, ext, app_name, app_name
     );
     let cols = 50;
     let rows = (msg.lines().count() as u32) + 3;
     let id = rt.desktop.wm.create_titled_window(
-        200,
-        160,
-        cols * GLYPH_W,
-        rows * GLYPH_H,
-        0x1a1a0d,
-        "Open File",
+        200, 160, cols * GLYPH_W, rows * GLYPH_H, 0x1a1a0d, "Open File",
     );
     if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let _ = crate::menu_actions::render_text_into_surface(
-            &mut w.surface,
-            &msg,
-            cols,
-            0xFFFFCC,
-            0x1a1a0d,
+            &mut w.surface, &msg, cols, 0xFFFFCC, 0x1a1a0d,
         );
     }
     rt.desktop.wm.raise_to_top(id);
