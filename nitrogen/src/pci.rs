@@ -4,7 +4,7 @@
 //! for unified hardware management. No kernel or boot crate dependencies — only
 //! `x86_64`, `alloc`, and `log`.
 
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::port::PortWriter;
 
@@ -17,6 +17,35 @@ use crate::port::PortWriter;
 //
 // These statics are populated once by the kernel after it parses the
 // MCFG ACPI table.
+
+/// NMI-safe spinlock for PCI config space (CF8/CFC) access.
+/// Protects the address/data pair from interleaving between normal
+/// and NMI recovery paths.
+static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// Acquire the PCI config space lock (NMI-safe spinlock).
+#[inline]
+fn pci_config_lock_acquire() {
+    let mut retries = 0;
+    while PCI_CONFIG_LOCK.compare_exchange_weak(
+        false,
+        true,
+        Ordering::Acquire,
+        Ordering::Relaxed,
+    ).is_err() {
+        retries += 1;
+        if retries > 10000 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Release the PCI config space lock.
+#[inline]
+fn pci_config_lock_release() {
+    PCI_CONFIG_LOCK.store(false, Ordering::Release);
+}
 
 static ECAM_BASE: AtomicU64 = AtomicU64::new(0);
 static PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
@@ -236,36 +265,53 @@ impl PciConfigSpace {
         Self::write_config_dword_raw(bus, device, function, offset, value);
     }
 
-    /// Write a raw WORD to PCI configuration space.
+    /// Write a raw DWORD to PCI configuration space (internal, unlocked).
     ///
-    /// Uses the existing dword at the aligned address, modifies only the
-    /// relevant 16-bit half, and writes it back. This avoids corrupting the
-    /// other half of the dword (e.g. the Status register when writing Command).
-    pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
-        let aligned = offset & !3;
-        let shift = if offset % 4 < 2 { 0 } else { 16 };
-        let existing = Self::read_config_dword(bus, device, function, aligned);
-        let masked = existing & !(0xFFFFu32 << shift);
-        Self::write_config_dword_raw(
-            bus,
-            device,
-            function,
-            aligned,
-            masked | ((value as u32) << shift),
-        );
-    }
-
-    /// Write a raw DWORD to PCI configuration space.
-    ///
-    /// This is a low-level mechanism. Use `write_config_dword` on `PciConfigSpace`
-    /// when you need to update the cached header fields as well.
-    pub fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+    /// Caller must hold PCI_CONFIG_LOCK.
+    fn write_config_dword_unlocked(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
         let mut data_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
 
         addr_writer.write_safe(address);
         data_writer.write_safe(value);
+    }
+
+    /// Write a raw WORD to PCI configuration space.
+    ///
+    /// Uses the existing dword at the aligned address, modifies only the
+    /// relevant 16-bit half, and writes it back. This avoids corrupting the
+    /// other half of the dword (e.g. the Status register when writing Command).
+    ///
+    /// NMI-safe: serializes CF8/CFC access to prevent interleaving with
+    /// MMIO NMI recovery path.
+    pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
+        pci_config_lock_acquire();
+        let aligned = offset & !3;
+        let shift = if offset % 4 < 2 { 0 } else { 16 };
+        let existing = Self::read_config_dword(bus, device, function, aligned);
+        let masked = existing & !(0xFFFFu32 << shift);
+        Self::write_config_dword_unlocked(
+            bus,
+            device,
+            function,
+            aligned,
+            masked | ((value as u32) << shift),
+        );
+        pci_config_lock_release();
+    }
+
+    /// Write a raw DWORD to PCI configuration space.
+    ///
+    /// This is a low-level mechanism. Use `write_config_dword` on `PciConfigSpace`
+    /// when you need to update the cached header fields as well.
+    ///
+    /// NMI-safe: serializes CF8/CFC access to prevent interleaving with
+    /// MMIO NMI recovery path.
+    pub fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
+        pci_config_lock_acquire();
+        Self::write_config_dword_unlocked(bus, device, function, offset, value);
+        pci_config_lock_release();
     }
 }
 

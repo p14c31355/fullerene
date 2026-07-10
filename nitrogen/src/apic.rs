@@ -30,6 +30,11 @@ impl ApicFlags {
     pub const TIMER_PERIODIC: u32 = 1 << 17;
     pub const TIMER_ONESHOT: u32 = 0; // Bit 17 = 0 → one-shot mode
     pub const TIMER_MASKED: u32 = 1 << 16;
+
+    // LVT delivery mode bits [10:8]
+    // 000 = Fixed, 010 = SMI, 100 = NMI, 101 = INIT, 111 = ExtINT
+    pub const DELIVERY_MODE_FIXED: u32 = 0 << 8;
+    pub const DELIVERY_MODE_NMI: u32 = 4 << 8;
 }
 
 /// Default IO APIC base address

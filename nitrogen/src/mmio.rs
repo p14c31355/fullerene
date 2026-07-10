@@ -30,6 +30,7 @@
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
 use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 // ============================================================================
 //  Cache management
@@ -134,14 +135,31 @@ impl<T> SafeReadResult<T> {
 /// *after* the config-space check.  True hang prevention requires platform
 /// mechanisms (e.g. PCIe AER, SMI watchdog, or an external timeout).
 /// These checks catch ~99% of real-world cases encountered during development.
-#[inline]
+#[inline(never)]
 pub fn checked_read_u32(addr: *const u32, health: Option<&PciHealth>) -> SafeReadResult<u32> {
     if let Some(h) = health {
         if !h.is_device_present() {
             return SafeReadResult::DeviceGone;
         }
     }
+
+    // If watchdog is armed but not yet active, activate it for this read.
+    // If already active, keep it active (multi-read protection).
+    let was_active = MMIO_WATCHDOG_ACTIVE.load(Ordering::Relaxed);
+    if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) && !was_active {
+        MMIO_WATCHDOG_ACTIVE.store(true, Ordering::Release);
+        arm_watchdog_timer();
+    }
+
     let val = unsafe { core::ptr::read_volatile(addr) };
+
+    // Only disarm if we activated it (single-read case).
+    // Multi-read callers must explicitly call disarm_mmio_watchdog().
+    if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) && !was_active {
+        MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
+        disarm_mmio_watchdog();
+    }
+
     if val == 0xFFFF_FFFF {
         return SafeReadResult::MasterAbort;
     }
@@ -447,5 +465,180 @@ impl Drop for DmaRegion {
         } else if self.len != 0 {
             log::warn!("DmaRegion dropped without free()");
         }
+    }
+}
+
+// ============================================================================
+//  MMIO NMI Watchdog — hang recovery for stalled PCIe reads
+// ============================================================================
+
+static MMIO_WATCHDOG_ARMED: AtomicBool = AtomicBool::new(false);
+static MMIO_WATCHDOG_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MMIO_WATCHDOG_DEADLINE: AtomicU64 = AtomicU64::new(0);
+
+// Packed BDF: bits [7:0]=bus, [15:8]=dev, [23:16]=func
+static MMIO_WATCHDOG_PCI_BDF: AtomicU32 = AtomicU32::new(0);
+static MMIO_WATCHDOG_BRIDGE_BDF: AtomicU32 = AtomicU32::new(0);
+
+// Saved LVT timer value to restore after NMI recovery
+static MMIO_WATCHDOG_SAVED_LVT: AtomicU32 = AtomicU32::new(0);
+static MMIO_WATCHDOG_SAVED_INITCNT: AtomicU32 = AtomicU32::new(0);
+
+/// Extern callback: switch APIC timer to NMI one-shot mode.
+/// Set by the kernel at boot; points to a function that reprograms
+/// the LAPIC LVT_TIMER register for NMI delivery.
+static mut MMIO_WATCHDOG_ARM_TIMER_FN: Option<fn()> = None;
+
+/// Extern callback: restore APIC timer to periodic mode.
+/// Set by the kernel at boot; points to a function that restores
+/// the LAPIC timer to its original periodic configuration.
+static mut MMIO_WATCHDOG_RESTORE_TIMER_FN: Option<fn()> = None;
+
+/// Register kernel-provided APIC timer switch callbacks.
+///
+/// Must be called once during kernel init, before any WiFi MMIO access.
+pub fn register_watchdog_timer_callbacks(arm_fn: fn(), restore_fn: fn()) {
+    unsafe {
+        MMIO_WATCHDOG_ARM_TIMER_FN = Some(arm_fn);
+        MMIO_WATCHDOG_RESTORE_TIMER_FN = Some(restore_fn);
+    }
+}
+
+/// Save the current APIC LVT timer configuration for later restoration.
+/// Called by the kernel's arm callback so the NMI handler can restore it.
+pub fn watchdog_save_lvt(lvt: u32, initcnt: u32) {
+    MMIO_WATCHDOG_SAVED_LVT.store(lvt, Ordering::SeqCst);
+    MMIO_WATCHDOG_SAVED_INITCNT.store(initcnt, Ordering::SeqCst);
+}
+
+/// Return the saved LVT timer value (used by NMI handler to restore timer).
+pub fn watchdog_saved_lvt() -> u32 {
+    MMIO_WATCHDOG_SAVED_LVT.load(Ordering::SeqCst)
+}
+
+/// Return the saved initial count (used by NMI handler to restore timer).
+pub fn watchdog_saved_initcnt() -> u32 {
+    MMIO_WATCHDOG_SAVED_INITCNT.load(Ordering::SeqCst)
+}
+
+/// Arm the MMIO NMI watchdog.
+///
+/// After calling this, the next `checked_read_u32` will reprogram the
+/// APIC timer to deliver an NMI after `deadline_tsc`.  If the MMIO read
+/// stalls, the NMI fires, the PCI device is disabled via port I/O, and
+/// the link is retrained so the stalled `mov` completes with `0xFFFFFFFF`.
+pub fn arm_mmio_watchdog(
+    deadline_tsc: u64,
+    pci_bdf: (u8, u8, u8),
+    bridge_bdf: Option<(u8, u8, u8)>,
+) {
+    MMIO_WATCHDOG_DEADLINE.store(deadline_tsc, Ordering::Release);
+    MMIO_WATCHDOG_PCI_BDF.store(
+        pci_bdf.0 as u32 | ((pci_bdf.1 as u32) << 8) | ((pci_bdf.2 as u32) << 16),
+        Ordering::Release,
+    );
+    if let Some((b, d, f)) = bridge_bdf {
+        MMIO_WATCHDOG_BRIDGE_BDF.store(
+            b as u32 | ((d as u32) << 8) | ((f as u32) << 16),
+            Ordering::Release,
+        );
+    } else {
+        MMIO_WATCHDOG_BRIDGE_BDF.store(0, Ordering::Release);
+    }
+    MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
+    MMIO_WATCHDOG_ARMED.store(true, Ordering::Release);
+}
+
+/// Disarm the MMIO NMI watchdog and restore the APIC timer.
+pub fn disarm_mmio_watchdog() {
+    MMIO_WATCHDOG_ARMED.store(false, Ordering::Release);
+    MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
+    if let Some(restore) = unsafe { MMIO_WATCHDOG_RESTORE_TIMER_FN } {
+        restore();
+    }
+}
+
+/// Called internally by `checked_read_u32` when the watchdog is armed.
+/// Switches the APIC timer to NMI one-shot mode.
+fn arm_watchdog_timer() {
+    if let Some(arm) = unsafe { MMIO_WATCHDOG_ARM_TIMER_FN } {
+        arm();
+    }
+}
+
+/// Query whether the NMI watchdog has fired (for use by the NMI handler).
+pub fn mmio_watchdog_armed() -> bool {
+    MMIO_WATCHDOG_ARMED.load(Ordering::Acquire)
+}
+
+/// Check if the NMI fired within the watchdog window (for the NMI handler).
+pub fn mmio_watchdog_expired() -> bool {
+    MMIO_WATCHDOG_ARMED.load(Ordering::Acquire)
+}
+
+// ── NMI recovery trigger flag ─────
+
+static MMIO_NMI_RECOVERY_TRIGGERED: AtomicBool = AtomicBool::new(false);
+
+pub fn mmio_watchdog_recovery_triggered() -> bool {
+    MMIO_NMI_RECOVERY_TRIGGERED.load(Ordering::Acquire)
+}
+
+pub fn clear_watchdog_recovery_trigger() {
+    MMIO_NMI_RECOVERY_TRIGGERED.store(false, Ordering::Release);
+}
+
+/// Called by the NMI handler as the main recovery path:
+/// 1. disable PCI endpoint via port I/O
+/// 2. trigger link retrain
+/// 3. set recovery trigger flag
+pub fn mmio_watchdog_nmi_recovery() {
+    let bdf = MMIO_WATCHDOG_PCI_BDF.load(Ordering::Acquire);
+    let (bus, dev, func) = (bdf as u8, (bdf >> 8) as u8, (bdf >> 16) as u8);
+
+    let cmd = crate::pci::PciConfigSpace::read_config_word(bus, dev, func, 4);
+    crate::pci::PciConfigSpace::write_config_word_raw(
+        bus,
+        dev,
+        func,
+        4,
+        cmd & !(0x02 | 0x04),
+    );
+
+    let bridge_bdf = MMIO_WATCHDOG_BRIDGE_BDF.load(Ordering::Acquire);
+    if bridge_bdf != 0 {
+        let (b, d, f) = (bridge_bdf as u8, (bridge_bdf >> 8) as u8, (bridge_bdf >> 16) as u8);
+        if let Some(lnk_off) = crate::pci_error::find_pcie_cap(b, d, f)
+            .and_then(|off| off.checked_add(0x10))
+            .filter(|&off| off <= 0xFC)
+        {
+            let ctl = crate::pci::PciConfigSpace::read_config_word(b, d, f, lnk_off as u8);
+            crate::pci::PciConfigSpace::write_config_word_raw(
+                b,
+                d,
+                f,
+                lnk_off as u8,
+                ctl | (1 << 5),
+            );
+        }
+    }
+
+    MMIO_WATCHDOG_ARMED.store(false, Ordering::Release);
+    MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
+    if let Some(restore) = unsafe { MMIO_WATCHDOG_RESTORE_TIMER_FN } {
+        restore();
+    }
+
+    MMIO_NMI_RECOVERY_TRIGGERED.store(true, Ordering::Release);
+}
+
+// ── NMI trampoline (halt loop) ────
+
+/// NMI handler redirects iretq here after MMIO watchdog recovery.
+/// This function just halts; the next periodic timer interrupt detects
+/// the recovery trigger flag and jumps to the scheduler loop.
+pub extern "C" fn mmio_nmi_recovery_trampoline() -> ! {
+    loop {
+        x86_64::instructions::hlt();
     }
 }

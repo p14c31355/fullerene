@@ -160,12 +160,12 @@ pub fn init() {
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
 
-    // Register WiFi service — drives iwlwifi init and tick, bridges
-    // driver state to the desktop UI through shared statics.
-    // Solvent itself knows nothing about WiFi.
-    // The driver context was set by the `wifi` init step earlier.
-    crate::wifi_service::init_and_register();
-    petroleum::serial::serial_log(format_args!("wifi_service registered\n"));
+    crate::interrupts::apic::register_mmio_watchdog();
+    petroleum::serial::serial_log(format_args!("MMIO NMI watchdog registered\n"));
+
+    // this function is hanger
+    // crate::wifi_service::init_and_register();
+    // petroleum::serial::serial_log(format_args!("wifi_service registered\n"));
 }
 
 /// Once the first frame renders successfully, disable the boot-screen

@@ -5,8 +5,10 @@
 
 use nitrogen::apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};
 use nitrogen::apic_controller::ApicController;
+use nitrogen::mmio;
 use petroleum::common::utils::reset_mutex_lock;
 use spin::Mutex;
+use x86_64::instructions;
 use x86_64::registers::model_specific::Msr;
 
 /// Hardware interrupt vectors
@@ -177,4 +179,61 @@ pub fn init_apic() {
 
     use super::syscall::setup_syscall;
     setup_syscall();
+}
+
+// ── MMIO NMI watchdog timer switching ───────────────────────────
+
+const WATCHDOG_NMI_INITIAL_COUNT: u32 = 30_000_000; // ~4.8s at 100MHz bus /16 div
+
+fn arm_watchdog_timer_impl() {
+    instructions::interrupts::without_interrupts(|| {
+        let guard = APIC_CONTROLLER.lock();
+        if let Some(ref ctrl) = *guard {
+            let lvt = ctrl.lapic_read(ApicOffsets::LVT_TIMER);
+            let initcnt = ctrl.lapic_read(ApicOffsets::TMRINITCNT);
+            mmio::watchdog_save_lvt(lvt, initcnt);
+
+            ctrl.lapic_write(
+                ApicOffsets::LVT_TIMER,
+                ApicFlags::DELIVERY_MODE_NMI | ApicFlags::TIMER_ONESHOT,
+            );
+            ctrl.lapic_write(ApicOffsets::TMRINITCNT, WATCHDOG_NMI_INITIAL_COUNT);
+        }
+    });
+}
+
+fn restore_watchdog_timer_impl() {
+    // NMI-safe: use try_lock to avoid blocking in the NMI handler.
+    // If the lock is held, force-reset it — the interrupted context that held it
+    // is being abandoned by the watchdog recovery.
+    let mut guard = APIC_CONTROLLER.try_lock();
+    if guard.is_none() {
+        unsafe {
+            reset_mutex_lock(&APIC_CONTROLLER);
+        }
+        guard = APIC_CONTROLLER.try_lock();
+    }
+    if let Some(guard) = guard {
+        if let Some(ref ctrl) = *guard {
+            let saved_lvt = mmio::watchdog_saved_lvt();
+            let saved_initcnt = mmio::watchdog_saved_initcnt();
+            // IMPORTANT: Write TMRINITCNT BEFORE LVT_TIMER.
+            // At this point TMRINITCNT still holds WATCHDOG_NMI_INITIAL_COUNT.
+            // If LVT_TIMER is written first (periodic mode), the timer would start
+            // at the stale watchdog count (~4.8s) before the correct count is restored.
+            ctrl.lapic_write(ApicOffsets::TMRINITCNT, saved_initcnt);
+            ctrl.lapic_write(ApicOffsets::LVT_TIMER, saved_lvt);
+        }
+    }
+}
+
+/// Force-reset the APIC controller lock. Safe to call during NMI recovery.
+pub unsafe fn reset_apic_controller_lock() {
+    unsafe { reset_mutex_lock(&APIC_CONTROLLER); }
+}
+
+/// Register the MMIO NMI watchdog timer callbacks with the nitrogen mmio module.
+/// Must be called once after APIC init and before WiFi init.
+pub fn register_mmio_watchdog() {
+    mmio::register_watchdog_timer_callbacks(arm_watchdog_timer_impl, restore_watchdog_timer_impl);
 }
