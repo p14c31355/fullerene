@@ -64,9 +64,9 @@ pub fn scheduler_loop() -> ! {
     gui::set_render_fn(gui::render);
 
     // Register NMI recovery restart context with a dedicated stack.
-    let recovery_rsp = unsafe {
-        let base = NMI_RECOVERY_STACK.0.as_ptr() as u64;
-        VirtAddr::new((base + NMI_RECOVERY_STACK.0.len() as u64) & !15u64)
+    let recovery_rsp = {
+        let base = core::ptr::addr_of!(NMI_RECOVERY_STACK) as u64;
+        VirtAddr::new((base + core::mem::size_of::<[u8; 4096]>() as u64) & !15u64)
     };
     set_recovery_restart(
         recovery_rsp,
