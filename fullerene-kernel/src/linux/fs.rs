@@ -816,5 +816,5 @@ linux_stub_errno!(sys_truncate, ENOSYS);
 linux_stub_errno!(sys_ftruncate, ENOSYS);
 linux_stub_errno!(sys_fsync, ENOSYS);
 linux_stub_errno!(sys_fdatasync, ENOSYS);
-linux_stub!(sys_fchmod, 0);
-linux_stub!(sys_fchmodat, 0);
+linux_stub_errno!(sys_fchmod, ENOSYS);
+linux_stub_errno!(sys_fchmodat, ENOSYS);

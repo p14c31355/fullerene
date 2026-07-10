@@ -17,12 +17,12 @@
 | 22 | yield | ✅ Full | |
 | 30 | map_memory | ✅ Full | |
 || 31 | unmap_memory | ✅ Full | |
-|| 32 | protect_memory | ⚠️ Stub | |
+|| 32 | protect_memory | ✅ Full | Page table flag update via set_page_flags |
 || 33 | query_memory | ✅ Full | |
 || 40 | create_event | ✅ Full | Events with edge-triggered signaling
 | 41 | wait_event | ✅ Full | |
 | 42 | signal_event | ✅ Full | |
-| 43 | subscribe_event | ⚠️ Stub | |
+| 43 | subscribe_event | ✅ Full | Per-process subscription list |
 | 50 | create_thread | ✅ Full | |
 | 51 | join_thread | ✅ Full | |
 | 52 | detach_thread | ✅ Full | |

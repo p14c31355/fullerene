@@ -2,6 +2,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use petroleum::common::memory::UserSlice;
+use petroleum::page_table::types::PageTableHelper;
 use x86_64::VirtAddr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -116,8 +117,59 @@ pub(crate) fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
     })
 }
 
-pub(crate) fn syscall_protect_memory(_addr: u64, _length: u64, _prot: u64) -> SyscallResult {
-    Err(SyscallError::NotSupported)
+pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> SyscallResult {
+    let len = length as usize;
+    if len == 0 || (addr % 4096) != 0 {
+        return Err(SyscallError::InvalidArgument);
+    }
+    let start_addr = VirtAddr::try_new(addr)
+        .map_err(|_| SyscallError::InvalidArgument)?;
+    let end_vaddr = addr.checked_add(length - 1)
+        .ok_or(SyscallError::InvalidArgument)?;
+    let end_addr = VirtAddr::try_new(end_vaddr)
+        .map_err(|_| SyscallError::InvalidArgument)?;
+    if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
+        return Err(SyscallError::PermissionDenied);
+    }
+
+    let _read = (prot & PROT_READ) != 0;
+    let write = (prot & PROT_WRITE) != 0;
+    let exec = (prot & PROT_EXEC) != 0;
+
+    with_kernel_mut_result(|k| -> SyscallResult {
+        let memory = &mut k.memory;
+        let mgr = memory.manager.as_mut().ok_or(SyscallError::OutOfMemory)?;
+        let ptm = mgr.page_table_manager_mut();
+        let num_pages = (len + 4095) / 4096;
+
+        for i in 0..num_pages {
+            let vaddr = addr as usize + i * 4096;
+
+            // Get current physical frame
+            let phys = ptm.translate_address(vaddr)
+                .map_err(|_| SyscallError::InvalidArgument)?;
+            if phys == 0 {
+                // Page not mapped — skip
+                continue;
+            }
+
+            // Build new flags
+            let mut flags = x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+            if write {
+                flags |= x86_64::structures::paging::PageTableFlags::WRITABLE;
+            }
+            if !exec {
+                flags |= x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+            }
+
+            // Update flags via the PageTableHelper API
+            ptm.set_page_flags(vaddr, flags)
+                .map_err(|_| SyscallError::OutOfMemory)?;
+        }
+
+        Ok(0)
+    })
 }
 
 pub(crate) fn syscall_query_memory(info_buf: *mut u8, buf_size: usize) -> SyscallResult {

@@ -27,6 +27,7 @@ use crate::scheduler_context::SCHEDULER;
 #[repr(align(16))]
 struct AlignedStack([u8; 65536]);
 
+#[allow(dead_code)]
 static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack([0u8; 65536]);
 
 /// Set the launch‑shell flag from the solvent side.

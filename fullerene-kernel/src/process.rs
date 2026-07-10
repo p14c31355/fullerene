@@ -9,7 +9,6 @@ use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::sync::atomic::Ordering;
 use petroleum::common::logging::SystemError;
 use petroleum::mem_debug;
 use petroleum::page_table::PageTableHelper as _;
@@ -260,10 +259,12 @@ impl HandleTable {
     }
 }
 
-/// Per-process resources: file descriptors, kernel object handles.
+/// Per-process resources: file descriptors, kernel object handles, event subscriptions.
 pub struct ProcessResources {
     pub fd_table: spin::Mutex<FdTable>,
     pub handle_table: spin::Mutex<HandleTable>,
+    /// Registered event subscriptions: (event_type, event_handle)
+    pub subscriptions: spin::Mutex<alloc::vec::Vec<(u64, u64)>>,
 }
 
 impl ProcessResources {
@@ -271,6 +272,7 @@ impl ProcessResources {
         Self {
             fd_table: spin::Mutex::new(FdTable::new()),
             handle_table: spin::Mutex::new(HandleTable::new()),
+            subscriptions: spin::Mutex::new(alloc::vec::Vec::new()),
         }
     }
 

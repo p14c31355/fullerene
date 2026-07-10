@@ -134,6 +134,18 @@ pub(crate) fn syscall_signal_event(handle: u64) -> SyscallResult {
     Ok(0)
 }
 
-pub(crate) fn syscall_subscribe_event(_event_type: u64, _callback_info: u64) -> SyscallResult {
-    Err(SyscallError::NotSupported)
+pub(crate) fn syscall_subscribe_event(event_type: u64, event_handle: u64) -> SyscallResult {
+    let h = Handle::from_raw(event_handle);
+    // Validate the handle exists and is an event
+    let _ = with_handle_mut(h, |obj| {
+        let _event = map_handle!(obj, Event, _e);
+        Ok(())
+    })?;
+
+    let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
+    process::SCHEDULER.with_process(pid, |p| {
+        p.resources.subscriptions.lock().push((event_type, event_handle));
+    }).ok_or(SyscallError::NoSuchProcess)?;
+
+    Ok(0)
 }
