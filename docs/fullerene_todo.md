@@ -33,6 +33,8 @@ Priority convention:
 ### P0-3. `&'static mut` and mutable global ownership
 - [x] `with_frame_allocator` guard API (replaces raw `get_frame_allocator_mut`)
 - [x] Frame allocator access made `unsafe` with doc comment
+- [x] **SchedulerContext**: moved all scheduling state (process list, schedule index, tick counter, NMI recovery RSP/RIP) into a single `pub static SCHEDULER` with explicit lock hierarchy. Replaced old `ProcessManager` global and scattered `AtomicU64` statics in `scheduler.rs`.
+- [x] **VDSO read-only**: removed async ring-buffer (slot state machine, `VdsoFuture`, `poll_all_vdso_rings`). VDSO page now only contains read-only metadata (`time_us`, `uptime_us`, `pid`), mapped without `WRITABLE` in user page tables.
 - [ ] `FramebufferGuard` / `with_framebuffer` closure API
 - [ ] Solvent cursor fast path: use `FramebufferGuard` instead of raw address
 - [ ] Trace buffer: fix for multi-CPU safety or document single-core assumption

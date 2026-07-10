@@ -37,13 +37,15 @@ Fullerene provides a full-featured kernel with multitasking capabilities, runnin
 
 - **Full-Featured Kernel (Fullerene-Kernel)** with components including:
   - **Memory Management**: Virtual memory with page tables, heap allocation (linked-list allocator), and physical memory tracking
-  - **Process Management**: Full process creation, scheduling, and context switching capabilities
-  - **Scheduler**: Preemptive round-robin scheduler with interrupt-driven task switching
-  - **Syscall Interface**: Complete system call implementation for user-kernel communication
-  - **Filesystem**: Abstraction layer for file operations (currently in-memory implementation)
+  - **Process Management**: Full process creation, termination, and per-process resource tracking (fd tables, handle tables with generation counters)
+  - **Scheduler**: Tick-driven round-robin scheduler via `SchedulerContext` (`SCHEDULER` singleton). All scheduling state (process list, tick counter, NMI recovery) is owned by a single struct with an explicit lock hierarchy independent of the `KERNEL` context lock.
+  - **Syscall Interface**: Complete system call implementation for user-kernel communication; VDSO provides zero-copy read-only access to time and PID (no async ring buffer)
+  - **Filesystem**: Abstraction layer via `Genome` (standalone VFS crate) with `MemFileSystem`, FAT32, and exFAT backends
   - **GUI Windowing System**: Lattice-based compositor, desktop, window management, and font rendering with cursor blink and terminal surface
-  - **Hardware Interfaces**: Keyboard input, serial output, APIC/PIC interrupt handling, VirtIO-GPU support
+  - **Hardware Interfaces**: Keyboard input, serial output, APIC/PIC interrupt handling, VirtIO-GPU support, USB (XHCI/EHCI), NVMe/AHCI storage, Intel WiFi (iwlwifi), HDA audio
   - **Shell**: Nozzle-based interactive shell with line editing, command history, and extensible built-in commands
+
+- **Common Library (Petroleum)**: Shared no_std utilities used by both kernel and userspace — page table management, graphics primitives, syscall ABI numbers, VDSO layout definition, serial logging, VirtIO drivers.
 
 - **GUI Framework (Lattice)**: A no_std compositing window system providing desktop environment, window manager, scene graph, surface rendering, terminal surface with bitmap font, and cursor support.
 
@@ -53,15 +55,17 @@ Fullerene provides a full-featured kernel with multitasking capabilities, runnin
 
 - **Shell Runtime (Nozzle)**: A no_std interactive shell runtime providing line editor with history, command parser, extensible command interface, prompt, and terminal abstraction. Used by the kernel's shell and accessible via both serial and GUI terminal.
 
-For a detailed compatibility matrix, see [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md).
+- **I/O Abstraction (Carrier)**: A no_std I/O abstraction layer providing the `Terminal` trait, command dispatch with streaming pipeline support, separating data transport from data processing.
+
+- **File System Framework (Genome)**: A no_std VFS layer providing the `FileSystem` trait, `MemFileSystem`, `Vfs` dispatcher with mount-table routing, and typed `FsError` — all framework-agnostic and used by the kernel through its `VfsContext`.
 
 - **Hardware Abstraction Layer (Nitrogen)**: Driver and hardware abstraction library providing PCI enumeration, APIC/PIC interrupt controllers, PS/2 keyboard/mouse, HDA audio, VirtIO block/net/gpu, USB XHCI, NVMe/AHCI storage, iwlwifi, and framebuffer management.
 
 - **Application Framework (Solvent)**: File explorer, image/audio viewers, menu actions, and handler infrastructure for building user-facing applications on Lattice and Nozzle.
 
-- **Common Library (Petroleum)**: Shared no_std utilities for UEFI types, serial logging, memory operations, graphics primitives, bare-metal hardware detection, page table management, and VirtIO device drivers.
-
 - **Build System (Flasks)**: Automated task runner for building bootloader and kernel, ISO creation (using isobemak crate), and QEMU virtualization with configurable VGA and display backends.
+
+- **Networking (Bonder)**: A no_std network protocol stack with Ethernet, IPv4, UDP socket abstraction, and iwlwifi integration.
 
 - **Userland Placeholder (Toluene)**: Scaffolding for user-space programs in Rust (currently minimal).
 
@@ -87,15 +91,12 @@ For detailed build instructions, QEMU options, and manual build steps, see [docs
 
 ## TODO / Next Steps
 
-- **Boot Experience**: Boot splash screen with logo, progress indicator, and fade transition to desktop.
-- **Graphics / Compositor**: vsync support, BDF font importer, font compiler via build.rs.
-- **Storage**: Block cache, FAT32 filesystem, initramfs support.
-- **Input**: USB HID driver, keyboard hotplug, mouse hotplug.
-- **Userspace**: ELF loader, process abstraction, syscall layer, userspace memory isolation, user-facing applications (settings, task monitor, file browser, log viewer).
-- **Developer Experience**: CI integration, build time measurement, debug feature flags, nightly regression testing, architecture documentation (Graphics.md, Memory.md, Boot.md, etc.).
-- **Stretch Goals**: Network stack, audio output, Wayland-style compositor, SMP support, Rust userspace SDK, package manager, self-hosted build.
+See [docs/fullerene_todo.md](docs/fullerene_todo.md) for the full prioritized checklist aligned with the architecture and improvement roadmap.
 
-See issues on GitHub for tracked tasks. For a detailed checklist, refer to [docs/fullerene_todo.md](docs/fullerene_todo.md).
+Priority convention:
+- **P0** = memory safety / process isolation
+- **P1** = structural improvement (ownership, types, tests)
+- **P2** = developer experience, performance
 
 ## Contributing
 

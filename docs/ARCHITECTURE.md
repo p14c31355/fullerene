@@ -48,6 +48,8 @@ The workspace should roughly follow this dependency direction:
 
 ```text
 Fullerene Kernel  ──── Genome (VFS / filesystem)
+    │   └── scheduler_context (SCHEDULER singleton)
+    │       └── process management, VDSO metadata
     ↓
 Nitrogen (drivers)
     ↓
@@ -56,6 +58,16 @@ Solvent (runtime/orchestration)
 Resonance / ChronoLine
     ↓
 Carrier (I/O abstraction) ──── Lattice / Nozzle
+```
+
+Shared across kernel and userspace:
+
+```text
+petroleum (no_std library)
+    ├── page_table, memory, graphics
+    ├── syscall numbers + raw syscall instruction
+    ├── VDSO layout (read-only metadata page)
+    └── serial, early boot helpers
 ```
 
 New in this revision:
@@ -96,6 +108,53 @@ The kernel should NOT own:
 - desktop state
 
 Kernel code should remain thin.
+
+### Scheduler Context
+
+All scheduling state — process list, schedule index, tick counter, NMI
+recovery target — lives in a single `SchedulerContext` struct behind a
+`pub static SCHEDULER` singleton (`fullerene-kernel/src/scheduler_context.rs`).
+
+```text
+SCHEDULER (Mutex<process list>)
+    ↑ independent
+solvent runtime (internal state)
+    ↑ independent
+KERNEL (Mutex<KernelContext>)   — GUI, VFS, shell
+```
+
+The three locks are **never held simultaneously**.  The scheduler loop:
+
+1. locks `SCHEDULER` briefly to publish VDSO metadata (atomic stores),
+2. calls `solvent::tick_core()` (no `SCHEDULER` or `KERNEL` lock held),
+3. locks `KERNEL` only inside `gui::runtime_tick()` for framebuffer render.
+
+Process lifecycle functions (`create_process`, `terminate_process`) access
+`SCHEDULER` directly.  The old `ProcessManager` global has been removed;
+all existing call-sites now route through `SCHEDULER.with_process()`,
+`SCHEDULER.schedule_next()`, etc.  Convenience wrappers (`block_current`,
+`context_switch`) in `process.rs` are thin delegates to `SCHEDULER`.
+
+### VDSO (Read-Only Metadata Page)
+
+The VDSO page (`VdsoPage`) at `0x7000_0000_0000` contains **only**
+read-only metadata:
+
+```text
+Offset │ Contents
+───────┼────────────────────────────────────────
+   0   │ time_us   (AtomicU64 — wall clock µs)
+   8   │ uptime_us (AtomicU64 — monotonic µs)
+  16   │ pid       (u64)
+```
+
+- Kernel writes via its phys_offset mapping (`Ordering::Release`).
+- Userspace reads atomically with no ring transition (zero-copy for
+  `Uptime`, `GetPid`, `ClockGetTime`).
+- The page is mapped **without `WRITABLE`** in the user's page table.
+  The old ring-buffer / slot-machinery (`VdsoFuture`, `poll_all_vdso_rings`)
+  has been removed — all non-trivial syscalls go through the `syscall`
+  instruction and trap to Ring-0.
 
 Preferred direction:
 
@@ -399,6 +458,15 @@ Do not hide lifecycle dependencies behind:
 - macros
 - implicit side effects
 - hidden static initialization
+
+**Exception — SCHEDULER singleton**: The `pub static SCHEDULER` in
+`scheduler_context.rs` is an intentional global because the scheduler
+loop, interrupt handlers, and syscall dispatch all need lock-free
+access to scheduling state from arbitrary context.  The critical
+distinction is that `SCHEDULER` owns its own lock (independent of
+`KERNEL`) and exposes a controlled method surface (`with_process`,
+`schedule_next`, `block_current`, …).  No new globals should be added
+without the same level of justification and encapsulation.
 
 Prefer capability passing.
 
