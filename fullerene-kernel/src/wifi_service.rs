@@ -91,14 +91,14 @@ impl solvent::Service for WifiService {
                     .collect();
 
                 // Put connected AP first
-                aps.sort_unstable_by(|a, b| {
+                // Put connected AP first, preserving RSSI order for others
+                aps.sort_by(|a, b| {
                     match (a.connected, b.connected) {
                         (true, false) => core::cmp::Ordering::Less,
                         (false, true) => core::cmp::Ordering::Greater,
                         _ => core::cmp::Ordering::Equal,
                     }
                 });
-
                 let status = Self::convert_status(&wifi_state);
 
                 let mut snap = NETWORK_SNAPSHOT.lock();
