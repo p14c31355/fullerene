@@ -136,7 +136,9 @@ fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
                 frame.stack_pointer,
                 crate::gdt::kernel_data_selector(),
             );
+        unsafe {
             frame.as_mut().write(new_frame);
+        }
         } else {
             safe_halt();
         }
@@ -187,7 +189,28 @@ macro_rules! define_err_handler {
 
 define_no_err_handler!(divide_error_handler, 0);
 define_no_err_handler!(debug_handler, 1);
-define_no_err_handler!(nmi_handler, 2);
+
+#[unsafe(no_mangle)]
+pub extern "x86-interrupt" fn nmi_handler(mut frame: InterruptStackFrame) {
+    if nitrogen::mmio::mmio_watchdog_armed() {
+        raw_log!("NMI: MMIO watchdog expired — forcing recovery\n");
+        nitrogen::mmio::mmio_watchdog_nmi_recovery();
+        let trampoline = x86_64::VirtAddr::from_ptr(
+            nitrogen::mmio::mmio_nmi_recovery_trampoline as *const ()
+        );
+        let new_frame = InterruptStackFrameValue::new(
+            trampoline,
+            frame.code_segment,
+            frame.cpu_flags,
+            frame.stack_pointer,
+            frame.stack_segment,
+        );
+        unsafe { frame.as_mut().write(new_frame); }
+        return;
+    }
+    raw_log!("NMI: unexpected — halting\n");
+    safe_halt();
+}
 define_no_err_handler!(overflow_handler, 4);
 define_no_err_handler!(bound_range_exceeded_handler, 5);
 define_no_err_handler!(invalid_opcode_handler, 6);

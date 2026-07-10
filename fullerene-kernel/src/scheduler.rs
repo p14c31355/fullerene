@@ -21,6 +21,11 @@
 use crate::gui;
 use crate::vdso;
 use solvent;
+use core::sync::atomic::{AtomicU64, Ordering};
+use x86_64::VirtAddr;
+
+/// NMI recovery dedicated stack.
+static NMI_RECOVERY_STACK: [u8; 4096] = [0u8; 4096];
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {
@@ -53,6 +58,16 @@ pub fn scheduler_loop() -> ! {
 
     // Wire kernel renderer into Solvent so runtime ticks can paint the display.
     gui::set_render_fn(gui::render);
+
+    // Register NMI recovery restart context with a dedicated stack.
+    let recovery_rsp = {
+        let base = NMI_RECOVERY_STACK.as_ptr() as u64;
+        VirtAddr::new((base + NMI_RECOVERY_STACK.len() as u64) & !15u64)
+    };
+    set_recovery_restart(
+        recovery_rsp,
+        VirtAddr::from_ptr(mmio_recovery_restart as *const ()),
+    );
 
     // Idle loop: drive runtime ticks without a shell.
     // Shell and other apps are launched via AppGrid or context menu.
@@ -100,4 +115,39 @@ pub extern "C" fn shell_process_main() -> ! {
     crate::shell::shell_main();
     crate::process::terminate_process(crate::process::current_pid().unwrap(), 0);
     petroleum::halt_loop();
+}
+
+// ── NMI recovery restart ───────────────────────────────────────
+
+static RECOVERY_RSP: AtomicU64 = AtomicU64::new(0);
+static RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
+
+/// Set the recovery RSP and RIP for the timer ISR to use after NMI
+/// MMIO watchdog recovery.
+pub fn set_recovery_restart(rsp: VirtAddr, rip: VirtAddr) {
+    RECOVERY_RSP.store(rsp.as_u64(), Ordering::Release);
+    RECOVERY_RIP.store(rip.as_u64(), Ordering::Release);
+}
+
+/// Get the recovery RSP and RIP for the timer ISR.
+pub fn get_recovery_restart_fn() -> Option<(VirtAddr, VirtAddr)> {
+    let rsp = RECOVERY_RSP.load(Ordering::Acquire);
+    let rip = RECOVERY_RIP.load(Ordering::Acquire);
+    if rsp != 0 && rip != 0 {
+        Some((VirtAddr::new(rsp), VirtAddr::new(rip)))
+    } else {
+        None
+    }
+}
+
+/// Restart the scheduler loop after an NMI watchdog recovery.
+/// Called from the timer ISR on a fresh stack.
+#[unsafe(no_mangle)]
+pub extern "C" fn mmio_recovery_restart() -> ! {
+    petroleum::serial::serial_log(format_args!(
+        "[mmio_recovery_restart] WiFi init hung, restarting scheduler loop\n"
+    ));
+    // Safe: no locks held from the hung context on this fresh stack.
+    nitrogen::iwlwifi::force_init_failed();
+    scheduler_loop()
 }

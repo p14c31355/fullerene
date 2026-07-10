@@ -4,7 +4,7 @@
 
 use super::apic::send_eoi;
 use petroleum::port_read_u8;
-use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue};
 
 /// Macro to create input device interrupt handlers
 macro_rules! define_input_interrupt_handler {
@@ -37,10 +37,28 @@ define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
 });
 
 /// Timer interrupt handler (no preemption - scheduler loop handles yielding)
+/// Also detects NMI MMIO watchdog recovery and redirects to the scheduler loop.
 #[unsafe(no_mangle)]
-pub extern "x86-interrupt" fn timer_handler(_stack_frame: InterruptStackFrame) {
+pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
     // Increment global tick counter (lock-free atomic increment)
     super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    if nitrogen::mmio::mmio_watchdog_recovery_triggered() {
+        nitrogen::mmio::clear_watchdog_recovery_trigger();
+        let restart_fn = crate::scheduler::get_recovery_restart_fn();
+        if let Some((rsp, rip)) = restart_fn {
+            let new_frame = InterruptStackFrameValue::new(
+                rip,
+                frame.code_segment,
+                frame.cpu_flags,
+                rsp,
+                frame.stack_segment,
+            );
+            unsafe {
+                frame.as_mut().write(new_frame);
+            }
+        }
+    }
 
     send_eoi();
 }

@@ -5,6 +5,7 @@
 
 use nitrogen::apic::{ApicFlags, ApicOffsets, IO_APIC_BASE};
 use nitrogen::apic_controller::ApicController;
+use nitrogen::mmio;
 use petroleum::common::utils::reset_mutex_lock;
 use spin::Mutex;
 use x86_64::registers::model_specific::Msr;
@@ -177,4 +178,39 @@ pub fn init_apic() {
 
     use super::syscall::setup_syscall;
     setup_syscall();
+}
+
+// ── MMIO NMI watchdog timer switching ───────────────────────────
+
+const WATCHDOG_NMI_INITIAL_COUNT: u32 = 100_000_000;
+
+fn arm_watchdog_timer_impl() {
+    let guard = APIC_CONTROLLER.lock();
+    if let Some(ref ctrl) = *guard {
+        let lvt = ctrl.lapic_read(ApicOffsets::LVT_TIMER);
+        let initcnt = ctrl.lapic_read(ApicOffsets::TMRINITCNT);
+        mmio::watchdog_save_lvt(lvt, initcnt);
+
+        ctrl.lapic_write(
+            ApicOffsets::LVT_TIMER,
+            ApicFlags::DELIVERY_MODE_NMI | ApicFlags::TIMER_ONESHOT,
+        );
+        ctrl.lapic_write(ApicOffsets::TMRINITCNT, WATCHDOG_NMI_INITIAL_COUNT);
+    }
+}
+
+fn restore_watchdog_timer_impl() {
+    let guard = APIC_CONTROLLER.lock();
+    if let Some(ref ctrl) = *guard {
+        let saved_lvt = mmio::watchdog_saved_lvt();
+        let saved_initcnt = mmio::watchdog_saved_initcnt();
+        ctrl.lapic_write(ApicOffsets::LVT_TIMER, saved_lvt);
+        ctrl.lapic_write(ApicOffsets::TMRINITCNT, saved_initcnt);
+    }
+}
+
+/// Register the MMIO NMI watchdog timer callbacks with the nitrogen mmio module.
+/// Must be called once after APIC init and before WiFi init.
+pub fn register_mmio_watchdog() {
+    mmio::register_watchdog_timer_callbacks(arm_watchdog_timer_impl, restore_watchdog_timer_impl);
 }

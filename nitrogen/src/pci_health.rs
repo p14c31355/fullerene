@@ -85,6 +85,10 @@ impl PciHealth {
         self
     }
 
+    pub fn upstream_bridge(&self) -> Option<(u8, u8, u8)> {
+        self.upstream_bridge
+    }
+
     /// Quick check: is the device still visible on the PCI bus?
     /// This is a single config read — safe and fast.
     pub fn is_device_present(&self) -> bool {

@@ -59,12 +59,26 @@ pub fn wifi_init_completed() -> bool {
 /// Called by the kernel when the incremental init has been running
 /// too long (PCIe MMIO hangs on real hardware) to prevent the idle
 /// loop from being permanently blocked.
+///
+/// Uses `try_lock` so that it can be called from the NMI watchdog
+/// path without deadlocking (the lock may be held by the hung context).
 pub fn force_init_failed() {
     if WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Relaxed) {
         return;
     }
-    // Clean up any partially-initialised resources.
-    let mut ctx = WIFI_INIT_CTX.lock();
+    // Always mark as failed (lock-free statics) so the tick loop
+    // stops attempting init, even if the Mutex is perma-locked.
+    set_init_phase(WifiInitPhase::Failed);
+    WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+
+    // Try to clean up resources – skip if lock is held by hung context.
+    let mut ctx = match WIFI_INIT_CTX.try_lock() {
+        Some(c) => c,
+        None => {
+            debug::print("iwlwifi", "step: force_init_failed (lock held, skip cleanup)");
+            return;
+        }
+    };
     let _ = ctx.mmio_device.take();
     // Disable PCI bus-mastering before freeing DMA regions
     if let Some(ref pci) = ctx.pci_dev {
@@ -92,9 +106,7 @@ pub fn force_init_failed() {
             ring.free(c);
         }
     }
-    set_init_phase(WifiInitPhase::Failed);
     drop(ctx);
-    WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
     debug::print("iwlwifi", "step: force_init_failed (timeout)");
 }
 
@@ -241,6 +253,13 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            let bdf_info = {
+                let ctx = WIFI_INIT_CTX.lock();
+                pci_bdf_from_ctx(&ctx)
+            };
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
             debug::print("iwlwifi", "step: mmio_reset");
             IwlWifiDevice::reset_device(mmio);
             debug::print("iwlwifi", "step: mmio_clock_req");
@@ -248,6 +267,7 @@ pub fn try_init_wifi_device_step() {
                 core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
             }
             mmio::write_barrier();
+            mmio::disarm_mmio_watchdog();
             debug::print("iwlwifi", "step: mmio_check_clock");
             let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();
@@ -261,8 +281,6 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            // Record MAC-clock poll start TSC and transition to
-            // per-tick polling so the event loop is not blocked.
             let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
@@ -278,24 +296,30 @@ pub fn try_init_wifi_device_step() {
                 (ctx.mmio, ctx.alive_start_tsc)
             };
             const TIMEOUT_CYCLES: u64 = 4_000_000_000;
+            let bdf_info = {
+                let ctx = WIFI_INIT_CTX.lock();
+                pci_bdf_from_ctx(&ctx)
+            };
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
             let mac_acquired = {
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
-                // Single checked read per tick — no busy-loop.
                 match mmio::checked_read_u32(
                     unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
                     health,
                 ) {
                     mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                     mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
+                        mmio::disarm_mmio_watchdog();
                         debug::print("iwlwifi", "step: ERR mac_abort_or_gone");
                         set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
                     _ => {
-                        // Not ready yet — check timeout.
+                        mmio::disarm_mmio_watchdog();
                         if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= TIMEOUT_CYCLES {
-                            drop(ctx);
                             debug::print("iwlwifi", "step: mmio_force_mac");
                             unsafe {
                                 core::ptr::write_volatile(
@@ -313,8 +337,10 @@ pub fn try_init_wifi_device_step() {
                             if !recovery_ok {
                                 false
                             } else {
-                                // Recovery succeeded — now verify MAC_CLOCK_READY is actually set.
                                 let health = ctx.health.as_ref();
+                                if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                                    mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+                                }
                                 let clock_ready = match mmio::checked_read_u32(
                                     unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
                                     health,
@@ -322,11 +348,11 @@ pub fn try_init_wifi_device_step() {
                                     mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                                     _ => false,
                                 };
+                                mmio::disarm_mmio_watchdog();
                                 drop(ctx);
                                 clock_ready
                             }
                         } else {
-                            // Not ready yet, not timed out: try again next tick.
                             return;
                         }
                     }
@@ -339,9 +365,14 @@ pub fn try_init_wifi_device_step() {
             }
             debug::print("iwlwifi", "step: mmio_read_mac");
             let mac = {
+                if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                    mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+                }
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
-                IwlWifiDevice::read_mac(mmio, health)
+                let mac = IwlWifiDevice::read_mac(mmio, health);
+                mmio::disarm_mmio_watchdog();
+                mac
             };
             debug::print("iwlwifi", "step: mmio_mask_ints");
             unsafe {
@@ -486,7 +517,7 @@ pub fn try_init_wifi_device_step() {
             set_init_phase(WifiInitPhase::FwUpload);
         }
         WifiInitPhase::FwUpload => {
-            let (fw_data, fw_name) = {
+            let (fw_data, fw_name, bdf_info) = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let _dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
@@ -501,23 +532,29 @@ pub fn try_init_wifi_device_step() {
                     return;
                 }
                 let fw = &ctx.fw_candidates[ctx.fw_candidate_idx];
-                (fw.data, fw.name)
+                let bdf = pci_bdf_from_ctx(&ctx);
+                (fw.data, fw.name, bdf)
             };
             log::info!(
                 "iwlwifi: step: trying firmware {} ({} bytes)",
                 fw_name, fw_data.len()
             );
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
             let start_result = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
                     None => {
+                        mmio::disarm_mmio_watchdog();
                         set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
                 };
                 dev.start_firmware(fw_data)
             };
+            mmio::disarm_mmio_watchdog();
             match start_result {
                 Ok(()) => {
                     log::info!("iwlwifi: step: firmware {} upload complete, waiting for alive", fw_name);
@@ -534,18 +571,26 @@ pub fn try_init_wifi_device_step() {
             }
         }
         WifiInitPhase::FwWaitAlive => {
-            let start_tsc = WIFI_INIT_CTX.lock().alive_start_tsc;
+            let (start_tsc, bdf_info) = {
+                let ctx = WIFI_INIT_CTX.lock();
+                (ctx.alive_start_tsc, pci_bdf_from_ctx(&ctx))
+            };
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
             let alive_result = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
                     None => {
+                        mmio::disarm_mmio_watchdog();
                         set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
                 };
                 dev.check_alive_nonblocking(start_tsc)
             };
+            mmio::disarm_mmio_watchdog();
             match alive_result {
                 Ok(true) => {
                     debug::print("iwlwifi", "step: fw_alive");
@@ -563,17 +608,26 @@ pub fn try_init_wifi_device_step() {
             }
         }
         WifiInitPhase::FwInitCmds => {
+            let bdf_info = {
+                let ctx = WIFI_INIT_CTX.lock();
+                pci_bdf_from_ctx(&ctx)
+            };
+            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+            }
             let result = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let dev = match ctx.mmio_device.as_mut() {
                     Some(d) => d,
                     None => {
+                        mmio::disarm_mmio_watchdog();
                         set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
                 };
                 dev.send_init_commands()
             };
+            mmio::disarm_mmio_watchdog();
             match result {
                 Ok(()) => {
                     debug::print("iwlwifi", "step: fw_init_cmds_ok");
@@ -620,6 +674,13 @@ pub fn try_init_wifi_device_step() {
 }
 
 // ── High-level API ─────────────────
+
+fn pci_bdf_from_ctx(ctx: &WifiInitContext) -> Option<((u8, u8, u8), Option<(u8, u8, u8)>)> {
+    let pci = ctx.pci_dev.as_ref()?;
+    let bdf = (pci.bus, pci.device, pci.function);
+    let bridge = ctx.health.as_ref().and_then(|h| h.upstream_bridge());
+    Some((bdf, bridge))
+}
 
 pub fn try_init_wifi_device() {
     debug::print("iwlwifi", "try_init_wifi_device: start");
