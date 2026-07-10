@@ -143,13 +143,20 @@ pub fn checked_read_u32(addr: *const u32, health: Option<&PciHealth>) -> SafeRea
         }
     }
 
-    if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) {
+    // If watchdog is armed but not yet active, activate it for this read.
+    // If already active, keep it active (multi-read protection).
+    let was_active = MMIO_WATCHDOG_ACTIVE.load(Ordering::Relaxed);
+    if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) && !was_active {
+        MMIO_WATCHDOG_ACTIVE.store(true, Ordering::Release);
         arm_watchdog_timer();
     }
 
     let val = unsafe { core::ptr::read_volatile(addr) };
 
-    if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) {
+    // Only disarm if we activated it (single-read case).
+    // Multi-read callers must explicitly call disarm_mmio_watchdog().
+    if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) && !was_active {
+        MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
         disarm_mmio_watchdog();
     }
 
@@ -471,6 +478,7 @@ impl Drop for DmaRegion {
 // ============================================================================
 
 static MMIO_WATCHDOG_ARMED: AtomicBool = AtomicBool::new(false);
+static MMIO_WATCHDOG_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MMIO_WATCHDOG_HUNG: AtomicBool = AtomicBool::new(false);
 static MMIO_WATCHDOG_DEADLINE: AtomicU64 = AtomicU64::new(0);
 
@@ -544,12 +552,14 @@ pub fn arm_mmio_watchdog(
         MMIO_WATCHDOG_BRIDGE_BDF.store(0, Ordering::Release);
     }
     MMIO_WATCHDOG_HUNG.store(false, Ordering::Release);
+    MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
     MMIO_WATCHDOG_ARMED.store(true, Ordering::Release);
 }
 
 /// Disarm the MMIO NMI watchdog and restore the APIC timer.
 pub fn disarm_mmio_watchdog() {
     MMIO_WATCHDOG_ARMED.store(false, Ordering::Release);
+    MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
     if let Some(restore) = unsafe { MMIO_WATCHDOG_RESTORE_TIMER_FN } {
         restore();
     }
@@ -623,6 +633,7 @@ pub fn mmio_watchdog_nmi_recovery() {
     }
 
     MMIO_WATCHDOG_ARMED.store(false, Ordering::Release);
+    MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
     if let Some(restore) = unsafe { MMIO_WATCHDOG_RESTORE_TIMER_FN } {
         restore();
     }

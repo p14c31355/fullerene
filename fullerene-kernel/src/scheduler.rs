@@ -24,8 +24,12 @@ use solvent;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;
 
-/// NMI recovery dedicated stack.
-static NMI_RECOVERY_STACK: [u8; 4096] = [0u8; 4096];
+/// NMI recovery dedicated stack (writable, 16-byte aligned).
+/// Must be mutable so recovery pushes can write to it without faulting.
+#[repr(align(16))]
+struct AlignedStack([u8; 4096]);
+
+static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack([0u8; 4096]);
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {
@@ -60,9 +64,9 @@ pub fn scheduler_loop() -> ! {
     gui::set_render_fn(gui::render);
 
     // Register NMI recovery restart context with a dedicated stack.
-    let recovery_rsp = {
-        let base = NMI_RECOVERY_STACK.as_ptr() as u64;
-        VirtAddr::new((base + NMI_RECOVERY_STACK.len() as u64) & !15u64)
+    let recovery_rsp = unsafe {
+        let base = NMI_RECOVERY_STACK.0.as_ptr() as u64;
+        VirtAddr::new((base + NMI_RECOVERY_STACK.0.len() as u64) & !15u64)
     };
     set_recovery_restart(
         recovery_rsp,

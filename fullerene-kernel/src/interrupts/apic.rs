@@ -200,16 +200,21 @@ fn arm_watchdog_timer_impl() {
 }
 
 fn restore_watchdog_timer_impl() {
-    let guard = APIC_CONTROLLER.lock();
-    if let Some(ref ctrl) = *guard {
-        let saved_lvt = mmio::watchdog_saved_lvt();
-        let saved_initcnt = mmio::watchdog_saved_initcnt();
-        // IMPORTANT: Write TMRINITCNT BEFORE LVT_TIMER.
-        // At this point TMRINITCNT still holds WATCHDOG_NMI_INITIAL_COUNT.
-        // If LVT_TIMER is written first (periodic mode), the timer would start
-        // at the stale watchdog count (~16s) before the correct count is restored.
-        ctrl.lapic_write(ApicOffsets::TMRINITCNT, saved_initcnt);
-        ctrl.lapic_write(ApicOffsets::LVT_TIMER, saved_lvt);
+    // NMI-safe: use try_lock to avoid blocking in the NMI handler.
+    // If the lock is held, the timer will remain in NMI mode until the next
+    // normal-path restore attempt — this is safe as the watchdog has already
+    // fired and the system is in recovery.
+    if let Some(guard) = APIC_CONTROLLER.try_lock() {
+        if let Some(ref ctrl) = *guard {
+            let saved_lvt = mmio::watchdog_saved_lvt();
+            let saved_initcnt = mmio::watchdog_saved_initcnt();
+            // IMPORTANT: Write TMRINITCNT BEFORE LVT_TIMER.
+            // At this point TMRINITCNT still holds WATCHDOG_NMI_INITIAL_COUNT.
+            // If LVT_TIMER is written first (periodic mode), the timer would start
+            // at the stale watchdog count (~4.8s) before the correct count is restored.
+            ctrl.lapic_write(ApicOffsets::TMRINITCNT, saved_initcnt);
+            ctrl.lapic_write(ApicOffsets::LVT_TIMER, saved_lvt);
+        }
     }
 }
 

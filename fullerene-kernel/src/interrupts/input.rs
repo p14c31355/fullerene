@@ -44,7 +44,6 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
     super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
     if nitrogen::mmio::mmio_watchdog_recovery_triggered() {
-        nitrogen::mmio::clear_watchdog_recovery_trigger();
         petroleum::serial::serial_log(format_args!(
             "[timer_handler] NMI recovery triggered — jumping to scheduler_loop\n"
         ));
@@ -60,6 +59,10 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
             unsafe {
                 frame.as_mut().write(new_frame);
             }
+            // Clear the trigger only after successfully writing the new frame.
+            // If no restart target is available, leave the trigger set so a
+            // later recovery attempt can succeed.
+            nitrogen::mmio::clear_watchdog_recovery_trigger();
         }
     }
 
