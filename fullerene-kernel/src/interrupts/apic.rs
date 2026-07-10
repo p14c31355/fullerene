@@ -204,10 +204,16 @@ fn arm_watchdog_timer_impl() {
 
 fn restore_watchdog_timer_impl() {
     // NMI-safe: use try_lock to avoid blocking in the NMI handler.
-    // If the lock is held, the timer will remain in NMI mode until the next
-    // normal-path restore attempt — this is safe as the watchdog has already
-    // fired and the system is in recovery.
-    if let Some(guard) = APIC_CONTROLLER.try_lock() {
+    // If the lock is held, force-reset it — the interrupted context that held it
+    // is being abandoned by the watchdog recovery.
+    let mut guard = APIC_CONTROLLER.try_lock();
+    if guard.is_none() {
+        unsafe {
+            reset_mutex_lock(&APIC_CONTROLLER);
+        }
+        guard = APIC_CONTROLLER.try_lock();
+    }
+    if let Some(guard) = guard {
         if let Some(ref ctrl) = *guard {
             let saved_lvt = mmio::watchdog_saved_lvt();
             let saved_initcnt = mmio::watchdog_saved_initcnt();
@@ -219,6 +225,11 @@ fn restore_watchdog_timer_impl() {
             ctrl.lapic_write(ApicOffsets::LVT_TIMER, saved_lvt);
         }
     }
+}
+
+/// Force-reset the APIC controller lock. Safe to call during NMI recovery.
+pub unsafe fn reset_apic_controller_lock() {
+    unsafe { reset_mutex_lock(&APIC_CONTROLLER); }
 }
 
 /// Register the MMIO NMI watchdog timer callbacks with the nitrogen mmio module.

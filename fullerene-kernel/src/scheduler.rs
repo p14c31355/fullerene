@@ -151,7 +151,10 @@ pub extern "C" fn mmio_recovery_restart() -> ! {
     petroleum::serial::serial_log(format_args!(
         "[mmio_recovery_restart] WiFi init hung, restarting scheduler loop\n"
     ));
-    // Safe: no locks held from the hung context on this fresh stack.
+    // Force-reset the APIC_CONTROLLER lock in case the hung context held it.
+    unsafe {
+        crate::interrupts::apic::reset_apic_controller_lock();
+    }
     nitrogen::iwlwifi::force_init_failed();
     scheduler_loop()
 }
