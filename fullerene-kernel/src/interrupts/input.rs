@@ -47,7 +47,7 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
         petroleum::serial::serial_log(format_args!(
             "[timer_handler] NMI recovery triggered — jumping to scheduler_loop\n"
         ));
-        let restart_fn = crate::scheduler::get_recovery_restart_fn();
+        let restart_fn = crate::scheduler_context::SCHEDULER.recovery_target();
         if let Some((rsp, rip)) = restart_fn {
             let new_frame = InterruptStackFrameValue::new(
                 rip,

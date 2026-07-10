@@ -24,7 +24,7 @@ pub unsafe extern "C" fn handle_syscall(
     let current_pid = crate::process::current_pid();
     let dispatch_mode = current_pid
         .and_then(|pid| {
-            crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+            crate::process::SCHEDULER.with_process(pid, |p| {
                 matches!(p.dispatch_mode, Some(crate::linux::DispatchMode::Linux(_)))
             })
         })
@@ -32,7 +32,7 @@ pub unsafe extern "C" fn handle_syscall(
 
     if dispatch_mode {
         let mut linux_rt = current_pid.and_then(|pid| {
-            crate::process::PROCESS_MANAGER
+            crate::process::SCHEDULER
                 .with_process(pid, |p| {
                     p.dispatch_mode.take().and_then(|mode| {
                         if let crate::linux::DispatchMode::Linux(rt) = mode {
@@ -49,7 +49,7 @@ pub unsafe extern "C" fn handle_syscall(
         let ret = if let Some(mut rt) = linux_rt.take() {
             let result = rt.dispatch(syscall_num, &[arg1, arg2, arg3, arg4, arg5, arg6]);
             if let Some(pid) = current_pid {
-                crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+                crate::process::SCHEDULER.with_process(pid, |p| {
                     p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(rt));
                 });
             }

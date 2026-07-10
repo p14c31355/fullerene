@@ -59,7 +59,7 @@ fn load_program_inner(
 
     // Attach LinuxRuntime if this is a Linux binary
     if is_linux {
-        process::PROCESS_MANAGER.with_process(pid, |p| {
+        process::SCHEDULER.with_process(pid, |p| {
             let initial_break = 0x60000000u64;
             let rt = crate::linux::LinuxRuntime::new(p.id.0, initial_break);
             p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(rt)));
@@ -73,7 +73,7 @@ fn load_program_inner(
     // pointer to the user-space page.  This avoids switching CR3 to the
     // process page table during load and keeps the kernel's address space
     // active.
-    process::PROCESS_MANAGER
+    process::SCHEDULER
         .with_process(pid, |p| {
             let process_page_table = p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
 

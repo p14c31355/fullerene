@@ -1,28 +1,26 @@
-//! System scheduler — thin entry point into the idle/event loop.
+//! System scheduler — idle loop driven by [`SchedulerContext`].
 //!
-//! The actual scheduling is handled by the Solvent runtime via
-//! `gui::runtime_tick()`.  This module renders the initial desktop
-//! frame and then enters an idle loop that drives runtime ticks.
-//! Shell and other apps are launched on demand via AppGrid or
-//! context menu, not started automatically.
+//! All scheduling state lives in the [`SCHEDULER`] singleton.
+//! This module is the thin entry point that boots the desktop, registers
+//! the NMI recovery target, and enters the idle tick loop.
 //!
-//! # Normal boot flow
+//! # Tick loop
 //!
 //! ```text
-//! Boot → Desktop → Idle (runtime ticks only)
-//!                  → User launches Shell from AppGrid / menu
+//! scheduler_loop()
+//!   ├── update_vdso_all()       — publish time to every process's VDSO page
+//!   ├── solvent::poll_*()       — poll input devices (no interrupt path)
+//!   ├── gui::runtime_tick()     — solvent tick_core + framebuffer render
+//!   ├── shell launch check      — via KERNEL lock (independent of SCHEDULER)
+//!   ├── advance_tick()
+//!   └── hlt()
 //! ```
-//!
-//! This gives a clear survival checkpoint: if the Desktop appears,
-//! GOP, memory, interrupts, and the scheduler are all confirmed
-//! working.  Any failure after that is isolated to the specific app
-//! being launched.
+
+use core::sync::atomic::Ordering;
+use x86_64::VirtAddr;
 
 use crate::gui;
-use crate::vdso;
-use solvent;
-use core::sync::atomic::{AtomicU64, Ordering};
-use x86_64::VirtAddr;
+use crate::scheduler_context::SCHEDULER;
 
 /// NMI recovery dedicated stack (writable, 16-byte aligned).
 /// Must be mutable so recovery pushes can write to it without faulting.
@@ -68,26 +66,22 @@ pub fn scheduler_loop() -> ! {
         let base = core::ptr::addr_of!(NMI_RECOVERY_STACK) as u64;
         VirtAddr::new((base + core::mem::size_of::<[u8; 4096]>() as u64) & !15u64)
     };
-    set_recovery_restart(
+    SCHEDULER.set_recovery(
         recovery_rsp,
         VirtAddr::from_ptr(mmio_recovery_restart as *const ()),
     );
 
-    // Idle loop: drive runtime ticks without a shell.
+    // Idle loop: drive runtime ticks.
     // Shell and other apps are launched via AppGrid or context menu.
-    let mut tick_counter: u64 = 0;
     loop {
-        // VDSO: process pending syscall requests from user processes
-        vdso::poll_all_vdso_rings();
-
-        // VDSO: update time metadata for all processes
+        // VDSO: update time metadata for all processes.
         let now_us = if solvent::get_tsc_per_ms() > 0 {
             let tsc = unsafe { core::arch::x86_64::_rdtsc() };
             (tsc as u128 * 1000 / solvent::get_tsc_per_ms() as u128) as u64
         } else {
-            crate::interrupts::TICK_COUNTER.load(core::sync::atomic::Ordering::Relaxed)
+            crate::interrupts::TICK_COUNTER.load(Ordering::Relaxed)
         };
-        vdso::update_vdso_metadata(now_us, now_us);
+        SCHEDULER.update_vdso_all(now_us, now_us);
 
         // Poll input devices before the runtime tick so that even
         // without interrupt delivery (some firmware / VM configs) the
@@ -96,7 +90,7 @@ pub fn scheduler_loop() -> ! {
         solvent::poll_mouse_state();
         solvent::poll_keyboard();
 
-        gui::runtime_tick(tick_counter);
+        gui::runtime_tick(SCHEDULER.current_tick());
 
         // Check if the user requested a shell launch (via AppGrid / menu).
         if crate::contexts::kernel::with_kernel(|k| k.shell.take_launch_request()).unwrap_or(false)
@@ -108,7 +102,7 @@ pub fn scheduler_loop() -> ! {
             petroleum::serial::_print(format_args!("Shell exited, back to idle\n"));
         }
 
-        tick_counter = tick_counter.wrapping_add(1);
+        SCHEDULER.advance_tick();
         x86_64::instructions::hlt();
     }
 }
@@ -119,29 +113,6 @@ pub extern "C" fn shell_process_main() -> ! {
     crate::shell::shell_main();
     crate::process::terminate_process(crate::process::current_pid().unwrap(), 0);
     petroleum::halt_loop();
-}
-
-// ── NMI recovery restart ───────────────────────────────────────
-
-static RECOVERY_RSP: AtomicU64 = AtomicU64::new(0);
-static RECOVERY_RIP: AtomicU64 = AtomicU64::new(0);
-
-/// Set the recovery RSP and RIP for the timer ISR to use after NMI
-/// MMIO watchdog recovery.
-pub fn set_recovery_restart(rsp: VirtAddr, rip: VirtAddr) {
-    RECOVERY_RSP.store(rsp.as_u64(), Ordering::Release);
-    RECOVERY_RIP.store(rip.as_u64(), Ordering::Release);
-}
-
-/// Get the recovery RSP and RIP for the timer ISR.
-pub fn get_recovery_restart_fn() -> Option<(VirtAddr, VirtAddr)> {
-    let rsp = RECOVERY_RSP.load(Ordering::Acquire);
-    let rip = RECOVERY_RIP.load(Ordering::Acquire);
-    if rsp != 0 && rip != 0 {
-        Some((VirtAddr::new(rsp), VirtAddr::new(rip)))
-    } else {
-        None
-    }
 }
 
 /// Restart the scheduler loop after an NMI watchdog recovery.

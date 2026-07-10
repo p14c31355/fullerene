@@ -25,7 +25,7 @@ pub fn check_and_fire_timers() {
 
     let expired: Vec<(process::ProcessId, Handle)> = {
         let mut expired_timers = Vec::new();
-        process::PROCESS_MANAGER.with_list(|list| {
+        process::SCHEDULER.with_list(|list| {
             for (owner_pid, proc) in list.iter_mut() {
                 let mut ht = proc.resources.handle_table.lock();
                 for (_handle, obj) in ht.entries_mut() {
@@ -43,7 +43,7 @@ pub fn check_and_fire_timers() {
 
     for (owner_pid, event_handle) in expired {
         let waiters_to_unblock: Vec<process::ProcessId> =
-            process::PROCESS_MANAGER.with_process(owner_pid, |proc| {
+            process::SCHEDULER.with_process(owner_pid, |proc| {
                 let mut ht = proc.resources.handle_table.lock();
                 if let Some(KernelObject::Event(e)) = ht.get_mut(event_handle) {
                     let mut inner = e.inner.lock();

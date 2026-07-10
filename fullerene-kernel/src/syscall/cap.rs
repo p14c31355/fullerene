@@ -10,7 +10,7 @@ pub(crate) fn syscall_handle_transfer(target_pid: u64, handle: u64) -> SyscallRe
     check_handle_permission(h, HandlePerms::TRANSFER)?;
     let target = process::ProcessId(target_pid);
 
-    if process::PROCESS_MANAGER.with_process(target, |_| {}).is_none() {
+    if process::SCHEDULER.with_process(target, |_| {}).is_none() {
         return Err(SyscallError::NoSuchProcess);
     }
 
@@ -18,7 +18,7 @@ pub(crate) fn syscall_handle_transfer(target_pid: u64, handle: u64) -> SyscallRe
         ht.remove(h).ok_or(SyscallError::BadHandle)
     })?);
 
-    let new_handle = process::PROCESS_MANAGER.with_process(target, |p| {
+    let new_handle = process::SCHEDULER.with_process(target, |p| {
         let mut ht = p.resources.handle_table.lock();
         let owned = obj.take().unwrap();
         ht.alloc(owned)

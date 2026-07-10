@@ -187,6 +187,7 @@ pub mod loader;
 pub mod memory_management;
 pub mod process;
 pub mod scheduler;
+pub mod scheduler_context;
 pub mod shell;
 pub mod slab;
 pub mod syscall;

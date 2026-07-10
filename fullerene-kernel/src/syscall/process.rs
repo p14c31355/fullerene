@@ -11,7 +11,7 @@ where
     F: FnOnce(&mut process::FdTable) -> Result<R, SyscallError>,
 {
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-    match process::PROCESS_MANAGER.with_process(pid, |p| {
+    match process::SCHEDULER.with_process(pid, |p| {
         let mut ft = p.resources.fd_table.lock();
         f(&mut *ft)
     }) {
@@ -25,7 +25,7 @@ where
     F: FnOnce(&mut crate::process::HandleTable) -> Result<R, SyscallError>,
 {
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-    match process::PROCESS_MANAGER.with_process(pid, |p| {
+    match process::SCHEDULER.with_process(pid, |p| {
         let mut ht = p.resources.handle_table.lock();
         f(&mut *ht)
     }) {

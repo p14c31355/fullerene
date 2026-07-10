@@ -106,7 +106,7 @@ pub(crate) unsafe fn set_schedule_trampoline(addr: x86_64::VirtAddr) {
 #[unsafe(no_mangle)]
 pub extern "C" fn exception_recovery_trampoline() -> ! {
     raw_log!("Recovery trampoline: cleaning up and scheduling next\n");
-    crate::process::PROCESS_MANAGER.cleanup();
+    crate::process::SCHEDULER.cleanup();
     crate::process::schedule_next();
     let new_pid = crate::process::current_pid().expect("schedule_next failed after exception");
     raw_log!("Switching to process {}\n", new_pid);
@@ -118,12 +118,12 @@ pub extern "C" fn exception_recovery_trampoline() -> ! {
 
 fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
     raw_log!("EXCEPTION: {} - terminating process\n", reason);
-    let current_pid = crate::process::PROCESS_MANAGER.current_pid();
+    let current_pid = crate::process::SCHEDULER.current_pid();
     if current_pid == 0 {
         safe_halt();
     }
     let pid = crate::process::ProcessId(current_pid as u64);
-    crate::process::PROCESS_MANAGER.with_process(pid, |p| {
+    crate::process::SCHEDULER.with_process(pid, |p| {
         p.state = crate::process::ProcessState::Terminated;
         p.exit_code = Some(1);
     });
@@ -252,16 +252,16 @@ pub extern "x86-interrupt" fn double_fault_handler(
         frame.code_segment.0
     );
     if is_user_mode(&frame) {
-        let pid = crate::process::PROCESS_MANAGER.current_pid();
+        let pid = crate::process::SCHEDULER.current_pid();
         if pid != 0 {
-            crate::process::PROCESS_MANAGER.with_process(
+            crate::process::SCHEDULER.with_process(
                 crate::process::ProcessId(pid as u64),
                 |p| {
                     p.state = crate::process::ProcessState::Terminated;
                     p.exit_code = Some(1);
                 },
             );
-            crate::process::PROCESS_MANAGER.cleanup();
+            crate::process::SCHEDULER.cleanup();
         }
     }
     safe_halt()

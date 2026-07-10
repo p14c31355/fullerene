@@ -28,14 +28,14 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
     let (parent_pt_phys, parent_context) = {
-        crate::process::PROCESS_MANAGER
+        crate::process::SCHEDULER
             .with_process(current_pid, |p| (p.page_table_phys_addr, p.context.clone()))
             .ok_or(SyscallError::NoSuchProcess)?
     };
 
     let (kernel_stack_ptr, kernel_stack_top) = alloc_kernel_stack()?;
 
-    let child_pid = process::PROCESS_MANAGER.allocate_pid();
+    let child_pid = process::SCHEDULER.allocate_pid();
 
     let mut thread_process = Process {
         id: child_pid,
@@ -61,7 +61,7 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
     thread_process.context.rip = entry;
 
     let thread_box = Box::new(thread_process);
-    crate::process::PROCESS_MANAGER
+    crate::process::SCHEDULER
         .add(thread_box)
         .map_err(|_| {
             free_kernel_stack(kernel_stack_ptr);
@@ -77,7 +77,7 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
     let handle = alloc_handle(KernelObject::Thread(ThreadState { inner }));
     if handle.is_err() {
         // Clean up: remove thread from process manager and free kernel stack
-        crate::process::PROCESS_MANAGER.with_list(|list| {
+        crate::process::SCHEDULER.with_list(|list| {
             if let Some(pos) = list.iter().position(|(id, _)| *id == child_pid) {
                 let _ = list.swap_remove(pos);
             }
@@ -133,7 +133,7 @@ pub(crate) fn syscall_exit_thread(exit_code: i32) -> SyscallResult {
 
     let waiters: Vec<process::ProcessId> = {
         let mut found_waiters: Vec<process::ProcessId> = Vec::new();
-        process::PROCESS_MANAGER.with_list(|list| {
+        process::SCHEDULER.with_list(|list| {
             for (_, proc) in list.iter_mut() {
                 let mut ht = proc.resources.handle_table.lock();
                 for obj in ht.iter_objects_mut() {
