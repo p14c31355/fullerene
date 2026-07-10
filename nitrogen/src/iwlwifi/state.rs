@@ -240,6 +240,44 @@ pub fn try_init_wifi_device_step() {
         }
         WifiInitPhase::MmioInit => {
             debug::print("iwlwifi", "step: mmio_enter");
+
+            // ── Secondary Bus Reset ──────────────────────────────
+            // Some platforms leave the WiFi endpoint in a state where
+            // PCI config space responds (vendor/device ID, D0, link)
+            // but MMIO BAR reads hang the CPU permanently (phantom
+            // device, ASPM L1 wedge, or platform erratum).
+            //
+            // A secondary bus reset on the upstream bridge forces the
+            // endpoint through a fresh PCI reset cycle, ensuring the
+            // link and BAR are truly operational before any MMIO read.
+            {
+                let ctx = WIFI_INIT_CTX.lock();
+                let bridge_bdf = ctx.health.as_ref().and_then(|h| h.upstream_bridge());
+                let pci_bdf = ctx.pci_dev.as_ref().map(|d| (d.bus, d.device, d.function));
+                if let (Some((bb, bd, bf)), Some((eb, ed, ef))) = (bridge_bdf, pci_bdf) {
+                    drop(ctx);
+                    debug::print("iwlwifi", "step: sbr_start");
+                    let bc = crate::pci::PciConfigSpace::read_config_word(bb, bd, bf, 0x3E);
+                    crate::pci::PciConfigSpace::write_config_word_raw(
+                        bb, bd, bf, 0x3E, bc | (1 << 6),
+                    );
+                    crate::timing::delay_us(100_000);
+                    crate::pci::PciConfigSpace::write_config_word_raw(
+                        bb, bd, bf, 0x3E, bc & !(1 << 6),
+                    );
+                    crate::timing::delay_us(100_000);
+                    // Re-configure endpoint after reset
+                    crate::pci::PciConfigSpace::write_config_word_raw(
+                        eb, ed, ef, 4, 0x06,
+                    );
+                    crate::pci_error::configure_completion_timeout(eb, ed, ef);
+                    debug::print("iwlwifi", "step: sbr_done");
+                } else {
+                    drop(ctx);
+                }
+            }
+
+            // Check device is present after reset
             let mmio = WIFI_INIT_CTX.lock().mmio;
             let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();

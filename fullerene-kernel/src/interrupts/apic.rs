@@ -182,7 +182,7 @@ pub fn init_apic() {
 
 // ── MMIO NMI watchdog timer switching ───────────────────────────
 
-const WATCHDOG_NMI_INITIAL_COUNT: u32 = 100_000_000;
+const WATCHDOG_NMI_INITIAL_COUNT: u32 = 30_000_000; // ~4.8s at 100MHz bus /16 div
 
 fn arm_watchdog_timer_impl() {
     let guard = APIC_CONTROLLER.lock();
@@ -204,8 +204,12 @@ fn restore_watchdog_timer_impl() {
     if let Some(ref ctrl) = *guard {
         let saved_lvt = mmio::watchdog_saved_lvt();
         let saved_initcnt = mmio::watchdog_saved_initcnt();
-        ctrl.lapic_write(ApicOffsets::LVT_TIMER, saved_lvt);
+        // IMPORTANT: Write TMRINITCNT BEFORE LVT_TIMER.
+        // At this point TMRINITCNT still holds WATCHDOG_NMI_INITIAL_COUNT.
+        // If LVT_TIMER is written first (periodic mode), the timer would start
+        // at the stale watchdog count (~16s) before the correct count is restored.
         ctrl.lapic_write(ApicOffsets::TMRINITCNT, saved_initcnt);
+        ctrl.lapic_write(ApicOffsets::LVT_TIMER, saved_lvt);
     }
 }
 
