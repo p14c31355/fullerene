@@ -271,22 +271,12 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     let (entry, info) = WifiRegistry::probe()?;
     crate::debug::print("wifi", "probe_ok");
 
-    // PCI config-space setup (NEVER hangs)
+    // PCI config-space setup (NEVER hangs).
+    // Order is critical: configure the upstream bridge BEFORE touching
+    // the endpoint to avoid ASPM state mismatch on the PCIe link.
     let pci_dev = crate::pci::PciDevice::new(info.bus, info.device, info.function)?;
-    crate::debug::print("wifi", "ensure_d0");
-    pci_dev.ensure_d0();
-    crate::debug::print("wifi", "disable_aspm");
-    pci_dev.disable_pcie_aspm();
-    crate::debug::print("wifi", "enable_mem");
-    pci_dev.enable_memory_access();
 
-    // ── Find upstream PCIe bridge (once, used for error reporting + ASPM) ──
-    // The upstream bridge controls ASPM and error routing for the endpoint.
-    // We find it via a single PCI scan and then:
-    //   1. Disable standard ASPM on the bridge
-    //   2. Disable L1 PM Substates on the bridge to prevent endpoint hangs
-    //   3. Configure Completion Timeout on the endpoint
-    //   4. Set up AER / Root Control error reporting on the bridge
+    // ── Find upstream PCIe bridge and disable its ASPM first ──
     crate::debug::print("wifi", "scan_bridge");
     let upstream_bridge: Option<(u8, u8, u8)> = {
         let mut scanner = PciScanner::new();
@@ -300,23 +290,23 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
         });
         if let Some(up) = upstream {
             log::info!(
-                "WiFi: disabling ASPM on upstream bridge {:02x}:{:02x}.{}",
+                "WiFi: found upstream bridge {:02x}:{:02x}.{}",
                 up.bus, up.device, up.function
             );
-            up.disable_pcie_aspm();
-            // Disable L1 PM Substates on the bridge via ECAM MMIO.
-            // Bridge-side ECAM is safe (bridges are never in L1).
-            crate::pci::PciDevice::disable_l1_substates(up.bus, up.device, up.function);
-            // ── PCIe error recovery: Completion Timeout on endpoint + Root Port AER ──
-            crate::pci_error::configure_completion_timeout(info.bus, info.device, info.function);
-            crate::pci_error::configure_root_port_error_reporting(up.bus, up.device, up.function);
             Some((up.bus, up.device, up.function))
         } else {
-            // No upstream bridge found — still configure endpoint timeout
-            crate::pci_error::configure_completion_timeout(info.bus, info.device, info.function);
             None
         }
     };
+
+    // ── Minimal endpoint configuration ─────────────────────
+    // Linux' iwlwifi calls only pci_enable_device() (which sets
+    // the Memory Space + Bus Master bits in the Command register)
+    // before accessing BAR0 MMIO.  Any additional config writes
+    // (ASPM disable, D0 re-assertion, CTO) can cause the PCIe
+    // link to enter an inconsistent state on this platform.
+    crate::debug::print("wifi", "enable_mem");
+    pci_dev.enable_memory_access();
 
     // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");
@@ -331,9 +321,9 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     if ctx.map_mmio_region(info.bar0_phys as usize, mmio_virt, info.bar0_size).is_err() {
         return None;
     }
+    let mmio_base = mmio_virt as *mut u32;
 
     // Sanity-check: verify the device is still present before any MMIO
-    let mmio_base = mmio_virt as *mut u32;
     crate::debug::print("wifi", "check_device_present");
     {
         let vendor = crate::pci::PciConfigSpace::read_config_word(

@@ -333,6 +333,11 @@ pub fn try_init_wifi_device_step() {
                 let ctx = WIFI_INIT_CTX.lock();
                 (ctx.mmio, ctx.alive_start_tsc)
             };
+            if mmio.is_null() {
+                debug::print("iwlwifi", "step: ERR mmio_null");
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            }
             const TIMEOUT_CYCLES: u64 = 4_000_000_000;
             let bdf_info = {
                 let ctx = WIFI_INIT_CTX.lock();

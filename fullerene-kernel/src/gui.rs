@@ -163,7 +163,7 @@ pub fn init() {
     crate::interrupts::apic::register_mmio_watchdog();
     petroleum::serial::serial_log(format_args!("MMIO NMI watchdog registered\n"));
 
-    crate::wifi_service::init_and_register();
+    // crate::wifi_service::init_and_register();
     petroleum::serial::serial_log(format_args!("wifi_service registered\n"));
 }
 
