@@ -80,7 +80,7 @@ pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
 
 pub fn halt_loop() -> ! {
     loop {
-        core::hint::spin_loop();
+        x86_64::instructions::hlt();
     }
 }
 

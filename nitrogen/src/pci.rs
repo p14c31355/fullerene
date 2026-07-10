@@ -21,17 +21,19 @@ use crate::port::PortWriter;
 static ECAM_BASE: AtomicU64 = AtomicU64::new(0);
 static PHYS_OFFSET: AtomicU64 = AtomicU64::new(0);
 static ECAM_START_BUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+static ECAM_END_BUS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 /// Store the ECAM MMIO base (physical), the phys→virt offset, and the
-/// starting bus number for the ECAM segment.
+/// bus range covered by the ECAM segment.
 ///
 /// Must be called once during boot, after the MCFG table is parsed.
 /// Without this, extended config space (offsets ≥ 0x100) cannot be
 /// accessed — L1Sub and AER configuration will be skipped.
-pub fn set_ecam_info(ecam_base: u64, phys_offset: u64, start_bus: u8) {
+pub fn set_ecam_info(ecam_base: u64, phys_offset: u64, start_bus: u8, end_bus: u8) {
     ECAM_BASE.store(ecam_base, core::sync::atomic::Ordering::Relaxed);
     PHYS_OFFSET.store(phys_offset, core::sync::atomic::Ordering::Relaxed);
     ECAM_START_BUS.store(start_bus, core::sync::atomic::Ordering::Relaxed);
+    ECAM_END_BUS.store(end_bus, core::sync::atomic::Ordering::Relaxed);
 }
 
 /// Convert a physical address to a virtual pointer using the stored offset.
@@ -53,10 +55,14 @@ fn ecam_addr(bus: u8, device: u8, function: u8, offset: u16) -> usize {
         return 0;
     }
     let start_bus = ECAM_START_BUS.load(core::sync::atomic::Ordering::Relaxed);
-    // Subtract start_bus to get the bus offset within the ECAM window
-    let bus_offset = bus.saturating_sub(start_bus);
+    let end_bus = ECAM_END_BUS.load(core::sync::atomic::Ordering::Relaxed);
+    // Reject buses outside the ECAM window — avoids out-of-bounds MMIO.
+    if bus < start_bus || bus > end_bus {
+        return 0;
+    }
+    let bus_offset = (bus - start_bus) as u64;
     let phys = base
-        + ((bus_offset as u64 & 0xFF) << 20)
+        + (bus_offset << 20)
         + ((device as u64 & 0x1F) << 15)
         + ((function as u64 & 0x7) << 12)
         + (offset as u64 & 0xFFF);
@@ -274,6 +280,9 @@ pub struct PciDevice {
     pub device_id: u16,
     pub class_code: u8,
     pub subclass: u8,
+    /// Header type (bits [6:0]): 0x00 = endpoint, 0x01 = PCI-to-PCI bridge,
+    /// 0x02 = CardBus bridge.  Bit 7 indicates multi-function.
+    pub header_type: u8,
 }
 
 impl PciDevice {
@@ -301,7 +310,25 @@ impl PciDevice {
         }
     }
 
+    /// Number of BAR registers for this device type.
+    ///
+    /// Type 0 (endpoint): up to 6 BARs at offsets 0x10..0x27.
+    /// Type 1 (bridge):   up to 2 BARs at offsets 0x10..0x17.
+    ///                     Offsets 0x18+ hold I/O / Memory / Prefetchable
+    ///                     base-limit registers — probing them as BARs
+    ///                     corrupts bus routing and causes system hangs.
+    pub fn max_bars(&self) -> u8 {
+        match self.header_type & 0x7F {
+            0x01 => 2, // PCI-to-PCI bridge
+            0x02 => 2, // CardBus bridge
+            _ => 6,    // endpoint (including 0x00)
+        }
+    }
+
     pub fn get_bar_info(&self, index: u8) -> Option<PciBar> {
+        if index >= self.max_bars() {
+            return None;
+        }
         let offset = 0x10 + (index * 4);
         let value = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
 
@@ -404,11 +431,10 @@ impl PciDevice {
     ///
     /// Does NOT touch L1 PM Substates (L1.1 / L1.2).  L1Sub lives in extended
     /// config space (offset ≥ 0x100) which requires ECAM MMIO — a non-posted
-    /// ECAM read to an endpoint in L1 hangs the CPU forever.  While bridge-side
-    /// ECAM access would be permissible for L1Sub configuration (bridges are
-    /// never in L1 relative to the CPU), the WiFi/RTSX/PciHealth recovery paths
-    /// intentionally leave L1Sub enabled, as Linux tolerates ASPM L1 + L1Sub
-    /// on the same chipset without hangs.
+    /// ECAM read to an endpoint in L1 hangs the CPU forever.  Bridge-side ECAM
+    /// access is permissible (bridges are never in L1 relative to the CPU), so
+    /// L1Sub can be disabled on the upstream bridge via `disable_l1_substates()`.
+    /// WiFi init now disables L1Sub on the bridge to prevent endpoint MMIO hangs.
     pub fn disable_pcie_aspm(&self) {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
@@ -451,10 +477,10 @@ impl PciDevice {
                         lnk_ctrl & !0x3,
                     );
                 }
-                // L1Sub is NOT disabled on the endpoint — that would
+                // L1Sub is NOT disabled on the endpoint here — that would
                 // require ECAM MMIO which hangs if the link is in L1.
-                // While bridge-side ECAM would be permissible, L1Sub is
-                // intentionally left enabled per the WiFi/PciHealth policy.
+                // Bridge-side L1Sub can be disabled separately via
+                // `disable_l1_substates()` during WiFi bridge init.
                 return;
             }
             let next =
@@ -530,6 +556,9 @@ impl PciDevice {
     }
 
     pub fn detect_bar_size(&self, bar_index: u8) -> u32 {
+        if bar_index >= self.max_bars() {
+            return 0;
+        }
         let offset = 0x10 + (bar_index * 4);
         let original_value =
             PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
@@ -591,6 +620,10 @@ impl PrivatePciDevice {
         // Read the class code, subclass, prog_if, and revision_id in a single safe read
         let class_rev = PciConfigSpace::read_config_dword(bus, device, function, 8);
 
+        // Read header type (offset 0x0E) — needed to distinguish endpoints
+        // from bridges so BAR probing doesn't clobber bridge control registers.
+        let header_type_raw = PciConfigSpace::read_config_byte(bus, device, function, 0x0E);
+
         // Build minimal config — other fields will be read on demand.
         let mut config = PciConfigSpace::new();
         config.vendor_id = vendor;
@@ -599,6 +632,7 @@ impl PrivatePciDevice {
         config.prog_if = (class_rev >> 8) as u8;
         config.subclass = (class_rev >> 16) as u8;
         config.class_code = (class_rev >> 24) as u8;
+        config.header_type = header_type_raw;
         Some(Self {
             bus,
             device,
@@ -617,6 +651,7 @@ impl PrivatePciDevice {
             device_id: self.config.device_id,
             class_code: self.config.class_code,
             subclass: self.config.subclass,
+            header_type: self.config.header_type,
         }
     }
 

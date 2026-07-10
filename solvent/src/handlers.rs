@@ -3,7 +3,7 @@
 //! These handlers are thin wrappers that delegate to `crate` globals.
 //! The heavy logic (menu dispatch, terminal I/O) lives in dedicated modules.
 
-use crate::{FB_DIMS, RUNTIME, SUPER_HELD, TIMEZONE_OFFSET_HOURS};
+use crate::{FB_DIMS, RUNTIME, SUPER_HELD};
 use lattice::shell_overlay::ShellState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
@@ -266,7 +266,7 @@ fn handle_timezone_click(rt: &mut crate::RuntimeState) -> bool {
     for (i, offset) in timezones.iter().enumerate() {
         let ey = start_y + (i as i32) * (entry_h + pad);
         if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
-            TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
+            crate::clock::TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
             rt.shell_state = ShellState::Desktop;
             rt.frame_due = true;
             return true;

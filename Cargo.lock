@@ -395,11 +395,13 @@ version = "0.1.0"
 dependencies = [
  "bitfield",
  "bitflags 2.11.1",
+ "bonder",
  "embedded-graphics",
  "fullerene-abi",
  "genome",
  "goblin",
  "heapless",
+ "lattice",
  "linked_list_allocator",
  "log",
  "memoffset",

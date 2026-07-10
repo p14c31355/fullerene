@@ -159,6 +159,13 @@ pub fn init() {
     solvent::set_render_progress_fn(crate::boot_stage::draw_boot_label);
     solvent::init();
     petroleum::serial::serial_log(format_args!("solvent::init() completed\n"));
+
+    // Register WiFi service — drives iwlwifi init and tick, bridges
+    // driver state to the desktop UI through shared statics.
+    // Solvent itself knows nothing about WiFi.
+    // The driver context was set by the `wifi` init step earlier.
+    crate::wifi_service::init_and_register();
+    petroleum::serial::serial_log(format_args!("wifi_service registered\n"));
 }
 
 /// Once the first frame renders successfully, disable the boot-screen
@@ -166,65 +173,47 @@ pub fn init() {
 /// over the desktop on every frame.
 static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 
-/// Render the desktop onto the primary framebuffer.
-///
-/// Bridged from solvent, providing kernel-owned framebuffer access.
-///
-/// Framebuffer access is obtained through the safe `with_framebuffer`
-/// closure API, which constrains the pixel slice lifetime to the
-/// closure scope — preventing `&'static mut` aliasing bugs.
-pub fn render() {
-    use petroleum::graphics::FramebufferGuard;
-
-    // Render via solvent with kernel-owned framebuffer access.
-    // The boot labels drawn before (RENDERING..., RENDER via guard) are
-    // overwritten by solvent::render which fills the full framebuffer.
-    // Once the desktop renders, no further boot labels should be drawn
-    // or they would persist as an overlay on the desktop.
-    let rendered = crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
-        if !BOOT_PROGRESS_DONE.load(Ordering::Relaxed) {
-            crate::boot_stage::draw_boot_label(b"RENDERING...");
-            crate::boot_stage::draw_boot_label(b"RENDER via guard");
-        }
-        solvent::render(fb);
-    });
-
-    // After the first successful render, disable boot-progress labels
-    // so they don't keep showing over the desktop on every frame.
-    if rendered.is_some() && !BOOT_PROGRESS_DONE.swap(true, Ordering::SeqCst) {
-        solvent::set_render_progress_fn(|_| {});
-    }
-
-    // Fallback: if the KernelContext renderer is not available (e.g. the
-    // GOP renderer build failed and we fell back to VGA text mode), render
-    // directly through the boot framebuffer's direct-map alias.  This alias
-    // is always accessible — the boot splash already draws through it.
-    // In the fallback path we still draw labels for diagnostic purposes
-    // since the user won't see a proper desktop anyway.
-    if rendered.is_none() {
-        crate::boot_stage::draw_boot_label(b"RENDER: guard failed, fallback");
-        if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
-            crate::boot_stage::draw_boot_label(b"RENDER: fallback FB OK");
-            if bfb.address() != 0 {
-                let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
-                let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
-                let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels());
-                solvent::render(&mut fb);
-            }
-            crate::boot_stage::draw_boot_label(b"RENDER: solvent::render OK");
-        } else {
-            crate::boot_stage::draw_boot_label(b"RENDER: NO fallback FB");
+/// Fallback: render directly to the boot framebuffer when KernelContext renderer is unavailable.
+fn render_fallback(label: &[u8]) {
+    crate::boot_stage::draw_boot_label(label);
+    if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
+        if bfb.address() != 0 {
+            let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
+            let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
+            solvent::render(&mut petroleum::graphics::FramebufferGuard::new(
+                pixels, bfb.width(), bfb.height(), bfb.stride_pixels(),
+            ));
         }
     }
+}
 
-    // Signal present & flush GPU (kernel-owned resource management).
-    // No boot labels are drawn here because they would persist on the desktop.
+/// Signal present and flush GPU after rendering.
+fn finish_frame() {
     crate::contexts::kernel::with_kernel_mut(|k| {
         if let Some(ref mut renderer) = k.framebuffer.renderer {
             renderer.present();
         }
     });
     crate::graphics::flush_gpu();
+}
+
+pub fn render() {
+    // Draw progress labels before acquiring the FramebufferGuard,
+    // to avoid mutable aliasing of the framebuffer slice.
+    if !BOOT_PROGRESS_DONE.load(Ordering::Relaxed) {
+        crate::boot_stage::draw_boot_label(b"RENDERING...");
+        crate::boot_stage::draw_boot_label(b"RENDER via guard");
+        // Disable the progress callback: subsequent labels drawn from within
+        // solvent::render() would race with the &mut [u32] in FramebufferGuard.
+        solvent::set_render_progress_fn(|_| {});
+    }
+
+    if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none() {
+        render_fallback(b"RENDER: guard failed, fallback");
+    }
+
+    BOOT_PROGRESS_DONE.store(true, Ordering::Release);
+    finish_frame();
 }
 
 /// Perform one tick of the runtime loop with kernel framebuffer access.
@@ -240,37 +229,12 @@ pub fn render() {
 /// 2. **render** — framebuffer rendering under the `KERNEL` lock.
 ///    Only started when `consume_frame_due()` returns `true`.
 pub fn runtime_tick(now: u64) {
-    use petroleum::graphics::FramebufferGuard;
-
-    // Phase 1: process input and events without the KERNEL lock.
     solvent::tick_core(now);
-
-    // Phase 2: render only when a frame is actually due.
     if solvent::consume_frame_due() {
-        let rendered = crate::contexts::framebuffer::with_framebuffer_guard(|fb| {
-            solvent::render(fb);
-        });
-
-        // Same fallback as render(): use the boot framebuffer alias when
-        // the KernelContext renderer is unavailable.
-        if rendered.is_none() {
-            if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
-                if bfb.address() != 0 {
-                    let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
-                    let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
-                    let mut fb = FramebufferGuard::new(pixels, bfb.width(), bfb.height(), bfb.stride_pixels());
-                    solvent::render(&mut fb);
-                }
-            }
+        if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none() {
+            render_fallback(b"RENDER: guard failed, fallback");
         }
-
-        // Signal present & flush GPU
-        crate::contexts::kernel::with_kernel_mut(|k| {
-            if let Some(ref mut renderer) = k.framebuffer.renderer {
-                renderer.present();
-            }
-        });
-        crate::graphics::flush_gpu();
+        finish_frame();
     }
 }
 

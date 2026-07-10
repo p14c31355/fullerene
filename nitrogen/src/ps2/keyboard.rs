@@ -275,26 +275,28 @@ fn clear_repeat(scancode: u8) {
 }
 
 pub fn read_char() -> Option<u8> {
-    INPUT_BUFFER.lock().pop_front()
+    x86_64::instructions::interrupts::without_interrupts(|| INPUT_BUFFER.lock().pop_front())
 }
 
 /// Pop a raw key event (scancode, pressed) from the queue.
 pub fn pop_raw_key() -> Option<(u8, bool)> {
-    RAW_KEY_QUEUE.lock().pop_front()
+    x86_64::instructions::interrupts::without_interrupts(|| RAW_KEY_QUEUE.lock().pop_front())
 }
 
 pub fn input_available() -> bool {
-    !INPUT_BUFFER.lock().is_empty()
+    x86_64::instructions::interrupts::without_interrupts(|| !INPUT_BUFFER.lock().is_empty())
 }
 
 pub fn raw_key_available() -> bool {
-    !RAW_KEY_QUEUE.lock().is_empty()
+    x86_64::instructions::interrupts::without_interrupts(|| !RAW_KEY_QUEUE.lock().is_empty())
 }
 
 pub fn flush_input() {
-    INPUT_BUFFER.lock().clear();
-    INPUT_STRING_BUFFER.lock().clear();
-    RAW_KEY_QUEUE.lock().clear();
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        INPUT_BUFFER.lock().clear();
+        INPUT_STRING_BUFFER.lock().clear();
+        RAW_KEY_QUEUE.lock().clear();
+    });
 }
 
 pub fn poll_key_hit() -> bool {

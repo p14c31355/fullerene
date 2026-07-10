@@ -283,9 +283,10 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     // ── Find upstream PCIe bridge (once, used for error reporting + ASPM) ──
     // The upstream bridge controls ASPM and error routing for the endpoint.
     // We find it via a single PCI scan and then:
-    //   1. Disable standard ASPM on the bridge (L1Sub is left enabled)
-    //   2. Configure Completion Timeout on the endpoint
-    //   3. Set up AER / Root Control error reporting on the bridge
+    //   1. Disable standard ASPM on the bridge
+    //   2. Disable L1 PM Substates on the bridge to prevent endpoint hangs
+    //   3. Configure Completion Timeout on the endpoint
+    //   4. Set up AER / Root Control error reporting on the bridge
     crate::debug::print("wifi", "scan_bridge");
     let upstream_bridge: Option<(u8, u8, u8)> = {
         let mut scanner = PciScanner::new();
@@ -303,9 +304,9 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
                 up.bus, up.device, up.function
             );
             up.disable_pcie_aspm();
-            // L1Sub is NOT disabled — while bridge-side ECAM MMIO would be
-            // permissible, ECAM is unsafe on bare metal (MCFG base may be wrong).
-            // Linux tolerates ASPM L1 + L1Sub enabled on this chipset.
+            // Disable L1 PM Substates on the bridge via ECAM MMIO.
+            // Bridge-side ECAM is safe (bridges are never in L1).
+            crate::pci::PciDevice::disable_l1_substates(up.bus, up.device, up.function);
             // ── PCIe error recovery: Completion Timeout on endpoint + Root Port AER ──
             crate::pci_error::configure_completion_timeout(info.bus, info.device, info.function);
             crate::pci_error::configure_root_port_error_reporting(up.bus, up.device, up.function);

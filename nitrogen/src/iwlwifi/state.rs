@@ -54,6 +54,50 @@ pub fn wifi_init_completed() -> bool {
     WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// Force WiFi init to be marked as failed/completed.
+///
+/// Called by the kernel when the incremental init has been running
+/// too long (PCIe MMIO hangs on real hardware) to prevent the idle
+/// loop from being permanently blocked.
+pub fn force_init_failed() {
+    if WIFI_INIT_COMPLETED.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    // Clean up any partially-initialised resources.
+    let mut ctx = WIFI_INIT_CTX.lock();
+    let _ = ctx.mmio_device.take();
+    // Disable PCI bus-mastering before freeing DMA regions
+    if let Some(ref pci) = ctx.pci_dev {
+        let cmd = crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
+        crate::pci::PciConfigSpace::write_config_word_raw(pci.bus, pci.device, pci.function, 4, cmd & !0x04);
+    }
+    let drv = ctx.driver_ctx;
+    for mut buf in ctx.tx_bufs.drain(..) {
+        if let Some(c) = drv {
+            buf.free(c);
+        }
+    }
+    for mut buf in ctx.rx_bufs.drain(..) {
+        if let Some(c) = drv {
+            buf.free(c);
+        }
+    }
+    if let Some(mut ring) = ctx.tx_dma_ring.take() {
+        if let Some(c) = drv {
+            ring.free(c);
+        }
+    }
+    if let Some(mut ring) = ctx.rx_dma_ring.take() {
+        if let Some(c) = drv {
+            ring.free(c);
+        }
+    }
+    set_init_phase(WifiInitPhase::Failed);
+    drop(ctx);
+    WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
+    debug::print("iwlwifi", "step: force_init_failed (timeout)");
+}
+
 fn set_init_phase(phase: WifiInitPhase) {
     WIFI_INIT_PHASE.store(phase as u8, core::sync::atomic::Ordering::Release);
 }
@@ -97,6 +141,7 @@ fn select_firmware_list(device_id: u16) -> &'static [FirmwareBlob] {
 
 pub fn try_init_wifi_device_step() {
     let phase = get_init_phase();
+    debug::print("iwlwifi", &alloc::format!("step: phase={}", phase as u8));
 
     match phase {
         WifiInitPhase::Idle => {
@@ -166,6 +211,7 @@ pub fn try_init_wifi_device_step() {
                             );
                             timing::delay_us(10_000);
                         }
+
                     }
                 }
                 let mut ctx = WIFI_INIT_CTX.lock();
@@ -181,25 +227,28 @@ pub fn try_init_wifi_device_step() {
             debug::print("iwlwifi", "step: pci_probe_done");
         }
         WifiInitPhase::MmioInit => {
-            let (mmio, health_ok) = {
+            debug::print("iwlwifi", "step: mmio_enter");
+            let mmio = WIFI_INIT_CTX.lock().mmio;
+            let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                let mmio = ctx.mmio;
-                let ok = match ctx.health.as_mut() {
-                    Some(h) => h.recover().is_ok(),
+                match ctx.health.as_mut() {
+                    Some(h) => h.is_device_present(),
                     None => false,
-                };
-                (mmio, ok)
+                }
             };
-            if !health_ok {
-                debug::print("iwlwifi", "step: ERR health_recover");
+            if !device_present {
+                debug::print("iwlwifi", "step: ERR device_gone_before_reset");
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            debug::print("iwlwifi", "step: mmio_reset");
             IwlWifiDevice::reset_device(mmio);
+            debug::print("iwlwifi", "step: mmio_clock_req");
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
             }
             mmio::write_barrier();
+            debug::print("iwlwifi", "step: mmio_check_clock");
             let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 match ctx.health.as_mut() {
@@ -212,32 +261,89 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
-            {
-                let start = unsafe { core::arch::x86_64::_rdtsc() };
-                loop {
-                    if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) >= 10_000_000 {
-                        break;
-                    }
-                    core::hint::spin_loop();
-                }
-            }
+            // Record MAC-clock poll start TSC and transition to
+            // per-tick polling so the event loop is not blocked.
+            let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                let ok = match ctx.health.as_mut() {
-                    Some(h) => h.recover().is_ok(),
-                    None => false,
-                };
-                if !ok {
-                    debug::print("iwlwifi", "step: ERR recover_before_read_mac");
-                    set_init_phase(WifiInitPhase::Failed);
-                    return;
-                }
+                ctx.alive_start_tsc = now_tsc;
             }
+            debug::print("iwlwifi", "step: mmio_init_done → MmioPollMacClock");
+            set_init_phase(WifiInitPhase::MmioPollMacClock);
+        }
+        WifiInitPhase::MmioPollMacClock => {
+            debug::print("iwlwifi", "step: mmio_poll_mac");
+            let (mmio, start_tsc) = {
+                let ctx = WIFI_INIT_CTX.lock();
+                (ctx.mmio, ctx.alive_start_tsc)
+            };
+            const TIMEOUT_CYCLES: u64 = 4_000_000_000;
+            let mac_acquired = {
+                let ctx = WIFI_INIT_CTX.lock();
+                let health = ctx.health.as_ref();
+                // Single checked read per tick — no busy-loop.
+                match mmio::checked_read_u32(
+                    unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
+                    health,
+                ) {
+                    mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
+                    mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
+                        debug::print("iwlwifi", "step: ERR mac_abort_or_gone");
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
+                    _ => {
+                        // Not ready yet — check timeout.
+                        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= TIMEOUT_CYCLES {
+                            drop(ctx);
+                            debug::print("iwlwifi", "step: mmio_force_mac");
+                            unsafe {
+                                core::ptr::write_volatile(
+                                    mmio.add(CSR_GP_CNTRL as usize),
+                                    CSR_GP_CNTRL_MAC_ACCESS_REQ | (1 << 1),
+                                );
+                            }
+                            mmio::write_barrier();
+                            crate::timing::delay_us(10_000);
+                            let mut ctx = WIFI_INIT_CTX.lock();
+                            let recovery_ok = match ctx.health.as_mut() {
+                                Some(h) => h.recover().is_ok(),
+                                None => false,
+                            };
+                            if !recovery_ok {
+                                false
+                            } else {
+                                // Recovery succeeded — now verify MAC_CLOCK_READY is actually set.
+                                let health = ctx.health.as_ref();
+                                let clock_ready = match mmio::checked_read_u32(
+                                    unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
+                                    health,
+                                ) {
+                                    mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
+                                    _ => false,
+                                };
+                                drop(ctx);
+                                clock_ready
+                            }
+                        } else {
+                            // Not ready yet, not timed out: try again next tick.
+                            return;
+                        }
+                    }
+                }
+            };
+            if !mac_acquired {
+                debug::print("iwlwifi", "step: ERR mac_not_ready");
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            }
+            debug::print("iwlwifi", "step: mmio_read_mac");
             let mac = {
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
                 IwlWifiDevice::read_mac(mmio, health)
             };
+            debug::print("iwlwifi", "step: mmio_mask_ints");
             unsafe {
                 core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
             }
@@ -245,7 +351,7 @@ pub fn try_init_wifi_device_step() {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.mac = Some(mac);
             }
-            debug::print("iwlwifi", "step: mmio_init_done");
+            debug::print("iwlwifi", "step: mmio_poll_mac_done");
             set_init_phase(WifiInitPhase::DmaAlloc);
         }
         WifiInitPhase::DmaAlloc => {
@@ -630,5 +736,17 @@ pub fn connect_to_ap(ssid: &Ssid, password: Option<&str>) {
     if let Some(ref mut dev) = *dev_guard {
         let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
         let _ = dev_ref.connect(ssid, password);
+    }
+}
+
+pub fn start_scan_if_idle() {
+    let mut dev_guard = WIFI_DEVICE.lock();
+    if let Some(ref mut dev) = *dev_guard {
+        let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
+        // Only start a scan if the device is ready and not already busy.
+        if dev_ref.device_available()
+            && dev_ref.get_status() == bonder::wifi::WifiStatus::Disconnected {
+            let _ = dev_ref.start_scan();
+        }
     }
 }

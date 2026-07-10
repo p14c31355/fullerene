@@ -158,7 +158,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     "MCFG: ECAM at phys={:#018x}, segment={}, buses {}-{}",
                     mcfg.base_address, mcfg.segment, mcfg.start_bus, mcfg.end_bus,
                 );
-                nitrogen::pci::set_ecam_info(mcfg.base_address, phys_off, mcfg.start_bus);
+                nitrogen::pci::set_ecam_info(mcfg.base_address, phys_off, mcfg.start_bus, mcfg.end_bus);
             } else {
                 log::warn!("MCFG: table not found — extended PCIe config space unavailable");
             }

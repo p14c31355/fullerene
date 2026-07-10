@@ -26,7 +26,8 @@ impl PciAllocator {
             );
 
             let mut bar_index = 0;
-            while bar_index < 6 {
+            let max_bars = device.max_bars();
+            while bar_index < max_bars {
                 let advance = if let Some(bar) = device.get_bar_info(bar_index) {
                     let step = if bar.is_64bit { 2 } else { 1 };
                     log::info!(

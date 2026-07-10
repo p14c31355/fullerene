@@ -70,6 +70,13 @@ pub fn scheduler_loop() -> ! {
         };
         vdso::update_vdso_metadata(now_us, now_us);
 
+        // Poll input devices before the runtime tick so that even
+        // without interrupt delivery (some firmware / VM configs) the
+        // desktop remains responsive and doesn't hang after the first
+        // rendered frame.
+        solvent::poll_mouse_state();
+        solvent::poll_keyboard();
+
         gui::runtime_tick(tick_counter);
 
         // Check if the user requested a shell launch (via AppGrid / menu).

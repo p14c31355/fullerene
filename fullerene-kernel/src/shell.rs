@@ -389,7 +389,7 @@ fn register_nozzle_hooks() {
                 }
             }
             ctx.terminal.write_str("\n=== Kernel trace buffer ===\n");
-            let events = crate::tracing::snapshot();
+            let events = resonance::tracing::snapshot();
             if events.is_empty() {
                 ctx.terminal.write_str("(no trace events recorded)\n");
             } else {
