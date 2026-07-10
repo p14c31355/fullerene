@@ -27,9 +27,9 @@ use x86_64::VirtAddr;
 /// NMI recovery dedicated stack (writable, 16-byte aligned).
 /// Must be mutable so recovery pushes can write to it without faulting.
 #[repr(align(16))]
-struct AlignedStack([u8; 4096]);
+struct AlignedStack([u8; 65536]);
 
-static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack([0u8; 4096]);
+static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack([0u8; 65536]);
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {

@@ -160,11 +160,6 @@ pub fn checked_read_u32(addr: *const u32, health: Option<&PciHealth>) -> SafeRea
         disarm_mmio_watchdog();
     }
 
-    if MMIO_WATCHDOG_HUNG.load(Ordering::Acquire) {
-        MMIO_WATCHDOG_HUNG.store(false, Ordering::Release);
-        return SafeReadResult::MasterAbort;
-    }
-
     if val == 0xFFFF_FFFF {
         return SafeReadResult::MasterAbort;
     }
@@ -479,7 +474,6 @@ impl Drop for DmaRegion {
 
 static MMIO_WATCHDOG_ARMED: AtomicBool = AtomicBool::new(false);
 static MMIO_WATCHDOG_ACTIVE: AtomicBool = AtomicBool::new(false);
-static MMIO_WATCHDOG_HUNG: AtomicBool = AtomicBool::new(false);
 static MMIO_WATCHDOG_DEADLINE: AtomicU64 = AtomicU64::new(0);
 
 // Packed BDF: bits [7:0]=bus, [15:8]=dev, [23:16]=func
@@ -551,7 +545,6 @@ pub fn arm_mmio_watchdog(
     } else {
         MMIO_WATCHDOG_BRIDGE_BDF.store(0, Ordering::Release);
     }
-    MMIO_WATCHDOG_HUNG.store(false, Ordering::Release);
     MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
     MMIO_WATCHDOG_ARMED.store(true, Ordering::Release);
 }
@@ -600,8 +593,6 @@ pub fn clear_watchdog_recovery_trigger() {
 /// 2. trigger link retrain
 /// 3. set recovery trigger flag
 pub fn mmio_watchdog_nmi_recovery() {
-    MMIO_WATCHDOG_HUNG.store(true, Ordering::Release);
-
     let bdf = MMIO_WATCHDOG_PCI_BDF.load(Ordering::Acquire);
     let (bus, dev, func) = (bdf as u8, (bdf >> 8) as u8, (bdf >> 16) as u8);
 

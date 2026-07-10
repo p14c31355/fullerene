@@ -8,6 +8,7 @@ use nitrogen::apic_controller::ApicController;
 use nitrogen::mmio;
 use petroleum::common::utils::reset_mutex_lock;
 use spin::Mutex;
+use x86_64::instructions;
 use x86_64::registers::model_specific::Msr;
 
 /// Hardware interrupt vectors
@@ -185,18 +186,20 @@ pub fn init_apic() {
 const WATCHDOG_NMI_INITIAL_COUNT: u32 = 30_000_000; // ~4.8s at 100MHz bus /16 div
 
 fn arm_watchdog_timer_impl() {
-    let guard = APIC_CONTROLLER.lock();
-    if let Some(ref ctrl) = *guard {
-        let lvt = ctrl.lapic_read(ApicOffsets::LVT_TIMER);
-        let initcnt = ctrl.lapic_read(ApicOffsets::TMRINITCNT);
-        mmio::watchdog_save_lvt(lvt, initcnt);
+    instructions::interrupts::without_interrupts(|| {
+        let guard = APIC_CONTROLLER.lock();
+        if let Some(ref ctrl) = *guard {
+            let lvt = ctrl.lapic_read(ApicOffsets::LVT_TIMER);
+            let initcnt = ctrl.lapic_read(ApicOffsets::TMRINITCNT);
+            mmio::watchdog_save_lvt(lvt, initcnt);
 
-        ctrl.lapic_write(
-            ApicOffsets::LVT_TIMER,
-            ApicFlags::DELIVERY_MODE_NMI | ApicFlags::TIMER_ONESHOT,
-        );
-        ctrl.lapic_write(ApicOffsets::TMRINITCNT, WATCHDOG_NMI_INITIAL_COUNT);
-    }
+            ctrl.lapic_write(
+                ApicOffsets::LVT_TIMER,
+                ApicFlags::DELIVERY_MODE_NMI | ApicFlags::TIMER_ONESHOT,
+            );
+            ctrl.lapic_write(ApicOffsets::TMRINITCNT, WATCHDOG_NMI_INITIAL_COUNT);
+        }
+    });
 }
 
 fn restore_watchdog_timer_impl() {

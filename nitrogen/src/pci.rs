@@ -26,12 +26,17 @@ static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
 /// Acquire the PCI config space lock (NMI-safe spinlock).
 #[inline]
 fn pci_config_lock_acquire() {
+    let mut retries = 0;
     while PCI_CONFIG_LOCK.compare_exchange_weak(
         false,
         true,
         Ordering::Acquire,
         Ordering::Relaxed,
     ).is_err() {
+        retries += 1;
+        if retries > 10000 {
+            break;
+        }
         core::hint::spin_loop();
     }
 }
