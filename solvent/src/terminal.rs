@@ -50,7 +50,7 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
             .saturating_add(
                 (new_cols as usize)
                     .saturating_mul(new_rows as usize)
-                    .saturating_mul(12),
+                    .saturating_mul(core::mem::size_of::<LatticeCell>()),
             );
         let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
         if needed > reserve {
