@@ -7,7 +7,7 @@
 //! All colour constants are stored here and consumed by the compositor,
 //! taskbar, and shell overlay renderers.
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Visual style (appearance family).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +131,7 @@ pub const MODERN_LIGHT_THEME: ThemeColors = ThemeColors {
 // ── Global state ───────────────────────────────────────────────
 
 /// false = Classic, true = Modern
-static STYLE_SEL: AtomicBool = AtomicBool::new(false);
+static STYLE_SEL: AtomicBool = AtomicBool::new(true);
 
 /// false = Dark, true = Light
 static VARIANT_SEL: AtomicBool = AtomicBool::new(false);

@@ -19,11 +19,10 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use nitrogen::usb::context::USBContext;
-use nitrogen::usb::disk::{Disk, set_mount_fn};
+use nitrogen::usb::disk::Disk;
 
 use crate::drivers::fat::{BlockDevice, FatFileSystem};
 use crate::klog_fmt;
-use crate::process::current_pid;
 
 pub static USB_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static USB_DRIVES: Mutex<Vec<UsbDrive>> = Mutex::new(Vec::new());
@@ -37,41 +36,19 @@ pub struct UsbDrive {
 
 static USB_CTX: spin::Mutex<Option<USBContext>> = spin::Mutex::new(None);
 
-/// Reentrancy guard: stores the PID of the process currently holding the
-/// lock.  When the same process re-enters (e.g., mount callback from the
-/// USB poll path), we use the stored raw pointer instead of re-acquiring
-/// the Mutex, preventing deadlock.
-static USB_CTX_OWNER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Raw pointer to the USB context, set once during init.
-/// Used for reentrant access when the Mutex is already held.
-static USB_CTX_PTR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
+/// Access the controller context outside enumeration callbacks.
 pub(crate) fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&mut USBContext) -> R,
 {
-    let current_pid = current_pid().map(|p| p.0).unwrap_or(0);
-    if current_pid != 0 && USB_CTX_OWNER.load(core::sync::atomic::Ordering::Relaxed) == current_pid {
-        let ptr = USB_CTX_PTR.load(core::sync::atomic::Ordering::Relaxed) as *mut USBContext;
-        let ctx = unsafe { &mut *ptr };
-        return f(ctx);
-    }
     let mut guard = USB_CTX.lock();
-    USB_CTX_OWNER.store(current_pid, core::sync::atomic::Ordering::Release);
     let ctx = guard.as_mut().expect("USB context not initialized");
-    let result = f(ctx);
-    USB_CTX_OWNER.store(0, core::sync::atomic::Ordering::Release);
-    drop(guard);
-    result
+    f(ctx)
 }
 
 pub fn init() {
     log::info!("USB: init start");
     let _ = crate::vfs::mkdir("/mnt");
-
-    // Register the platform's FAT-mount callback.
-    set_mount_fn(platform_mount_fat);
 
     // Create and initialise the USB context.
     {
@@ -115,13 +92,10 @@ pub fn init() {
             nitrogen::timing::delay_ms(250);
         }
 
-        let mut guard = USB_CTX.lock();
-        *guard = Some(ctx);
-        // Store raw pointer for reentrant access from mount callback.
-        if let Some(ref ctx_ref) = *guard {
-            USB_CTX_PTR.store(ctx_ref as *const USBContext as usize, core::sync::atomic::Ordering::Relaxed);
-        }
+        *USB_CTX.lock() = Some(ctx);
     } // closes the inner block
+
+    mount_pending();
 
     // Quick check: if a device was already mounted, log it.
     if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
@@ -139,7 +113,12 @@ pub fn poll_usb() -> bool {
             ctx.poll();
         }
     }
-    USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
+    mount_pending();
+    let changed = USB_DRIVE_COUNT.load(Ordering::Relaxed) != before;
+    if changed {
+        let _ = crate::klog::flush_to_vfs();
+    }
+    changed
 }
 
 /// Re-poll all controllers: clear state and re-enumerate from scratch.
@@ -164,8 +143,29 @@ pub fn poll_usb_all() -> bool {
         let mut guard = USB_CTX.lock();
         *guard = Some(ctx);
     }
+    mount_pending();
+    let mounted = USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0;
+    let _ = crate::klog::flush_to_vfs();
+    mounted
+}
 
-    USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0
+/// Mount newly enumerated candidates after releasing the controller lock.
+fn mount_pending() {
+    let mounted: Vec<String> = USB_DRIVES.lock().iter().map(|d| d.mount_point.clone()).collect();
+    let candidates: Vec<Disk> = USB_CTX
+        .lock()
+        .as_ref()
+        .map(|ctx| {
+            ctx.disks()
+                .iter()
+                .filter(|disk| !mounted.contains(&disk.mount_point))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    for mut disk in candidates {
+        let _ = platform_mount_fat(&mut disk);
+    }
 }
 
 // ── Platform FAT-mount callback ───────────────────────────

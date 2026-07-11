@@ -43,3 +43,6 @@ rmp3 = ["dep:rmp3"]
 [lib]
 name = "solvent"
 path = "src/lib.rs"
+
+[dev-dependencies]
+petroleum = { path = "../petroleum", features = ["std"] }

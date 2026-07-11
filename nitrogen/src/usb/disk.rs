@@ -89,7 +89,7 @@ impl StorageManager {
         let name = alloc::format!("USB Drive {}", disk_num);
         let mount_point = alloc::format!("/mnt/usb-{}", disk_num);
 
-        let mut disk = Disk {
+        let disk = Disk {
             name,
             mount_point,
             dev_addr,
@@ -103,44 +103,12 @@ impl StorageManager {
             ctrl_idx,
         };
 
-        let ok = platform_mount_fat(&mut disk);
-        if ok {
-            self.disks.push(disk);
+        if self.disks.iter().any(|known| {
+            known.ctrl_type == ctrl_type && known.ctrl_idx == ctrl_idx && known.dev_addr == dev_addr
+        }) {
+            return false;
         }
-        ok
-    }
-}
-
-// ── Platform-specific FAT mounting ─────────────────────────
-
-/// Thin bridge: the kernel crate provides the actual
-/// [`crate::drivers::fat::FatFileSystem`] implementation.
-///
-/// This function is called by [`StorageManager::try_mount`] and is
-/// expected to be defined by the kernel crate via a `#[no_mangle]`
-/// override or by calling [`set_mount_fn`] during early init.
-/// Platform callback: the kernel crate registers this to mount a
-/// FAT filesystem from the given disk's parameters.  The callback
-/// is responsible for all VFS interactions and should update the
-/// disk's block_size and total_blocks fields based on the actual
-/// device geometry.
-static MOUNT_FN: spin::Mutex<Option<fn(&mut Disk) -> bool>> = spin::Mutex::new(None);
-
-/// Register the platform's FAT-mount callback.
-pub fn set_mount_fn(f: fn(&mut Disk) -> bool) {
-    *MOUNT_FN.lock() = Some(f);
-}
-
-fn platform_mount_fat(disk: &mut Disk) -> bool {
-    let callback = {
-        let guard = MOUNT_FN.lock();
-        *guard
-    };
-    match callback {
-        Some(f) => f(disk),
-        None => {
-            log::warn!("USB: no mount callback registered; disk not mounted");
-            false
-        }
+        self.disks.push(disk);
+        true
     }
 }

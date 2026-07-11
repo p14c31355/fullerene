@@ -57,7 +57,7 @@ pub fn collect_system_stats(
     SystemStats {
         total_processes: get_total_processes(),
         active_processes: get_active_processes(),
-        memory_used: crate::page_table::ALLOCATOR.lock().used(),
+        memory_used: crate::page_table::heap::heap_stats().used,
         uptime_ticks: get_uptime_ticks(),
     }
 }

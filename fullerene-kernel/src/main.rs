@@ -164,7 +164,6 @@ pub use heap::MEMORY_MAP;
 pub mod drivers;
 
 // ── WiFi service (registered with Solvent at runtime) ──────────────
-pub mod wifi_service;
 
 // ── DriverContext bridge (kernel → nitrogen) ──────────────────────
 pub mod driver_context_impl;

@@ -806,7 +806,6 @@ dependencies = [
  "paste",
  "spin 0.10.0",
  "static_assertions",
- "toluene",
  "volatile 0.6.1",
  "x86_64 0.15.4",
 ]

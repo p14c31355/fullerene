@@ -342,7 +342,9 @@ impl SchedulerContext {
                 let new_frame = PhysFrame::containing_address(pt);
                 let (current_frame, _) = Cr3::read();
                 if new_frame != current_frame {
-                    Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
+                    unsafe {
+                        Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
+                    }
                 }
             }
             let old_ref = old_ctx.map(|ptr| unsafe { &mut *ptr });

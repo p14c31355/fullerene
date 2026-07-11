@@ -213,6 +213,7 @@ Solvent owns:
 - service ownership
 - subsystem wiring
 - frame/update pacing
+- device-service lifecycle scheduling and projection of driver snapshots into UI state
 
 Solvent should NOT become:
 - a GUI framework
@@ -227,6 +228,11 @@ who runs what
 who owns what
 who talks to what
 ```
+
+Wi-Fi follows this boundary explicitly: Nitrogen owns the Intel device and
+incremental initialization state machine, while Solvent owns `WifiService`, its
+timeout, scan cadence, action consumption, and immutable desktop snapshot. The
+kernel only installs the `DriverContext` capability and starts Solvent.
 
 ---
 
@@ -391,6 +397,12 @@ Genome focuses on one question:
 ```text
 how persistent data is organised, stored, and retrieved
 ```
+
+USB mass-storage enumeration is likewise two-phase. Nitrogen registers block
+device candidates without invoking VFS callbacks. After the controller lock is
+released, the kernel integration layer performs FAT probing and mounts through
+Genome. This lock boundary must be preserved: recursively borrowing a
+`USBContext` from a mount callback is prohibited.
 
 The kernel crate re-exports Genome types and adds the singleton `VfsContext` (wrapping `Vfs` with `spin::Mutex` + handle table) through the kernel's `vfs` and `fs` modules, keeping the core logic framework-agnostic.
 

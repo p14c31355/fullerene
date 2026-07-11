@@ -2,9 +2,8 @@
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
-use crate::{HEAP_EXTEND_RESERVE, RUNTIME, SOLVENT_CALLBACKS};
+use crate::{HEAP_EXTEND_RESERVE, SOLVENT_CALLBACKS};
 use alloc::string::String;
-use alloc::vec::Vec;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;

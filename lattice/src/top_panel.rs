@@ -7,8 +7,6 @@
 //!
 //! Complements the existing bottom taskbar (Xfce-style).
 
-use crate::compositor::{COLOR_PRIMARY, COLOR_TEXT};
-
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Top panel height in pixels.
@@ -70,6 +68,7 @@ impl TopPanel {
     /// `fb_width` is the logical screen width; `fb_stride` is the actual
     /// pixels‑per‑scan‑line (may be larger on real hardware with GOP padding).
     pub fn render(&self, fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32) {
+        let colors = crate::theme::current_colors();
         let stride = fb_stride as usize;
         let fb_w = fb_width as usize;
         let panel_h = TOP_PANEL_HEIGHT;
@@ -81,14 +80,14 @@ impl TopPanel {
         // Fill panel background
         for row in 0..panel_h {
             let rs = (row as usize) * stride;
-            fb[rs..rs + fb_w].fill(TOP_PANEL_BG);
+            fb[rs..rs + fb_w].fill(colors.taskbar_bg);
         }
 
         // Draw "Activities" button (left side)
         let btn_bg = if self.activities_highlight {
-            TOP_PANEL_BUTTON_HOVER
+            colors.active
         } else {
-            TOP_PANEL_BUTTON_BG
+            colors.taskbar_inactive_bg
         };
         let btn_x = 4u32;
         let btn_y = 4u32;
@@ -124,7 +123,7 @@ impl TopPanel {
                     if crate::font::get_glyph_pixel(*ch, gry as u32, grx as u32) {
                         let idx = (py as usize) * stride + px as usize;
                         if idx < fb.len() {
-                            fb[idx] = COLOR_TEXT;
+                            fb[idx] = colors.taskbar_text;
                         }
                     }
                 }
@@ -150,7 +149,7 @@ impl TopPanel {
                             if crate::font::get_glyph_pixel(*ch, gry as u32, grx as u32) {
                                 let idx = (py as usize) * stride + px as usize;
                                 if idx < fb.len() {
-                                    fb[idx] = COLOR_PRIMARY;
+                                    fb[idx] = colors.primary;
                                 }
                             }
                         }
