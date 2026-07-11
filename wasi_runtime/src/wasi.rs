@@ -583,7 +583,11 @@ pub fn environ_get(
     let memory = get_memory(&caller)?;
     let mut buf_offset = environ_buf_ptr;
     for (i, entry) in env.iter().enumerate() {
-        write_u32(&memory, &mut caller, environ_ptr + (i as u32) * 4, buf_offset)?;
+        let addr = match environ_ptr.checked_add((i as u32).checked_mul(4).ok_or_else(|| Error::new("overflow"))?) {
+            Some(a) => a,
+            None => return Ok(EINVAL),
+        };
+        write_u32(&memory, &mut caller, addr, buf_offset)?;
         memory
             .write(&mut caller, buf_offset as usize, entry)
             .map_err(|_| Error::new("environ_get: write failed"))?;
