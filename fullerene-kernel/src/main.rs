@@ -147,6 +147,13 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
 }
 
+// ── Host-target panic handler (enables `cargo check` on Linux) ──
+#[cfg(not(any(target_os = "none", target_os = "uefi")))]
+#[panic_handler]
+fn panic_host(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
 petroleum::define_alloc_error_handler!();
 
 // Exported globals
@@ -187,6 +194,7 @@ pub mod loader;
 pub mod memory_management;
 pub mod process;
 pub mod scheduler;
+pub mod scheduler_context;
 pub mod shell;
 pub mod slab;
 pub mod syscall;

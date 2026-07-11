@@ -1,10 +1,22 @@
 //! Theme system for Lattice compositor.
 //!
-//! Provides dark and light theme variants with runtime switching.
+//! Two style axes:
+//!   **Style**: Classic or Modern (visual appearance)
+//!   **Variant**: Dark or Light (brightness)
+//!
 //! All colour constants are stored here and consumed by the compositor,
 //! taskbar, and shell overlay renderers.
 
-/// Available theme variants.
+use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+/// Visual style (appearance family).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeStyle {
+    Classic,
+    Modern,
+}
+
+/// Brightness variant within a style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeVariant {
     Dark,
@@ -32,8 +44,10 @@ pub struct ThemeColors {
     pub taskbar_inactive_bg: u32,
 }
 
-/// Fullerene dark theme (default).
-pub const DARK_THEME: ThemeColors = ThemeColors {
+// ── Classic style ──────────────────────────────────────────────
+
+/// Classic dark theme (original Fullerene look).
+pub const CLASSIC_DARK_THEME: ThemeColors = ThemeColors {
     bg: 0x1a1a2e,
     surface: 0x16213e,
     primary: 0x4A90D9,
@@ -52,8 +66,8 @@ pub const DARK_THEME: ThemeColors = ThemeColors {
     taskbar_inactive_bg: 0x333344,
 };
 
-/// Fullerene light theme.
-pub const LIGHT_THEME: ThemeColors = ThemeColors {
+/// Classic light theme.
+pub const CLASSIC_LIGHT_THEME: ThemeColors = ThemeColors {
     bg: 0xF0F0F5,
     surface: 0xFFFFFF,
     primary: 0x2563EB,
@@ -72,15 +86,68 @@ pub const LIGHT_THEME: ThemeColors = ThemeColors {
     taskbar_inactive_bg: 0x9CA3AF,
 };
 
-/// Global theme state, toggleable at runtime.
-use core::sync::atomic::{AtomicBool, Ordering};
+// ── Modern style ───────────────────────────────────────────────
+
+/// Modern dark theme — macOS/iOS‑inspired flat design.
+pub const MODERN_DARK_THEME: ThemeColors = ThemeColors {
+    bg: 0x0D0D0D,
+    surface: 0x1C1C1E,
+    primary: 0x007AFF,
+    active: 0x0066D6,
+    text: 0xF5F5F5,
+    muted: 0x8E8E93,
+    border_active: 0x007AFF,
+    border_inactive: 0x3A3A3C,
+    title_active: 0x007AFF,
+    title_inactive: 0x48484A,
+    accent: 0xFF9F0A,
+    danger: 0xFF3B30,
+    taskbar_bg: 0x000000,
+    taskbar_text: 0xF5F5F5,
+    taskbar_active_bg: 0x007AFF,
+    taskbar_inactive_bg: 0x2C2C2E,
+};
+
+/// Modern light theme — clean white with blue accent.
+pub const MODERN_LIGHT_THEME: ThemeColors = ThemeColors {
+    bg: 0xFFFFFF,
+    surface: 0xF2F2F7,
+    primary: 0x007AFF,
+    active: 0x0066D6,
+    text: 0x1C1C1E,
+    muted: 0x8E8E93,
+    border_active: 0x007AFF,
+    border_inactive: 0xC7C7CC,
+    title_active: 0x007AFF,
+    title_inactive: 0xAEAEB2,
+    accent: 0xFF9F0A,
+    danger: 0xFF3B30,
+    taskbar_bg: 0xE5E5EA,
+    taskbar_text: 0x1C1C1E,
+    taskbar_active_bg: 0x007AFF,
+    taskbar_inactive_bg: 0xC7C7CC,
+};
+
+// ── Global state ───────────────────────────────────────────────
+
+/// false = Classic, true = Modern
+static STYLE_SEL: AtomicBool = AtomicBool::new(false);
 
 /// false = Dark, true = Light
-static CURRENT_THEME: AtomicBool = AtomicBool::new(false);
+static VARIANT_SEL: AtomicBool = AtomicBool::new(false);
 
-/// Get the currently active theme variant.
+/// Get the currently active style.
+pub fn current_style() -> ThemeStyle {
+    if STYLE_SEL.load(Ordering::SeqCst) {
+        ThemeStyle::Modern
+    } else {
+        ThemeStyle::Classic
+    }
+}
+
+/// Get the currently active brightness variant.
 pub fn current_theme_variant() -> ThemeVariant {
-    if CURRENT_THEME.load(Ordering::SeqCst) {
+    if VARIANT_SEL.load(Ordering::SeqCst) {
         ThemeVariant::Light
     } else {
         ThemeVariant::Dark
@@ -89,29 +156,43 @@ pub fn current_theme_variant() -> ThemeVariant {
 
 /// Get the currently active theme colours.
 pub fn current_colors() -> ThemeColors {
-    if CURRENT_THEME.load(Ordering::SeqCst) {
-        LIGHT_THEME
-    } else {
-        DARK_THEME
+    let style = current_style();
+    let variant = current_theme_variant();
+    match (style, variant) {
+        (ThemeStyle::Classic, ThemeVariant::Dark) => CLASSIC_DARK_THEME,
+        (ThemeStyle::Classic, ThemeVariant::Light) => CLASSIC_LIGHT_THEME,
+        (ThemeStyle::Modern, ThemeVariant::Dark) => MODERN_DARK_THEME,
+        (ThemeStyle::Modern, ThemeVariant::Light) => MODERN_LIGHT_THEME,
     }
 }
 
-/// Toggle between dark and light theme.
+// ── Style switching ────────────────────────────────────────────
+
+/// Toggle between Classic and Modern style.
+pub fn toggle_style() -> ThemeStyle {
+    let was_modern = STYLE_SEL.fetch_xor(true, Ordering::SeqCst);
+    if was_modern { ThemeStyle::Classic } else { ThemeStyle::Modern }
+}
+
+/// Set the style explicitly.
+pub fn set_style(style: ThemeStyle) {
+    STYLE_SEL.store(matches!(style, ThemeStyle::Modern), Ordering::SeqCst);
+}
+
+/// Toggle between dark and light variant.
 pub fn toggle_theme() -> ThemeVariant {
-    let was_light = CURRENT_THEME.fetch_xor(true, Ordering::SeqCst);
-    if was_light {
-        ThemeVariant::Dark
-    } else {
-        ThemeVariant::Light
-    }
+    let was_light = VARIANT_SEL.fetch_xor(true, Ordering::SeqCst);
+    if was_light { ThemeVariant::Dark } else { ThemeVariant::Light }
 }
 
-/// Set the theme explicitly.
+/// Set the variant explicitly.
 pub fn set_theme(variant: ThemeVariant) {
-    CURRENT_THEME.store(matches!(variant, ThemeVariant::Light), Ordering::SeqCst);
+    VARIANT_SEL.store(matches!(variant, ThemeVariant::Light), Ordering::SeqCst);
 }
 
-/// Get a single colour value by name (for shell / settings app).
+// ── Colour lookups (shell / settings) ──────────────────────────
+
+/// Get a single colour value by name.
 pub fn get_color(name: &str) -> Option<u32> {
     let c = current_colors();
     match name {
@@ -138,21 +219,9 @@ pub fn get_color(name: &str) -> Option<u32> {
 /// List all available colour names.
 pub fn color_names() -> &'static [&'static str] {
     &[
-        "bg",
-        "surface",
-        "primary",
-        "active",
-        "text",
-        "muted",
-        "border_active",
-        "border_inactive",
-        "title_active",
-        "title_inactive",
-        "accent",
-        "danger",
-        "taskbar_bg",
-        "taskbar_text",
-        "taskbar_active_bg",
-        "taskbar_inactive_bg",
+        "bg", "surface", "primary", "active", "text", "muted",
+        "border_active", "border_inactive", "title_active", "title_inactive",
+        "accent", "danger",
+        "taskbar_bg", "taskbar_text", "taskbar_active_bg", "taskbar_inactive_bg",
     ]
 }

@@ -1,13 +1,12 @@
 use core::sync::atomic::Ordering;
 
 use petroleum::page_table::types::PageTableHelper;
-use petroleum::vdso::{VDSO_COMPLETE, VDSO_PENDING, VDSO_USER_BASE, VdsoPage};
+use petroleum::vdso::{VDSO_USER_BASE, VdsoPage};
 use x86_64::VirtAddr;
 use x86_64::structures::paging::{FrameAllocator, PageTableFlags, PhysFrame, Size4KiB};
 
-use crate::process::PROCESS_MANAGER;
-use crate::syscall::handle_syscall;
-
+/// Reference to a VDSO page: kernel-side pointer + the physical frame
+/// so `Drop` can free the frame when the process is destroyed.
 pub struct VdsoPageRef {
     pub kernel_ptr: &'static VdsoPage,
     pub phys: PhysFrame<Size4KiB>,
@@ -23,6 +22,15 @@ impl Drop for VdsoPageRef {
     }
 }
 
+/// Create and map a read-only VDSO page for a user-space process.
+///
+/// The physical frame is:
+///   - zero-initialised and PID-stamped via the kernel's phys_offset mapping,
+///   - mapped into the **user's** page table at `VDSO_USER_BASE` with
+///     read-only user-accessible flags (no `WRITABLE` — userspace can
+///     never corrupt the VDSO data),
+///   - returned as a `VdsoPageRef` so the kernel can write time metadata
+///     through `kernel_ptr` (which points into the phys_offset region).
 pub fn create_vdso_page(
     process_pt: &mut impl PageTableHelper,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
@@ -39,8 +47,9 @@ pub fn create_vdso_page(
     *page = VdsoPage::new();
     page.pid = pid;
 
-    let flags =
-        PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;
+    // User-side: read-only.  Kernel writes via phys_offset, not through
+    // the user's page table, so no WRITABLE flag needed.
+    let flags = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
     process_pt
         .map_page(
             VDSO_USER_BASE as usize,
@@ -70,50 +79,12 @@ pub fn create_vdso_page(
     })
 }
 
-pub fn poll_vdso_page(vdso: &VdsoPage) {
-    for slot in 0..petroleum::vdso::VDSO_RING_SIZE {
-        let state = vdso.requests[slot].state.load(Ordering::Acquire);
-        if state == VDSO_PENDING {
-            let syscall_num = vdso.requests[slot].syscall_num();
-            let args = vdso.requests[slot].args();
-            let result = unsafe {
-                handle_syscall(
-                    syscall_num,
-                    args[0],
-                    args[1],
-                    args[2],
-                    args[3],
-                    args[4],
-                    args[5],
-                )
-            };
-            vdso.requests[slot].set_result(result);
-            vdso.requests[slot]
-                .state
-                .store(VDSO_COMPLETE, Ordering::Release);
-        }
-    }
-}
-
-pub fn poll_all_vdso_rings() {
-    PROCESS_MANAGER.with_list(|list| {
-        for (_, proc) in list.iter() {
-            if proc.state != crate::process::ProcessState::Terminated {
-                if let Some(ref vdso) = proc.vdso_page {
-                    poll_vdso_page(vdso.kernel_ptr);
-                }
-            }
-        }
-    });
-}
-
-pub fn update_vdso_metadata(now_us: u64, wall_us: u64) {
-    PROCESS_MANAGER.with_list(|list| {
-        for (_, proc) in list.iter_mut() {
-            if let Some(ref vdso) = proc.vdso_page {
-                vdso.kernel_ptr.uptime_us.store(now_us, Ordering::Relaxed);
-                vdso.kernel_ptr.time_us.store(wall_us, Ordering::Release);
-            }
-        }
-    });
+/// Update per-process VDSO metadata (uptime, wall-clock time).
+///
+/// Called once per scheduler tick.  Writes are done through the kernel's
+/// phys_offset mapping and are visible to user-space via the read-only
+/// shared page.
+pub fn update_vdso_metadata(now_us: u64, wall_us: u64, vdso: &VdsoPage) {
+    vdso.uptime_us.store(now_us, Ordering::Relaxed);
+    vdso.time_us.store(wall_us, Ordering::Release);
 }

@@ -1,27 +1,26 @@
 //! Process management module for Fullerene OS
 //!
-//! This module provides process creation, scheduling, and context switching
-//! capabilities for user-space programs.
+//! This module defines the `Process` struct, `ProcessContext`, and
+//! lifecycle functions (create / terminate).  Scheduling logic lives
+//! in [`scheduler_context`]; access the global scheduler via
+//! `SCHEDULER`.
 
 use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use heapless::Vec as HeaplessVec;
 use petroleum::common::logging::SystemError;
 use petroleum::mem_debug;
 use petroleum::page_table::PageTableHelper as _;
-use spin::Mutex;
-use x86_64::{PhysAddr, VirtAddr, registers::control::Cr3, structures::paging::PhysFrame};
+use x86_64::{PhysAddr, VirtAddr};
 
 use crate::linux::runtime::DispatchMode;
-use crate::vdso::{VdsoPageRef, create_vdso_page};
+use crate::vdso::{create_vdso_page, VdsoPageRef};
 
 use crate::syscall::{Handle, HandlePerms, KernelObject};
 
 /// Maximum number of processes managed by the system
-const MAX_PROCESSES: usize = 64;
+pub const MAX_PROCESSES: usize = 64;
 
 /// Process ID type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -260,10 +259,12 @@ impl HandleTable {
     }
 }
 
-/// Per-process resources: file descriptors, kernel object handles.
+/// Per-process resources: file descriptors, kernel object handles, event subscriptions.
 pub struct ProcessResources {
     pub fd_table: spin::Mutex<FdTable>,
     pub handle_table: spin::Mutex<HandleTable>,
+    /// Registered event subscriptions: (event_type, event_handle)
+    pub subscriptions: spin::Mutex<alloc::vec::Vec<(u64, u64)>>,
 }
 
 impl ProcessResources {
@@ -271,6 +272,7 @@ impl ProcessResources {
         Self {
             fd_table: spin::Mutex::new(FdTable::new()),
             handle_table: spin::Mutex::new(HandleTable::new()),
+            subscriptions: spin::Mutex::new(alloc::vec::Vec::new()),
         }
     }
 
@@ -360,7 +362,7 @@ pub struct Process {
 impl Process {
     /// Create a new process
     pub fn new(name: &'static str, entry_point: VirtAddr, is_user: bool) -> Self {
-        let id = PROCESS_MANAGER.allocate_pid();
+        let id = SCHEDULER.allocate_pid();
 
         Self {
             id,
@@ -418,121 +420,11 @@ impl Process {
     }
 }
 
-/// Manages the global list of processes with encapsulated locking
+/// Scheduling and process-list state lives in [`crate::scheduler_context::SCHEDULER`].
 ///
-/// Also owns the scheduler state (`next_pid`, `current_index`, `current_pid`)
-/// that was previously scattered as separate statics.
-pub struct ProcessManager {
-    processes: Mutex<HeaplessVec<(ProcessId, Box<Process>), MAX_PROCESSES>>,
-    /// Next available process ID.
-    next_pid: AtomicUsize,
-    /// Round‑robin index into `processes`.
-    current_index: AtomicUsize,
-    /// PID of the currently running process (0 = none).
-    current_pid: AtomicUsize,
-}
-
-impl ProcessManager {
-    pub const fn new() -> Self {
-        Self {
-            processes: Mutex::new(HeaplessVec::new()),
-            next_pid: AtomicUsize::new(1),
-            current_index: AtomicUsize::new(0),
-            current_pid: AtomicUsize::new(0),
-        }
-    }
-
-    // ── PID allocation ─────────────────────────────────────────
-
-    /// Allocate a new unique process ID.
-    pub fn allocate_pid(&self) -> ProcessId {
-        ProcessId(self.next_pid.fetch_add(1, Ordering::Relaxed) as u64)
-    }
-
-    // ── Scheduler state ────────────────────────────────────────
-
-    /// The PID of the currently running process (0 = none / idle).
-    pub fn current_pid(&self) -> usize {
-        self.current_pid.load(Ordering::SeqCst)
-    }
-
-    /// Set the currently running PID.
-    pub fn set_current_pid(&self, pid: usize) {
-        self.current_pid.store(pid, Ordering::SeqCst);
-    }
-
-    /// Get the round‑robin schedule index.
-    pub fn schedule_index(&self) -> usize {
-        self.current_index.load(Ordering::SeqCst)
-    }
-
-    /// Set the round‑robin schedule index.
-    pub fn set_schedule_index(&self, idx: usize) {
-        self.current_index.store(idx, Ordering::SeqCst);
-    }
-
-    // ── Process list operations ─────────────────────────────────
-
-    /// Adds a new process to the list
-    pub fn add(&self, process: Box<Process>) -> Result<(), SystemError> {
-        let mut processes = self.processes.lock();
-        let pid = process.id;
-        if processes.len() >= MAX_PROCESSES {
-            return Err(SystemError::TooManyProcesses);
-        }
-        // Remove existing entry with same PID if present
-        if let Some(pos) = processes.iter().position(|(id, _)| *id == pid) {
-            let _ = processes.swap_remove(pos);
-        }
-        processes
-            .push((pid, process))
-            .map_err(|_| SystemError::TooManyProcesses)
-    }
-
-    /// Performs an operation on a process found by PID
-    pub fn with_process<F, R>(&self, pid: ProcessId, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut Process) -> R,
-    {
-        let mut processes = self.processes.lock();
-        processes
-            .iter_mut()
-            .find(|(id, _)| *id == pid)
-            .map(|(_, p)| f(p))
-    }
-
-    /// Performs an operation on the entire process list
-    pub fn with_list<F, R>(&self, f: F) -> R
-    where
-        F: FnOnce(&mut HeaplessVec<(ProcessId, Box<Process>), MAX_PROCESSES>) -> R,
-    {
-        let mut processes = self.processes.lock();
-        f(&mut *processes)
-    }
-
-    /// Returns the total number of processes
-    pub fn count(&self) -> usize {
-        self.processes.lock().len()
-    }
-
-    /// Returns the number of active processes (Ready or Running)
-    pub fn active_count(&self) -> usize {
-        self.processes
-            .lock()
-            .iter()
-            .filter(|(_, p)| p.state == ProcessState::Ready || p.state == ProcessState::Running)
-            .count()
-    }
-
-    /// Removes terminated processes from the list
-    pub fn cleanup(&self) {
-        let mut processes = self.processes.lock();
-        processes.retain(|(_, p)| p.state != ProcessState::Terminated);
-    }
-}
-
-/// Global process manager
-pub static PROCESS_MANAGER: ProcessManager = ProcessManager::new();
+/// Use the convenience functions below (which delegate to `SCHEDULER`) or
+/// access `SCHEDULER` directly.
+pub use crate::scheduler_context::SCHEDULER;
 
 // Use KERNEL_STACK_SIZE from crate::heap
 
@@ -560,7 +452,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
     // Idle process — heap allocator is already initialised (see init.rs),
     // so we can safely use Box::new here.
     let idle_addr = VirtAddr::new(idle_loop as *const () as usize as u64);
-    let pid = PROCESS_MANAGER.allocate_pid();
+    let pid = SCHEDULER.allocate_pid();
 
     let ctx = ProcessContext {
         regs: [0; 16],
@@ -594,12 +486,12 @@ pub fn init(heap_start: usize, heap_end: usize) {
         resources: ProcessResources::new(),
     });
 
-    PROCESS_MANAGER
+    SCHEDULER
         .add(idle)
         .expect("Failed to add idle process");
 
     IDLE_INIT.store(true, core::sync::atomic::Ordering::Release);
-    PROCESS_MANAGER.set_current_pid(pid.0 as usize);
+    SCHEDULER.set_current_pid(pid.0 as usize);
 
     mem_debug!("Process: init done\n");
 }
@@ -694,7 +586,7 @@ pub fn create_process(
     process.init_context(kernel_stack_top);
 
     let pid = process.id;
-    PROCESS_MANAGER.add(Box::new(process))?;
+    SCHEDULER.add(Box::new(process))?;
 
     mem_debug!("Process: create_process done\n");
     Ok(pid)
@@ -702,7 +594,7 @@ pub fn create_process(
 
 /// Unblock parent processes that are waiting for this child process
 fn unblock_waiting_parents(child_pid: ProcessId) {
-    let parent_to_unblock = PROCESS_MANAGER.with_list(|list| {
+    let parent_to_unblock = SCHEDULER.with_list(|list| {
         list.iter()
             .find(|(id, _)| *id == child_pid)
             .and_then(|(_, proc)| proc.parent_id)
@@ -720,7 +612,7 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
-    let to_unblock = PROCESS_MANAGER.with_process(pid, |process| {
+    let to_unblock = SCHEDULER.with_process(pid, |process| {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
 
@@ -756,7 +648,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     unblock_waiting_parents(pid);
 
     // If current process is terminating, schedule next
-    let current_pid = PROCESS_MANAGER.current_pid();
+    let current_pid = SCHEDULER.current_pid();
     if current_pid == pid.0 as usize {
         schedule_next();
     }
@@ -775,85 +667,12 @@ fn idle_loop() {
 
 /// Schedule next process (round-robin)
 pub fn schedule_next() {
-    petroleum::scheduler_log!("Starting process scheduling");
-
-    PROCESS_MANAGER.with_list(|process_list| {
-        petroleum::scheduler_log!(
-            "Acquired process list lock, {} processes",
-            process_list.len()
-        );
-
-        if process_list.is_empty() {
-            petroleum::scheduler_log!("No processes in list, cannot schedule");
-            return;
-        }
-
-        let current_index = PROCESS_MANAGER.schedule_index();
-        petroleum::scheduler_log!("Current index: {}", current_index);
-
-        let mut next_index = current_index;
-        let start_index = current_index;
-
-        loop {
-            next_index = (next_index + 1) % process_list.len();
-            let proc = process_list[next_index].1.as_ref();
-            petroleum::scheduler_log!(
-                "Checking process at index {}, name: {}, state: {:?}",
-                next_index,
-                proc.name,
-                proc.state
-            );
-
-            if proc.state == ProcessState::Ready {
-                petroleum::scheduler_log!("Found ready process at index {}", next_index);
-                break;
-            }
-
-            if next_index == start_index {
-                petroleum::scheduler_log!(
-                    "Wrapped around, all processes blocked or completed check"
-                );
-                if let Some(idle_idx) = process_list.iter().position(|(_, p)| p.name == "idle") {
-                    next_index = idle_idx;
-                    petroleum::scheduler_log!("Switching to idle process at index {}", idle_idx);
-                } else {
-                    petroleum::scheduler_log!("No idle process found, using first process");
-                    next_index = 0;
-                }
-                break;
-            }
-        }
-
-        PROCESS_MANAGER.set_schedule_index(next_index);
-        let next_pid = process_list[next_index].1.id.0 as usize;
-        PROCESS_MANAGER.set_current_pid(next_pid);
-        petroleum::scheduler_log!(
-            "Set current process index to {}, PID {}",
-            next_index,
-            next_pid
-        );
-
-        if current_index != next_index {
-            if let Some((_, current)) = process_list.get_mut(current_index) {
-                if current.state == ProcessState::Running {
-                    current.state = ProcessState::Ready;
-                    petroleum::scheduler_log!("Marked current process as ready");
-                }
-            }
-
-            if let Some((_, next)) = process_list.get_mut(next_index) {
-                next.state = ProcessState::Running;
-                petroleum::scheduler_log!("Marked next process as running");
-            }
-        }
-    });
-
-    petroleum::scheduler_log!("Process scheduling completed");
+    SCHEDULER.schedule_next();
 }
 
 /// Get current process ID
 pub fn current_pid() -> Option<ProcessId> {
-    let pid = PROCESS_MANAGER.current_pid();
+    let pid = SCHEDULER.current_pid();
     if pid == 0 {
         None
     } else {
@@ -873,71 +692,17 @@ pub fn yield_current() {
 
 /// Perform context switch between two processes
 pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
-    use crate::context_switch::switch_context;
-
-    // Early return if switching to the same process to avoid aliasing
-    if old_pid == Some(new_pid) {
-        return;
-    }
-
-    // HeaplessVec never reallocates and Box<Process> elements live for the
-    // process lifetime, so the `context` field address is stable while the
-    // process exists.  We extract raw pointers within the lock, then use
-    // them after the lock drops — safe because no slot touched here will
-    // be freed during this window (terminated processes are skipped by the
-    // scheduler and the idle process is never removed).
-    let (old_ctx, new_ctx) = PROCESS_MANAGER.with_list(|list| {
-        let old_ptr = old_pid
-            .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
-            .map(|(_, p)| &mut *p.context as *mut ProcessContext);
-        let new_ptr = list
-            .iter()
-            .find(|(id, _)| *id == new_pid)
-            .map(|(_, p)| &*p.context as *const ProcessContext);
-        (old_ptr, new_ptr)
-    });
-    let pt = PROCESS_MANAGER.with_process(new_pid, |p| p.page_table_phys_addr).unwrap_or(PhysAddr::new(0));
-
-    if let Some(new) = new_ctx {
-        if pt != PhysAddr::new(0) {
-            let new_frame = PhysFrame::containing_address(pt);
-            let (current_frame, _) = Cr3::read();
-            if new_frame != current_frame {
-                unsafe { Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty()) };
-            }
-        }
-        let old_ref = old_ctx.map(|ptr| unsafe { &mut *ptr });
-        unsafe { switch_context(old_ref, &*new) };
-    }
+    SCHEDULER.context_switch(old_pid, new_pid);
 }
 
 /// Block current process
 pub fn block_current() {
-    let pid = current_pid().expect("block_current called with no current process");
-
-    let found = PROCESS_MANAGER.with_process(pid, |process| {
-        process.state = ProcessState::Blocked;
-    });
-
-    if found.is_some() {
-        let old_pid = Some(pid);
-        schedule_next();
-        let new_pid =
-            current_pid().expect("schedule_next failed to select a process after blocking");
-        unsafe {
-            context_switch(old_pid, new_pid);
-        }
-    } else {
-        panic!(
-            "State inconsistency: current PID {} not found in process list",
-            pid
-        );
-    }
+    SCHEDULER.block_current();
 }
 
 /// Unblock a process
 pub fn unblock_process(pid: ProcessId) {
-    PROCESS_MANAGER.with_process(pid, |process| {
+    SCHEDULER.with_process(pid, |process| {
         if process.state == ProcessState::Blocked {
             process.state = ProcessState::Ready;
         }
@@ -960,8 +725,8 @@ mod tests {
     fn test_process_counting() {
         // Initialize the process management system with dummy heap range
         init(0, 0);
-        assert!(PROCESS_MANAGER.count() > 0);
-        assert!(PROCESS_MANAGER.active_count() > 0);
+        assert!(SCHEDULER.count() > 0);
+        assert!(SCHEDULER.active_count() > 0);
     }
 }
 

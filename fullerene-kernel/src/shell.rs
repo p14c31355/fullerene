@@ -314,15 +314,21 @@ fn register_nozzle_hooks() {
             ctx.terminal.write_str("Example: calc (2+3)*4\n");
         }
         "theme" => {
-            let current = solvent::current_theme_variant();
-            let name = match current {
+            let style = solvent::current_style();
+            let variant = solvent::current_theme_variant();
+            let style_name = match style {
+                solvent::ThemeStyle::Classic => "classic",
+                solvent::ThemeStyle::Modern => "modern",
+            };
+            let var_name = match variant {
                 solvent::ThemeVariant::Dark => "dark",
                 solvent::ThemeVariant::Light => "light",
             };
-            let msg = format!("Current theme: {}\n", name);
+            let msg = format!("Style: {}  Variant: {}\n", style_name, var_name);
             ctx.terminal.write_str(&msg);
-            ctx.terminal
-                .write_str("Usage: theme toggle | theme dark | theme light\n");
+            ctx.terminal.write_str(
+                "Usage: theme ( classic | modern | dark | light | toggle | toggle-style )\n",
+            );
         }
         "wallpaper" => {
             let current = solvent::get_wallpaper();
@@ -582,6 +588,9 @@ fn register_nozzle_hooks() {
         "theme dark" => { solvent::set_theme(solvent::ThemeVariant::Dark); solvent::force_desktop_redraw(); }
         "theme light" => { solvent::set_theme(solvent::ThemeVariant::Light); solvent::force_desktop_redraw(); }
         "theme toggle" => { solvent::toggle_theme(); solvent::force_desktop_redraw(); }
+        "theme toggle-style" => { solvent::toggle_style(); solvent::force_desktop_redraw(); }
+        "theme classic" => { solvent::set_style(solvent::ThemeStyle::Classic); solvent::force_desktop_redraw(); }
+        "theme modern" => { solvent::set_style(solvent::ThemeStyle::Modern); solvent::force_desktop_redraw(); }
         "wallpaper solid" => { solvent::set_wallpaper(solvent::WallpaperMode::SolidColor); solvent::force_desktop_redraw(); }
         "wallpaper grid" => { solvent::set_wallpaper(solvent::WallpaperMode::GridPattern); solvent::force_desktop_redraw(); }
         "wallpaper gradient" => { solvent::set_wallpaper(solvent::WallpaperMode::Gradient); solvent::force_desktop_redraw(); }

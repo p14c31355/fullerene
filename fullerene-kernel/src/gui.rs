@@ -94,7 +94,7 @@ pub fn init() {
         vfs_unlink: Some(|path| crate::vfs::unlink(path).map_err(fs_err_str)),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
-            crate::process::PROCESS_MANAGER.with_list(|list| {
+            crate::process::SCHEDULER.with_list(|list| {
                 for (pid, proc) in list.iter() {
                     let state = match proc.state {
                         crate::process::ProcessState::Ready => solvent::ProcessStateKind::Ready,

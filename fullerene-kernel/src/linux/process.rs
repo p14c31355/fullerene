@@ -33,7 +33,7 @@ pub fn sys_getpid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
 
 pub fn sys_getppid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     let pid = process::current_pid().unwrap_or(ProcessId(0));
-    process::PROCESS_MANAGER
+    process::SCHEDULER
         .with_process(pid, |p| p.parent_id.map(|id| id.0).unwrap_or(0))
         .unwrap_or(0)
 }
@@ -57,7 +57,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
 
     // Get parent info
-    let (parent_pt, parent_ctx) = process::PROCESS_MANAGER
+    let (parent_pt, parent_ctx) = process::SCHEDULER
         .with_process(current_pid, |p| (p.page_table_phys_addr, p.context.clone()))
         .unwrap_or((PhysAddr::new(0), Box::new(ProcessContext::default())));
 
@@ -92,7 +92,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
     let kernel_stack_top = x86_64::VirtAddr::new(stack_ptr as u64 + 4096);
 
-    let child_pid = process::PROCESS_MANAGER.allocate_pid();
+    let child_pid = process::SCHEDULER.allocate_pid();
 
     // Remove inherited VDSO mapping (parent may have one at VDSO_USER_BASE)
     let _ = child_pt.unmap_page(petroleum::vdso::VDSO_USER_BASE as usize);
@@ -150,7 +150,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
 
     let child_box = alloc::boxed::Box::new(child_process);
-    if process::PROCESS_MANAGER.add(child_box).is_err() {
+    if process::SCHEDULER.add(child_box).is_err() {
         return errno_code(ENOMEM);
     }
 
@@ -317,7 +317,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // ── Reset process state ───────────────────────────────
     let current_pid = process::current_pid().unwrap_or(ProcessId(0));
 
-    process::PROCESS_MANAGER.with_process(current_pid, |p| {
+    process::SCHEDULER.with_process(current_pid, |p| {
         p.entry_point = x86_64::VirtAddr::new(entry);
         p.user_stack = x86_64::VirtAddr::new(stack_top_vaddr_default);
 
@@ -394,7 +394,7 @@ pub fn sys_wait4(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         // Wait for any child
         let current_pid = process::current_pid().unwrap_or(ProcessId(0));
         let mut found = None;
-        process::PROCESS_MANAGER.with_list(|list| {
+        process::SCHEDULER.with_list(|list| {
             for (id, p) in list.iter() {
                 if p.parent_id == Some(current_pid) && p.state == process::ProcessState::Terminated
                 {
@@ -419,7 +419,7 @@ pub fn sys_wait4(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     };
 
     // Get the exit code
-    let exit_code = process::PROCESS_MANAGER
+    let exit_code = process::SCHEDULER
         .with_process(target_pid, |p| p.exit_code)
         .flatten()
         .unwrap_or(0);
@@ -433,7 +433,7 @@ pub fn sys_wait4(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 
     // Remove the child process
-    process::PROCESS_MANAGER.with_list(|list| {
+    process::SCHEDULER.with_list(|list| {
         list.retain(|(id, _)| *id != target_pid);
     });
 

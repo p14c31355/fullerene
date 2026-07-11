@@ -30,7 +30,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
     let (parent_page_table_phys_addr, parent_context, parent_user_stack, parent_entry_point) = {
-        crate::process::PROCESS_MANAGER
+        crate::process::SCHEDULER
             .with_process(current_pid, |p| {
                 (
                     p.page_table_phys_addr,
@@ -73,7 +73,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         e
     })?;
 
-    let child_pid = process::PROCESS_MANAGER.allocate_pid().0 as usize;
+    let child_pid = process::SCHEDULER.allocate_pid().0 as usize;
 
     let _ = child_page_table.unmap_page(petroleum::vdso::VDSO_USER_BASE as usize);
 
@@ -126,7 +126,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 
     let child_box = Box::new(child_process);
 
-    crate::process::PROCESS_MANAGER
+    crate::process::SCHEDULER
         .add(child_box)
         .map_err(|_| {
             free_kernel_stack(kernel_stack_ptr);
@@ -261,7 +261,7 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
         Ok(0)
     } else {
         let pid_type = process::ProcessId(pid);
-        let result = crate::process::PROCESS_MANAGER
+        let result = crate::process::SCHEDULER
             .with_process(pid_type, |process| {
                 if process.state == crate::process::ProcessState::Terminated {
                     Some(process.exit_code.unwrap_or(0))
@@ -273,13 +273,13 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
 
         if let Some(exit_code) = result {
             Ok(exit_code as u64)
-        } else if crate::process::PROCESS_MANAGER
+        } else if crate::process::SCHEDULER
             .with_process(pid_type, |_| {})
             .is_some()
         {
             crate::process::block_current();
             // Re-read exit_code after unblock (parent was unblocked by terminate_process)
-            let ec = crate::process::PROCESS_MANAGER
+            let ec = crate::process::SCHEDULER
                 .with_process(pid_type, |process| process.exit_code)
                 .flatten()
                 .unwrap_or(0);
@@ -301,7 +301,7 @@ pub(crate) fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallR
     petroleum::validate_user_buffer(buffer as usize, size, false)?;
     let current_pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
 
-    crate::process::PROCESS_MANAGER
+    crate::process::SCHEDULER
         .with_process(current_pid, |process| {
             let name_bytes = process.name.as_bytes();
             let copy_len = name_bytes.len().min(size - 1);

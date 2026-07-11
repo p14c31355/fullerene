@@ -95,7 +95,7 @@ impl TaskHandle {
     /// Block the current process until the task completes.
     pub fn join(self) {
         loop {
-            let terminated = process::PROCESS_MANAGER.with_process(ProcessId(self.pid), |p| {
+            let terminated = process::SCHEDULER.with_process(ProcessId(self.pid), |p| {
                 matches!(p.state, ProcessState::Terminated)
             });
             if terminated.unwrap_or(true) {
@@ -123,7 +123,7 @@ where
                 VirtAddr::new(task_entry::<F> as *const () as u64),
                 false,
             )?;
-            process::PROCESS_MANAGER.with_process(ProcessId(p.0 as u64), |pr| {
+            process::SCHEDULER.with_process(ProcessId(p.0 as u64), |pr| {
                 pr.task_data = raw as u64;
                 pr.state = ProcessState::Ready;
             });
@@ -137,7 +137,7 @@ where
 /// Entry point for spawned async tasks.
 extern "C" fn task_entry<F: Future<Output = ()> + Send + 'static>() {
     let pid = process::current_pid().expect("task_entry: no current PID");
-    let raw = process::PROCESS_MANAGER
+    let raw = process::SCHEDULER
         .with_process(pid, |p| {
             p.task_data as *mut Box<dyn Future<Output = ()> + Send>
         })
@@ -247,7 +247,7 @@ pub static TASK_MANAGER: TaskManager = TaskManager::new();
 /// Initialize the task manager.  Does a sweep of existing processes
 /// from the ProcessManager to seed the initial task list.
 pub fn init_task_manager() {
-    crate::process::PROCESS_MANAGER.with_list(|list| {
+    crate::process::SCHEDULER.with_list(|list| {
         for (_, proc) in list.iter() {
             TASK_MANAGER.register(proc.id.0, proc.name, proc.is_user);
         }

@@ -4,7 +4,7 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`bellows`**: The UEFI bootloader. Responsible for loading the kernel and setting up the framebuffer configuration.
 
-- **`fullerene-kernel`**: The core kernel. Handles low-level hardware initialization, process scheduling, and enters the main shell loop.
+- **`fullerene-kernel`**: The core kernel. Handles low-level hardware initialization, process scheduling via `SchedulerContext` (`SCHEDULER` singleton), VDSO read-only metadata pages, GUI integration, and enters the main shell loop. The `scheduler_context` module owns all scheduling state (process list, tick counter, NMI recovery target), replacing the old `ProcessManager` global.
 
 - **`flasks`**: The build and task runner. Builds the kernel and bootloader, creates a bootable ISO, and launches QEMU for emulation.
 
@@ -16,9 +16,13 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`chronoline`**: A no_std timer management primitive for deadline tracking and timer scheduling.
 
-- **`petroleum`**: A library providing common EFI types, utilities, serial output macros, graphics primitives, page table management, and VirtIO drivers for no_std environments.
+- **`carrier`**: A no_std I/O abstraction layer providing the `Terminal` trait, command dispatch with streaming pipeline support, and pipe mechanism for shell pipeline chaining.
 
-- **`bonder`**: A no_std network protocol stack implementing Ethernet frame handling, IPv4 packet processing, and UDP socket abstraction with a logger subsystem.
+- **`genome`**: A no_std file system / VFS framework providing the `FileSystem` trait, `MemFileSystem`, `Vfs` dispatcher with mount-table routing, path normalization, and typed `FsError`. The kernel crate re-exports Genome types and adds the singleton `VfsContext`.
+
+- **`petroleum`**: A no_std library providing common EFI types, page table management, graphics primitives, serial/early boot utilities, VirtIO driver helpers, syscall ABI numbers, and VDSO layout definition — used by both the kernel and user-space crates.
+
+- **`bonder`**: A no_std network protocol stack implementing Ethernet frame handling, IPv4 packet processing, and UDP socket abstraction with iwlwifi integration.
 
 - **`nitrogen`**: A hardware abstraction and device driver library providing PCI enumeration, APIC/PIC interrupt controllers, PS/2 keyboard/mouse drivers, HDA audio, VirtIO block/net/gpu drivers, USB (XHCI), NVMe/AHCI storage, Intel wireless (iwlwifi), and framebuffer management. The kernel's primary driver layer.
 

@@ -304,13 +304,28 @@ impl RtsxController {
     }
 
     pub fn init_sd_card(&mut self) -> Result<(), &'static str> {
+        // Overall timeout: must complete within 5 seconds on real hardware.
+        let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let duration_ticks = 5_000_000u64.saturating_mul(crate::timing::ticks_per_us());
+
+        macro_rules! check_timeout {
+            () => {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= duration_ticks {
+                    return Err("SD init timed out");
+                }
+            };
+        }
+
         self.init_hardware()?;
+        check_timeout!();
         self.command(CMD0_GO_IDLE, 0, SD_RSP_R0)?;
+        check_timeout!();
         delay_ms(1);
 
         let v2_card = self
             .command(CMD8_SEND_IF_COND, 0x1AA, SD_RSP_R1)
             .is_ok_and(|response| response & 0xFFF == 0x1AA);
+        check_timeout!();
         let argument = 0x00FF_8000 | if v2_card { 1 << 30 } else { 0 };
         let ocr = crate::timing::poll_timeout_us(2_000_000, || {
             match self.app_command(0, ACMD41_SEND_OP_COND, argument, SD_RSP_R3) {
@@ -321,24 +336,33 @@ impl RtsxController {
         let block_addressed = ocr & (1 << 30) != 0;
 
         self.command(CMD2_ALL_SEND_CID, 0, SD_RSP_R2)?;
+        check_timeout!();
         let cid = self.long_response()?;
+        check_timeout!();
         let rca = (self.command(CMD3_SEND_RELATIVE_ADDR, 0, SD_RSP_R1)? >> 16) as u16;
+        check_timeout!();
         if rca == 0 {
             return Err("card returned RCA zero");
         }
         self.command(CMD9_SEND_CSD, u32::from(rca) << 16, SD_RSP_R2)?;
+        check_timeout!();
         let csd = self.long_response()?;
+        check_timeout!();
         let total_blocks = Self::parse_csd(&csd, block_addressed)?;
 
         self.command(CMD7_SELECT_CARD, u32::from(rca) << 16, SD_RSP_R1B)?;
+        check_timeout!();
         if !block_addressed {
             self.command(CMD16_SET_BLOCKLEN, 512, SD_RSP_R1)?;
+            check_timeout!();
         }
         if self
             .app_command(rca, ACMD6_SET_BUS_WIDTH, 2, SD_RSP_R1)
             .is_ok()
         {
+            check_timeout!();
             self.write_reg(SD_CFG1, 0x03, 0x01)?;
+            check_timeout!();
         }
         self.write_reg(SD_CFG1, 0xC0, 0)?;
 

@@ -712,7 +712,7 @@ pub fn force_desktop_redraw() {
 }
 
 // ── Theme / wallpaper bridges ────────────────────────────────
-pub use lattice::theme::{ThemeVariant, current_theme_variant, set_theme, toggle_theme};
+pub use lattice::theme::{ThemeVariant, ThemeStyle, current_theme_variant, set_theme, toggle_theme, current_style, set_style, toggle_style};
 pub use lattice::wallpaper::{
     WallpaperMode, WallpaperPreset, find_preset, get_wallpaper, set_wallpaper, wallpaper_presets,
 };

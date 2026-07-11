@@ -17,22 +17,22 @@ Priority convention:
 - [x] Per-process `alloc_handle`, `with_handle_mut` in `handlers.rs`
 - [x] Handle transfer with rollback (transactional move between processes)
 - [x] Resource cleanup on process termination (unblock waiters, close handles)
-- [ ] Handle generation counters (index + generation to detect stale handles)
-- [ ] Handle permission bits (read/write/signal/duplicate/transfer)
-- [ ] Syscall return of multiple handles via `#[repr(C)]` struct (fix pipe packing)
+- [x] Handle generation counters (index + generation + cryptographic MAC to detect stale handles)
+- [x] Handle permission bits (read/write/signal/duplicate/transfer)
+- [x] Syscall return of multiple handles via user buffer (pipe_create)
 
 ### P0-2. User memory access unification
-- [x] `UserPtr<T>` — validated pointer with copy-in/out operations
 - [x] `UserSlice` — validated byte range with `copy_from_user` / `copy_to_user`
+- [x] `validate_user_range` — walks current page table (CR3) page-by-page checking PRESENT / USER_ACCESSIBLE / writable flags
 - [x] Updated `copy_user_string` to use `UserSlice`
 - [x] Updated Linux compat copy functions to use `UserSlice`
-- [ ] Page-level validation (check present/user/writable per page via page table)
-- [ ] Remove all `&'static` return values from user memory API
-- [ ] Unify native and Linux ABI copy under one implementation
+- [ ] Unify native and Linux ABI copy under one implementation (low priority, both already use `UserSlice`)
 
 ### P0-3. `&'static mut` and mutable global ownership
 - [x] `with_frame_allocator` guard API (replaces raw `get_frame_allocator_mut`)
 - [x] Frame allocator access made `unsafe` with doc comment
+- [x] **SchedulerContext**: moved all scheduling state (process list, schedule index, tick counter, NMI recovery RSP/RIP) into a single `pub static SCHEDULER` with explicit lock hierarchy. Replaced old `ProcessManager` global and scattered `AtomicU64` statics in `scheduler.rs`.
+- [x] **VDSO read-only**: removed async ring-buffer (slot state machine, `VdsoFuture`, `poll_all_vdso_rings`). VDSO page now only contains read-only metadata (`time_us`, `uptime_us`, `pid`), mapped without `WRITABLE` in user page tables.
 - [ ] `FramebufferGuard` / `with_framebuffer` closure API
 - [ ] Solvent cursor fast path: use `FramebufferGuard` instead of raw address
 - [ ] Trace buffer: fix for multi-CPU safety or document single-core assumption
@@ -53,7 +53,8 @@ Priority convention:
 
 ### P1-1. Typed errors (replace `&'static str`)
 - [x] `BlockError` (done as part of P0-4)
-- [ ] `FsError`, `DriverError`, `MemoryError` in respective crates
+- [x] `FsError` in `genome` crate (FileNotFound, FileExists, PermissionDenied, InvalidFileDescriptor, InvalidSeek, DiskFull, NotADirectory, DirectoryNotEmpty, IsADirectory, InvalidPath, NotSupported, InvalidInput)
+- [ ] `DriverError`, `MemoryError` in respective crates
 - [ ] `From` impls to convert to `SyscallError` / Linux errno
 - [ ] Remove `Result<..., &'static str>` usage (~200+ sites across kernel/nitrogen/genome)
 
@@ -64,7 +65,7 @@ Priority convention:
 
 ### P1-3. Module splitting by context boundary
 - [ ] Split `drivers/fat.rs` → `block_device`, `partition`, `cache`, `fat32`, `exfat`
-- [ ] Split `syscall/handlers.rs` → `dispatch`, `process`, `fs`, `memory`, etc.
+- [ ] Split `syscall/handlers.rs` → `dispatch`, `process`, `fs`, `memory`, etc. (mostly done — already split by function area)
 - [ ] Split `solvent/lib.rs` → `runtime_context`, `input_loop`, `event_loop`, etc.
 - [ ] Split `usb/xhci/context.rs` → controller init, command, event, transfer, resources
 - [ ] Split `iwlwifi.rs` → device, firmware, registers, tx, rx, connection_state
@@ -76,9 +77,9 @@ Priority convention:
 - [ ] Device registry: `DeviceManagerContext` with take/return lease API
 
 ### P1-5. FS capability contract
-- [ ] `FileSystem` trait: typed `Result` instead of `Option` + string errors
+- [x] `FileSystem` trait: uses typed `Result<..., FsError>` instead of `Option` + string errors
 - [ ] `FileSystemCapabilities`: read-only, mkdir, unlink, symlink, large-file
-- [ ] Stub operations return `NotSupported` (not silent success)
+- [x] Stub operations return `NotSupported` (not silent success) — verified in dispatch
 - [ ] Offset/size/LBA unified to `u64` with checked conversion
 
 ### P1-6. Timer & trace semantics
@@ -89,14 +90,15 @@ Priority convention:
 - [ ] Trace buffer: sequence-numbered snapshots
 
 ### P1-7. Stub syscall audit
-- [ ] Linux compat: `mount`, `umount2`, `truncate`, `fsync` return `ENOSYS`
-- [ ] Native syscall stubs: return `NotSupported` instead of success
+- [x] Linux compat: `mount`, `umount2`, `truncate`, `ftruncate`, `fsync`, `fdatasync` return `ENOSYS` (correct error, not silent success)
+- [x] Linux compat: `fchmod`, `fchmodat` changed from silent success to `ENOSYS`
+- [x] Native syscall stubs: `protect_memory` and `subscribe_event` implemented with real logic; only `device_ioctl` remains `NotSupported` (needs device dispatch infrastructure)
 - [ ] Syscall support matrix as test data
 
 ### P1-8. Headless / fake device tests
 - [ ] `carrier`: pipeline parse, unknown command, stdin/stdout, command stop
 - [ ] `solvent`: input event → state transition, dirty rect, clock, terminal session
-- [ ] FAT/block cache: `FakeBlockDevice` tests (done as part of P0-4)
+- [x] FAT/block cache: `FakeBlockDevice` tests (done as part of P0-4)
 - [ ] Syscall: fake process address space + 2-process resource isolation
 - [ ] `nitrogen`: register backend trait → state-machine test
 - [ ] `lattice`: deterministic scene snapshot / PPM hash
@@ -108,7 +110,8 @@ Priority convention:
 ### P2-1. Reproducible toolchain & CI
 - [x] `rust-toolchain.toml`: nightly date pinned to `2026-06-01`
 - [x] Components include `rustfmt` + `clippy`
-- [ ] CI: add `cargo fmt --check`, host test, Clippy jobs
+- [x] Host-target `#[panic_handler]` added — `cargo check -p fullerene-kernel` now works without `--target`
+- [ ] CI: add `cargo fmt --check`, host check, Clippy jobs
 - [ ] CI: add headless QEMU smoke test with `isa-debug-exit`
 - [ ] CI: separate UEFI build and driver/hardware test matrix
 
@@ -125,9 +128,9 @@ Priority convention:
 - [ ] Slot map for fd/handle/process after per-ownership model
 
 ### P2-4. Capability documentation
-- [ ] Support matrix: FS, Linux syscall, native syscall, driver, QEMU/real HW
+- [x] Support matrix: FS, Linux syscall, native syscall, driver, QEMU/real HW (`docs/SUPPORT_MATRIX.md`)
 - [ ] Matrix data in Rust/TOML → generate docs and tests
-- [ ] README feature list links to support matrix
+- [x] README feature list links to support matrix
 
 ---
 
@@ -135,7 +138,7 @@ Priority convention:
 
 - [ ] Fullerene Logo Display / Boot Splash
 - [ ] Boot progress indicator
-- [ ] Panic fallback screen
+- [x] Panic fallback screen (coloured screen encoding boot stage)
 - [ ] Fade transition to desktop
 - [ ] Full color palette, wallpaper, system font
 

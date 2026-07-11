@@ -7,7 +7,8 @@ This document summarizes the development history and significant changes made to
 - Introduced system call interface and handler infrastructure.
 - Implemented APIC (Advanced Programmable Interrupt Controller) initialization and control.
 - Set up IDT (Interrupt Descriptor Table) for exception and interrupt handling.
-- Transitioned process management from a global list to a structured `ProcessManager`.
+- **SchedulerContext** (`scheduler_context.rs`): unified all scheduling state (process list, schedule index, tick counter, NMI recovery target) into a single `pub static SCHEDULER`, replacing the old `ProcessManager` global. Lock hierarchy is now explicit: `SCHEDULER` → (independent) → `KERNEL`.
+- **VDSO**: eliminated the async ring-buffer (slot state machine, `VdsoFuture`, `poll_all_vdso_rings`). The VDSO page now contains only read-only metadata (`time_us`, `uptime_us`, `pid`) and is mapped without `WRITABLE` in user page tables. Non-trivial syscalls always trap via the `syscall` instruction.
 
 ## Memory Management & Paging
 - Implemented kernel initialization with a new L4 page table.
