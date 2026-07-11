@@ -96,6 +96,7 @@ impl Taskbar {
     /// The surface should be the full framebuffer dimensions; the taskbar
     /// is drawn at the bottom.
     pub fn render(&self, fb: &mut [u32], fb_width: u32, fb_height: u32) {
+        let colors = crate::theme::current_colors();
         let bar_y = fb_height.saturating_sub(TASKBAR_HEIGHT);
         let fb_w = fb_width as usize;
 
@@ -106,7 +107,7 @@ impl Taskbar {
                 break;
             }
             let row_start = (y as usize) * fb_w;
-            fb[row_start..row_start + fb_w].fill(TASKBAR_BG);
+            fb[row_start..row_start + fb_w].fill(colors.taskbar_bg);
         }
 
         // WiFi icon X position (used both for icon and as right bound for debug text)
@@ -132,9 +133,9 @@ impl Taskbar {
                 break;
             }
             let bg = if entry.focused {
-                TASKBAR_ACTIVE_BG
+                colors.taskbar_active_bg
             } else {
-                TASKBAR_INACTIVE_BG
+                colors.taskbar_inactive_bg
             };
             // Button background
             for row in 0..btn_h {
@@ -165,7 +166,7 @@ impl Taskbar {
                             continue;
                         }
                         if crate::font::get_glyph_pixel(ch, row, col) {
-                            fb[(y as usize) * fb_w + x as usize] = TASKBAR_TEXT;
+                            fb[(y as usize) * fb_w + x as usize] = colors.taskbar_text;
                         }
                     }
                 }
@@ -193,7 +194,7 @@ impl Taskbar {
                         let y = dy + row;
                         if x < wifi_icon_x && y < fb_height {
                             if crate::font::get_glyph_pixel(ch, row, col) {
-                                fb[(y as usize) * fb_w + x as usize] = TASKBAR_TEXT;
+                                fb[(y as usize) * fb_w + x as usize] = colors.taskbar_text;
                             }
                         }
                     }
@@ -216,7 +217,7 @@ impl Taskbar {
                         let y = clock_y + row;
                         if x < fb_width && y < fb_height {
                             if crate::font::get_glyph_pixel(ch, row, col) {
-                                fb[(y as usize) * fb_w + x as usize] = TASKBAR_TEXT;
+                                fb[(y as usize) * fb_w + x as usize] = colors.taskbar_text;
                             }
                         }
                     }

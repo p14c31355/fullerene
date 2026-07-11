@@ -136,9 +136,7 @@ fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
                 frame.stack_pointer,
                 crate::gdt::kernel_data_selector(),
             );
-        unsafe {
             frame.as_mut().write(new_frame);
-        }
         } else {
             safe_halt();
         }

@@ -2,7 +2,7 @@
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
-use crate::{RUNTIME, SOLVENT_CALLBACKS};
+use crate::SOLVENT_CALLBACKS;
 use alloc::string::String;
 use spin::Mutex;
 

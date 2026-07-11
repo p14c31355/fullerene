@@ -3,7 +3,6 @@
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
 use crate::{DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, RUNTIME, SOLVENT_CALLBACKS};
-use alloc::vec::Vec;
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use spin::Mutex;

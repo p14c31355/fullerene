@@ -9,7 +9,6 @@ use alloc::boxed::Box;
 use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use petroleum::common::logging::SystemError;
 use petroleum::mem_debug;
 use petroleum::page_table::PageTableHelper as _;
 use x86_64::{PhysAddr, VirtAddr};
@@ -692,7 +691,7 @@ pub fn yield_current() {
 
 /// Perform context switch between two processes
 pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
-    SCHEDULER.context_switch(old_pid, new_pid);
+    unsafe { SCHEDULER.context_switch(old_pid, new_pid) };
 }
 
 /// Block current process

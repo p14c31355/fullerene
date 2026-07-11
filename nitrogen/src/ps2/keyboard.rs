@@ -53,6 +53,14 @@ const KEY_REPEAT_DELAY_MS: u64 = 500;
 const KEY_REPEAT_RATE_MS: u64 = 33;
 static SYS_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+#[inline]
+fn interrupt_free<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(test)]
+    return f();
+    #[cfg(not(test))]
+    x86_64::instructions::interrupts::without_interrupts(f)
+}
+
 /// Last pressed scancode for shell-level double-tap detection.
 pub static LAST_SUPER_SCANCODE: Mutex<Option<(u8, u64)>> = Mutex::new(None);
 
@@ -275,24 +283,24 @@ fn clear_repeat(scancode: u8) {
 }
 
 pub fn read_char() -> Option<u8> {
-    x86_64::instructions::interrupts::without_interrupts(|| INPUT_BUFFER.lock().pop_front())
+    interrupt_free(|| INPUT_BUFFER.lock().pop_front())
 }
 
 /// Pop a raw key event (scancode, pressed) from the queue.
 pub fn pop_raw_key() -> Option<(u8, bool)> {
-    x86_64::instructions::interrupts::without_interrupts(|| RAW_KEY_QUEUE.lock().pop_front())
+    interrupt_free(|| RAW_KEY_QUEUE.lock().pop_front())
 }
 
 pub fn input_available() -> bool {
-    x86_64::instructions::interrupts::without_interrupts(|| !INPUT_BUFFER.lock().is_empty())
+    interrupt_free(|| !INPUT_BUFFER.lock().is_empty())
 }
 
 pub fn raw_key_available() -> bool {
-    x86_64::instructions::interrupts::without_interrupts(|| !RAW_KEY_QUEUE.lock().is_empty())
+    interrupt_free(|| !RAW_KEY_QUEUE.lock().is_empty())
 }
 
 pub fn flush_input() {
-    x86_64::instructions::interrupts::without_interrupts(|| {
+    interrupt_free(|| {
         INPUT_BUFFER.lock().clear();
         INPUT_STRING_BUFFER.lock().clear();
         RAW_KEY_QUEUE.lock().clear();

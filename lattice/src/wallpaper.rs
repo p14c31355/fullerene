@@ -316,7 +316,7 @@ pub fn wallpaper_presets() -> &'static [WallpaperPreset] {
 }
 
 /// Global wallpaper state (lock‑free atomic).
-static WALLPAPER_MODE: AtomicU32 = AtomicU32::new(DISC_GRID); // GridPattern is default
+static WALLPAPER_MODE: AtomicU32 = AtomicU32::new(DISC_GRADIENT);
 
 /// Set the wallpaper mode.
 pub fn set_wallpaper(mode: WallpaperMode) {

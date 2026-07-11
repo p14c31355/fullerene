@@ -351,7 +351,14 @@ impl Compositor {
         }
 
         // ── Layer 0: Desktop background (wallpaper) + icons ───
-        crate::wallpaper::render_wallpaper(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
+        if scene.layered {
+            crate::wallpaper::render_wallpaper(framebuffer, fb_width, fb_height, dx, dy, dw, dh);
+        } else {
+            for row in dy..dy + dh {
+                let start = (row * fb_width + dx) as usize;
+                framebuffer[start..start + dw as usize].fill(scene.bg_color);
+            }
+        }
 
         // Draw desktop icons on the background, behind windows
         if let Some(icons) = scene.desktop_icons {
@@ -471,7 +478,7 @@ impl Compositor {
                 // Border (1px)
                 let is_border = row == 0 || row == oh - 1 || col == 0 || col == ow - 1;
                 let color = if is_border {
-                    COLOR_BORDER_ACTIVE
+                    crate::theme::current_colors().border_active
                 } else {
                     ov.color
                 };
@@ -510,7 +517,7 @@ impl Compositor {
                 for col in 0..8 {
                     let px = x + (i as u32) * 8 + col;
                     if px < fbw && py < _fbh && gl.pixel(row, col) {
-                        fb[(py * fbw + px) as usize] = COLOR_ACCENT;
+                        fb[(py * fbw + px) as usize] = crate::theme::current_colors().accent;
                     }
                 }
             }
@@ -619,15 +626,16 @@ impl Compositor {
         ch: u32,
     ) {
         let title = win.title.as_ref().map(|t| t.as_str()).unwrap_or("");
+        let colors = crate::theme::current_colors();
         let bc = if win.focused {
-            COLOR_BORDER_ACTIVE
+            colors.border_active
         } else {
-            COLOR_BORDER_INACTIVE
+            colors.border_inactive
         };
         let tc = if win.focused {
-            COLOR_TITLE_ACTIVE
+            colors.title_active
         } else {
-            COLOR_TITLE_INACTIVE
+            colors.title_inactive
         };
         let ww = win.width + WINDOW_BORDER * 2;
         let wh = win.height + TITLE_BAR_HEIGHT + WINDOW_BORDER * 2;
@@ -748,7 +756,7 @@ impl Compositor {
                         continue;
                     }
                     if gl.pixel(row as u32, col as u32) {
-                        fb[(da as usize) * (fbw as usize) + dxa as usize] = COLOR_TEXT;
+                        fb[(da as usize) * (fbw as usize) + dxa as usize] = colors.text;
                     }
                 }
             }

@@ -426,8 +426,8 @@ mod tests {
         buf.insert_char(b'a');
         buf.insert_char(b'\n');
         buf.insert_char(b'b');
+        buf.cursor_left(); // to start of 'b' line
         buf.cursor_left(); // to end of 'a' line
-        buf.cursor_up(); // to row 0, col 1
         buf.delete_char(); // join rows
         assert_eq!(buf.row_count(), 1);
         assert_eq!(buf.rows[0].as_str(), "ab");
