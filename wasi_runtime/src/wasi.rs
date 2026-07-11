@@ -26,8 +26,8 @@ pub const WHENCE_END: u32 = 2;
 
 // ── WASI clock ids ────────────────────────────────────────────────
 
-pub const CLOCK_MONOTONIC: u32 = 0;
-pub const CLOCK_REALTIME: u32 = 1;
+pub const CLOCK_REALTIME: u32 = 0;
+pub const CLOCK_MONOTONIC: u32 = 1;
 
 // ── FD table entry ────────────────────────────────────────────────
 
@@ -53,6 +53,7 @@ pub struct WasiCtx {
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
     pub read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
+    pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
     pub get_monotonic_ns: fn() -> u64,
 }
 
@@ -64,6 +65,7 @@ impl WasiCtx {
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
         read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
+        read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
         get_monotonic_ns: fn() -> u64,
     ) -> Self {
         let args_vec: Vec<Vec<u8>> = args
@@ -90,6 +92,7 @@ impl WasiCtx {
             read_stdin,
             yield_now,
             read_entire_file,
+            read_directory,
             get_monotonic_ns,
         }
     }
@@ -148,16 +151,21 @@ pub fn fd_write(
         let base = iovs_ptr + i * 8;
         let buf_ptr = read_u32(&memory, &caller, base)?;
         let buf_len = read_u32(&memory, &caller, base + 4)?;
-        let mut chunk = vec![0u8; buf_len as usize];
-        memory
-            .read(&caller, buf_ptr as usize, &mut chunk)
-            .map_err(|_| Error::new("fd_write: read iov failed"))?;
-        let s = str::from_utf8(&chunk).unwrap_or("");
-        let ctx = caller.data();
-        match fd {
-            1 => (ctx.write_stdout)(s),
-            2 => (ctx.write_stderr)(s),
-            _ => return Ok(EBADF),
+        let mut offset = 0;
+        let mut temp_buf = [0u8; 4096];
+        while offset < buf_len {
+            let chunk_len = (buf_len - offset).min(4096) as usize;
+            memory
+                .read(&caller, (buf_ptr + offset) as usize, &mut temp_buf[..chunk_len])
+                .map_err(|_| Error::new("fd_write: read iov failed"))?;
+            let s = String::from_utf8_lossy(&temp_buf[..chunk_len]);
+            let ctx = caller.data();
+            match fd {
+                1 => (ctx.write_stdout)(&s),
+                2 => (ctx.write_stderr)(&s),
+                _ => return Ok(EBADF),
+            }
+            offset += chunk_len as u32;
         }
         total += buf_len;
     }
@@ -176,8 +184,7 @@ pub fn fd_read(
         return Ok(ESUCCESS);
     }
     let memory = get_memory(&caller)?;
-    let buf_ptr = read_u32(&memory, &caller, iovs_ptr)?;
-    let buf_len = read_u32(&memory, &caller, iovs_ptr + 4)?;
+    let mut total_read: u32 = 0;
     match fd {
         0 => {
             loop {
@@ -187,53 +194,82 @@ pub fn fd_read(
                 }
                 (caller.data().yield_now)();
             }
-            let mut buf = vec![0u8; buf_len as usize];
-            let mut read_count: u32 = 0;
-            for _ in 0..buf_len {
-                match (caller.data().read_stdin)() {
-                    Some(byte) => {
-                        buf[read_count as usize] = byte;
-                        read_count += 1;
+            let mut temp_buf = [0u8; 4096];
+            for i in 0..iovs_len {
+                let base = iovs_ptr + i * 8;
+                let buf_ptr = read_u32(&memory, &caller, base)?;
+                let buf_len = read_u32(&memory, &caller, base + 4)?;
+                let mut iov_written: u32 = 0;
+                while iov_written < buf_len {
+                    let chunk_len = (buf_len - iov_written).min(4096) as usize;
+                    let mut chunk_read = 0;
+                    for j in 0..chunk_len {
+                        match (caller.data().read_stdin)() {
+                            Some(byte) => {
+                                temp_buf[j] = byte;
+                                chunk_read += 1;
+                            }
+                            None => break,
+                        }
                     }
-                    None => break,
+                    if chunk_read == 0 {
+                        break;
+                    }
+                    memory
+                        .write(&mut caller, (buf_ptr + iov_written) as usize, &temp_buf[..chunk_read])
+                        .map_err(|_| Error::new("fd_read: write failed"))?;
+                    iov_written += chunk_read as u32;
+                    total_read += chunk_read as u32;
+                    if chunk_read < chunk_len {
+                        break;
+                    }
+                }
+                if iov_written < buf_len {
+                    break;
                 }
             }
-            memory
-                .write(&mut caller, buf_ptr as usize, &buf[..read_count as usize])
-                .map_err(|_| Error::new("fd_read: write failed"))?;
-            write_u32(&memory, &mut caller, nread_ptr, read_count)?;
+            write_u32(&memory, &mut caller, nread_ptr, total_read)?;
             Ok(ESUCCESS)
         }
         _ => {
-            let to_read = {
-                let bc = caller.data();
-                match bc.fds.get(&fd) {
-                    Some(WasiFd::File { data, offset }) => {
-                        (buf_len as usize).min(data.len().saturating_sub(*offset))
-                    }
-                    _ => return Ok(EBADF),
-                }
-            };
-            if to_read > 0 {
-                let chunk = {
+            for i in 0..iovs_len {
+                let base = iovs_ptr + i * 8;
+                let buf_ptr = read_u32(&memory, &caller, base)?;
+                let buf_len = read_u32(&memory, &caller, base + 4)?;
+                let (to_read, current_offset) = {
                     let bc = caller.data();
                     match bc.fds.get(&fd) {
                         Some(WasiFd::File { data, offset }) => {
-                            data[*offset..*offset + to_read].to_vec()
+                            let available = data.len().saturating_sub(*offset);
+                            ((buf_len as usize).min(available), *offset)
                         }
                         _ => return Ok(EBADF),
                     }
                 };
-                memory
-                    .write(&mut caller, buf_ptr as usize, &chunk)
-                    .map_err(|_| Error::new("fd_read: write data failed"))?;
-                let bc = caller.data_mut();
-                if let Some(WasiFd::File { offset: o, .. }) = bc.fds.get_mut(&fd) {
-                    *o += to_read;
+                if to_read > 0 {
+                    let chunk = {
+                        let bc = caller.data();
+                        match bc.fds.get(&fd) {
+                            Some(WasiFd::File { data, .. }) => {
+                                data[current_offset..current_offset + to_read].to_vec()
+                            }
+                            _ => return Ok(EBADF),
+                        }
+                    };
+                    memory
+                        .write(&mut caller, buf_ptr as usize, &chunk)
+                        .map_err(|_| Error::new("fd_read: write data failed"))?;
+                    let bc = caller.data_mut();
+                    if let Some(WasiFd::File { offset: o, .. }) = bc.fds.get_mut(&fd) {
+                        *o = current_offset + to_read;
+                    }
+                    total_read += to_read as u32;
+                }
+                if to_read < buf_len as usize {
+                    break;
                 }
             }
-            let memory = get_memory(&caller)?;
-            write_u32(&memory, &mut caller, nread_ptr, to_read as u32)?;
+            write_u32(&memory, &mut caller, nread_ptr, total_read)?;
             Ok(ESUCCESS)
         }
     }
@@ -353,6 +389,9 @@ pub fn path_open(
     if fd != 3 {
         return Ok(EBADF);
     }
+    if path_len > 1024 {
+        return Ok(EINVAL);
+    }
     let memory = get_memory(&caller)?;
     let mut path_buf = vec![0u8; path_len as usize];
     memory
@@ -389,6 +428,9 @@ pub fn path_filestat_get(
     path_len: u32,
     buf_ptr: u32,
 ) -> Result<u32, Error> {
+    if path_len > 1024 {
+        return Ok(EINVAL);
+    }
     let memory = get_memory(&caller)?;
     let mut path_buf = vec![0u8; path_len as usize];
     memory
@@ -445,32 +487,53 @@ pub fn fd_readdir(
     fd: u32,
     buf_ptr: u32,
     buf_len: u32,
-    _cookie: u64,
+    cookie: u64,
     bufused_ptr: u32,
 ) -> Result<u32, Error> {
-    let path = {
+    let entries = {
         let bc = caller.data();
         match bc.fds.get(&fd) {
-            Some(WasiFd::PreopenedDir { path }) => path.clone(),
+            Some(WasiFd::PreopenedDir { path }) => {
+                (bc.read_directory)(path).unwrap_or_default()
+            }
             _ => return Ok(EBADF),
         }
     };
-    let entries = vec![String::from("."), path];
     let memory = get_memory(&caller)?;
     let mut used: u32 = 0;
-    for (i, entry) in entries.iter().enumerate() {
-        let name = entry.as_bytes();
+    let cookie_start = cookie as usize;
+    let start_entry = if cookie_start == 0 {
+        let name = b".";
         let entry_size = 24 + name.len() as u32;
+        if entry_size <= buf_len {
+            write_u64(&memory, &mut caller, buf_ptr, 1)?;
+            write_u64(&memory, &mut caller, buf_ptr + 8, 0)?;
+            write_u32(&memory, &mut caller, buf_ptr + 16, name.len() as u32)?;
+            write_u8(&memory, &mut caller, buf_ptr + 20, FILETYPE_DIRECTORY)?;
+            memory
+                .write(&mut caller, (buf_ptr + 24) as usize, name)
+                .map_err(|_| Error::new("fd_readdir: write name failed"))?;
+            used += entry_size;
+        }
+        0usize
+    } else {
+        cookie_start.saturating_sub(1)
+    };
+    for entry_idx in start_entry..entries.len() {
+        let (ref name, filetype) = entries[entry_idx];
+        let name_bytes = name.as_bytes();
+        let entry_size = 24 + name_bytes.len() as u32;
         if used + entry_size > buf_len {
             break;
         }
         let off = buf_ptr + used;
-        write_u64(&memory, &mut caller, off, (i + 1) as u64)?;
-        write_u64(&memory, &mut caller, off + 8, i as u64)?;
-        write_u32(&memory, &mut caller, off + 16, name.len() as u32)?;
-        write_u8(&memory, &mut caller, off + 20, FILETYPE_DIRECTORY)?;
+        let next_cookie = entry_idx + 2;
+        write_u64(&memory, &mut caller, off, next_cookie as u64)?;
+        write_u64(&memory, &mut caller, off + 8, entry_idx as u64)?;
+        write_u32(&memory, &mut caller, off + 16, name_bytes.len() as u32)?;
+        write_u8(&memory, &mut caller, off + 20, filetype)?;
         memory
-            .write(&mut caller, (off + 24) as usize, name)
+            .write(&mut caller, (off + 24) as usize, name_bytes)
             .map_err(|_| Error::new("fd_readdir: write name failed"))?;
         used += entry_size;
     }
@@ -564,7 +627,8 @@ pub fn clock_time_get(
     let time = {
         let bc = caller.data();
         match id {
-            CLOCK_MONOTONIC | CLOCK_REALTIME => (bc.get_monotonic_ns)(),
+            CLOCK_MONOTONIC => (bc.get_monotonic_ns)(),
+            CLOCK_REALTIME => return Ok(ENOTSUP),
             _ => return Ok(ENOTSUP),
         }
     };
@@ -578,22 +642,47 @@ pub fn random_get(
     buf_ptr: u32,
     buf_len: u32,
 ) -> Result<u32, Error> {
-    let mut buf = vec![0u8; buf_len as usize];
-    let mut i = 0;
-    while i + 8 <= buf_len as usize {
-        let mut val: u64 = 0;
-        unsafe { core::arch::x86_64::_rdrand64_step(&mut val); }
-        buf[i..i + 8].copy_from_slice(&val.to_le_bytes());
-        i += 8;
-    }
-    if i < buf_len as usize {
-        let mut val: u64 = 0;
-        unsafe { core::arch::x86_64::_rdrand64_step(&mut val); }
-        buf[i..].copy_from_slice(&val.to_le_bytes()[..buf_len as usize - i]);
-    }
+    let mut temp_buf = [0u8; 128];
+    let mut offset = 0;
     let memory = get_memory(&caller)?;
-    memory
-        .write(&mut caller, buf_ptr as usize, &buf)
-        .map_err(|_| Error::new("random_get: write failed"))?;
+    while offset < buf_len {
+        let chunk_len = (buf_len - offset).min(128) as usize;
+        let mut i = 0;
+        while i + 8 <= chunk_len {
+            let mut val: u64 = 0;
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut retries = 10;
+                while retries > 0 {
+                    if unsafe { core::arch::x86_64::_rdrand64_step(&mut val) } == 1 {
+                        break;
+                    }
+                    retries -= 1;
+                    core::hint::spin_loop();
+                }
+            }
+            temp_buf[i..i + 8].copy_from_slice(&val.to_le_bytes());
+            i += 8;
+        }
+        if i < chunk_len {
+            let mut val: u64 = 0;
+            #[cfg(target_arch = "x86_64")]
+            {
+                let mut retries = 10;
+                while retries > 0 {
+                    if unsafe { core::arch::x86_64::_rdrand64_step(&mut val) } == 1 {
+                        break;
+                    }
+                    retries -= 1;
+                    core::hint::spin_loop();
+                }
+            }
+            temp_buf[i..chunk_len].copy_from_slice(&val.to_le_bytes()[..chunk_len - i]);
+        }
+        memory
+            .write(&mut caller, (buf_ptr + offset) as usize, &temp_buf[..chunk_len])
+            .map_err(|_| Error::new("random_get: write failed"))?;
+        offset += chunk_len as u32;
+    }
     Ok(ESUCCESS)
 }

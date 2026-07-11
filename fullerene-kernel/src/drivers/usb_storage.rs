@@ -99,7 +99,7 @@ pub fn init() {
                 i + 1, count_after, disk_count_after
             );
 
-            if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
+            if !ctx.disks().is_empty() {
                 log::info!("USB: device detected after {} retries", i + 1);
                 for d in ctx.disks() {
                     log::info!(
@@ -567,16 +567,15 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
         tag: 1,
     };
 
-    let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
+    let mp = disk.mount_point.clone();
     match FatFileSystem::from_device(Box::new(bdev)) {
         Ok(fs) => {
             let _ = crate::vfs::mkdir(&mp);
             if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
                 .is_some_and(|r| r.is_ok())
             {
-                let n = USB_DRIVES.lock().len() + 1;
                 USB_DRIVES.lock().push(UsbDrive {
-                    name: alloc::format!("USB Drive {}", n),
+                    name: disk.name.clone(),
                     mount_point: mp,
                 });
                 USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);

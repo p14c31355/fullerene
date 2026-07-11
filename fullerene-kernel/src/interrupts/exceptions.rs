@@ -136,9 +136,9 @@ fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
                 frame.stack_pointer,
                 crate::gdt::kernel_data_selector(),
             );
-        unsafe {
-            frame.as_mut().write(new_frame);
-        }
+        // SAFETY: InterruptStackFrameValue::write() modifies the interrupt stack
+        // frame in-place. We own the frame and the write targets a valid value.
+        unsafe { frame.as_mut().write(new_frame); }
         } else {
             safe_halt();
         }

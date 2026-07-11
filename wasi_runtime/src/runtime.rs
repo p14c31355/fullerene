@@ -1,3 +1,4 @@
+use alloc::string::String;
 use alloc::vec::Vec;
 use wasmi::{Engine, Linker, Module, Store};
 
@@ -17,6 +18,7 @@ pub fn run(
     read_stdin: fn() -> Option<u8>,
     yield_now: fn(),
     read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
+    read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
     get_monotonic_ns: fn() -> u64,
 ) -> i32 {
     let engine = Engine::default();
@@ -36,6 +38,7 @@ pub fn run(
         read_stdin,
         yield_now,
         read_entire_file,
+        read_directory,
         get_monotonic_ns,
     );
 
@@ -73,7 +76,9 @@ pub fn run(
             }
         }
     } else if let Ok(func) = instance.get_typed_func::<(), ()>(&store, "_initialize") {
-        let _ = func.call(&mut store, ());
+        if func.call(&mut store, ()).is_err() {
+            return store.data().exit_code.unwrap_or(1) as i32;
+        }
     }
 
     store.data().exit_code.unwrap_or(0) as i32

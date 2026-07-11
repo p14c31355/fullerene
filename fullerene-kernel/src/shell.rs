@@ -43,11 +43,28 @@ fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str
     })
 }
 
+fn wasm_read_directory(path: &str) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, &'static str> {
+    let entries = crate::vfs::readdir(path).map_err(|_| "readdir failed")?;
+    Ok(entries
+        .iter()
+        .map(|e| {
+            let ft = if e.is_dir {
+                wasi_runtime::wasi::FILETYPE_DIRECTORY
+            } else {
+                wasi_runtime::wasi::FILETYPE_REGULAR_FILE
+            };
+            (e.name.clone(), ft)
+        })
+        .collect())
+}
+
 fn wasm_get_monotonic_ns() -> u64 {
     if solvent::is_initialized() {
         solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed) * 1_000_000
     } else {
-        unsafe { core::arch::x86_64::_rdtsc() }
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
+        tsc.saturating_mul(1_000_000) / tsc_per_ms
     }
 }
 
@@ -473,7 +490,7 @@ fn register_nozzle_hooks() {
             tline!(ctx.terminal, "Loading WASM binary: {}", path);
             match crate::fs::read_entire_file(path) {
                 Ok(binary) => {
-                    let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().map(|s| *s).collect();
+                    let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
                     let code = wasi_runtime::runtime::run(
                         &binary,
                         &wasm_args,
@@ -482,6 +499,7 @@ fn register_nozzle_hooks() {
                         wasm_read_stdin,
                         wasm_yield_now,
                         wasm_read_entire_file,
+                        wasm_read_directory,
                         wasm_get_monotonic_ns,
                     );
                     tline!(ctx.terminal, "WASI process exited with code {}", code);

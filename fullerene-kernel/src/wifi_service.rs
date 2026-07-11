@@ -47,15 +47,12 @@ impl solvent::Service for WifiService {
         // ── Phase 2: periodic hardware tick (after init) ──────
         nitrogen::iwlwifi::tick_wifi_device();
 
-        // ── Phase 2b: periodic scan initiation ────────────────
-        // Trigger a scan every ~10 seconds (600 ticks at 60fps) if
-        // the device is ready and not currently scanning/connecting.
-        if nitrogen::iwlwifi::wifi_init_completed() && now % 600 == 0 {
-            nitrogen::iwlwifi::start_scan_if_idle();
-        }
-
-        // ── Phase 3: consume queued UI actions ────────────────
+        // ── Phase 2b: consume queued UI actions (before scan) ─
+        // Drain connect actions before starting a scan, because
+        // start_scan_if_idle() clears scan_results and a connect
+        // queued in the same tick could fail with "AP not found".
         let actions = core::mem::take(&mut *WIFI_ACTION_QUEUE.lock());
+        let has_pending_connect = actions.iter().any(|a| matches!(a, WifiAction::Connect(..)));
         for action in actions {
             match action {
                 WifiAction::Connect(ssid, password) => {
@@ -64,7 +61,18 @@ impl solvent::Service for WifiService {
             }
         }
 
-        // ── Phase 4: update network snapshot for the desktop ──
+        // ── Phase 2c: periodic scan initiation ────────────────
+        // Skip the scan when a connect was just submitted so that
+        // the scan results (which start_scan_if_idle clears) are
+        // not discarded before the association completes.
+        if !has_pending_connect
+            && nitrogen::iwlwifi::wifi_init_completed()
+            && now % 600 == 0
+        {
+            nitrogen::iwlwifi::start_scan_if_idle();
+        }
+
+        // ── Phase 3: update network snapshot for the desktop ──
         // (only every ~20 ticks to avoid churn)
         if now % 20 == 0 {
             if let Some(wifi_state) = nitrogen::iwlwifi::wifi_state_snapshot() {
