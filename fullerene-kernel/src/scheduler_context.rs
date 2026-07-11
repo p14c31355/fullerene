@@ -293,6 +293,23 @@ impl SchedulerContext {
     }
 
     /// Raw context switch — updates CR3 when needed.
+    ///
+    /// # Safety
+    ///
+    /// Raw context pointers are extracted while holding the process-list
+    /// spinlock, then dereferenced after the lock is released.  This is safe
+    /// **only** because the kernel is currently single-core (UP) and uses
+    /// cooperative scheduling:
+    ///
+    ///   * No other core can concurrently terminate/clean up a process.
+    ///   * Interrupt handlers (interrupt‑gate, IF=0) never touch the process
+    ///     list, so they cannot race with the pointer window.
+    ///   * Cooperative scheduling means no preemption can occur between the
+    ///     lock drop and `switch_context`.
+    ///
+    /// For future SMP support the `ProcessContext` must be ref‑counted
+    /// (e.g. `Arc<Mutex<ProcessContext>>`) so that the data stays alive
+    /// even when the owning `Process` is dropped.
     pub unsafe fn context_switch(
         &self,
         old_pid: Option<ProcessId>,
@@ -303,22 +320,22 @@ impl SchedulerContext {
             return;
         }
 
-        // Extract raw context pointers inside the lock, then switch outside it.
-        let (old_ctx, new_ctx, pt) = self.with_list(|list| {
-            let old_ptr = old_pid
-                .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
-                .map(|(_, p)| &mut *p.context as *mut ProcessContext);
-            let new_ptr = list
-                .iter()
-                .find(|(id, _)| *id == new_pid)
-                .map(|(_, p)| &*p.context as *const ProcessContext);
-            let page_table = list
-                .iter()
-                .find(|(id, _)| *id == new_pid)
-                .map(|(_, p)| p.page_table_phys_addr)
-                .unwrap_or(x86_64::PhysAddr::new(0));
-            (old_ptr, new_ptr, page_table)
-        });
+        let mut guard = self.processes.lock();
+        let list = &mut *guard;
+
+        let new_ctx = list
+            .iter()
+            .find(|(id, _)| *id == new_pid)
+            .map(|(_, p)| &*p.context as *const ProcessContext);
+        let pt = list
+            .iter()
+            .find(|(id, _)| *id == new_pid)
+            .map(|(_, p)| p.page_table_phys_addr)
+            .unwrap_or(x86_64::PhysAddr::new(0));
+        let old_ctx = old_pid
+            .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
+            .map(|(_, p)| &mut *p.context as *mut ProcessContext);
+        drop(guard);
 
         if let Some(new) = new_ctx {
             if pt.as_u64() != 0 {

@@ -305,12 +305,12 @@ impl RtsxController {
 
     pub fn init_sd_card(&mut self) -> Result<(), &'static str> {
         // Overall timeout: must complete within 5 seconds on real hardware.
-        let deadline = unsafe { core::arch::x86_64::_rdtsc() }
-            .wrapping_add(5_000_000u64.saturating_mul(crate::timing::ticks_per_us()));
+        let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let duration_ticks = 5_000_000u64.saturating_mul(crate::timing::ticks_per_us());
 
         macro_rules! check_timeout {
             () => {
-                if unsafe { core::arch::x86_64::_rdtsc() } >= deadline {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= duration_ticks {
                     return Err("SD init timed out");
                 }
             };

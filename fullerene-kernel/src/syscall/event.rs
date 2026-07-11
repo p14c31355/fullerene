@@ -146,6 +146,13 @@ pub(crate) fn syscall_subscribe_event(event_type: u64, event_handle: u64) -> Sys
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
     process::SCHEDULER.with_process(pid, |p| {
         let mut subscriptions = p.resources.subscriptions.lock();
+        let ht = p.resources.handle_table.lock();
+
+        // Proactively clean up stale subscriptions whose handles have been closed
+        subscriptions.retain(|&(_, h_raw)| {
+            ht.get(Handle::from_raw(h_raw)).is_some()
+        });
+        drop(ht);
 
         // Check if this subscription already exists (idempotent)
         if subscriptions.iter().any(|&(t, h)| t == event_type && h == event_handle) {

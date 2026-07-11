@@ -201,8 +201,7 @@ pub fn sys_mprotect(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 page_flags |= PageTableFlags::NO_EXECUTE;
             }
             if PageTableHelper::set_page_flags(ptm, page_vaddr, page_flags).is_err() {
-                // Page not mapped — skip, but don't silently swallow
-                continue;
+                return errno_code(ENOMEM);
             }
         }
     }

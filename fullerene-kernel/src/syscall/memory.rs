@@ -119,7 +119,7 @@ pub(crate) fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
 
 pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> SyscallResult {
     let len = length as usize;
-    if len == 0 || (addr % 4096) != 0 {
+    if len == 0 || len > (128 << 20) || (addr % 4096) != 0 {
         return Err(SyscallError::InvalidArgument);
     }
     let start_addr = VirtAddr::try_new(addr)
