@@ -203,7 +203,7 @@ fn mount_pending() {
                 });
             state.failure_count += 1;
             // Exponential backoff: 50ms * 2^failure_count, capped at 10s.
-            let backoff_ticks = (50 * (1 << state.failure_count.min(7))).min(10_000);
+            let backoff_ticks = (50 * (1 << state.failure_count.min(8))).min(10_000);
             state.next_retry_tick = current_tick + backoff_ticks;
         }
     }
