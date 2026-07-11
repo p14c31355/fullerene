@@ -159,7 +159,7 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
         }
 
         // Second pass: apply new flags to all pages
-        for (idx, &(vaddr, original_flags)) in page_info.iter().enumerate() {
+        for (idx, &(vaddr, _)) in page_info.iter().enumerate() {
             // Build new flags based on protection arguments
             let mut flags = x86_64::structures::paging::PageTableFlags::empty();
 
@@ -189,7 +189,7 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
             }
 
             // Try to update flags; rollback on failure
-            if let Err(e) = ptm.set_page_flags(vaddr, flags) {
+            if ptm.set_page_flags(vaddr, flags).is_err() {
                 // Rollback: restore all previously changed pages
                 for &(rollback_vaddr, rollback_flags) in &page_info[..idx] {
                     let _ = ptm.set_page_flags(rollback_vaddr, rollback_flags);

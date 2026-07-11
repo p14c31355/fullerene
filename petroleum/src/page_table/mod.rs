@@ -18,7 +18,9 @@ mod tests;
 pub use allocator::bitmap::BitmapFrameAllocator;
 pub use allocator::traits::FrameAllocatorExt;
 pub use constants::{BootInfoFrameAllocator, HIGHER_HALF_OFFSET as KERNEL_OFFSET};
-pub use heap::{ALLOCATOR, HEAP_INITIALIZED, init_global_heap};
+#[cfg(not(feature = "std"))]
+pub use heap::ALLOCATOR;
+pub use heap::{HEAP_INITIALIZED, init_global_heap};
 pub use kernel::init::init;
 pub use kernel::init::{
     InitAndJumpArgs, KernelMemoryOperations, active_level_4_table, init_and_jump,

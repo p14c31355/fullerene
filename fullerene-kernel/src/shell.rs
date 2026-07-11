@@ -8,6 +8,69 @@ use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
 
+// ── WASM/WASI runtime callbacks ──────────────────────────────────
+
+fn wasm_write_stdout(data: &[u8]) {
+    if solvent::is_initialized() {
+        let s = alloc::string::String::from_utf8_lossy(data);
+        solvent::write_terminal(&s);
+    } else {
+        kernel_syscall(4, 1, data.as_ptr() as u64, data.len() as u64);
+    }
+}
+
+fn wasm_write_stderr(data: &[u8]) {
+    if solvent::is_initialized() {
+        let s = alloc::string::String::from_utf8_lossy(data);
+        solvent::write_terminal(&s);
+    } else {
+        kernel_syscall(4, 2, data.as_ptr() as u64, data.len() as u64);
+    }
+}
+
+fn wasm_read_stdin() -> Option<u8> {
+    let mut byte = 0u8;
+    let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
+    if res > 0 { Some(byte) } else { None }
+}
+
+fn wasm_yield_now() {
+    kernel_syscall(22, 0, 0, 0);
+}
+
+fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    crate::fs::read_entire_file(path).map_err(|e| match e {
+        crate::fs::FsError::FileNotFound => "file not found",
+        _ => "read failed",
+    })
+}
+
+fn wasm_read_directory(path: &str) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, &'static str> {
+    let entries = crate::vfs::readdir(path).map_err(|_| "readdir failed")?;
+    Ok(entries
+        .iter()
+        .map(|e| {
+            let ft = if e.is_dir {
+                wasi_runtime::wasi::FILETYPE_DIRECTORY
+            } else {
+                wasi_runtime::wasi::FILETYPE_REGULAR_FILE
+            };
+            (e.name.clone(), ft)
+        })
+        .collect())
+}
+
+fn wasm_get_monotonic_ns() -> u64 {
+    if solvent::is_initialized() {
+        solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed) * 1_000_000
+    } else {
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
+        // Use u128 to prevent overflow while maintaining full precision
+        ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
+    }
+}
+
 /// Helper: write a formatted line to the terminal.
 macro_rules! tline {
     ($t:expr, $($arg:tt)*) => { $t.write_str(&alloc::format!("{}{}", alloc::format!($($arg)*), '\n')) };
@@ -424,6 +487,35 @@ fn register_nozzle_hooks() {
         }
         "run_busybox" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_busybox(), "BusyBox shell started (PID: {})"),
         "hello_linux" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_test_binary(), "Test Linux binary started (PID: {})"),
+        "wasm" => {
+            if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: wasm <path> [args...]"); }
+            let path = ctx.args[1];
+            tline!(ctx.terminal, "Loading WASM binary: {}", path);
+            match crate::fs::read_entire_file(path) {
+                Ok(binary) => {
+                    let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
+                    let code = wasi_runtime::runtime::run(
+                        &binary,
+                        &wasm_args,
+                        wasm_write_stdout,
+                        wasm_write_stderr,
+                        wasm_read_stdin,
+                        wasm_yield_now,
+                        wasm_read_entire_file,
+                        wasm_read_directory,
+                        wasm_get_monotonic_ns,
+                    );
+                    tline!(ctx.terminal, "WASI process exited with code {}", code);
+                }
+                Err(e) => {
+                    let err_str = match e {
+                        crate::fs::FsError::FileNotFound => "file not found",
+                        _ => "read failed",
+                    };
+                    tline!(ctx.terminal, "wasm: {}: {}", path, err_str);
+                }
+            }
+        }
         "usb_info" => {
             use crate::drivers::usb_storage;
             let count = usb_storage::USB_DRIVE_COUNT.load(core::sync::atomic::Ordering::Relaxed);

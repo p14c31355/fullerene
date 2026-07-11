@@ -13,17 +13,17 @@
 //! ```
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 
 use nitrogen::usb::context::USBContext;
-use nitrogen::usb::disk::{Disk, set_mount_fn};
+use nitrogen::usb::disk::Disk;
 
 use crate::drivers::fat::{BlockDevice, FatFileSystem};
 use crate::klog_fmt;
-use crate::process::current_pid;
 
 pub static USB_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static USB_DRIVES: Mutex<Vec<UsbDrive>> = Mutex::new(Vec::new());
@@ -33,45 +33,34 @@ pub struct UsbDrive {
     pub mount_point: String,
 }
 
+/// Tracks retry state for failed mount attempts.
+struct MountRetryState {
+    /// Number of consecutive failures for this disk.
+    failure_count: usize,
+    /// Tick counter when the next retry is allowed.
+    next_retry_tick: u64,
+}
+
+/// Mount retry backoff state, keyed by mount point.
+static MOUNT_RETRY_STATE: Mutex<BTreeMap<String, MountRetryState>> = Mutex::new(BTreeMap::new());
+
 // ── Global USB context ────────────────────────────────────
 
 static USB_CTX: spin::Mutex<Option<USBContext>> = spin::Mutex::new(None);
 
-/// Reentrancy guard: stores the PID of the process currently holding the
-/// lock.  When the same process re-enters (e.g., mount callback from the
-/// USB poll path), we use the stored raw pointer instead of re-acquiring
-/// the Mutex, preventing deadlock.
-static USB_CTX_OWNER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// Raw pointer to the USB context, set once during init.
-/// Used for reentrant access when the Mutex is already held.
-static USB_CTX_PTR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
+/// Access the controller context outside enumeration callbacks.
 pub(crate) fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&mut USBContext) -> R,
 {
-    let current_pid = current_pid().map(|p| p.0).unwrap_or(0);
-    if current_pid != 0 && USB_CTX_OWNER.load(core::sync::atomic::Ordering::Relaxed) == current_pid {
-        let ptr = USB_CTX_PTR.load(core::sync::atomic::Ordering::Relaxed) as *mut USBContext;
-        let ctx = unsafe { &mut *ptr };
-        return f(ctx);
-    }
     let mut guard = USB_CTX.lock();
-    USB_CTX_OWNER.store(current_pid, core::sync::atomic::Ordering::Release);
     let ctx = guard.as_mut().expect("USB context not initialized");
-    let result = f(ctx);
-    USB_CTX_OWNER.store(0, core::sync::atomic::Ordering::Release);
-    drop(guard);
-    result
+    f(ctx)
 }
 
 pub fn init() {
     log::info!("USB: init start");
     let _ = crate::vfs::mkdir("/mnt");
-
-    // Register the platform's FAT-mount callback.
-    set_mount_fn(platform_mount_fat);
 
     // Create and initialise the USB context.
     {
@@ -99,7 +88,7 @@ pub fn init() {
                 i + 1, count_after, disk_count_after
             );
 
-            if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
+            if !ctx.disks().is_empty() {
                 log::info!("USB: device detected after {} retries", i + 1);
                 for d in ctx.disks() {
                     log::info!(
@@ -115,13 +104,10 @@ pub fn init() {
             nitrogen::timing::delay_ms(250);
         }
 
-        let mut guard = USB_CTX.lock();
-        *guard = Some(ctx);
-        // Store raw pointer for reentrant access from mount callback.
-        if let Some(ref ctx_ref) = *guard {
-            USB_CTX_PTR.store(ctx_ref as *const USBContext as usize, core::sync::atomic::Ordering::Relaxed);
-        }
+        *USB_CTX.lock() = Some(ctx);
     } // closes the inner block
+
+    mount_pending();
 
     // Quick check: if a device was already mounted, log it.
     if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
@@ -139,7 +125,12 @@ pub fn poll_usb() -> bool {
             ctx.poll();
         }
     }
-    USB_DRIVE_COUNT.load(Ordering::Relaxed) != before
+    mount_pending();
+    let changed = USB_DRIVE_COUNT.load(Ordering::Relaxed) != before;
+    if changed {
+        let _ = crate::klog::flush_to_vfs();
+    }
+    changed
 }
 
 /// Re-poll all controllers: clear state and re-enumerate from scratch.
@@ -156,16 +147,73 @@ pub fn poll_usb_all() -> bool {
     USB_DRIVES.lock().clear();
     USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
 
+    // Clear retry state on explicit rescan.
+    MOUNT_RETRY_STATE.lock().clear();
+
     // Re-create the USB context (full re-scan)
     use crate::driver_context_impl::KernelDriverContext;
     let mut ctx = USBContext::new(&KernelDriverContext);
     let _ = ctx.enable();
+    for i in 0..8 {
+        ctx.poll();
+        if !ctx.disks().is_empty() {
+            break;
+        }
+        nitrogen::timing::delay_ms(250);
+    }
     {
         let mut guard = USB_CTX.lock();
         *guard = Some(ctx);
     }
+    mount_pending();
+    let mounted = USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0;
+    let _ = crate::klog::flush_to_vfs();
+    mounted
+}
 
-    USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0
+/// Mount newly enumerated candidates after releasing the controller lock.
+fn mount_pending() {
+    let current_tick = solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
+    let mounted: Vec<String> = USB_DRIVES.lock().iter().map(|d| d.mount_point.clone()).collect();
+    let candidates: Vec<Disk> = USB_CTX
+        .lock()
+        .as_ref()
+        .map(|ctx| {
+            ctx.disks()
+                .iter()
+                .filter(|disk| !mounted.contains(&disk.mount_point))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut retry_state = MOUNT_RETRY_STATE.lock();
+    for mut disk in candidates {
+        // Check if this disk is in backoff.
+        if let Some(state) = retry_state.get(&disk.mount_point) {
+            if current_tick < state.next_retry_tick {
+                // Still in backoff; skip this candidate.
+                continue;
+            }
+        }
+
+        // Attempt mount.
+        if platform_mount_fat(&mut disk) {
+            // Success: remove any retry state.
+            retry_state.remove(&disk.mount_point);
+        } else {
+            // Failure: record or increment backoff.
+            let state = retry_state.entry(disk.mount_point.clone())
+                .or_insert(MountRetryState {
+                    failure_count: 0,
+                    next_retry_tick: 0,
+                });
+            state.failure_count += 1;
+            // Exponential backoff: 50ms * 2^failure_count, capped at 10s.
+            let backoff_ticks = (50 * (1 << state.failure_count.min(8))).min(10_000);
+            state.next_retry_tick = current_tick + backoff_ticks;
+        }
+    }
 }
 
 // ── Platform FAT-mount callback ───────────────────────────
@@ -567,16 +615,15 @@ fn platform_mount_fat(disk: &mut Disk) -> bool {
         tag: 1,
     };
 
-    let mp = alloc::format!("/mnt/usb-{}", USB_DRIVES.lock().len() + 1);
+    let mp = disk.mount_point.clone();
     match FatFileSystem::from_device(Box::new(bdev)) {
         Ok(fs) => {
             let _ = crate::vfs::mkdir(&mp);
             if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
                 .is_some_and(|r| r.is_ok())
             {
-                let n = USB_DRIVES.lock().len() + 1;
                 USB_DRIVES.lock().push(UsbDrive {
-                    name: alloc::format!("USB Drive {}", n),
+                    name: disk.name.clone(),
                     mount_point: mp,
                 });
                 USB_DRIVE_COUNT.fetch_add(1, Ordering::Relaxed);

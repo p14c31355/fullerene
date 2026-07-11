@@ -11,7 +11,6 @@ use bonder::wifi::Ssid;
 use crate::debug;
 use crate::mmio::{self, DmaRegion};
 use crate::pci_health::PciHealth;
-use crate::timing;
 use crate::DriverContext;
 
 use super::regs::*;
@@ -204,28 +203,12 @@ pub fn try_init_wifi_device_step() {
                 return;
             }
             {
-                let mut health = PciHealth::new(&raw.pci_dev);
-                if let Some((bus, dev, func)) = raw.upstream_bridge {
-                    health = health.with_upstream_bridge(bus, dev, func);
-                    if let Some(_bridge) = crate::pci::PciDevice::new(bus, dev, func) {
-                        let lnk_ctl_offset = crate::pci_error::find_pcie_cap(bus, dev, func)
-                            .and_then(|off| off.checked_add(0x10));
-                        if let Some(lnk_off) = lnk_ctl_offset {
-                            let ctl = crate::pci::PciConfigSpace::read_config_word(
-                                bus, dev, func, lnk_off,
-                            );
-                            crate::pci::PciConfigSpace::write_config_word_raw(
-                                bus, dev, func, lnk_off, ctl | (1 << 5),
-                            );
-                            log::info!(
-                                "WiFi: link retrain triggered on bridge {:02x}:{:02x}.{}",
-                                bus, dev, func,
-                            );
-                            timing::delay_us(10_000);
-                        }
-
-                    }
-                }
+                let health = raw.upstream_bridge.map_or_else(
+                    || PciHealth::new(&raw.pci_dev),
+                    |(bus, dev, func)| {
+                        PciHealth::new(&raw.pci_dev).with_upstream_bridge(bus, dev, func)
+                    },
+                );
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.pci_dev = Some(raw.pci_dev);
                 ctx.mmio = raw.mmio;
@@ -241,43 +224,8 @@ pub fn try_init_wifi_device_step() {
         WifiInitPhase::MmioInit => {
             debug::print("iwlwifi", "step: mmio_enter");
 
-            // ── Secondary Bus Reset ──────────────────────────────
-            // Some platforms leave the WiFi endpoint in a state where
-            // PCI config space responds (vendor/device ID, D0, link)
-            // but MMIO BAR reads hang the CPU permanently (phantom
-            // device, ASPM L1 wedge, or platform erratum).
-            //
-            // A secondary bus reset on the upstream bridge forces the
-            // endpoint through a fresh PCI reset cycle, ensuring the
-            // link and BAR are truly operational before any MMIO read.
-            {
-                let bdf_info = {
-                    let ctx = WIFI_INIT_CTX.lock();
-                    let bridge_bdf = ctx.health.as_ref().and_then(|h| h.upstream_bridge());
-                    let pci_bdf = ctx.pci_dev.as_ref().map(|d| (d.bus, d.device, d.function));
-                    (bridge_bdf, pci_bdf)
-                };
-                if let (Some((bb, bd, bf)), Some((eb, ed, ef))) = bdf_info {
-                    debug::print("iwlwifi", "step: sbr_start");
-                    let bc = crate::pci::PciConfigSpace::read_config_word(bb, bd, bf, 0x3E);
-                    crate::pci::PciConfigSpace::write_config_word_raw(
-                        bb, bd, bf, 0x3E, bc | (1 << 6),
-                    );
-                    crate::timing::delay_us(100_000);
-                    crate::pci::PciConfigSpace::write_config_word_raw(
-                        bb, bd, bf, 0x3E, bc & !(1 << 6),
-                    );
-                    crate::timing::delay_us(100_000);
-                    // Re-configure endpoint after reset
-                    crate::pci::PciConfigSpace::write_config_word_raw(
-                        eb, ed, ef, 4, 0x06,
-                    );
-                    crate::pci_error::configure_completion_timeout(eb, ed, ef);
-                    debug::print("iwlwifi", "step: sbr_done");
-                }
-            }
-
-            // Check device is present after reset
+            // Link training belongs to firmware. Resetting the upstream bridge
+            // here can strand the endpoint before the first non-posted read.
             let mmio = WIFI_INIT_CTX.lock().mmio;
             let device_present = {
                 let mut ctx = WIFI_INIT_CTX.lock();

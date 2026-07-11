@@ -28,6 +28,9 @@ jobs:
       - name: Add UEFI target
         run: rustup target add x86_64-unknown-uefi
 
+      - name: Add WASI target
+        run: rustup target add wasm32-wasip1
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./ -> target"

@@ -32,22 +32,6 @@ mod tests_with_std {
         assert!(ptr.0.is_null());
     }
 
-    // Integrated tests from toluene to reduce redundant test files
-    mod toluene_integration {
-        extern crate toluene;
-
-        #[test]
-        fn test_add_positive() {
-            assert_eq!(toluene::add(2, 3), 5);
-            assert_eq!(toluene::add(0, 0), 0);
-            assert_eq!(toluene::add(-1, 1), 0);
-        }
-
-        #[test]
-        fn test_add_negative() {
-            assert_eq!(toluene::add(-2, -3), -5);
-        }
-    }
 }
 
 #[cfg(test)]

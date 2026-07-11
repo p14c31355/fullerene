@@ -66,10 +66,12 @@ fn read_rtc_us() -> Option<u64> {
 /// NMI recovery dedicated stack (writable, 16-byte aligned).
 /// Must be mutable so recovery pushes can write to it without faulting.
 #[repr(align(16))]
-struct AlignedStack([u8; 65536]);
+struct AlignedStack {
+    _bytes: [u8; 65536],
+}
 
 #[allow(dead_code)]
-static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack([0u8; 65536]);
+static mut NMI_RECOVERY_STACK: AlignedStack = AlignedStack { _bytes: [0; 65536] };
 
 /// Set the launch‑shell flag from the solvent side.
 pub fn request_shell_launch() {

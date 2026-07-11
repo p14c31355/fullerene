@@ -16,3 +16,6 @@ target/
 
 # Build artefacts — these are embedded via build.rs + OUT_DIR
 bellows/src/kernel.bin
+
+# WASM binaries — built at compile time via build.rs
+*.wasm

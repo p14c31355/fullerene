@@ -5,8 +5,89 @@
 //! manages the UI-side state (showing/hiding menus, dialogs) and queues
 //! connection requests for an external service to consume.
 
-use bonder::wifi::Ssid;
+use alloc::{boxed::Box, string::ToString, vec::Vec};
+use bonder::wifi::{Ssid, WifiStatus};
 use lattice::desktop::DesktopAction;
+use lattice::network_menu::{ApDisplay, NetStatus};
+
+const WIFI_INIT_TIMEOUT_TICKS: u64 = 600;
+
+/// Runtime-owned Wi-Fi lifecycle and UI projection.
+struct WifiService {
+    init_started: Option<u64>,
+    init_pending: bool,
+}
+
+impl WifiService {
+    const fn new() -> Self {
+        Self { init_started: None, init_pending: true }
+    }
+
+    fn advance_init(&mut self, now: u64) {
+        let started = *self.init_started.get_or_insert(now);
+        if nitrogen::iwlwifi::wifi_init_completed() {
+            self.init_pending = false;
+        } else if now.wrapping_sub(started) >= WIFI_INIT_TIMEOUT_TICKS {
+            nitrogen::iwlwifi::force_init_failed();
+            self.init_pending = false;
+        } else {
+            nitrogen::iwlwifi::try_init_wifi_device_step();
+        }
+    }
+
+    fn update_snapshot() {
+        let Some(state) = nitrogen::iwlwifi::wifi_state_snapshot() else { return };
+        let mut aps: Vec<_> = state.scan_results.iter().map(|ap| {
+            let ssid = ap.ssid.to_string();
+            ApDisplay {
+                connected: state.connected_ssid.as_ref() == Some(&ssid),
+                ssid,
+                signal_bars: match ap.rssi { -39.. => 3, -59..=-40 => 2, -74..=-60 => 1, _ => 0 },
+                has_lock: ap.security.needs_password(),
+            }
+        }).collect();
+        aps.sort_by_key(|ap| !ap.connected);
+        *crate::NETWORK_SNAPSHOT.lock() = crate::NetworkSnapshot {
+            aps,
+            status: if !state.device_available {
+                NetStatus::NoDevice
+            } else {
+                match state.status {
+                    WifiStatus::Connected => NetStatus::Connected(
+                        state.connected_ssid.unwrap_or_default(),
+                        state.ip_address.unwrap_or_else(|| "0.0.0.0".into()),
+                    ),
+                    WifiStatus::Scanning => NetStatus::Scanning,
+                    WifiStatus::Disconnected => NetStatus::Disconnected,
+                    WifiStatus::Error => NetStatus::Error("Connection failed".into()),
+                    WifiStatus::Authenticating => NetStatus::Connecting("Authenticating...".into()),
+                    WifiStatus::Associating => NetStatus::Connecting("Associating...".into()),
+                    WifiStatus::Handshake => NetStatus::Connecting("WPA Handshake...".into()),
+                }
+            },
+        };
+    }
+}
+
+impl crate::Service for WifiService {
+    fn tick(&mut self, now: u64) {
+        if self.init_pending { self.advance_init(now); }
+        nitrogen::iwlwifi::tick_wifi_device();
+        if nitrogen::iwlwifi::wifi_init_completed() && now % 600 == 0 {
+            nitrogen::iwlwifi::start_scan_if_idle();
+        }
+        for action in core::mem::take(&mut *crate::WIFI_ACTION_QUEUE.lock()) {
+            let crate::WifiAction::Connect(ssid, password) = action;
+            nitrogen::iwlwifi::connect_to_ap(&ssid, password.as_deref());
+        }
+        if now % 20 == 0 { Self::update_snapshot(); }
+    }
+}
+
+pub fn register_wifi_service() {
+    nitrogen::iwlwifi::init_wifi_manager();
+    crate::register_service(Box::new(WifiService::new()));
+}
 
 /// Handle a network menu action.
 ///
