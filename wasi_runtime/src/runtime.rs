@@ -13,8 +13,8 @@ use crate::wasi::{
 pub fn run(
     wasm_binary: &[u8],
     args: &[&str],
-    write_stdout: fn(&str),
-    write_stderr: fn(&str),
+    write_stdout: fn(&[u8]),
+    write_stderr: fn(&[u8]),
     read_stdin: fn() -> Option<u8>,
     yield_now: fn(),
     read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
@@ -26,7 +26,8 @@ pub fn run(
     let module = match Module::new(&engine, wasm_binary) {
         Ok(m) => m,
         Err(e) => {
-            write_stderr(&alloc::format!("wasm: parse error: {}\n", e));
+            let msg = alloc::format!("wasm: parse error: {}\n", e);
+            write_stderr(msg.as_bytes());
             return -1;
         }
     };
@@ -47,7 +48,8 @@ pub fn run(
     let linker = match create_linker(&engine) {
         Ok(l) => l,
         Err(e) => {
-            write_stderr(&alloc::format!("wasm: linker setup failed: {}\n", e));
+            let msg = alloc::format!("wasm: linker setup failed: {}\n", e);
+            write_stderr(msg.as_bytes());
             return -1;
         }
     };
@@ -62,7 +64,7 @@ pub fn run(
         },
         Err(e) => {
             let msg = alloc::format!("wasm: instantiation failed: {}\n", e);
-            write_stderr(&msg);
+            write_stderr(msg.as_bytes());
             return -1;
         }
     };

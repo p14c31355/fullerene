@@ -232,7 +232,8 @@ who talks to what
 Wi-Fi follows this boundary explicitly: Nitrogen owns the Intel device and
 incremental initialization state machine, while Solvent owns `WifiService`, its
 timeout, scan cadence, action consumption, and immutable desktop snapshot. The
-kernel only installs the `DriverContext` capability and starts Solvent.
+kernel installs the `DriverContext` capability, starts Solvent via `solvent::init()`,
+and explicitly registers the Wi-Fi service via `solvent::register_wifi_service()`.
 
 ---
 

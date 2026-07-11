@@ -13,6 +13,7 @@
 //! ```
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -31,6 +32,17 @@ pub struct UsbDrive {
     pub name: String,
     pub mount_point: String,
 }
+
+/// Tracks retry state for failed mount attempts.
+struct MountRetryState {
+    /// Number of consecutive failures for this disk.
+    failure_count: usize,
+    /// Tick counter when the next retry is allowed.
+    next_retry_tick: u64,
+}
+
+/// Mount retry backoff state, keyed by mount point.
+static MOUNT_RETRY_STATE: Mutex<BTreeMap<String, MountRetryState>> = Mutex::new(BTreeMap::new());
 
 // ── Global USB context ────────────────────────────────────
 
@@ -135,6 +147,9 @@ pub fn poll_usb_all() -> bool {
     USB_DRIVES.lock().clear();
     USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
 
+    // Clear retry state on explicit rescan.
+    MOUNT_RETRY_STATE.lock().clear();
+
     // Re-create the USB context (full re-scan)
     use crate::driver_context_impl::KernelDriverContext;
     let mut ctx = USBContext::new(&KernelDriverContext);
@@ -151,6 +166,7 @@ pub fn poll_usb_all() -> bool {
 
 /// Mount newly enumerated candidates after releasing the controller lock.
 fn mount_pending() {
+    let current_tick = solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
     let mounted: Vec<String> = USB_DRIVES.lock().iter().map(|d| d.mount_point.clone()).collect();
     let candidates: Vec<Disk> = USB_CTX
         .lock()
@@ -163,8 +179,33 @@ fn mount_pending() {
                 .collect()
         })
         .unwrap_or_default();
+
+    let mut retry_state = MOUNT_RETRY_STATE.lock();
     for mut disk in candidates {
-        let _ = platform_mount_fat(&mut disk);
+        // Check if this disk is in backoff.
+        if let Some(state) = retry_state.get(&disk.mount_point) {
+            if current_tick < state.next_retry_tick {
+                // Still in backoff; skip this candidate.
+                continue;
+            }
+        }
+
+        // Attempt mount.
+        if platform_mount_fat(&mut disk) {
+            // Success: remove any retry state.
+            retry_state.remove(&disk.mount_point);
+        } else {
+            // Failure: record or increment backoff.
+            let state = retry_state.entry(disk.mount_point.clone())
+                .or_insert(MountRetryState {
+                    failure_count: 0,
+                    next_retry_tick: 0,
+                });
+            state.failure_count += 1;
+            // Exponential backoff: 50ms * 2^failure_count, capped at 10s.
+            let backoff_ticks = (50 * (1 << state.failure_count.min(7))).min(10_000);
+            state.next_retry_tick = current_tick + backoff_ticks;
+        }
     }
 }
 

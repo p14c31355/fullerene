@@ -48,8 +48,8 @@ pub struct WasiCtx {
     pub env: Vec<Vec<u8>>,
     pub fds: BTreeMap<u32, WasiFd>,
     pub next_fd: u32,
-    pub write_stdout: fn(&str),
-    pub write_stderr: fn(&str),
+    pub write_stdout: fn(&[u8]),
+    pub write_stderr: fn(&[u8]),
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
     pub read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
@@ -158,11 +158,10 @@ pub fn fd_write(
             memory
                 .read(&caller, (buf_ptr + offset) as usize, &mut temp_buf[..chunk_len])
                 .map_err(|_| Error::new("fd_write: read iov failed"))?;
-            let s = String::from_utf8_lossy(&temp_buf[..chunk_len]);
             let ctx = caller.data();
             match fd {
-                1 => (ctx.write_stdout)(&s),
-                2 => (ctx.write_stderr)(&s),
+                1 => (ctx.write_stdout)(&temp_buf[..chunk_len]),
+                2 => (ctx.write_stderr)(&temp_buf[..chunk_len]),
                 _ => return Ok(EBADF),
             }
             offset += chunk_len as u32;
@@ -187,13 +186,13 @@ pub fn fd_read(
     let mut total_read: u32 = 0;
     match fd {
         0 => {
-            loop {
-                let has_data = { (caller.data().read_stdin)().is_some() };
-                if has_data {
-                    break;
+            // Wait for at least one byte to be available.
+            let first_byte = loop {
+                match (caller.data().read_stdin)() {
+                    Some(byte) => break byte,
+                    None => (caller.data().yield_now)(),
                 }
-                (caller.data().yield_now)();
-            }
+            };
             let mut temp_buf = [0u8; 4096];
             for i in 0..iovs_len {
                 let base = iovs_ptr + i * 8;
@@ -203,7 +202,12 @@ pub fn fd_read(
                 while iov_written < buf_len {
                     let chunk_len = (buf_len - iov_written).min(4096) as usize;
                     let mut chunk_read = 0;
-                    for j in 0..chunk_len {
+                    // Use the first byte from the wait loop if this is the first chunk.
+                    if total_read == 0 && chunk_read == 0 {
+                        temp_buf[0] = first_byte;
+                        chunk_read = 1;
+                    }
+                    for j in chunk_read..chunk_len {
                         match (caller.data().read_stdin)() {
                             Some(byte) => {
                                 temp_buf[j] = byte;
@@ -650,32 +654,50 @@ pub fn random_get(
         let mut i = 0;
         while i + 8 <= chunk_len {
             let mut val: u64 = 0;
+            let mut success = false;
             #[cfg(target_arch = "x86_64")]
             {
                 let mut retries = 10;
                 while retries > 0 {
                     if unsafe { core::arch::x86_64::_rdrand64_step(&mut val) } == 1 {
+                        success = true;
                         break;
                     }
                     retries -= 1;
                     core::hint::spin_loop();
                 }
             }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                return Err(Error::new("random_get: entropy not available on this architecture"));
+            }
+            if !success {
+                return Err(Error::new("random_get: entropy exhausted"));
+            }
             temp_buf[i..i + 8].copy_from_slice(&val.to_le_bytes());
             i += 8;
         }
         if i < chunk_len {
             let mut val: u64 = 0;
+            let mut success = false;
             #[cfg(target_arch = "x86_64")]
             {
                 let mut retries = 10;
                 while retries > 0 {
                     if unsafe { core::arch::x86_64::_rdrand64_step(&mut val) } == 1 {
+                        success = true;
                         break;
                     }
                     retries -= 1;
                     core::hint::spin_loop();
                 }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                return Err(Error::new("random_get: entropy not available on this architecture"));
+            }
+            if !success {
+                return Err(Error::new("random_get: entropy exhausted"));
             }
             temp_buf[i..chunk_len].copy_from_slice(&val.to_le_bytes()[..chunk_len - i]);
         }

@@ -10,19 +10,21 @@ use alloc::string::String;
 
 // ── WASM/WASI runtime callbacks ──────────────────────────────────
 
-fn wasm_write_stdout(s: &str) {
+fn wasm_write_stdout(data: &[u8]) {
     if solvent::is_initialized() {
-        solvent::write_terminal(s);
+        let s = alloc::string::String::from_utf8_lossy(data);
+        solvent::write_terminal(&s);
     } else {
-        kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+        kernel_syscall(4, 1, data.as_ptr() as u64, data.len() as u64);
     }
 }
 
-fn wasm_write_stderr(s: &str) {
+fn wasm_write_stderr(data: &[u8]) {
     if solvent::is_initialized() {
-        solvent::write_terminal(s);
+        let s = alloc::string::String::from_utf8_lossy(data);
+        solvent::write_terminal(&s);
     } else {
-        kernel_syscall(4, 2, s.as_ptr() as u64, s.len() as u64);
+        kernel_syscall(4, 2, data.as_ptr() as u64, data.len() as u64);
     }
 }
 
@@ -64,7 +66,8 @@ fn wasm_get_monotonic_ns() -> u64 {
     } else {
         let tsc = unsafe { core::arch::x86_64::_rdtsc() };
         let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
-        tsc.saturating_mul(1_000_000) / tsc_per_ms
+        // Divide first to avoid overflow: (tsc / tsc_per_ms) * 1_000_000
+        (tsc / tsc_per_ms).saturating_mul(1_000_000)
     }
 }
 
