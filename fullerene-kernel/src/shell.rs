@@ -66,8 +66,8 @@ fn wasm_get_monotonic_ns() -> u64 {
     } else {
         let tsc = unsafe { core::arch::x86_64::_rdtsc() };
         let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
-        // Divide first to avoid overflow: (tsc / tsc_per_ms) * 1_000_000
-        (tsc / tsc_per_ms).saturating_mul(1_000_000)
+        // Use u128 to prevent overflow while maintaining full precision
+        ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
     }
 }
 
