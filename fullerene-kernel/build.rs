@@ -32,12 +32,27 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", wasm_src.display());
 
+    // Use the RUSTC from cargo's build environment — it points to the correct
+    // toolchain (respecting rust-toolchain.toml). Derive sysroot from it.
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+
+    let sysroot = String::from_utf8(
+        Command::new(&rustc)
+            .args(["--print", "sysroot"])
+            .output()
+            .expect("Failed to get sysroot from rustc")
+            .stdout,
+    )
+    .expect("Invalid UTF-8 from rustc --print sysroot")
+    .trim()
+    .to_string();
 
     let status = Command::new(&rustc)
         .args([
             "--target",
             "wasm32-wasip1",
+            "--sysroot",
+            &sysroot,
             "-C",
             "opt-level=s",
             "-C",
