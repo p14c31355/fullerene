@@ -153,7 +153,11 @@ pub fn fd_write(
             None => return Ok(EINVAL),
         };
         let buf_ptr = read_u32(&memory, &caller, base)?;
-        let buf_len = read_u32(&memory, &caller, base + 4)?;
+        let len_addr = match base.checked_add(4) {
+            Some(a) => a,
+            None => return Ok(EINVAL),
+        };
+        let buf_len = read_u32(&memory, &caller, len_addr)?;
         let mut offset = 0;
         let mut temp_buf = [0u8; 4096];
         while offset < buf_len {
@@ -189,29 +193,42 @@ pub fn fd_read(
     let mut total_read: u32 = 0;
     match fd {
         0 => {
-            // Wait for at least one byte to be available.
-            let first_byte = loop {
-                match (caller.data().read_stdin)() {
-                    Some(byte) => break byte,
-                    None => (caller.data().yield_now)(),
-                }
-            };
             let mut temp_buf = [0u8; 4096];
+            let mut first_byte_opt: Option<u8> = None;
             for i in 0..iovs_len {
                 let base = match iovs_ptr.checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?) {
                     Some(b) => b,
                     None => return Ok(EINVAL),
                 };
                 let buf_ptr = read_u32(&memory, &caller, base)?;
-                let buf_len = read_u32(&memory, &caller, base + 4)?;
+                let len_addr = match base.checked_add(4) {
+                    Some(a) => a,
+                    None => return Ok(EINVAL),
+                };
+                let buf_len = read_u32(&memory, &caller, len_addr)?;
+                if buf_len == 0 {
+                    continue;
+                }
+                // Wait for at least one byte to be available for the first non-empty iovec.
+                if first_byte_opt.is_none() {
+                    let first_byte = loop {
+                        match (caller.data().read_stdin)() {
+                            Some(byte) => break byte,
+                            None => (caller.data().yield_now)(),
+                        }
+                    };
+                    first_byte_opt = Some(first_byte);
+                }
                 let mut iov_written: u32 = 0;
                 while iov_written < buf_len {
                     let chunk_len = (buf_len - iov_written).min(4096) as usize;
                     let mut chunk_read = 0;
                     // Use the first byte from the wait loop if this is the first chunk.
                     if total_read == 0 && chunk_read == 0 {
-                        temp_buf[0] = first_byte;
-                        chunk_read = 1;
+                        if let Some(first_byte) = first_byte_opt {
+                            temp_buf[0] = first_byte;
+                            chunk_read = 1;
+                        }
                     }
                     for j in chunk_read..chunk_len {
                         match (caller.data().read_stdin)() {
@@ -248,7 +265,11 @@ pub fn fd_read(
                     None => return Ok(EINVAL),
                 };
                 let buf_ptr = read_u32(&memory, &caller, base)?;
-                let buf_len = read_u32(&memory, &caller, base + 4)?;
+                let len_addr = match base.checked_add(4) {
+                    Some(a) => a,
+                    None => return Ok(EINVAL),
+                };
+                let buf_len = read_u32(&memory, &caller, len_addr)?;
                 let (to_read, current_offset) = {
                     let bc = caller.data();
                     match bc.fds.get(&fd) {
