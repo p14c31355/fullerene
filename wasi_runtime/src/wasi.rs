@@ -159,7 +159,7 @@ pub fn fd_write(
         while offset < buf_len {
             let chunk_len = (buf_len - offset).min(4096) as usize;
             memory
-                .read(&caller, (buf_ptr + offset) as usize, &mut temp_buf[..chunk_len])
+                .read(&caller, buf_ptr as usize + offset as usize, &mut temp_buf[..chunk_len])
                 .map_err(|_| Error::new("fd_write: read iov failed"))?;
             let ctx = caller.data();
             match fd {
