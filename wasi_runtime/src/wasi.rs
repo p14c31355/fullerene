@@ -716,7 +716,7 @@ pub fn random_get(
             temp_buf[i..chunk_len].copy_from_slice(&val.to_le_bytes()[..chunk_len - i]);
         }
         memory
-            .write(&mut caller, (buf_ptr + offset) as usize, &temp_buf[..chunk_len])
+            .write(&mut caller, buf_ptr as usize + offset as usize, &temp_buf[..chunk_len])
             .map_err(|_| Error::new("random_get: write failed"))?;
         offset += chunk_len as u32;
     }
