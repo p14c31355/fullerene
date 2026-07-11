@@ -148,7 +148,10 @@ pub fn fd_write(
     let memory = get_memory(&caller)?;
     let mut total: u32 = 0;
     for i in 0..iovs_len {
-        let base = iovs_ptr + i * 8;
+        let base = match iovs_ptr.checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?) {
+            Some(b) => b,
+            None => return Ok(EINVAL),
+        };
         let buf_ptr = read_u32(&memory, &caller, base)?;
         let buf_len = read_u32(&memory, &caller, base + 4)?;
         let mut offset = 0;
