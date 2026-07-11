@@ -16,10 +16,10 @@
 | 21 | get_process_name | ✅ Full | |
 | 22 | yield | ✅ Full | |
 | 30 | map_memory | ✅ Full | |
-|| 31 | unmap_memory | ✅ Full | |
-|| 32 | protect_memory | ✅ Full | Page table flag update via set_page_flags |
-|| 33 | query_memory | ✅ Full | |
-|| 40 | create_event | ✅ Full | Events with edge-triggered signaling
+| 31 | unmap_memory | ✅ Full | |
+| 32 | protect_memory | ✅ Full | Page table flag update via set_page_flags |
+| 33 | query_memory | ✅ Full | |
+| 40 | create_event | ✅ Full | Events with edge-triggered signaling |
 | 41 | wait_event | ✅ Full | |
 | 42 | signal_event | ✅ Full | |
 | 43 | subscribe_event | ✅ Full | Per-process subscription list |

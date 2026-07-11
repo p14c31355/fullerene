@@ -22,6 +22,47 @@ use x86_64::VirtAddr;
 use crate::gui;
 use crate::scheduler_context::SCHEDULER;
 
+/// Read CMOS RTC and convert to microseconds since Unix epoch (1970-01-01 00:00:00 UTC).
+/// Returns `None` if RTC is unavailable or invalid.
+fn read_rtc_us() -> Option<u64> {
+    // Obtain wall-clock callback from Solvent
+    let cb = solvent::SOLVENT_CALLBACKS.lock().wall_clock?;
+    let (year, month, day, hour, minute, second) = cb()?;
+
+    // Validate ranges
+    if month == 0 || month > 12 || day == 0 || day > 31 || hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+
+    // Convert to days since Unix epoch (1970-01-01)
+    // Algorithm based on standard calendar calculations
+    let mut y = year as i64;
+    let mut m = month as i64;
+
+    // Adjust for months: March = 0, ..., Feb = 11 (makes leap-year math easier)
+    if m <= 2 {
+        y -= 1;
+        m += 12;
+    }
+
+    // Days since epoch using Zeller-style formula
+    let days_since_epoch =
+        (365 * y) + (y / 4) - (y / 100) + (y / 400)  // Years to days with leap years
+        + (30 * m + 3 * (m + 1) / 5)                  // Months to days
+        + (day as i64)                                 // Add day of month
+        - 719561;                                      // Adjust to Unix epoch (days from year 0 to 1970-01-01)
+
+    // Convert to seconds
+    let total_seconds = days_since_epoch * 86400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64);
+
+    // Convert to microseconds
+    if total_seconds < 0 {
+        return None; // Time before Unix epoch
+    }
+
+    Some((total_seconds as u64) * 1_000_000)
+}
+
 /// NMI recovery dedicated stack (writable, 16-byte aligned).
 /// Must be mutable so recovery pushes can write to it without faulting.
 #[repr(align(16))]
@@ -76,13 +117,18 @@ pub fn scheduler_loop() -> ! {
     // Shell and other apps are launched via AppGrid or context menu.
     loop {
         // VDSO: update time metadata for all processes.
-        let now_us = if solvent::get_tsc_per_ms() > 0 {
+        // Compute monotonic uptime in microseconds
+        let uptime_us = if solvent::get_tsc_per_ms() > 0 {
             let tsc = unsafe { core::arch::x86_64::_rdtsc() };
             (tsc as u128 * 1000 / solvent::get_tsc_per_ms() as u128) as u64
         } else {
             crate::interrupts::TICK_COUNTER.load(Ordering::Relaxed)
         };
-        SCHEDULER.update_vdso_all(now_us, now_us);
+
+        // Obtain wall-clock time from RTC; fallback to uptime if RTC unavailable
+        let wall_us = read_rtc_us().unwrap_or(uptime_us);
+
+        SCHEDULER.update_vdso_all(uptime_us, wall_us);
 
         // Poll input devices before the runtime tick so that even
         // without interrupt delivery (some firmware / VM configs) the

@@ -85,7 +85,7 @@ impl SchedulerContext {
         self.tsc_per_ms.load(Ordering::Relaxed)
     }
 
-    /// Increment the tick counter and return the new value.
+    /// Increment the tick counter and return the old value (before increment).
     pub fn advance_tick(&self) -> u64 {
         self.tick_counter.fetch_add(1, Ordering::Relaxed)
     }
@@ -206,7 +206,8 @@ impl SchedulerContext {
                 return (None, ProcessId(0));
             }
 
-            let current_idx = self.schedule_index();
+            // Clamp the schedule index to the valid range in case the process list has shrunk.
+            let current_idx = self.schedule_index().min(list.len().saturating_sub(1));
             let start_idx = current_idx;
             let mut next_idx = current_idx;
 

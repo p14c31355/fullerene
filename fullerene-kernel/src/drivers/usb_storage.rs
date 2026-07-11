@@ -60,8 +60,8 @@ where
     let mut guard = USB_CTX.lock();
     let ctx = guard.as_mut().expect("USB context not initialized");
     let result = f(ctx);
-    drop(guard);
     USB_CTX_IN_USE.store(false, core::sync::atomic::Ordering::Release);
+    drop(guard);
     result
 }
 

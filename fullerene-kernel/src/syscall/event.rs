@@ -12,6 +12,7 @@ use crate::contexts::kernel;
 use crate::process;
 
 const EVENT_MANUAL_RESET: u64 = 1;
+const MAX_SUBSCRIPTIONS: usize = 64;
 
 pub(crate) fn syscall_create_event(flags: u64) -> SyscallResult {
     let manual_reset = (flags & EVENT_MANUAL_RESET) != 0;
@@ -144,8 +145,21 @@ pub(crate) fn syscall_subscribe_event(event_type: u64, event_handle: u64) -> Sys
 
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
     process::SCHEDULER.with_process(pid, |p| {
-        p.resources.subscriptions.lock().push((event_type, event_handle));
-    }).ok_or(SyscallError::NoSuchProcess)?;
+        let mut subscriptions = p.resources.subscriptions.lock();
+
+        // Check if this subscription already exists (idempotent)
+        if subscriptions.iter().any(|&(t, h)| t == event_type && h == event_handle) {
+            return Ok(());
+        }
+
+        // Enforce capacity limit
+        if subscriptions.len() >= MAX_SUBSCRIPTIONS {
+            return Err(SyscallError::OutOfMemory);
+        }
+
+        subscriptions.push((event_type, event_handle));
+        Ok(())
+    }).ok_or(SyscallError::NoSuchProcess)??;
 
     Ok(0)
 }

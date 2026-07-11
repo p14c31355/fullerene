@@ -132,7 +132,7 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
         return Err(SyscallError::PermissionDenied);
     }
 
-    let _read = (prot & PROT_READ) != 0;
+    let read = (prot & PROT_READ) != 0;
     let write = (prot & PROT_WRITE) != 0;
     let exec = (prot & PROT_EXEC) != 0;
 
@@ -142,30 +142,60 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
         let ptm = mgr.page_table_manager_mut();
         let num_pages = (len + 4095) / 4096;
 
+        // First pass: validate all pages are mapped and collect original flags
+        let mut page_info: Vec<(usize, x86_64::structures::paging::PageTableFlags)> = Vec::with_capacity(num_pages);
         for i in 0..num_pages {
             let vaddr = addr as usize + i * 4096;
 
-            // Get current physical frame
-            let phys = ptm.translate_address(vaddr)
+            // Validate page is mapped (translate_address returns error if not mapped)
+            ptm.translate_address(vaddr)
                 .map_err(|_| SyscallError::InvalidArgument)?;
-            if phys == 0 {
-                // Page not mapped — skip
-                continue;
+
+            // Get current flags to save for potential rollback
+            let original_flags = ptm.get_page_flags(vaddr)
+                .map_err(|_| SyscallError::InvalidArgument)?;
+
+            page_info.push((vaddr, original_flags));
+        }
+
+        // Second pass: apply new flags to all pages
+        for (idx, &(vaddr, original_flags)) in page_info.iter().enumerate() {
+            // Build new flags based on protection arguments
+            let mut flags = x86_64::structures::paging::PageTableFlags::empty();
+
+            // Handle PROT_NONE: when no permissions are requested, clear PRESENT to make inaccessible
+            if prot == 0 {
+                // PROT_NONE: clear PRESENT but keep USER_ACCESSIBLE to maintain it's a user page
+                flags = x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+            } else {
+                // At least one permission is requested
+                if read {
+                    flags |= x86_64::structures::paging::PageTableFlags::PRESENT;
+                }
+                // Note: on x86_64, there's no separate read permission bit; PRESENT implies readable
+                // So if write or exec is set without read, we still need PRESENT
+                if write || exec {
+                    flags |= x86_64::structures::paging::PageTableFlags::PRESENT;
+                }
+
+                flags |= x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
+
+                if write {
+                    flags |= x86_64::structures::paging::PageTableFlags::WRITABLE;
+                }
+                if !exec {
+                    flags |= x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
+                }
             }
 
-            // Build new flags
-            let mut flags = x86_64::structures::paging::PageTableFlags::PRESENT
-                | x86_64::structures::paging::PageTableFlags::USER_ACCESSIBLE;
-            if write {
-                flags |= x86_64::structures::paging::PageTableFlags::WRITABLE;
+            // Try to update flags; rollback on failure
+            if let Err(e) = ptm.set_page_flags(vaddr, flags) {
+                // Rollback: restore all previously changed pages
+                for &(rollback_vaddr, rollback_flags) in &page_info[..idx] {
+                    let _ = ptm.set_page_flags(rollback_vaddr, rollback_flags);
+                }
+                return Err(SyscallError::OutOfMemory);
             }
-            if !exec {
-                flags |= x86_64::structures::paging::PageTableFlags::NO_EXECUTE;
-            }
-
-            // Update flags via the PageTableHelper API
-            ptm.set_page_flags(vaddr, flags)
-                .map_err(|_| SyscallError::OutOfMemory)?;
         }
 
         Ok(0)
