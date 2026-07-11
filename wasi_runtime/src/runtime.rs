@@ -1,0 +1,111 @@
+use alloc::vec::Vec;
+use wasmi::{Engine, Linker, Module, Store};
+
+use crate::wasi::{
+    args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
+    fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir, fd_seek, fd_write,
+    path_filestat_get, path_open, proc_exit, random_get, WasiCtx,
+};
+
+/// Run a WASI module with the given binary, arguments, and I/O callbacks.
+/// Returns the exit code (0 = success).
+pub fn run(
+    wasm_binary: &[u8],
+    args: &[&str],
+    write_stdout: fn(&str),
+    write_stderr: fn(&str),
+    read_stdin: fn() -> Option<u8>,
+    yield_now: fn(),
+    read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
+    get_monotonic_ns: fn() -> u64,
+) -> i32 {
+    let engine = Engine::default();
+
+    let module = match Module::new(&engine, wasm_binary) {
+        Ok(m) => m,
+        Err(e) => {
+            write_stderr(&alloc::format!("wasm: parse error: {}\n", e));
+            return -1;
+        }
+    };
+
+    let ctx = WasiCtx::new(
+        args,
+        write_stdout,
+        write_stderr,
+        read_stdin,
+        yield_now,
+        read_entire_file,
+        get_monotonic_ns,
+    );
+
+    let mut store = Store::new(&engine, ctx);
+
+    let linker = match create_linker(&engine) {
+        Ok(l) => l,
+        Err(e) => {
+            write_stderr(&alloc::format!("wasm: linker setup failed: {}\n", e));
+            return -1;
+        }
+    };
+
+    let instance = match linker.instantiate(&mut store, &module) {
+        Ok(pre) => match pre.start(&mut store) {
+            Ok(inst) => inst,
+            Err(_) => {
+                let code = store.data().exit_code.unwrap_or(1);
+                return code as i32;
+            }
+        },
+        Err(e) => {
+            let msg = alloc::format!("wasm: instantiation failed: {}\n", e);
+            write_stderr(&msg);
+            return -1;
+        }
+    };
+
+    if let Ok(func) = instance.get_typed_func::<(), ()>(&store, "_start") {
+        match func.call(&mut store, ()) {
+            Ok(()) => {}
+            Err(_err) => {
+                let code = store.data().exit_code.unwrap_or(1);
+                return code as i32;
+            }
+        }
+    } else if let Ok(func) = instance.get_typed_func::<(), ()>(&store, "_initialize") {
+        let _ = func.call(&mut store, ());
+    }
+
+    store.data().exit_code.unwrap_or(0) as i32
+}
+
+fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
+    let mut linker = Linker::<WasiCtx>::new(engine);
+    let module = "wasi_snapshot_preview1";
+
+    macro_rules! wasi_func {
+        ($name:expr, $func:expr) => {
+            linker.func_wrap(module, $name, $func)?;
+        };
+    }
+
+    wasi_func!("args_sizes_get", args_sizes_get);
+    wasi_func!("args_get", args_get);
+    wasi_func!("environ_sizes_get", environ_sizes_get);
+    wasi_func!("environ_get", environ_get);
+    wasi_func!("fd_write", fd_write);
+    wasi_func!("fd_read", fd_read);
+    wasi_func!("fd_close", fd_close);
+    wasi_func!("fd_seek", fd_seek);
+    wasi_func!("fd_prestat_get", fd_prestat_get);
+    wasi_func!("fd_prestat_dir_name", fd_prestat_dir_name);
+    wasi_func!("fd_filestat_get", fd_filestat_get);
+    wasi_func!("fd_readdir", fd_readdir);
+    wasi_func!("path_open", path_open);
+    wasi_func!("path_filestat_get", path_filestat_get);
+    wasi_func!("proc_exit", proc_exit);
+    wasi_func!("clock_time_get", clock_time_get);
+    wasi_func!("random_get", random_get);
+
+    Ok(linker)
+}

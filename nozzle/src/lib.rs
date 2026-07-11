@@ -169,6 +169,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             "Launch BusyBox shell from the filesystem",
             builtins::cmd_run_busybox
         ),
+        (
+            "wasm",
+            "Run a WASM/WASI binary",
+            builtins::cmd_wasm
+        ),
     )
 }
 

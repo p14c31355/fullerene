@@ -8,6 +8,49 @@ use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
 
+// ── WASM/WASI runtime callbacks ──────────────────────────────────
+
+fn wasm_write_stdout(s: &str) {
+    if solvent::is_initialized() {
+        solvent::write_terminal(s);
+    } else {
+        kernel_syscall(4, 1, s.as_ptr() as u64, s.len() as u64);
+    }
+}
+
+fn wasm_write_stderr(s: &str) {
+    if solvent::is_initialized() {
+        solvent::write_terminal(s);
+    } else {
+        kernel_syscall(4, 2, s.as_ptr() as u64, s.len() as u64);
+    }
+}
+
+fn wasm_read_stdin() -> Option<u8> {
+    let mut byte = 0u8;
+    let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
+    if res > 0 { Some(byte) } else { None }
+}
+
+fn wasm_yield_now() {
+    kernel_syscall(22, 0, 0, 0);
+}
+
+fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
+    crate::fs::read_entire_file(path).map_err(|e| match e {
+        crate::fs::FsError::FileNotFound => "file not found",
+        _ => "read failed",
+    })
+}
+
+fn wasm_get_monotonic_ns() -> u64 {
+    if solvent::is_initialized() {
+        solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed) * 1_000_000
+    } else {
+        unsafe { core::arch::x86_64::_rdtsc() }
+    }
+}
+
 /// Helper: write a formatted line to the terminal.
 macro_rules! tline {
     ($t:expr, $($arg:tt)*) => { $t.write_str(&alloc::format!("{}{}", alloc::format!($($arg)*), '\n')) };
@@ -424,6 +467,34 @@ fn register_nozzle_hooks() {
         }
         "run_busybox" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_busybox(), "BusyBox shell started (PID: {})"),
         "hello_linux" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_test_binary(), "Test Linux binary started (PID: {})"),
+        "wasm" => {
+            if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: wasm <path> [args...]"); }
+            let path = ctx.args[1];
+            tline!(ctx.terminal, "Loading WASM binary: {}", path);
+            match crate::fs::read_entire_file(path) {
+                Ok(binary) => {
+                    let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().map(|s| *s).collect();
+                    let code = wasi_runtime::runtime::run(
+                        &binary,
+                        &wasm_args,
+                        wasm_write_stdout,
+                        wasm_write_stderr,
+                        wasm_read_stdin,
+                        wasm_yield_now,
+                        wasm_read_entire_file,
+                        wasm_get_monotonic_ns,
+                    );
+                    tline!(ctx.terminal, "WASI process exited with code {}", code);
+                }
+                Err(e) => {
+                    let err_str = match e {
+                        crate::fs::FsError::FileNotFound => "file not found",
+                        _ => "read failed",
+                    };
+                    tline!(ctx.terminal, "wasm: {}: {}", path, err_str);
+                }
+            }
+        }
         "usb_info" => {
             use crate::drivers::usb_storage;
             let count = usb_storage::USB_DRIVE_COUNT.load(core::sync::atomic::Ordering::Relaxed);
