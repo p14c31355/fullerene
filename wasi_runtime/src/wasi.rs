@@ -226,7 +226,7 @@ pub fn fd_read(
                         break;
                     }
                     memory
-                        .write(&mut caller, (buf_ptr + iov_written) as usize, &temp_buf[..chunk_read])
+                        .write(&mut caller, buf_ptr as usize + iov_written as usize, &temp_buf[..chunk_read])
                         .map_err(|_| Error::new("fd_read: write failed"))?;
                     iov_written += chunk_read as u32;
                     total_read += chunk_read as u32;
