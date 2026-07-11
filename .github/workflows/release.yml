@@ -31,7 +31,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: nightly
-          targets: x86_64-unknown-uefi
+          targets: x86_64-unknown-uefi,wasm32-wasip1
 
       - name: Add rust-src component
         run: rustup component add rust-src --toolchain nightly
