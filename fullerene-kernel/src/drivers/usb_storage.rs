@@ -154,6 +154,13 @@ pub fn poll_usb_all() -> bool {
     use crate::driver_context_impl::KernelDriverContext;
     let mut ctx = USBContext::new(&KernelDriverContext);
     let _ = ctx.enable();
+    for i in 0..8 {
+        ctx.poll();
+        if !ctx.disks().is_empty() {
+            break;
+        }
+        nitrogen::timing::delay_ms(250);
+    }
     {
         let mut guard = USB_CTX.lock();
         *guard = Some(ctx);

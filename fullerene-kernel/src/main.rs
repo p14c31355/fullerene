@@ -1,5 +1,5 @@
-#![no_std]
-#![no_main]
+#![cfg_attr(any(target_os = "none", target_os = "uefi"), no_std)]
+#![cfg_attr(any(target_os = "none", target_os = "uefi"), no_main)]
 #![feature(abi_x86_interrupt)]
 #![cfg_attr(not(test), feature(alloc_error_handler))]
 #![allow(unused_features)]
@@ -147,13 +147,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-// ── Host-target panic handler (enables `cargo check` on Linux) ──
-#[cfg(not(any(target_os = "none", target_os = "uefi")))]
-#[panic_handler]
-fn panic_host(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
 petroleum::define_alloc_error_handler!();
 
 // Exported globals
@@ -202,3 +195,7 @@ pub mod task;
 pub mod linux;
 pub mod vdso;
 pub mod vfs;
+
+// ── Host-target main (enables `cargo check` on Linux) ──
+#[cfg(not(any(target_os = "none", target_os = "uefi")))]
+fn main() {}

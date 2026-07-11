@@ -459,6 +459,7 @@ impl Compositor {
         cw: u32,
         ch: u32,
     ) {
+        let border_active = crate::theme::current_colors().border_active;
         let ox = ov.x as i32;
         let oy = ov.y as i32;
         let ow = ov.width as i32;
@@ -478,7 +479,7 @@ impl Compositor {
                 // Border (1px)
                 let is_border = row == 0 || row == oh - 1 || col == 0 || col == ow - 1;
                 let color = if is_border {
-                    crate::theme::current_colors().border_active
+                    border_active
                 } else {
                     ov.color
                 };
@@ -494,6 +495,7 @@ impl Compositor {
             return;
         }
         let dc = draw_calls_last_frame();
+        let accent = crate::theme::current_colors().accent;
         // Inline formatting to avoid heap allocation
         let mut buf = [0u8; 32];
         let mut pos = 0usize;
@@ -517,7 +519,7 @@ impl Compositor {
                 for col in 0..8 {
                     let px = x + (i as u32) * 8 + col;
                     if px < fbw && py < _fbh && gl.pixel(row, col) {
-                        fb[(py * fbw + px) as usize] = crate::theme::current_colors().accent;
+                        fb[(py * fbw + px) as usize] = accent;
                     }
                 }
             }

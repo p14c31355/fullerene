@@ -243,7 +243,10 @@ pub fn fd_read(
         }
         _ => {
             for i in 0..iovs_len {
-                let base = iovs_ptr + i * 8;
+                let base = match iovs_ptr.checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?) {
+                    Some(b) => b,
+                    None => return Ok(EINVAL),
+                };
                 let buf_ptr = read_u32(&memory, &caller, base)?;
                 let buf_len = read_u32(&memory, &caller, base + 4)?;
                 let (to_read, current_offset) = {
@@ -318,11 +321,14 @@ pub fn fd_seek(
             _ => 0,
         }
     };
-    let new_offset: i64 = match whence {
-        WHENCE_SET => offset,
-        WHENCE_CUR => current_offset as i64 + offset,
-        WHENCE_END => file_len as i64 + offset,
+    let new_offset = match whence {
+        WHENCE_SET => Some(offset),
+        WHENCE_CUR => (current_offset as i64).checked_add(offset),
+        WHENCE_END => (file_len as i64).checked_add(offset),
         _ => return Ok(EINVAL),
+    };
+    let Some(new_offset) = new_offset else {
+        return Ok(EINVAL);
     };
     if new_offset < 0 {
         return Ok(EINVAL);
@@ -407,7 +413,10 @@ pub fn path_open(
     memory
         .read(&caller, path_ptr as usize, &mut path_buf)
         .map_err(|_| Error::new("path_open: read path failed"))?;
-    let path_str = str::from_utf8(&path_buf).map_err(|_| Error::new("path_open: invalid utf-8"))?;
+    let path_str = match str::from_utf8(&path_buf) {
+        Ok(s) => s,
+        Err(_) => return Ok(EINVAL),
+    };
     let clean = path_str.trim_matches('\0').trim_start_matches('/');
     let full_path = if clean.is_empty() { String::from("/") } else { alloc::format!("/{}", clean) };
     let data = {
@@ -446,7 +455,10 @@ pub fn path_filestat_get(
     memory
         .read(&caller, path_ptr as usize, &mut path_buf)
         .map_err(|_| Error::new("path_filestat_get: read path failed"))?;
-    let path_str = str::from_utf8(&path_buf).unwrap_or("");
+    let path_str = match str::from_utf8(&path_buf) {
+        Ok(s) => s,
+        Err(_) => return Ok(EINVAL),
+    };
     let clean = path_str.trim_matches('\0').trim_start_matches('/');
     let full_path = if clean.is_empty() { String::from("/") } else { alloc::format!("/{}", clean) };
     let size = {
@@ -660,65 +672,50 @@ pub fn random_get(
     buf_ptr: u32,
     buf_len: u32,
 ) -> Result<u32, Error> {
-    let mut temp_buf = [0u8; 128];
-    let mut offset = 0;
-    let memory = get_memory(&caller)?;
-    while offset < buf_len {
-        let chunk_len = (buf_len - offset).min(128) as usize;
-        let mut i = 0;
-        while i + 8 <= chunk_len {
-            let mut val: u64 = 0;
-            let mut success = false;
-            #[cfg(target_arch = "x86_64")]
-            {
-                let mut retries = 10;
-                while retries > 0 {
-                    if unsafe { core::arch::x86_64::_rdrand64_step(&mut val) } == 1 {
-                        success = true;
-                        break;
-                    }
-                    retries -= 1;
-                    core::hint::spin_loop();
-                }
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                return Err(Error::new("random_get: entropy not available on this architecture"));
-            }
-            if !success {
-                return Err(Error::new("random_get: entropy exhausted"));
-            }
-            temp_buf[i..i + 8].copy_from_slice(&val.to_le_bytes());
-            i += 8;
-        }
-        if i < chunk_len {
-            let mut val: u64 = 0;
-            let mut success = false;
-            #[cfg(target_arch = "x86_64")]
-            {
-                let mut retries = 10;
-                while retries > 0 {
-                    if unsafe { core::arch::x86_64::_rdrand64_step(&mut val) } == 1 {
-                        success = true;
-                        break;
-                    }
-                    retries -= 1;
-                    core::hint::spin_loop();
-                }
-            }
-            #[cfg(not(target_arch = "x86_64"))]
-            {
-                return Err(Error::new("random_get: entropy not available on this architecture"));
-            }
-            if !success {
-                return Err(Error::new("random_get: entropy exhausted"));
-            }
-            temp_buf[i..chunk_len].copy_from_slice(&val.to_le_bytes()[..chunk_len - i]);
-        }
-        memory
-            .write(&mut caller, buf_ptr as usize + offset as usize, &temp_buf[..chunk_len])
-            .map_err(|_| Error::new("random_get: write failed"))?;
-        offset += chunk_len as u32;
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (caller, buf_ptr, buf_len);
+        return Ok(ENOTSUP);
     }
-    Ok(ESUCCESS)
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: CPUID leaf 1 is always supported on x86_64.
+        let cpuid = unsafe { core::arch::x86_64::__cpuid(1) };
+        if (cpuid.ecx & (1 << 30)) == 0 {
+            return Ok(ENOTSUP);
+        }
+
+        let memory = get_memory(&caller)?;
+        let mut offset = 0;
+        while offset < buf_len {
+            let chunk_len = (buf_len - offset).min(128) as usize;
+            let mut temp_buf = [0u8; 128];
+            let mut i = 0;
+            while i < chunk_len {
+                let mut val: u64 = 0;
+                let mut retries = 10;
+                let mut success = false;
+                while retries > 0 {
+                    if unsafe { core::arch::x86_64::_rdrand64_step(&mut val) } == 1 {
+                        success = true;
+                        break;
+                    }
+                    retries -= 1;
+                    core::hint::spin_loop();
+                }
+                if !success {
+                    return Err(Error::new("random_get: entropy exhausted"));
+                }
+                let end = (i + 8).min(chunk_len);
+                temp_buf[i..end].copy_from_slice(&val.to_le_bytes()[..end - i]);
+                i = end;
+            }
+            memory
+                .write(&mut caller, (buf_ptr as usize) + (offset as usize), &temp_buf[..chunk_len])
+                .map_err(|_| Error::new("random_get: write failed"))?;
+            offset += chunk_len as u32;
+        }
+        Ok(ESUCCESS)
+    }
 }

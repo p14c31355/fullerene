@@ -87,10 +87,12 @@ pub fn init_initramfs() {
     let _ = crate::contexts::vfs::mkdir("/apps");
 
     // Embed the hello.wasm test binary (built at compile time by build.rs)
-    let _ = crate::fs::write_entire_file(
+    if let Err(e) = crate::fs::write_entire_file(
         "/apps/hello.wasm",
         include_bytes!(concat!(env!("OUT_DIR"), "/hello.wasm")),
-    );
+    ) {
+        log::warn!("Initramfs: failed to write /apps/hello.wasm: {:?}", e);
+    }
 
     // If a CPIO archive is embedded in the kernel, unpack it now.
     // This is the third layer of the storage stack foundation:

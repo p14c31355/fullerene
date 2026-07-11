@@ -577,7 +577,7 @@ pub fn tick_core(now: u64) {
         service.tick(now);
     }
     let mut registry = SERVICES.lock();
-    services.append(&mut registry);
+    services.append(&mut *registry);
     *registry = services;
 
     if now % 20 == 0 {
