@@ -4,7 +4,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 static TICKS_PER_US: AtomicU64 = AtomicU64::new(0);
 
-fn ticks_per_us() -> u64 {
+pub fn ticks_per_us() -> u64 {
     let cached = TICKS_PER_US.load(Ordering::Relaxed);
     if cached != 0 {
         return cached;

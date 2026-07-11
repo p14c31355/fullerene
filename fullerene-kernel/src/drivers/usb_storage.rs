@@ -36,28 +36,33 @@ pub struct UsbDrive {
 
 static USB_CTX: spin::Mutex<Option<USBContext>> = spin::Mutex::new(None);
 
-/// Busy-wait for approximately `ms` milliseconds using RDTSC.
-fn delay_ms(ms: u64) {
-    let start = unsafe { core::arch::x86_64::_rdtsc() };
-    let tsc_per_ms = solvent::get_tsc_per_ms();
-    let target = ms
-        * if tsc_per_ms > 0 {
-            tsc_per_ms
-        } else {
-            1_000_000
-        };
-    while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < target {
-        core::hint::spin_loop();
-    }
-}
+/// Reentrancy guard: set to `true` while `USB_CTX` is being accessed
+/// from within `with_ctx`.  When already inside, we use a stored raw
+/// pointer instead of re-acquiring the Mutex (preventing deadlock when
+/// the mount callback is invoked from the USB poll path).
+static USB_CTX_IN_USE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Raw pointer to the USB context, set once during init.
+/// Used for reentrant access when the Mutex is already held.
+static USB_CTX_PTR: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 pub(crate) fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&mut USBContext) -> R,
 {
+    // Reentrant path: use stored raw pointer (no lock).
+    if USB_CTX_IN_USE.load(core::sync::atomic::Ordering::Relaxed) {
+        let ptr = USB_CTX_PTR.load(core::sync::atomic::Ordering::Relaxed) as *mut USBContext;
+        let ctx = unsafe { &mut *ptr };
+        return f(ctx);
+    }
+    USB_CTX_IN_USE.store(true, core::sync::atomic::Ordering::Release);
     let mut guard = USB_CTX.lock();
     let ctx = guard.as_mut().expect("USB context not initialized");
-    f(ctx)
+    let result = f(ctx);
+    drop(guard);
+    USB_CTX_IN_USE.store(false, core::sync::atomic::Ordering::Release);
+    result
 }
 
 pub fn init() {
@@ -106,12 +111,16 @@ pub fn init() {
                 }
                 break;
             }
-            delay_ms(250);
+            nitrogen::timing::delay_ms(250);
         }
 
         let mut guard = USB_CTX.lock();
         *guard = Some(ctx);
-    }
+        // Store raw pointer for reentrant access from mount callback.
+        if let Some(ref ctx_ref) = *guard {
+            USB_CTX_PTR.store(ctx_ref as *const USBContext as usize, core::sync::atomic::Ordering::Relaxed);
+        }
+    } // closes the inner block
 
     // Quick check: if a device was already mounted, log it.
     if USB_DRIVE_COUNT.load(Ordering::Relaxed) > 0 {
