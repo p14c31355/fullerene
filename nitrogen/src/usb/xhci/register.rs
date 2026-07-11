@@ -639,8 +639,9 @@ mod tests {
             // ── Extended Capabilities at 0x3000 ─────────────
             // USB Legacy Support (ECID=1) → nothing (skip handoff)
             let ec_base = 0x3000usize;
-            mem[ec_base] = 2; // ECID = Supported Protocol
-            mem[ec_base + 1] = 0; // next = 0 (last)
+            // ECID=Supported Protocol, next=0, major revision=3.
+            let protocol_header = 2u32 | (3 << 24);
+            mem[ec_base..ec_base + 4].copy_from_slice(&protocol_header.to_le_bytes());
             // DWORD2 at offset 8: port_offset=1, port_count=n_ports
             let dw2 = 1u32 | (n_ports << 8) | (3u32 << 24); // USB 3.0
             mem[ec_base + 8..ec_base + 12].copy_from_slice(&dw2.to_le_bytes());
@@ -763,7 +764,8 @@ mod tests {
     #[test]
     fn test_parse_port_protocols() {
         let sim = SimHc::new(4);
-        let bitmap = parse_port_protocols(sim.base(), 0x3000, 4);
+        // xHCI XECP is expressed in DWORDs, not bytes.
+        let bitmap = parse_port_protocols(sim.base(), 0x3000 / 4, 4);
         assert!(!bitmap.is_empty());
         // All 4 ports should be USB 3.0
         assert_eq!(bitmap[0] & 0xF, 0xF);
@@ -782,21 +784,13 @@ mod tests {
         let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
         regs.update_portsc(0, PORTSC_PED, PORTSC_PP); // set PED, clear PP
 
-        // After update: PP cleared, PED set, RW1C bits should be PRESERVED (not cleared)
-        // because update_portsc masks them out during read to avoid accidental acknowledgment
+        // A memory-backed fake cannot emulate write-1-to-clear semantics. Verify
+        // that the value sent to hardware contains zero for every RW1C bit;
+        // real hardware therefore preserves the pending events.
         let val = regs.portsc(0).0;
         assert_eq!(val & PORTSC_PP, 0, "PP should be cleared");
         assert_ne!(val & PORTSC_PED, 0, "PED should be set");
-        assert_ne!(
-            val & PORTSC_CSC,
-            0,
-            "CSC should be preserved (not accidentally cleared)"
-        );
-        assert_ne!(
-            val & PORTSC_PEC,
-            0,
-            "PEC should be preserved (not accidentally cleared)"
-        );
+        assert_eq!(val & PORTSC_RW1C_MASK, 0, "RW1C events must not be acknowledged");
     }
 
     #[test]

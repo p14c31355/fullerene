@@ -35,7 +35,6 @@ pub use render::{cursor_save_background, render, set_render_progress_fn};
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
 
 use alloc::boxed::Box;
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
@@ -208,6 +207,8 @@ pub(crate) static SERVICES: spin::Mutex<Vec<Box<dyn Service>>> = spin::Mutex::ne
 pub fn register_service(service: Box<dyn Service>) {
     SERVICES.lock().push(service);
 }
+
+pub use network_manager::register_wifi_service;
 
 // ── WiFi action queue ────────────────────────────────────────
 #[allow(dead_code)]
@@ -570,9 +571,14 @@ pub fn tick_core(now: u64) {
     clock::update_clock();
     chrono_tick(now);
 
-    for service in SERVICES.lock().iter_mut() {
+    // Callbacks may acquire runtime locks or register another service.
+    let mut services = core::mem::take(&mut *SERVICES.lock());
+    for service in &mut services {
         service.tick(now);
     }
+    let mut registry = SERVICES.lock();
+    services.append(&mut registry);
+    *registry = services;
 
     if now % 20 == 0 {
         let snap = NETWORK_SNAPSHOT.lock();

@@ -86,6 +86,7 @@ pub fn probe_and_mount() -> bool {
         // Allow future retry on failure.
         SD_PROBED.store(false, Ordering::Release);
     }
+    let _ = crate::klog::flush_to_vfs();
     ok
 }
 

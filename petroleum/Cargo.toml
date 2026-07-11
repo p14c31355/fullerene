@@ -41,6 +41,3 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc"]
 name = "petroleum"
 path = "src/lib.rs"
 crate-type = ["lib"]
-
-[dev-dependencies]
-toluene = { path = "../toluene" }
