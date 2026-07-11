@@ -60,8 +60,8 @@ pub struct WasiCtx {
 impl WasiCtx {
     pub fn new(
         args: &[&str],
-        write_stdout: fn(&str),
-        write_stderr: fn(&str),
+        write_stdout: fn(&[u8]),
+        write_stderr: fn(&[u8]),
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
         read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
