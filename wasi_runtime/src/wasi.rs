@@ -623,7 +623,11 @@ pub fn args_get(
     let memory = get_memory(&caller)?;
     let mut buf_offset = argv_buf_ptr;
     for (i, arg) in args.iter().enumerate() {
-        write_u32(&memory, &mut caller, argv_ptr + (i as u32) * 4, buf_offset)?;
+        let addr = match argv_ptr.checked_add((i as u32).checked_mul(4).ok_or_else(|| Error::new("overflow"))?) {
+            Some(a) => a,
+            None => return Ok(EINVAL),
+        };
+        write_u32(&memory, &mut caller, addr, buf_offset)?;
         memory
             .write(&mut caller, buf_offset as usize, arg)
             .map_err(|_| Error::new("args_get: write failed"))?;
