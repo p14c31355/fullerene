@@ -48,6 +48,7 @@ heapless = { version = "0.9.2", default-features = false }
 paste = "1.0.15"
 log = { workspace = true }
 wasi_runtime = { path = "../wasi_runtime" }
+fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false, features = ["alloc", "lfn", "unicode"] }
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
 [features]
