@@ -1,6 +1,5 @@
 pub mod fat;
-pub mod sd_card;
-pub mod usb_storage;
+pub mod registry;
 pub mod virtio_gpu;
 
 /// Thin kernel wrapper around `nitrogen::storage::ahci`.

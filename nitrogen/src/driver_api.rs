@@ -72,7 +72,18 @@ pub trait Driver: Send {
     ///
     /// Return `(0xFFFF, 0xFFFF)` for a fallback driver that matches any
     /// device (the registry tries fallback drivers last).
-    fn pci_id(&self) -> (u16, u16);
+    fn pci_id(&self) -> (u16, u16) {
+        (0xFFFF, 0xFFFF)
+    }
+
+    /// PCI class/subclass this driver handles.
+    ///
+    /// Override this for generic drivers that match by device class
+    /// (e.g. AHCI = class 0x01/subclass 0x06) instead of vendor/device.
+    /// Return `None` to skip class‑based matching (default).
+    fn pci_class(&self) -> Option<(u8, u8)> {
+        None
+    }
 
     /// Probe a PCI device and return a type-erased driver instance.
     fn probe(&self, ctx: &dyn DriverContext, device: &PciDevice) -> DriverBox;
@@ -102,8 +113,10 @@ impl DriverRegistry {
 
     /// Match a PCI device against all registered drivers.
     ///
-    /// First pass: exact vendor/device match.
-    /// Second pass: fallback drivers (`0xFFFF, 0xFFFF`).
+    /// Three-pass strategy:
+    /// 1. Exact vendor/device match
+    /// 2. Class/subclass match (e.g. AHCI = 0x01/0x06)
+    /// 3. Fallback drivers (`0xFFFF, 0xFFFF`)
     pub fn match_device(
         &self,
         ctx: &dyn DriverContext,
@@ -118,6 +131,18 @@ impl DriverRegistry {
                 }
             }
         }
+        // Second pass: class/subclass match (e.g. AHCI = 0x01/0x06).
+        for (_name, driver) in &self.drivers {
+            if let Some((class, subclass)) = driver.pci_class() {
+                if class == device.class_code && subclass == device.subclass {
+                    let result = driver.probe(ctx, device);
+                    if !matches!(result, DriverBox::None) {
+                        return result;
+                    }
+                }
+            }
+        }
+        // Third pass: fallback drivers (0xFFFF, 0xFFFF).
         for (_name, driver) in &self.drivers {
             let (vid, did) = driver.pci_id();
             if vid == 0xFFFF && did == 0xFFFF {

@@ -180,6 +180,22 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::GraphicsReady);
             Ok(())
         }),
+        petroleum::init_step!("device_probe", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step start\n");
+            // Build the driver registry and probe every PCI device.
+            let registry = crate::drivers::registry::build_registry();
+            let ctx = &crate::driver_context_impl::KernelDriverContext;
+            let mut scanner = nitrogen::pci::PciScanner::new();
+            let _ = scanner.scan_all_buses();
+            for dev in scanner.get_devices() {
+                let _box = registry.match_device(ctx, dev);
+                // The driver pushed its controller into its own static
+                // list as a side‑effect — we don't keep the DriverBox
+                // at this level.
+            }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
+            Ok(())
+        }),
         petroleum::init_step!("PS2 Controller", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PS2 Controller step start\n");
             let devices = nitrogen::ps2::init_ps2_controller();
@@ -244,13 +260,13 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("usb_storage", || {
             crate::boot_stage::draw_boot_label(b"USB STORAGE");
-            crate::drivers::usb_storage::init();
+            // USB is now probed by the DriverRegistry during device_probe.
+            // This step is kept as a serial-log marker for boot progress.
             petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
             Ok(())
         }),
         petroleum::init_step!("sd_card", || {
             crate::boot_stage::draw_boot_label(b"SD CARD");
-            crate::drivers::sd_card::init();
             petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
             Ok(())
         }),

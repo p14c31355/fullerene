@@ -315,11 +315,11 @@ fn register_nozzle_hooks() {
     nozzle::sys_hooks::SD_MOUNT_HOOK
         .lock()
         .replace(|ctx: &mut nozzle::CommandContext| {
-            use crate::drivers::sd_card;
+            use crate::drivers::registry;
             ctx.terminal.write_str("sd_mount: hook called\n");
-            if sd_card::probe_and_mount() {
+            if registry::sd_probe_and_mount() {
                 ctx.terminal.write_str("sd_mount: OK\n");
-                let drives = sd_card::SD_DRIVES.lock();
+                let drives = registry::SD_DRIVES.lock();
                 for d in drives.iter() {
                     tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
                 }
@@ -517,17 +517,17 @@ fn register_nozzle_hooks() {
             }
         }
         "usb_info" => {
-            use crate::drivers::usb_storage;
-            let count = usb_storage::USB_DRIVE_COUNT.load(core::sync::atomic::Ordering::Relaxed);
+            use crate::drivers::registry;
+            let count = registry::USB_DRIVE_COUNT.load(core::sync::atomic::Ordering::Relaxed);
             tline!(ctx.terminal, "USB drives (global): {}", count);
             {
-                let drives = usb_storage::USB_DRIVES.lock();
+                let drives = registry::USB_DRIVES.lock();
                 for d in drives.iter() {
                     tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
                 }
             }
             // Also show full USB context status
-            usb_storage::with_ctx(|ctx_usb| {
+            registry::with_ctx(|ctx_usb| {
                 tline!(ctx.terminal, "USBContext: {} disk(s) registered", ctx_usb.disks().len());
                 for disk in ctx_usb.disks() {
                     tline!(ctx.terminal, "  ctrl={} dev_addr={} ep_out=0x{:02x} ep_in=0x{:02x} blk_size={} total_blocks={}",
