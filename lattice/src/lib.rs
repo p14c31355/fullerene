@@ -10,6 +10,7 @@ pub mod editor;
 pub mod font;
 pub mod menu;
 pub mod network_menu;
+pub mod painter;
 pub mod renderer;
 pub mod scene;
 pub mod shell_overlay;

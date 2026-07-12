@@ -2,6 +2,10 @@ use crate::cursor::Cursor;
 use crate::scene::{DirtyRect, OverlayRect, Scene};
 use crate::window::Window;
 
+/// Global window corner radius (0 = square, 8 = rounded).
+/// Set by the settings UI; read by the compositor.
+pub static WINDOW_CORNER_RADIUS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
+
 pub trait RenderTarget {
     fn buffer(&mut self) -> &mut [u32];
     fn dimensions(&self) -> (u32, u32);
@@ -617,6 +621,7 @@ impl Compositor {
 
     // ── Title bar drawing (with padding) ──────────────────
 
+    #[allow(unused_variables)]
     fn draw_title_bar(
         fb: &mut [u32],
         fbw: u32,
@@ -629,139 +634,47 @@ impl Compositor {
     ) {
         let title = win.title.as_ref().map(|t| t.as_str()).unwrap_or("");
         let colors = crate::theme::current_colors();
-        let bc = if win.focused {
-            colors.border_active
-        } else {
-            colors.border_inactive
-        };
-        let tc = if win.focused {
-            colors.title_active
-        } else {
-            colors.title_inactive
-        };
-        let ww = win.width + WINDOW_BORDER * 2;
-        let wh = win.height + TITLE_BAR_HEIGHT + WINDOW_BORDER * 2;
-        let cex = (cx + cw) as i32;
-        let cey = (cy + ch) as i32;
-        let fw = fbw as i32;
-        let fh = fbh as i32;
+        let mut p = crate::painter::Painter::new(fb, fbw, fbh);
+        let bw = WINDOW_BORDER as i32;
+        let ww = (win.width + WINDOW_BORDER * 2) as i32;
+        let wh = (win.height + TITLE_BAR_HEIGHT + WINDOW_BORDER * 2) as i32;
+        let radius = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
+        let wx = win.x - bw;
+        let wy = win.y - bw;
 
-        // Shadow
-        if let Some(sh) = &win.shadow_surface {
-            let shx = win.x + 2 - WINDOW_BORDER as i32;
-            let shy = win.y + 2 - WINDOW_BORDER as i32;
-            for sy in 0..sh.height() {
-                let da = shy + sy as i32;
-                if da < cy as i32 || da >= cey || da >= fh {
-                    continue;
-                }
-                for sx in 0..sh.width() {
-                    let dxa = shx + sx as i32;
-                    if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                        continue;
-                    }
-                    let sp = sh.get_pixel(sx, sy).unwrap_or(0);
-                    if sp & 0xFF000000 == 0 {
-                        continue;
-                    }
-                    let d = &mut fb[(da as usize) * (fbw as usize) + dxa as usize];
-                    let bg = *d;
-                    let a = ((sp >> 24) & 0xFF) as u32;
-                    let ia = 255 - a;
-                    let r = (((sp >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255;
-                    let g = (((sp >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255;
-                    let b = ((sp & 0xFF) * a + (bg & 0xFF) * ia) / 255;
-                    *d = (r << 16) | (g << 8) | b;
-                }
-            }
-        }
+        // Shadow via painter
+        p.draw_shadow(wx, wy, ww as u32, wh as u32, radius, 3, 6, 0x000000);
 
-        // Border
-        for row in 0..wh as i32 {
-            let da = win.y - WINDOW_BORDER as i32 + row;
-            if da < cy as i32 || da >= cey || da >= fh {
-                continue;
-            }
-            for col in 0..ww as i32 {
-                let dxa = win.x - WINDOW_BORDER as i32 + col;
-                if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                    continue;
-                }
-                if row < WINDOW_BORDER as i32
-                    || row >= wh as i32 - WINDOW_BORDER as i32
-                    || col < WINDOW_BORDER as i32
-                    || col >= ww as i32 - WINDOW_BORDER as i32
-                {
-                    fb[(da as usize) * (fbw as usize) + dxa as usize] = bc;
-                }
-            }
-        }
+        // Pre-fill corner squares with background so outside-the-arc pixels
+        // don't stay black.
+        let bg = colors.bg;
+        let r32 = radius as i32;
+        p.fill_rect(wx, wy, radius, radius, bg);
+        p.fill_rect(wx + ww as i32 - r32, wy, radius, radius, bg);
+        p.fill_rect(wx, wy + wh as i32 - r32, radius, radius, bg);
+        p.fill_rect(wx + ww as i32 - r32, wy + wh as i32 - r32, radius, radius, bg);
 
-        // Title bar bg
-        for row in 0..TITLE_BAR_HEIGHT as i32 {
-            let da = win.y + row;
-            if da < cy as i32 || da >= cey || da >= fh {
-                continue;
-            }
-            for col in 0..win.width as i32 {
-                let dxa = win.x + col;
-                if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                    continue;
-                }
-                fb[(da as usize) * (fbw as usize) + dxa as usize] = tc;
-            }
-        }
+        // Window body with rounded rect — 4 corners rounded
+        let border_col = if win.focused { colors.border_active } else { colors.border_inactive };
+        let title_col = if win.focused { colors.title_active } else { colors.title_inactive };
+        p.rounded_rect(wx, wy, ww as u32, wh as u32, radius, border_col);
 
-        // ── Title bar buttons (close / maximize / minimize) ──
-        // Use pre‑rendered cached textures for fast blitting.
+        // Title bar background — plain rect (no extra rounding; top corners
+        // already handled by the border rounded_rect).
+        p.fill_rect(win.x, win.y, win.width, TITLE_BAR_HEIGHT, title_col);
 
-        blit_button(
-            fb,
-            fbw,
-            &CLOSE_BUTTON_CACHE,
-            win.x + win.width as i32 - 18,
-            win.y + 3,
-        );
-        blit_button(
-            fb,
-            fbw,
-            &MAXIMIZE_BUTTON_CACHE,
-            win.x + win.width as i32 - 38,
-            win.y + 3,
-        );
-        blit_button(
-            fb,
-            fbw,
-            &MINIMIZE_BUTTON_CACHE,
-            win.x + win.width as i32 - 58,
-            win.y + 3,
-        );
+        // Separator line below title
+        let sep_y = win.y + TITLE_BAR_HEIGHT as i32;
+        p.fill_rect(win.x + r32, sep_y, win.width.saturating_sub(radius * 2), 1, border_col);
 
-        // Title text (with padding from left)
-        // Uses glyph_fast to avoid per-pixel Mutex lock on font lookup
-        let tx = win.x + WINDOW_PADDING as i32;
-        let ty = win.y + WINDOW_PADDING as i32;
-        for (i, ch) in title.bytes().enumerate() {
-            if ch < 32 || ch > 126 {
-                continue;
-            }
-            let gl = crate::font::glyph_fast(ch);
-            let gx = tx + (i as i32) * 8;
-            for row in 0..12 {
-                let da = ty + row;
-                if da < cy as i32 || da >= cey || da >= fh {
-                    continue;
-                }
-                for col in 0..8 {
-                    let dxa = gx + col;
-                    if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                        continue;
-                    }
-                    if gl.pixel(row as u32, col as u32) {
-                        fb[(da as usize) * (fbw as usize) + dxa as usize] = colors.text;
-                    }
-                }
-            }
-        }
+        // ── Title bar buttons ──
+        blit_button(p.fb, p.width, &CLOSE_BUTTON_CACHE, win.x + win.width as i32 - 18, win.y + 3);
+        blit_button(p.fb, p.width, &MAXIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 38, win.y + 3);
+        blit_button(p.fb, p.width, &MINIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 58, win.y + 3);
+
+        // Title text — try TTF first, fall back to bitmap
+        let tx = win.x + 4;
+        let ty = win.y + 3;
+        p.draw_text(tx, ty, title, colors.text, 13.0);
     }
 }

@@ -3,7 +3,7 @@
 //! Renders clickable icons on the desktop background layer,
 //! with labels and hit-testing for mouse events.
 
-use crate::compositor::COLOR_TEXT;
+use crate::painter::Painter;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -85,6 +85,7 @@ impl DesktopIconLayer {
     }
 
     /// Render all icons into the framebuffer, clipped to a dirty rect.
+    #[allow(unused_variables)]
     pub fn render(
         &self,
         fb: &mut [u32],
@@ -95,64 +96,17 @@ impl DesktopIconLayer {
         clip_w: u32,
         clip_h: u32,
     ) {
-        let fb_w = fb_width as usize;
-        let cex = (clip_x + clip_w) as i32;
-        let cey = (clip_y + clip_h) as i32;
-
+        let mut painter = Painter::new(fb, fb_width, fb_height);
         for icon in &self.icons {
-            // Draw icon box
-            for dy in 0..icon.size as i32 {
-                let py = icon.y + dy;
-                if py < clip_y as i32 || py >= cey || py >= fb_height as i32 {
-                    continue;
-                }
-                for dx in 0..icon.size as i32 {
-                    let px = icon.x + dx;
-                    if px < clip_x as i32 || px >= cex || px >= fb_width as i32 {
-                        continue;
-                    }
-                    let is_border = dy == 0
-                        || dy == icon.size as i32 - 1
-                        || dx == 0
-                        || dx == icon.size as i32 - 1;
-                    let color = if is_border {
-                        crate::compositor::COLOR_PRIMARY
-                    } else {
-                        icon.color
-                    };
-                    let idx = (py as usize) * fb_w + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = color;
-                    }
-                }
-            }
+            // Draw icon box with rounded corners
+            painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
+            // Thin border on the rounded rect
+            painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, crate::compositor::COLOR_PRIMARY);
 
-            // Draw label below the icon
-            let label_y = icon.y + icon.size as i32 + 2;
-            let label_x = icon.x + 2;
-            for (ci, ch) in icon.label.bytes().enumerate() {
-                if ch < 32 || ch > 126 {
-                    continue;
-                }
-                for gry in 0..12 {
-                    let py = label_y + gry;
-                    if py < 0 || py >= fb_height as i32 || py < clip_y as i32 || py >= cey {
-                        continue;
-                    }
-                    for grx in 0..8 {
-                        let px = label_x + (ci as i32) * 8 + grx;
-                        if px < 0 || px >= fb_width as i32 || px < clip_x as i32 || px >= cex {
-                            continue;
-                        }
-                        if crate::font::get_glyph_pixel(ch, gry as u32, grx as u32) {
-                            let idx = (py as usize) * fb_w + px as usize;
-                            if idx < fb.len() {
-                                fb[idx] = COLOR_TEXT;
-                            }
-                        }
-                    }
-                }
-            }
+            // Draw label below the icon using painter text
+            let lx = icon.x + 2;
+            let ly = icon.y + icon.size as i32 + 2;
+            painter.draw_text(lx, ly, &icon.label, crate::compositor::COLOR_TEXT, 11.0);
         }
     }
 }

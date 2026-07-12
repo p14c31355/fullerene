@@ -428,6 +428,10 @@ pub fn poll_keyboard() {
                 settings_bridge::settings_handle_key_inner(r, scancode, pressed);
                 continue;
             }
+            if top_id.is_some() && r.explorer.as_ref().and_then(|e| e.window_id) == top_id {
+                explorer_handle_key(r, scancode, pressed);
+                continue;
+            }
         }
         drop(rt);
         let key = scancode_to_resonance_keycode(scancode);
@@ -909,6 +913,59 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
     }
     rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
+}
+
+// ── Explorer keyboard handling ──────────────────────────────
+fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
+    if !pressed { return; }
+    let key = scancode_to_resonance_keycode(scancode);
+    let visible_rows = 20usize;
+    // Pre-compute enter action to avoid borrow conflicts.
+    let mut enter_action: Option<(String, bool)> = None;
+    match key {
+        resonance::KeyCode::Up => {
+            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            let n = explorer.entries.len();
+            let idx = explorer.selected_index.unwrap_or(n.saturating_sub(1));
+            explorer.selected_index = if idx == 0 { Some(n.saturating_sub(1)) } else { Some(idx - 1) };
+            if let Some(s) = explorer.selected_index { if s < explorer.scroll_offset { explorer.scroll_offset = s; } }
+            rt.explorer_dirty = true;
+            rt.frame_due = true;
+        }
+        resonance::KeyCode::Down => {
+            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            let n = explorer.entries.len();
+            let idx = explorer.selected_index.unwrap_or(0);
+            explorer.selected_index = if idx + 1 >= n { Some(0) } else { Some(idx + 1) };
+            if let Some(s) = explorer.selected_index {
+                if s >= explorer.scroll_offset + visible_rows { explorer.scroll_offset = s.saturating_sub(visible_rows - 1); }
+            }
+            rt.explorer_dirty = true;
+            rt.frame_due = true;
+        }
+        resonance::KeyCode::Enter => {
+            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            if let Some(idx) = explorer.selected_index {
+                let is_dir = explorer.raw_is_dir.get(idx).copied().unwrap_or(false);
+                let path = if explorer.current_dir.ends_with('/') {
+                    alloc::format!("{}{}", explorer.current_dir, explorer.raw_names[idx])
+                } else {
+                    alloc::format!("{}/{}", explorer.current_dir, explorer.raw_names[idx])
+                };
+                if is_dir {
+                    explorer.navigate_to(&path);
+                    rt.explorer_dirty = true;
+                    rt.frame_due = true;
+                } else {
+                    enter_action = Some((path, is_dir));
+                }
+            }
+        }
+        _ => {}
+    }
+    if let Some((path, false)) = enter_action {
+        launch_file(rt, &path);
+    }
 }
 
 // ── Shell bootstrap ──────────────────────────────────────────

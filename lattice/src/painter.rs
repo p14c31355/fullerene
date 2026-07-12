@@ -1,0 +1,185 @@
+//! Painter abstraction — the sole way to draw into a framebuffer.
+//!
+//! Provides clipped drawing primitives (rect, rounded rect, text, shadow,
+//! surface blit) so upper layers never touch raw pixels directly.
+
+use crate::font::{self, render_text_bitmap, render_text_ttf};
+use crate::theme::ThemeColors;
+use crate::surface::Surface;
+
+/// A software painter operating on a `u32` RGBA framebuffer.
+pub struct Painter<'a> {
+    pub fb: &'a mut [u32],
+    pub width: u32,
+    pub height: u32,
+}
+
+impl<'a> Painter<'a> {
+    pub fn new(fb: &'a mut [u32], width: u32, height: u32) -> Self {
+        Self { fb, width, height }
+    }
+
+    #[inline]
+    fn idx(&self, x: u32, y: u32) -> usize {
+        (y as usize) * (self.width as usize) + (x as usize)
+    }
+
+    /// Clip a rectangle to framebuffer bounds, returning `(x, y, w, h)` or `None`.
+    fn clip(&self, x: i32, y: i32, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+        let x = x.max(0) as u32;
+        let y = y.max(0) as u32;
+        let w = (w as u64).min((self.width as u64).saturating_sub(x as u64)) as u32;
+        let h = (h as u64).min((self.height as u64).saturating_sub(y as u64)) as u32;
+        if w == 0 || h == 0 { None } else { Some((x, y, w, h)) }
+    }
+
+    // ── Fill ─────────────────────────────────────────────────
+
+    /// Fill a rectangle with a solid colour.
+    pub fn fill_rect(&mut self, x: i32, y: i32, w: u32, h: u32, color: u32) {
+        let (cx, cy, cw, ch) = match self.clip(x, y, w, h) { Some(r) => r, None => return };
+        let w = self.width as usize;
+        for row in cy..cy + ch {
+            let start = (row as usize) * w + cx as usize;
+            let end = (row as usize) * w + (cx + cw) as usize;
+            self.fb[start..end].fill(color);
+        }
+    }
+
+    /// Fill a rounded rectangle.
+    pub fn rounded_rect(&mut self, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
+        if r == 0 { return self.fill_rect(x, y, w, h, color); }
+        let r = r.min(w / 2).min(h / 2) as i32;
+        // Fill center
+        self.fill_rect(x, y + r, w, h.saturating_sub(r as u32 * 2), color);
+        // Fill top/middle/bottom bars between corners
+        self.fill_rect(x + r, y, w.saturating_sub(r as u32 * 2), h, color);
+        // Four corners
+        for dy in 0..r {
+            for dx in 0..r {
+                if dx * dx + dy * dy <= r * r {
+                    self.set_pixel((x + w as i32 - r + dx - 1) as u32, (y + r - dy - 1) as u32, color);
+                    self.set_pixel((x + r - dx - 1) as u32, (y + r - dy - 1) as u32, color);
+                    self.set_pixel((x + w as i32 - r + dx - 1) as u32, (y + h as i32 - r + dy) as u32, color);
+                    self.set_pixel((x + r - dx - 1) as u32, (y + h as i32 - r + dy) as u32, color);
+                }
+            }
+        }
+    }
+
+    // ── Pixel ────────────────────────────────────────────────
+
+    #[inline]
+    pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
+        if x < self.width && y < self.height {
+            self.fb[self.idx(x, y)] = color;
+        }
+    }
+
+    #[inline]
+    pub fn get_pixel(&self, x: u32, y: u32) -> Option<u32> {
+        if x < self.width && y < self.height { Some(self.fb[self.idx(x, y)]) } else { None }
+    }
+
+    // ── Alpha-blend ──────────────────────────────────────────
+
+    /// Alpha-blend a source RGBA pixel over the destination.
+    pub fn blend_pixel(&mut self, x: u32, y: u32, src: u32) {
+        if x >= self.width || y >= self.height { return; }
+        let idx = self.idx(x, y);
+        let a = (src >> 24) & 0xFF;
+        if a == 255 { self.fb[idx] = src; return; }
+        if a == 0 { return; }
+        let bg = self.fb[idx];
+        let ia = 255 - a;
+        let r = (((src >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255;
+        let g = (((src >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255;
+        let b = ((src & 0xFF) * a + (bg & 0xFF) * ia) / 255;
+        self.fb[idx] = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
+    }
+
+    // ── Blit Surface ─────────────────────────────────────────
+
+    /// Copy a Surface onto the framebuffer at (dx, dy) with optional alpha blend.
+    pub fn blit_surface(&mut self, src: &Surface, dx: i32, dy: i32) {
+        let sw = src.width() as i32;
+        let sh = src.height() as i32;
+        let sx_s = 0i32.max(-dx);
+        let sy_s = 0i32.max(-dy);
+        let sx_e = sw.min(self.width as i32 - dx);
+        let sy_e = sh.min(self.height as i32 - dy);
+        if sx_s >= sx_e || sy_s >= sy_e { return; }
+        let ddx = (dx + sx_s) as u32;
+        let ddy = (dy + sy_s) as u32;
+        for row in sy_s..sy_e {
+            let src_row = &src.pixels()[(row as usize) * (sw as usize)..];
+            let dst_start = self.idx(ddx, ddy + (row - sy_s) as u32);
+            let dst_slice = &mut self.fb[dst_start..dst_start + (sx_e - sx_s) as usize];
+            for (i, &p) in src_row[sx_s as usize..sx_e as usize].iter().enumerate() {
+                dst_slice[i] = p;
+            }
+        }
+    }
+
+    // ── Shadow ───────────────────────────────────────────────
+
+    /// Draw a drop shadow for a rounded rectangle.
+    pub fn draw_shadow(&mut self, x: i32, y: i32, w: u32, h: u32, _radius: u32, offset: i32, blur: u32, color: u32) {
+        let sx = x + offset;
+        let sy = y + offset;
+        // Simple 1-pass box blur approximation: expand the rect and alpha-fade the edges.
+        let b = blur as i32;
+        let sw = w as i32 + b * 2;
+        let sh = h as i32 + b * 2;
+        let s_area = (sw * sh) as u64;
+        if s_area > self.width as u64 * self.height as u64 * 2 { return; }
+        for dy in 0..sh {
+            let ay = sy - b + dy;
+            if ay < 0 || ay >= self.height as i32 { continue; }
+            let y_dist = if dy < b { b - dy } else if dy >= sh - b { dy - (sh - b) + 1 } else { 0 };
+            for dx in 0..sw {
+                let ax = sx - b + dx;
+                if ax < 0 || ax >= self.width as i32 { continue; }
+                let x_dist = if dx < b { b - dx } else if dx >= sw - b { dx - (sw - b) + 1 } else { 0 };
+                let dist = x_dist.max(y_dist) as u32;
+                if dist >= blur { continue; }
+                let alpha = ((blur - dist) * 64).min(255);
+                if alpha > 0 {
+                    let src_c = (color & 0x00FF_FFFF) | (alpha << 24);
+                    self.blend_pixel(ax as u32, ay as u32, src_c);
+                }
+            }
+        }
+    }
+
+    // ── Text ─────────────────────────────────────────────────
+
+    /// Draw text using TTF-based antialiased rendering (falls back to bitmap).
+    pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: u32, size: f32) {
+        let ttf = font::get_ttf_font();
+        if let Some(font) = ttf {
+            let _ = render_text_ttf(self.fb, self.width, self.height, x, y, text, color, size, font);
+        } else {
+            render_text_bitmap(self.fb, self.width, self.height, x, y, text, color);
+        }
+    }
+
+    /// Draw text using the legacy bitmap font (always works, no TTF needed).
+    pub fn draw_text_bitmap(&mut self, x: i32, y: i32, text: &str, color: u32) {
+        render_text_bitmap(self.fb, self.width, self.height, x, y, text, color);
+    }
+
+    // ── Window border helpers ────────────────────────────────
+
+    /// Draw a window border with rounded corners.
+    pub fn draw_window_border(&mut self, x: i32, y: i32, w: u32, h: u32, radius: u32, title_h: u32, active: bool, theme: &ThemeColors) {
+        let border_color = if active { theme.border_active } else { theme.border_inactive };
+        let title_color = if active { theme.title_active } else { theme.title_inactive };
+        // Title bar background (rounded top)
+        self.rounded_rect(x, y, w, title_h + 2, radius, title_color);
+        // Bottom body background (to cover the rounded corner gap)
+        self.fill_rect(x, y + radius as i32, w, h - radius, border_color);
+        // Thin border line
+        self.fill_rect(x, y + title_h as i32 + 2, w, 1, border_color);
+    }
+}

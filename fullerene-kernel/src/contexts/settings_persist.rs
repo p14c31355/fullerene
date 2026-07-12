@@ -93,6 +93,7 @@ pub fn load_settings(
     let mut sensitivity: f32 = 1.0;
     let mut brightness: f32 = 1.0;
     let mut top_panel: bool = true;
+    let mut window_corner: bool = true; // rounded by default
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -120,17 +121,23 @@ pub fn load_settings(
                         top_panel = v;
                     }
                 }
+                (Some("display"), "window_corner") => {
+                    if let Some(v) = parse_bool(value) {
+                        window_corner = v;
+                    }
+                }
                 _ => {}
             }
         }
     }
 
+    lattice::compositor::WINDOW_CORNER_RADIUS.store(if window_corner { 8 } else { 0 }, core::sync::atomic::Ordering::Relaxed);
     let bright_x100 = (brightness.clamp(0.1, 1.0) * 100.0) as u32;
     (sensitivity.clamp(0.25, 4.0), bright_x100, top_panel)
 }
 
 /// Build a TOML string from current settings.
-pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: bool) -> String {
+pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: bool, corner_rounded: bool) -> String {
     alloc::format!(
         "# Fullerene Settings\n\
          # Auto-generated — do not edit while the system is running\n\
@@ -141,9 +148,11 @@ pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: b
          \n\
          [display]\n\
          brightness = {:.2}\n\
-         top_panel_enabled = {}\n",
+         top_panel_enabled = {}\n\
+         window_corner = {}\n",
         sensitivity,
         brightness_x100 as f32 / 100.0,
         top_panel,
+        corner_rounded,
     )
 }

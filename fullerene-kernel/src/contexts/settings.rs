@@ -84,6 +84,11 @@ impl MouseSettings {
     }
 }
 
+// ── Window corner style ─────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowCorner { Square, Rounded }
+
 // ── Display settings ──────────────────────────────────────────
 
 #[derive(Debug)]
@@ -93,14 +98,30 @@ pub struct DisplaySettings {
     brightness_x100: AtomicU32,
     /// Whether the GNOME-style top panel is visible.
     top_panel_enabled: AtomicU32, // 0 = off, 1 = on
+    /// Window corner style: 0 = square, 1 = rounded.
+    window_corner: AtomicU32,
 }
 
 impl DisplaySettings {
     pub const fn new() -> Self {
         Self {
-            brightness_x100: AtomicU32::new(100), // 1.0
-            top_panel_enabled: AtomicU32::new(1), // on by default
+            brightness_x100: AtomicU32::new(100),
+            top_panel_enabled: AtomicU32::new(1),
+            window_corner: AtomicU32::new(1), // rounded by default
         }
+    }
+
+    pub fn window_corner(&self) -> WindowCorner {
+        if self.window_corner.load(Ordering::Relaxed) == 0 { WindowCorner::Square } else { WindowCorner::Rounded }
+    }
+
+    pub fn set_window_corner(&self, style: WindowCorner) {
+        self.window_corner.store(match style { WindowCorner::Square => 0, WindowCorner::Rounded => 1 }, Ordering::Relaxed);
+    }
+
+    pub fn toggle_corner(&self) -> WindowCorner {
+        let prev = self.window_corner.fetch_xor(1, Ordering::Relaxed);
+        if prev == 0 { WindowCorner::Rounded } else { WindowCorner::Square }
     }
 
     /// Get brightness as f32 (0.1 .. 1.0).

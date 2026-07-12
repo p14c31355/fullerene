@@ -1,18 +1,8 @@
-//! 8×16 fixed‑width bitmap font with PSF2 loader and Unicode fallback.
+//! Font rendering — 8×16 bitmap fallback + optional ab_glyph TrueType.
 //!
-//! Three font sources are supported:
-//!
-//! 1. **Embedded font** — compiled into the kernel via `build.rs`
-//!    (95 glyphs, 8×16, 1520 bytes).  Always available.
-//!
-//! 2. **PSF2 font** — loaded at runtime from a PSF2 file.  Supports
-//!    up to 65535 glyphs (including Unicode mapping table).  When
-//!    loaded, replaces the embedded font for rendering.
-//!
-//! 3. **Fallback chain** — when a glyph is not found in the active font
-//!    (e.g. Unicode codepoints beyond ASCII), the system renders a
-//!    replacement glyph (full block, hollow square, or '?' depending on
-//!    the codepoint).
+//! When a TTF font is available (downloaded at build time), text is
+//! rendered with grayscale antialiasing.  Otherwise the classic 8×16
+//! VGA bitmap font is used as fallback.
 //!
 //! # PSF2 Header (32 bytes)
 //!
@@ -353,4 +343,71 @@ pub fn render_text(
             }
         }
     }
+}
+
+/// Convenience wrapper: bitmap text at (x, y) with 12px glyph height.
+pub fn render_text_bitmap(
+    fb: &mut [u32], fb_width: u32, fb_height: u32,
+    x: i32, y: i32, text: &str, color: u32,
+) {
+    if y < 0 || y as u32 + 12 >= fb_height { return; }
+    render_text(fb, fb_width, fb_height, x.max(0) as u32, y as u32, text.as_bytes(), color, 12);
+}
+
+// ── TrueType font support (ab_glyph) ──────────────────────────
+
+use ab_glyph::{FontArc, PxScale, point};
+use ab_glyph::Font as _;
+use ab_glyph::ScaleFont as _;
+use spin::once::Once;
+
+static TTF_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LiberationSans-Regular.ttf"));
+
+static TTF_FONT: Once<Option<FontArc>> = Once::new();
+
+/// Try to get the loaded TTF font, or `None` if unavailable.
+pub fn get_ttf_font() -> Option<&'static FontArc> {
+    TTF_FONT.call_once(|| FontArc::try_from_slice(TTF_DATA).ok());
+    TTF_FONT.get().unwrap().as_ref()
+}
+
+/// Render text using the TTF font with grayscale antialiasing.
+pub fn render_text_ttf(
+    fb: &mut [u32], fb_width: u32, fb_height: u32,
+    x: i32, y: i32, text: &str, color: u32, size: f32,
+    font: &FontArc,
+) -> Result<(), ()> {
+    let scale = PxScale { x: size, y: size };
+    let sf = font.as_scaled(scale);
+    let mut px = x as f32;
+    let base_y = y as f32 + size * 0.85;
+    for ch in text.chars() {
+        if ch == ' ' { px += size * 0.35; continue; }
+        let gid = sf.glyph_id(ch);
+        let glyph = gid.with_scale_and_position(scale, point(px, base_y));
+        if let Some(outline) = sf.outline_glyph(glyph) {
+            let bounds = outline.px_bounds();
+            let ox = bounds.min.x as i32;
+            let oy = bounds.min.y as i32;
+            outline.draw(|dx, dy, coverage| {
+                let bx = ox + dx as i32;
+                let by = oy + dy as i32;
+                if bx < 0 || by < 0 || bx as u32 >= fb_width || by as u32 >= fb_height { return; }
+                let ca = (coverage * 255.0) as u32;
+                if ca == 0 { return; }
+                let idx = (by as usize) * (fb_width as usize) + (bx as usize);
+                if ca >= 255 { fb[idx] = color; return; }
+                let bg = fb[idx];
+                let ia = 255 - ca;
+                let r = (((color >> 16) & 0xFF) * ca + ((bg >> 16) & 0xFF) * ia) / 255;
+                let g = (((color >> 8) & 0xFF) * ca + ((bg >> 8) & 0xFF) * ia) / 255;
+                let b = ((color & 0xFF) * ca + (bg & 0xFF) * ia) / 255;
+                fb[idx] = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
+            });
+            px += sf.h_advance(gid);
+        } else {
+            px += size * 0.5;
+        }
+    }
+    Ok(())
 }
