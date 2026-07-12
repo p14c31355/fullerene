@@ -123,29 +123,30 @@ impl<'a> Painter<'a> {
 
     // ── Shadow ───────────────────────────────────────────────
 
-    /// Draw a drop shadow for a rounded rectangle.
+    /// Draw a drop shadow with smooth quadratic falloff (no FP).
     pub fn draw_shadow(&mut self, x: i32, y: i32, w: u32, h: u32, _radius: u32, offset: i32, blur: u32, color: u32) {
         let sx = x + offset;
         let sy = y + offset;
-        // Simple 1-pass box blur approximation: expand the rect and alpha-fade the edges.
         let b = blur as i32;
         let sw = w as i32 + b * 2;
         let sh = h as i32 + b * 2;
-        let s_area = (sw * sh) as u64;
-        if s_area > self.width as u64 * self.height as u64 * 2 { return; }
+        if (sw as u64) * (sh as u64) > self.width as u64 * self.height as u64 * 2 { return; }
+        let b_sq = (blur * blur) as u64;
+        let max_alpha = 70u32;
         for dy in 0..sh {
             let ay = sy - b + dy;
             if ay < 0 || ay >= self.height as i32 { continue; }
-            let y_dist = if dy < b { b - dy } else if dy >= sh - b { dy - (sh - b) + 1 } else { 0 };
+            let yd = if dy < b { (b - dy) as u64 } else if dy >= sh - b { (dy - (sh - b) + 1) as u64 } else { 0 };
             for dx in 0..sw {
                 let ax = sx - b + dx;
                 if ax < 0 || ax >= self.width as i32 { continue; }
-                let x_dist = if dx < b { b - dx } else if dx >= sw - b { dx - (sw - b) + 1 } else { 0 };
-                let dist = x_dist.max(y_dist) as u32;
-                if dist >= blur { continue; }
-                let alpha = ((blur - dist) * 64).min(255);
+                let xd = if dx < b { (b - dx) as u64 } else if dx >= sw - b { (dx - (sw - b) + 1) as u64 } else { 0 };
+                let dist_sq = xd * xd + yd * yd;
+                if dist_sq >= b_sq { continue; }
+                // Quadratic falloff: max alpha at center, 0 at edge
+                let alpha = if b_sq == 0 { max_alpha as u64 } else { (max_alpha as u64 * (b_sq - dist_sq)) / b_sq };
                 if alpha > 0 {
-                    let src_c = (color & 0x00FF_FFFF) | (alpha << 24);
+                    let src_c = (color & 0x00FF_FFFF) | ((alpha as u32) << 24);
                     self.blend_pixel(ax as u32, ay as u32, src_c);
                 }
             }

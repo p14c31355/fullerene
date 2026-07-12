@@ -232,6 +232,11 @@ fn handle_overlay_event(rt: &mut crate::RuntimeState, event: &Event) -> bool {
         Event::Input(InputEvent::MouseMove { x, y }) => {
             rt.desktop.mouse_move(*x, *y);
             rt.frame_due = true;
+            // During overlay mode, mark cursor-only so the render pass
+            // skips the full compositor/overlay re-render.
+            if rt.shell_state != lattice::shell_overlay::ShellState::Desktop {
+                rt.cursor_only_update = true;
+            }
             true
         }
         Event::Input(InputEvent::MouseDown(_))
