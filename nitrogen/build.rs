@@ -41,12 +41,15 @@ fn main() {
     //
     // Also declare all possible cfg names so nightly rustc doesn't warn.
 
-    // Declare all possible cfg names up front.
-    for name in &[
+    // Shared list of known driver modules (must match lib.rs gated modules).
+    let known_drivers = &[
         "audio", "framebuffer", "hda", "ioapic", "iommu",
         "iwlwifi", "pic", "ps2", "storage", "timing",
         "usb", "virtio", "wifi",
-    ] {
+    ];
+
+    // Declare all possible cfg names up front.
+    for name in known_drivers {
         println!("cargo::rustc-check-cfg=cfg(nitrogen_no_{})", name);
     }
 
@@ -55,6 +58,12 @@ fn main() {
         let clean: String = mod_name.chars()
             .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
             .collect();
+
+        // Validate against known driver list.
+        if !known_drivers.contains(&clean.as_str()) {
+            eprintln!("cargo:warning=.driverignore: unknown module '{}' (will be ignored)", mod_name);
+        }
+
         println!("cargo:rustc-cfg=nitrogen_no_{}", clean);
     }
 

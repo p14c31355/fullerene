@@ -85,11 +85,22 @@ pub fn init() {
         vfs_write: Some(|path, data| {
             // Open existing file, write, close
             let fd = crate::contexts::vfs::open(path, 0).map_err(fs_err_str)?;
-            crate::contexts::vfs::write(fd.fd, data).map_err(fs_err_str)?;
+            match crate::contexts::vfs::write(fd.fd, data) {
+                Ok(_) => {
+                    let _ = crate::contexts::vfs::close(fd.fd);
+                    Ok(())
+                }
+                Err(e) => {
+                    let _ = crate::contexts::vfs::close(fd.fd);
+                    Err(fs_err_str(e))
+                }
+            }
+        }),
+        vfs_create: Some(|path| {
+            let fd = crate::contexts::vfs::create(path).map_err(fs_err_str)?;
             let _ = crate::contexts::vfs::close(fd.fd);
             Ok(())
         }),
-        vfs_create: Some(|path| crate::contexts::vfs::create(path).map(|_| ()).map_err(fs_err_str)),
         vfs_mkdir: Some(|path| crate::contexts::vfs::mkdir(path).map_err(fs_err_str)),
         vfs_unlink: Some(|path| crate::contexts::vfs::unlink(path).map_err(fs_err_str)),
         process_list: Some(|| {

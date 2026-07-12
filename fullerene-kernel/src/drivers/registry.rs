@@ -31,21 +31,27 @@ pub use nitrogen::driver_api::DriverRegistry;
 
 // ── USB storage state (formerly drivers/usb_storage.rs) ────
 
+#[cfg(not(nitrogen_no_usb))]
 pub static USB_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(nitrogen_no_usb))]
 pub static USB_DRIVES: Mutex<Vec<UsbDrive>> = Mutex::new(Vec::new());
 
+// Shared USB context static used by all USB access paths
+#[cfg(not(nitrogen_no_usb))]
+static USB_CTX: Mutex<Option<nitrogen::usb::context::USBContext>> = Mutex::new(None);
+
+#[cfg(not(nitrogen_no_usb))]
 pub struct UsbDrive {
     pub name: String,
     pub mount_point: String,
 }
 
 /// Access the USB controller context.  Panics if not initialised.
+#[cfg(not(nitrogen_no_usb))]
 pub fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&mut nitrogen::usb::context::USBContext) -> R,
 {
-    use nitrogen::usb::context::USBContext;
-    static USB_CTX: Mutex<Option<USBContext>> = Mutex::new(None);
     let mut guard = USB_CTX.lock();
     let ctx = guard.as_mut().expect("USB context not initialized");
     f(ctx)
@@ -53,10 +59,14 @@ where
 
 // ── SD card state (formerly drivers/sd_card.rs) ────────────
 
+#[cfg(not(nitrogen_no_storage))]
 pub static SD_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(nitrogen_no_storage))]
 pub static SD_DRIVES: Mutex<Vec<SdDrive>> = Mutex::new(Vec::new());
+#[cfg(not(nitrogen_no_storage))]
 pub static SD_PROBED: AtomicBool = AtomicBool::new(false);
 
+#[cfg(not(nitrogen_no_storage))]
 pub struct SdDrive {
     pub name: String,
     pub mount_point: String,
@@ -68,8 +78,10 @@ pub struct SdDrive {
 
 // -- AHCI ----------------------------------------------------
 
+#[cfg(not(nitrogen_no_storage))]
 pub struct AhciDriver;
 
+#[cfg(not(nitrogen_no_storage))]
 impl Driver for AhciDriver {
     fn pci_class(&self) -> Option<(u8, u8)> {
         Some((0x01, 0x06)) // mass-storage, SATA (AHCI)
@@ -82,8 +94,10 @@ impl Driver for AhciDriver {
 
 // -- NVMe ----------------------------------------------------
 
+#[cfg(not(nitrogen_no_storage))]
 pub struct NvmeDriver;
 
+#[cfg(not(nitrogen_no_storage))]
 impl Driver for NvmeDriver {
     fn pci_class(&self) -> Option<(u8, u8)> {
         Some((0x01, 0x08)) // mass-storage, NVM Express
@@ -96,8 +110,10 @@ impl Driver for NvmeDriver {
 
 // -- USB storage (formerly usb_storage::init) -----------------
 
+#[cfg(not(nitrogen_no_usb))]
 pub struct UsbStorageDriver;
 
+#[cfg(not(nitrogen_no_usb))]
 impl Driver for UsbStorageDriver {
     fn pci_class(&self) -> Option<(u8, u8)> {
         Some((0x0C, 0x03)) // USB host controller
@@ -118,16 +134,17 @@ impl Driver for UsbStorageDriver {
 }
 
 /// Initialise the USB driver (probe phase — called from Driver).
+#[cfg(not(nitrogen_no_usb))]
 pub(crate) fn init_usb_ctx(ctx: nitrogen::usb::context::USBContext) {
-    use nitrogen::usb::context::USBContext;
-    static USB_CTX: Mutex<Option<USBContext>> = Mutex::new(None);
     *USB_CTX.lock() = Some(ctx);
 }
 
 // -- SD card (formerly sd_card::init) -------------------------
 
+#[cfg(not(nitrogen_no_storage))]
 pub struct SdCardDriver;
 
+#[cfg(not(nitrogen_no_storage))]
 impl Driver for SdCardDriver {
     fn pci_class(&self) -> Option<(u8, u8)> {
         Some((0xFF, 0x00)) // vendor-specific (RTSX)
@@ -152,10 +169,14 @@ impl Driver for SdCardDriver {
 /// Populate the `DriverRegistry` with every available driver.
 pub fn build_registry() -> DriverRegistry {
     let mut reg = DriverRegistry::new();
-    reg.register("ahci", Box::new(AhciDriver));
-    reg.register("nvme", Box::new(NvmeDriver));
+    #[cfg(not(nitrogen_no_storage))]
+    {
+        reg.register("ahci", Box::new(AhciDriver));
+        reg.register("nvme", Box::new(NvmeDriver));
+        reg.register("sd_card", Box::new(SdCardDriver));
+    }
+    #[cfg(not(nitrogen_no_usb))]
     reg.register("usb_storage", Box::new(UsbStorageDriver));
-    reg.register("sd_card", Box::new(SdCardDriver));
     // Future: virtio_gpu, iwlwifi, hda, …
     reg
 }
@@ -164,10 +185,12 @@ pub fn build_registry() -> DriverRegistry {
 //  USB polling
 // ────────────────────────────────────────────────────────────
 
+#[cfg(not(nitrogen_no_usb))]
 /// Mount retry backoff state keyed by mount point.
 static MOUNT_RETRY_STATE: Mutex<BTreeMap<String, MountRetryState>> =
     Mutex::new(BTreeMap::new());
 
+#[cfg(not(nitrogen_no_usb))]
 struct MountRetryState {
     failure_count: usize,
     next_retry_tick: u64,
@@ -175,6 +198,7 @@ struct MountRetryState {
 
 /// Poll USB controller once and mount newly-discovered devices.
 /// Returns `true` if a new drive was mounted.
+#[cfg(not(nitrogen_no_usb))]
 pub fn poll_usb() -> bool {
     let before = USB_DRIVE_COUNT.load(Ordering::Relaxed);
     {
@@ -192,6 +216,7 @@ pub fn poll_usb() -> bool {
 }
 
 /// Full USB re-enumeration (clear + re-scan).
+#[cfg(not(nitrogen_no_usb))]
 fn usb_poll_and_mount() {
     // Delay-polls for devices (same as original init).
     use core::sync::atomic::Ordering;
@@ -225,6 +250,7 @@ fn usb_poll_and_mount() {
 }
 
 /// Re-poll all controllers from scratch.
+#[cfg(not(nitrogen_no_usb))]
 pub fn poll_usb_all() -> bool {
     // Unmount existing drives.
     let mps: Vec<String> = USB_DRIVES
@@ -250,13 +276,13 @@ pub fn poll_usb_all() -> bool {
 }
 
 /// Access the inner USB context static for poll operations.
+#[cfg(not(nitrogen_no_usb))]
 fn with_ctx_inner() -> spin::MutexGuard<'static, Option<nitrogen::usb::context::USBContext>> {
-    use nitrogen::usb::context::USBContext;
-    static USB_CTX: Mutex<Option<USBContext>> = Mutex::new(None);
     USB_CTX.lock()
 }
 
 /// Mount newly enumerated USB candidates after releasing the controller lock.
+#[cfg(not(nitrogen_no_usb))]
 fn mount_pending() {
     let current_tick = solvent::GLOBAL_TICK.load(Ordering::Relaxed);
     let mounted: Vec<String> = USB_DRIVES.lock().iter().map(|d| d.mount_point.clone()).collect();
@@ -298,6 +324,7 @@ fn mount_pending() {
 
 // ── Platform FAT-mount callback ─────────────────────────────
 
+#[cfg(not(nitrogen_no_usb))]
 fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
     let ctrl_type = disk.ctrl_type;
     let ctrl_idx = disk.ctrl_idx;
@@ -423,6 +450,7 @@ fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
 // ────────────────────────────────────────────────────────────
 
 /// Probe & mount an SD card (called from the `sd_mount` shell command).
+#[cfg(not(nitrogen_no_storage))]
 pub fn sd_probe_and_mount() -> bool {
     if SD_PROBED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -440,6 +468,7 @@ pub fn sd_probe_and_mount() -> bool {
     ok
 }
 
+#[cfg(not(nitrogen_no_storage))]
 fn sd_probe_and_mount_impl() -> bool {
     if !nitrogen::storage::rtsx::is_present() {
         crate::klog_fmt!("SD card: no controller\n");
@@ -502,13 +531,16 @@ fn sd_probe_and_mount_impl() -> bool {
     }
 }
 
+#[cfg(not(nitrogen_no_storage))]
 struct SdBlockDev {
     block_size: u32,
     total_blocks: u64,
 }
 
+#[cfg(not(nitrogen_no_storage))]
 unsafe impl Send for SdBlockDev {}
 
+#[cfg(not(nitrogen_no_storage))]
 impl crate::drivers::fat::BlockDevice for SdBlockDev {
     fn read_sectors(
         &mut self,
@@ -544,6 +576,9 @@ impl crate::drivers::fat::BlockDevice for SdBlockDev {
 /// driver reported a state change.
 pub fn poll_all(_registry: &DriverRegistry) -> bool {
     let mut changed = false;
-    changed |= poll_usb();
+    #[cfg(not(nitrogen_no_usb))]
+    {
+        changed |= poll_usb();
+    }
     changed
 }

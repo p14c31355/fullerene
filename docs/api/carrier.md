@@ -27,9 +27,9 @@ pub trait Terminal {
 
 ## 2. パイプ機構
 
-`carrier::pipeline` モジュール:
+`Terminal` trait methods:
 
-| 関数 | 役割 |
+| メソッド | 役割 |
 |---|---|
 | `arm_pipe_stdout()` | パイプ stdout を有効化 |
 | `take_stdout()` | パイプバッファを取得 |
@@ -42,7 +42,7 @@ pub trait Terminal {
 `carrier::exec` モジュール:
 
 ```rust
-pub fn dispatch(input: &str, ctx: &mut CommandContext, term: &mut dyn Terminal);
+pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool;
 ```
 
 最終パイプステージはバッファリングなしで直接terminalに書き込む (ストリーミング dispatch)。

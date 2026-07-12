@@ -28,10 +28,11 @@ pub trait DriverContext: Send + Sync {
 ```
 
 **関連型**:
+
 | 型 | 役割 |
 |---|---|
-| `DriverContextError` | OutOfMemory / MmioMappingFailed / InvalidArgument |
-| `PageFlags` | writable / write_combining / executable の3フラグ |
+| `nitrogen::driver_context::DriverContextError` | OutOfMemory / MmioMappingFailed / InvalidArgument |
+| `nitrogen::driver_context::PageFlags` | writable / write_combining / executable の3フラグ |
 
 **実装 (kernel側)**: `fullerene-kernel/src/driver_context_impl.rs` — `KernelDriverContext`
 
@@ -152,7 +153,7 @@ pub trait Driver: Send {
     fn pci_id(&self) -> (u16, u16);
 
     /// Probe a PCI device and return a type‑erased driver instance.
-    fn probe(&self, ctx: &dyn DriverContext, device: &PciDevice) -> DriverBox;
+    fn probe(&self, ctx: &dyn DriverContext, device: &nitrogen::pci::PciDevice) -> DriverBox;
 }
 ```
 
@@ -170,7 +171,7 @@ pub struct DriverRegistry { /* ... */ }
 impl DriverRegistry {
     pub fn new() -> Self;
     pub fn register(&mut self, name: &'static str, driver: Box<dyn Driver>);
-    pub fn match_device(&self, device: &PciDevice) -> DriverBox;
+    pub fn match_device(&self, ctx: &dyn DriverContext, device: &nitrogen::pci::PciDevice) -> DriverBox;
     pub fn iter(&self) -> impl Iterator<Item = &'static str>;
 }
 ```

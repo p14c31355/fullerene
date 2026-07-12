@@ -64,7 +64,7 @@
 
 ### Process
 
-`fullerene-kernel::process::Process`
+`crate::process::Process`
 
 ```rust
 pub struct Process {
@@ -79,7 +79,7 @@ pub struct Process {
 
 ### SchedulerContext
 
-`fullerene-kernel::scheduler_context::SchedulerContext`
+`crate::scheduler_context::SchedulerContext`
 
 ```rust
 pub static SCHEDULER: spin::Mutex<SchedulerContext>;

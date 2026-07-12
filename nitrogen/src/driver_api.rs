@@ -142,10 +142,11 @@ impl DriverRegistry {
                 }
             }
         }
-        // Third pass: fallback drivers (0xFFFF, 0xFFFF).
+        // Third pass: fallback drivers (0xFFFF, 0xFFFF) that do NOT override pci_class.
+        // Drivers that override pci_class() are class-based matchers, not fallback.
         for (_name, driver) in &self.drivers {
             let (vid, did) = driver.pci_id();
-            if vid == 0xFFFF && did == 0xFFFF {
+            if vid == 0xFFFF && did == 0xFFFF && driver.pci_class().is_none() {
                 let result = driver.probe(ctx, device);
                 if !matches!(result, DriverBox::None) {
                     return result;

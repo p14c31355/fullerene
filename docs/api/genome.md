@@ -109,7 +109,7 @@ impl Vfs {
     pub fn write_at(&mut self, mount_idx: usize, fd: u32, data: &[u8]) -> Result<usize, FsError>;
     pub fn close_at(&mut self, mount_idx: usize, fd: u32) -> Result<(), FsError>;
     pub fn seek_at(&mut self, mount_idx: usize, fd: u32, pos: usize) -> Result<(), FsError>;
-    pub fn create(&mut self, path: &str) -> Option<u64>;
+    pub fn create(&mut self, path: &str) -> Option<u64>; // Creates files only (InodeType::File)
     pub fn mkdir(&mut self, path: &str) -> Result<(), FsError>;
     pub fn unlink(&mut self, path: &str) -> Result<(), FsError>;
     pub fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError>;
