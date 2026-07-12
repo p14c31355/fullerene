@@ -1,10 +1,10 @@
 # Carrier — Public Trait API (v0.1)
 
-> **Status: DRAFT — 凍結予定**
+> **Status: DRAFT — Subject to Freeze**
 
 ---
 
-## 1. Terminal — I/O抽象
+## 1. Terminal — I/O Abstraction
 
 `carrier::terminal::Terminal`
 
@@ -21,36 +21,36 @@ pub trait Terminal {
 }
 ```
 
-**v0.1 凍結範囲**: この8メソッド。デフォルト実装を持つメソッドは拡張ポイントとして設計されている。
+**v0.1 freeze scope**: These 8 methods. Methods with default implementations are designed as extension points.
 
 ---
 
-## 2. パイプ機構
+## 2. Pipe Mechanism
 
 `Terminal` trait methods:
 
-| メソッド | 役割 |
+| Method | Role |
 |---|---|
-| `arm_pipe_stdout()` | パイプ stdout を有効化 |
-| `take_stdout()` | パイプバッファを取得 |
-| `clear_pipe_stdin()` | パイプ stdin をクリア |
+| `arm_pipe_stdout()` | Enable pipe stdout |
+| `take_stdout()` | Retrieve pipe buffer |
+| `clear_pipe_stdin()` | Clear pipe stdin |
 
 ---
 
-## 3. コマンドディスパッチ
+## 3. Command Dispatch
 
-`carrier::exec` モジュール:
+`carrier::exec` module:
 
 ```rust
 pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool;
 ```
 
-最終パイプステージはバッファリングなしで直接terminalに書き込む (ストリーミング dispatch)。
+The final pipe stage writes directly to the terminal without buffering (streaming dispatch).
 
 ---
 
-## 変更履歴
+## Changelog
 
-| 日付 | 変更 |
+| Date | Change |
 |---|---|
-| 2026-07-13 | v0.1 初版 |
+| 2026-07-13 | v0.1 initial |

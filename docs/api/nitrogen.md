@@ -1,17 +1,17 @@
 # Nitrogen — Public Trait API (v0.1)
 
-> **Status: DRAFT — 凍結予定**
+> **Status: DRAFT — Subject to Freeze**
 >
-> この文書に記載されたtraitはバージョン v0.1 のAPIサーフェスを構成する。
-> 内部実装の変更は許可されるが、これらのtraitの**シグネチャ変更は全クレートに影響するため、v0.1 凍結後は変更禁止**。
+> The traits documented here constitute the v0.1 API surface.
+> Internal implementation changes are permitted, but **signature changes to these traits affect all crates and are prohibited after the v0.1 freeze**.
 
 ---
 
-## 1. DriverContext — ドライバ実行時コンテキスト
+## 1. DriverContext — Driver Runtime Context
 
 `nitrogen::driver_context::DriverContext`
 
-ドライバがカーネルから受け取る実行時ケイパビリティ。物理メモリ割当、MMIOマッピング、DMAマッピングを提供する。
+Runtime capabilities a driver receives from the kernel. Provides physical memory allocation, MMIO mapping, and DMA mapping.
 
 ```rust
 pub trait DriverContext: Send + Sync {
@@ -27,22 +27,22 @@ pub trait DriverContext: Send + Sync {
 }
 ```
 
-**関連型**:
+**Associated types**:
 
-| 型 | 役割 |
+| Type | Role |
 |---|---|
 | `nitrogen::driver_context::DriverContextError` | OutOfMemory / MmioMappingFailed / InvalidArgument |
-| `nitrogen::driver_context::PageFlags` | writable / write_combining / executable の3フラグ |
+| `nitrogen::driver_context::PageFlags` | Three flags: writable / write_combining / executable |
 
-**実装 (kernel側)**: `fullerene-kernel/src/driver_context_impl.rs` — `KernelDriverContext`
+**Implementation (kernel side)**: `fullerene-kernel/src/driver_context_impl.rs` — `KernelDriverContext`
 
 ---
 
-## 2. StorageDriver — ブロックストレージ
+## 2. StorageDriver — Block Storage
 
 `nitrogen::driver_api::StorageDriver`
 
-NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage 等のブロックデバイス。
+Block devices such as NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage.
 
 ```rust
 pub trait StorageDriver: Send {
@@ -56,11 +56,11 @@ pub trait StorageDriver: Send {
 
 ---
 
-## 3. NetworkDriver — ネットワークインターフェース
+## 3. NetworkDriver — Network Interface
 
 `nitrogen::driver_api::NetworkDriver`
 
-Ethernet, Wi-Fi 等のNIC。
+NICs such as Ethernet, Wi-Fi.
 
 ```rust
 pub trait NetworkDriver: Send {
@@ -73,11 +73,11 @@ pub trait NetworkDriver: Send {
 
 ---
 
-## 4. DisplayDriver — ディスプレイ/GPU
+## 4. DisplayDriver — Display/GPU
 
 `nitrogen::driver_api::DisplayDriver`
 
-VGA-compatible, VirtIO-GPU 等。
+VGA-compatible, VirtIO-GPU, etc.
 
 ```rust
 pub trait DisplayDriver: Send {
@@ -91,11 +91,11 @@ pub trait DisplayDriver: Send {
 
 ---
 
-## 5. AudioDriver — オーディオ
+## 5. AudioDriver — Audio
 
 `nitrogen::driver_api::AudioDriver`
 
-HDA, AC97, USB audio 等。
+HDA, AC97, USB audio, etc.
 
 ```rust
 pub trait AudioDriver: Send {
@@ -106,11 +106,11 @@ pub trait AudioDriver: Send {
 
 ---
 
-## 6. UsbHostDriver — USBホストコントローラ
+## 6. UsbHostDriver — USB Host Controller
 
 `nitrogen::driver_api::UsbHostDriver`
 
-EHCI, XHCI, OHCI, UHCI。
+EHCI, XHCI, OHCI, UHCI.
 
 ```rust
 pub trait UsbHostDriver: Send {
@@ -121,11 +121,11 @@ pub trait UsbHostDriver: Send {
 
 ---
 
-## 7. DriverBox — 型消去されたドライバ戻り値
+## 7. DriverBox — Type-Erased Driver Return Value
 
 `nitrogen::driver_api::DriverBox`
 
-PCIデバイスの(class, subclass) マッチング結果として返される enum。
+An enum returned as the result of (class, subclass) matching for PCI devices.
 
 ```rust
 pub enum DriverBox {
@@ -140,11 +140,11 @@ pub enum DriverBox {
 
 ---
 
-## 8. Driver — ドライバライフサイクル (v0.1 追加)
+## 8. Driver — Driver Lifecycle (added v0.1)
 
 `nitrogen::driver_api::Driver`
 
-ドライバインスタンスの生成とPCIマッチングを一つのtraitに統一する。
+Unifies driver instance creation and PCI matching into a single trait.
 
 ```rust
 pub trait Driver: Send {
@@ -159,11 +159,11 @@ pub trait Driver: Send {
 
 ---
 
-## 9. DriverRegistry — ドライバ登録簿 (v0.1 追加)
+## 9. DriverRegistry — Driver Registry (added v0.1)
 
 `nitrogen::driver_api::DriverRegistry`
 
-`Driver` インスタンスを集め、PCIデバイスにマッチするドライバを返す。
+Collects `Driver` instances and returns a matching driver for a PCI device.
 
 ```rust
 pub struct DriverRegistry { /* ... */ }
@@ -178,8 +178,8 @@ impl DriverRegistry {
 
 ---
 
-## 変更履歴
+## Changelog
 
-| 日付 | 変更 |
+| Date | Change |
 |---|---|
-| 2026-07-13 | v0.1 初版 — DriverContext, StorageDriver, NetworkDriver, DisplayDriver, AudioDriver, UsbHostDriver, DriverBox, Driver, DriverRegistry |
+| 2026-07-13 | v0.1 initial — DriverContext, StorageDriver, NetworkDriver, DisplayDriver, AudioDriver, UsbHostDriver, DriverBox, Driver, DriverRegistry |

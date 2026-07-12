@@ -1,14 +1,14 @@
 # Genome — Public Trait API (v0.1)
 
-> **Status: DRAFT — 凍結予定**
+> **Status: DRAFT — Subject to Freeze**
 >
-> VFS層の公開インターフェース。`FileSystem` trait が唯一の抽象であり、
-> すべてのファイルシステム実装（MemFileSystem, FatFileSystem, exFAT 等）は
-> このtraitを実装する。
+> Public interface of the VFS layer. The `FileSystem` trait is the sole abstraction,
+> and all filesystem implementations (MemFileSystem, FatFileSystem, exFAT, etc.)
+> implement this trait.
 
 ---
 
-## 1. FileSystem — ファイルシステム抽象
+## 1. FileSystem — Filesystem Abstraction
 
 `genome::vfs::FileSystem`
 
@@ -27,11 +27,11 @@ pub trait FileSystem: Send {
 }
 ```
 
-**v0.1 凍結範囲**: この10メソッドを超えて拡張しない。必要ならユーティリティは別traitに分離する。
+**v0.1 freeze scope**: Do not extend beyond these 10 methods. If necessary, utilities should be split into separate traits.
 
 ---
 
-## 2. 関連型
+## 2. Associated Types
 
 ### FsError
 
@@ -93,7 +93,7 @@ pub struct FileDescriptor {
 
 ---
 
-## 3. Vfs — マウントテーブルディスパッチャ
+## 3. Vfs — Mount Table Dispatcher
 
 `genome::vfs::Vfs`
 
@@ -121,21 +121,21 @@ impl Vfs {
 }
 ```
 
-**マウント戦略**: 最長一致のマウントポイント検索 (longest-prefix match)。
+**Mount strategy**: Longest-prefix match for mount point resolution.
 
 ---
 
-## 4. 実装 (v0.1 同梱)
+## 4. Implementations (bundled in v0.1)
 
-| 実装 | 説明 |
+| Implementation | Description |
 |---|---|
-| `MemFileSystem` | B-tree ベースのインメモリ tmpfs。Genome に同梱。 |
-| `FatFileSystem` | FAT32 バックエンド。kernel の `drivers/fat.rs` に配置。 |
+| `MemFileSystem` | B-tree based in-memory tmpfs. Bundled with Genome. |
+| `FatFileSystem` | FAT32 backend. Located in kernel `drivers/fat.rs`. |
 
 ---
 
-## 変更履歴
+## Changelog
 
-| 日付 | 変更 |
+| Date | Change |
 |---|---|
-| 2026-07-13 | v0.1 初版 |
+| 2026-07-13 | v0.1 initial |
