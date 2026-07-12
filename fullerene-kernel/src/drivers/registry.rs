@@ -118,12 +118,11 @@ impl Driver for UsbStorageDriver {
     fn pci_class(&self) -> Option<(u8, u8)> {
         Some((0x0C, 0x03)) // USB host controller
     }
-    fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
+    fn probe(&self, ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
         crate::boot_stage::draw_boot_label(b"USB STORAGE");
         let _ = crate::contexts::vfs::mkdir("/mnt");
 
-        use crate::driver_context_impl::KernelDriverContext;
-        let mut ctx = nitrogen::usb::context::USBContext::new(&KernelDriverContext);
+        let mut ctx = nitrogen::usb::context::USBContext::new(ctx);
         let _ = ctx.enable();
         // Store in the global singleton for later polling.
         crate::drivers::registry::init_usb_ctx(ctx);
@@ -149,10 +148,9 @@ impl Driver for SdCardDriver {
     fn pci_class(&self) -> Option<(u8, u8)> {
         Some((0xFF, 0x00)) // vendor-specific (RTSX)
     }
-    fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
+    fn probe(&self, ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
         crate::boot_stage::draw_boot_label(b"SD CARD");
-        use crate::driver_context_impl::KernelDriverContext;
-        nitrogen::storage::rtsx::init(&KernelDriverContext);
+        nitrogen::storage::rtsx::init(ctx);
         if nitrogen::storage::rtsx::is_present() {
             log::info!("SD: RTSX controller found");
         } else {
@@ -292,7 +290,7 @@ fn mount_pending() {
             .map(|ctx| {
                 ctx.disks()
                     .iter()
-                    .filter(|disk| !mounted.contains(&disk.mount_point))
+                    .filter(|disk| !mounted.contains(&alloc::format!("/mnt/{}", disk.mount_point)))
                     .cloned()
                     .collect()
             })
@@ -403,6 +401,195 @@ fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
         }
     }
 
+    // Determine partition offset by scanning for FAT partition (MBR or raw BPB).
+    let mut partition_lba = 0u32;
+    {
+        let mut mbr = [0u8; 512];
+        let mut tag = 0u32;
+        let ok = crate::drivers::registry::with_ctx(|ctx| {
+            ctx.bot_read(
+                ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps,
+                0, 1, 512, &mut mbr, &mut tag,
+            )
+        });
+        if ok.is_ok() {
+            let is_exfat_at_0 = &mbr[3..11] == b"EXFAT   ";
+            let bps_at_0 = u16::from_le_bytes([mbr[11], mbr[12]]);
+            let is_fat_bpb_at_0 =
+                bps_at_0 == 512 || bps_at_0 == 1024 || bps_at_0 == 2048 || bps_at_0 == 4096;
+
+            if !is_exfat_at_0 && !is_fat_bpb_at_0 {
+                let sig = u16::from_le_bytes([mbr[0x1FE], mbr[0x1FF]]);
+                if sig == 0xAA55 {
+                    let mut best_lba: Option<u32> = None;
+                    let mut best_sectors: u64 = 0;
+                    for i in 0..4 {
+                        let off = 0x1BE + i * 16;
+                        let ptype = mbr[off + 4];
+                        let lba_start = u32::from_le_bytes([
+                            mbr[off + 8], mbr[off + 9], mbr[off + 10], mbr[off + 11],
+                        ]);
+                        let sector_count = u32::from_le_bytes([
+                            mbr[off + 12], mbr[off + 13], mbr[off + 14], mbr[off + 15],
+                        ]) as u64;
+                        let is_known_fat = ptype == 0x0B || ptype == 0x0C || ptype == 0x06 || ptype == 0x0E;
+                        let is_ambiguous_07 = ptype == 0x07;
+
+                        if is_known_fat || is_ambiguous_07 {
+                            let mut accept = is_known_fat;
+                            if is_ambiguous_07 {
+                                let mut boot_check = [0u8; 512];
+                                let mut tag2 = 0u32;
+                                let read_ok = crate::drivers::registry::with_ctx(|ctx| {
+                                    ctx.bot_read(
+                                        ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps,
+                                        ep_in, ep_in_mps, lba_start, 1, 512,
+                                        &mut boot_check, &mut tag2,
+                                    )
+                                });
+                                if read_ok.is_ok() {
+                                    let is_exfat_sig = &boot_check[3..11] == b"EXFAT   ";
+                                    let bps = u16::from_le_bytes([boot_check[11], boot_check[12]]);
+                                    let is_fat_bps =
+                                        bps == 512 || bps == 1024 || bps == 2048 || bps == 4096;
+                                    accept = is_exfat_sig || is_fat_bps;
+                                }
+                            }
+                            if accept && sector_count > best_sectors {
+                                best_lba = Some(lba_start);
+                                best_sectors = sector_count;
+                            }
+                        }
+                    }
+                    partition_lba = best_lba.unwrap_or(0);
+
+                    // GPT support
+                    if partition_lba == 0 {
+                        let gpt_protective = {
+                            let off = 0x1BE;
+                            mbr[off + 4] == 0xEE
+                        };
+                        if gpt_protective {
+                            let mut gpt_hdr = [0u8; 512];
+                            let mut tag3 = 0u32;
+                            let ok = crate::drivers::registry::with_ctx(|ctx| {
+                                ctx.bot_read(
+                                    ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps,
+                                    ep_in, ep_in_mps, 1, 1, 512,
+                                    &mut gpt_hdr, &mut tag3,
+                                )
+                            });
+                            if ok.is_ok() && &gpt_hdr[0..8] == b"EFI PART" {
+                                let entries_lba = u64::from_le_bytes([
+                                    gpt_hdr[72], gpt_hdr[73], gpt_hdr[74], gpt_hdr[75],
+                                    gpt_hdr[76], gpt_hdr[77], gpt_hdr[78], gpt_hdr[79],
+                                ]);
+                                let num_entries = u32::from_le_bytes([
+                                    gpt_hdr[80], gpt_hdr[81], gpt_hdr[82], gpt_hdr[83],
+                                ]);
+                                let entry_size =
+                                    u32::from_le_bytes([gpt_hdr[84], gpt_hdr[85], gpt_hdr[86], gpt_hdr[87]])
+                                        .max(128);
+
+                                let mut best_lba_gpt: u32 = 0;
+                                let mut best_size_gpt: u64 = 0;
+                                let max_entries = num_entries.min(128);
+                                let entries_per_sector = 512 / entry_size;
+
+                                for idx in 0..max_entries {
+                                    let sector_idx = idx / entries_per_sector;
+                                    let entry_in_sector = idx % entries_per_sector;
+                                    let sector_lba = entries_lba + sector_idx as u64;
+
+                                    let mut sector = [0u8; 512];
+                                    let mut tag4 = 0u32;
+                                    let ok = crate::drivers::registry::with_ctx(|ctx| {
+                                        ctx.bot_read(
+                                            ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps,
+                                            ep_in, ep_in_mps, sector_lba as u32, 1, 512,
+                                            &mut sector, &mut tag4,
+                                        )
+                                    });
+                                    if ok.is_err() {
+                                        break;
+                                    }
+
+                                    let entry_off = (entry_in_sector * entry_size) as usize;
+                                    if entry_off + 128 > 512 {
+                                        break;
+                                    }
+                                    let entry = &sector[entry_off..entry_off + 128];
+
+                                    if entry[..16] == [0u8; 16] {
+                                        continue;
+                                    }
+                                    let start_lba = u64::from_le_bytes([
+                                        entry[32], entry[33], entry[34], entry[35],
+                                        entry[36], entry[37], entry[38], entry[39],
+                                    ]);
+                                    let end_lba = u64::from_le_bytes([
+                                        entry[40], entry[41], entry[42], entry[43],
+                                        entry[44], entry[45], entry[46], entry[47],
+                                    ]);
+                                    let size_sectors = end_lba.saturating_sub(start_lba) + 1;
+                                    if start_lba <= u32::MAX as u64 && size_sectors > best_size_gpt {
+                                        best_size_gpt = size_sectors;
+                                        best_lba_gpt = start_lba as u32;
+                                    }
+                                }
+                                partition_lba = best_lba_gpt;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Read the actual boot sector at partition offset
+    let mut boot = [0u8; 512];
+    let mut tag5 = 0u32;
+    let ok = crate::drivers::registry::with_ctx(|ctx| {
+        ctx.bot_read(
+            ctrl_type, ctrl_idx, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps,
+            partition_lba, 1, 512, &mut boot, &mut tag5,
+        )
+    });
+    if ok.is_err() {
+        return false;
+    }
+
+    let is_exfat = &boot[3..11] == b"EXFAT   ";
+    let (block_size, total_blocks) = if is_exfat {
+        let bps_shift = boot[108];
+        if bps_shift < 9 || bps_shift > 12 {
+            return false;
+        }
+        let bps = 1u32 << bps_shift;
+        let total_blocks = u64::from_le_bytes([
+            boot[72], boot[73], boot[74], boot[75], boot[76], boot[77], boot[78], boot[79],
+        ]);
+        (bps, total_blocks)
+    } else {
+        let block_size = u16::from_le_bytes([boot[11], boot[12]]) as u32;
+        let total_sectors_16 = u16::from_le_bytes([boot[19], boot[20]]) as u64;
+        let total_sectors_32 = u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]) as u64;
+        let total_blocks = if total_sectors_32 > 0 {
+            total_sectors_32
+        } else {
+            total_sectors_16
+        };
+        (block_size, total_blocks)
+    };
+
+    if block_size == 0 {
+        return false;
+    }
+
+    // Update disk geometry with actual values from partition boot sector
+    disk.block_size = block_size;
+    disk.total_blocks = total_blocks;
+
     let bdev = Box::new(BotBlockDev {
         ctrl_type,
         ctrl_idx,
@@ -411,9 +598,9 @@ fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
         ep_out_mps,
         ep_in,
         ep_in_mps,
-        block_size: disk.block_size,
-        total_blocks: disk.total_blocks,
-        tag: 0,
+        block_size,
+        total_blocks,
+        tag: 1,
     });
 
     let mp = disk.mount_point.clone();

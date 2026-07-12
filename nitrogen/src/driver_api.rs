@@ -125,20 +125,14 @@ impl DriverRegistry {
         for (_name, driver) in &self.drivers {
             let (vid, did) = driver.pci_id();
             if vid == device.vendor_id && did == device.device_id {
-                let result = driver.probe(ctx, device);
-                if !matches!(result, DriverBox::None) {
-                    return result;
-                }
+                return driver.probe(ctx, device);
             }
         }
         // Second pass: class/subclass match (e.g. AHCI = 0x01/0x06).
         for (_name, driver) in &self.drivers {
             if let Some((class, subclass)) = driver.pci_class() {
                 if class == device.class_code && subclass == device.subclass {
-                    let result = driver.probe(ctx, device);
-                    if !matches!(result, DriverBox::None) {
-                        return result;
-                    }
+                    return driver.probe(ctx, device);
                 }
             }
         }
@@ -147,10 +141,7 @@ impl DriverRegistry {
         for (_name, driver) in &self.drivers {
             let (vid, did) = driver.pci_id();
             if vid == 0xFFFF && did == 0xFFFF && driver.pci_class().is_none() {
-                let result = driver.probe(ctx, device);
-                if !matches!(result, DriverBox::None) {
-                    return result;
-                }
+                return driver.probe(ctx, device);
             }
         }
         DriverBox::None
