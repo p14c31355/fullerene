@@ -1,11 +1,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::vfs;
+use crate::contexts::vfs;
 pub use genome::fs::{DirEntry, FsError, PackageEntry, parse_manifest};
 
 pub fn init() {
-    vfs::init();
+    vfs::init_vfs();
     log::info!("File system initialized (VFS + tmpfs)");
 }
 
