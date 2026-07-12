@@ -46,6 +46,17 @@ pub struct UsbDrive {
     pub mount_point: String,
 }
 
+#[cfg(nitrogen_no_usb)]
+pub static USB_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(nitrogen_no_usb)]
+pub static USB_DRIVES: Mutex<Vec<UsbDrive>> = Mutex::new(Vec::new());
+
+#[cfg(nitrogen_no_usb)]
+pub struct UsbDrive {
+    pub name: String,
+    pub mount_point: String,
+}
+
 /// Access the USB controller context.  Panics if not initialised.
 #[cfg(not(nitrogen_no_usb))]
 pub fn with_ctx<F, R>(f: F) -> R
@@ -55,6 +66,35 @@ where
     let mut guard = USB_CTX.lock();
     let ctx = guard.as_mut().expect("USB context not initialized");
     f(ctx)
+}
+
+#[cfg(nitrogen_no_usb)]
+/// Dummy USB context for when USB support is not compiled in.
+pub struct DummyUsbContext;
+
+#[cfg(nitrogen_no_usb)]
+impl DummyUsbContext {
+    pub fn disks(&self) -> &[DummyUsbDisk] {
+        &[]
+    }
+}
+
+#[cfg(nitrogen_no_usb)]
+pub struct DummyUsbDisk {
+    pub ctrl_type: &'static str,
+    pub dev_addr: u8,
+    pub ep_out: u8,
+    pub ep_in: u8,
+    pub block_size: u32,
+    pub total_blocks: u64,
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn with_ctx<F, R>(_f: F) -> R
+where
+    F: FnOnce(&mut DummyUsbContext) -> R,
+{
+    panic!("USB support not compiled in");
 }
 
 // ── SD card state (formerly drivers/sd_card.rs) ────────────
@@ -67,6 +107,17 @@ pub static SD_DRIVES: Mutex<Vec<SdDrive>> = Mutex::new(Vec::new());
 pub static SD_PROBED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(not(nitrogen_no_storage))]
+pub struct SdDrive {
+    pub name: String,
+    pub mount_point: String,
+}
+
+#[cfg(nitrogen_no_storage)]
+pub static SD_DRIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(nitrogen_no_storage)]
+pub static SD_DRIVES: Mutex<Vec<SdDrive>> = Mutex::new(Vec::new());
+
+#[cfg(nitrogen_no_storage)]
 pub struct SdDrive {
     pub name: String,
     pub mount_point: String,
@@ -118,11 +169,13 @@ impl Driver for UsbStorageDriver {
     fn pci_class(&self) -> Option<(u8, u8)> {
         Some((0x0C, 0x03)) // USB host controller
     }
-    fn probe(&self, ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
+    fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
         crate::boot_stage::draw_boot_label(b"USB STORAGE");
         let _ = crate::contexts::vfs::mkdir("/mnt");
 
-        let mut ctx = nitrogen::usb::context::USBContext::new(ctx);
+        let mut ctx = nitrogen::usb::context::USBContext::new(
+            &crate::driver_context_impl::KernelDriverContext,
+        );
         let _ = ctx.enable();
         // Store in the global singleton for later polling.
         crate::drivers::registry::init_usb_ctx(ctx);
@@ -211,6 +264,11 @@ pub fn poll_usb() -> bool {
         let _ = crate::klog::flush_to_vfs();
     }
     changed
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn poll_usb() -> bool {
+    false
 }
 
 /// Full USB re-enumeration (clear + re-scan).
@@ -720,6 +778,11 @@ fn sd_probe_and_mount_impl() -> bool {
             false
         }
     }
+}
+
+#[cfg(nitrogen_no_storage)]
+pub fn sd_probe_and_mount() -> bool {
+    false
 }
 
 #[cfg(not(nitrogen_no_storage))]

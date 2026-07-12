@@ -124,7 +124,11 @@ impl DriverRegistry {
     ) -> DriverBox {
         for (_name, driver) in &self.drivers {
             let (vid, did) = driver.pci_id();
-            if vid == device.vendor_id && did == device.device_id {
+            if vid != 0xFFFF
+                && did != 0xFFFF
+                && vid == device.vendor_id
+                && did == device.device_id
+            {
                 return driver.probe(ctx, device);
             }
         }

@@ -44,7 +44,7 @@ fn main() {
     // Shared list of known driver modules (must match lib.rs gated modules).
     let known_drivers = &[
         "audio", "framebuffer", "hda", "ioapic", "iommu",
-        "iwlwifi", "pic", "ps2", "storage", "timing",
+        "iwlwifi", "pic", "ps2", "storage",
         "usb", "virtio", "wifi",
     ];
 

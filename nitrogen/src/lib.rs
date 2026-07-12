@@ -56,7 +56,6 @@ pub mod pic;
 pub mod ps2;
 #[cfg(not(nitrogen_no_storage))]
 pub mod storage;
-#[cfg(not(nitrogen_no_timing))]
 pub mod timing;
 #[cfg(not(nitrogen_no_usb))]
 pub mod usb;
