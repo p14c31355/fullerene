@@ -104,7 +104,7 @@ impl Driver for UsbStorageDriver {
     }
     fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
         crate::boot_stage::draw_boot_label(b"USB STORAGE");
-        let _ = crate::vfs::mkdir("/mnt");
+        let _ = crate::contexts::vfs::mkdir("/mnt");
 
         use crate::driver_context_impl::KernelDriverContext;
         let mut ctx = nitrogen::usb::context::USBContext::new(&KernelDriverContext);
@@ -233,7 +233,7 @@ pub fn poll_usb_all() -> bool {
         .map(|d| d.mount_point.clone())
         .collect();
     for mp in &mps {
-        let _ = crate::vfs::unmount(mp);
+        let _ = crate::contexts::vfs::unmount(mp);
     }
     USB_DRIVES.lock().clear();
     USB_DRIVE_COUNT.store(0, Ordering::Relaxed);
@@ -390,12 +390,12 @@ fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
     });
 
     let mp = disk.mount_point.clone();
-    let _ = crate::vfs::mkdir("/mnt");
+    let _ = crate::contexts::vfs::mkdir("/mnt");
 
     match crate::drivers::fat::FatFileSystem::from_device(bdev) {
         Ok(fs) => {
             let mount_mp = alloc::format!("/mnt/{}", mp);
-            let _ = crate::vfs::mkdir(&mount_mp);
+            let _ = crate::contexts::vfs::mkdir(&mount_mp);
             if crate::contexts::vfs::with_vfs(|v| v.mount(&mount_mp, Box::new(fs)))
                 .is_some_and(|r| r.is_ok())
             {
@@ -469,7 +469,7 @@ fn sd_probe_and_mount_impl() -> bool {
         info.block_size
     );
 
-    let _ = crate::vfs::mkdir("/mnt");
+    let _ = crate::contexts::vfs::mkdir("/mnt");
 
     let bdev = SdBlockDev {
         block_size: info.block_size,
@@ -479,7 +479,7 @@ fn sd_probe_and_mount_impl() -> bool {
     let mp = String::from("/mnt/sdcard-1");
     match crate::drivers::fat::FatFileSystem::from_device(Box::new(bdev)) {
         Ok(fs) => {
-            let _ = crate::vfs::mkdir(&mp);
+            let _ = crate::contexts::vfs::mkdir(&mp);
             if crate::contexts::vfs::with_vfs(|v| v.mount(&mp, Box::new(fs)))
                 .is_some_and(|r| r.is_ok())
             {

@@ -46,7 +46,7 @@ fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str
 }
 
 fn wasm_read_directory(path: &str) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, &'static str> {
-    let entries = crate::vfs::readdir(path).map_err(|_| "readdir failed")?;
+    let entries = crate::contexts::vfs::readdir(path).map_err(|_| "readdir failed")?;
     Ok(entries
         .iter()
         .map(|e| {
@@ -121,7 +121,7 @@ fn register_nozzle_hooks() {
                 "."
             };
             let long_format = ctx.args.contains(&"-l");
-            match crate::vfs::readdir(path) {
+            match crate::contexts::vfs::readdir(path) {
                 Ok(entries) => {
                     for ent in entries {
                         if long_format {
@@ -154,7 +154,7 @@ fn register_nozzle_hooks() {
             }
             Err(e) => tline!(ctx.terminal, "cat: {}: {}", path, e),
         }),
-        pwd: Some(|ctx| match crate::vfs::working_directory() {
+        pwd: Some(|ctx| match crate::contexts::vfs::working_directory() {
             Ok(wd) => {
                 tline!(ctx.terminal, "{}", wd);
             }
@@ -162,7 +162,7 @@ fn register_nozzle_hooks() {
                 tline!(ctx.terminal, "pwd: {}", e);
             }
         }),
-        cd: Some(|ctx, path| match crate::vfs::change_directory(path) {
+        cd: Some(|ctx, path| match crate::contexts::vfs::change_directory(path) {
             Ok(()) => {}
             Err(e) => {
                 tline!(ctx.terminal, "cd: {}: {}", path, e);
@@ -170,7 +170,7 @@ fn register_nozzle_hooks() {
         }),
         tree: Some(|ctx, path| {
             let resolved = if path == "." {
-                match crate::vfs::working_directory() {
+                match crate::contexts::vfs::working_directory() {
                     Ok(wd) => wd,
                     Err(_) => String::from("/"),
                 }
@@ -190,7 +190,7 @@ fn register_nozzle_hooks() {
         }),
         find: Some(|ctx, path, pattern| {
             let resolved = if path == "." {
-                crate::vfs::working_directory().unwrap_or("/".into())
+                crate::contexts::vfs::working_directory().unwrap_or("/".into())
             } else {
                 String::from(path)
             };
@@ -246,7 +246,7 @@ fn register_nozzle_hooks() {
                 tline!(ctx.terminal, "rm: {}: {}", path, e);
             }
         }),
-        mkdir: Some(|ctx, path| match crate::vfs::mkdir(path) {
+        mkdir: Some(|ctx, path| match crate::contexts::vfs::mkdir(path) {
             Ok(()) => {
                 tline!(ctx.terminal, "Created directory {}", path);
             }
@@ -254,14 +254,14 @@ fn register_nozzle_hooks() {
                 tline!(ctx.terminal, "mkdir: {}: {}", path, e);
             }
         }),
-        touch: Some(|ctx, path| match crate::vfs::open(path, 0) {
+        touch: Some(|ctx, path| match crate::contexts::vfs::open(path, 0) {
             Ok(fd) => {
-                let _ = crate::vfs::close(fd.fd);
+                let _ = crate::contexts::vfs::close(fd.fd);
                 tline!(ctx.terminal, "Touched {}", path);
             }
-            Err(_) => match crate::vfs::create(path) {
+            Err(_) => match crate::contexts::vfs::create(path) {
                 Ok(fd) => {
-                    let _ = crate::vfs::close(fd.fd);
+                    let _ = crate::contexts::vfs::close(fd.fd);
                     tline!(ctx.terminal, "Touched {}", path);
                 }
                 Err(e) => {

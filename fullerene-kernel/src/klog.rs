@@ -232,24 +232,24 @@ pub fn flush_to_vfs() -> Result<(), ()> {
     out.extend_from_slice(b"=== End boot log ===\n");
 
     // Create /bootlogs/ if it doesn't exist
-    if crate::vfs::exists("/bootlogs") {
+    if crate::contexts::vfs::exists("/bootlogs") {
         // Rotate previous bootlog if present
-        if crate::vfs::exists("/bootlog.txt") {
+        if crate::contexts::vfs::exists("/bootlog.txt") {
             rotate_bootlog();
         }
     } else {
         // Bootlogs directory doesn't exist yet — try to create it
         // (ignore failure; we can still write /bootlog.txt)
-        let _ = crate::vfs::mkdir("/bootlogs");
+        let _ = crate::contexts::vfs::mkdir("/bootlogs");
     }
 
     // Write to /bootlog.txt via the VFS low-level API.
     // We go through create+write+close manually for error resilience.
-    let fd_info = crate::vfs::create("/bootlog.txt").map_err(|_| ())?;
-    crate::vfs::write(fd_info.fd, &out).map_err(|_| {
-        let _ = crate::vfs::close(fd_info.fd);
+    let fd_info = crate::contexts::vfs::create("/bootlog.txt").map_err(|_| ())?;
+    crate::contexts::vfs::write(fd_info.fd, &out).map_err(|_| {
+        let _ = crate::contexts::vfs::close(fd_info.fd);
     })?;
-    let _ = crate::vfs::close(fd_info.fd);
+    let _ = crate::contexts::vfs::close(fd_info.fd);
     Ok(())
 }
 
@@ -279,7 +279,7 @@ fn rotate_bootlog() {
     let mut path;
     loop {
         path = alloc::format!("/bootlogs/boot-{}.txt", idx);
-        if !crate::vfs::exists(&path) {
+        if !crate::contexts::vfs::exists(&path) {
             break;
         }
         idx += 1;
@@ -289,23 +289,23 @@ fn rotate_bootlog() {
         }
     }
     // Read old content, write to rotated path, then unlink original.
-    if let Ok(fd) = crate::vfs::open("/bootlog.txt", 0) {
+    if let Ok(fd) = crate::contexts::vfs::open("/bootlog.txt", 0) {
         let mut buf = [0u8; 512];
         let mut all = alloc::vec::Vec::new();
         loop {
-            match crate::vfs::read(fd.fd, &mut buf) {
+            match crate::contexts::vfs::read(fd.fd, &mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => all.extend_from_slice(&buf[..n]),
             }
         }
-        let _ = crate::vfs::close(fd.fd);
+        let _ = crate::contexts::vfs::close(fd.fd);
         // Write rotated copy
-        if let Ok(fd2) = crate::vfs::create(&path) {
-            if crate::vfs::write(fd2.fd, &all).is_ok() {
-                let _ = crate::vfs::close(fd2.fd);
-                let _ = crate::vfs::unlink("/bootlog.txt");
+        if let Ok(fd2) = crate::contexts::vfs::create(&path) {
+            if crate::contexts::vfs::write(fd2.fd, &all).is_ok() {
+                let _ = crate::contexts::vfs::close(fd2.fd);
+                let _ = crate::contexts::vfs::unlink("/bootlog.txt");
             } else {
-                let _ = crate::vfs::close(fd2.fd);
+                let _ = crate::contexts::vfs::close(fd2.fd);
             }
         }
     }

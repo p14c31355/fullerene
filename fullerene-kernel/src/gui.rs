@@ -54,7 +54,7 @@ pub fn init() {
         heap_extend: Some(|additional| unsafe { crate::heap::extend_kernel_heap(additional) }),
         wall_clock: Some(read_cmos_time),
         vfs_readdir: Some(|path| {
-            let entries = crate::vfs::readdir(path).map_err(fs_err_str)?;
+            let entries = crate::contexts::vfs::readdir(path).map_err(fs_err_str)?;
             let mut result = alloc::vec::Vec::new();
             for vn in entries {
                 result.push(solvent::VfsEntry {
@@ -66,32 +66,32 @@ pub fn init() {
             Ok(result)
         }),
         vfs_read: Some(|path| {
-            let fd = crate::vfs::open(path, 0).map_err(fs_err_str)?;
+            let fd = crate::contexts::vfs::open(path, 0).map_err(fs_err_str)?;
             let mut buf = alloc::vec::Vec::new();
             let mut tmp = [0u8; 4096];
             loop {
-                match crate::vfs::read(fd.fd, &mut tmp) {
+                match crate::contexts::vfs::read(fd.fd, &mut tmp) {
                     Ok(0) => break,
                     Ok(n) => buf.extend_from_slice(&tmp[..n]),
                     Err(e) => {
-                        let _ = crate::vfs::close(fd.fd);
+                        let _ = crate::contexts::vfs::close(fd.fd);
                         return Err(fs_err_str(e));
                     }
                 }
             }
-            let _ = crate::vfs::close(fd.fd);
+            let _ = crate::contexts::vfs::close(fd.fd);
             Ok(buf)
         }),
         vfs_write: Some(|path, data| {
             // Open existing file, write, close
-            let fd = crate::vfs::open(path, 0).map_err(fs_err_str)?;
-            crate::vfs::write(fd.fd, data).map_err(fs_err_str)?;
-            let _ = crate::vfs::close(fd.fd);
+            let fd = crate::contexts::vfs::open(path, 0).map_err(fs_err_str)?;
+            crate::contexts::vfs::write(fd.fd, data).map_err(fs_err_str)?;
+            let _ = crate::contexts::vfs::close(fd.fd);
             Ok(())
         }),
-        vfs_create: Some(|path| crate::vfs::create(path).map(|_| ()).map_err(fs_err_str)),
-        vfs_mkdir: Some(|path| crate::vfs::mkdir(path).map_err(fs_err_str)),
-        vfs_unlink: Some(|path| crate::vfs::unlink(path).map_err(fs_err_str)),
+        vfs_create: Some(|path| crate::contexts::vfs::create(path).map(|_| ()).map_err(fs_err_str)),
+        vfs_mkdir: Some(|path| crate::contexts::vfs::mkdir(path).map_err(fs_err_str)),
+        vfs_unlink: Some(|path| crate::contexts::vfs::unlink(path).map_err(fs_err_str)),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
             crate::process::SCHEDULER.with_list(|list| {

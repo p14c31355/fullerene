@@ -12,7 +12,7 @@ use core::cmp::min;
 use core::str;
 
 use crate::klog_fmt;
-use crate::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
+use crate::contexts::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
 use genome::fs::FsError;
 // Master Boot Record at LBA 0. Partition entries at offset 0x1BE.
 

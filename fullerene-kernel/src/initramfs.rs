@@ -126,7 +126,7 @@ fn parse_entry(data: &[u8], offset: usize) -> Option<(CpioHeader, usize, usize)>
 
 /// Unpack a CPIO `newc` archive into the kernel's VFS.
 ///
-/// Creates directories with `crate::vfs::mkdir` and files with
+/// Creates directories with `crate::contexts::vfs::mkdir` and files with
 /// `crate::fs::write_entire_file`.  The caller is responsible for
 /// ensuring the VFS is initialised before calling this function.
 pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
@@ -149,7 +149,7 @@ pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
         }
         let ftype = header.mode & 0o170000;
         if ftype == 0o040000 {
-            let _ = crate::vfs::mkdir(path);
+            let _ = crate::contexts::vfs::mkdir(path);
             count += 1;
         } else if ftype == 0o100000 {
             let body_end = body_start.checked_add(header.filesize as usize)
@@ -157,11 +157,11 @@ pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
                 .unwrap_or(body_start);
             let body = archive.get(body_start..body_end).unwrap_or(&[]);
             if let Ok(parent) = parent_of(path) {
-                if !parent.is_empty() && !crate::vfs::exists(parent) {
-                    let _ = crate::vfs::mkdir(parent);
+                if !parent.is_empty() && !crate::contexts::vfs::exists(parent) {
+                    let _ = crate::contexts::vfs::mkdir(parent);
                 }
             }
-            if crate::vfs::exists(path) {
+            if crate::contexts::vfs::exists(path) {
                 let _ = crate::fs::remove(path);
             }
             // write_entire_file creates the file if needed, so no separate creation step.

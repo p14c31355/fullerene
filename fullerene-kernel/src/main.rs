@@ -161,9 +161,6 @@ pub mod drivers;
 // ── DriverContext bridge (kernel → nitrogen) ──────────────────────
 pub mod driver_context_impl;
 
-// ── Plugin registry ───────────────────────────────────────────────
-pub mod plugin;
-
 // ── DevFs ─────────────────────────────────────────────────────────
 pub mod devfs;
 
@@ -191,10 +188,8 @@ pub mod shell;
 pub mod slab;
 pub mod syscall;
 pub mod task;
-// tracing.rs is now a thin re-export of resonance::tracing
 pub mod linux;
 pub mod vdso;
-pub mod vfs;
 
 // ── Host-target main (enables `cargo check` on Linux) ──
 #[cfg(not(any(target_os = "none", target_os = "uefi")))]
