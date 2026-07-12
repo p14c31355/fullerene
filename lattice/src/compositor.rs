@@ -13,19 +13,19 @@ pub trait RenderTarget {
 
 pub struct Compositor;
 
-pub const TITLE_BAR_HEIGHT: u32 = 20;
-pub const WINDOW_BORDER: u32 = 2;
+pub const TITLE_BAR_HEIGHT: u32 = 28;
+pub const WINDOW_BORDER: u32 = 1;
 
 // UI padding constants
-pub const WINDOW_PADDING: u32 = 4;
-pub const TASKBAR_PADDING: u32 = 4;
-pub const BUTTON_PADDING: u32 = 2;
+pub const WINDOW_PADDING: u32 = 8;
+pub const TASKBAR_PADDING: u32 = 6;
+pub const BUTTON_PADDING: u32 = 4;
 
 // ── Fullerene Color Palette ──────────────────────────────────
-pub const COLOR_BG: u32 = 0x1a1a2e;
-pub const COLOR_SURFACE: u32 = 0x16213e;
-pub const COLOR_PRIMARY: u32 = 0x4A90D9;
-pub const COLOR_ACTIVE: u32 = 0x3A7BD5;
+pub const COLOR_BG: u32 = 0x1B1B1D;
+pub const COLOR_SURFACE: u32 = 0x242426;
+pub const COLOR_PRIMARY: u32 = 0x3584E4;
+pub const COLOR_ACTIVE: u32 = 0x2A7DE0;
 pub const COLOR_TEXT: u32 = 0xE0E0E0;
 pub const COLOR_MUTED: u32 = 0x888888;
 pub const COLOR_BORDER_ACTIVE: u32 = 0x4A90D9;
@@ -643,7 +643,7 @@ impl Compositor {
         let wy = win.y - bw;
 
         // Shadow via painter
-        p.draw_shadow(wx, wy, ww as u32, wh as u32, radius, 3, 6, 0x000000);
+        p.draw_shadow(wx, wy, ww as u32, wh as u32, radius, 2, 3, 0x000000);
 
         // Pre-fill corner squares with background so outside-the-arc pixels
         // don't stay black.
@@ -667,14 +667,15 @@ impl Compositor {
         let sep_y = win.y + TITLE_BAR_HEIGHT as i32;
         p.fill_rect(win.x + r32, sep_y, win.width.saturating_sub(radius * 2), 1, border_col);
 
-        // ── Title bar buttons ──
-        blit_button(p.fb, p.width, &CLOSE_BUTTON_CACHE, win.x + win.width as i32 - 18, win.y + 3);
-        blit_button(p.fb, p.width, &MAXIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 38, win.y + 3);
-        blit_button(p.fb, p.width, &MINIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 58, win.y + 3);
+        // ── Title bar buttons (slightly smaller, right-aligned) ──
+        let btn_y = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
+        blit_button(p.fb, p.width, &CLOSE_BUTTON_CACHE, win.x + win.width as i32 - 22, btn_y);
+        blit_button(p.fb, p.width, &MAXIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 42, btn_y);
+        blit_button(p.fb, p.width, &MINIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 62, btn_y);
 
-        // Title text — try TTF first, fall back to bitmap
-        let tx = win.x + 4;
-        let ty = win.y + 3;
+        // Title text — centered vertically, left-aligned with padding
+        let tx = win.x + 12;
+        let ty = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
         p.draw_text(tx, ty, title, colors.text, 13.0);
     }
 }

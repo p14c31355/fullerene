@@ -8,6 +8,7 @@ pub mod desktop;
 pub mod desktop_icons;
 pub mod editor;
 pub mod font;
+pub mod icon;
 pub mod menu;
 pub mod network_menu;
 pub mod painter;

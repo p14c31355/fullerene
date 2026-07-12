@@ -5,29 +5,50 @@ use std::process::Command;
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
 
-    let bin_path = out_dir.join("font8x16.bin");
-    fs::write(&bin_path, &font_bytes()).expect("failed to write font8x16.bin");
+    // 1. Bitmap font
+    fs::write(out_dir.join("font8x16.bin"), &font_bytes()).expect("write font");
 
-    // Try to fetch LiberationSans TTF for antialiased rendering (optional).
+    // 2. Try to fetch TTF font
     let ttf_path = out_dir.join("LiberationSans-Regular.ttf");
-    let mut downloaded = false;
     if !ttf_path.exists() {
         let url = "https://github.com/liberationfonts/liberation-fonts/raw/refs/heads/master/LiberationSans-Regular.ttf";
-        let result = Command::new("curl").args(["-fsSL", "-o", &ttf_path.to_string_lossy(), url]).status()
-            .or_else(|_| Command::new("wget").args(["-q", "-O", &ttf_path.to_string_lossy(), url]).status());
-        if let Ok(status) = result { downloaded = status.success(); }
-    } else {
-        downloaded = true;
-    }
-    // Write a placeholder so the file always exists for `include_bytes!`.
-    // TTF fonts start with \x00\x01\x00\x00\x00 (SFNT version).
-    // An empty/invalid file will cause `FontArc::try_from_slice` to return Err at runtime.
-    if !downloaded {
-        fs::write(&ttf_path, &[0u8; 4]).expect("failed to write font placeholder");
-        println!("cargo:warning=font: no TTF available (install curl/wget for antialiased text)");
+        let ok = Command::new("curl").args(["-fsSL", "-o", &ttf_path.to_string_lossy(), url]).status()
+            .or_else(|_| Command::new("wget").args(["-q", "-O", &ttf_path.to_string_lossy(), url]).status())
+            .map(|s| s.success()).unwrap_or(false);
+        if !ok {
+            fs::write(&ttf_path, &[0u8; 4]).ok();
+            println!("cargo:warning=TTF font unavailable — install curl/wget");
+        }
     }
 
+    // 3. Pre-render SVG icons to RGBA pixel data (64×64 each)
+    render_svg_icons(&out_dir);
+
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/icons");
+}
+
+fn render_svg_icons(out_dir: &PathBuf) {
+    let icons_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("icons");
+    let svgs = ["shell.svg", "files.svg", "settings.svg", "about.svg"];
+    for svg_name in &svgs {
+        let svg_path = icons_dir.join(svg_name);
+        let svg_data = match fs::read(&svg_path) {
+            Ok(d) => d,
+            Err(_) => { println!("cargo:warning=SVG icon not found: {}", svg_path.display()); continue; }
+        };
+        let rtree = match usvg::Tree::from_data(&svg_data, &usvg::Options::default()) {
+            Ok(t) => t,
+            Err(e) => { println!("cargo:warning=SVG parse error for {}: {}", svg_name, e); continue; }
+        };
+        let size = tiny_skia::IntSize::from_wh(64, 64).unwrap();
+        let mut pixmap = tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
+        resvg::render(&rtree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+        // Write raw RGBA pixels (64*64*4 bytes) for runtime use
+        let stem = svg_name.trim_end_matches(".svg");
+        let bin_name = format!("icon_{}.rgba", stem);
+        fs::write(out_dir.join(&bin_name), pixmap.data()).expect("write icon pixels");
+    }
 }
 
 #[rustfmt::skip]

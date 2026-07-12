@@ -8,3 +8,8 @@ license.workspace = true
 [dependencies]
 ab_glyph = { version = "0.2.32", default-features = false, features = ["libm"] }
 spin = { workspace = true, features = ["spin_mutex", "once"] }
+
+[build-dependencies]
+usvg = "0.47"
+tiny-skia = "0.12"
+resvg = "0.47"

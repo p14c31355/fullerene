@@ -66,6 +66,17 @@ impl DesktopIconLayer {
         }
     }
 
+    /// Get the pre-rendered SVG icon surface for a desktop icon index.
+    fn icon_surface(idx: usize) -> Option<crate::surface::Surface> {
+        match idx {
+            0 => Some(crate::icon::ICON_SHELL.surface()),
+            1 => Some(crate::icon::ICON_FILES.surface()),
+            2 => Some(crate::icon::ICON_SETTINGS.surface()),
+            3 => Some(crate::icon::ICON_ABOUT.surface()),
+            _ => None,
+        }
+    }
+
     /// Find an icon at the given screen position.
     /// Returns the index in `self.icons` or `None`.
     pub fn hit_test(&self, px: i32, py: i32) -> Option<usize> {
@@ -97,15 +108,18 @@ impl DesktopIconLayer {
         clip_h: u32,
     ) {
         let mut painter = Painter::new(fb, fb_width, fb_height);
-        for icon in &self.icons {
-            // Draw icon box with rounded corners
-            painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
-            // Thin border on the rounded rect
-            painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, crate::compositor::COLOR_PRIMARY);
+        for (idx, icon) in self.icons.iter().enumerate() {
+            // Draw SVG icon if available, else fall back to rounded color box
+            if let Some(svg_surface) = Self::icon_surface(idx) {
+                painter.blit_surface(&svg_surface, icon.x, icon.y);
+            } else {
+                painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
+                painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, crate::compositor::COLOR_PRIMARY);
+            }
 
             // Draw label below the icon using painter text
             let lx = icon.x + 2;
-            let ly = icon.y + icon.size as i32 + 2;
+            let ly = icon.y + icon.size as i32 + 6;
             painter.draw_text(lx, ly, &icon.label, crate::compositor::COLOR_TEXT, 11.0);
         }
     }
