@@ -61,7 +61,8 @@ fn main() {
 
         // Validate against known driver list.
         if !known_drivers.contains(&clean.as_str()) {
-            eprintln!("cargo:warning=.driverignore: unknown module '{}' (will be ignored)", mod_name);
+            println!("cargo:warning=.driverignore: unknown module '{}' (will be ignored)", mod_name);
+            continue;
         }
 
         println!("cargo:rustc-cfg=nitrogen_no_{}", clean);
