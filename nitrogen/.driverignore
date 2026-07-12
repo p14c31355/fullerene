@@ -1,0 +1,22 @@
+# .driverignore — driver selection for Nitrogen
+#
+# Format: gitignore‑style path patterns.
+# Directories listed here are EXCLUDED from the build.
+# Infrastructure modules (pci, driver_api, driver_context, …) are
+# always included and should never appear here.
+#
+# Example — exclude wireless and Bluetooth:
+# iwlwifi/
+# bluetooth/
+
+# USB subsystem (xhci, ehci, msd, hub, …). Uncomment to exclude:
+# usb/
+
+# Intel wireless. Uncomment to exclude:
+# iwlwifi/
+
+# Realtek SD card reader. Uncomment to exclude:
+# storage/
+
+# Audio (HDA). Uncomment to exclude:
+# hda/
