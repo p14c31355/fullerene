@@ -432,7 +432,7 @@ fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
                         let sector_count = u32::from_le_bytes([
                             mbr[off + 12], mbr[off + 13], mbr[off + 14], mbr[off + 15],
                         ]) as u64;
-                        let is_known_fat = ptype == 0x0B || ptype == 0x0C || ptype == 0x06 || ptype == 0x0E;
+                        let is_known_fat = ptype == 0x01 || ptype == 0x04 || ptype == 0x06 || ptype == 0x0B || ptype == 0x0C || ptype == 0x0E;
                         let is_ambiguous_07 = ptype == 0x07;
 
                         if is_known_fat || is_ambiguous_07 {
@@ -494,7 +494,11 @@ fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
                                 let mut best_lba_gpt: u32 = 0;
                                 let mut best_size_gpt: u64 = 0;
                                 let max_entries = num_entries.min(128);
-                                let entries_per_sector = 512 / entry_size;
+                                let entries_per_sector = if entry_size > 0 && entry_size <= 512 {
+                                    512 / entry_size
+                                } else {
+                                    1
+                                };
 
                                 for idx in 0..max_entries {
                                     let sector_idx = idx / entries_per_sector;
