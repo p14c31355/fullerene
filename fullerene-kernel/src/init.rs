@@ -35,7 +35,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
                 unsafe {
                     let ptr = core::ptr::addr_of_mut!(HEAP) as *mut u8;
-                    petroleum::page_table::ALLOCATOR
+                    petroleum::ALLOCATOR
                         .lock()
                         .init(ptr, crate::heap::HEAP_SIZE);
                     petroleum::common::memory::set_heap_range(ptr as usize, crate::heap::HEAP_SIZE);
