@@ -26,6 +26,8 @@ impl<'a> Painter<'a> {
 
     /// Clip a rectangle to framebuffer bounds, returning `(x, y, w, h)` or `None`.
     fn clip(&self, x: i32, y: i32, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+        let w = if x < 0 { w.saturating_sub((-x) as u32) } else { w };
+        let h = if y < 0 { h.saturating_sub((-y) as u32) } else { h };
         let x = x.max(0) as u32;
         let y = y.max(0) as u32;
         let w = (w as u64).min((self.width as u64).saturating_sub(x as u64)) as u32;
@@ -116,7 +118,22 @@ impl<'a> Painter<'a> {
             let dst_start = self.idx(ddx, ddy + (row - sy_s) as u32);
             let dst_slice = &mut self.fb[dst_start..dst_start + (sx_e - sx_s) as usize];
             for (i, &p) in src_row[sx_s as usize..sx_e as usize].iter().enumerate() {
-                dst_slice[i] = p;
+                let a = (p >> 24) & 0xFF;
+                if a == 0 {
+                    // Fully transparent: preserve destination
+                    continue;
+                } else if a == 255 {
+                    // Fully opaque: direct replacement
+                    dst_slice[i] = p;
+                } else {
+                    // Partially transparent: blend with background
+                    let bg = dst_slice[i];
+                    let ia = 255 - a;
+                    let r = (((p >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255;
+                    let g = (((p >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255;
+                    let b = ((p & 0xFF) * a + (bg & 0xFF) * ia) / 255;
+                    dst_slice[i] = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
+                }
             }
         }
     }

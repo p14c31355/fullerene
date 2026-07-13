@@ -125,7 +125,7 @@ pub trait UsbHostDriver: Send {
 
 `nitrogen::driver_api::DriverBox`
 
-An enum returned as the result of (class, subclass) matching for PCI devices.
+An enum returned by a driver or plugin probe. DriverRegistry handles vendor/device, class/subclass, and fallback matching around the probe.
 
 ```rust
 pub enum DriverBox {

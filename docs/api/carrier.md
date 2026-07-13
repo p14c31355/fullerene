@@ -31,6 +31,7 @@ pub trait Terminal {
 
 | Method | Role |
 |---|---|
+| `set_stdin()` | Provide pipe stdin or pass input to next pipeline stage |
 | `arm_pipe_stdout()` | Enable pipe stdout |
 | `take_stdout()` | Retrieve pipe buffer |
 | `clear_pipe_stdin()` | Clear pipe stdin |

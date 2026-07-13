@@ -929,6 +929,7 @@ fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
         resonance::KeyCode::Up => {
             let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
             let n = explorer.entries.len();
+            if n == 0 { return; }
             let idx = explorer.selected_index.unwrap_or(n.saturating_sub(1));
             explorer.selected_index = if idx == 0 { Some(n.saturating_sub(1)) } else { Some(idx - 1) };
             if let Some(s) = explorer.selected_index { if s < explorer.scroll_offset { explorer.scroll_offset = s; } }
@@ -938,6 +939,7 @@ fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
         resonance::KeyCode::Down => {
             let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
             let n = explorer.entries.len();
+            if n == 0 { return; }
             let idx = explorer.selected_index.unwrap_or(0);
             explorer.selected_index = if idx + 1 >= n { Some(0) } else { Some(idx + 1) };
             if let Some(s) = explorer.selected_index {
@@ -949,11 +951,15 @@ fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
         resonance::KeyCode::Enter => {
             let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
             if let Some(idx) = explorer.selected_index {
+                let name = match explorer.raw_names.get(idx) {
+                    Some(n) => n,
+                    None => return,
+                };
                 let is_dir = explorer.raw_is_dir.get(idx).copied().unwrap_or(false);
                 let path = if explorer.current_dir.ends_with('/') {
-                    alloc::format!("{}{}", explorer.current_dir, explorer.raw_names[idx])
+                    alloc::format!("{}{}", explorer.current_dir, name)
                 } else {
-                    alloc::format!("{}/{}", explorer.current_dir, explorer.raw_names[idx])
+                    alloc::format!("{}/{}", explorer.current_dir, name)
                 };
                 if is_dir {
                     explorer.navigate_to(&path);

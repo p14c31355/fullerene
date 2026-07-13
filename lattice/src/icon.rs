@@ -19,12 +19,19 @@ impl SvgIcon {
         let mut s = Surface::new(64, 64, 0);
         let buf = s.pixels_mut();
         for (i, chunk) in self.pixels.chunks_exact(4).enumerate() {
-            let r = chunk[0] as u32;
-            let g = chunk[1] as u32;
-            let b = chunk[2] as u32;
+            let r_pre = chunk[0] as u32;
+            let g_pre = chunk[1] as u32;
+            let b_pre = chunk[2] as u32;
             let a = chunk[3] as u32;
-            // Premultiplied alpha to straight alpha conversion, store as 0xRRGGBBAA
-            let pixel = if a == 0 { 0 } else { (r << 16) | (g << 8) | b | (a << 24) };
+            // Unpremultiply RGB channels before storing
+            let pixel = if a == 0 {
+                0
+            } else {
+                let r = (r_pre * 255) / a;
+                let g = (g_pre * 255) / a;
+                let b = (b_pre * 255) / a;
+                (r << 16) | (g << 8) | b | (a << 24)
+            };
             buf[i] = pixel;
         }
         s

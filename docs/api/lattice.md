@@ -2,7 +2,7 @@
 
 > **Status: DRAFT — Subject to Freeze**
 >
-> Lattice is a compositing window system. It consists of structs and their methods rather than traits.
+> Lattice is a compositing window system combining structs, methods, and rendering traits.
 
 ---
 
@@ -49,7 +49,7 @@ impl Surface {
 }
 ```
 
-**Safety limit**: Areas exceeding 4K resolution (3840×2160) are rejected and a 0×0 surface is returned.
+**Safety limit**: Surfaces exceeding 4096×2160 resolution are rejected and a 0×0 surface is returned.
 
 ---
 
