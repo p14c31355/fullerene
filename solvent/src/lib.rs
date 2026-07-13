@@ -208,6 +208,7 @@ pub fn register_service(service: Box<dyn Service>) {
     SERVICES.lock().push(service);
 }
 
+#[cfg(not(nitrogen_no_iwlwifi))]
 pub use network_manager::register_wifi_service;
 
 // ── WiFi action queue ────────────────────────────────────────

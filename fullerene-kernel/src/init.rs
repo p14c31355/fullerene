@@ -321,6 +321,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card done\n");
             Ok(())
         }),
+        #[cfg(not(nitrogen_no_iwlwifi))]
         petroleum::init_step!("wifi", || {
             crate::boot_stage::draw_step_hint(b"wf_strt");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] wifi start\n");

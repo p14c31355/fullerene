@@ -232,6 +232,7 @@ impl WifiRegistry {
 
 /// All supported WiFi chipsets.  The first matching entry wins.
 pub static DRIVER_TABLE: &[DriverEntry] = &[
+    #[cfg(not(nitrogen_no_iwlwifi))]
     DriverEntry {
         vendor: 0x8086,
         devices: &[0x095b, 0x095a, 0x08b1, 0x08b2],
