@@ -111,6 +111,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         let prev = *PREV_SHELL_STATE.lock();
         if rt.shell_state != prev {
             rt.desktop.force_full_redraw();
+            rt.cursor_only_update = false;
             *PREV_SHELL_STATE.lock() = rt.shell_state;
             *PREV_TRANSITION.lock() = true;
         }

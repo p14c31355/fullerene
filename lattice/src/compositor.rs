@@ -621,7 +621,6 @@ impl Compositor {
 
     // ── Title bar drawing (with padding) ──────────────────
 
-    #[allow(unused_variables)]
     fn draw_title_bar(
         fb: &mut [u32],
         fbw: u32,
@@ -642,8 +641,22 @@ impl Compositor {
         let wx = win.x - bw;
         let wy = win.y - bw;
 
+        // Skip if the title-bar bounding box doesn't intersect the dirty rect
+        let cex = (cx + cw) as i32;
+        let cey = (cy + ch) as i32;
+        let ww_u = ww as u32;
+        let wh_u = wh as u32;
+        if wx + ww as i32 <= cx as i32 || wy + wh as i32 <= cy as i32
+            || wx >= cex || wy >= cey
+        {
+            return;
+        }
+
+        // Restrict painter to the intersection of framebuffer and dirty rect
+        p.clip_rect(cx as i32, cy as i32, cw, ch);
+
         // Shadow via painter
-        p.draw_shadow(wx, wy, ww as u32, wh as u32, radius, 2, 3, 0x000000);
+        p.draw_shadow(wx, wy, ww_u, wh_u, radius, 2, 3, 0x000000);
 
         // Pre-fill corner squares with background so outside-the-arc pixels
         // don't stay black.
@@ -657,7 +670,7 @@ impl Compositor {
         // Window body with rounded rect — 4 corners rounded
         let border_col = if win.focused { colors.border_active } else { colors.border_inactive };
         let title_col = if win.focused { colors.title_active } else { colors.title_inactive };
-        p.rounded_rect(wx, wy, ww as u32, wh as u32, radius, border_col);
+        p.rounded_rect(wx, wy, ww_u, wh_u, radius, border_col);
 
         // Title bar background — plain rect (no extra rounding; top corners
         // already handled by the border rounded_rect).

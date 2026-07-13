@@ -1,7 +1,6 @@
 use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -9,18 +8,9 @@ fn main() {
     // 1. Bitmap font
     fs::write(out_dir.join("font8x16.bin"), &font_bytes()).expect("write font");
 
-    // 2. Try to fetch TTF font
+    // 2. TTF font from the ttf-noto-sans crate (bundled, no network needed)
     let ttf_path = out_dir.join("LiberationSans-Regular.ttf");
-    if !ttf_path.exists() {
-        let url = "https://github.com/liberationfonts/liberation-fonts/raw/refs/heads/master/LiberationSans-Regular.ttf";
-        let ok = Command::new("curl").args(["-fsSL", "-o", &ttf_path.to_string_lossy(), url]).status()
-            .or_else(|_| Command::new("wget").args(["-q", "-O", &ttf_path.to_string_lossy(), url]).status())
-            .map(|s| s.success()).unwrap_or(false);
-        if !ok {
-            fs::write(&ttf_path, &[0u8; 4]).ok();
-            println!("cargo:warning=TTF font unavailable — install curl/wget");
-        }
-    }
+    fs::write(&ttf_path, ttf_noto_sans::REGULAR).expect("write Noto Sans TTF");
 
     // 3. Pre-render SVG icons to RGBA pixel data (64×64 each)
     render_svg_icons(&out_dir);
@@ -109,37 +99,41 @@ fn render_wallpapers(out_dir: &PathBuf) {
     for name in &["beach", "mountain", "city", "fullerene"] {
         let mut svg_path = wd.join(name);
         svg_path.set_extension("svg");
-        if svg_path.exists() {
-            render_svg_file(out_dir, name, &svg_path);
+        if !svg_path.exists() {
+            println!("cargo:error=wallpaper source SVG not found: {}", svg_path.display());
+            return;
         }
+        render_svg_file(out_dir, name, &svg_path);
     }
 
     let png_path = wd.join("fullerene_sharp.png");
-    if png_path.exists() {
-        if let Ok(png_data) = fs::read(&png_path) {
-            if let Ok(pixmap) = tiny_skia::Pixmap::decode_png(&png_data) {
-                let w = pixmap.width();
-                let h = pixmap.height();
-                let pixel_count = (w * h) as usize;
-                let mut code = format!(
-                    "const SHARP_W: u32 = {};\nconst SHARP_H: u32 = {};\nstatic SHARP_PIXELS: [u32; {}] = [",
-                    w, h, pixel_count
-                );
-                for y in 0..h {
-                    if y % 64 == 0 { code.push('\n'); }
-                    for x in 0..w {
-                        let src_idx = (y * w + x) as usize * 4;
-                        let r = pixmap.data()[src_idx];
-                        let g = pixmap.data()[src_idx + 1];
-                        let b = pixmap.data()[src_idx + 2];
-                        write!(code, "0x{:02X}{:02X}{:02X},", r, g, b).unwrap();
-                    }
+    if !png_path.exists() {
+        println!("cargo:error=wallpaper source PNG not found: {}", png_path.display());
+        return;
+    }
+    if let Ok(png_data) = fs::read(&png_path) {
+        if let Ok(pixmap) = tiny_skia::Pixmap::decode_png(&png_data) {
+            let w = pixmap.width();
+            let h = pixmap.height();
+            let pixel_count = (w * h) as usize;
+            let mut code = format!(
+                "const SHARP_W: u32 = {};\nconst SHARP_H: u32 = {};\nstatic SHARP_PIXELS: [u32; {}] = [",
+                w, h, pixel_count
+            );
+            for y in 0..h {
+                if y % 64 == 0 { code.push('\n'); }
+                for x in 0..w {
+                    let src_idx = (y * w + x) as usize * 4;
+                    let r = pixmap.data()[src_idx];
+                    let g = pixmap.data()[src_idx + 1];
+                    let b = pixmap.data()[src_idx + 2];
+                    write!(code, "0x{:02X}{:02X}{:02X},", r, g, b).unwrap();
                 }
-                code.push_str("];\n");
-                fs::write(out_dir.join("wallpaper_sharp.rs"), code.as_bytes())
-                    .expect("write wallpaper PNG data");
-                println!("cargo:notice=Rendered fullerene_sharp wallpaper ({}×{})", w, h);
             }
+            code.push_str("];\n");
+            fs::write(out_dir.join("wallpaper_sharp.rs"), code.as_bytes())
+                .expect("write wallpaper PNG data");
+            println!("cargo:notice=Rendered fullerene_sharp wallpaper ({}×{})", w, h);
         }
     }
 }

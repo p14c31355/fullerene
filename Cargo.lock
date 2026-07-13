@@ -798,6 +798,7 @@ dependencies = [
  "resvg",
  "spin 0.12.0",
  "tiny-skia",
+ "ttf-noto-sans",
  "usvg",
 ]
 
@@ -1590,6 +1591,12 @@ dependencies = [
  "lattice",
  "petroleum",
 ]
+
+[[package]]
+name = "ttf-noto-sans"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e0c7dd9e451dd3a033abddb7fccd79a31eac26ebc97f638132a42dc56cc5cc9"
 
 [[package]]
 name = "ttf-parser"

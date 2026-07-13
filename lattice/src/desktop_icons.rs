@@ -96,7 +96,6 @@ impl DesktopIconLayer {
     }
 
     /// Render all icons into the framebuffer, clipped to a dirty rect.
-    #[allow(unused_variables)]
     pub fn render(
         &self,
         fb: &mut [u32],
@@ -108,13 +107,13 @@ impl DesktopIconLayer {
         clip_h: u32,
     ) {
         let mut painter = Painter::new(fb, fb_width, fb_height);
+        painter.clip_rect(clip_x as i32, clip_y as i32, clip_w, clip_h);
         for (idx, icon) in self.icons.iter().enumerate() {
             // Draw SVG icon if available, else fall back to rounded color box
             if let Some(svg_surface) = Self::icon_surface(idx) {
                 painter.blit_surface(&svg_surface, icon.x, icon.y);
             } else {
                 painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
-                painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, crate::compositor::COLOR_PRIMARY);
             }
 
             // Draw label below the icon using painter text

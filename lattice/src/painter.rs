@@ -12,11 +12,37 @@ pub struct Painter<'a> {
     pub fb: &'a mut [u32],
     pub width: u32,
     pub height: u32,
+    clip_x: u32,
+    clip_y: u32,
+    clip_w: u32,
+    clip_h: u32,
 }
 
 impl<'a> Painter<'a> {
     pub fn new(fb: &'a mut [u32], width: u32, height: u32) -> Self {
-        Self { fb, width, height }
+        Self {
+            fb, width, height,
+            clip_x: 0,
+            clip_y: 0,
+            clip_w: width,
+            clip_h: height,
+        }
+    }
+
+    /// Set an additional clipping rectangle (in addition to framebuffer bounds).
+    pub fn clip_rect(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        let x = x.max(0) as u32;
+        let y = y.max(0) as u32;
+        let xe = (x + w).min(self.width);
+        let ye = (y + h).min(self.height);
+        let cx = self.clip_x.max(x);
+        let cy = self.clip_y.max(y);
+        let cw = (self.clip_x + self.clip_w).min(xe).saturating_sub(cx);
+        let ch = (self.clip_y + self.clip_h).min(ye).saturating_sub(cy);
+        self.clip_x = cx;
+        self.clip_y = cy;
+        self.clip_w = cw;
+        self.clip_h = ch;
     }
 
     #[inline]
@@ -24,14 +50,24 @@ impl<'a> Painter<'a> {
         (y as usize) * (self.width as usize) + (x as usize)
     }
 
-    /// Clip a rectangle to framebuffer bounds, returning `(x, y, w, h)` or `None`.
+    /// Clip a rectangle to framebuffer bounds and the painter clip rect, returning `(x, y, w, h)` or `None`.
     fn clip(&self, x: i32, y: i32, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
         let w = if x < 0 { w.saturating_sub((-x) as u32) } else { w };
         let h = if y < 0 { h.saturating_sub((-y) as u32) } else { h };
         let x = x.max(0) as u32;
         let y = y.max(0) as u32;
-        let w = (w as u64).min((self.width as u64).saturating_sub(x as u64)) as u32;
-        let h = (h as u64).min((self.height as u64).saturating_sub(y as u64)) as u32;
+        let mut w = (w as u64).min((self.width as u64).saturating_sub(x as u64)) as u32;
+        let mut h = (h as u64).min((self.height as u64).saturating_sub(y as u64)) as u32;
+        if w == 0 || h == 0 { return None; }
+        // Intersect with painter clip rect
+        let cxe = self.clip_x.saturating_add(self.clip_w);
+        let cye = self.clip_y.saturating_add(self.clip_h);
+        let xe = (x + w).min(cxe);
+        let ye = (y + h).min(cye);
+        let x = x.max(self.clip_x);
+        let y = y.max(self.clip_y);
+        w = xe.saturating_sub(x);
+        h = ye.saturating_sub(y);
         if w == 0 || h == 0 { None } else { Some((x, y, w, h)) }
     }
 

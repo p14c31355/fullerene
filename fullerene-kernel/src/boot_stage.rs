@@ -178,7 +178,7 @@ pub fn draw_step_hint(hint: &[u8]) {
     let fbh = fb.height();
     let margin = (fbw.min(fbh) / 20).clamp(12, 40);
     let panel_w = fbw.saturating_sub(margin * 2).min(760);
-    let panel_h = if fbh >= 360 { 180 } else { 132 }.min(fbh.saturating_sub(margin * 2));
+    let panel_h = (if fbh >= 360 { 180 } else { 132 }).min(fbh.saturating_sub(margin * 2));
     let panel_x = (fbw - panel_w) / 2;
     let panel_y = (fbh - panel_h) / 2;
     let y = panel_y + panel_h - 16;

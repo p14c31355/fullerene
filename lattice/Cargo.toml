@@ -13,3 +13,4 @@ spin = { workspace = true, features = ["spin_mutex", "once"] }
 usvg = "0.47"
 tiny-skia = "0.12"
 resvg = "0.47"
+ttf-noto-sans = "0.1"

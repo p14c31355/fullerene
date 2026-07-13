@@ -74,19 +74,19 @@ fn parse_bool(s: &str) -> Option<bool> {
 
 /// Load settings from `/etc/settings.toml` via VFS and apply them.
 ///
-/// Returns `(sensitivity, brightness_x100, top_panel_enabled)` so the
+/// Returns `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded)` so the
 /// caller can sync to solvent.
 pub fn load_settings(
     read_fn: impl FnOnce(&str) -> Result<Vec<u8>, &'static str>,
-) -> (f32, u32, bool) {
+) -> (f32, u32, bool, bool) {
     let data = match read_fn("/etc/settings.toml") {
         Ok(data) => data,
-        Err(_) => return (1.0, 100, true),
+        Err(_) => return (1.0, 100, true, true),
     };
 
     let text = match core::str::from_utf8(&data) {
         Ok(s) => s,
-        Err(_) => return (1.0, 100, true),
+        Err(_) => return (1.0, 100, true, true),
     };
 
     let mut section: Option<&str> = None;
@@ -131,9 +131,8 @@ pub fn load_settings(
         }
     }
 
-    lattice::compositor::WINDOW_CORNER_RADIUS.store(if window_corner { 8 } else { 0 }, core::sync::atomic::Ordering::Relaxed);
     let bright_x100 = (brightness.clamp(0.1, 1.0) * 100.0) as u32;
-    (sensitivity.clamp(0.25, 4.0), bright_x100, top_panel)
+    (sensitivity.clamp(0.25, 4.0), bright_x100, top_panel, window_corner)
 }
 
 /// Build a TOML string from current settings.
