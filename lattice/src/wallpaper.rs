@@ -66,7 +66,7 @@ static WALLPAPER_PRESETS: [WallpaperPreset; 5] = [
         width: BEACH_W,
         height: BEACH_H,
         pixels: &BEACH_PIXELS,
-        tileable: true,
+        tileable: false,
         smooth: false,
     },
     WallpaperPreset {
@@ -74,7 +74,7 @@ static WALLPAPER_PRESETS: [WallpaperPreset; 5] = [
         width: MOUNTAIN_W,
         height: MOUNTAIN_H,
         pixels: &MOUNTAIN_PIXELS,
-        tileable: true,
+        tileable: false,
         smooth: false,
     },
     WallpaperPreset {
@@ -82,7 +82,7 @@ static WALLPAPER_PRESETS: [WallpaperPreset; 5] = [
         width: CITY_W,
         height: CITY_H,
         pixels: &CITY_PIXELS,
-        tileable: true,
+        tileable: false,
         smooth: false,
     },
     WallpaperPreset {
