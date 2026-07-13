@@ -407,7 +407,7 @@ fn register_nozzle_hooks() {
             let msg = format!("Current wallpaper: {}\n", name);
             ctx.terminal.write_str(&msg);
             ctx.terminal
-                .write_str("Usage: wallpaper solid | grid | gradient | beach | mountain | city\n");
+                .write_str("Usage: wallpaper solid | grid | gradient | beach | mountain | city | fullerene | fullerene-sharp\n");
         }
         "windows" => {
             if solvent::is_initialized() {

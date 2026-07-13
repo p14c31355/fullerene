@@ -6,6 +6,7 @@ use crate::{DISPLAY_BRIGHTNESS_X100, FB_DIMS, MOUSE_SENSITIVITY, RUNTIME, SOLVEN
 use alloc::vec;
 use lattice::compositor::WINDOW_CORNER_RADIUS;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
+use lattice::wallpaper::{self, WallpaperMode};
 use resonance::KeyCode;
 
 /// Selected row in the settings UI.
@@ -27,7 +28,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
 
     let mut sel = SETTINGS_SELECTED.lock();
 
-    const ROWS: u32 = 4;
+    const ROWS: u32 = 5;
     match key {
         KeyCode::Up => {
             *sel = sel.saturating_sub(1).min(ROWS - 1);
@@ -59,10 +60,22 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
                     persist_settings();
                 }
                 3 => {
-                    // Window corner toggle
                     let cur = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
                     let new_val = if cur == 0 { 8 } else { 0 };
                     WINDOW_CORNER_RADIUS.store(new_val, core::sync::atomic::Ordering::Relaxed);
+                    rt.desktop.force_full_redraw();
+                    persist_settings();
+                }
+                4 => {
+                    let modes = wallpaper::wallpaper_modes();
+                    let cur = wallpaper::get_wallpaper();
+                    let cur_idx = modes.iter().position(|(_, m)| *m == cur).unwrap_or(0);
+                    let next_idx = if dec {
+                        (cur_idx + modes.len() - 1) % modes.len()
+                    } else {
+                        (cur_idx + 1) % modes.len()
+                    };
+                    wallpaper::set_wallpaper(modes[next_idx].1);
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
@@ -120,13 +133,24 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
     let corner = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
     let sel = *SETTINGS_SELECTED.lock();
 
+    let wp_mode = wallpaper::get_wallpaper();
+    let wp_name = match wp_mode {
+        WallpaperMode::SolidColor => "solid",
+        WallpaperMode::GridPattern => "grid",
+        WallpaperMode::Gradient => "gradient",
+        WallpaperMode::Preset(idx) => {
+            wallpaper::wallpaper_presets().get(idx).map_or("?", |p| p.name)
+        }
+    };
+
     let info = alloc::format!(
         "{}Settings\n\
          \n\
          {}Mouse Sensitivity: {:.2}\n\
          {}Display Brightness: {}.{:02}\n\
          {}Top Panel: {}\n\
-         {}Window Corner: {}",
+         {}Window Corner: {}\n\
+         {}Wallpaper: {}",
         highlight(sel, 99),
         highlight(sel, 0),
         sens,
@@ -137,6 +161,8 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         if top_panel { "ON " } else { "OFF" },
         highlight(sel, 3),
         if corner > 0 { "Rounded" } else { "Square " },
+        highlight(sel, 4),
+        wp_name,
     );
 
     let cols = 38u32;

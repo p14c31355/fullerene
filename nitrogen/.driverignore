@@ -11,7 +11,7 @@
 # iwlwifi/
 
 # USB subsystem (xhci, ehci, msd, hub, …). Uncomment to exclude:
-usb/
+# usb/
 
 # Intel wireless. Uncomment to exclude:
 iwlwifi/
