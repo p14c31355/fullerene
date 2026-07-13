@@ -96,11 +96,11 @@ pub fn open_block_device(name: &str) -> Result<FatFileSystem, FsError> {
     let (dev_name, device) = devices.remove(pos);
     match FatFileSystem::from_device(device) {
         Ok(fs) => Ok(fs),
-        Err(e) => {
-            // Re-insert device if FatFileSystem construction failed
+        Err((e, Some(device))) => {
             devices.push((dev_name, device));
             Err(e)
         }
+        Err((e, None)) => Err(e),
     }
 }
 
@@ -343,15 +343,20 @@ pub struct FatFileSystem {
 }
 
 impl FatFileSystem {
-    pub fn from_device(mut device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
-        let lba = find_fat_partition(&mut *device)?;
+    pub fn from_device(device: Box<dyn BlockDevice>) -> Result<Self, (FsError, Option<Box<dyn BlockDevice>>)> {
+        let mut device = device;
+        let lba = match find_fat_partition(&mut *device) {
+            Ok(lba) => lba,
+            Err(e) => return Err((e, Some(device))),
+        };
         if lba > 0 {
             let wrapped = PartitionBlockDevice { inner: device, offset: lba };
             let cached = BlockCache::new(wrapped, 64);
-            return Self::new(Box::new(cached));
+            Self::new(Box::new(cached)).map_err(|e| (e, None))
+        } else {
+            let cached = BlockCache::new(device, 64);
+            Self::new(Box::new(cached)).map_err(|e| (e, None))
         }
-        let cached = BlockCache::new(device, 64);
-        Self::new(Box::new(cached))
     }
 
     pub fn new(device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
@@ -405,24 +410,34 @@ impl FileSystem for FatFileSystem {
     }
 
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-        let handle = self.handles.iter_mut().find(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
-        let path = handle.1.clone();
-        let offset = handle.2;
-        let mut file = self.open_file(&path)?;
-        Self::map_err(file.seek(fatfs::SeekFrom::Start(offset)))?;
-        let n = Self::map_err(file.read(buf))?;
-        handle.2 += n as u64;
+        let (path, offset) = {
+            let handle = self.handles.iter_mut().find(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            (handle.1.clone(), handle.2)
+        };
+        let n = {
+            let mut file = self.open_file(&path)?;
+            Self::map_err(file.seek(fatfs::SeekFrom::Start(offset)))?;
+            Self::map_err(file.read(buf))?
+        };
+        if let Some(handle) = self.handles.iter_mut().find(|h| h.0 == fd) {
+            handle.2 += n as u64;
+        }
         Ok(n)
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
-        let handle = self.handles.iter_mut().find(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
-        let path = handle.1.clone();
-        let offset = handle.2;
-        let mut file = self.open_file(&path)?;
-        Self::map_err(file.seek(fatfs::SeekFrom::Start(offset)))?;
-        let n = Self::map_err(file.write(data))?;
-        handle.2 += n as u64;
+        let (path, offset) = {
+            let handle = self.handles.iter_mut().find(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            (handle.1.clone(), handle.2)
+        };
+        let n = {
+            let mut file = self.open_file(&path)?;
+            Self::map_err(file.seek(fatfs::SeekFrom::Start(offset)))?;
+            Self::map_err(file.write(data))?
+        };
+        if let Some(handle) = self.handles.iter_mut().find(|h| h.0 == fd) {
+            handle.2 += n as u64;
+        }
         Ok(n)
     }
 

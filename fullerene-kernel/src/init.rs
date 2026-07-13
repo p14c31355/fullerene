@@ -13,10 +13,12 @@ use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
 use petroleum::initializer::FrameAllocator;
 
+#[cfg(not(nitrogen_no_iwlwifi))]
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
 
 /// Format a PCI device descriptor into a byte buffer for serial debug.
+#[allow(unused_assignments)]
 fn hex_fmt(buf: &mut [u8; 72], bus: u8, dev: u8, func: u8, vid: u16, did: u16, cls: u8, scls: u8) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut i = 0;
