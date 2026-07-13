@@ -61,13 +61,16 @@ impl WallpaperMode {
     }
 }
 
-/// A named wallpaper preset with raw pixel data (tileable).
+/// A named wallpaper preset with raw pixel data.
 #[derive(Debug, Clone, Copy)]
 pub struct WallpaperPreset {
     pub name: &'static str,
     pub width: u32,
     pub height: u32,
     pub pixels: &'static [u32],
+    /// If true, the image tiles across the framebuffer.
+    /// If false, the image is displayed once, centered on the screen.
+    pub tileable: bool,
 }
 
 // ── Preset generators (const fn) ──────────────────────────────
@@ -284,29 +287,42 @@ static MOUNTAIN_PIXELS: ([u32; MOUNTAIN_WU * MOUNTAIN_HU], u32, u32) = gen_mount
 /// Pre-computed city wallpaper pixels.
 static CITY_PIXELS: ([u32; CITY_WU * CITY_HU], u32, u32) = gen_city();
 
+// Pre-rendered fullerene wallpaper (generated from SVG at build time).
+include!(concat!(env!("OUT_DIR"), "/wallpaper_fullerene.rs"));
+
 /// Available wallpaper presets (module-level static array).
 ///
 /// Module-level `static` avoids the lazy-initialisation guard that
 /// function-scoped `static` would require — in `no_std` bare‑metal
 /// kernels the guard atomics may not work correctly, causing hangs.
-static WALLPAPER_PRESETS: [WallpaperPreset; 3] = [
+static WALLPAPER_PRESETS: [WallpaperPreset; 4] = [
     WallpaperPreset {
         name: "beach",
         width: BEACH_W,
         height: BEACH_H,
         pixels: &BEACH_PIXELS.0,
+        tileable: true,
     },
     WallpaperPreset {
         name: "mountain",
         width: MOUNTAIN_W,
         height: MOUNTAIN_H,
         pixels: &MOUNTAIN_PIXELS.0,
+        tileable: true,
     },
     WallpaperPreset {
         name: "city",
         width: CITY_W,
         height: CITY_H,
         pixels: &CITY_PIXELS.0,
+        tileable: true,
+    },
+    WallpaperPreset {
+        name: "fullerene",
+        width: FULLERENE_W,
+        height: FULLERENE_H,
+        pixels: &FULLERENE_PIXELS,
+        tileable: false,
     },
 ];
 
@@ -316,7 +332,7 @@ pub fn wallpaper_presets() -> &'static [WallpaperPreset] {
 }
 
 /// Global wallpaper state (lock‑free atomic).
-static WALLPAPER_MODE: AtomicU32 = AtomicU32::new(DISC_GRADIENT);
+static WALLPAPER_MODE: AtomicU32 = AtomicU32::new(DISC_PRESET | (3 << 2));
 
 /// Set the wallpaper mode.
 pub fn set_wallpaper(mode: WallpaperMode) {
@@ -385,24 +401,79 @@ pub fn render_wallpaper(
         WallpaperMode::Preset(idx) => {
             let presets = wallpaper_presets();
             if let Some(preset) = presets.get(idx) {
-                let pw = preset.width as usize;
-                let pixels = preset.pixels;
-                for row_offset in 0..ch {
-                    let y = cy + row_offset;
-                    if y >= fb_height {
-                        continue;
-                    }
-                    let src_y = (y % preset.height) as usize;
-                    let rs = (y as usize) * fb_w;
-                    let src_row_start = src_y * pw;
-                    for col_offset in 0..cw {
-                        let x = cx + col_offset;
-                        if x >= fb_width {
+                if preset.tileable {
+                    let pw = preset.width as usize;
+                    let pixels = preset.pixels;
+                    for row_offset in 0..ch {
+                        let y = cy + row_offset;
+                        if y >= fb_height {
                             continue;
                         }
-                        let src_x = (x % preset.width) as usize;
-                        let color = pixels[src_row_start + src_x];
-                        fb[rs + x as usize] = color;
+                        let src_y = (y % preset.height) as usize;
+                        let rs = (y as usize) * fb_w;
+                        let src_row_start = src_y * pw;
+                        for col_offset in 0..cw {
+                            let x = cx + col_offset;
+                            if x >= fb_width {
+                                continue;
+                            }
+                            let src_x = (x % preset.width) as usize;
+                            let color = pixels[src_row_start + src_x];
+                            fb[rs + x as usize] = color;
+                        }
+                    }
+                } else {
+                    // Cover: fill entire framebuffer, maintain aspect ratio, clip overflow
+                    let pw = preset.width as u64;
+                    let ph = preset.height as u64;
+                    let fw = fb_width as u64;
+                    let fh = fb_height as u64;
+                    let pixels = preset.pixels;
+
+                    if fw * ph >= fh * pw {
+                        // Width-constrained: image fills the width, clips top/bottom
+                        // src_y = (y + oy) * pw / fw,  src_x = x * pw / fw
+                        // where oy = (ph * fw - fh * pw) / (2 * pw)
+                        let oy = (ph * fw - fh * pw) / (2 * pw);
+                        for row_offset in 0..ch {
+                            let y = cy + row_offset;
+                            if y >= fb_height {
+                                continue;
+                            }
+                            let src_y = (((y as u64 + oy) * pw / fw) as usize).min(ph as usize - 1);
+                            let rs = (y as usize) * fb_w;
+                            let src_row_start = src_y * (pw as usize);
+                            for col_offset in 0..cw {
+                                let x = cx + col_offset;
+                                if x >= fb_width {
+                                    continue;
+                                }
+                                let src_x = ((x as u64 * pw / fw) as usize).min(pw as usize - 1);
+                                fb[rs + x as usize] = pixels[src_row_start + src_x];
+                            }
+                        }
+                    } else {
+                        // Height-constrained: image fills the height, clips left/right
+                        // src_x = (x + ox) * ph / fh,  src_y = y * ph / fh
+                        // where ox = (pw * fh - fw * ph) / (2 * ph)
+                        let ox = (pw * fh - fw * ph) / (2 * ph);
+                        for row_offset in 0..ch {
+                            let y = cy + row_offset;
+                            if y >= fb_height {
+                                continue;
+                            }
+                            let src_y = ((y as u64 * ph / fh) as usize).min(ph as usize - 1);
+                            let rs = (y as usize) * fb_w;
+                            let src_row_start = src_y * (pw as usize);
+                            for col_offset in 0..cw {
+                                let x = cx + col_offset;
+                                if x >= fb_width {
+                                    continue;
+                                }
+                                let src_x = (((x as u64 + ox) * ph / fh) as usize).min(pw as usize - 1);
+                                fb[rs + x as usize] = pixels[src_row_start + src_x];
+                            }
+                        }
                     }
                 }
             } else {
@@ -506,5 +577,6 @@ pub fn wallpaper_modes() -> &'static [(&'static str, WallpaperMode)] {
         ("solid", WallpaperMode::SolidColor),
         ("grid", WallpaperMode::GridPattern),
         ("gradient", WallpaperMode::Gradient),
+        ("fullerene", WallpaperMode::Preset(3)),
     ]
 }

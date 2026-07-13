@@ -24,8 +24,12 @@ fn main() {
     // 3. Pre-render SVG icons to RGBA pixel data (64×64 each)
     render_svg_icons(&out_dir);
 
+    // 4. Pre-render wallpaper SVG to raw RGB pixel data
+    render_wallpaper_svg(&out_dir);
+
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/icons");
+    println!("cargo:rerun-if-changed=assets/wallpapers");
 }
 
 fn render_svg_icons(out_dir: &PathBuf) {
@@ -49,6 +53,73 @@ fn render_svg_icons(out_dir: &PathBuf) {
         let bin_name = format!("icon_{}.rgba", stem);
         fs::write(out_dir.join(&bin_name), pixmap.data()).expect("write icon pixels");
     }
+}
+
+fn render_wallpaper_svg(out_dir: &PathBuf) {
+    let wallpapers_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join("wallpapers");
+    let svg_path = wallpapers_dir.join("fullerene.svg");
+    if !svg_path.exists() {
+        return;
+    }
+    let svg_data = match fs::read(&svg_path) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("cargo:warning=wallpaper SVG read error: {}", e);
+            return;
+        }
+    };
+    let rtree = match usvg::Tree::from_data(&svg_data, &usvg::Options::default()) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("cargo:warning=wallpaper SVG parse error: {}", e);
+            return;
+        }
+    };
+
+    // Render at a fixed resolution (preserves 3:2 aspect ratio)
+    let render_w = 960u32;
+    let render_h = 640u32;
+    let scale = (render_w as f32 / rtree.size().width())
+        .min(render_h as f32 / rtree.size().height());
+
+    let pix_w = (rtree.size().width() * scale) as u32;
+    let pix_h = (rtree.size().height() * scale) as u32;
+
+    let mut pixmap = tiny_skia::Pixmap::new(pix_w.max(1), pix_h.max(1)).unwrap();
+    let transform = tiny_skia::Transform::from_scale(scale, scale);
+    resvg::render(&rtree, transform, &mut pixmap.as_mut());
+
+    // Convert RGBA → 0x00RRGGBB, center in output tile
+    let pixel_count = (render_w * render_h) as usize;
+    let ox = (render_w.saturating_sub(pix_w)) / 2;
+    let oy = (render_h.saturating_sub(pix_h)) / 2;
+
+    let mut code = format!(
+        "const FULLERENE_W: u32 = {};\nconst FULLERENE_H: u32 = {};\nstatic FULLERENE_PIXELS: [u32; {}] = [",
+        render_w, render_h, pixel_count
+    );
+    use std::fmt::Write;
+    for y in 0..render_h {
+        if y % 64 == 0 {
+            code.push('\n');
+        }
+        for x in 0..render_w {
+            let (r, g, b) = if x >= ox && x < ox + pix_w && y >= oy && y < oy + pix_h {
+                let src_idx = ((y - oy) * pix_w + (x - ox)) as usize * 4;
+                (pixmap.data()[src_idx], pixmap.data()[src_idx + 1], pixmap.data()[src_idx + 2])
+            } else {
+                (0, 0, 0)
+            };
+            write!(code, "0x{:02X}{:02X}{:02X},",
+                r, g, b).unwrap();
+        }
+    }
+    code.push_str("];\n");
+    fs::write(out_dir.join("wallpaper_fullerene.rs"), code.as_bytes())
+        .expect("write wallpaper pixel data");
+    println!("cargo:notice=Rendered fullerene.svg wallpaper ({}×{})", pix_w, pix_h);
 }
 
 #[rustfmt::skip]
