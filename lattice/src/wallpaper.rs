@@ -424,54 +424,88 @@ pub fn render_wallpaper(
                     }
                 } else {
                     // Cover: fill entire framebuffer, maintain aspect ratio, clip overflow
+                    // Uses bilinear interpolation for smooth scaling.
                     let pw = preset.width as u64;
                     let ph = preset.height as u64;
                     let fw = fb_width as u64;
                     let fh = fb_height as u64;
                     let pixels = preset.pixels;
 
+                    // Fixed-point precision: 8 fractional bits (0..255)
+                    let precision = 255u64;
+
                     if fw * ph >= fh * pw {
                         // Width-constrained: image fills the width, clips top/bottom
-                        // src_y = (y + oy) * pw / fw,  src_x = x * pw / fw
-                        // where oy = (ph * fw - fh * pw) / (2 * pw)
+                        // src_y = (y + oy) * pw / fw  (fixed-point)
+                        // src_x = x * pw / fw          (fixed-point)
                         let oy = (ph * fw - fh * pw) / (2 * pw);
                         for row_offset in 0..ch {
                             let y = cy + row_offset;
                             if y >= fb_height {
                                 continue;
                             }
-                            let src_y = (((y as u64 + oy) * pw / fw) as usize).min(ph as usize - 1);
+                            let src_y_fp = (y as u64 + oy) * pw * precision / fw;
+                            let src_y_int = (src_y_fp / precision) as usize;
+                            let fy = (src_y_fp % precision) as u8;
+                            let src_y_int = src_y_int.min(ph as usize - 1);
+                            let src_y_int1 = (src_y_int + 1).min(ph as usize - 1);
                             let rs = (y as usize) * fb_w;
-                            let src_row_start = src_y * (pw as usize);
                             for col_offset in 0..cw {
                                 let x = cx + col_offset;
                                 if x >= fb_width {
                                     continue;
                                 }
-                                let src_x = ((x as u64 * pw / fw) as usize).min(pw as usize - 1);
-                                fb[rs + x as usize] = pixels[src_row_start + src_x];
+                                let src_x_fp = (x as u64) * pw * precision / fw;
+                                let src_x_int = (src_x_fp / precision) as usize;
+                                let fx = (src_x_fp % precision) as u8;
+                                let src_x_int = src_x_int.min(pw as usize - 1);
+                                let src_x_int1 = (src_x_int + 1).min(pw as usize - 1);
+
+                                let tl = pixels[src_y_int * (pw as usize) + src_x_int];
+                                let tr = pixels[src_y_int * (pw as usize) + src_x_int1];
+                                let bl = pixels[src_y_int1 * (pw as usize) + src_x_int];
+                                let br = pixels[src_y_int1 * (pw as usize) + src_x_int1];
+
+                                let top = blend(tl, tr, fx);
+                                let bot = blend(bl, br, fx);
+                                fb[rs + x as usize] = blend(top, bot, fy);
                             }
                         }
                     } else {
                         // Height-constrained: image fills the height, clips left/right
-                        // src_x = (x + ox) * ph / fh,  src_y = y * ph / fh
-                        // where ox = (pw * fh - fw * ph) / (2 * ph)
+                        // src_x = (x + ox) * ph / fh  (fixed-point)
+                        // src_y = y * ph / fh          (fixed-point)
                         let ox = (pw * fh - fw * ph) / (2 * ph);
                         for row_offset in 0..ch {
                             let y = cy + row_offset;
                             if y >= fb_height {
                                 continue;
                             }
-                            let src_y = ((y as u64 * ph / fh) as usize).min(ph as usize - 1);
+                            let src_y_fp = (y as u64) * ph * precision / fh;
+                            let src_y_int = (src_y_fp / precision) as usize;
+                            let fy = (src_y_fp % precision) as u8;
+                            let src_y_int = src_y_int.min(ph as usize - 1);
+                            let src_y_int1 = (src_y_int + 1).min(ph as usize - 1);
                             let rs = (y as usize) * fb_w;
-                            let src_row_start = src_y * (pw as usize);
                             for col_offset in 0..cw {
                                 let x = cx + col_offset;
                                 if x >= fb_width {
                                     continue;
                                 }
-                                let src_x = (((x as u64 + ox) * ph / fh) as usize).min(pw as usize - 1);
-                                fb[rs + x as usize] = pixels[src_row_start + src_x];
+                                let src_x_fp = (x as u64 + ox) * ph * precision / fh;
+                                let src_x_int = (src_x_fp / precision) as usize;
+                                let fx = (src_x_fp % precision) as u8;
+                                let src_x_int = src_x_int.min(pw as usize - 1);
+                                let src_x_int1 = (src_x_int + 1).min(pw as usize - 1);
+
+                                let tl = pixels[src_y_int * (pw as usize) + src_x_int];
+                                let tr = pixels[src_y_int * (pw as usize) + src_x_int1];
+                                let bl = pixels[src_y_int1 * (pw as usize) + src_x_int];
+                                let br = pixels[src_y_int1 * (pw as usize) + src_x_int1];
+
+                                let top = blend(tl, tr, fx);
+                                let bot = blend(bl, br, fx);
+                                fb[rs + x as usize] = blend(top, bot, fy);
                             }
                         }
                     }

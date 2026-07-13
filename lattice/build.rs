@@ -78,40 +78,29 @@ fn render_wallpaper_svg(out_dir: &PathBuf) {
         }
     };
 
-    // Render at a fixed resolution (preserves 3:2 aspect ratio)
-    let render_w = 960u32;
-    let render_h = 640u32;
-    let scale = (render_w as f32 / rtree.size().width())
-        .min(render_h as f32 / rtree.size().height());
+    // Render at the SVG's native resolution
+    let w = rtree.size().width().ceil() as u32;
+    let h = rtree.size().height().ceil() as u32;
 
-    let pix_w = (rtree.size().width() * scale) as u32;
-    let pix_h = (rtree.size().height() * scale) as u32;
+    let mut pixmap = tiny_skia::Pixmap::new(w, h).unwrap();
+    resvg::render(&rtree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
 
-    let mut pixmap = tiny_skia::Pixmap::new(pix_w.max(1), pix_h.max(1)).unwrap();
-    let transform = tiny_skia::Transform::from_scale(scale, scale);
-    resvg::render(&rtree, transform, &mut pixmap.as_mut());
-
-    // Convert RGBA → 0x00RRGGBB, center in output tile
-    let pixel_count = (render_w * render_h) as usize;
-    let ox = (render_w.saturating_sub(pix_w)) / 2;
-    let oy = (render_h.saturating_sub(pix_h)) / 2;
-
+    // Convert RGBA → 0x00RRGGBB
+    let pixel_count = (w * h) as usize;
     let mut code = format!(
         "const FULLERENE_W: u32 = {};\nconst FULLERENE_H: u32 = {};\nstatic FULLERENE_PIXELS: [u32; {}] = [",
-        render_w, render_h, pixel_count
+        w, h, pixel_count
     );
     use std::fmt::Write;
-    for y in 0..render_h {
+    for y in 0..h {
         if y % 64 == 0 {
             code.push('\n');
         }
-        for x in 0..render_w {
-            let (r, g, b) = if x >= ox && x < ox + pix_w && y >= oy && y < oy + pix_h {
-                let src_idx = ((y - oy) * pix_w + (x - ox)) as usize * 4;
-                (pixmap.data()[src_idx], pixmap.data()[src_idx + 1], pixmap.data()[src_idx + 2])
-            } else {
-                (0, 0, 0)
-            };
+        for x in 0..w {
+            let src_idx = (y * w + x) as usize * 4;
+            let r = pixmap.data()[src_idx];
+            let g = pixmap.data()[src_idx + 1];
+            let b = pixmap.data()[src_idx + 2];
             write!(code, "0x{:02X}{:02X}{:02X},",
                 r, g, b).unwrap();
         }
@@ -119,7 +108,7 @@ fn render_wallpaper_svg(out_dir: &PathBuf) {
     code.push_str("];\n");
     fs::write(out_dir.join("wallpaper_fullerene.rs"), code.as_bytes())
         .expect("write wallpaper pixel data");
-    println!("cargo:notice=Rendered fullerene.svg wallpaper ({}×{})", pix_w, pix_h);
+    println!("cargo:notice=Rendered fullerene.svg wallpaper ({}×{})", w, h);
 }
 
 #[rustfmt::skip]
