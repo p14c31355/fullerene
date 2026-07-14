@@ -148,6 +148,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("grep", "Search for a pattern", builtins::cmd_grep),
         ("sort", "Sort lines of text", builtins::cmd_sort),
         ("wc", "Count lines, words, and bytes", builtins::cmd_wc),
+        (
+            "mount",
+            "Mount a block device to a directory",
+            builtins::cmd_mount
+        ),
         ("usb_info", "Show USB device status", builtins::cmd_usb_info),
         (
             "sd_mount",

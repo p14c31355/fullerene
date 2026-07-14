@@ -19,11 +19,12 @@
 //! ehci.poll_ports();
 //! ```
 
-use crate::DriverContext;
-use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
-
 use alloc::vec::Vec;
 use core::ptr;
+
+use crate::DriverContext;
+use crate::pci_health::PciHealth;
+use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
 
 // ── Import sub-contexts from sibling modules ──────────────────
 use super::async_queue::*;
@@ -47,6 +48,8 @@ pub struct EhciContext {
     pub devices: Vec<UsbDevice>,
     /// Driver context for memory allocation.
     driver_ctx: &'static dyn DriverContext,
+    /// PCI health monitor — check before MMIO transaction cycles.
+    pub health: PciHealth,
     /// Next USB device address to assign.
     pub next_address: u8,
 }
@@ -114,8 +117,9 @@ impl EhciContext {
     /// # Safety
     /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
     /// of the returned controller.
-    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
+    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
         let registers = unsafe { EhciRegisterContext::new(mmio_base) };
+        crate::debug::hint(b"eh_csp");
         let hcsparams = unsafe { ptr::read_volatile(mmio_base.add(4) as *const u32) };
         let n_ports = (hcsparams & 0x0F).max(1);
 
@@ -128,6 +132,7 @@ impl EhciContext {
             ports,
             devices: Vec::new(),
             driver_ctx: ctx,
+            health,
             next_address: 1,
         })
     }
@@ -141,32 +146,55 @@ impl EhciContext {
 
     /// Reset the controller (HCRESET).
     pub fn reset(&mut self) -> Result<(), &'static str> {
-        let op = &self.registers.op;
-        op.set_usbcmd(USBCMD_HCRESET);
-        if crate::timing::wait_timeout_us(500_000, || {
-            op.usbcmd() & USBCMD_HCRESET == 0
-        }).is_err() {
-            return Err("HCRESET timeout");
+        if !self.health.is_device_present() {
+            log::error!("EHCI: device gone before reset");
+            return Err("EHCI device gone");
         }
+        let op = &self.registers.op;
+        crate::debug::hint(b"eh_rst");
+        op.set_usbcmd(USBCMD_HCRESET);
+        crate::debug::hint(b"eh_wrs");
+        let mut aborted = false;
+        if crate::timing::wait_timeout_us(500_000, || {
+            let cmd = op.usbcmd();
+            if cmd == 0xFFFF_FFFF {
+                aborted = true;
+                return true;
+            }
+            cmd & USBCMD_HCRESET == 0
+        }).is_err() || aborted {
+            return Err("HCRESET timeout or device disconnected");
+        }
+        crate::debug::hint(b"eh_rdy");
         Ok(())
     }
 
     /// Start the controller and enable the async schedule.
     pub fn start(&mut self) -> Result<(), &'static str> {
         let op = &self.registers.op;
+        crate::debug::hint(b"eh_alt");
         op.set_async_list_addr(self.transfer.schedule.head_phys as u32);
 
+        crate::debug::hint(b"eh_cmd");
         let cmd = op.usbcmd();
         op.set_usbcmd(cmd | USBCMD_RS | USBCMD_ASSE);
 
         // Wait for HCHalted to clear
+        crate::debug::hint(b"eh_hch");
+        let mut aborted = false;
         if crate::timing::wait_timeout_us(200_000, || {
-            op.usbsts() & USBSTS_HCH == 0
-        }).is_err() {
-            return Err("EHCI start timeout (HCH still set)");
+            let sts = op.usbsts();
+            if sts == 0xFFFF_FFFF {
+                aborted = true;
+                return true;
+            }
+            sts & USBSTS_HCH == 0
+        }).is_err() || aborted {
+            return Err("EHCI start timeout or device disconnected");
         }
 
         // Clear stale port-change status bits
+        crate::debug::hint(b"eh_pcd");
         op.write_usbsts(USBSTS_PCD);
         Ok(())
     }

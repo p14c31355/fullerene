@@ -1,9 +1,11 @@
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
+use genome::block::BlockDevice;
 use genome::fs::FsError;
 use genome::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
 use nitrogen::driver_api::DriverBox;
@@ -225,4 +227,34 @@ fn stable_ino(name: &str) -> u64 {
         h = h.wrapping_mul(31).wrapping_add(b as u64);
     }
     h | 0x1000_0000_0000_0000
+}
+
+// ── Block device registry ───────────────────────────────────
+//
+// Maps device names (e.g. "usb0", "sd0") to block device instances.
+// Used by the `mount` shell command to look up storage devices.
+// Devices are registered during enumeration and consumed on mount.
+
+pub static BLOCK_DEVICE_REGISTRY: Mutex<BTreeMap<alloc::string::String, Box<dyn BlockDevice>>> =
+    Mutex::new(BTreeMap::new());
+
+pub fn register_block_device(name: alloc::string::String, device: Box<dyn BlockDevice>) {
+    BLOCK_DEVICE_REGISTRY.lock().insert(name, device);
+}
+
+pub fn unregister_block_device(name: &str) {
+    BLOCK_DEVICE_REGISTRY.lock().remove(name);
+}
+
+/// Take a block device out of the registry (ownership transferred to caller).
+pub fn open_block_device(name: &str) -> Option<Box<dyn BlockDevice>> {
+    BLOCK_DEVICE_REGISTRY.lock().remove(name)
+}
+
+pub fn list_block_device_names() -> alloc::vec::Vec<alloc::string::String> {
+    BLOCK_DEVICE_REGISTRY.lock().keys().cloned().collect()
+}
+
+pub fn block_device_exists(name: &str) -> bool {
+    BLOCK_DEVICE_REGISTRY.lock().contains_key(name)
 }

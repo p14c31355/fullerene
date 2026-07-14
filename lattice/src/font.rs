@@ -1,8 +1,8 @@
-//! Font rendering — 8×16 bitmap fallback + optional ab_glyph TrueType.
+//! Font rendering — bitmap fallback via embedded-graphics + ab_glyph TrueType.
 //!
-//! When a TTF font is available (downloaded at build time), text is
-//! rendered with grayscale antialiasing.  Otherwise the classic 8×16
-//! VGA bitmap font is used as fallback.
+//! When a TTF font is available (compiled at build time), text is
+//! rendered with grayscale antialiasing.  Otherwise a built‑in bitmap
+//! font from `embedded-graphics` is used as fallback.
 //!
 //! # PSF2 Header (32 bytes)
 //!
@@ -22,13 +22,51 @@
 //! followed by an optional Unicode mapping table.
 
 pub const GLYPH_WIDTH: u32 = 8;
-pub const GLYPH_HEIGHT: u32 = 16;
-pub const GLYPH_BYTES: usize = 16;
+pub const GLYPH_HEIGHT: u32 = 13;
+pub const GLYPH_BYTES: usize = 13;
 pub const GLYPH_COUNT: usize = 95;
 
-/// Raw font bitmap — 95 glyphs × 16 bytes each = 1520 bytes.
-/// Compiled at build time by `build.rs`.
-static FONT_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/font8x16.bin"));
+use embedded_graphics::mono_font::ascii::{FONT_8X13, FONT_9X15, FONT_6X12, FONT_10X20};
+
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
+use embedded_graphics::Pixel;
+
+/// Simple draw target that renders BinaryColor pixels onto a `&mut [u32]` framebuffer.
+struct FbDrawTarget<'a> {
+    fb: &'a mut [u32],
+    width: u32,
+    height: u32,
+    stride: u32,
+    fg_color: u32,
+}
+
+impl DrawTarget for FbDrawTarget<'_> {
+    type Color = BinaryColor;
+    type Error = core::convert::Infallible;
+
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>,
+    {
+        for Pixel(pos, color) in pixels {
+            if color == BinaryColor::On {
+                let px = pos.x as u32;
+                let py = pos.y as u32;
+                if px < self.width && py < self.height {
+                    self.fb[(py * self.stride + px) as usize] = self.fg_color;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl OriginDimensions for FbDrawTarget<'_> {
+    fn size(&self) -> Size {
+        Size::new(self.width, self.height)
+    }
+}
 
 // ── PSF2 support ──────────────────────────────────────────────
 
@@ -244,8 +282,8 @@ impl Glyph<'_> {
 /// Look up a glyph for printable ASCII (0x20–0x7E).
 ///
 /// If a PSF2 font has been loaded via [`load_psf2`], glyphs 0x20–0x7E
-/// are taken from the PSF bitmap.  Otherwise the compile‑time embedded
-/// font is used.
+/// are taken from the PSF bitmap.  Otherwise the font from
+/// `embedded-graphics` is used.
 ///
 /// Characters outside 0x20–0x7E fall back to the space glyph (index 0).
 /// Use [`glyph_for_codepoint`] for Unicode‑aware glyph rendering.
@@ -259,24 +297,63 @@ pub fn glyph(ch: u8) -> Glyph<'static> {
 }
 
 fn ascii_glyph(ch: u8) -> Glyph<'static> {
-    // Try PSF font first
     if let Some(ref psf) = *PSF_FONT.lock() {
         return psf_glyph(psf, ch);
     }
     embedded_glyph(ch)
 }
 
+/// Render a single ASCII character into a tiny 8×13 framebuffer and return
+/// the bitmap rows as a glyph.  The result is cached in [`EMBEDDED_GLYPH_CACHE`]
+/// so the rasterisation only happens once.
 fn embedded_glyph(ch: u8) -> Glyph<'static> {
     let idx = if ch >= 0x20 && ch <= 0x7E {
         (ch - 0x20) as usize
     } else {
         0
     };
+    let rows = embedded_glyph_data();
     let start = idx * GLYPH_BYTES;
-    let end = (start + GLYPH_BYTES).min(FONT_BIN.len());
-    Glyph {
-        rows: &FONT_BIN[start..end],
-    }
+    let end = (start + GLYPH_BYTES).min(rows.len());
+    Glyph { rows: &rows[start..end] }
+}
+
+/// Lazily rasterise all 95 ASCII glyphs into a flat byte array via
+/// `embedded-graphics` and cache the result.
+fn embedded_glyph_data() -> &'static [u8] {
+    use embedded_graphics::mono_font::MonoTextStyle;
+    use embedded_graphics::text::{Text, Baseline};
+    static CACHE: spin::once::Once<[u8; 1235]> = spin::once::Once::new();
+    CACHE.call_once(|| {
+        let mut out = [0u8; 1235];
+        let mut buf = [0u32; 8 * 13];
+        for code in 0x20u8..=0x7Eu8 {
+            let i = (code - 0x20) as usize;
+            buf.fill(0);
+            let mut target = FbDrawTarget {
+                fb: &mut buf,
+                width: 8,
+                height: 13,
+                stride: 8,
+                fg_color: 0xFFFFFF,
+            };
+            let style = MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+            let ch_slice = [code];
+            let text_str = core::str::from_utf8(&ch_slice).unwrap_or(" ");
+            let _ = Text::with_baseline(text_str, Point::new(0, 0), style, Baseline::Top)
+                .draw(&mut target);
+            for r in 0..13 {
+                let mut byte = 0u8;
+                for c in 0..8 {
+                    if buf[r * 8 + c] == 0xFFFFFF {
+                        byte |= 0x80 >> c;
+                    }
+                }
+                out[i * 13 + r] = byte;
+            }
+        }
+        out
+    })
 }
 
 fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
@@ -306,43 +383,70 @@ pub fn get_glyph_pixel(ch: u8, row: u32, col: u32) -> bool {
 
 /// Return a `Glyph` for ASCII without Mutex contention per pixel.
 ///
-/// This checks PSF once and returns either the PSF glyph or the embedded
-/// glyph, so callers can do many `.pixel()` calls without re‑locking.
+/// This checks PSF once and returns either the PSF glyph or the
+/// embedded-graphics glyph, so callers can do many `.pixel()` calls
+/// without re‑locking.
 #[inline]
 pub fn glyph_fast(ch: u8) -> Glyph<'static> {
-    // Fast path: check PSF only once
     if let Some(ref psf) = *PSF_FONT.lock() {
         return psf_glyph(psf, ch);
     }
     embedded_glyph(ch)
 }
 
-/// Render a string of 8-pixel-wide bitmap glyphs onto a framebuffer.
+/// Render a string of bitmap glyphs onto a framebuffer using
+/// `embedded-graphics` mono fonts.
 ///
 /// `glyph_height` is typically 12 (standard) or 14 (label).  Each glyph
 /// is 8 columns wide.  Characters outside the printable ASCII range
 /// (32..=126) are silently skipped.
-#[inline]
 pub fn render_text(
     fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
     x: u32, y: u32, text: &[u8], color: u32, glyph_height: u32,
 ) {
-    for (i, &ch) in text.iter().enumerate() {
-        if ch < 32 || ch > 126 { continue; }
-        let gl = glyph_fast(ch);
-        let gx = x + (i as u32) * 8;
-        for row in 0..glyph_height {
-            let py = y + row;
-            if py >= fb_height { continue; }
-            for col in 0..8 {
-                let px = gx + col;
-                if px >= fb_width { continue; }
-                if gl.pixel(row, col) {
-                    fb[(py * fb_stride + px) as usize] = color;
+    // Use PSF2 font if loaded, otherwise embedded-graphics mono font.
+    if psf_loaded() {
+        for (i, &ch) in text.iter().enumerate() {
+            if ch < 32 || ch > 126 { continue; }
+            let gl = glyph_fast(ch);
+            let gx = x + (i as u32) * 8;
+            for row in 0..glyph_height {
+                let py = y + row;
+                if py >= fb_height { continue; }
+                for col in 0..8 {
+                    let px = gx + col;
+                    if px >= fb_width { continue; }
+                    if gl.pixel(row, col) {
+                        fb[(py * fb_stride + px) as usize] = color;
+                    }
                 }
             }
         }
+        return;
     }
+
+    // Default: use embedded-graphics mono font via FbDrawTarget.
+    // Select font based on requested glyph_height.
+    let font = match glyph_height {
+        0..=12 => &FONT_6X12,
+        13..=14 => &FONT_8X13,
+        15..=19 => &FONT_9X15,
+        _ => &FONT_10X20,
+    };
+    let mut target = FbDrawTarget {
+        fb,
+        width: fb_width,
+        height: fb_height,
+        stride: fb_stride,
+        fg_color: color,
+    };
+    use embedded_graphics::text::Baseline as EgBaseline;
+    let style = embedded_graphics::mono_font::MonoTextStyle::new(font, BinaryColor::On);
+    let text_str = core::str::from_utf8(text).unwrap_or("");
+    let _ = embedded_graphics::text::Text::with_baseline(
+        text_str, Point::new(x as i32, y as i32), style, EgBaseline::Top,
+    )
+    .draw(&mut target);
 }
 
 /// Convenience wrapper: bitmap text at (x, y) with 12px glyph height.
@@ -350,8 +454,9 @@ pub fn render_text_bitmap(
     fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
     x: i32, y: i32, text: &str, color: u32,
 ) {
-    if y < 0 || y as u32 + 12 >= fb_height { return; }
-    render_text(fb, fb_width, fb_height, fb_stride, x.max(0) as u32, y as u32, text.as_bytes(), color, 12);
+    let h = PSF_FONT.lock().as_ref().map_or(GLYPH_HEIGHT, |psf| psf.height);
+    if y < 0 || y as u32 + h >= fb_height { return; }
+    render_text(fb, fb_width, fb_height, fb_stride, x.max(0) as u32, y as u32, text.as_bytes(), color, h);
 }
 
 // ── TrueType font support (ab_glyph) ──────────────────────────

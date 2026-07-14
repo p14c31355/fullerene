@@ -122,6 +122,7 @@ impl ControllerManager {
             // page-fault and hang the CPU.  PCI MMIO aperture is NOT part of
             // the direct physical-memory map, so phys_to_virt alone is
             // insufficient.
+            crate::debug::hint(b"us_map");
             log::info!(
                 "USB: mapping MMIO BAR0 {:#x} -> virt {:#p} ({} bytes)",
                 mmio_base, mmio_virt, bar_size
@@ -176,6 +177,7 @@ impl ControllerManager {
                 continue;
             }
 
+            crate::debug::hint(b"us_pif");
             let prog_if = crate::pci::PciConfigSpace::read_config_byte(
                 dev.bus,
                 dev.device,
@@ -183,14 +185,15 @@ impl ControllerManager {
                 0x09,
             );
             match prog_if {
-                0x20 => {
+                    0x20 => {
                     log::info!(
                         "USB: EHCI at {:02x}:{:02x}.{} — initialising",
                         dev.bus,
                         dev.device,
                         dev.function
                     );
-                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx) } {
+                    crate::debug::hint(b"eh_new");
+                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx, health) } {
                         if hc.initialize().is_ok() {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
@@ -211,7 +214,7 @@ impl ControllerManager {
                         dev.function
                     );
                     route_intel_ports_to_xhci(dev);
-                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx) } {
+                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx, health) } {
                         if hc.init().is_ok() {
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));

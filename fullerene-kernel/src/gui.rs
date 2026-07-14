@@ -141,11 +141,10 @@ pub fn init() {
             result
         }),
         usb_drive_list: Some(|| {
-            let drives = crate::drivers::registry::USB_DRIVES.lock();
-            drives
-                .iter()
-                .map(|d| (d.name.clone(), d.mount_point.clone()))
-                .collect()
+            let names = crate::devfs::list_block_device_names();
+            names.iter().map(|n| {
+                (alloc::format!("/dev/{}", n), alloc::format!("(not mounted — use mount command)"))
+            }).collect()
         }),
         usb_poll: Some(|| crate::drivers::registry::poll_usb()),
         shell_cmd: None,

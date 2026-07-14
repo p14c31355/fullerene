@@ -349,15 +349,33 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             Ok(())
         }
         "fat32" => {
-            // The kernel's USB storage driver already mounts FatFileSystem
-            // directly via `vfs.mount(mount_point, Box::new(fs))` when a
-            // disk is detected.  This code path is a convenience for
-            // mounting a known block device by name (e.g. `/dev/sda`) at
-            // boot.  We look up the device in the kernel's driver registry.
-            let fs = crate::drivers::fat::open_block_device(device)?;
-            vfs.mount(mount_point, Box::new(fs))?;
-            log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
-            Ok(())
+            // Normalize device name: strip leading "/dev/" if present
+            let device_name = device.strip_prefix("/dev/").unwrap_or(device);
+
+            // Validate mount point before consuming the block device
+            if !vfs.exists(mount_point) {
+                vfs.mkdir(mount_point)?;
+            }
+
+            let bdev = crate::devfs::open_block_device(device_name)
+                .ok_or(FsError::FileNotFound)?;
+            match crate::drivers::fat::FatFileSystem::from_device(bdev) {
+                Ok(fs) => {
+                    vfs.mount(mount_point, Box::new(fs))?;
+                    log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
+                    Ok(())
+                }
+                Err((e, returned_bdev)) => {
+                    // Re-register the device so subsequent mount attempts can reuse it
+                    if let Some(bdev) = returned_bdev {
+                        crate::devfs::register_block_device(
+                            alloc::string::String::from(device_name),
+                            bdev,
+                        );
+                    }
+                    Err(e)
+                }
+            }
         }
         _ => Err(FsError::NotSupported),
     })

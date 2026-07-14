@@ -22,11 +22,12 @@
 //! xhci.poll_ports();
 //! ```
 
-use crate::DriverContext;
-use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket};
-
-use alloc::vec::Vec;
 use core::ptr;
+use alloc::vec::Vec;
+
+use crate::DriverContext;
+use crate::pci_health::PciHealth;
+use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket};
 
 // ── Import sub-contexts from sibling modules ──────────────────
 use super::device::*;
@@ -59,6 +60,8 @@ pub struct XhciContext {
     pub devices: Vec<UsbDevice>,
     /// Driver context for memory allocation.
     pub(super) driver_ctx: &'static dyn DriverContext,
+    /// PCI health monitor — used before every MMIO transaction cycle.
+    pub health: PciHealth,
     /// Whether legacy (BIOS→OS) handoff succeeded.
     pub legacy_handoff_done: bool,
     /// ERST physical address (allocated in setup_erst).
@@ -85,7 +88,7 @@ impl XhciContext {
     /// # Safety
     /// `mmio_base` must reference a mapped xHCI register BAR for the lifetime
     /// of the returned controller.
-    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
+    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
         // ── Step 1: Read capability registers ─────────────────
         let cap_regs = unsafe { CapabilityRegisters::read(mmio_base) };
         let caplength = cap_regs.caplength;
@@ -161,6 +164,7 @@ impl XhciContext {
             interrupts,
             devices: Vec::new(),
             driver_ctx: ctx,
+            health,
             legacy_handoff_done: legacy_ok,
             erst_phys: None,
             deferred_free_list: Vec::new(),
@@ -218,6 +222,12 @@ impl XhciContext {
     pub fn init(&mut self) -> Result<(), &'static str> {
         let hci_ver = self.registers.cap.hci_version;
         log::info!("xHCI: hci_version=0x{:04X}", hci_ver);
+
+        // Phase 0: Verify device is still present before any MMIO.
+        if !self.health.is_device_present() {
+            log::error!("xHCI: device gone before init");
+            return Err("xHCI device gone");
+        }
 
         // Phase 1: Full HCRST.
         // Stop the controller first (it cannot be running during HCRST).

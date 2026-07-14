@@ -17,13 +17,30 @@ use petroleum::initializer::FrameAllocator;
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
 
+use spin::Once;
+
+static DRIVER_MGR: Once<crate::hardware::driver_manager::DriverManager> = Once::new();
+
+/// Access the global DriverManager (initialised during device_probe init step).
+pub fn with_driver_mgr<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&crate::hardware::driver_manager::DriverManager) -> R,
+{
+    DRIVER_MGR.get().map(f)
+}
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+fn hex_char(v: u8) -> u8 {
+    HEX_DIGITS[(v & 0xF) as usize]
+}
+
 /// Format a PCI device descriptor into a byte buffer for serial debug.
 #[allow(unused_assignments)]
 fn hex_fmt(buf: &mut [u8; 72], bus: u8, dev: u8, func: u8, vid: u16, did: u16, cls: u8, scls: u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut i = 0;
     macro_rules! push { ($b:expr) => { if i < buf.len() { buf[i] = $b; i += 1; } } }
-    macro_rules! hex { ($v:expr) => { push!(HEX[($v >> 4) as usize]); push!(HEX[($v & 0xF) as usize]); } }
+    macro_rules! hex { ($v:expr) => { push!(HEX_DIGITS[($v >> 4) as usize]); push!(HEX_DIGITS[($v & 0xF) as usize]); } }
     macro_rules! bytes { ($s:expr) => { for &b in $s { push!(b); } } }
     bytes!(b"[probe] "); hex!(bus); push!(':' as u8); hex!(dev); push!('.' as u8); hex!(func); push!(' ' as u8);
     hex!((vid >> 8) as u8); hex!(vid as u8); push!(':' as u8);
@@ -133,7 +150,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             // Try UEFI Configuration Table RSDP first, then BootContext, then legacy scan
             let uefi_rsdp =
                 crate::boot::UEFI_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
-            let rsdp = if uefi_rsdp != 0 {
+            let hint_rsdp = if uefi_rsdp != 0 {
                 uefi_rsdp
             } else {
                 crate::contexts::boot::with_boot(|b| b.rsdp_address).unwrap_or(0)
@@ -145,11 +162,12 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             } else {
                 "ACPI scan"
             };
-            // Set ACPI phys_to_virt offset for the new acpi module
+            // Set ACPI phys_to_virt offset
             let acpi_phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
             nitrogen::acpi::set_phys_to_virt_offset(acpi_phys_off);
-            // Fall back to legacy ACPI scan if no RSDP from boot
-            let rsdp = if rsdp != 0 { rsdp } else { nitrogen::acpi::find_rsdp().unwrap_or(0) };
+            // Use AcpiManager for table discovery
+            let acpi_mgr = nitrogen::acpi::manager::AcpiManager::init(hint_rsdp);
+            let rsdp = acpi_mgr.as_ref().map(|m| m.rsdp()).unwrap_or(0);
             match nitrogen::iommu::init(rsdp) {
                 Ok(()) => log::info!("IOMMU initialized (RSDP from {})", rsdp_source),
                 Err(e) => {
@@ -158,24 +176,17 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 }
             }
             // ── ECAM setup via MCFG ─────────────────────────────
-            // Parse the MCFG ACPI table to find the ECAM MMIO base
-            // address.  This is required for extended PCIe config
-            // space (offsets ≥ 0x100), used by L1Sub disable and AER.
-            //
-            // Note: no explicit map_mmio_region is needed here.
-            // The bootloader already identity- and higher-half-maps
-            // 0-64 GB with 2 MiB huge pages.  ECAM resides well
-            // within this range (typically 0xB0000000–0xBFFFFFFF),
-            // so phys_to_virt(ecam_base) is directly accessible.
-            if let Some(mcfg) = nitrogen::acpi::mcfg::parse_mcfg(rsdp) {
-                let phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
-                log::info!(
-                    "MCFG: ECAM at phys={:#018x}, segment={}, buses {}-{}",
-                    mcfg.base_address, mcfg.segment, mcfg.start_bus, mcfg.end_bus,
-                );
-                nitrogen::pci::set_ecam_info(mcfg.base_address, phys_off, mcfg.start_bus, mcfg.end_bus);
-            } else {
-                log::warn!("MCFG: table not found — extended PCIe config space unavailable");
+            if let Some(ref mgr) = acpi_mgr {
+                if let Some(mcfg) = mgr.parse_mcfg() {
+                    let phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
+                    log::info!(
+                        "MCFG: ECAM at phys={:#018x}, segment={}, buses {}-{}",
+                        mcfg.base_address, mcfg.segment, mcfg.start_bus, mcfg.end_bus,
+                    );
+                    nitrogen::pci::set_ecam_info(mcfg.base_address, phys_off, mcfg.start_bus, mcfg.end_bus);
+                } else {
+                    log::warn!("MCFG: table not found — extended PCIe config space unavailable");
+                }
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] IOMMU step done\n");
             Ok(())
@@ -195,40 +206,60 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::GraphicsReady);
             Ok(())
         }),
+        petroleum::init_step!("devfs", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs start\n");
+            let _ = crate::contexts::vfs::mkdir("/dev");
+            let _ = crate::contexts::vfs::mount("", "/dev", "tmpfs");
+            petroleum::serial::serial_log(format_args!("DevFS /dev/ mounted\n"));
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs done\n");
+            Ok(())
+        }),
         petroleum::init_step!("device_probe", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step start\n");
             let registry = crate::drivers::registry::build_registry();
             let ctx = &crate::driver_context_impl::KernelDriverContext;
             let mut scanner = nitrogen::pci::PciScanner::new();
             let _ = scanner.scan_all_buses();
+
+            // Pre-process: safety gates for all devices before probing
+            let mut healthy_devices = alloc::vec::Vec::new();
             for dev in scanner.get_devices() {
-                // ── Safety gates before any non-posted MMIO read ───
-                // PCIe devices in D3 or L1 cannot complete MMIO reads,
-                // hanging the CPU forever.  These use port I/O only.
                 // Log each device so we can identify where real hardware hangs.
                 {
                     let mut buf = [0u8; 72];
                     hex_fmt(&mut buf, dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id, dev.class_code, dev.subclass);
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf);
                 }
-
                 // Skip PCI bridges — drivers only match endpoints.
                 if dev.class_code == 0x06 { continue; }
-
+                // Show bus:device on boot screen (serial-free debug)
+                let hint_bcd = [
+                    b'd', b'v',
+                    hex_char(dev.bus >> 4), hex_char(dev.bus & 0xF),
+                    b':',
+                    hex_char(dev.device >> 4), hex_char(dev.device & 0xF),
+                    b':',
+                    hex_char(dev.function >> 4), hex_char(dev.function & 0xF),
+                ];
+                crate::boot_stage::draw_step_hint(&hint_bcd);
                 dev.disable_pcie_aspm();
                 dev.enable_memory_access();
                 dev.ensure_d0();
-
-                // Quick MMIO-safety check: read config-space Vendor ID again
-                // after enable_memory.  If it returns 0xFFFF the device is gone
-                // (phantom / unpopulated slot) — skip to avoid MMIO hang.
+                // Quick MMIO-safety check
+                crate::boot_stage::draw_step_hint(b"dv_vid");
                 let vid = nitrogen::pci::PciConfigSpace::read_config_word(
                     dev.bus, dev.device, dev.function, 0,
                 );
                 if vid == 0xFFFF || vid == 0x0000 { continue; }
 
-                let _box = registry.match_device(ctx, dev);
+                // Device passed safety checks, add to healthy list
+                healthy_devices.push(dev.clone());
             }
+
+            // DriverManager orchestrates probe → priority → attach → registration
+            let mgr = DRIVER_MGR.call_once(crate::hardware::driver_manager::DriverManager::new);
+            mgr.discover_and_attach(&registry, ctx, &healthy_devices);
+
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
         }),
@@ -318,6 +349,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage::draw_step_hint(b"sd_strt");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card start\n");
             crate::boot_stage::draw_boot_label(b"SD CARD");
+            crate::drivers::registry::sd_probe_and_register();
             petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
             crate::boot_stage::draw_step_hint(b"sd_ok  ");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card done\n");
@@ -356,6 +388,16 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
 
     ];
     InitSequence::new(&common_steps).run();
+
+    // Flush boot log to /bootlog.txt so early init messages survive
+    // even if the system hangs or panics shortly after boot.
+    if let Err(e) = crate::klog::flush_to_vfs() {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flush failed\n");
+        // Non-fatal — continue booting.
+        let _ = e;
+    } else {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flushed\n");
+    }
 
     // Shell is no longer auto-started.  It is launched on demand via
     // the AppGrid overlay or the desktop context menu (NewShell action).
