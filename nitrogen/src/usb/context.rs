@@ -268,6 +268,7 @@ impl ControllerManager {
         let mut xhci_devices: Vec<(usize, usize)> = Vec::new();
 
         for (idx, ehci) in self.ehci.iter_mut().enumerate() {
+            let _ = ehci.start();
             let old = ehci.devices().len();
             let new = ehci.poll_ports();
             if new > 0 {

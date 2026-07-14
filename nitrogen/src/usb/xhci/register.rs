@@ -526,8 +526,10 @@ pub fn parse_port_protocols(
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
     const BIOS_OWNED: u32 = 1 << 16;
     const OS_OWNED: u32 = 1 << 24;
-    const LEGACY_PRESERVE: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17);
-    const LEGACY_EVENTS: u32 = 0x7 << 29;
+    // Preserve SMI enables (bits 29-31) in their BIOS-default state.
+    // Enabling USB SMIs on real hardware can cause SMM-BIOS/OS-MMIO
+    // conflicts that manifest as a complete system hang.
+    const LEGACY_PRESERVE: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17) | (0x7 << 29);
 
     let m = Mmio(mmio_base);
     let mut off = ext_cap_ptr as usize;
@@ -543,7 +545,7 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
             let legsup = m.read32(cap_base);
             if legsup & BIOS_OWNED == 0 {
                 let control = m.read32(cap_base + 4);
-                m.write32(cap_base + 4, (control & LEGACY_PRESERVE) | LEGACY_EVENTS);
+                m.write32(cap_base + 4, control & LEGACY_PRESERVE);
                 return Ok(true);
             }
             m.write32(cap_base, legsup | OS_OWNED);
@@ -556,7 +558,7 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
                 m.write32(cap_base, (m.read32(cap_base) | OS_OWNED) & !BIOS_OWNED);
             }
             let control = m.read32(cap_base + 4);
-            m.write32(cap_base + 4, (control & LEGACY_PRESERVE) | LEGACY_EVENTS);
+            m.write32(cap_base + 4, control & LEGACY_PRESERVE);
             return Ok(false);
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;

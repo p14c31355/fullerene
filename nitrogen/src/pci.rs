@@ -22,14 +22,25 @@ use crate::port::PortWriter;
 static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
 
 /// Acquire the PCI config space lock.
+///
+/// A retry limit prevents deadlock if the lock is re-entered from the same
+/// context (e.g. an NMI that interrupted a locked region).  In normal
+/// operation the lock is held for a single I/O transaction so contention
+/// is negligible.
 #[inline]
 fn pci_config_lock_acquire() {
+    let mut retries = 0u32;
     while PCI_CONFIG_LOCK.compare_exchange_weak(
         false,
         true,
         Ordering::Acquire,
         Ordering::Relaxed,
     ).is_err() {
+        retries += 1;
+        if retries > 100_000 {
+            log::warn!("PCI: config lock contention exceeded 100k spins");
+            break;
+        }
         core::hint::spin_loop();
     }
 }
@@ -279,20 +290,25 @@ impl PciConfigSpace {
         data_writer.write_safe(value);
     }
 
+    /// Write a raw WORD to PCI configuration space (internal, unlocked).
+    ///
+    /// Caller must hold PCI_CONFIG_LOCK.  Uses a DWORD read-modify-write so that
+    /// the write-one-to-clear Status register in the adjacent half-word is not
+    /// corrupted.  Native 16-bit I/O writes to the CFC port are not supported by
+    /// all chipsets and may cause a system hang.
     fn write_config_word_unlocked(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
-        let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_writer = PortWriter::new(
-            crate::port::HardwarePorts::PCI_CONFIG_DATA + u16::from(offset & 2),
+        let aligned = offset & !3;
+        let shift = if offset % 4 < 2 { 0 } else { 16 };
+        let existing = Self::read_config_dword_unlocked(bus, device, function, aligned);
+        let masked = existing & !(0xFFFFu32 << shift);
+        Self::write_config_dword_unlocked(
+            bus, device, function, aligned,
+            masked | ((value as u32) << shift),
         );
-        addr_writer.write_safe(address);
-        data_writer.write_safe(value);
     }
 
     /// Write a raw WORD to PCI configuration space.
     ///
-    /// Uses a native 16-bit CFC transaction so writing Command does not rewrite
-    /// the adjacent write-one-to-clear Status register.
     /// Serializes CF8/CFC access with all other configuration transactions.
     pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
         pci_config_lock_acquire();
