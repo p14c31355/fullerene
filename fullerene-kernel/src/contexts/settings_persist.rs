@@ -74,25 +74,26 @@ fn parse_bool(s: &str) -> Option<bool> {
 
 /// Load settings from `/etc/settings.toml` via VFS and apply them.
 ///
-/// Returns `(sensitivity, brightness_x100, top_panel_enabled)` so the
+/// Returns `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded)` so the
 /// caller can sync to solvent.
 pub fn load_settings(
     read_fn: impl FnOnce(&str) -> Result<Vec<u8>, &'static str>,
-) -> (f32, u32, bool) {
+) -> (f32, u32, bool, bool) {
     let data = match read_fn("/etc/settings.toml") {
         Ok(data) => data,
-        Err(_) => return (1.0, 100, true),
+        Err(_) => return (1.0, 100, true, true),
     };
 
     let text = match core::str::from_utf8(&data) {
         Ok(s) => s,
-        Err(_) => return (1.0, 100, true),
+        Err(_) => return (1.0, 100, true, true),
     };
 
     let mut section: Option<&str> = None;
     let mut sensitivity: f32 = 1.0;
     let mut brightness: f32 = 1.0;
     let mut top_panel: bool = true;
+    let mut window_corner: bool = true; // rounded by default
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -120,17 +121,22 @@ pub fn load_settings(
                         top_panel = v;
                     }
                 }
+                (Some("display"), "window_corner") => {
+                    if let Some(v) = parse_bool(value) {
+                        window_corner = v;
+                    }
+                }
                 _ => {}
             }
         }
     }
 
     let bright_x100 = (brightness.clamp(0.1, 1.0) * 100.0) as u32;
-    (sensitivity.clamp(0.25, 4.0), bright_x100, top_panel)
+    (sensitivity.clamp(0.25, 4.0), bright_x100, top_panel, window_corner)
 }
 
 /// Build a TOML string from current settings.
-pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: bool) -> String {
+pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: bool, corner_rounded: bool) -> String {
     alloc::format!(
         "# Fullerene Settings\n\
          # Auto-generated — do not edit while the system is running\n\
@@ -141,9 +147,11 @@ pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: b
          \n\
          [display]\n\
          brightness = {:.2}\n\
-         top_panel_enabled = {}\n",
+         top_panel_enabled = {}\n\
+         window_corner = {}\n",
         sensitivity,
         brightness_x100 as f32 / 100.0,
         top_panel,
+        corner_rounded,
     )
 }

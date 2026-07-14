@@ -111,6 +111,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         let prev = *PREV_SHELL_STATE.lock();
         if rt.shell_state != prev {
             rt.desktop.force_full_redraw();
+            rt.cursor_only_update = false;
             *PREV_SHELL_STATE.lock() = rt.shell_state;
             *PREV_TRANSITION.lock() = true;
         }
@@ -194,6 +195,10 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
 
     let has_dirty = rt.desktop.has_pending_dirty_rects();
     if has_dirty {
+        let cursor_only = core::mem::replace(&mut rt.cursor_only_update, false);
+
+        // When cursor_only, skip compositor + overlay — just update cursor below.
+        if !cursor_only {
         render_progress(b"RENDER: has dirty");
         {
             let back_needed = back_len.saturating_mul(4);
@@ -321,6 +326,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 .top_panel
                 .render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
         }
+        } // end !cursor_only
 
         // Cursor handling: restore old cursor, save background, draw new cursor
         let cur_sz = lattice::cursor::Cursor::SIZE as i32;

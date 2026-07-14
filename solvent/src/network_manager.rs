@@ -5,24 +5,26 @@
 //! manages the UI-side state (showing/hiding menus, dialogs) and queues
 //! connection requests for an external service to consume.
 
-use alloc::{boxed::Box, string::ToString, vec::Vec};
-use bonder::wifi::{Ssid, WifiStatus};
+use bonder::wifi::Ssid;
 use lattice::desktop::DesktopAction;
-use lattice::network_menu::{ApDisplay, NetStatus};
 
+#[cfg(not(nitrogen_no_iwlwifi))]
 const WIFI_INIT_TIMEOUT_TICKS: u64 = 600;
 
 /// Runtime-owned Wi-Fi lifecycle and UI projection.
+#[allow(dead_code)]
 struct WifiService {
     init_started: Option<u64>,
     init_pending: bool,
 }
 
 impl WifiService {
+    #[allow(dead_code)]
     const fn new() -> Self {
         Self { init_started: None, init_pending: true }
     }
 
+    #[cfg(not(nitrogen_no_iwlwifi))]
     fn advance_init(&mut self, now: u64) {
         let started = *self.init_started.get_or_insert(now);
         if nitrogen::iwlwifi::wifi_init_completed() {
@@ -35,7 +37,12 @@ impl WifiService {
         }
     }
 
+    #[cfg(not(nitrogen_no_iwlwifi))]
     fn update_snapshot() {
+        use alloc::string::ToString;
+        use alloc::vec::Vec;
+        use lattice::network_menu::{ApDisplay, NetStatus};
+        use bonder::wifi::WifiStatus;
         let Some(state) = nitrogen::iwlwifi::wifi_state_snapshot() else { return };
         let mut aps: Vec<_> = state.scan_results.iter().map(|ap| {
             let ssid = ap.ssid.to_string();
@@ -71,20 +78,31 @@ impl WifiService {
 
 impl crate::Service for WifiService {
     fn tick(&mut self, now: u64) {
+        #[cfg(nitrogen_no_iwlwifi)]
+        let _ = now;
+        #[cfg(not(nitrogen_no_iwlwifi))]
         if self.init_pending { self.advance_init(now); }
+        #[cfg(not(nitrogen_no_iwlwifi))]
         nitrogen::iwlwifi::tick_wifi_device();
+        #[cfg(not(nitrogen_no_iwlwifi))]
         if nitrogen::iwlwifi::wifi_init_completed() && now % 600 == 0 {
             nitrogen::iwlwifi::start_scan_if_idle();
         }
         for action in core::mem::take(&mut *crate::WIFI_ACTION_QUEUE.lock()) {
             let crate::WifiAction::Connect(ssid, password) = action;
+            #[cfg(not(nitrogen_no_iwlwifi))]
             nitrogen::iwlwifi::connect_to_ap(&ssid, password.as_deref());
+            #[cfg(nitrogen_no_iwlwifi)]
+            let _ = (ssid, password);
         }
+        #[cfg(not(nitrogen_no_iwlwifi))]
         if now % 20 == 0 { Self::update_snapshot(); }
     }
 }
 
+#[cfg(not(nitrogen_no_iwlwifi))]
 pub fn register_wifi_service() {
+    use alloc::boxed::Box;
     nitrogen::iwlwifi::init_wifi_manager();
     crate::register_service(Box::new(WifiService::new()));
 }

@@ -99,6 +99,7 @@ impl Taskbar {
         let colors = crate::theme::current_colors();
         let bar_y = fb_height.saturating_sub(TASKBAR_HEIGHT);
         let fb_w = fb_width as usize;
+        let mut painter = crate::painter::Painter::new(fb, fb_width, fb_height);
 
         // Fill bar background
         for row in 0..TASKBAR_HEIGHT {
@@ -107,7 +108,7 @@ impl Taskbar {
                 break;
             }
             let row_start = (y as usize) * fb_w;
-            fb[row_start..row_start + fb_w].fill(colors.taskbar_bg);
+            painter.fb[row_start..row_start + fb_w].fill(colors.taskbar_bg);
         }
 
         // WiFi icon X position (used both for icon and as right bound for debug text)
@@ -115,7 +116,7 @@ impl Taskbar {
 
         // Draw WiFi indicator icon (right side, before clock)
         crate::network_menu::render_wifi_icon(
-            fb, fb_width, fb_height,
+            painter.fb, fb_width, fb_height,
             wifi_icon_x, bar_y + 6,
             self.wifi_connected,
             self.wifi_visible,
@@ -123,13 +124,13 @@ impl Taskbar {
         );
 
         // Draw window buttons (from left)
-        let mut btn_x = 4u32;
+        let mut btn_x = 4i32;
         let btn_w = 120u32;
         let btn_h = TASKBAR_HEIGHT - 6;
         let btn_y = bar_y + 3;
 
         for entry in &self.entries {
-            if btn_x + btn_w > fb_width {
+            if btn_x as u32 + btn_w > fb_width {
                 break;
             }
             let bg = if entry.focused {
@@ -141,37 +142,25 @@ impl Taskbar {
             for row in 0..btn_h {
                 let y = btn_y + row;
                 let rs = (y as usize) * fb_w + btn_x as usize;
-                fb[rs..rs + btn_w as usize].fill(bg);
+                painter.fb[rs..rs + btn_w as usize].fill(bg);
             }
-            // Button text
-            let label = if entry.title.len() > 14 {
-                &entry.title[..14]
+            // Button text - truncate safely at char boundary
+            let mut char_count = 0;
+            let mut byte_index = entry.title.len();
+            for (idx, _) in entry.title.char_indices() {
+                if char_count >= 14 {
+                    byte_index = idx;
+                    break;
+                }
+                char_count += 1;
+            }
+            let label = if entry.title.len() > byte_index {
+                &entry.title[..byte_index]
             } else {
                 &entry.title
             };
-            let tx = btn_x + 4;
-            let ty = btn_y + 3;
-            for (i, ch) in label.bytes().enumerate() {
-                if ch < 32 || ch > 126 {
-                    continue;
-                }
-                for row in 0..12 {
-                    let y = ty + row;
-                    if y >= fb_height {
-                        continue;
-                    }
-                    for col in 0..8 {
-                        let x = tx + (i as u32) * 8 + col;
-                        if x >= fb_width {
-                            continue;
-                        }
-                        if crate::font::get_glyph_pixel(ch, row, col) {
-                            fb[(y as usize) * fb_w + x as usize] = colors.taskbar_text;
-                        }
-                    }
-                }
-            }
-            btn_x += btn_w + 4;
+            painter.draw_text(btn_x + 4, btn_y as i32 + 3, label, colors.taskbar_text, 13.0);
+            btn_x += btn_w as i32 + 4;
         }
 
         // Draw debug status messages (between window buttons and WiFi icon)
@@ -183,46 +172,15 @@ impl Taskbar {
                 alloc::format!("{}: {}", last_source, last_msg)
             };
             let dx = btn_x + 4;
-            let dy = btn_y + 3;
-            for (i, ch) in debug_text.bytes().enumerate() {
-                if ch < 32 || ch > 126 {
-                    continue;
-                }
-                for row in 0..12 {
-                    for col in 0..8 {
-                        let x = dx + (i as u32) * 8 + col;
-                        let y = dy + row;
-                        if x < wifi_icon_x && y < fb_height {
-                            if crate::font::get_glyph_pixel(ch, row, col) {
-                                fb[(y as usize) * fb_w + x as usize] = colors.taskbar_text;
-                            }
-                        }
-                    }
-                }
-            }
+            let dy = (btn_y + 3) as i32;
+            painter.draw_text(dx, dy, &debug_text, colors.taskbar_text, 13.0);
         }
 
         // Draw clock on the right
         if !self.clock_text.is_empty() {
-            let clock_len = self.clock_text.len() as u32 * 8;
-            let clock_x = fb_width.saturating_sub(clock_len + 8);
-            let clock_y = btn_y + 3;
-            for (i, ch) in self.clock_text.bytes().enumerate() {
-                if ch < 32 || ch > 126 {
-                    continue;
-                }
-                for row in 0..12 {
-                    for col in 0..8 {
-                        let x = clock_x + (i as u32) * 8 + col;
-                        let y = clock_y + row;
-                        if x < fb_width && y < fb_height {
-                            if crate::font::get_glyph_pixel(ch, row, col) {
-                                fb[(y as usize) * fb_w + x as usize] = colors.taskbar_text;
-                            }
-                        }
-                    }
-                }
-            }
+            let clock_y = (btn_y + 3) as i32;
+            let clock_x = (fb_width as i32).saturating_sub(100);
+            painter.draw_text(clock_x, clock_y, &self.clock_text, colors.taskbar_text, 13.0);
         }
     }
 }

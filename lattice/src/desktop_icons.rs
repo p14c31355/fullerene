@@ -3,7 +3,7 @@
 //! Renders clickable icons on the desktop background layer,
 //! with labels and hit-testing for mouse events.
 
-use crate::compositor::COLOR_TEXT;
+use crate::painter::Painter;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -66,6 +66,17 @@ impl DesktopIconLayer {
         }
     }
 
+    /// Get the pre-rendered SVG icon surface for a desktop icon index.
+    fn icon_surface(idx: usize) -> Option<crate::surface::Surface> {
+        match idx {
+            0 => Some(crate::icon::ICON_SHELL.surface()),
+            1 => Some(crate::icon::ICON_FILES.surface()),
+            2 => Some(crate::icon::ICON_SETTINGS.surface()),
+            3 => Some(crate::icon::ICON_ABOUT.surface()),
+            _ => None,
+        }
+    }
+
     /// Find an icon at the given screen position.
     /// Returns the index in `self.icons` or `None`.
     pub fn hit_test(&self, px: i32, py: i32) -> Option<usize> {
@@ -95,64 +106,20 @@ impl DesktopIconLayer {
         clip_w: u32,
         clip_h: u32,
     ) {
-        let fb_w = fb_width as usize;
-        let cex = (clip_x + clip_w) as i32;
-        let cey = (clip_y + clip_h) as i32;
-
-        for icon in &self.icons {
-            // Draw icon box
-            for dy in 0..icon.size as i32 {
-                let py = icon.y + dy;
-                if py < clip_y as i32 || py >= cey || py >= fb_height as i32 {
-                    continue;
-                }
-                for dx in 0..icon.size as i32 {
-                    let px = icon.x + dx;
-                    if px < clip_x as i32 || px >= cex || px >= fb_width as i32 {
-                        continue;
-                    }
-                    let is_border = dy == 0
-                        || dy == icon.size as i32 - 1
-                        || dx == 0
-                        || dx == icon.size as i32 - 1;
-                    let color = if is_border {
-                        crate::compositor::COLOR_PRIMARY
-                    } else {
-                        icon.color
-                    };
-                    let idx = (py as usize) * fb_w + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = color;
-                    }
-                }
+        let mut painter = Painter::new(fb, fb_width, fb_height);
+        painter.clip_rect(clip_x as i32, clip_y as i32, clip_w, clip_h);
+        for (idx, icon) in self.icons.iter().enumerate() {
+            // Draw SVG icon if available, else fall back to rounded color box
+            if let Some(svg_surface) = Self::icon_surface(idx) {
+                painter.blit_surface(&svg_surface, icon.x, icon.y);
+            } else {
+                painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
             }
 
-            // Draw label below the icon
-            let label_y = icon.y + icon.size as i32 + 2;
-            let label_x = icon.x + 2;
-            for (ci, ch) in icon.label.bytes().enumerate() {
-                if ch < 32 || ch > 126 {
-                    continue;
-                }
-                for gry in 0..12 {
-                    let py = label_y + gry;
-                    if py < 0 || py >= fb_height as i32 || py < clip_y as i32 || py >= cey {
-                        continue;
-                    }
-                    for grx in 0..8 {
-                        let px = label_x + (ci as i32) * 8 + grx;
-                        if px < 0 || px >= fb_width as i32 || px < clip_x as i32 || px >= cex {
-                            continue;
-                        }
-                        if crate::font::get_glyph_pixel(ch, gry as u32, grx as u32) {
-                            let idx = (py as usize) * fb_w + px as usize;
-                            if idx < fb.len() {
-                                fb[idx] = COLOR_TEXT;
-                            }
-                        }
-                    }
-                }
-            }
+            // Draw label below the icon using painter text
+            let lx = icon.x + 2;
+            let ly = icon.y + icon.size as i32 + 6;
+            painter.draw_text(lx, ly, &icon.label, crate::compositor::COLOR_TEXT, 13.0);
         }
     }
 }

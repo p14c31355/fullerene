@@ -6,4 +6,11 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
-spin = { workspace = true, features = ["spin_mutex"] }
+ab_glyph = { version = "0.2.32", default-features = false, features = ["libm"] }
+spin = { workspace = true, features = ["spin_mutex", "once"] }
+
+[build-dependencies]
+usvg = "0.47"
+tiny-skia = "0.12"
+resvg = "0.47"
+ttf-noto-sans = "0.1"

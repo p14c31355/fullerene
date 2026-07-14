@@ -28,6 +28,7 @@
 //! ```
 
 use core::sync::atomic::{AtomicU32, Ordering};
+use lattice::compositor::WINDOW_CORNER_RADIUS;
 
 // ── Mouse settings ─────────────────────────────────────────────
 
@@ -98,9 +99,22 @@ pub struct DisplaySettings {
 impl DisplaySettings {
     pub const fn new() -> Self {
         Self {
-            brightness_x100: AtomicU32::new(100), // 1.0
-            top_panel_enabled: AtomicU32::new(1), // on by default
+            brightness_x100: AtomicU32::new(100),
+            top_panel_enabled: AtomicU32::new(1),
         }
+    }
+
+    pub fn is_corner_rounded(&self) -> bool {
+        WINDOW_CORNER_RADIUS.load(Ordering::Relaxed) > 0
+    }
+
+    pub fn set_corner_rounded(&self, rounded: bool) {
+        WINDOW_CORNER_RADIUS.store(if rounded { 8 } else { 0 }, Ordering::Relaxed);
+    }
+
+    pub fn toggle_corner(&self) -> bool {
+        let prev = WINDOW_CORNER_RADIUS.fetch_xor(8, Ordering::Relaxed);
+        prev == 0
     }
 
     /// Get brightness as f32 (0.1 .. 1.0).

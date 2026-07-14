@@ -4,10 +4,12 @@
 
 use crate::{DISPLAY_BRIGHTNESS_X100, FB_DIMS, MOUSE_SENSITIVITY, RUNTIME, SOLVENT_CALLBACKS};
 use alloc::vec;
+use lattice::compositor::WINDOW_CORNER_RADIUS;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
+use lattice::wallpaper::{self, WallpaperMode};
 use resonance::KeyCode;
 
-/// Selected row in the settings UI (0=mouse, 1=brightness, 2=top panel).
+/// Selected row in the settings UI.
 pub(crate) static SETTINGS_SELECTED: spin::Mutex<u32> = spin::Mutex::new(0);
 
 /// Handle a key event when the settings window is focused (public entry point).
@@ -26,51 +28,54 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
 
     let mut sel = SETTINGS_SELECTED.lock();
 
+    const ROWS: u32 = 5;
     match key {
         KeyCode::Up => {
-            *sel = sel.saturating_sub(1).min(2);
+            *sel = sel.saturating_sub(1).min(ROWS - 1);
         }
         KeyCode::Down => {
-            *sel = (*sel + 1).min(2);
+            *sel = (*sel + 1).min(ROWS - 1);
         }
         KeyCode::Left | KeyCode::Right => {
             let dec = key == KeyCode::Left;
             match *sel {
                 0 => {
-                    // Mouse sensitivity
-                    let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed)
-                        as f32)
-                        / 6.0;
-                    let new_val = if dec {
-                        (cur - 0.25).max(0.25)
-                    } else {
-                        (cur + 0.25).min(4.0)
-                    };
-                    MOUSE_SENSITIVITY.store(
-                        (new_val * 6.0) as i16,
-                        core::sync::atomic::Ordering::Relaxed,
-                    );
+                    let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
+                    let new_val = if dec { (cur - 0.25).max(0.25) } else { (cur + 0.25).min(4.0) };
+                    MOUSE_SENSITIVITY.store((new_val * 6.0) as i16, core::sync::atomic::Ordering::Relaxed);
                     persist_settings();
                 }
                 1 => {
-                    // Brightness
-                    let cur =
-                        DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed) as i32;
-                    let new_val = if dec {
-                        (cur - 5).max(10)
-                    } else {
-                        (cur + 5).min(100)
-                    };
-                    DISPLAY_BRIGHTNESS_X100
-                        .store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
+                    let cur = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed) as i32;
+                    let new_val = if dec { (cur - 5).max(10) } else { (cur + 5).min(100) };
+                    DISPLAY_BRIGHTNESS_X100.store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
                 2 => {
-                    // Top panel toggle
                     lattice::top_panel::toggle_top_panel();
                     let (fw, fh, _) = *FB_DIMS.lock();
                     rt.desktop.relayout_maximized_windows(fw, fh);
+                    rt.desktop.force_full_redraw();
+                    persist_settings();
+                }
+                3 => {
+                    let cur = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
+                    let new_val = if cur == 0 { 8 } else { 0 };
+                    WINDOW_CORNER_RADIUS.store(new_val, core::sync::atomic::Ordering::Relaxed);
+                    rt.desktop.force_full_redraw();
+                    persist_settings();
+                }
+                4 => {
+                    let modes = wallpaper::wallpaper_modes();
+                    let cur = wallpaper::get_wallpaper();
+                    let cur_idx = modes.iter().position(|(_, m)| *m == cur).unwrap_or(0);
+                    let next_idx = if dec {
+                        (cur_idx + modes.len() - 1) % modes.len()
+                    } else {
+                        (cur_idx + 1) % modes.len()
+                    };
+                    wallpaper::set_wallpaper(modes[next_idx].1);
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
@@ -125,15 +130,28 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
     let sens = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
     let bright = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
     let top_panel = lattice::top_panel::is_top_panel_enabled();
+    let corner = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
     let sel = *SETTINGS_SELECTED.lock();
+
+    let wp_mode = wallpaper::get_wallpaper();
+    let wp_name = match wp_mode {
+        WallpaperMode::SolidColor => "solid",
+        WallpaperMode::GridPattern => "grid",
+        WallpaperMode::Gradient => "gradient",
+        WallpaperMode::Preset(idx) => {
+            wallpaper::wallpaper_presets().get(idx).map_or("?", |p| p.name)
+        }
+    };
 
     let info = alloc::format!(
         "{}Settings\n\
          \n\
          {}Mouse Sensitivity: {:.2}\n\
          {}Display Brightness: {}.{:02}\n\
-         {}Top Panel: {}",
-        highlight(sel, 99), // title (not selectable)
+         {}Top Panel: {}\n\
+         {}Window Corner: {}\n\
+         {}Wallpaper: {}",
+        highlight(sel, 99),
         highlight(sel, 0),
         sens,
         highlight(sel, 1),
@@ -141,10 +159,14 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         bright % 100,
         highlight(sel, 2),
         if top_panel { "ON " } else { "OFF" },
+        highlight(sel, 3),
+        if corner > 0 { "Rounded" } else { "Square " },
+        highlight(sel, 4),
+        wp_name,
     );
 
     let cols = 38u32;
-    let total = cols as usize * 9;
+    let total = cols as usize * 10;
     let mut cells = vec![
         LatticeCell {
             ch: b' ',

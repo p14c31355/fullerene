@@ -1,12 +1,12 @@
 # Lattice — Public API (v0.1)
 
-> **Status: DRAFT — 凍結予定**
+> **Status: DRAFT — Subject to Freeze**
 >
-> Lattice は compositing window system。trait ではなく構造体とそのメソッドで構成される。
+> Lattice is a compositing window system combining structs, methods, and rendering traits.
 
 ---
 
-## 1. Window — ウィンドウ
+## 1. Window — Window
 
 `lattice::window::Window`
 
@@ -30,7 +30,7 @@ pub struct Window {
 
 ---
 
-## 2. Surface — ピクセルサーフェス
+## 2. Surface — Pixel Surface
 
 `lattice::surface::Surface`
 
@@ -49,11 +49,11 @@ impl Surface {
 }
 ```
 
-**安全制限**: 4K解像度 (3840×2160) を超える領域は拒否され、0×0 の surface が返る。
+**Safety limit**: Surfaces exceeding 4096×2160 resolution are rejected and a 0×0 surface is returned.
 
 ---
 
-## 3. Scene — シーングラフ
+## 3. Scene — Scene Graph
 
 `lattice::scene::Scene`
 
@@ -74,7 +74,7 @@ pub struct Scene {
 
 ---
 
-## 4. Cursor — カーソル
+## 4. Cursor — Cursor
 
 `lattice::cursor::Cursor`
 
@@ -88,37 +88,37 @@ pub struct Cursor {
 
 ---
 
-## 5. Renderer — レンダラ
+## 5. Renderer — Renderer
 
-`lattice::renderer` モジュール:
+`lattice::renderer` module:
 
-| 型 | 役割 |
+| Type | Role |
 |---|---|
-| `VecFramebuffer` | テスト用 vec-backed framebuffer (PPM出力対応) |
-| `fn render_scene(scene: &Scene, fb: &mut [u32], stride: usize)` | シーンをframebufferに描画 |
+| `VecFramebuffer` | Vec-backed framebuffer for testing (supports PPM output) |
+| `fn render_scene(scene: &Scene, fb: &mut [u32], stride: usize)` | Render a scene to the framebuffer |
 
 ---
 
-## 6. その他モジュール
+## 6. Other Modules
 
-| モジュール | 責務 |
+| Module | Responsibility |
 |---|---|
-| `wm` | ウィンドウマネージャ (focus, raise, resize) |
-| `compositor` | コンポジット管理 |
-| `desktop` | デスクトップ状態 |
-| `font` | ビットマップフォントレンダリング |
-| `theme` | カラーテーマ |
-| `cursor` | カーソル描画 |
-| `terminal_surface` | ターミナル描画 |
-| `top_panel` | トップパネル (clock, status) |
-| `taskbar` | タスクバー |
-| `wallpaper` | 壁紙管理 |
-| `desktop_icons` | デスクトップアイコン |
+| `wm` | Window manager (focus, raise, resize) |
+| `compositor` | Compositing management |
+| `desktop` | Desktop state |
+| `font` | Bitmap font rendering |
+| `theme` | Color theme |
+| `cursor` | Cursor rendering |
+| `terminal_surface` | Terminal rendering |
+| `top_panel` | Top panel (clock, status) |
+| `taskbar` | Taskbar |
+| `wallpaper` | Wallpaper management |
+| `desktop_icons` | Desktop icons |
 
 ---
 
-## 変更履歴
+## Changelog
 
-| 日付 | 変更 |
+| Date | Change |
 |---|---|
-| 2026-07-13 | v0.1 初版 |
+| 2026-07-13 | v0.1 initial |

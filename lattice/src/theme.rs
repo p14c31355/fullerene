@@ -48,22 +48,22 @@ pub struct ThemeColors {
 
 /// Classic dark theme (original Fullerene look).
 pub const CLASSIC_DARK_THEME: ThemeColors = ThemeColors {
-    bg: 0x1a1a2e,
-    surface: 0x16213e,
-    primary: 0x4A90D9,
-    active: 0x3A7BD5,
+    bg: 0x1B1B1D,
+    surface: 0x242426,
+    primary: 0x3584E4,
+    active: 0x2A7DE0,
     text: 0xE0E0E0,
     muted: 0x888888,
-    border_active: 0x4A90D9,
+    border_active: 0x3584E4,
     border_inactive: 0x555555,
-    title_active: 0x3A7BD5,
-    title_inactive: 0x444444,
+    title_active: 0x2A2A2C,
+    title_inactive: 0x333335,
     accent: 0xE6A817,
     danger: 0xD94A4A,
-    taskbar_bg: 0x0F0F1A,
+    taskbar_bg: 0x151516,
     taskbar_text: 0xCCCCCC,
-    taskbar_active_bg: 0x3A7BD5,
-    taskbar_inactive_bg: 0x333344,
+    taskbar_active_bg: 0x3584E4,
+    taskbar_inactive_bg: 0x2C2C2E,
 };
 
 /// Classic light theme.
@@ -90,21 +90,21 @@ pub const CLASSIC_LIGHT_THEME: ThemeColors = ThemeColors {
 
 /// Modern dark theme — macOS/iOS‑inspired flat design.
 pub const MODERN_DARK_THEME: ThemeColors = ThemeColors {
-    bg: 0x0D0D0D,
-    surface: 0x1C1C1E,
-    primary: 0x007AFF,
-    active: 0x0066D6,
+    bg: 0x1B1B1D,
+    surface: 0x242426,
+    primary: 0x3584E4,
+    active: 0x2A7DE0,
     text: 0xF5F5F5,
-    muted: 0x8E8E93,
-    border_active: 0x007AFF,
+    muted: 0x98989A,
+    border_active: 0x3584E4,
     border_inactive: 0x3A3A3C,
-    title_active: 0x007AFF,
-    title_inactive: 0x48484A,
+    title_active: 0x1C1C1E,
+    title_inactive: 0x2A2A2C,
     accent: 0xFF9F0A,
     danger: 0xFF3B30,
-    taskbar_bg: 0x000000,
+    taskbar_bg: 0x151516,
     taskbar_text: 0xF5F5F5,
-    taskbar_active_bg: 0x007AFF,
+    taskbar_active_bg: 0x3584E4,
     taskbar_inactive_bg: 0x2C2C2E,
 };
 

@@ -167,6 +167,25 @@ pub fn draw_boot_label(label: &[u8]) {
     }
 }
 
+/// Draw a small status line at the bottom of the boot panel — used as a
+/// serial-free progress indicator for init steps on real hardware.
+pub fn draw_step_hint(hint: &[u8]) {
+    let fb = match crate::graphics::discovery::direct_boot_framebuffer() {
+        Some(f) => f,
+        None => return,
+    };
+    let fbw = fb.width();
+    let fbh = fb.height();
+    let margin = (fbw.min(fbh) / 20).clamp(12, 40);
+    let panel_w = fbw.saturating_sub(margin * 2).min(760);
+    let panel_h = (if fbh >= 360 { 180 } else { 132 }).min(fbh.saturating_sub(margin * 2));
+    let panel_x = (fbw - panel_w) / 2;
+    let panel_y = (fbh - panel_h) / 2;
+    let y = panel_y + panel_h - 16;
+    let x = panel_x + 24;
+    unsafe { fb.draw_text(x, y, hint, 1, 0x8c8c96); }
+}
+
 /// Get the last boot stage reached.
 pub fn last_stage() -> Option<BootStage> {
     let raw = LAST_STAGE.load(Ordering::Acquire);

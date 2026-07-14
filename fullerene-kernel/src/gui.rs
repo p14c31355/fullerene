@@ -174,8 +174,11 @@ pub fn init() {
     crate::interrupts::apic::register_mmio_watchdog();
     petroleum::serial::serial_log(format_args!("MMIO NMI watchdog registered\n"));
 
-    solvent::register_wifi_service();
-    petroleum::serial::serial_log(format_args!("wifi service registered\n"));
+    #[cfg(not(nitrogen_no_iwlwifi))]
+    {
+        solvent::register_wifi_service();
+        petroleum::serial::serial_log(format_args!("wifi service registered\n"));
+    }
 }
 
 /// Once the first frame renders successfully, disable the boot-screen

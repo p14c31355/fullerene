@@ -687,7 +687,7 @@ fn platform_mount_fat(disk: &mut nitrogen::usb::disk::Disk) -> bool {
                 false
             }
         }
-        Err(e) => {
+        Err((e, _)) => {
             crate::klog_fmt!("USB: FAT error for {} — {}\n", mp, e);
             false
         }
@@ -773,7 +773,7 @@ fn sd_probe_and_mount_impl() -> bool {
                 false
             }
         }
-        Err(e) => {
+        Err((e, _)) => {
             crate::klog_fmt!("SD card: FAT error — {}\n", e);
             false
         }

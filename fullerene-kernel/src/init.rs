@@ -13,8 +13,23 @@ use crate::boot_stage::BootStage;
 use petroleum::common::InitSequence;
 use petroleum::initializer::FrameAllocator;
 
+#[cfg(not(nitrogen_no_iwlwifi))]
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
+
+/// Format a PCI device descriptor into a byte buffer for serial debug.
+#[allow(unused_assignments)]
+fn hex_fmt(buf: &mut [u8; 72], bus: u8, dev: u8, func: u8, vid: u16, did: u16, cls: u8, scls: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut i = 0;
+    macro_rules! push { ($b:expr) => { if i < buf.len() { buf[i] = $b; i += 1; } } }
+    macro_rules! hex { ($v:expr) => { push!(HEX[($v >> 4) as usize]); push!(HEX[($v & 0xF) as usize]); } }
+    macro_rules! bytes { ($s:expr) => { for &b in $s { push!(b); } } }
+    bytes!(b"[probe] "); hex!(bus); push!(':' as u8); hex!(dev); push!('.' as u8); hex!(func); push!(' ' as u8);
+    hex!((vid >> 8) as u8); hex!(vid as u8); push!(':' as u8);
+    hex!((did >> 8) as u8); hex!(did as u8);
+    bytes!(b" class="); hex!(cls); push!('/' as u8); hex!(scls); push!('\n' as u8);
+}
 
 /// Common initialization function for both UEFI and BIOS boot paths
 ///
@@ -182,118 +197,160 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         }),
         petroleum::init_step!("device_probe", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step start\n");
-            // Build the driver registry and probe every PCI device.
             let registry = crate::drivers::registry::build_registry();
             let ctx = &crate::driver_context_impl::KernelDriverContext;
             let mut scanner = nitrogen::pci::PciScanner::new();
             let _ = scanner.scan_all_buses();
             for dev in scanner.get_devices() {
-                // ── Safety gates before any non-posted MMIO read ───────
-                // PCIe devices in D3 (power-gated) or L1 (ASPM link-down)
-                // cannot complete MMIO reads, hanging the CPU forever.
-                // These calls use port I/O (CF8/CFC) which always completes.
+                // ── Safety gates before any non-posted MMIO read ───
+                // PCIe devices in D3 or L1 cannot complete MMIO reads,
+                // hanging the CPU forever.  These use port I/O only.
+                // Log each device so we can identify where real hardware hangs.
+                {
+                    let mut buf = [0u8; 72];
+                    hex_fmt(&mut buf, dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id, dev.class_code, dev.subclass);
+                    petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf);
+                }
+
+                // Skip PCI bridges — drivers only match endpoints.
+                if dev.class_code == 0x06 { continue; }
+
                 dev.disable_pcie_aspm();
                 dev.enable_memory_access();
                 dev.ensure_d0();
+
+                // Quick MMIO-safety check: read config-space Vendor ID again
+                // after enable_memory.  If it returns 0xFFFF the device is gone
+                // (phantom / unpopulated slot) — skip to avoid MMIO hang.
+                let vid = nitrogen::pci::PciConfigSpace::read_config_word(
+                    dev.bus, dev.device, dev.function, 0,
+                );
+                if vid == 0xFFFF || vid == 0x0000 { continue; }
+
                 let _box = registry.match_device(ctx, dev);
-                // The driver pushed its controller into its own static
-                // list as a side‑effect — we don't keep the DriverBox
-                // at this level.
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
         }),
+        // draw_step_hint shows the step name at the bottom of the boot
+        // screen so we can identify hangs without serial access.
         petroleum::init_step!("PS2 Controller", || {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] PS2 Controller step start\n");
+            crate::boot_stage::draw_step_hint(b"ps2_ctrl");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_ctrl start\n");
             let devices = nitrogen::ps2::init_ps2_controller();
-            petroleum::serial::serial_log(format_args!(
-                "PS/2 controller initialized (keyboard={}, mouse={})\n",
-                devices & 1 != 0,
-                devices & 2 != 0
-            ));
+            petroleum::serial::serial_log(format_args!("PS/2 controller initialized (keyboard={}, mouse={})\n", devices & 1 != 0, devices & 2 != 0));
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_ctrl done\n");
             Ok(())
         }),
         petroleum::init_step!("PS2 Mouse", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_mouse start\n");
             match nitrogen::ps2::mouse::init_mouse() {
-                Ok(()) => {
-                    petroleum::serial::serial_log(format_args!("PS/2 mouse initialised\n"));
-                    Ok(())
-                }
-                Err(e) => {
-                    petroleum::serial::serial_log(format_args!("PS/2 mouse init failed: {}\n", e));
-                    Ok(())
-                }
+                Ok(()) => { petroleum::serial::serial_log(format_args!("PS/2 mouse initialised\n")); }
+                Err(e) => { petroleum::serial::serial_log(format_args!("PS/2 mouse init failed: {}\n", e)); }
             }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_mouse done\n");
+            Ok(())
         }),
         petroleum::init_step!("PS2 Keyboard", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_kbd start\n");
             nitrogen::ps2::keyboard::init_keyboard();
             petroleum::serial::serial_log(format_args!("PS/2 keyboard initialised\n"));
             crate::boot_stage!(BootStage::InputReady);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_kbd done\n");
             Ok(())
         }),
         petroleum::init_step!("process", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] process start\n");
             let heap_start = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as usize;
             let heap_end = heap_start + crate::heap::HEAP_SIZE;
             crate::process::init(heap_start, heap_end);
             crate::boot_stage!(BootStage::ProcessReady);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] process done\n");
             Ok(())
         }),
         petroleum::init_step!("syscall", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] syscall start\n");
             crate::syscall::init();
             crate::boot_stage!(BootStage::SyscallReady);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] syscall done\n");
             Ok(())
         }),
         petroleum::init_step!("fs", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] fs start\n");
             crate::fs::init();
             crate::boot_stage!(BootStage::FilesystemReady);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] fs done\n");
             Ok(())
         }),
         petroleum::init_step!("loader", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] loader start\n");
             crate::loader::init();
             crate::boot_stage!(BootStage::LoaderReady);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] loader done\n");
             Ok(())
         }),
         petroleum::init_step!("initramfs", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] initramfs start\n");
             crate::boot_stage::draw_boot_label(b"INITRAMFS");
             crate::linux::launch::init_initramfs();
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] initramfs done\n");
             Ok(())
         }),
         petroleum::init_step!("device_manager", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr start\n");
             crate::boot_stage::draw_boot_label(b"DEVICE MANAGER");
             crate::hardware::device_manager::init_device_manager()
                 .map_err(|_| "Failed to initialize device manager")?;
             petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr done\n");
             Ok(())
         }),
         petroleum::init_step!("usb_storage", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] usb_storage start\n");
             crate::boot_stage::draw_boot_label(b"USB STORAGE");
-            // USB is now probed by the DriverRegistry during device_probe.
-            // This step is kept as a serial-log marker for boot progress.
+            crate::boot_stage::draw_step_hint(b"pre_log"); // drawn BEFORE serial_log
             petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
+            crate::boot_stage::draw_step_hint(b"usb_ok ");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] usb_storage done\n");
             Ok(())
         }),
         petroleum::init_step!("sd_card", || {
+            crate::boot_stage::draw_step_hint(b"sd_strt");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card start\n");
             crate::boot_stage::draw_boot_label(b"SD CARD");
             petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
+            crate::boot_stage::draw_step_hint(b"sd_ok  ");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card done\n");
             Ok(())
         }),
+        #[cfg(not(nitrogen_no_iwlwifi))]
         petroleum::init_step!("wifi", || {
+            crate::boot_stage::draw_step_hint(b"wf_strt");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] wifi start\n");
             crate::boot_stage::draw_boot_label(b"WIFI");
             nitrogen::iwlwifi::set_wifi_driver_context(&WIFI_DRIVER_CTX);
             petroleum::serial::serial_log(format_args!("WiFi driver context set\n"));
+            crate::boot_stage::draw_step_hint(b"wifi_ok");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] wifi done\n");
             Ok(())
         }),
         petroleum::init_step!("gui", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] gui start\n");
             crate::boot_stage::draw_boot_label(b"DESKTOP SERVICES");
             crate::gui::init();
             petroleum::serial::serial_log(format_args!("GUI subsystem initialised\n"));
             crate::boot_stage!(BootStage::GuiReady);
+            crate::boot_stage::draw_step_hint(b"gui_ok ");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] gui done\n");
             Ok(())
         }),
         petroleum::init_step!("task_manager", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] task_mgr start\n");
             crate::task::init_task_manager();
             petroleum::serial::serial_log(format_args!("Task manager initialised\n"));
             crate::boot_stage!(BootStage::TaskManagerReady);
+            crate::boot_stage::draw_step_hint(b"task_ok");
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] task_mgr done\n");
             Ok(())
         }),
 

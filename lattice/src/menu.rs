@@ -122,40 +122,17 @@ impl PopupMenu {
 
     /// Render menu text onto a framebuffer (called by compositor overlay pass).
     ///
-    /// `fbw` is logical screen width, `fb_stride` is the actual
-    /// pixels‑per‑scan‑line (may be > `fbw` on real hardware).
-    pub fn render_text(&self, fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
+    /// Uses the Painter's TTF renderer (with bitmap fallback) for crisper text.
+    pub fn render_text(&self, fb: &mut [u32], fbw: u32, fbh: u32, _fb_stride: u32) {
         if !self.visible {
             return;
         }
-        let stride = fb_stride as usize;
+        let mut painter = crate::painter::Painter::new(fb, fbw, fbh);
         for (i, item) in self.items.iter().enumerate() {
             let item_y = self.y + MENU_BORDER + i as u32 * ITEM_HEIGHT;
-            let tx = self.x + MENU_BORDER + 4;
-            let ty = item_y + 4;
-            for (j, ch) in item.label.bytes().enumerate() {
-                if ch < 32 || ch > 126 {
-                    continue;
-                }
-                for row in 0..12 {
-                    let py = ty + row;
-                    if py >= fbh {
-                        continue;
-                    }
-                    for col in 0..8 {
-                        let px = tx + (j as u32) * 8 + col;
-                        if px >= fbw {
-                            continue;
-                        }
-                        if crate::font::get_glyph_pixel(ch, row, col) {
-                            let idx = (py as usize) * stride + px as usize;
-                            if idx < fb.len() {
-                                fb[idx] = MENU_TEXT;
-                            }
-                        }
-                    }
-                }
-            }
+            let tx = (self.x + MENU_BORDER + 4) as i32;
+            let ty = (item_y + 4) as i32;
+            painter.draw_text(tx, ty, &item.label, crate::compositor::COLOR_TEXT, 13.0);
         }
     }
 }
@@ -212,10 +189,6 @@ pub fn desktop_context_menu() -> alloc::vec::Vec<MenuItem> {
         MenuItem {
             label: alloc::string::String::from("Toggle Tiling"),
             action: alloc::string::String::from("toggle_tiling")
-        },
-        MenuItem {
-            label: alloc::string::String::from("Change Wallpaper"),
-            action: alloc::string::String::from("change_wallpaper")
         },
         MenuItem {
             label: alloc::string::String::from("──"),

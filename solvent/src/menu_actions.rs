@@ -285,7 +285,7 @@ pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
     }
 
     let cols = 38u32;
-    let rows = 9u32;
+    let rows = 10u32;
     let id = rt.desktop.wm.create_titled_window(
         150,
         80,

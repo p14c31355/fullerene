@@ -191,20 +191,18 @@ impl BootFramebuffer {
         unsafe { self.draw_text(x, y, text, scale, color) };
     }
 
-    unsafe fn draw_text(&self, mut x: u32, y: u32, text: &[u8], scale: u32, color: u32) {
+    pub unsafe fn draw_text(&self, mut x: u32, y: u32, text: &[u8], scale: u32, color: u32) {
         for &byte in text {
             let rows = glyph(byte.to_ascii_uppercase());
             for (gy, bits) in rows.iter().copied().enumerate() {
                 for gx in 0..5u32 {
                     if bits & (1 << (4 - gx)) != 0 {
                         unsafe {
-                            self.fill_rect(
-                                x.saturating_add(gx.saturating_mul(scale)),
-                                y.saturating_add((gy as u32).saturating_mul(scale)),
-                                scale,
-                                scale,
-                                color,
-                            )
+                            let rx = x.saturating_add(gx.saturating_mul(scale));
+                            let ry = y.saturating_add((gy as u32).saturating_mul(scale));
+                            if rx < self.width && ry < self.height {
+                                self.fill_rect(rx, ry, scale, scale, color);
+                            }
                         };
                     }
                 }

@@ -702,7 +702,7 @@ pub fn random_get(
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: CPUID leaf 1 is always supported on x86_64.
-        let cpuid = unsafe { core::arch::x86_64::__cpuid(1) };
+        let cpuid = core::arch::x86_64::__cpuid(1);
         if (cpuid.ecx & (1 << 30)) == 0 {
             return Ok(ENOTSUP);
         }

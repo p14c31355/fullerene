@@ -208,6 +208,7 @@ pub fn register_service(service: Box<dyn Service>) {
     SERVICES.lock().push(service);
 }
 
+#[cfg(not(nitrogen_no_iwlwifi))]
 pub use network_manager::register_wifi_service;
 
 // ── WiFi action queue ────────────────────────────────────────
@@ -266,6 +267,7 @@ pub struct RuntimeState {
     pub explorer_dirty: bool,
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
+    pub cursor_only_update: bool,
     pub usb_poll_pending: bool,
 }
 
@@ -325,6 +327,7 @@ pub fn init() {
         explorer_dirty: false,
         settings_window: None,
         settings_dirty: false,
+        cursor_only_update: false,
         usb_poll_pending: false,
     });
 }
@@ -426,6 +429,10 @@ pub fn poll_keyboard() {
             }
             if top_id.is_some() && r.settings_window == top_id {
                 settings_bridge::settings_handle_key_inner(r, scancode, pressed);
+                continue;
+            }
+            if top_id.is_some() && r.explorer.as_ref().and_then(|e| e.window_id) == top_id {
+                explorer_handle_key(r, scancode, pressed);
                 continue;
             }
         }
@@ -909,6 +916,65 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
     }
     rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
+}
+
+// ── Explorer keyboard handling ──────────────────────────────
+fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
+    if !pressed { return; }
+    let key = scancode_to_resonance_keycode(scancode);
+    let visible_rows = 20usize;
+    // Pre-compute enter action to avoid borrow conflicts.
+    let mut enter_action: Option<(String, bool)> = None;
+    match key {
+        resonance::KeyCode::Up => {
+            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            let n = explorer.entries.len();
+            if n == 0 { return; }
+            let idx = explorer.selected_index.unwrap_or(n.saturating_sub(1));
+            explorer.selected_index = if idx == 0 { Some(n.saturating_sub(1)) } else { Some(idx - 1) };
+            if let Some(s) = explorer.selected_index { if s < explorer.scroll_offset { explorer.scroll_offset = s; } }
+            rt.explorer_dirty = true;
+            rt.frame_due = true;
+        }
+        resonance::KeyCode::Down => {
+            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            let n = explorer.entries.len();
+            if n == 0 { return; }
+            let idx = explorer.selected_index.unwrap_or(0);
+            explorer.selected_index = if idx + 1 >= n { Some(0) } else { Some(idx + 1) };
+            if let Some(s) = explorer.selected_index {
+                if s >= explorer.scroll_offset + visible_rows { explorer.scroll_offset = s.saturating_sub(visible_rows - 1); }
+            }
+            rt.explorer_dirty = true;
+            rt.frame_due = true;
+        }
+        resonance::KeyCode::Enter => {
+            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            if let Some(idx) = explorer.selected_index {
+                let name = match explorer.raw_names.get(idx) {
+                    Some(n) => n,
+                    None => return,
+                };
+                let is_dir = explorer.raw_is_dir.get(idx).copied().unwrap_or(false);
+                let path = if explorer.current_dir.ends_with('/') {
+                    alloc::format!("{}{}", explorer.current_dir, name)
+                } else {
+                    alloc::format!("{}/{}", explorer.current_dir, name)
+                };
+                if is_dir {
+                    explorer.navigate_to(&path);
+                    rt.explorer_dirty = true;
+                    rt.frame_due = true;
+                } else {
+                    enter_action = Some((path, is_dir));
+                }
+            }
+        }
+        _ => {}
+    }
+    if let Some((path, false)) = enter_action {
+        launch_file(rt, &path);
+    }
 }
 
 // ── Shell bootstrap ──────────────────────────────────────────

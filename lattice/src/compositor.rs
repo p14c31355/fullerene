@@ -2,6 +2,10 @@ use crate::cursor::Cursor;
 use crate::scene::{DirtyRect, OverlayRect, Scene};
 use crate::window::Window;
 
+/// Global window corner radius (0 = square, 8 = rounded).
+/// Set by the settings UI; read by the compositor.
+pub static WINDOW_CORNER_RADIUS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
+
 pub trait RenderTarget {
     fn buffer(&mut self) -> &mut [u32];
     fn dimensions(&self) -> (u32, u32);
@@ -9,19 +13,19 @@ pub trait RenderTarget {
 
 pub struct Compositor;
 
-pub const TITLE_BAR_HEIGHT: u32 = 20;
-pub const WINDOW_BORDER: u32 = 2;
+pub const TITLE_BAR_HEIGHT: u32 = 28;
+pub const WINDOW_BORDER: u32 = 1;
 
 // UI padding constants
-pub const WINDOW_PADDING: u32 = 4;
-pub const TASKBAR_PADDING: u32 = 4;
-pub const BUTTON_PADDING: u32 = 2;
+pub const WINDOW_PADDING: u32 = 8;
+pub const TASKBAR_PADDING: u32 = 6;
+pub const BUTTON_PADDING: u32 = 4;
 
 // ── Fullerene Color Palette ──────────────────────────────────
-pub const COLOR_BG: u32 = 0x1a1a2e;
-pub const COLOR_SURFACE: u32 = 0x16213e;
-pub const COLOR_PRIMARY: u32 = 0x4A90D9;
-pub const COLOR_ACTIVE: u32 = 0x3A7BD5;
+pub const COLOR_BG: u32 = 0x1B1B1D;
+pub const COLOR_SURFACE: u32 = 0x242426;
+pub const COLOR_PRIMARY: u32 = 0x3584E4;
+pub const COLOR_ACTIVE: u32 = 0x2A7DE0;
 pub const COLOR_TEXT: u32 = 0xE0E0E0;
 pub const COLOR_MUTED: u32 = 0x888888;
 pub const COLOR_BORDER_ACTIVE: u32 = 0x4A90D9;
@@ -489,7 +493,7 @@ impl Compositor {
         }
     }
 
-    fn draw_debug_overlay(fb: &mut [u32], fbw: u32, _fbh: u32) {
+    fn draw_debug_overlay(fb: &mut [u32], fbw: u32, fbh: u32) {
         let fps = current_fps_x100();
         if fps == 0 {
             return;
@@ -506,24 +510,11 @@ impl Compositor {
         let _ = write_str(&mut buf, &mut pos, b" DC:");
         write_u64_fixed(&mut buf, &mut pos, dc, 0);
         let text = &buf[..pos.min(32)];
+        let text_str = core::str::from_utf8(text).unwrap_or("FPS:?");
 
-        let x = fbw.saturating_sub(150);
-        let y = 4u32;
-        for (i, &ch) in text.iter().enumerate() {
-            if ch < 32 || ch > 126 {
-                continue;
-            }
-            let gl = crate::font::glyph_fast(ch);
-            for row in 0..12 {
-                let py = y + row;
-                for col in 0..8 {
-                    let px = x + (i as u32) * 8 + col;
-                    if px < fbw && py < _fbh && gl.pixel(row, col) {
-                        fb[(py * fbw + px) as usize] = accent;
-                    }
-                }
-            }
-        }
+        let mut p = crate::painter::Painter::new(fb, fbw, fbh);
+        let x = (fbw.saturating_sub(150)) as i32;
+        p.draw_text(x, 4, text_str, accent, 13.0);
     }
 
     // ── Cursor ────────────────────────────────────────────
@@ -629,139 +620,62 @@ impl Compositor {
     ) {
         let title = win.title.as_ref().map(|t| t.as_str()).unwrap_or("");
         let colors = crate::theme::current_colors();
-        let bc = if win.focused {
-            colors.border_active
-        } else {
-            colors.border_inactive
-        };
-        let tc = if win.focused {
-            colors.title_active
-        } else {
-            colors.title_inactive
-        };
-        let ww = win.width + WINDOW_BORDER * 2;
-        let wh = win.height + TITLE_BAR_HEIGHT + WINDOW_BORDER * 2;
+        let mut p = crate::painter::Painter::new(fb, fbw, fbh);
+        let bw = WINDOW_BORDER as i32;
+        let ww = (win.width + WINDOW_BORDER * 2) as i32;
+        let wh = (win.height + TITLE_BAR_HEIGHT + WINDOW_BORDER * 2) as i32;
+        let radius = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
+        let wx = win.x - bw;
+        let wy = win.y - bw;
+
+        // Skip if the title-bar bounding box doesn't intersect the dirty rect
         let cex = (cx + cw) as i32;
         let cey = (cy + ch) as i32;
-        let fw = fbw as i32;
-        let fh = fbh as i32;
-
-        // Shadow
-        if let Some(sh) = &win.shadow_surface {
-            let shx = win.x + 2 - WINDOW_BORDER as i32;
-            let shy = win.y + 2 - WINDOW_BORDER as i32;
-            for sy in 0..sh.height() {
-                let da = shy + sy as i32;
-                if da < cy as i32 || da >= cey || da >= fh {
-                    continue;
-                }
-                for sx in 0..sh.width() {
-                    let dxa = shx + sx as i32;
-                    if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                        continue;
-                    }
-                    let sp = sh.get_pixel(sx, sy).unwrap_or(0);
-                    if sp & 0xFF000000 == 0 {
-                        continue;
-                    }
-                    let d = &mut fb[(da as usize) * (fbw as usize) + dxa as usize];
-                    let bg = *d;
-                    let a = ((sp >> 24) & 0xFF) as u32;
-                    let ia = 255 - a;
-                    let r = (((sp >> 16) & 0xFF) * a + ((bg >> 16) & 0xFF) * ia) / 255;
-                    let g = (((sp >> 8) & 0xFF) * a + ((bg >> 8) & 0xFF) * ia) / 255;
-                    let b = ((sp & 0xFF) * a + (bg & 0xFF) * ia) / 255;
-                    *d = (r << 16) | (g << 8) | b;
-                }
-            }
+        let ww_u = ww as u32;
+        let wh_u = wh as u32;
+        if wx + ww as i32 <= cx as i32 || wy + wh as i32 <= cy as i32
+            || wx >= cex || wy >= cey
+        {
+            return;
         }
 
-        // Border
-        for row in 0..wh as i32 {
-            let da = win.y - WINDOW_BORDER as i32 + row;
-            if da < cy as i32 || da >= cey || da >= fh {
-                continue;
-            }
-            for col in 0..ww as i32 {
-                let dxa = win.x - WINDOW_BORDER as i32 + col;
-                if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                    continue;
-                }
-                if row < WINDOW_BORDER as i32
-                    || row >= wh as i32 - WINDOW_BORDER as i32
-                    || col < WINDOW_BORDER as i32
-                    || col >= ww as i32 - WINDOW_BORDER as i32
-                {
-                    fb[(da as usize) * (fbw as usize) + dxa as usize] = bc;
-                }
-            }
-        }
+        // Restrict painter to the intersection of framebuffer and dirty rect
+        p.clip_rect(cx as i32, cy as i32, cw, ch);
 
-        // Title bar bg
-        for row in 0..TITLE_BAR_HEIGHT as i32 {
-            let da = win.y + row;
-            if da < cy as i32 || da >= cey || da >= fh {
-                continue;
-            }
-            for col in 0..win.width as i32 {
-                let dxa = win.x + col;
-                if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                    continue;
-                }
-                fb[(da as usize) * (fbw as usize) + dxa as usize] = tc;
-            }
-        }
+        // Shadow via painter
+        p.draw_shadow(wx, wy, ww_u, wh_u, radius, 2, 3, 0x000000);
 
-        // ── Title bar buttons (close / maximize / minimize) ──
-        // Use pre‑rendered cached textures for fast blitting.
+        // Pre-fill corner squares with background so outside-the-arc pixels
+        // don't stay black.
+        let bg = colors.bg;
+        let r32 = radius as i32;
+        p.fill_rect(wx, wy, radius, radius, bg);
+        p.fill_rect(wx + ww as i32 - r32, wy, radius, radius, bg);
+        p.fill_rect(wx, wy + wh as i32 - r32, radius, radius, bg);
+        p.fill_rect(wx + ww as i32 - r32, wy + wh as i32 - r32, radius, radius, bg);
 
-        blit_button(
-            fb,
-            fbw,
-            &CLOSE_BUTTON_CACHE,
-            win.x + win.width as i32 - 18,
-            win.y + 3,
-        );
-        blit_button(
-            fb,
-            fbw,
-            &MAXIMIZE_BUTTON_CACHE,
-            win.x + win.width as i32 - 38,
-            win.y + 3,
-        );
-        blit_button(
-            fb,
-            fbw,
-            &MINIMIZE_BUTTON_CACHE,
-            win.x + win.width as i32 - 58,
-            win.y + 3,
-        );
+        // Window body with rounded rect — 4 corners rounded
+        let border_col = if win.focused { colors.border_active } else { colors.border_inactive };
+        let title_col = if win.focused { colors.title_active } else { colors.title_inactive };
+        p.rounded_rect(wx, wy, ww_u, wh_u, radius, border_col);
 
-        // Title text (with padding from left)
-        // Uses glyph_fast to avoid per-pixel Mutex lock on font lookup
-        let tx = win.x + WINDOW_PADDING as i32;
-        let ty = win.y + WINDOW_PADDING as i32;
-        for (i, ch) in title.bytes().enumerate() {
-            if ch < 32 || ch > 126 {
-                continue;
-            }
-            let gl = crate::font::glyph_fast(ch);
-            let gx = tx + (i as i32) * 8;
-            for row in 0..12 {
-                let da = ty + row;
-                if da < cy as i32 || da >= cey || da >= fh {
-                    continue;
-                }
-                for col in 0..8 {
-                    let dxa = gx + col;
-                    if dxa < cx as i32 || dxa >= cex || dxa >= fw {
-                        continue;
-                    }
-                    if gl.pixel(row as u32, col as u32) {
-                        fb[(da as usize) * (fbw as usize) + dxa as usize] = colors.text;
-                    }
-                }
-            }
-        }
+        // Title bar background — plain rect (no extra rounding; top corners
+        // already handled by the border rounded_rect).
+        p.fill_rect(win.x, win.y, win.width, TITLE_BAR_HEIGHT, title_col);
+
+        // Separator line below title
+        let sep_y = win.y + TITLE_BAR_HEIGHT as i32;
+        p.fill_rect(win.x + r32, sep_y, win.width.saturating_sub(radius * 2), 1, border_col);
+
+        // ── Title bar buttons (slightly smaller, right-aligned) ──
+        let btn_y = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
+        blit_button(p.fb, p.width, &CLOSE_BUTTON_CACHE, win.x + win.width as i32 - 22, btn_y);
+        blit_button(p.fb, p.width, &MAXIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 42, btn_y);
+        blit_button(p.fb, p.width, &MINIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 62, btn_y);
+
+        // Title text — centered vertically, left-aligned with padding
+        let tx = win.x + 12;
+        let ty = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
+        p.draw_text(tx, ty, title, colors.text, 15.0);
     }
 }

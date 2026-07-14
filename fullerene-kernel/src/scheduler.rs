@@ -175,6 +175,7 @@ pub extern "C" fn mmio_recovery_restart() -> ! {
     unsafe {
         crate::interrupts::apic::reset_apic_controller_lock();
     }
+    #[cfg(not(nitrogen_no_iwlwifi))]
     nitrogen::iwlwifi::force_init_failed();
     scheduler_loop()
 }

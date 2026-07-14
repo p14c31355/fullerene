@@ -14,10 +14,10 @@
 # usb/
 
 # Intel wireless. Uncomment to exclude:
-# iwlwifi/
+iwlwifi/
 
 # Storage subsystem (Realtek SD card, AHCI, NVMe). Uncomment to exclude:
-# storage/
+storage/
 
 # Audio (HDA). Uncomment to exclude:
 # hda/

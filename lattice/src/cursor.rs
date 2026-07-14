@@ -35,17 +35,31 @@ impl Cursor {
     }
 }
 
-/// const fn that builds a 16×16 white arrow bitmap.
+/// const fn that builds a 16×16 arrow bitmap with black outline + white fill.
 ///
-/// Zero values are transparent; `0xFFFFFFFF` is opaque white.
+/// Zero = transparent, `0xFF000000` = opaque black, `0xFFFFFFFF` = opaque white.
 const fn generate_shape() -> [u32; 256] {
     let mut pixels = [0u32; 256];
     let w = 16usize;
     let arrow_h = 12usize;
 
+    // Black outline (fill slightly larger area)
+    let mut y = 0;
+    while y < arrow_h + 1 {
+        let mut x = 0;
+        while x <= y + 1 {
+            if y < 256 && x < 16 {
+                pixels[y * w + x] = 0xFF000000;
+            }
+            x += 1;
+        }
+        y += 1;
+    }
+
+    // White fill (slightly smaller, inset by 1px on left and bottom)
     let mut y = 0;
     while y < arrow_h {
-        let mut x = 0;
+        let mut x = 1;
         while x <= y {
             pixels[y * w + x] = 0xFFFFFFFF;
             x += 1;

@@ -3,7 +3,7 @@
 //! Provides the access point list menu, password input dialog,
 //! and WiFi status indicator for the taskbar.
 
-use crate::font;
+use crate::painter::Painter;
 use alloc::string::String;
 
 // ── Constants ──────────────────────────────────────────────────
@@ -223,43 +223,23 @@ pub fn render_password_dialog(
     }
 
     // Draw password text (masked with *)
-    let text_x = input_x + 4;
-    let text_y = input_y + 6;
+    let text_x = (input_x + 4) as i32;
+    let text_y = (input_y + 6) as i32;
+    let masked = "*".repeat(password.len());
+    let mut p = Painter::new(fb, fb_width, fb_height);
+    p.draw_text(text_x, text_y, &masked, PWD_INPUT_TEXT, 13.0);
 
-    let glyph = font::glyph_fast(b'*');
-    for i in 0..password.len() {
-        let gx = text_x + (i as u32) * 8;
-        for row in 0..12 {
-            let py = text_y + row;
-            if py >= fb_height {
-                continue;
-            }
-            for col in 0..8 {
-                let px = gx + col;
-                if px >= fb_width {
-                    continue;
+    // Cursor blink - draw a short vertical bar
+    let cursor_x = text_x + (cursor_pos as i32) * 8;
+    if (cursor_x as u32) < input_x + PWD_INPUT_W - 4 && cursor_x < fb_width as i32 {
+        // Draw a vertical bar (5 pixels tall)
+        for dy in 0..5 {
+            let cursor_y = text_y + 8 + dy;
+            if cursor_y >= 0 && (cursor_y as u32) < fb_height {
+                let idx = (cursor_y as usize) * fw + cursor_x as usize;
+                if idx < fb.len() {
+                    fb[idx] = PWD_INPUT_TEXT;
                 }
-                if glyph.pixel(row, col) {
-                    let idx = (py as usize) * fw + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = PWD_INPUT_TEXT;
-                    }
-                }
-            }
-        }
-    }
-
-    // Cursor blink
-    let cursor_x = text_x + (cursor_pos as u32) * 8;
-    if cursor_x < input_x + PWD_INPUT_W - 4 && cursor_x < fb_width {
-        for row in 0..12 {
-            let py = text_y + row;
-            if py >= fb_height {
-                continue;
-            }
-            let idx = (py as usize) * fw + cursor_x as usize;
-            if idx < fb.len() {
-                fb[idx] = PWD_INPUT_TEXT;
             }
         }
     }
@@ -313,34 +293,11 @@ fn render_button(
         }
     }
 
-    // Label
-    let text_x = x + (w - (label.len() as u32) * 8) / 2;
-    let text_y = y + (h - 12) / 2;
-    for (i, ch) in label.bytes().enumerate() {
-        if ch < 32 || ch > 126 {
-            continue;
-        }
-        let glyph = font::glyph_fast(ch);
-        let gx = text_x + (i as u32) * 8;
-        for row in 0..12 {
-            let py = text_y + row;
-            if py >= fb_height {
-                continue;
-            }
-            for col in 0..8 {
-                let px = gx + col;
-                if px >= fb_width {
-                    continue;
-                }
-                if glyph.pixel(row, col) {
-                    let idx = (py as usize) * fw + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = 0xFFFFFF;
-                    }
-                }
-            }
-        }
-    }
+    // Label using Painter TTF
+    let text_x = (x as i32) + (w as i32 - (label.len() as i32) * 8) / 2;
+    let text_y = (y + (h - 12) / 2) as i32;
+    let mut p = Painter::new(fb, fb_width, fb_height);
+    p.draw_text(text_x, text_y, label, 0xFFFFFF, 13.0);
 }
 
 /// Render the network menu (list of APs).
@@ -505,7 +462,7 @@ pub fn render_network_menu(
     }
 }
 
-/// Helper to render menu text.
+/// Helper to render menu text using Painter TTF.
 fn render_menu_text(
     fb: &mut [u32],
     fb_width: u32,
@@ -515,32 +472,8 @@ fn render_menu_text(
     text: &str,
     color: u32,
 ) {
-    let fw = fb_width as usize;
-    for (i, ch) in text.bytes().enumerate() {
-        if ch < 32 || ch > 126 {
-            continue;
-        }
-        let glyph = font::glyph_fast(ch);
-        let gx = x + (i as u32) * 8;
-        for row in 0..12 {
-            let py = y + row;
-            if py >= fb_height {
-                continue;
-            }
-            for col in 0..8 {
-                let px = gx + col;
-                if px >= fb_width {
-                    continue;
-                }
-                if glyph.pixel(row, col) {
-                    let idx = (py as usize) * fw + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = color;
-                    }
-                }
-            }
-        }
-    }
+    let mut p = Painter::new(fb, fb_width, fb_height);
+    p.draw_text(x as i32, y as i32, text, color, 13.0);
 }
 
 /// Check if a point is within the WiFi icon area in the taskbar.
