@@ -11,14 +11,20 @@ pub struct McfgEntry {
     pub base_address: u64,
 }
 
+/// Device scope within a DRHD unit (I/O APIC, HPET, etc.).
+#[derive(Debug, Clone)]
+pub struct DeviceScope {
+    pub bus: u8,
+    pub path: Vec<(u8, u8)>,
+}
+
 /// Parsed DMAR entry (VT-d DMA remapping).
 #[derive(Debug, Clone)]
 pub struct DmarDrhd {
     pub flags: u8,
     pub segment: u16,
     pub phys_base: u64,
-    pub dev_scope_bus: u8,
-    pub dev_scope_path: Vec<(u8, u8)>,
+    pub scopes: Vec<DeviceScope>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,23 +120,26 @@ impl AcpiManager {
                 let flags = unsafe { core::ptr::read_unaligned(p.add(offset + 4) as *const u8) };
                 let segment = unsafe { core::ptr::read_unaligned(p.add(offset + 6) as *const u16) };
                 let phys_base = unsafe { core::ptr::read_unaligned(p.add(offset + 8) as *const u64) };
-                let mut bus = 0u8;
-                let mut path = Vec::new();
-                let scope_off = offset + 16;
-                if scope_off + 6 <= offset + slen {
+                let mut scopes = Vec::new();
+                let mut scope_off = offset + 16;
+                while scope_off + 6 <= offset + slen {
                     let scope_len = unsafe { core::ptr::read_unaligned(p.add(scope_off + 1) as *const u8) } as usize;
-                    if scope_len >= 6 && scope_off + scope_len <= offset + slen {
-                        bus = unsafe { core::ptr::read_unaligned(p.add(scope_off + 5) as *const u8) };
-                        let mut po = scope_off + 6;
-                        while po + 2 <= scope_off + scope_len {
-                            let dev = unsafe { core::ptr::read_unaligned(p.add(po) as *const u8) };
-                            let func = unsafe { core::ptr::read_unaligned(p.add(po + 1) as *const u8) };
-                            path.push((dev, func));
-                            po += 2;
-                        }
+                    if scope_len < 6 || scope_off + scope_len > offset + slen {
+                        break;
                     }
+                    let bus = unsafe { core::ptr::read_unaligned(p.add(scope_off + 5) as *const u8) };
+                    let mut path = Vec::new();
+                    let mut po = scope_off + 6;
+                    while po + 2 <= scope_off + scope_len {
+                        let dev = unsafe { core::ptr::read_unaligned(p.add(po) as *const u8) };
+                        let func = unsafe { core::ptr::read_unaligned(p.add(po + 1) as *const u8) };
+                        path.push((dev, func));
+                        po += 2;
+                    }
+                    scopes.push(DeviceScope { bus, path });
+                    scope_off += scope_len;
                 }
-                drhd_units.push(DmarDrhd { flags, segment, phys_base, dev_scope_bus: bus, dev_scope_path: path });
+                drhd_units.push(DmarDrhd { flags, segment, phys_base, scopes });
             }
             offset += slen;
         }

@@ -154,10 +154,16 @@ impl EhciContext {
         crate::debug::hint(b"eh_rst");
         op.set_usbcmd(USBCMD_HCRESET);
         crate::debug::hint(b"eh_wrs");
+        let mut aborted = false;
         if crate::timing::wait_timeout_us(500_000, || {
-            op.usbcmd() & USBCMD_HCRESET == 0
-        }).is_err() {
-            return Err("HCRESET timeout");
+            let cmd = op.usbcmd();
+            if cmd == 0xFFFF_FFFF {
+                aborted = true;
+                return true;
+            }
+            cmd & USBCMD_HCRESET == 0
+        }).is_err() || aborted {
+            return Err("HCRESET timeout or device disconnected");
         }
         crate::debug::hint(b"eh_rdy");
         Ok(())
@@ -175,10 +181,16 @@ impl EhciContext {
 
         // Wait for HCHalted to clear
         crate::debug::hint(b"eh_hch");
+        let mut aborted = false;
         if crate::timing::wait_timeout_us(200_000, || {
-            op.usbsts() & USBSTS_HCH == 0
-        }).is_err() {
-            return Err("EHCI start timeout (HCH still set)");
+            let sts = op.usbsts();
+            if sts == 0xFFFF_FFFF {
+                aborted = true;
+                return true;
+            }
+            sts & USBSTS_HCH == 0
+        }).is_err() || aborted {
+            return Err("EHCI start timeout or device disconnected");
         }
 
         // Clear stale port-change status bits
