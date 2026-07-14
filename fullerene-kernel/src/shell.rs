@@ -7,6 +7,7 @@
 use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
+use alloc::boxed::Box;
 
 // ── WASM/WASI runtime callbacks ──────────────────────────────────
 
@@ -311,20 +312,78 @@ fn register_nozzle_hooks() {
     .install();
 
     // ── Install sys info / control hooks ───────────────────────
-    // Register SD mount hook for direct access (bypasses info hook)
+    // Register SD mount hook
     nozzle::sys_hooks::SD_MOUNT_HOOK
         .lock()
         .replace(|ctx: &mut nozzle::CommandContext| {
             use crate::drivers::registry;
-            ctx.terminal.write_str("sd_mount: hook called\n");
+            ctx.terminal.write_str("sd_mount: probing SD card...\n");
             if registry::sd_probe_and_mount() {
-                ctx.terminal.write_str("sd_mount: OK\n");
-                let drives = registry::SD_DRIVES.lock();
-                for d in drives.iter() {
-                    tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
-                }
+                ctx.terminal.write_str("sd_mount: SD registered at /dev/sd0\n");
+                ctx.terminal.write_str("sd_mount: run 'mount /dev/sd0 /mnt' to mount\n");
             } else {
-                ctx.terminal.write_str("sd_mount: FAILED\n");
+                ctx.terminal.write_str("sd_mount: FAILED (no SD card)\n");
+            }
+        });
+
+    // Register block device mount hook
+    nozzle::sys_hooks::MOUNT_HOOK
+        .lock()
+        .replace(|ctx: &mut nozzle::CommandContext| {
+            if ctx.args.len() < 3 {
+                ctx.terminal.write_str("Usage: mount /dev/<device> <mount_point>\n");
+                ctx.terminal.write_str("Available devices:\n");
+                for name in crate::devfs::list_block_device_names() {
+                    tline!(ctx.terminal, "    /dev/{}", name);
+                }
+                return;
+            }
+            let dev_path = ctx.args[1];
+            let mount_point = ctx.args[2];
+
+            let dev_name = dev_path.strip_prefix("/dev/").unwrap_or(dev_path);
+
+            let bdev = match crate::devfs::open_block_device(dev_name) {
+                Some(b) => b,
+                None => {
+                    tline!(ctx.terminal, "mount: device '{}' not found", dev_name);
+                    tstr!(ctx.terminal, "  Available devices:");
+                    for name in crate::devfs::list_block_device_names() {
+                        tline!(ctx.terminal, "    /dev/{}", name);
+                    }
+                    return;
+                }
+            };
+
+            tline!(ctx.terminal, "mount: mounting {} at {} ...", dev_path, mount_point);
+
+            let dev_name_owned = alloc::format!("{}", dev_name);
+
+            match crate::drivers::fat::FatFileSystem::from_device(bdev) {
+                Ok(fs) => {
+                    let _ = crate::contexts::vfs::mkdir(mount_point);
+                    match crate::contexts::vfs::with_vfs(|v| v.mount(mount_point, Box::new(fs))) {
+                        Some(Ok(())) => {
+                            tline!(ctx.terminal, "mount: OK — {} mounted at {}", dev_path, mount_point);
+                            let _ = crate::klog::flush_to_vfs();
+                        }
+                        Some(Err(e)) => {
+                            tline!(ctx.terminal, "mount: VFS mount error: {:?}", e);
+                        }
+                        None => {
+                            ctx.terminal.write_str("mount: VFS not available\n");
+                        }
+                    }
+                }
+                Err((e, returned_bdev)) => {
+                    tline!(ctx.terminal, "mount: filesystem init failed — {:?}", e);
+                    if let Some(bdev) = returned_bdev {
+                        crate::devfs::register_block_device(
+                            Box::leak(dev_name_owned.into_boxed_str()),
+                            bdev,
+                        );
+                    }
+                }
             }
         });
 
@@ -518,17 +577,15 @@ fn register_nozzle_hooks() {
         }
         "usb_info" => {
             use crate::drivers::registry;
-            let count = registry::USB_DRIVE_COUNT.load(core::sync::atomic::Ordering::Relaxed);
-            tline!(ctx.terminal, "USB drives (global): {}", count);
-            {
-                let drives = registry::USB_DRIVES.lock();
-                for d in drives.iter() {
-                    tline!(ctx.terminal, "  {} -> {}", d.name, d.mount_point);
-                }
+            let count = crate::devfs::list_block_device_names().len();
+            tline!(ctx.terminal, "USB block devices: {}", count);
+            tline!(ctx.terminal, "Registered /dev/ entries:");
+            for name in crate::devfs::list_block_device_names() {
+                tline!(ctx.terminal, "  /dev/{}", name);
             }
             // Also show full USB context status
             registry::with_ctx(|ctx_usb| {
-                tline!(ctx.terminal, "USBContext: {} disk(s) registered", ctx_usb.disks().len());
+                tline!(ctx.terminal, "USBContext: {} disk(s) enumerated", ctx_usb.disks().len());
                 for disk in ctx_usb.disks() {
                     tline!(ctx.terminal, "  ctrl={} dev_addr={} ep_out=0x{:02x} ep_in=0x{:02x} blk_size={} total_blocks={}",
                         disk.ctrl_type, disk.dev_addr, disk.ep_out, disk.ep_in, disk.block_size, disk.total_blocks);

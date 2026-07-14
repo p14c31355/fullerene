@@ -81,47 +81,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> 
     Err(FsError::FileNotFound)
 }
 
-use spin::Mutex;
-
-static BLOCK_DEVICES: Mutex<Vec<(&'static str, Box<dyn BlockDevice>)>> = Mutex::new(Vec::new());
-
-pub fn register_block_device(name: &'static str, device: Box<dyn BlockDevice>) {
-    BLOCK_DEVICES.lock().push((name, device));
-    klog_fmt!("FAT: registered block device {}\n", name);
-}
-
-pub fn open_block_device(name: &str) -> Result<FatFileSystem, FsError> {
-    let mut devices = BLOCK_DEVICES.lock();
-    let pos = devices.iter().position(|(n, _)| *n == name).ok_or(FsError::FileNotFound)?;
-    let (dev_name, device) = devices.remove(pos);
-    match FatFileSystem::from_device(device) {
-        Ok(fs) => Ok(fs),
-        Err((e, Some(device))) => {
-            devices.push((dev_name, device));
-            Err(e)
-        }
-        Err((e, None)) => Err(e),
-    }
-}
-
-pub trait BlockDevice: Send {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str>;
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str>;
-    fn sector_size(&self) -> u32;
-    fn total_sectors(&self) -> u64;
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BlockError {
-    Device(&'static str),
-    BufferTooSmall { required: usize, provided: usize },
-    LbaOverflow,
-    SectorNotFound,
-}
-
-impl From<&'static str> for BlockError {
-    fn from(e: &'static str) -> Self { BlockError::Device(e) }
-}
+pub use genome::block::{BlockDevice, BlockError};
 
 pub struct BlockCache<D: BlockDevice> {
     inner: D,
@@ -222,13 +182,6 @@ impl BlockDevice for PartitionBlockDevice {
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> { self.inner.write_sectors(lba + self.offset, count, buf) }
     fn sector_size(&self) -> u32 { self.inner.sector_size() }
     fn total_sectors(&self) -> u64 { self.inner.total_sectors().saturating_sub(self.offset as u64) }
-}
-
-impl BlockDevice for Box<dyn BlockDevice> {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> { (**self).read_sectors(lba, count, buf) }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> { (**self).write_sectors(lba, count, buf) }
-    fn sector_size(&self) -> u32 { (**self).sector_size() }
-    fn total_sectors(&self) -> u64 { (**self).total_sectors() }
 }
 
 // ── fatfs device adapter ─────────────────────────────────────

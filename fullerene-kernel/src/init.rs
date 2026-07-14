@@ -279,6 +279,14 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] loader done\n");
             Ok(())
         }),
+        petroleum::init_step!("devfs", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs start\n");
+            let _ = crate::contexts::vfs::mkdir("/dev");
+            let _ = crate::contexts::vfs::mount("", "/dev", "tmpfs");
+            petroleum::serial::serial_log(format_args!("DevFS /dev/ mounted\n"));
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs done\n");
+            Ok(())
+        }),
         petroleum::init_step!("initramfs", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] initramfs start\n");
             crate::boot_stage::draw_boot_label(b"INITRAMFS");
@@ -308,6 +316,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage::draw_step_hint(b"sd_strt");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card start\n");
             crate::boot_stage::draw_boot_label(b"SD CARD");
+            crate::drivers::registry::sd_probe_and_register();
             petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
             crate::boot_stage::draw_step_hint(b"sd_ok  ");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card done\n");
