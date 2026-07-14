@@ -84,6 +84,7 @@ pub struct EhciRegisterContext {
 impl EhciRegisterContext {
     pub unsafe fn new(mmio_base: *mut u8) -> Self {
         unsafe {
+            crate::debug::hint(b"eh_cap");
             let caplength = ptr::read_volatile(mmio_base as *const u8);
             Self {
                 mmio_base,

@@ -17,13 +17,18 @@ use petroleum::initializer::FrameAllocator;
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
 
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+fn hex_char(v: u8) -> u8 {
+    HEX_DIGITS[(v & 0xF) as usize]
+}
+
 /// Format a PCI device descriptor into a byte buffer for serial debug.
 #[allow(unused_assignments)]
 fn hex_fmt(buf: &mut [u8; 72], bus: u8, dev: u8, func: u8, vid: u16, did: u16, cls: u8, scls: u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut i = 0;
     macro_rules! push { ($b:expr) => { if i < buf.len() { buf[i] = $b; i += 1; } } }
-    macro_rules! hex { ($v:expr) => { push!(HEX[($v >> 4) as usize]); push!(HEX[($v & 0xF) as usize]); } }
+    macro_rules! hex { ($v:expr) => { push!(HEX_DIGITS[($v >> 4) as usize]); push!(HEX_DIGITS[($v & 0xF) as usize]); } }
     macro_rules! bytes { ($s:expr) => { for &b in $s { push!(b); } } }
     bytes!(b"[probe] "); hex!(bus); push!(':' as u8); hex!(dev); push!('.' as u8); hex!(func); push!(' ' as u8);
     hex!((vid >> 8) as u8); hex!(vid as u8); push!(':' as u8);
@@ -213,10 +218,21 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 }
                 // Skip PCI bridges — drivers only match endpoints.
                 if dev.class_code == 0x06 { continue; }
+                // Show bus:device on boot screen (serial-free debug)
+                let hint_bcd = [
+                    b'd', b'v',
+                    hex_char(dev.bus >> 4), hex_char(dev.bus & 0xF),
+                    b':',
+                    hex_char(dev.device >> 4), hex_char(dev.device & 0xF),
+                    b':',
+                    hex_char(dev.function >> 4), hex_char(dev.function & 0xF),
+                ];
+                crate::boot_stage::draw_step_hint(&hint_bcd);
                 dev.disable_pcie_aspm();
                 dev.enable_memory_access();
                 dev.ensure_d0();
                 // Quick MMIO-safety check
+                crate::boot_stage::draw_step_hint(b"dv_vid");
                 let vid = nitrogen::pci::PciConfigSpace::read_config_word(
                     dev.bus, dev.device, dev.function, 0,
                 );

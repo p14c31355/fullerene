@@ -119,6 +119,7 @@ impl EhciContext {
     /// of the returned controller.
     pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
         let registers = unsafe { EhciRegisterContext::new(mmio_base) };
+        crate::debug::hint(b"eh_csp");
         let hcsparams = unsafe { ptr::read_volatile(mmio_base.add(4) as *const u32) };
         let n_ports = (hcsparams & 0x0F).max(1);
 
@@ -150,24 +151,30 @@ impl EhciContext {
             return Err("EHCI device gone");
         }
         let op = &self.registers.op;
+        crate::debug::hint(b"eh_rst");
         op.set_usbcmd(USBCMD_HCRESET);
+        crate::debug::hint(b"eh_wrs");
         if crate::timing::wait_timeout_us(500_000, || {
             op.usbcmd() & USBCMD_HCRESET == 0
         }).is_err() {
             return Err("HCRESET timeout");
         }
+        crate::debug::hint(b"eh_rdy");
         Ok(())
     }
 
     /// Start the controller and enable the async schedule.
     pub fn start(&mut self) -> Result<(), &'static str> {
         let op = &self.registers.op;
+        crate::debug::hint(b"eh_alt");
         op.set_async_list_addr(self.transfer.schedule.head_phys as u32);
 
+        crate::debug::hint(b"eh_cmd");
         let cmd = op.usbcmd();
         op.set_usbcmd(cmd | USBCMD_RS | USBCMD_ASSE);
 
         // Wait for HCHalted to clear
+        crate::debug::hint(b"eh_hch");
         if crate::timing::wait_timeout_us(200_000, || {
             op.usbsts() & USBSTS_HCH == 0
         }).is_err() {
@@ -175,6 +182,7 @@ impl EhciContext {
         }
 
         // Clear stale port-change status bits
+        crate::debug::hint(b"eh_pcd");
         op.write_usbsts(USBSTS_PCD);
         Ok(())
     }

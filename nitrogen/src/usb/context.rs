@@ -122,6 +122,7 @@ impl ControllerManager {
             // page-fault and hang the CPU.  PCI MMIO aperture is NOT part of
             // the direct physical-memory map, so phys_to_virt alone is
             // insufficient.
+            crate::debug::hint(b"us_map");
             log::info!(
                 "USB: mapping MMIO BAR0 {:#x} -> virt {:#p} ({} bytes)",
                 mmio_base, mmio_virt, bar_size
@@ -176,6 +177,7 @@ impl ControllerManager {
                 continue;
             }
 
+            crate::debug::hint(b"us_pif");
             let prog_if = crate::pci::PciConfigSpace::read_config_byte(
                 dev.bus,
                 dev.device,
@@ -190,6 +192,7 @@ impl ControllerManager {
                         dev.device,
                         dev.function
                     );
+                    crate::debug::hint(b"eh_new");
                     if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx, health) } {
                         if hc.initialize().is_ok() {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());

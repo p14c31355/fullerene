@@ -134,6 +134,7 @@ impl Driver for UsbStorageDriver {
     }
     fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
         crate::boot_stage::draw_boot_label(b"USB STORAGE");
+        nitrogen::debug::set_hint_callback(crate::boot_stage::draw_step_hint);
 
         let mut ctx = nitrogen::usb::context::USBContext::new(
             &crate::driver_context_impl::KernelDriverContext,
@@ -142,7 +143,9 @@ impl Driver for UsbStorageDriver {
         // Store in the global singleton for later polling.
         crate::drivers::registry::init_usb_ctx(ctx);
         // Initial poll to enumerate devices (no mount — use `mount` command).
+        crate::boot_stage::draw_step_hint(b"usb_pol");
         crate::drivers::registry::usb_poll_and_register();
+        crate::boot_stage::draw_step_hint(b"usb_reg");
         DriverBox::None
     }
 }

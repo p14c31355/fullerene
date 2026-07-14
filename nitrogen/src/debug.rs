@@ -202,6 +202,26 @@ pub fn set_framebuffer(virt: *mut u32, width: u32, height: u32, stride: u32) {
     *FB.lock() = Some(FbInfo { virt, width, height, stride });
 }
 
+// ── Boot-screen hint callback ─────────────────────────────────────────
+//
+// Kernel sets this to `draw_step_hint` before USB init so that drivers in
+// nitrogen can show progress text on the boot panel (serial-independent).
+
+static HINT_CB: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
+
+/// Set the callback that draws a hint on the boot screen.
+/// Called once by the kernel during init.
+pub fn set_hint_callback(cb: fn(&[u8])) {
+    *HINT_CB.lock() = Some(cb);
+}
+
+/// Draw a hint on the boot screen (if a callback has been registered).
+pub fn hint(msg: &[u8]) {
+    if let Some(cb) = *HINT_CB.lock() {
+        cb(msg);
+    }
+}
+
 #[macro_export]
 macro_rules! debug_status {
     ($source:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
