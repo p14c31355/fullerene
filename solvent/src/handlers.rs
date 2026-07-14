@@ -25,6 +25,11 @@ impl EventHandler for WmEventHandler {
             Event::Input(InputEvent::MouseMove { x, y }) => {
                 rt.desktop.mouse_move(*x, *y);
                 rt.frame_due = true;
+                // When only the cursor moves (no menus or dialogs open),
+                // skip the full compositor redraw and just update the cursor.
+                if !rt.desktop.has_active_overlays() {
+                    rt.cursor_only_update = true;
+                }
                 true
             }
             Event::Input(InputEvent::MouseDown(btn)) => {

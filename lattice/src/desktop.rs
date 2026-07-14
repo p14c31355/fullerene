@@ -409,6 +409,13 @@ impl Desktop {
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
     }
 
+    /// Returns `true` when any transient overlay (context menu, network
+    /// menu, password dialog) is open.  Callers can use this to decide
+    /// whether a cursor‑only update is safe.
+    pub fn has_active_overlays(&self) -> bool {
+        self.active_menu.is_some() || self.network_menu_open || self.pwd_dialog_open
+    }
+
     /// Force a full-screen redraw on the next frame.
     ///
     /// Useful when overlay modes (TaskOverview / AppGrid) need every frame

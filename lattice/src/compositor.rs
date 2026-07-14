@@ -493,7 +493,7 @@ impl Compositor {
         }
     }
 
-    fn draw_debug_overlay(fb: &mut [u32], fbw: u32, _fbh: u32) {
+    fn draw_debug_overlay(fb: &mut [u32], fbw: u32, fbh: u32) {
         let fps = current_fps_x100();
         if fps == 0 {
             return;
@@ -510,24 +510,11 @@ impl Compositor {
         let _ = write_str(&mut buf, &mut pos, b" DC:");
         write_u64_fixed(&mut buf, &mut pos, dc, 0);
         let text = &buf[..pos.min(32)];
+        let text_str = core::str::from_utf8(text).unwrap_or("FPS:?");
 
-        let x = fbw.saturating_sub(150);
-        let y = 4u32;
-        for (i, &ch) in text.iter().enumerate() {
-            if ch < 32 || ch > 126 {
-                continue;
-            }
-            let gl = crate::font::glyph_fast(ch);
-            for row in 0..12 {
-                let py = y + row;
-                for col in 0..8 {
-                    let px = x + (i as u32) * 8 + col;
-                    if px < fbw && py < _fbh && gl.pixel(row, col) {
-                        fb[(py * fbw + px) as usize] = accent;
-                    }
-                }
-            }
-        }
+        let mut p = crate::painter::Painter::new(fb, fbw, fbh);
+        let x = (fbw.saturating_sub(150)) as i32;
+        p.draw_text(x, 4, text_str, accent, 13.0);
     }
 
     // ── Cursor ────────────────────────────────────────────
