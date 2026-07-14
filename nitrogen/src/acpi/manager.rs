@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 use crate::acpi;
 use crate::acpi::{find_rsdp, find_table, get_table_bytes};
 
@@ -9,28 +8,6 @@ pub struct McfgEntry {
     pub start_bus: u8,
     pub end_bus: u8,
     pub base_address: u64,
-}
-
-/// Device scope within a DRHD unit (I/O APIC, HPET, etc.).
-#[derive(Debug, Clone)]
-pub struct DeviceScope {
-    pub bus: u8,
-    pub path: Vec<(u8, u8)>,
-}
-
-/// Parsed DMAR entry (VT-d DMA remapping).
-#[derive(Debug, Clone)]
-pub struct DmarDrhd {
-    pub flags: u8,
-    pub segment: u16,
-    pub phys_base: u64,
-    pub scopes: Vec<DeviceScope>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DmarInfo {
-    pub host_address_width: u8,
-    pub drhd_units: Vec<DmarDrhd>,
 }
 
 /// Standalone ACPI table manager.
@@ -76,7 +53,7 @@ impl AcpiManager {
         let bytes = self.table_bytes(table_phys)?;
 
         let total_len = bytes.len();
-        if total_len < 44 || (total_len - 44) % 16 != 0 {
+        if total_len < 44 {
             return None;
         }
         let p = bytes.as_ptr();
@@ -89,60 +66,10 @@ impl AcpiManager {
             if segment == 0 {
                 return Some(McfgEntry { segment, start_bus, end_bus, base_address: base_addr });
             }
+            log::debug!("MCFG: skipping segment {} (bus {}-{})", segment, start_bus, end_bus);
             offset += 16;
         }
         None
     }
 
-    /// Parse the DMAR table and return VT-d information.
-    pub fn parse_dmar(&self) -> Option<DmarInfo> {
-        let bytes = self.table_bytes(self.find_table(b"DMAR")?)?;
-        let total_len = bytes.len();
-        if total_len < 48 {
-            return None;
-        }
-        let p = bytes.as_ptr();
-        let raw_width_byte = unsafe { core::ptr::read_unaligned(p.add(36) as *const u8) };
-        let host_address_width = match raw_width_byte.checked_add(1) {
-            Some(w) if raw_width_byte != 0xFF => w,
-            _ => return None, // Invalid: 0xFF would overflow or produce invalid width
-        };
-
-        let mut drhd_units = Vec::new();
-        let mut offset = 48usize;
-        while offset + 4 <= total_len {
-            let stype = unsafe { core::ptr::read_unaligned(p.add(offset) as *const u16) };
-            let slen = unsafe { core::ptr::read_unaligned(p.add(offset + 2) as *const u16) } as usize;
-            if slen < 4 || offset + slen > total_len {
-                return None;
-            }
-            if stype == 0 && slen >= 16 {
-                let flags = unsafe { core::ptr::read_unaligned(p.add(offset + 4) as *const u8) };
-                let segment = unsafe { core::ptr::read_unaligned(p.add(offset + 6) as *const u16) };
-                let phys_base = unsafe { core::ptr::read_unaligned(p.add(offset + 8) as *const u64) };
-                let mut scopes = Vec::new();
-                let mut scope_off = offset + 16;
-                while scope_off + 6 <= offset + slen {
-                    let scope_len = unsafe { core::ptr::read_unaligned(p.add(scope_off + 1) as *const u8) } as usize;
-                    if scope_len < 6 || scope_off + scope_len > offset + slen {
-                        break;
-                    }
-                    let bus = unsafe { core::ptr::read_unaligned(p.add(scope_off + 5) as *const u8) };
-                    let mut path = Vec::new();
-                    let mut po = scope_off + 6;
-                    while po + 2 <= scope_off + scope_len {
-                        let dev = unsafe { core::ptr::read_unaligned(p.add(po) as *const u8) };
-                        let func = unsafe { core::ptr::read_unaligned(p.add(po + 1) as *const u8) };
-                        path.push((dev, func));
-                        po += 2;
-                    }
-                    scopes.push(DeviceScope { bus, path });
-                    scope_off += scope_len;
-                }
-                drhd_units.push(DmarDrhd { flags, segment, phys_base, scopes });
-            }
-            offset += slen;
-        }
-        Some(DmarInfo { host_address_width, drhd_units })
-    }
 }

@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use log;
 use spin::Mutex;
 
-use nitrogen::driver_api::{DriverBox, DriverRegistry};
+use nitrogen::driver_api::DriverRegistry;
 use nitrogen::pci::PciDevice;
 use nitrogen::DriverContext;
 
@@ -41,7 +41,8 @@ impl DriverManager {
     ///
     /// 1. For each device, find matching drivers via `DriverRegistry`
     /// 2. Call `probe()` — candidates are tried in priority order
-    /// 3. Call `attach()` — finalises initialisation
+    /// 3. Call `attach()` — finalises initialisation (falls back to next
+    ///    candidate if a higher‑priority driver fails to attach)
     /// 4. Store metadata for lifecycle management
     pub fn discover_and_attach(
         &self,
@@ -53,9 +54,10 @@ impl DriverManager {
             if dev.class_code == 0x06 {
                 continue;
             }
-            let mut result = registry.match_device(ctx, dev);
-            if !matches!(result, DriverBox::None) {
-                match result.attach() {
+            let mut candidates = registry.probe_candidates(ctx, dev);
+            let mut attached = false;
+            for candidate in &mut candidates {
+                match candidate.attach() {
                     Ok(()) => {
                         log::info!(
                             "DriverManager: attached driver for {:04x}:{:04x} (class {:#04x}) at {:02x}:{:02x}.{}",
@@ -71,6 +73,8 @@ impl DriverManager {
                             device: dev.device,
                             function: dev.function,
                         });
+                        attached = true;
+                        break;
                     }
                     Err(e) => {
                         log::warn!(
@@ -79,6 +83,13 @@ impl DriverManager {
                         );
                     }
                 }
+            }
+            if candidates.is_empty() && !attached {
+                log::debug!(
+                    "DriverManager: no driver for {:04x}:{:04x} (class {:#04x}) at {:02x}:{:02x}.{}",
+                    dev.vendor_id, dev.device_id, dev.class_code,
+                    dev.bus, dev.device, dev.function,
+                );
             }
         }
     }

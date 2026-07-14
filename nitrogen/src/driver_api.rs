@@ -281,6 +281,36 @@ impl DriverRegistry {
         DriverBox::None
     }
 
+    /// Probe all matching drivers and return those that succeed, in priority order.
+    ///
+    /// Unlike [`match_device`](Self::match_device) which short‑circuits on the first
+    /// successful probe, this returns every driver whose `probe()` returned non-`None`,
+    /// sorted by priority (highest first).  The caller can then attempt `attach()` on
+    /// each until one succeeds.
+    pub fn probe_candidates(
+        &self,
+        ctx: &dyn DriverContext,
+        device: &PciDevice,
+    ) -> Vec<DriverBox> {
+        let mut candidates: Vec<(usize, i32)> = Vec::new();
+        for (i, (_name, driver)) in self.drivers.iter().enumerate() {
+            if driver.descriptor().matches(device) {
+                candidates.push((i, driver.priority()));
+            }
+        }
+        candidates.sort_by(|a, b| b.1.cmp(&a.1));
+
+        let mut results = Vec::new();
+        for (idx, _prio) in &candidates {
+            let (_name, driver) = &self.drivers[*idx];
+            let result = driver.probe(ctx, device);
+            if !matches!(result, DriverBox::None) {
+                results.push(result);
+            }
+        }
+        results
+    }
+
     /// Iterate over registered driver names.
     pub fn iter(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.drivers.iter().map(|(name, _)| *name)
