@@ -41,3 +41,8 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc"]
 name = "petroleum"
 path = "src/lib.rs"
 crate-type = ["lib"]
+
+[[test]]
+name = "lib"
+path = "tests/lib.rs"
+required-features = ["std"]

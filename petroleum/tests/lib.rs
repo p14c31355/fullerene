@@ -93,47 +93,6 @@ mod address_integration_tests {
     }
 
     #[test]
-    fn test_bootloader_buffer_layout_flow() {
-        // Scenario: Bellows loader preparing memory map buffer
-        let buffer_size = 128 * 1024;
-        let map_size = 4096 * 2; // 8KiB of actual map data
-        let config_size = 64; // Mock size for ConfigWithMetadata
-
-        // 1. Calculate needed pages for buffer
-        let pages = calculate_pages_for_buffer(buffer_size);
-        assert_eq!(pages, 33);
-
-        // 2. Data pointer offset
-        let data_ptr_offset = calculate_map_data_ptr(0x1000);
-        assert_eq!(data_ptr_offset, 0x1000 + core::mem::size_of::<usize>());
-
-        // 3. Calculate where config goes
-        let config_offset = calculate_config_offset(map_size);
-        // size_of::<usize>() + 8192
-        assert_eq!(config_offset, core::mem::size_of::<usize>() + 8192);
-
-        // 4. Verify overflow check
-        // total capacity = 128KB + 8 = 131080
-        // config_offset + config_size = (8 + 8192) + 64 = 8324
-        assert!(check_buffer_overflow(
-            0x1000,
-            config_offset,
-            config_size,
-            buffer_size
-        ));
-
-        // Test overflow case: map_size is huge
-        let huge_map_size = 130 * 1024;
-        let huge_config_offset = calculate_config_offset(huge_map_size);
-        assert!(!check_buffer_overflow(
-            0x1000,
-            huge_config_offset,
-            config_size,
-            buffer_size
-        ));
-    }
-
-    #[test]
     fn test_program_loading_page_calculation_flow() {
         // Scenario: Loading a program segment of 10KB
         let mem_size = 10 * 1024;

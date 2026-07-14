@@ -11,6 +11,8 @@ crate-type = ["rlib"]
 [[bin]]
 name = "toluene"
 path = "src/main.rs"
+test = false
+bench = false
 
 [features]
 default = ["vfs", "kernel-syscall"]
@@ -24,6 +26,11 @@ clap = { version = "4", features = ["derive"] }
 lattice = { path = "../lattice" }
 petroleum = { path = "../petroleum" }
 
+[dev-dependencies]
+petroleum = { path = "../petroleum", features = ["std"] }
+
 [[bin]]
 name = "soxhlet"
 path = "src/soxhlet/main.rs"
+test = false
+bench = false

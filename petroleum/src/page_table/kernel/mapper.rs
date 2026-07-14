@@ -295,13 +295,33 @@ pub fn unmap_range<A: FrameAllocator>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::page_table::allocator::bitmap::BitmapFrameAllocator;
+    use crate::page_table::allocator::traits::AllocError;
+    use alloc::{boxed::Box, vec::Vec};
+
+    #[derive(Default)]
+    struct TestAllocator(Vec<Box<PageTable>>);
+
+    impl FrameAllocator for TestAllocator {
+        fn allocate(&mut self) -> Result<PhysFrame, AllocError> {
+            let table = Box::new(PageTable::new());
+            let frame = PhysFrame {
+                start_address: (&*table as *const PageTable) as u64,
+            };
+            self.0.push(table);
+            Ok(frame)
+        }
+
+        fn deallocate(&mut self, _frame: PhysFrame) {}
+
+        fn is_initialized(&self) -> bool {
+            true
+        }
+    }
 
     #[test]
     fn map_single_4k() {
         let mut root = PageTable::new();
-        let _storage = &mut [0u8; 65536];
-        let mut alloc = BitmapFrameAllocator::new(1024);
+        let mut alloc = TestAllocator::default();
 
         // Allocate frame before creating mapper (which borrows alloc)
         let frame = alloc.allocate().unwrap();

@@ -5,7 +5,6 @@
 //! and [`DoorbellRegisters`].
 
 use core::ptr;
-use crate::mmio::detect_abort_read_u32;
 
 // ══════════════════════════════════════════════════════════════
 //  Register Offsets
@@ -93,16 +92,14 @@ struct Mmio(*mut u8);
 impl Mmio {
     fn read32(&self, off: usize) -> u32 {
         let p = unsafe { self.0.add(off) as *const u32 };
-        // detect_abort_read_u32 performs the volatile read and checks
-        // for 0xFFFF_FFFF (PCI master abort).  Unlike raw read_volatile,
-        // this signals the abort instead of potentially masking it.
-        match detect_abort_read_u32(p) {
-            Some(v) => v,
-            None => {
-                log::warn!("xHCI: MMIO read at offset {:#x} returned 0xFFFF_FFFF (master abort)", off);
-                0xFFFF_FFFF
-            }
+        let value = unsafe { ptr::read_volatile(p) };
+        if value == u32::MAX {
+            log::warn!(
+                "xHCI: MMIO read at offset {:#x} completed with all ones",
+                off
+            );
         }
+        value
     }
 
     fn write32(&self, off: usize, val: u32) {
@@ -187,19 +184,37 @@ pub struct HccParams1 {
 }
 
 impl CapabilityRegisters {
-    pub unsafe fn read(mmio: *mut u8) -> Self {
-        unsafe {
-            Self {
-                caplength: ptr::read_volatile(mmio as *const u8),
-                hci_version: ptr::read_volatile(mmio.add(0x02) as *const u16),
-                hcs_params1: ptr::read_volatile(mmio.add(CAP_HCSPARAMS1) as *const u32),
-                hcs_params2: ptr::read_volatile(mmio.add(CAP_HCSPARAMS2) as *const u32),
-                hcs_params3: ptr::read_volatile(mmio.add(CAP_HCSPARAMS3) as *const u32),
-                hcc_params1: ptr::read_volatile(mmio.add(CAP_HCCPARAMS1) as *const u32),
-                db_offset: ptr::read_volatile(mmio.add(CAP_DBOFF) as *const u32) & 0xFFFF_FFFC,
-                rt_offset: ptr::read_volatile(mmio.add(CAP_RTSOFF) as *const u32) & 0xFFFF_FFFC,
-            }
+    pub unsafe fn read(mmio: *mut u8) -> Option<Self> {
+        let registers = Mmio(mmio);
+        let header = registers.read32(CAP_CAPLENGTH);
+        let caplength = header as u8;
+        if header == u32::MAX || caplength < 0x20 || caplength & 3 != 0 {
+            return None;
         }
+        let hcs_params1 = registers.read32(CAP_HCSPARAMS1);
+        if hcs_params1 == u32::MAX {
+            return None;
+        }
+        let [hcs_params2, hcs_params3, hcc_params1, db_offset, rt_offset] = [
+            registers.read32(CAP_HCSPARAMS2),
+            registers.read32(CAP_HCSPARAMS3),
+            registers.read32(CAP_HCCPARAMS1),
+            registers.read32(CAP_DBOFF),
+            registers.read32(CAP_RTSOFF),
+        ];
+        if [hcs_params2, hcs_params3, hcc_params1, db_offset, rt_offset].contains(&u32::MAX) {
+            return None;
+        }
+        Some(Self {
+            caplength,
+            hci_version: (header >> 16) as u16,
+            hcs_params1,
+            hcs_params2,
+            hcs_params3,
+            hcc_params1,
+            db_offset: db_offset & 0xFFFF_FFFC,
+            rt_offset: rt_offset & 0xFFFF_FFFC,
+        })
     }
 
     pub fn hcs_params1(&self) -> HcsParams1 {
@@ -398,24 +413,6 @@ pub struct RegisterContext {
     pub doorbell: DoorbellRegisters,
 }
 
-impl RegisterContext {
-    pub unsafe fn new(mmio_base: *mut u8) -> Self {
-        unsafe {
-            let cap = CapabilityRegisters::read(mmio_base);
-            let caplen = cap.caplength as usize;
-            let rt_off = cap.rt_offset as usize;
-            let db_off = cap.db_offset as usize;
-            Self {
-                mmio_base,
-                cap,
-                op: OperationalRegisters::new(mmio_base.add(caplen)),
-                runtime: RuntimeRegisters::new(mmio_base.add(rt_off)),
-                doorbell: DoorbellRegisters::new(mmio_base.add(db_off)),
-            }
-        }
-    }
-}
-
 // ══════════════════════════════════════════════════════════════
 //  Legacy / Extended Capabilities
 // ══════════════════════════════════════════════════════════════
@@ -527,6 +524,11 @@ pub fn parse_port_protocols(
 }
 
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
+    const BIOS_OWNED: u32 = 1 << 16;
+    const OS_OWNED: u32 = 1 << 24;
+    const LEGACY_PRESERVE: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17);
+    const LEGACY_EVENTS: u32 = 0x7 << 29;
+
     let m = Mmio(mmio_base);
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
@@ -539,23 +541,22 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
         if ec_id == 1 {
             let cap_base = off * 4;
             let legsup = m.read32(cap_base);
-            if (legsup >> 16) & 1 == 0 {
-                m.write32(cap_base + 4, m.read32(cap_base + 4) & !0x00F8001F);
+            if legsup & BIOS_OWNED == 0 {
+                let control = m.read32(cap_base + 4);
+                m.write32(cap_base + 4, (control & LEGACY_PRESERVE) | LEGACY_EVENTS);
                 return Ok(true);
             }
-            m.write32(cap_base, legsup | (1 << 24));
-            let mut ok = false;
-            for _ in 0..5_000_000 {
-                if (m.read32(cap_base) & (1 << 16)) == 0 {
-                    ok = true;
-                    break;
-                }
-                core::hint::spin_loop();
+            m.write32(cap_base, legsup | OS_OWNED);
+            if crate::timing::wait_timeout_us(1_000_000, || {
+                m.read32(cap_base) & BIOS_OWNED == 0
+            })
+            .is_err()
+            {
+                log::warn!("xHCI: BIOS handoff timed out; forcing OS ownership");
+                m.write32(cap_base, (m.read32(cap_base) | OS_OWNED) & !BIOS_OWNED);
             }
-            if !ok {
-                return Err("legacy handoff timed out");
-            }
-            m.write32(cap_base + 4, m.read32(cap_base + 4) & !0x00F8001F);
+            let control = m.read32(cap_base + 4);
+            m.write32(cap_base + 4, (control & LEGACY_PRESERVE) | LEGACY_EVENTS);
             return Ok(false);
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;
@@ -756,7 +757,7 @@ mod tests {
     #[test]
     fn test_capability_registers_read() {
         let sim = SimHc::new(4);
-        let cap = unsafe { CapabilityRegisters::read(sim.base()) };
+        let cap = unsafe { CapabilityRegisters::read(sim.base()) }.unwrap();
         assert_eq!(cap.caplength, 0x20);
         assert_eq!(cap.hci_version, 0x0110);
         assert_eq!(cap.db_offset, 0x2000);

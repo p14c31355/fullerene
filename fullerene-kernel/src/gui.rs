@@ -143,7 +143,12 @@ pub fn init() {
         usb_drive_list: Some(|| {
             let names = crate::devfs::list_block_device_names();
             names.iter().map(|n| {
-                (alloc::format!("/dev/{}", n), alloc::format!("(not mounted — use mount command)"))
+                let status = if crate::devfs::block_device_available(n) {
+                    "(not mounted — use mount command)"
+                } else {
+                    "(mounted or in use)"
+                };
+                (alloc::format!("/dev/{}", n), alloc::string::String::from(status))
             }).collect()
         }),
         usb_poll: Some(|| crate::drivers::registry::poll_usb()),

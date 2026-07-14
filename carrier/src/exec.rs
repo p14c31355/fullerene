@@ -15,7 +15,7 @@ pub fn push_history(line: &str) {
         return;
     }
     let mut guard = SHARED_HISTORY.lock();
-    if guard.front().map_or(false, |h| h == line) {
+    if guard.front().is_some_and(|h| h == line) {
         return;
     }
     if guard.len() >= 128 {

@@ -54,3 +54,6 @@ fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-feature
 [features]
 default = []
 user_space = []
+
+[dev-dependencies]
+petroleum = { path = "../petroleum", features = ["std"] }

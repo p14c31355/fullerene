@@ -1,7 +1,6 @@
 //! EHCI register context — structured MMIO access layer.
 
 use core::ptr;
-use crate::mmio::detect_abort_read_u32;
 
 pub const OP_USBCMD: usize = 0x00;
 pub const OP_USBSTS: usize = 0x04;
@@ -32,13 +31,11 @@ impl EhciOperationalRegisters {
 
     pub fn read(&self, off: usize) -> u32 {
         let p = unsafe { self.0.add(off) as *const u32 };
-        match detect_abort_read_u32(p) {
-            Some(v) => v,
-            None => {
-                log::warn!("EHCI: MMIO read at offset {:#x} returned 0xFFFF_FFFF (master abort)", off);
-                0xFFFF_FFFF
-            }
+        let value = unsafe { ptr::read_volatile(p) };
+        if value == u32::MAX {
+            log::warn!("EHCI: MMIO read at offset {:#x} completed with all ones", off);
         }
+        value
     }
     pub fn write(&self, off: usize, val: u32) {
         unsafe {
@@ -78,19 +75,29 @@ impl EhciOperationalRegisters {
 pub struct EhciRegisterContext {
     pub mmio_base: *mut u8,
     pub caplength: u8,
+    pub hcs_params: u32,
     pub op: EhciOperationalRegisters,
 }
 
 impl EhciRegisterContext {
-    pub unsafe fn new(mmio_base: *mut u8) -> Self {
+    pub unsafe fn new(mmio_base: *mut u8) -> Option<Self> {
         unsafe {
             crate::debug::hint(b"eh_cap");
-            let caplength = ptr::read_volatile(mmio_base as *const u8);
-            Self {
+            let header = ptr::read_volatile(mmio_base as *const u32);
+            let caplength = header as u8;
+            if header == u32::MAX || caplength < 0x10 || caplength & 3 != 0 {
+                return None;
+            }
+            let hcs_params = ptr::read_volatile(mmio_base.add(4) as *const u32);
+            if hcs_params == u32::MAX || hcs_params & 0x0f == 0 {
+                return None;
+            }
+            Some(Self {
                 mmio_base,
                 caplength,
+                hcs_params,
                 op: EhciOperationalRegisters::new(mmio_base.add(caplength as usize)),
-            }
+            })
         }
     }
 }

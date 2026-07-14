@@ -87,7 +87,7 @@
 | VGA Text Mode | ✅ | ✅ | Stable |
 | AHCI | ✅ | 🔶 | Beta |
 | NVMe | ✅ | ✅ | Beta |
-| xHCI | ✅ | ✅ | Beta |
+| xHCI | ✅ | 🔶 | Beta |
 | eHCI | ✅ | ❌ | Alpha |
 | RTSX | ❌ | ✅ | Alpha |
 | IWL WiFi | ❌ | 🔶 | Alpha |

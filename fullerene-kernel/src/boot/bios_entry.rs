@@ -1,4 +1,4 @@
-#[cfg(not(target_os = "uefi"))]
+#[cfg(all(not(target_os = "uefi"), not(test)))]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start() -> ! {
     crate::init::init_common(x86_64::VirtAddr::new(0));

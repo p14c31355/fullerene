@@ -90,7 +90,10 @@ impl XhciContext {
     /// of the returned controller.
     pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
         // ── Step 1: Read capability registers ─────────────────
-        let cap_regs = unsafe { CapabilityRegisters::read(mmio_base) };
+        let Some(cap_regs) = (unsafe { CapabilityRegisters::read(mmio_base) }) else {
+            log::warn!("xHCI: invalid or inaccessible capability header");
+            return None;
+        };
         let caplength = cap_regs.caplength;
         let op_off = caplength;
         let rt_off = cap_regs.rt_offset;
@@ -103,6 +106,15 @@ impl XhciContext {
         let max_slots = hcs1.max_slots;
         let ppc = hcs1.ppc;
         let scratchpad_bufs = hcs1.max_scratchpad_bufs;
+
+        if n_ports == 0
+            || max_slots == 0
+            || cap_regs.db_offset == 0
+            || cap_regs.rt_offset == 0
+        {
+            log::warn!("xHCI: invalid or inaccessible capability registers");
+            return None;
+        }
 
         log::info!(
             "xHCI: HCSPARAMS1=0x{:08X} n_ports={} max_slots={} ppc={} scratchpad={}",
@@ -207,18 +219,9 @@ impl XhciContext {
 
     /// Initialise the controller: configure registers, start, init ports.
     ///
-    /// Strategy:
-    ///   Always do a full HCRST (Host Controller Reset) followed by proper
-    ///   port power management.  The previous two-phase approach of trying
-    ///   to preserve firmware state via `init_no_reset()` caused USB 3.0
-    ///   PHY calibration loss on Wildcat Point-LP xHCI because stopping a
-    ///   running controller disrupts the PHY and no amount of WPR/PR can
-    ///   recover it afterwards.  A clean HCRST restores the controller to a
-    ///   known state; following up with proper port power-cycling and link
-    ///   training lets the hardware re-calibrate the PHY from scratch.
-    ///
-    /// This mirrors the Linux behaviour for Intel Wildcat Point-LP xHCI
-    /// quirks (XHCI_RESET_ON_RESUME).
+    /// A full HCRST after halting establishes the clean initial state used by
+    /// the normal xHCI probe path. Port power and link training follow only
+    /// after the controller data structures have been installed.
     pub fn init(&mut self) -> Result<(), &'static str> {
         let hci_ver = self.registers.cap.hci_version;
         log::info!("xHCI: hci_version=0x{:04X}", hci_ver);

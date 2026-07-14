@@ -118,10 +118,9 @@ impl EhciContext {
     /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
     /// of the returned controller.
     pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
-        let registers = unsafe { EhciRegisterContext::new(mmio_base) };
+        let registers = unsafe { EhciRegisterContext::new(mmio_base) }?;
         crate::debug::hint(b"eh_csp");
-        let hcsparams = unsafe { ptr::read_volatile(mmio_base.add(4) as *const u32) };
-        let n_ports = (hcsparams & 0x0F).max(1);
+        let n_ports = registers.hcs_params & 0x0F;
 
         let transfer = TransferContext::alloc(ctx)?;
         let ports = EhciPortContext::new(n_ports);

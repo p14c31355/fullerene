@@ -47,7 +47,7 @@ pub fn exit_boot_services_and_jump(
     }
     // Pre-allocate buffer before loop to include it in map key
     let map_buffer_size: usize = MAP_BUFFER_SIZE;
-    let alloc_pages = petroleum::common::utils::calculate_pages_for_buffer(map_buffer_size);
+    let alloc_pages = map_buffer_size.div_ceil(PAGE_SIZE_4K as usize);
 
     // Allocate memory for KernelArgs, L4 table, and initial kernel stack before exiting boot services
     // We allocate a larger block (KERNEL_ARGS_PAGES pages) to ensure the stack and arguments are far apart.
@@ -108,8 +108,7 @@ pub fn exit_boot_services_and_jump(
         ));
     }
 
-    let map_ptr: *mut c_void =
-        petroleum::common::utils::calculate_map_data_ptr(map_phys_addr) as *mut c_void;
+    let map_ptr = map_phys_addr as *mut c_void;
 
     // Setup variables for memory map
     let mut map_size: usize = map_buffer_size; // Start with full buffer size

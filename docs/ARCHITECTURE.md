@@ -405,6 +405,11 @@ released, the kernel integration layer performs FAT probing and mounts through
 Genome. This lock boundary must be preserved: recursively borrowing a
 `USBContext` from a mount callback is prohibited.
 
+The kernel device registry preserves `/dev/<name>` identity while transferring
+exclusive block-device ownership to a mounted filesystem. An available entry
+contains a device lease; a present entry without a lease means mounted or in
+use. Controller re-enumeration must not invalidate an outstanding lease.
+
 The kernel crate re-exports Genome types and adds the singleton `VfsContext` (wrapping `Vfs` with `spin::Mutex` + handle table) through the kernel's `vfs` and `fs` modules, keeping the core logic framework-agnostic.
 
 ---

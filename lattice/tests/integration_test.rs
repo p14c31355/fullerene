@@ -67,7 +67,7 @@ fn test_full_pipeline() {
     // Raise red so it's on top for the drag test
     wm.raise_to_top(red_id);
 
-    // Click title bar (y=20 is inside title bar: window.y=10..30)
+    // Click inside the title bar.
     wm.on_mouse_down(50, 20);
     wm.on_mouse_move(200, 100);
 
@@ -78,8 +78,8 @@ fn test_full_pipeline() {
     assert_eq!(target.pixels[old_red_idx], 0x808080, "old red → background");
 
     // offset=(50-10,20-10)=(40,10), new=(200-40,100-10)=(160,90)
-    // client area starts at y=90+TITLE_BAR_HEIGHT(20)=110
-    let new_red_idx = (115 * W + 165) as usize;
+    let client_y = 90 + lattice::compositor::TITLE_BAR_HEIGHT + 5;
+    let new_red_idx = (client_y * W + 165) as usize;
     assert_eq!(target.pixels[new_red_idx], 0x0000FF, "new red position");
 
     wm.on_mouse_up();

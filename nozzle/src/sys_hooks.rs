@@ -44,14 +44,9 @@ pub fn call_sys_info_hook(ctx: &mut CommandContext, cmd: &str) {
     }
 }
 
-/// SD card mount hook — set by the kernel.
-pub static SD_MOUNT_HOOK: Mutex<Option<fn(&mut carrier::exec::CommandContext)>> = Mutex::new(None);
-
 /// Block device mount hook — set by the kernel.
 /// Called with args: ["mount", "/dev/<name>", "<mount_point>"]
 pub static MOUNT_HOOK: Mutex<Option<fn(&mut carrier::exec::CommandContext)>> = Mutex::new(None);
-
-
 
 pub fn call_sys_control_hook(cmd: &str) {
     let hooks = SYS_HOOKS.lock();

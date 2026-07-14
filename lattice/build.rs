@@ -1,6 +1,6 @@
 use std::fmt::Write;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -20,7 +20,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/wallpapers");
 }
 
-fn render_svg_icons(out_dir: &PathBuf) {
+fn render_svg_icons(out_dir: &Path) {
     let icons_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("icons");
     let svgs = ["shell.svg", "files.svg", "settings.svg", "about.svg"];
     for svg_name in &svgs {
@@ -44,7 +44,7 @@ fn render_svg_icons(out_dir: &PathBuf) {
 
 // ── Render an SVG file to a wallpaper pixel-data source file ───
 
-fn render_svg_file(out_dir: &PathBuf, name: &str, svg_path: &PathBuf) {
+fn render_svg_file(out_dir: &Path, name: &str, svg_path: &Path) {
     let svg_data = match fs::read(svg_path) {
         Ok(d) => d,
         Err(e) => {
@@ -90,7 +90,7 @@ fn render_svg_file(out_dir: &PathBuf, name: &str, svg_path: &PathBuf) {
 
 // ── Wallpaper rendering dispatch ──────────────────────────
 
-fn render_wallpapers(out_dir: &PathBuf) {
+fn render_wallpapers(out_dir: &Path) {
     let wd = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets").join("wallpapers");
 
     for name in &["beach", "mountain", "city", "fullerene"] {
@@ -108,8 +108,9 @@ fn render_wallpapers(out_dir: &PathBuf) {
         println!("cargo:error=wallpaper source PNG not found: {}", png_path.display());
         return;
     }
-    if let Ok(png_data) = fs::read(&png_path) {
-        if let Ok(pixmap) = tiny_skia::Pixmap::decode_png(&png_data) {
+    if let Ok(png_data) = fs::read(&png_path)
+        && let Ok(pixmap) = tiny_skia::Pixmap::decode_png(&png_data)
+    {
             let w = pixmap.width();
             let h = pixmap.height();
             let pixel_count = (w * h) as usize;
@@ -131,7 +132,6 @@ fn render_wallpapers(out_dir: &PathBuf) {
             fs::write(out_dir.join("wallpaper_sharp.rs"), code.as_bytes())
                 .expect("write wallpaper PNG data");
             println!("cargo:notice=Rendered fullerene_sharp wallpaper ({}×{})", w, h);
-        }
     }
 }
 

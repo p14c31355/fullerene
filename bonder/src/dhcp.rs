@@ -102,7 +102,7 @@ impl DhcpHeader {
 }
 
 /// Parsed DHCP lease information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DhcpLease {
     pub ip_address: [u8; 4],
     pub subnet_mask: [u8; 4],
@@ -114,14 +114,7 @@ pub struct DhcpLease {
 
 impl DhcpLease {
     pub fn new() -> Self {
-        Self {
-            ip_address: [0u8; 4],
-            subnet_mask: [0u8; 4],
-            router: [0u8; 4],
-            dns_server: [0u8; 4],
-            server_id: [0u8; 4],
-            lease_time: 0,
-        }
+        Self::default()
     }
 }
 
@@ -350,12 +343,10 @@ impl DhcpClient {
                         self.lease.server_id.copy_from_slice(&opt_data[..4]);
                     }
                 }
-                OPTION_IP_LEASE_TIME => {
-                    if opt_len >= 4 {
-                        self.lease.lease_time = u32::from_be_bytes([
-                            opt_data[0], opt_data[1], opt_data[2], opt_data[3],
-                        ]);
-                    }
+                OPTION_IP_LEASE_TIME if opt_len >= 4 => {
+                    self.lease.lease_time = u32::from_be_bytes([
+                        opt_data[0], opt_data[1], opt_data[2], opt_data[3],
+                    ]);
                 }
                 _ => {}
             }

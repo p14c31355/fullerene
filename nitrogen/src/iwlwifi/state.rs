@@ -297,10 +297,9 @@ pub fn try_init_wifi_device_step() {
             let mac_acquired = {
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
-                match mmio::checked_read_u32(
-                    unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
-                    health,
-                ) {
+                match unsafe {
+                    mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize), health)
+                } {
                     mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                     mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
                         mmio::disarm_mmio_watchdog();
@@ -332,10 +331,12 @@ pub fn try_init_wifi_device_step() {
                                 if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                                 }
-                                let clock_ready = match mmio::checked_read_u32(
-                                    unsafe { mmio.add(CSR_GP_CNTRL as usize) } as *const u32,
-                                    health,
-                                ) {
+                                let clock_ready = match unsafe {
+                                    mmio::checked_read_u32(
+                                        mmio.add(CSR_GP_CNTRL as usize),
+                                        health,
+                                    )
+                                } {
                                     mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                                     _ => false,
                                 };

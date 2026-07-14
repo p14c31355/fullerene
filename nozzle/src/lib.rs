@@ -155,11 +155,6 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ),
         ("usb_info", "Show USB device status", builtins::cmd_usb_info),
         (
-            "sd_mount",
-            "Probe and mount SD card",
-            builtins::cmd_sd_mount
-        ),
-        (
             "hello_linux",
             "Launch the built-in Linux test binary",
             builtins::cmd_hello_linux

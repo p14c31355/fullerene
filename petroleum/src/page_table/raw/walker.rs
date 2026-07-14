@@ -199,34 +199,29 @@ pub fn walk_to_table<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::{boxed::Box, vec::Vec};
 
-    /// A simple bump allocator for testing.
-    struct TestAllocator {
-        next_frame: u64,
-    }
-
-    impl TestAllocator {
-        fn new(start: u64) -> Self {
-            Self { next_frame: start }
-        }
-    }
+    #[derive(Default)]
+    struct TestAllocator(Vec<Box<PageTable>>);
 
     impl FrameAlloc for TestAllocator {
         fn alloc_zeroed(&mut self) -> Option<u64> {
-            let addr = self.next_frame;
-            self.next_frame += 4096;
+            let table = Box::new(PageTable::new());
+            let addr = (&*table as *const PageTable) as u64;
+            self.0.push(table);
             Some(addr)
         }
     }
 
     #[test]
-    fn walk_creates_tables() {
+    fn walk_creates_intermediate_tables() {
         let mut root = PageTable::new();
-        let mut alloc = TestAllocator::new(0x1000);
+        let mut alloc = TestAllocator::default();
         let virt = CanonicalVirtAddr::new(0x0000_0000_0020_0000).unwrap(); // 2 MiB offset
 
         let entry = walk_or_create(&mut root, virt, &mut alloc, 1).unwrap();
-        assert!(entry.is_present());
+        assert!(entry.is_unused());
+        assert!(root[virt.p4_index()].is_present());
     }
 
     #[test]

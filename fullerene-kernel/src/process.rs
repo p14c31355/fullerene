@@ -612,6 +612,11 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     let to_unblock = SCHEDULER.with_process(pid, |process| {
+        // The idle task owns neither an allocated stack nor a replacement task.
+        // It is a scheduler invariant, not a terminable user process.
+        if process.name == "idle" {
+            return Vec::new();
+        }
         process.state = ProcessState::Terminated;
         process.exit_code = Some(exit_code);
 
@@ -620,12 +625,17 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         let waiters = process.resources.cleanup();
 
         // Free resources
-        let kernel_stack_base =
-            process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
-        let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        unsafe {
-            petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout)
-        };
+        if let Some(kernel_stack_base) = process
+            .kernel_stack
+            .as_u64()
+            .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+            .filter(|&base| base != 0)
+        {
+            let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
+            unsafe {
+                petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout)
+            };
+        }
 
         // Properly free page table frames recursively
         if let Some(page_table) = process.page_table.take() {

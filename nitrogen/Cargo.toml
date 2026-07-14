@@ -17,7 +17,6 @@ spin = { version = "0.10.0", default-features = false, features = [
 log = { workspace = true }
 ps2-mouse = "0.1.4"
 bonder = { path = "../bonder" }
-xhci = "0.9.2"
 
 [lib]
 name = "nitrogen"

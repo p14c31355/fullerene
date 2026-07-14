@@ -5,7 +5,7 @@
 //! ```text
 //! USBContext
 //!  ├── ControllerManager   (PCI scan, init, polling)
-//!  ├── StorageManager      (disk list, mount)
+//!  ├── StorageManager      (discovered block-device metadata)
 //!  ├── HostController (trait)
 //!  │    ├── XhciContext
 //!  │    └── EhciContext
