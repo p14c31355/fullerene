@@ -689,6 +689,6 @@ impl Compositor {
         // Title text — centered vertically, left-aligned with padding
         let tx = win.x + 12;
         let ty = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
-        p.draw_text(tx, ty, title, colors.text, 13.0);
+        p.draw_text(tx, ty, title, colors.text, 15.0);
     }
 }

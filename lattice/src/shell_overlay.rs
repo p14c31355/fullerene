@@ -9,6 +9,7 @@
 //! All rendering is done in software — no GPU / 3D acceleration required.
 
 use crate::compositor::{COLOR_PRIMARY, COLOR_TEXT, dim_color};
+use crate::painter::Painter;
 use crate::window::Window;
 
 /// Shell state — determines which overlay to draw.
@@ -30,40 +31,19 @@ fn dim_backdrop(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
     }
 }
 
-/// Render glyph-based text at `(x, y)` in the given colour.
+/// Render text at `(x, y)` using the Painter's TTF renderer (bitmap fallback).
 fn render_text(
     fb: &mut [u32],
     fbw: u32,
     fbh: u32,
-    stride: usize,
+    _stride: usize,
     text: &str,
     x: u32,
     y: u32,
     color: u32,
 ) {
-    for (i, ch) in text.bytes().enumerate() {
-        if !(32..=126).contains(&ch) {
-            continue;
-        }
-        for gry in 0..12 {
-            let py = y + gry;
-            if py >= fbh {
-                continue;
-            }
-            for grx in 0..8 {
-                let px = x + (i as u32) * 8 + grx;
-                if px >= fbw {
-                    continue;
-                }
-                if crate::font::get_glyph_pixel(ch, gry, grx) {
-                    let idx = (py as usize) * stride + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = color;
-                    }
-                }
-            }
-        }
-    }
+    let mut p = Painter::new(fb, fbw, fbh);
+    p.draw_text(x as i32, y as i32, text, color, 13.0);
 }
 
 /// Render the Task Overview overlay on top of the current framebuffer.
@@ -331,24 +311,8 @@ pub fn render_timezone_selector(
     );
 }
 
-/// Render a text label centred horizontally.
-fn render_label(fb: &mut [u32], fbw: u32, _fbh: u32, fb_stride: u32, text: &str, x: u32, y: u32) {
-    let stride = fb_stride as usize;
-    for (i, ch) in text.bytes().enumerate() {
-        if ch < 32 || ch > 126 {
-            continue;
-        }
-        for row in 0..14 {
-            let py = y + row;
-            for col in 0..8 {
-                let px = x + (i as u32) * 8 + col;
-                if px < fbw && crate::font::get_glyph_pixel(ch, row, col) {
-                    let idx = (py as usize) * stride + px as usize;
-                    if idx < fb.len() {
-                        fb[idx] = COLOR_PRIMARY;
-                    }
-                }
-            }
-        }
-    }
+/// Render a text label centred horizontally using Painter TTF.
+fn render_label(fb: &mut [u32], fbw: u32, fbh: u32, _fb_stride: u32, text: &str, x: u32, y: u32) {
+    let mut p = Painter::new(fb, fbw, fbh);
+    p.draw_text(x as i32, y as i32, text, COLOR_PRIMARY, 15.0);
 }
