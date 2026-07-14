@@ -1,5 +1,6 @@
 pub mod dmar;
 pub mod mcfg;
+pub mod manager;
 
 use core::sync::atomic::AtomicU64;
 

@@ -29,6 +29,7 @@
 
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
+use core::ops::{BitAnd, BitOr, Not};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -321,6 +322,134 @@ impl MemRegion {
         write_barrier();
     }
 }
+
+// ============================================================================
+//  Mmio<T> — typed MMIO register wrapper
+// ============================================================================
+
+/// Marker trait for MMIO-safe register types.
+///
+/// # Safety
+/// Types implementing this trait must be plain-old-data with no padding,
+/// and `size_of::<T>()` must equal the hardware register width.
+pub unsafe trait MmioSafe: Copy + 'static {}
+
+unsafe impl MmioSafe for u8 {}
+unsafe impl MmioSafe for u16 {}
+unsafe impl MmioSafe for u32 {}
+unsafe impl MmioSafe for u64 {}
+
+/// Operations required for MMIO register read-modify-write.
+pub trait MmioOps: BitAnd<Output = Self> + BitOr<Output = Self> + Not<Output = Self> + Sized {}
+impl MmioOps for u8 {}
+impl MmioOps for u16 {}
+impl MmioOps for u32 {}
+impl MmioOps for u64 {}
+
+/// A typed MMIO register at a fixed virtual address.
+///
+/// `Mmio<T>` wraps a pointer to a register of type `T` and provides
+/// volatile read/write access with explicit ordering barriers.
+///
+/// # Type parameters
+///
+/// `T` must implement [`MmioSafe`] — supported types are `u8`, `u16`,
+/// `u32`, and `u64`.
+///
+/// # Safety
+///
+/// The caller must ensure the pointer is valid, properly aligned, and
+/// points to a UC-mapped MMIO register.  The region must remain mapped
+/// for the lifetime of this handle.
+///
+/// # Example
+///
+/// ```ignore
+/// let ctrl = Mmio::<u32>::new(base.add(0x1000) as *mut u32);
+/// ctrl.write(0x1);                  // volatile write
+/// Mmio::<u32>::barrier();           // mfence — ensure write reaches PCIe
+/// let status = ctrl.read();         // volatile read + lfence
+/// ```
+pub struct Mmio<T: MmioSafe> {
+    ptr: *mut T,
+}
+
+impl<T: MmioSafe> Mmio<T> {
+    /// Create a new MMIO register handle from a virtual address.
+    ///
+    /// # Safety
+    /// `ptr` must point to a valid UC-mapped MMIO register of at least
+    /// `size_of::<T>()` bytes.  The caller is responsible for lifetime
+    /// and alignment guarantees.
+    #[inline]
+    pub unsafe fn new(ptr: *mut T) -> Self {
+        Self { ptr }
+    }
+
+    /// Return the raw pointer.
+    #[inline]
+    pub fn ptr(&self) -> *mut T {
+        self.ptr
+    }
+
+    /// Volatile read with a read barrier (`lfence`).
+    #[inline]
+    pub fn read(&self) -> T {
+        let val = unsafe { ptr::read_volatile(self.ptr) };
+        read_barrier();
+        val
+    }
+
+    /// Volatile write (no implicit barrier — call [`barrier`](Self::barrier)
+    /// explicitly after the last write before a read or doorbell).
+    #[inline]
+    pub fn write(&self, val: T) {
+        unsafe { ptr::write_volatile(self.ptr, val) };
+    }
+
+    /// Raw volatile read without an `lfence`.
+    #[inline]
+    pub fn read_raw(&self) -> T {
+        unsafe { ptr::read_volatile(self.ptr) }
+    }
+
+    /// Read-modify-write: clear bits in `clear_mask`, then set bits in `set_mask`.
+    ///
+    /// This performs one volatile read and one volatile write.
+    /// Only available for types that support bitwise operations (`u8`, `u16`, `u32`, `u64`).
+    #[inline]
+    pub fn update(&self, set_mask: T, clear_mask: T)
+    where
+        T: MmioOps,
+    {
+        let old = self.read();
+        self.write((old & !clear_mask) | (set_mask & clear_mask));
+    }
+
+    /// Issue a write barrier (`mfence`) — ensures all prior stores are
+    /// visible to PCIe before subsequent reads.
+    #[inline]
+    pub fn barrier() {
+        write_barrier();
+    }
+}
+
+// Convenience: allow obtaining a typed register from a MemRegion offset.
+
+impl MemRegion {
+    /// Return a typed `Mmio<T>` handle at the given byte offset.
+    ///
+    /// # Panics
+    /// Panics if `offset + size_of::<T>()` exceeds the region size, or
+    /// if the offset is not aligned to `align_of::<T>()`.
+    #[inline]
+    pub fn at<T: MmioSafe>(&self, offset: usize) -> Mmio<T> {
+        let ptr = self.reg_ptr::<T>(offset);
+        unsafe { Mmio::new(ptr) }
+    }
+}
+
+// Allow SafeReadResult mapping.
 
 // ============================================================================
 //  DmaRegion — DMA buffer with cache management
