@@ -229,12 +229,18 @@ pub fn render_password_dialog(
     let mut p = Painter::new(fb, fb_width, fb_height);
     p.draw_text(text_x, text_y, &masked, PWD_INPUT_TEXT, 13.0);
 
-    // Cursor blink
+    // Cursor blink - draw a short vertical bar
     let cursor_x = text_x + (cursor_pos as i32) * 8;
     if (cursor_x as u32) < input_x + PWD_INPUT_W - 4 && cursor_x < fb_width as i32 {
-        let idx = ((text_y + 11) as usize) * fw + cursor_x as usize;
-        if idx < fb.len() {
-            fb[idx] = PWD_INPUT_TEXT;
+        // Draw a vertical bar (5 pixels tall)
+        for dy in 0..5 {
+            let cursor_y = text_y + 8 + dy;
+            if cursor_y >= 0 && (cursor_y as u32) < fb_height {
+                let idx = (cursor_y as usize) * fw + cursor_x as usize;
+                if idx < fb.len() {
+                    fb[idx] = PWD_INPUT_TEXT;
+                }
+            }
         }
     }
 

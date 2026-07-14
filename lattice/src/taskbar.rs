@@ -144,9 +144,18 @@ impl Taskbar {
                 let rs = (y as usize) * fb_w + btn_x as usize;
                 painter.fb[rs..rs + btn_w as usize].fill(bg);
             }
-            // Button text
-            let label = if entry.title.len() > 14 {
-                &entry.title[..14]
+            // Button text - truncate safely at char boundary
+            let mut char_count = 0;
+            let mut byte_index = entry.title.len();
+            for (idx, _) in entry.title.char_indices() {
+                if char_count >= 14 {
+                    byte_index = idx;
+                    break;
+                }
+                char_count += 1;
+            }
+            let label = if entry.title.len() > byte_index {
+                &entry.title[..byte_index]
             } else {
                 &entry.title
             };

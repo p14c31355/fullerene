@@ -324,7 +324,7 @@ pub fn glyph_fast(ch: u8) -> Glyph<'static> {
 /// (32..=126) are silently skipped.
 #[inline]
 pub fn render_text(
-    fb: &mut [u32], fb_width: u32, fb_height: u32,
+    fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
     x: u32, y: u32, text: &[u8], color: u32, glyph_height: u32,
 ) {
     for (i, &ch) in text.iter().enumerate() {
@@ -338,7 +338,7 @@ pub fn render_text(
                 let px = gx + col;
                 if px >= fb_width { continue; }
                 if gl.pixel(row, col) {
-                    fb[(py * fb_width + px) as usize] = color;
+                    fb[(py * fb_stride + px) as usize] = color;
                 }
             }
         }
@@ -347,11 +347,11 @@ pub fn render_text(
 
 /// Convenience wrapper: bitmap text at (x, y) with 12px glyph height.
 pub fn render_text_bitmap(
-    fb: &mut [u32], fb_width: u32, fb_height: u32,
+    fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
     x: i32, y: i32, text: &str, color: u32,
 ) {
     if y < 0 || y as u32 + 12 >= fb_height { return; }
-    render_text(fb, fb_width, fb_height, x.max(0) as u32, y as u32, text.as_bytes(), color, 12);
+    render_text(fb, fb_width, fb_height, fb_stride, x.max(0) as u32, y as u32, text.as_bytes(), color, 12);
 }
 
 // ── TrueType font support (ab_glyph) ──────────────────────────
@@ -373,7 +373,7 @@ pub fn get_ttf_font() -> Option<&'static FontArc> {
 
 /// Render text using the TTF font with grayscale antialiasing.
 pub fn render_text_ttf(
-    fb: &mut [u32], fb_width: u32, fb_height: u32,
+    fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
     x: i32, y: i32, text: &str, color: u32, size: f32,
     font: &FontArc,
 ) -> Result<(), ()> {
@@ -395,7 +395,7 @@ pub fn render_text_ttf(
                 if bx < 0 || by < 0 || bx as u32 >= fb_width || by as u32 >= fb_height { return; }
                 let ca = (coverage * 255.0) as u32;
                 if ca == 0 { return; }
-                let idx = (by as usize) * (fb_width as usize) + (bx as usize);
+                let idx = (by as usize) * (fb_stride as usize) + (bx as usize);
                 if ca >= 255 { fb[idx] = color; return; }
                 let bg = fb[idx];
                 let ia = 255 - ca;

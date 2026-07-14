@@ -33,6 +33,9 @@ impl EventHandler for WmEventHandler {
                 true
             }
             Event::Input(InputEvent::MouseDown(btn)) => {
+                // Clear cursor-only mode since mouse down is a scene-mutating event
+                rt.cursor_only_update = false;
+
                 let cx = rt.desktop.cursor.x;
                 let cy = rt.desktop.cursor.y;
 
@@ -247,12 +250,15 @@ fn handle_overlay_event(rt: &mut crate::RuntimeState, event: &Event) -> bool {
         Event::Input(InputEvent::MouseDown(_))
             if rt.shell_state == ShellState::TimeZoneSelector =>
         {
+            rt.cursor_only_update = false;
             handle_timezone_click(rt)
         }
         Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::AppGrid => {
+            rt.cursor_only_update = false;
             handle_appgrid_click(rt)
         }
         Event::Input(InputEvent::MouseDown(_)) => {
+            rt.cursor_only_update = false;
             rt.shell_state = ShellState::Desktop;
             rt.frame_due = true;
             true

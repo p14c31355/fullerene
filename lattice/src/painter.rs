@@ -12,6 +12,7 @@ pub struct Painter<'a> {
     pub fb: &'a mut [u32],
     pub width: u32,
     pub height: u32,
+    pub stride: u32,
     clip_x: u32,
     clip_y: u32,
     clip_w: u32,
@@ -22,6 +23,18 @@ impl<'a> Painter<'a> {
     pub fn new(fb: &'a mut [u32], width: u32, height: u32) -> Self {
         Self {
             fb, width, height,
+            stride: width,
+            clip_x: 0,
+            clip_y: 0,
+            clip_w: width,
+            clip_h: height,
+        }
+    }
+
+    pub fn new_with_stride(fb: &'a mut [u32], width: u32, height: u32, stride: u32) -> Self {
+        Self {
+            fb, width, height,
+            stride,
             clip_x: 0,
             clip_y: 0,
             clip_w: width,
@@ -47,7 +60,7 @@ impl<'a> Painter<'a> {
 
     #[inline]
     fn idx(&self, x: u32, y: u32) -> usize {
-        (y as usize) * (self.width as usize) + (x as usize)
+        (y as usize) * (self.stride as usize) + (x as usize)
     }
 
     /// Clip a rectangle to framebuffer bounds and the painter clip rect, returning `(x, y, w, h)` or `None`.
@@ -212,15 +225,15 @@ impl<'a> Painter<'a> {
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: u32, size: f32) {
         let ttf = font::get_ttf_font();
         if let Some(font) = ttf {
-            let _ = render_text_ttf(self.fb, self.width, self.height, x, y, text, color, size, font);
+            let _ = render_text_ttf(self.fb, self.width, self.height, self.stride, x, y, text, color, size, font);
         } else {
-            render_text_bitmap(self.fb, self.width, self.height, x, y, text, color);
+            render_text_bitmap(self.fb, self.width, self.height, self.stride, x, y, text, color);
         }
     }
 
     /// Draw text using the legacy bitmap font (always works, no TTF needed).
     pub fn draw_text_bitmap(&mut self, x: i32, y: i32, text: &str, color: u32) {
-        render_text_bitmap(self.fb, self.width, self.height, x, y, text, color);
+        render_text_bitmap(self.fb, self.width, self.height, self.stride, x, y, text, color);
     }
 
     // ── Window border helpers ────────────────────────────────

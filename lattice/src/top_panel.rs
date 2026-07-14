@@ -84,10 +84,15 @@ impl TopPanel {
         }
 
         // "Activities" label using Painter TTF (no separate button background)
-        let mut painter = crate::painter::Painter::new(fb, fb_width, fb_height);
+        let mut painter = crate::painter::Painter::new_with_stride(fb, fb_width, fb_height, fb_stride);
         let tx = 12i32;
         let ty = 4i32;
-        painter.draw_text(tx, ty, "Activities", colors.taskbar_text, 13.0);
+        let activities_color = if self.activities_highlight {
+            colors.primary
+        } else {
+            colors.taskbar_text
+        };
+        painter.draw_text(tx, ty, "Activities", activities_color, 13.0);
 
         // Draw clock (centre-right) using Painter TTF
         if !self.clock_text.is_empty() {
