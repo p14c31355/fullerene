@@ -219,8 +219,12 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             let mut scanner = nitrogen::pci::PciScanner::new();
             let _ = scanner.scan_all_buses();
 
-            // Discovery is read-only. Each matched Nitrogen driver owns the
-            // power/decode transition for its endpoint immediately before MMIO.
+            // Pre-process: establish safe PCI state for every device before
+            // any driver is probed.  This ensures bridges have memory decoding
+            // enabled and all endpoints are in D0 with ASPM disabled, so the
+            // first MMIO access by any driver never hits a device in L1 or
+            // behind a bridge with memory decoding off.
+            let mut healthy_devices = alloc::vec::Vec::new();
             for dev in scanner.get_devices() {
                 // Log each device so we can identify where real hardware hangs.
                 {
@@ -228,8 +232,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     hex_fmt(&mut buf, dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id, dev.class_code, dev.subclass);
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf);
                 }
-                // Skip PCI bridges — drivers only match endpoints.
-                if dev.class_code == 0x06 { continue; }
                 // Show bus:device on boot screen (serial-free debug)
                 let hint_bcd = [
                     b'd', b'v',
@@ -240,11 +242,20 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     hex_char(dev.function >> 4), hex_char(dev.function & 0xF),
                 ];
                 crate::boot_stage::draw_step_hint(&hint_bcd);
+                dev.disable_pcie_aspm();
+                dev.enable_memory_access();
+                dev.ensure_d0();
+                // Quick MMIO-safety check
+                let vid = nitrogen::pci::PciConfigSpace::read_config_word(
+                    dev.bus, dev.device, dev.function, 0,
+                );
+                if vid == 0xFFFF || vid == 0x0000 { continue; }
+                healthy_devices.push(dev.clone());
             }
 
             // DriverManager orchestrates probe → priority → attach → registration
             let mgr = DRIVER_MGR.call_once(crate::hardware::driver_manager::DriverManager::new);
-            mgr.discover_and_attach(&registry, ctx, scanner.get_devices());
+            mgr.discover_and_attach(&registry, ctx, &healthy_devices);
 
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
