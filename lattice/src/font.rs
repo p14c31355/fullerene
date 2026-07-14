@@ -454,7 +454,7 @@ pub fn render_text_bitmap(
     fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
     x: i32, y: i32, text: &str, color: u32,
 ) {
-    let h = GLYPH_HEIGHT;
+    let h = PSF_FONT.lock().as_ref().map_or(GLYPH_HEIGHT, |psf| psf.height);
     if y < 0 || y as u32 + h >= fb_height { return; }
     render_text(fb, fb_width, fb_height, fb_stride, x.max(0) as u32, y as u32, text.as_bytes(), color, h);
 }

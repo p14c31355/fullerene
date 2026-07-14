@@ -17,6 +17,19 @@ use petroleum::initializer::FrameAllocator;
 static WIFI_DRIVER_CTX: super::driver_context_impl::KernelDriverContext =
     super::driver_context_impl::KernelDriverContext;
 
+use spin::Mutex;
+
+static DRIVER_MGR: Mutex<Option<crate::hardware::driver_manager::DriverManager>> = Mutex::new(None);
+
+/// Access the global DriverManager (initialised during device_probe init step).
+pub fn with_driver_mgr<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&crate::hardware::driver_manager::DriverManager) -> R,
+{
+    let guard = DRIVER_MGR.lock();
+    guard.as_ref().map(f)
+}
+
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 fn hex_char(v: u8) -> u8 {
@@ -245,8 +258,10 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             }
 
             // DriverManager orchestrates probe → priority → attach → registration
-            let driver_mgr = crate::hardware::driver_manager::DriverManager::new();
-            driver_mgr.discover_and_attach(&registry, ctx, &healthy_devices);
+            let mut driver_mgr = DRIVER_MGR.lock();
+            *driver_mgr = Some(crate::hardware::driver_manager::DriverManager::new());
+            let mgr = driver_mgr.as_mut().unwrap();
+            mgr.discover_and_attach(&registry, ctx, &healthy_devices);
 
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())

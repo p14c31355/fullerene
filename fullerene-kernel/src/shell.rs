@@ -343,6 +343,19 @@ fn register_nozzle_hooks() {
 
             let dev_name = dev_path.strip_prefix("/dev/").unwrap_or(dev_path);
 
+            // Validate mount point before consuming the block device
+            match crate::contexts::vfs::with_vfs(|v| v.mkdir(mount_point)) {
+                Some(Err(e)) if e != genome::fs::FsError::FileExists => {
+                    tline!(ctx.terminal, "mount: failed to create mount point '{}': {:?}", mount_point, e);
+                    return;
+                }
+                None => {
+                    ctx.terminal.write_str("mount: VFS not available\n");
+                    return;
+                }
+                _ => {}
+            }
+
             let bdev = match crate::devfs::open_block_device(dev_name) {
                 Some(b) => b,
                 None => {
@@ -361,7 +374,6 @@ fn register_nozzle_hooks() {
 
             match crate::drivers::fat::FatFileSystem::from_device(bdev) {
                 Ok(fs) => {
-                    let _ = crate::contexts::vfs::mkdir(mount_point);
                     match crate::contexts::vfs::with_vfs(|v| v.mount(mount_point, Box::new(fs))) {
                         Some(Ok(())) => {
                             tline!(ctx.terminal, "mount: OK — {} mounted at {}", dev_path, mount_point);
