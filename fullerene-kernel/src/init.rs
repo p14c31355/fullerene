@@ -208,7 +208,9 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             let ctx = &crate::driver_context_impl::KernelDriverContext;
             let mut scanner = nitrogen::pci::PciScanner::new();
             let _ = scanner.scan_all_buses();
+
             // Pre-process: safety gates for all devices before probing
+            let mut healthy_devices = alloc::vec::Vec::new();
             for dev in scanner.get_devices() {
                 // Log each device so we can identify where real hardware hangs.
                 {
@@ -237,11 +239,14 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     dev.bus, dev.device, dev.function, 0,
                 );
                 if vid == 0xFFFF || vid == 0x0000 { continue; }
+
+                // Device passed safety checks, add to healthy list
+                healthy_devices.push(dev.clone());
             }
 
             // DriverManager orchestrates probe → priority → attach → registration
             let driver_mgr = crate::hardware::driver_manager::DriverManager::new();
-            driver_mgr.discover_and_attach(&registry, ctx, scanner.get_devices());
+            driver_mgr.discover_and_attach(&registry, ctx, &healthy_devices);
 
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())

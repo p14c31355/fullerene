@@ -135,6 +135,13 @@ impl DriverDescriptor {
         {
             return true;
         }
+        // Vendor match with device wildcard (e.g., vendor-specific but any device)
+        if self.vendor != 0xFFFF
+            && self.device == 0xFFFF
+            && self.vendor == device.vendor_id
+        {
+            return true;
+        }
         // Class/subclass match
         if self.class != 0xFF
             && self.class == device.class_code

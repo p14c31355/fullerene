@@ -96,7 +96,11 @@ impl AcpiManager {
             return None;
         }
         let p = bytes.as_ptr();
-        let host_address_width = (unsafe { core::ptr::read_unaligned(p.add(36) as *const u8) }) + 1;
+        let raw_width_byte = unsafe { core::ptr::read_unaligned(p.add(36) as *const u8) };
+        let host_address_width = match raw_width_byte.checked_add(1) {
+            Some(w) if raw_width_byte != 0xFF => w,
+            _ => return None, // Invalid: 0xFF would overflow or produce invalid width
+        };
 
         let mut drhd_units = Vec::new();
         let mut offset = 48usize;

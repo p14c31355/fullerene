@@ -235,10 +235,10 @@ fn stable_ino(name: &str) -> u64 {
 // Used by the `mount` shell command to look up storage devices.
 // Devices are registered during enumeration and consumed on mount.
 
-pub static BLOCK_DEVICE_REGISTRY: Mutex<BTreeMap<&'static str, Box<dyn BlockDevice>>> =
+pub static BLOCK_DEVICE_REGISTRY: Mutex<BTreeMap<alloc::string::String, Box<dyn BlockDevice>>> =
     Mutex::new(BTreeMap::new());
 
-pub fn register_block_device(name: &'static str, device: Box<dyn BlockDevice>) {
+pub fn register_block_device(name: alloc::string::String, device: Box<dyn BlockDevice>) {
     BLOCK_DEVICE_REGISTRY.lock().insert(name, device);
 }
 
@@ -251,8 +251,8 @@ pub fn open_block_device(name: &str) -> Option<Box<dyn BlockDevice>> {
     BLOCK_DEVICE_REGISTRY.lock().remove(name)
 }
 
-pub fn list_block_device_names() -> alloc::vec::Vec<&'static str> {
-    BLOCK_DEVICE_REGISTRY.lock().keys().copied().collect()
+pub fn list_block_device_names() -> alloc::vec::Vec<alloc::string::String> {
+    BLOCK_DEVICE_REGISTRY.lock().keys().cloned().collect()
 }
 
 pub fn block_device_exists(name: &str) -> bool {

@@ -423,7 +423,7 @@ impl<T: MmioSafe> Mmio<T> {
         T: MmioOps,
     {
         let old = self.read();
-        self.write((old & !clear_mask) | (set_mask & clear_mask));
+        self.write((old & !clear_mask) | set_mask);
     }
 
     /// Issue a write barrier (`mfence`) — ensures all prior stores are

@@ -349,7 +349,9 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             Ok(())
         }
         "fat32" => {
-            let bdev = crate::devfs::open_block_device(device)
+            // Normalize device name: strip leading "/dev/" if present
+            let device_name = device.strip_prefix("/dev/").unwrap_or(device);
+            let bdev = crate::devfs::open_block_device(device_name)
                 .ok_or(FsError::FileNotFound)?;
             match crate::drivers::fat::FatFileSystem::from_device(bdev) {
                 Ok(fs) => {
@@ -357,7 +359,16 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
                     log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
                     Ok(())
                 }
-                Err((e, _bdev)) => Err(e),
+                Err((e, returned_bdev)) => {
+                    // Re-register the device so subsequent mount attempts can reuse it
+                    if let Some(bdev) = returned_bdev {
+                        crate::devfs::register_block_device(
+                            alloc::string::String::from(device_name),
+                            bdev,
+                        );
+                    }
+                    Err(e)
+                }
             }
         }
         _ => Err(FsError::NotSupported),

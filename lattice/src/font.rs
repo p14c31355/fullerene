@@ -26,7 +26,7 @@ pub const GLYPH_HEIGHT: u32 = 13;
 pub const GLYPH_BYTES: usize = 13;
 pub const GLYPH_COUNT: usize = 95;
 
-use embedded_graphics::mono_font::ascii::FONT_8X13;
+use embedded_graphics::mono_font::ascii::{FONT_8X13, FONT_9X15, FONT_6X12, FONT_10X20};
 
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
@@ -426,6 +426,13 @@ pub fn render_text(
     }
 
     // Default: use embedded-graphics mono font via FbDrawTarget.
+    // Select font based on requested glyph_height.
+    let font = match glyph_height {
+        0..=12 => &FONT_6X12,
+        13..=14 => &FONT_8X13,
+        15..=19 => &FONT_9X15,
+        _ => &FONT_10X20,
+    };
     let mut target = FbDrawTarget {
         fb,
         width: fb_width,
@@ -434,7 +441,7 @@ pub fn render_text(
         fg_color: color,
     };
     use embedded_graphics::text::Baseline as EgBaseline;
-    let style = embedded_graphics::mono_font::MonoTextStyle::new(&FONT_8X13, BinaryColor::On);
+    let style = embedded_graphics::mono_font::MonoTextStyle::new(font, BinaryColor::On);
     let text_str = core::str::from_utf8(text).unwrap_or("");
     let _ = embedded_graphics::text::Text::with_baseline(
         text_str, Point::new(x as i32, y as i32), style, EgBaseline::Top,

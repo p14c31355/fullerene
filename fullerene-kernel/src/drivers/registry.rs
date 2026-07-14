@@ -139,7 +139,9 @@ impl Driver for UsbStorageDriver {
         let mut ctx = nitrogen::usb::context::USBContext::new(
             &crate::driver_context_impl::KernelDriverContext,
         );
-        let _ = ctx.enable();
+        if let Err(e) = ctx.enable() {
+            log::warn!("USB: enable failed: {:?}", e);
+        }
         // Store in the global singleton for later polling.
         crate::drivers::registry::init_usb_ctx(ctx);
         // Initial poll to enumerate devices (no mount — use `mount` command).
@@ -303,15 +305,20 @@ fn usb_poll_and_register() {
 /// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
 #[cfg(not(nitrogen_no_usb))]
 pub fn poll_usb_all() -> bool {
-    let names: Vec<&'static str> = crate::devfs::list_block_device_names();
+    // Only unregister USB-owned block devices (usbN pattern)
+    let names = crate::devfs::list_block_device_names();
     for name in names {
-        crate::devfs::unregister_block_device(name);
+        if name.starts_with("usb") {
+            crate::devfs::unregister_block_device(&name);
+        }
     }
     LAST_REGISTERED_USB_COUNT.store(0, Ordering::Relaxed);
 
     use crate::driver_context_impl::KernelDriverContext;
     let mut ctx = nitrogen::usb::context::USBContext::new(&KernelDriverContext);
-    let _ = ctx.enable();
+    if let Err(e) = ctx.enable() {
+        log::warn!("USB: enable failed during re-enumeration: {:?}", e);
+    }
     init_usb_ctx(ctx);
     usb_poll_and_register();
     let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
@@ -348,7 +355,6 @@ fn register_pending_usb() {
     for disk in &disks {
         let idx = LAST_REGISTERED_USB_COUNT.fetch_add(1, Ordering::Relaxed);
         let dev_name = alloc::format!("usb{}", idx);
-        let static_name: &'static str = Box::leak(dev_name.into_boxed_str());
 
         let bdev = Box::new(UsbBlockDevice {
             ctrl_type: disk.ctrl_type,
@@ -363,11 +369,11 @@ fn register_pending_usb() {
             tag: 1,
         });
 
-        crate::devfs::register_block_device(static_name, bdev);
-        crate::klog_fmt!("USB: registered /dev/{} (bulk-only)\n", static_name);
+        crate::klog_fmt!("USB: registered /dev/{} (bulk-only)\n", dev_name);
+        crate::devfs::register_block_device(dev_name.clone(), bdev);
 
         let _ = crate::contexts::vfs::mkdir("/dev");
-        let _ = crate::contexts::vfs::create(&alloc::format!("/dev/{}", static_name));
+        let _ = crate::contexts::vfs::create(&alloc::format!("/dev/{}", dev_name));
     }
     let _ = crate::klog::flush_to_vfs();
 }
@@ -421,9 +427,9 @@ pub fn sd_probe_and_register() -> bool {
         total_blocks: info.total_blocks,
     });
 
-    let dev_name: &'static str = Box::leak(alloc::format!("sd{}", 0).into_boxed_str());
-    crate::devfs::register_block_device(dev_name, bdev);
+    let dev_name = alloc::format!("sd{}", 0);
     crate::klog_fmt!("SD card: registered /dev/{}\n", dev_name);
+    crate::devfs::register_block_device(dev_name.clone(), bdev);
 
     let _ = crate::contexts::vfs::mkdir("/dev");
     let _ = crate::contexts::vfs::create(&alloc::format!("/dev/{}", dev_name));
@@ -459,18 +465,7 @@ impl BlockDevice for SdBlockDev {
 // ── Compatibility: sd_probe_and_mount → delegates to register ──
 #[cfg(not(nitrogen_no_storage))]
 pub fn sd_probe_and_mount() -> bool {
-    if SD_PROBED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        crate::klog_fmt!("SD card: already probed\n");
-        return true;
-    }
-
     let ok = sd_probe_and_register();
-    if !ok {
-        SD_PROBED.store(false, Ordering::Release);
-    }
     let _ = crate::klog::flush_to_vfs();
     ok
 }

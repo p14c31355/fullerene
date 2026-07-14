@@ -369,19 +369,20 @@ fn register_nozzle_hooks() {
                         }
                         Some(Err(e)) => {
                             tline!(ctx.terminal, "mount: VFS mount error: {:?}", e);
+                            tline!(ctx.terminal, "mount: device {} is unrecoverable (consumed by filesystem)", dev_name);
                         }
                         None => {
                             ctx.terminal.write_str("mount: VFS not available\n");
+                            tline!(ctx.terminal, "mount: device {} is unrecoverable (consumed by filesystem)", dev_name);
                         }
                     }
                 }
                 Err((e, returned_bdev)) => {
                     tline!(ctx.terminal, "mount: filesystem init failed — {:?}", e);
                     if let Some(bdev) = returned_bdev {
-                        crate::devfs::register_block_device(
-                            Box::leak(dev_name_owned.into_boxed_str()),
-                            bdev,
-                        );
+                        crate::devfs::register_block_device(dev_name_owned.clone(), bdev);
+                    } else {
+                        tline!(ctx.terminal, "mount: device {} is unrecoverable", dev_name);
                     }
                 }
             }
@@ -578,7 +579,7 @@ fn register_nozzle_hooks() {
         "usb_info" => {
             use crate::drivers::registry;
             let count = crate::devfs::list_block_device_names().len();
-            tline!(ctx.terminal, "USB block devices: {}", count);
+            tline!(ctx.terminal, "Registered block devices: {}", count);
             tline!(ctx.terminal, "Registered /dev/ entries:");
             for name in crate::devfs::list_block_device_names() {
                 tline!(ctx.terminal, "  /dev/{}", name);
