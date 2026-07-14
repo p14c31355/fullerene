@@ -231,24 +231,25 @@ fn stable_ino(name: &str) -> u64 {
 
 // ── Block device registry ───────────────────────────────────
 //
-// Maps device names (e.g. "usb0", "sd0") to block device instances.
-// Used by the `mount` shell command to look up storage devices.
-// Devices are registered during enumeration and consumed on mount.
+// Maps persistent device names (e.g. "usb0", "sd0") to an optional device
+// lease. `None` means a mounted filesystem currently owns the device, while
+// the `/dev` identity remains enumerable.
 
-pub static BLOCK_DEVICE_REGISTRY: Mutex<BTreeMap<alloc::string::String, Box<dyn BlockDevice>>> =
-    Mutex::new(BTreeMap::new());
+pub static BLOCK_DEVICE_REGISTRY: Mutex<
+    BTreeMap<alloc::string::String, Option<Box<dyn BlockDevice>>>,
+> = Mutex::new(BTreeMap::new());
 
 pub fn register_block_device(name: alloc::string::String, device: Box<dyn BlockDevice>) {
-    BLOCK_DEVICE_REGISTRY.lock().insert(name, device);
+    BLOCK_DEVICE_REGISTRY.lock().insert(name, Some(device));
 }
 
 pub fn unregister_block_device(name: &str) {
     BLOCK_DEVICE_REGISTRY.lock().remove(name);
 }
 
-/// Take a block device out of the registry (ownership transferred to caller).
-pub fn open_block_device(name: &str) -> Option<Box<dyn BlockDevice>> {
-    BLOCK_DEVICE_REGISTRY.lock().remove(name)
+/// Lease a block device to a filesystem while preserving its `/dev` identity.
+pub fn lease_block_device(name: &str) -> Option<Box<dyn BlockDevice>> {
+    BLOCK_DEVICE_REGISTRY.lock().get_mut(name)?.take()
 }
 
 pub fn list_block_device_names() -> alloc::vec::Vec<alloc::string::String> {
@@ -257,4 +258,11 @@ pub fn list_block_device_names() -> alloc::vec::Vec<alloc::string::String> {
 
 pub fn block_device_exists(name: &str) -> bool {
     BLOCK_DEVICE_REGISTRY.lock().contains_key(name)
+}
+
+pub fn block_device_available(name: &str) -> bool {
+    BLOCK_DEVICE_REGISTRY
+        .lock()
+        .get(name)
+        .is_some_and(|device| device.is_some())
 }

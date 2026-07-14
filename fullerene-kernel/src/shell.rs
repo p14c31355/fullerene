@@ -7,7 +7,6 @@
 use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
-use alloc::boxed::Box;
 
 // ── WASM/WASI runtime callbacks ──────────────────────────────────
 
@@ -312,21 +311,6 @@ fn register_nozzle_hooks() {
     .install();
 
     // ── Install sys info / control hooks ───────────────────────
-    // Register SD mount hook
-    nozzle::sys_hooks::SD_MOUNT_HOOK
-        .lock()
-        .replace(|ctx: &mut nozzle::CommandContext| {
-            use crate::drivers::registry;
-            ctx.terminal.write_str("sd_mount: probing SD card...\n");
-            if registry::sd_probe_and_mount() {
-                ctx.terminal.write_str("sd_mount: SD registered at /dev/sd0\n");
-                ctx.terminal.write_str("sd_mount: run 'mount /dev/sd0 /mnt' to mount\n");
-            } else {
-                ctx.terminal.write_str("sd_mount: FAILED (no SD card)\n");
-            }
-        });
-
-    // Register block device mount hook
     nozzle::sys_hooks::MOUNT_HOOK
         .lock()
         .replace(|ctx: &mut nozzle::CommandContext| {
@@ -338,64 +322,14 @@ fn register_nozzle_hooks() {
                 }
                 return;
             }
-            let dev_path = ctx.args[1];
-            let mount_point = ctx.args[2];
-
-            let dev_name = dev_path.strip_prefix("/dev/").unwrap_or(dev_path);
-
-            // Validate mount point before consuming the block device
-            match crate::contexts::vfs::with_vfs(|v| v.mkdir(mount_point)) {
-                Some(Err(e)) if e != genome::fs::FsError::FileExists => {
-                    tline!(ctx.terminal, "mount: failed to create mount point '{}': {:?}", mount_point, e);
-                    return;
+            let (device, mount_point) = (ctx.args[1], ctx.args[2]);
+            match crate::contexts::vfs::mount(device, mount_point, "fat32") {
+                Ok(()) => {
+                    tline!(ctx.terminal, "mount: OK — {} mounted at {}", device, mount_point);
+                    let _ = crate::klog::flush_to_vfs();
                 }
-                None => {
-                    ctx.terminal.write_str("mount: VFS not available\n");
-                    return;
-                }
-                _ => {}
-            }
-
-            let bdev = match crate::devfs::open_block_device(dev_name) {
-                Some(b) => b,
-                None => {
-                    tline!(ctx.terminal, "mount: device '{}' not found", dev_name);
-                    tstr!(ctx.terminal, "  Available devices:");
-                    for name in crate::devfs::list_block_device_names() {
-                        tline!(ctx.terminal, "    /dev/{}", name);
-                    }
-                    return;
-                }
-            };
-
-            tline!(ctx.terminal, "mount: mounting {} at {} ...", dev_path, mount_point);
-
-            let dev_name_owned = alloc::format!("{}", dev_name);
-
-            match crate::drivers::fat::FatFileSystem::from_device(bdev) {
-                Ok(fs) => {
-                    match crate::contexts::vfs::with_vfs(|v| v.mount(mount_point, Box::new(fs))) {
-                        Some(Ok(())) => {
-                            tline!(ctx.terminal, "mount: OK — {} mounted at {}", dev_path, mount_point);
-                            let _ = crate::klog::flush_to_vfs();
-                        }
-                        Some(Err(e)) => {
-                            tline!(ctx.terminal, "mount: VFS mount error: {:?}", e);
-                            tline!(ctx.terminal, "mount: device {} is unrecoverable (consumed by filesystem)", dev_name);
-                        }
-                        None => {
-                            ctx.terminal.write_str("mount: VFS not available\n");
-                            tline!(ctx.terminal, "mount: device {} is unrecoverable (consumed by filesystem)", dev_name);
-                        }
-                    }
-                }
-                Err((e, returned_bdev)) => {
-                    tline!(ctx.terminal, "mount: filesystem init failed — {:?}", e);
-                    if let Some(bdev) = returned_bdev {
-                        crate::devfs::register_block_device(dev_name_owned.clone(), bdev);
-                    } else {
-                        tline!(ctx.terminal, "mount: device {} is unrecoverable", dev_name);
-                    }
+                Err(e) => {
+                    tline!(ctx.terminal, "mount: {}: {:?}", device, e);
                 }
             }
         });

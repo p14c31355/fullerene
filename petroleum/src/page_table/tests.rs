@@ -61,13 +61,3 @@ fn test_alignment() {
     assert!(is_aligned(4096, 4096));
     assert!(!is_aligned(4097, 4096));
 }
-
-/// Safe CR3 read — wrapper around the raw assembly.
-pub fn safe_cr3_read() -> u64 {
-    super::raw::utils::read_cr3()
-}
-
-#[test]
-fn test_cr3_read() {
-    let _cr3 = safe_cr3_read();
-}

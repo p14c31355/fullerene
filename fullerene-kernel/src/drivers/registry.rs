@@ -13,9 +13,10 @@
 //! No other kernel file needs to change.
 
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicUsize, Ordering};
-#[allow(unused_imports)]
-use core::sync::atomic::AtomicBool;
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(nitrogen_no_usb))]
+use core::sync::atomic::AtomicUsize;
 use spin::Mutex;
 
 use genome::block::BlockDevice;
@@ -160,7 +161,14 @@ impl StorageDriver for NvmeStorageCtl {
 // -- USB storage (formerly usb_storage::init) -----------------
 
 #[cfg(not(nitrogen_no_usb))]
-pub struct UsbStorageDriver;
+pub struct UsbStorageDriver(AtomicBool);
+
+#[cfg(not(nitrogen_no_usb))]
+impl UsbStorageDriver {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+}
 
 #[cfg(not(nitrogen_no_usb))]
 impl Driver for UsbStorageDriver {
@@ -168,7 +176,15 @@ impl Driver for UsbStorageDriver {
         Some((0x0C, 0x03)) // USB host controller
     }
     fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
-        DriverBox::UsbHost(Box::new(UsbHostCtl))
+        if self
+            .0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            DriverBox::UsbHost(Box::new(UsbHostCtl))
+        } else {
+            DriverBox::None
+        }
     }
 }
 
@@ -258,7 +274,7 @@ pub fn build_registry() -> DriverRegistry {
         reg.register("sd_card", Box::new(SdCardDriver));
     }
     #[cfg(not(nitrogen_no_usb))]
-    reg.register("usb_storage", Box::new(UsbStorageDriver));
+    reg.register("usb_storage", Box::new(UsbStorageDriver::new()));
     // Future: virtio_gpu, iwlwifi, hda, …
     reg
 }
@@ -369,8 +385,16 @@ fn usb_poll_and_register() {
 /// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
 #[cfg(not(nitrogen_no_usb))]
 pub fn poll_usb_all() -> bool {
-    // Only unregister USB-owned block devices (usbN pattern)
     let names = crate::devfs::list_block_device_names();
+    if names
+        .iter()
+        .any(|name| name.starts_with("usb") && !crate::devfs::block_device_available(name))
+    {
+        log::warn!("USB: refusing re-enumeration while a USB block device is mounted");
+        return false;
+    }
+
+    // Only unregister USB-owned block devices (usbN pattern).
     for name in names {
         if name.starts_with("usb") {
             crate::devfs::unregister_block_device(&name);
@@ -524,19 +548,6 @@ impl BlockDevice for SdBlockDev {
     }
     fn sector_size(&self) -> u32 { self.block_size }
     fn total_sectors(&self) -> u64 { self.total_blocks }
-}
-
-// ── Compatibility: sd_probe_and_mount → delegates to register ──
-#[cfg(not(nitrogen_no_storage))]
-pub fn sd_probe_and_mount() -> bool {
-    let ok = sd_probe_and_register();
-    let _ = crate::klog::flush_to_vfs();
-    ok
-}
-
-#[cfg(nitrogen_no_storage)]
-pub fn sd_probe_and_mount() -> bool {
-    false
 }
 
 // ────────────────────────────────────────────────────────────

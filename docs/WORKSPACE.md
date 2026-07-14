@@ -4,7 +4,7 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`bellows`**: The UEFI bootloader. Responsible for loading the kernel and setting up the framebuffer configuration.
 
-- **`fullerene-kernel`**: The core kernel. Handles low-level hardware initialization, process scheduling via `SchedulerContext` (`SCHEDULER` singleton), VDSO read-only metadata pages, GUI integration, and enters the main shell loop. The `scheduler_context` module owns all scheduling state (process list, tick counter, NMI recovery target), replacing the old `ProcessManager` global.
+- **`fullerene-kernel`**: The core kernel. Handles hardware-policy integration, process scheduling via `SchedulerContext` (`SCHEDULER` singleton), VDSO read-only metadata pages, GUI integration, and enters the main shell loop. Its device registry leases block devices to Genome while retaining stable `/dev` identities.
 
 - **`flasks`**: The build and task runner. Builds the kernel and bootloader, creates a bootable ISO, and launches QEMU for emulation.
 
@@ -24,7 +24,7 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`bonder`**: A no_std network protocol stack implementing Ethernet frame handling, IPv4 packet processing, and UDP socket abstraction with iwlwifi integration.
 
-- **`nitrogen`**: A hardware abstraction and device driver library providing PCI enumeration, APIC/PIC interrupt controllers, PS/2 keyboard/mouse drivers, HDA audio, VirtIO block/net/gpu drivers, USB (XHCI), NVMe/AHCI storage, Intel wireless (iwlwifi), and framebuffer management. The kernel's primary driver layer.
+- **`nitrogen`**: A hardware abstraction and device driver library providing PCI enumeration, APIC/PIC interrupt controllers, PS/2 keyboard/mouse drivers, HDA audio, VirtIO block/net/gpu drivers, USB (xHCI/EHCI), NVMe/AHCI storage, Intel wireless (iwlwifi), and framebuffer management. It owns PCI power/decode transitions and MMIO preflight for matched devices.
 
 - **`solvent`**: An application framework providing file explorer, viewers (image/audio), menu actions, and handler infrastructure for building user-facing applications on top of Lattice and Nozzle.
 

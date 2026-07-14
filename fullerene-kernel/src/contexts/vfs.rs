@@ -143,14 +143,10 @@ impl VfsContext {
 
     pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let replaced_index = vfs.mounted_fs_index(mount_point);
-        vfs.mount(mount_point, fs)?;
-        if let Some(replaced_index) = replaced_index {
-            self.handle_table
-                .lock()
-                .entries
-                .retain(|entry| entry.mount_index != replaced_index);
+        if vfs.mounted_fs_index(mount_point).is_some() {
+            return Err(FsError::FileExists);
         }
+        vfs.mount(mount_point, fs)?;
         Ok(())
     }
 
@@ -349,16 +345,25 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             Ok(())
         }
         "fat32" => {
-            // Normalize device name: strip leading "/dev/" if present
-            let device_name = device.strip_prefix("/dev/").unwrap_or(device);
+            let device_name = device
+                .strip_prefix("/dev/")
+                .filter(|name| !name.is_empty() && !name.contains('/'))
+                .ok_or(FsError::InvalidPath)?;
+
+            if !crate::devfs::block_device_exists(device_name) {
+                return Err(FsError::FileNotFound);
+            }
+            if vfs.inner.lock().mounted_fs_index(mount_point).is_some() {
+                return Err(FsError::FileExists);
+            }
 
             // Validate mount point before consuming the block device
             if !vfs.exists(mount_point) {
                 vfs.mkdir(mount_point)?;
             }
 
-            let bdev = crate::devfs::open_block_device(device_name)
-                .ok_or(FsError::FileNotFound)?;
+            let bdev = crate::devfs::lease_block_device(device_name)
+                .ok_or(FsError::PermissionDenied)?;
             match crate::drivers::fat::FatFileSystem::from_device(bdev) {
                 Ok(fs) => {
                     vfs.mount(mount_point, Box::new(fs))?;

@@ -9,8 +9,9 @@ use alloc::vec::Vec;
 use crate::wifi::Bssid;
 
 /// WPA state for a single connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WpaState {
+    #[default]
     Initial,
     HavePmk,
     WaitMsg1,
@@ -63,22 +64,28 @@ pub struct WpaSupplicant {
     pub mic_error: bool,
 }
 
-impl WpaSupplicant {
-    pub fn new() -> Self {
+impl Default for WpaSupplicant {
+    fn default() -> Self {
         Self {
-            state: WpaState::Initial,
-            ssid: alloc::string::String::new(),
-            passphrase: alloc::string::String::new(),
-            pmk: [0u8; 32],
-            ptk: [0u8; 48],
-            gtk: [0u8; 32],
-            anonce: [0u8; 32],
-            snonce: [0u8; 32],
-            ap_bssid: [0u8; 6],
-            client_mac: [0u8; 6],
+            state: WpaState::default(),
+            ssid: String::new(),
+            passphrase: String::new(),
+            pmk: [0; 32],
+            ptk: [0; 48],
+            gtk: [0; 32],
+            anonce: [0; 32],
+            snonce: [0; 32],
+            ap_bssid: [0; 6],
+            client_mac: [0; 6],
             replay_counter: 0,
             mic_error: false,
         }
+    }
+}
+
+impl WpaSupplicant {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Initialize with passphrase and SSID (PMK derivation).
@@ -108,9 +115,8 @@ impl WpaSupplicant {
 
     // WPA2 PSK = PBKDF2(HMAC-SHA1, passphrase, ssid, 4096, 256)
     // HMAC-SHA1 produces 20 bytes per block, so we need 2 blocks for 32 bytes
-    let mut block = 1u32;
-    for i in 0..2 {
-        let start = (i as usize) * 20;
+    for (i, block) in (1u32..=2).enumerate() {
+        let start = i * 20;
         let end = core::cmp::min(start + 20, 32);
         let len = end - start;
 
@@ -119,7 +125,6 @@ impl WpaSupplicant {
         salt.extend_from_slice(&block.to_be_bytes());
 
         let mut u = hmac_sha1(pass_bytes, &salt);
-        block += 1;
 
         let mut t = [0u8; 20];
         t.copy_from_slice(&u);
@@ -527,7 +532,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
         let (mut a, mut b, mut c, mut d, mut e) =
             (state[0], state[1], state[2], state[3], state[4]);
 
-        for t in 0..80 {
+        for (t, word) in w.iter().enumerate() {
             let (f, k) = if t < 20 {
                 ((b & c) | (!b & d), 0x5A827999)
             } else if t < 40 {
@@ -543,7 +548,7 @@ fn sha1(data: &[u8]) -> [u8; 20] {
                 .wrapping_add(f)
                 .wrapping_add(e)
                 .wrapping_add(k)
-                .wrapping_add(w[t]);
+                .wrapping_add(*word);
             e = d;
             d = c;
             c = b.rotate_left(30);

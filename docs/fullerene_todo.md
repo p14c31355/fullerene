@@ -74,7 +74,8 @@ Priority convention:
 - [ ] Move `solvent::SOLVENT_CALLBACKS`, `RUNTIME`, `EVENT_QUEUE`, `DISPATCHER` into `RuntimeContext`
 - [ ] Move `nozzle::FS_HOOKS`, `SYS_HOOKS` into constructor-injected services
 - [ ] Move `carrier::SHARED_HISTORY` into terminal session
-- [ ] Device registry: `DeviceManagerContext` with take/return lease API
+- [x] Device registry: persistent `/dev` identity with exclusive take lease
+- [ ] Return a block-device lease when its filesystem is unmounted
 
 ### P1-5. FS capability contract
 - [x] `FileSystem` trait: uses typed `Result<..., FsError>` instead of `Option` + string errors

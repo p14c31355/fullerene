@@ -159,8 +159,9 @@ impl RtsxController {
     }
 
     fn prepare_device(&mut self) -> Result<(), &'static str> {
-        self.device.ensure_d0();
-        self.device.enable_memory_access();
+        if !self.device.prepare_mmio() {
+            return Err("RTSX PCI command or power transition failed");
+        }
         self.health
             .pre_mmio_access()
             .map_err(|_| "RTSX device is not safely accessible")
@@ -516,9 +517,10 @@ pub fn init(context: &dyn DriverContext) {
         return;
     };
 
-    device.ensure_d0();
-    device.disable_pcie_aspm();
-    device.enable_memory_access();
+    if !device.prepare_mmio() {
+        log::warn!("RTSX: PCI command or power transition failed");
+        return;
+    }
     let Some(bar0) = device.read_bar(0).filter(|&address| address != 0) else {
         log::warn!("RTSX: invalid BAR0");
         return;

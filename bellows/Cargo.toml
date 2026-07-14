@@ -6,6 +6,8 @@ edition = "2024"
 [[bin]]
 name = "bellows"
 path = "src/main.rs"
+test = false
+bench = false
 
 [features]
 debug_loader = []

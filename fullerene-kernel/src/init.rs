@@ -58,7 +58,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
 
     crate::boot_stage!(BootStage::KernelEntry);
 
-    #[cfg(not(target_os = "uefi"))]
+    #[cfg(all(not(target_os = "uefi"), not(test)))]
     {
         use core::mem::MaybeUninit;
         let bios_init_steps = [
@@ -67,9 +67,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
                 unsafe {
                     let ptr = core::ptr::addr_of_mut!(HEAP) as *mut u8;
-                    petroleum::ALLOCATOR
-                        .lock()
-                        .init(ptr, crate::heap::HEAP_SIZE);
+                    petroleum::init_global_heap(ptr, crate::heap::HEAP_SIZE);
                     petroleum::common::memory::set_heap_range(ptr as usize, crate::heap::HEAP_SIZE);
                     crate::gdt::init(x86_64::VirtAddr::from_ptr(ptr));
                 }
@@ -221,8 +219,8 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             let mut scanner = nitrogen::pci::PciScanner::new();
             let _ = scanner.scan_all_buses();
 
-            // Pre-process: safety gates for all devices before probing
-            let mut healthy_devices = alloc::vec::Vec::new();
+            // Discovery is read-only. Each matched Nitrogen driver owns the
+            // power/decode transition for its endpoint immediately before MMIO.
             for dev in scanner.get_devices() {
                 // Log each device so we can identify where real hardware hangs.
                 {
@@ -242,23 +240,11 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     hex_char(dev.function >> 4), hex_char(dev.function & 0xF),
                 ];
                 crate::boot_stage::draw_step_hint(&hint_bcd);
-                dev.disable_pcie_aspm();
-                dev.enable_memory_access();
-                dev.ensure_d0();
-                // Quick MMIO-safety check
-                crate::boot_stage::draw_step_hint(b"dv_vid");
-                let vid = nitrogen::pci::PciConfigSpace::read_config_word(
-                    dev.bus, dev.device, dev.function, 0,
-                );
-                if vid == 0xFFFF || vid == 0x0000 { continue; }
-
-                // Device passed safety checks, add to healthy list
-                healthy_devices.push(dev.clone());
             }
 
             // DriverManager orchestrates probe → priority → attach → registration
             let mgr = DRIVER_MGR.call_once(crate::hardware::driver_manager::DriverManager::new);
-            mgr.discover_and_attach(&registry, ctx, &healthy_devices);
+            mgr.discover_and_attach(&registry, ctx, scanner.get_devices());
 
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())

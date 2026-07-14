@@ -1,23 +1,20 @@
 //! Disk — USB mass-storage block device and StorageManager.
 //!
-//! [`StorageManager`] owns all discovered disks and handles mounting
-//! to the kernel's VFS.  Each [`Disk`] wraps a FAT filesystem mounted
-//! at a `/mnt/usb-N` path.
+//! [`StorageManager`] owns discovered block-device metadata. Filesystem and
+//! mount policy remain in the kernel integration layer.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 // ============================================================================
-//  Disk — a mounted USB storage device
+//  Disk — a discovered USB storage device
 // ============================================================================
 
-/// A mounted USB mass-storage disk.
+/// A discovered USB mass-storage disk.
 #[derive(Clone)]
 pub struct Disk {
     /// Human-readable name (e.g. "USB Drive 1").
     pub name: String,
-    /// VFS mount point (e.g. "/mnt/usb-1").
-    pub mount_point: String,
     /// Index into the owning host controller's device list.
     pub dev_addr: u8,
     /// Bulk OUT endpoint address.
@@ -39,29 +36,27 @@ pub struct Disk {
 }
 
 // ============================================================================
-//  StorageManager — owns all disks, handles auto-mount
+//  StorageManager — owns discovered disks
 // ============================================================================
 
-/// Manages the list of mounted USB storage devices.
+/// Manages the list of discovered USB storage devices.
+#[derive(Default)]
 pub struct StorageManager {
     disks: Vec<Disk>,
 }
 
 impl StorageManager {
     pub fn new() -> Self {
-        Self { disks: Vec::new() }
+        Self::default()
     }
 
-    /// References to all mounted disks.
+    /// References to all discovered disks.
     pub fn disks(&self) -> &[Disk] {
         &self.disks
     }
 
-    /// Try to mount a mass-storage device using the given endpoint info.
-    ///
-    /// The actual BPB parsing and VFS mounting is delegated to the
-    /// platform callback via [`platform_mount_fat`].
-    pub fn try_mount(
+    /// Register a mass-storage device using default high-speed packet sizes.
+    pub fn try_register(
         &mut self,
         ctrl_type: &'static str,
         dev_addr: u8,
@@ -69,13 +64,11 @@ impl StorageManager {
         ep_in: u8,
         ctrl_idx: usize,
     ) -> bool {
-        self.try_mount_with_mps(ctrl_type, dev_addr, ep_out, 512, ep_in, 512, ctrl_idx)
+        self.try_register_with_mps(ctrl_type, dev_addr, ep_out, 512, ep_in, 512, ctrl_idx)
     }
 
-    /// Try to mount a mass-storage device with the given endpoint info
-    /// and per-endpoint max packet sizes.  `ep_out_mps` and `ep_in_mps`
-    /// are the device-reported wMaxPacketSize for each bulk endpoint.
-    pub fn try_mount_with_mps(
+    /// Register a mass-storage device with its reported endpoint packet sizes.
+    pub fn try_register_with_mps(
         &mut self,
         ctrl_type: &'static str,
         dev_addr: u8,
@@ -87,11 +80,9 @@ impl StorageManager {
     ) -> bool {
         let disk_num = self.disks.len() + 1;
         let name = alloc::format!("USB Drive {}", disk_num);
-        let mount_point = alloc::format!("/mnt/usb-{}", disk_num);
 
         let disk = Disk {
             name,
-            mount_point,
             dev_addr,
             ep_out,
             ep_out_mps,

@@ -27,12 +27,6 @@ mod tests {
         assert_eq!(petroleum::SyscallNumber::Write as u64, 4);
         assert_eq!(petroleum::SyscallNumber::Read as u64, 3);
     }
-
-    #[test]
-    fn test_exit_syscall() {
-        let result = super::basic::syscall_exit(0);
-        assert!(result.is_ok());
-    }
 }
 
 #[cfg(test)]

@@ -10,6 +10,35 @@ Running on real hardware with InsydeH2O UEFI firmware required three fixes:
 
 3. **Skip `safe_map_page` WC remap on real hardware**: The kernel's `safe_map_page` (via `map_page_4k_l1`) attempts to split the boot-phase 2MB/1GB huge-page WB mapping into 4KB WC pages for the framebuffer. On InsydeH2O this operation breaks the mapping entirely, making the framebuffer inaccessible. The fix relies on the existing boot-phase huge-page identity mapping (WB via PAT/MTRR), which is already functional and confirmed working via direct `write_volatile` tests.
 
+## Intel Wildcat Point-LP USB (8086:9cb1 / 8086:9ca6)
+
+The target machine exposes an xHCI controller at `00:14.0` and an EHCI
+companion at `00:1d.0`. Before the first xHCI BAR0 load, Fullerene now:
+
+1. moves the endpoint to D0;
+2. enables the Intel USB3 terminations (`USB3_PSSEN`, config `0xd8`), then
+   routes the firmware-declared USB2 ports (`XUSB2PR`, config `0xd0`) to xHCI;
+3. disables standard ASPM and enables PCI memory decoding/bus mastering;
+4. maps BAR0 uncached and reads the capability header as a 32-bit register;
+5. performs the xHCI BIOS/OS ownership handoff and disables legacy SMIs.
+
+The USB subsystem owns this sequence once per boot, rather than once for every
+USB PCI function. EHCI is initialized once and is not restarted by each poll.
+
+`core::ptr::read_volatile`, an MMIO wrapper, inline assembly, and an external
+xHCI crate all ultimately issue the same non-posted CPU load. None can impose a
+software timeout on a PCIe transaction that never completes. The removed
+`detect_abort_read_u32` helper only classified an all-ones value *after* a load
+completed and therefore did not prevent a hang. Fullerene instead performs
+configuration-space preflight before the first MMIO access; later watchdog
+recovery remains a platform mechanism, not a replacement read primitive.
+
+Real-hardware validation is still required for the complete controller reset,
+port enumeration, and mass-storage path on this machine.
+
+Reference: Linux [`drivers/usb/host/pci-quirks.c`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/pci-quirks.c)
+and [`drivers/usb/host/xhci-ext-caps.h`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci-ext-caps.h).
+
 ## Future Platforms
 
 In the future, we plan to add compatibility notes for:

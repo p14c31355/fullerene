@@ -254,22 +254,11 @@ sys_info_cmd!(cmd_usb_info, "usb_info");
 ///   mount /dev/usb0 /mnt
 ///   mount /dev/sd0 /mnt/sdcard
 pub fn cmd_mount(ctx: &mut CommandContext) -> bool {
-    let h = crate::sys_hooks::MOUNT_HOOK.lock().clone();
+    let h = *crate::sys_hooks::MOUNT_HOOK.lock();
     if let Some(f) = h {
         f(ctx);
     } else {
         ctx.terminal.write_str("mount: hook not registered\n");
-    }
-    true
-}
-
-/// `sd_mount` — probe SD card
-pub fn cmd_sd_mount(ctx: &mut CommandContext) -> bool {
-    let h = crate::sys_hooks::SD_MOUNT_HOOK.lock().clone();
-    if let Some(f) = h {
-        f(ctx);
-    } else {
-        ctx.terminal.write_str("sd_mount: hook not registered\n");
     }
     true
 }

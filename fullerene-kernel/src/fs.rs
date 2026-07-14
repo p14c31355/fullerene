@@ -95,10 +95,6 @@ pub fn exists(path: &str) -> bool {
     vfs::exists(path)
 }
 
-pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsError> {
-    vfs::mount(device, mount_point, fs_type)
-}
-
 pub fn working_directory() -> Result<String, FsError> {
     vfs::working_directory()
 }
@@ -128,8 +124,7 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
         };
         result.push(full.clone());
         if entry.is_dir {
-            let children = walk_dir(&full)?;
-            result.extend(children);
+            result.extend(walk_dir(&full)?);
         }
     }
     Ok(result)
@@ -200,17 +195,14 @@ pub fn list_packages() -> Result<Vec<PackageEntry>, FsError> {
     }
     let entries = list_dir("/packages")?;
     for entry in &entries {
-        if entry.is_dir {
-            let manifest_path = alloc::format!("/packages/{}/manifest.txt", entry.name);
-            if exists(&manifest_path) {
-                if let Ok(data) = read_entire_file(&manifest_path) {
-                    if let Ok(text) = core::str::from_utf8(&data) {
-                        if let Some(pkg) = parse_manifest(&entry.name, text) {
-                            packages.push(pkg);
-                        }
-                    }
-                }
-            }
+        let manifest_path = alloc::format!("/packages/{}/manifest.txt", entry.name);
+        if entry.is_dir
+            && exists(&manifest_path)
+            && let Ok(data) = read_entire_file(&manifest_path)
+            && let Ok(text) = core::str::from_utf8(&data)
+            && let Some(pkg) = parse_manifest(&entry.name, text)
+        {
+            packages.push(pkg);
         }
     }
     Ok(packages)
@@ -248,8 +240,7 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
     if !exists(&pkg_dir) {
         return Err(FsError::FileNotFound);
     }
-    let entries = walk_dir(&pkg_dir)?;
-    let mut sorted_entries = entries;
+    let mut sorted_entries = walk_dir(&pkg_dir)?;
     sorted_entries.sort_by(|a, b| b.len().cmp(&a.len()));
 
     for entry in sorted_entries {

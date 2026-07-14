@@ -114,7 +114,7 @@ impl IwlWifiDevice {
     #[inline]
     pub(super) fn safe_read32(&self, reg: u32) -> Option<u32> {
         let addr = unsafe { self.mmio.add(reg as usize) } as *const u32;
-        match mmio::checked_read_u32(addr, Some(&self.health)) {
+        match unsafe { mmio::checked_read_u32(addr, Some(&self.health)) } {
             SafeReadResult::Value(v) => Some(v),
             _ => None,
         }
@@ -164,9 +164,9 @@ impl IwlWifiDevice {
         let mut health = PciHealth::new(&device);
         health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
 
-        device.ensure_d0();
-        device.disable_pcie_aspm();
-        device.enable_memory_access();
+        if !device.prepare_mmio() {
+            return Err(IwlError::BarNotAvailable);
+        }
 
         let bar0_addr = device.read_bar(0).ok_or(IwlError::BarNotAvailable)?;
         let mmio_virt = ctx.phys_to_virt(bar0_addr);
@@ -189,10 +189,9 @@ impl IwlWifiDevice {
 
         health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
 
-        let hw_rev_raw = match mmio::checked_read_u32(
-            unsafe { mmio.add(CSR_HW_REV as usize) } as *const u32,
-            Some(&health),
-        ) {
+        let hw_rev_raw = match unsafe {
+            mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize), Some(&health))
+        } {
             mmio::SafeReadResult::Value(v) => v,
             _ => return Err(IwlError::BarNotAvailable),
         };
@@ -503,7 +502,7 @@ impl IwlWifiDevice {
     pub fn read_mac(mmio: *mut u32, health: Option<&PciHealth>) -> [u8; 6] {
         let checked_read = |reg: u32| -> Option<u32> {
             let addr = unsafe { mmio.add(reg as usize) } as *const u32;
-            match mmio::checked_read_u32(addr, health) {
+            match unsafe { mmio::checked_read_u32(addr, health) } {
                 SafeReadResult::Value(v) => Some(v),
                 _ => None,
             }
