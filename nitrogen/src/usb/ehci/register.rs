@@ -1,6 +1,7 @@
 //! EHCI register context — structured MMIO access layer.
 
 use core::ptr;
+use crate::mmio::detect_abort_read_u32;
 
 pub const OP_USBCMD: usize = 0x00;
 pub const OP_USBSTS: usize = 0x04;
@@ -30,7 +31,14 @@ impl EhciOperationalRegisters {
     }
 
     pub fn read(&self, off: usize) -> u32 {
-        unsafe { ptr::read_volatile(self.0.add(off) as *const u32) }
+        let p = unsafe { self.0.add(off) as *const u32 };
+        match detect_abort_read_u32(p) {
+            Some(v) => v,
+            None => {
+                log::warn!("EHCI: MMIO read at offset {:#x} returned 0xFFFF_FFFF (master abort)", off);
+                0xFFFF_FFFF
+            }
+        }
     }
     pub fn write(&self, off: usize, val: u32) {
         unsafe {

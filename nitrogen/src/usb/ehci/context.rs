@@ -19,11 +19,12 @@
 //! ehci.poll_ports();
 //! ```
 
-use crate::DriverContext;
-use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
-
 use alloc::vec::Vec;
 use core::ptr;
+
+use crate::DriverContext;
+use crate::pci_health::PciHealth;
+use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
 
 // ── Import sub-contexts from sibling modules ──────────────────
 use super::async_queue::*;
@@ -47,6 +48,8 @@ pub struct EhciContext {
     pub devices: Vec<UsbDevice>,
     /// Driver context for memory allocation.
     driver_ctx: &'static dyn DriverContext,
+    /// PCI health monitor — check before MMIO transaction cycles.
+    pub health: PciHealth,
     /// Next USB device address to assign.
     pub next_address: u8,
 }
@@ -114,7 +117,7 @@ impl EhciContext {
     /// # Safety
     /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
     /// of the returned controller.
-    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext) -> Option<Self> {
+    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
         let registers = unsafe { EhciRegisterContext::new(mmio_base) };
         let hcsparams = unsafe { ptr::read_volatile(mmio_base.add(4) as *const u32) };
         let n_ports = (hcsparams & 0x0F).max(1);
@@ -128,6 +131,7 @@ impl EhciContext {
             ports,
             devices: Vec::new(),
             driver_ctx: ctx,
+            health,
             next_address: 1,
         })
     }
@@ -141,6 +145,10 @@ impl EhciContext {
 
     /// Reset the controller (HCRESET).
     pub fn reset(&mut self) -> Result<(), &'static str> {
+        if !self.health.is_device_present() {
+            log::error!("EHCI: device gone before reset");
+            return Err("EHCI device gone");
+        }
         let op = &self.registers.op;
         op.set_usbcmd(USBCMD_HCRESET);
         if crate::timing::wait_timeout_us(500_000, || {

@@ -183,14 +183,14 @@ impl ControllerManager {
                 0x09,
             );
             match prog_if {
-                0x20 => {
+                    0x20 => {
                     log::info!(
                         "USB: EHCI at {:02x}:{:02x}.{} — initialising",
                         dev.bus,
                         dev.device,
                         dev.function
                     );
-                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx) } {
+                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx, health) } {
                         if hc.initialize().is_ok() {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
@@ -211,7 +211,7 @@ impl ControllerManager {
                         dev.function
                     );
                     route_intel_ports_to_xhci(dev);
-                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx) } {
+                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx, health) } {
                         if hc.init().is_ok() {
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));

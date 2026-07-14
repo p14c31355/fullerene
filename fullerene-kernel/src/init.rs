@@ -347,6 +347,16 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     ];
     InitSequence::new(&common_steps).run();
 
+    // Flush boot log to /bootlog.txt so early init messages survive
+    // even if the system hangs or panics shortly after boot.
+    if let Err(e) = crate::klog::flush_to_vfs() {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flush failed\n");
+        // Non-fatal — continue booting.
+        let _ = e;
+    } else {
+        petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flushed\n");
+    }
+
     // Shell is no longer auto-started.  It is launched on demand via
     // the AppGrid overlay or the desktop context menu (NewShell action).
     // See `crate::scheduler::request_shell_launch()`.

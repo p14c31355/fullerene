@@ -5,6 +5,7 @@
 //! and [`DoorbellRegisters`].
 
 use core::ptr;
+use crate::mmio::detect_abort_read_u32;
 
 // ══════════════════════════════════════════════════════════════
 //  Register Offsets
@@ -92,11 +93,16 @@ struct Mmio(*mut u8);
 impl Mmio {
     fn read32(&self, off: usize) -> u32 {
         let p = unsafe { self.0.add(off) as *const u32 };
-        let val = unsafe { ptr::read_volatile(p) };
-        if val == 0xFFFF_FFFF {
-            log::warn!("xHCI: MMIO read at offset {:#x} returned 0xFFFF_FFFF (master abort?)", off);
+        // detect_abort_read_u32 performs the volatile read and checks
+        // for 0xFFFF_FFFF (PCI master abort).  Unlike raw read_volatile,
+        // this signals the abort instead of potentially masking it.
+        match detect_abort_read_u32(p) {
+            Some(v) => v,
+            None => {
+                log::warn!("xHCI: MMIO read at offset {:#x} returned 0xFFFF_FFFF (master abort)", off);
+                0xFFFF_FFFF
+            }
         }
-        val
     }
 
     fn write32(&self, off: usize, val: u32) {

@@ -375,6 +375,7 @@ impl UsbBus {
     /// Scan PCI bus and initialise all found USB controllers.
     pub fn init_controllers(&mut self, ctx: &'static dyn DriverContext) {
         use crate::pci::PciScanner;
+        use crate::pci_health::PciHealth;
         let mut scanner = PciScanner::new();
         let _ = scanner.scan_all_buses();
         for dev in scanner.get_devices() {
@@ -391,6 +392,13 @@ impl UsbBus {
             }
             dev.enable_memory_access();
 
+            let mut health = PciHealth::new(dev);
+            if health.pre_mmio_access().is_err() {
+                log::info!("USB: device at {:02x}:{:02x}.{} failed health check — skipping",
+                    dev.bus, dev.device, dev.function);
+                continue;
+            }
+
             let prog_if = crate::pci::PciConfigSpace::read_config_byte(
                 dev.bus,
                 dev.device,
@@ -399,14 +407,14 @@ impl UsbBus {
             );
             match prog_if {
                 0x20 => {
-                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx) } {
+                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx, health) } {
                         if hc.initialize().is_ok() {
                             self.ehci.push(Box::new(hc));
                         }
                     }
                 }
                 0x30 => {
-                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx) } {
+                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx, health) } {
                         if hc.init().is_ok() {
                             self.xhci.push(Box::new(hc));
                         }
