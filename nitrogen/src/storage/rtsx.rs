@@ -30,6 +30,16 @@ const HOST_COMMAND_STOP: u32 = 1 << 28;
 const HOST_COMMAND_BUFFER_SIZE: usize = 1024;
 const HOST_COMMAND_CHUNK: usize = HOST_COMMAND_BUFFER_SIZE / size_of::<u32>();
 
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum HostCommandKind {
+    Read,
+    Write,
+    Check,
+}
+
+type RegisterCommand = (HostCommandKind, u16, u8, u8);
+
 const CARD_PWR_CTL: u16 = 0xFD50;
 const CARD_SHARE_MODE: u16 = 0xFD52;
 const CARD_STOP: u16 = 0xFD54;
@@ -114,8 +124,8 @@ pub struct RtsxController {
 unsafe impl Send for RtsxController {}
 
 impl RtsxController {
-    fn host_command(kind: u32, address: u16, mask: u8, value: u8) -> u32 {
-        (kind << 30)
+    fn host_command(kind: HostCommandKind, address: u16, mask: u8, value: u8) -> u32 {
+        ((kind as u32) << 30)
             | (u32::from(address & 0x3FFF) << 16)
             | (u32::from(mask) << 8)
             | u32::from(value)
@@ -350,6 +360,80 @@ impl RtsxController {
         result
     }
 
+    fn run_register_commands(&mut self, commands: &[RegisterCommand]) -> Result<(), &'static str> {
+        {
+            let command_buffer = self
+                .host_commands
+                .as_mut()
+                .ok_or("RTSX host command buffer unavailable")?;
+            for (slot, &(kind, address, mask, value)) in command_buffer
+                .as_mut_slice()
+                .chunks_exact_mut(size_of::<u32>())
+                .zip(commands)
+            {
+                slot.copy_from_slice(&Self::host_command(kind, address, mask, value).to_le_bytes());
+            }
+        }
+        self.run_host_commands(commands.len())
+    }
+
+    fn read_sector_commands(argument: u32) -> [RegisterCommand; 13] {
+        let [arg0, arg1, arg2, arg3] = argument.to_be_bytes();
+        [
+            (
+                HostCommandKind::Write,
+                SD_CMD0,
+                0xFF,
+                SD_CMD_START | CMD17_READ_SINGLE,
+            ),
+            (HostCommandKind::Write, SD_CMD1, 0xFF, arg0),
+            (HostCommandKind::Write, SD_CMD1 + 1, 0xFF, arg1),
+            (HostCommandKind::Write, SD_CMD1 + 2, 0xFF, arg2),
+            (HostCommandKind::Write, SD_CMD1 + 3, 0xFF, arg3),
+            (HostCommandKind::Write, SD_BYTE_CNT_L, 0xFF, 0),
+            (HostCommandKind::Write, SD_BYTE_CNT_H, 0xFF, 2),
+            (HostCommandKind::Write, SD_BLOCK_CNT_L, 0xFF, 1),
+            (HostCommandKind::Write, SD_BLOCK_CNT_H, 0xFF, 0),
+            (HostCommandKind::Write, SD_CFG2, 0xFF, SD_RSP_R1),
+            (HostCommandKind::Write, CARD_DATA_SOURCE, 0x01, 0x01),
+            (
+                HostCommandKind::Write,
+                SD_TRANSFER,
+                0xFF,
+                SD_TRANSFER_START | SD_TM_NORMAL_READ,
+            ),
+            (
+                HostCommandKind::Check,
+                SD_TRANSFER,
+                SD_TRANSFER_END,
+                SD_TRANSFER_END,
+            ),
+        ]
+    }
+
+    fn write_sector_commands() -> [RegisterCommand; 8] {
+        [
+            (HostCommandKind::Write, SD_BYTE_CNT_L, 0xFF, 0),
+            (HostCommandKind::Write, SD_BYTE_CNT_H, 0xFF, 2),
+            (HostCommandKind::Write, SD_BLOCK_CNT_L, 0xFF, 1),
+            (HostCommandKind::Write, SD_BLOCK_CNT_H, 0xFF, 0),
+            (HostCommandKind::Write, SD_CFG2, 0xFF, 0),
+            (HostCommandKind::Write, CARD_DATA_SOURCE, 0x01, 0x01),
+            (
+                HostCommandKind::Write,
+                SD_TRANSFER,
+                0xFF,
+                SD_TRANSFER_START | SD_TM_AUTO_WRITE_3,
+            ),
+            (
+                HostCommandKind::Check,
+                SD_TRANSFER,
+                SD_TRANSFER_END,
+                SD_TRANSFER_END,
+            ),
+        ]
+    }
+
     fn ppbuf_read_fast(&mut self, buffer: &mut [u8]) -> Result<(), &'static str> {
         for (chunk_index, output) in buffer.chunks_mut(HOST_COMMAND_CHUNK).enumerate() {
             let first_register = PPBUF_BASE2 + (chunk_index * HOST_COMMAND_CHUNK) as u16;
@@ -365,8 +449,13 @@ impl RtsxController {
                     .enumerate()
                 {
                     command.copy_from_slice(
-                        &Self::host_command(0, first_register + index as u16, 0, 0)
-                            .to_le_bytes(),
+                        &Self::host_command(
+                            HostCommandKind::Read,
+                            first_register + index as u16,
+                            0,
+                            0,
+                        )
+                        .to_le_bytes(),
                     );
                 }
             }
@@ -409,8 +498,13 @@ impl RtsxController {
                     .enumerate()
                 {
                     command.copy_from_slice(
-                        &Self::host_command(1, first_register + index as u16, 0xFF, value)
-                            .to_le_bytes(),
+                        &Self::host_command(
+                            HostCommandKind::Write,
+                            first_register + index as u16,
+                            0xFF,
+                            value,
+                        )
+                        .to_le_bytes(),
                     );
                 }
             }
@@ -566,14 +660,19 @@ impl RtsxController {
     }
 
     fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
-        self.set_command(CMD17_READ_SINGLE, self.card_address(lba)?)?;
-        self.set_data_len()?;
-        self.write_regs(&[
-            (SD_CFG2, 0xFF, SD_RSP_R1),
-            (CARD_DATA_SOURCE, 0x01, 0x01),
-            (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_NORMAL_READ),
-        ])?;
-        self.wait_transfer(SD_TRANSFER_END)?;
+        let argument = self.card_address(lba)?;
+        if self.host_commands.is_some() {
+            self.run_register_commands(&Self::read_sector_commands(argument))?;
+        } else {
+            self.set_command(CMD17_READ_SINGLE, argument)?;
+            self.set_data_len()?;
+            self.write_regs(&[
+                (SD_CFG2, 0xFF, SD_RSP_R1),
+                (CARD_DATA_SOURCE, 0x01, 0x01),
+                (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_NORMAL_READ),
+            ])?;
+            self.wait_transfer(SD_TRANSFER_END)?;
+        }
         self.ppbuf_read(buffer)
     }
 
@@ -581,12 +680,16 @@ impl RtsxController {
         let rca = self.sd_card.as_ref().ok_or("no initialized card")?.rca;
         self.command(CMD24_WRITE_SINGLE, self.card_address(lba)?, SD_RSP_R1)?;
         self.ppbuf_write(buffer)?;
-        self.set_data_len()?;
-        self.write_regs(&[
-            (SD_CFG2, 0xFF, 0),
-            (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
-        ])?;
-        self.wait_transfer(SD_TRANSFER_END)?;
+        if self.host_commands.is_some() {
+            self.run_register_commands(&Self::write_sector_commands())?;
+        } else {
+            self.set_data_len()?;
+            self.write_regs(&[
+                (SD_CFG2, 0xFF, 0),
+                (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
+            ])?;
+            self.wait_transfer(SD_TRANSFER_END)?;
+        }
         if crate::timing::poll_timeout_us(2_000_000, || {
             self.command(CMD13_SEND_STATUS, u32::from(rca) << 16, SD_RSP_R1)
                 .ok()
@@ -768,14 +871,26 @@ pub fn is_card_detected() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::RtsxController;
+    use super::{HostCommandKind, RtsxController, SD_TRANSFER, SD_TRANSFER_END};
 
     #[test]
     fn host_command_uses_realtek_wire_format() {
-        assert_eq!(RtsxController::host_command(0, 0xFA00, 0, 0), 0x3A00_0000);
         assert_eq!(
-            RtsxController::host_command(1, 0xFA00, 0xFF, 0x5A),
+            RtsxController::host_command(HostCommandKind::Read, 0xFA00, 0, 0),
+            0x3A00_0000
+        );
+        assert_eq!(
+            RtsxController::host_command(HostCommandKind::Write, 0xFA00, 0xFF, 0x5A),
             0x7A00_FF5A
+        );
+        assert_eq!(
+            RtsxController::host_command(
+                HostCommandKind::Check,
+                SD_TRANSFER,
+                SD_TRANSFER_END,
+                SD_TRANSFER_END,
+            ),
+            0xBDB3_4040
         );
     }
 }
