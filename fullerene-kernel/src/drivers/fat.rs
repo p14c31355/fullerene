@@ -178,9 +178,33 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
         if buf.len() < needed { return Err("buffer too small for multi-sector read"); }
         let end_lba = (lba as u64) + (count as u64);
         if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 { return Err("LBA range exceeds device capacity or 32-bit limit"); }
-        for i in 0..count {
-            let off = i * self.bps;
-            self.read_sector(lba + i as u32, &mut buf[off..off + self.bps]).map_err(|e| match e { BlockError::Device(s) => s, _ => "block cache error" })?;
+        let mut index = 0;
+        while index < count {
+            let current_lba = lba + index as u32;
+            if let Some(slot) = self.lookup(current_lba) {
+                let offset = index * self.bps;
+                buf[offset..offset + self.bps].copy_from_slice(&self.entries[slot].1);
+                index += 1;
+                continue;
+            }
+
+            let first = index;
+            while index < count && self.lookup(lba + index as u32).is_none() {
+                index += 1;
+            }
+            let start = first * self.bps;
+            let end = index * self.bps;
+            self.inner.read_sectors(
+                lba + first as u32,
+                (index - first) as u16,
+                &mut buf[start..end],
+            )?;
+            for sector in first..index {
+                let slot = self.evict_slot();
+                let offset = sector * self.bps;
+                self.entries[slot].0 = Some(lba + sector as u32);
+                self.entries[slot].1.copy_from_slice(&buf[offset..offset + self.bps]);
+            }
         }
         Ok(())
     }
@@ -190,11 +214,12 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
         if buf.len() < needed { return Err("buffer too small for multi-sector write"); }
         let end_lba = (lba as u64) + (count as u64);
         if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 { return Err("LBA range exceeds device capacity or 32-bit limit"); }
-        for i in 0..count {
-            let off = i * self.bps;
-            self.write_sector(lba + i as u32, &buf[off..off + self.bps]).map_err(|e| match e { BlockError::Device(s) => s, _ => "block cache error" })?;
+        for index in 0..count {
+            if let Some(slot) = self.lookup(lba + index as u32) {
+                self.entries[slot].0 = None;
+            }
         }
-        Ok(())
+        self.inner.write_sectors(lba, count as u16, &buf[..needed])
     }
     fn sector_size(&self) -> u32 { self.bps as u32 }
     fn total_sectors(&self) -> u64 { self.inner.total_sectors() }
