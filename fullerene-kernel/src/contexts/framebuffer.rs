@@ -247,15 +247,10 @@ impl FramebufferContext {
                 let (w, h) = (i.width, i.height);
                 gpu.flush(w, h);
             }
-        } else if self.renderer.is_some() {
-            // The framebuffer is in PCI MMIO space; the firmware MTRR
-            // override typically sets it to UC or WC.  In both cases
-            // writes bypass the CPU cache and SFENCE is sufficient to
-            // drain the write-combining or posted-write buffers.
-            // CLFLUSH is deliberately NOT used here — on some hardware
-            // it can trigger machine checks on UC/WC MMIO regions.
-            unsafe { core::arch::x86_64::_mm_sfence() };
         }
+        // GOP is direct scanout and has no present transaction. Its volatile
+        // blits are already submitted; waiting for a PCI completion fence here
+        // can indefinitely stop the desktop after a large dirty-region update.
         nitrogen::hda::HdaController::tick_vm_exit();
     }
     pub fn has_virtio_gpu(&self) -> bool {

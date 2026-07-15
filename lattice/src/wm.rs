@@ -61,17 +61,21 @@ const RESIZE_HANDLE_SIZE: u32 = 16;
 const MIN_WINDOW_W: u32 = 80;
 const MIN_WINDOW_H: u32 = 40;
 
-/// TITLE_BAR_HEIGHT from compositor — kept in sync manually.
-const TITLE_BAR_H: u32 = 20;
-const BORDER: u32 = 2;
-
 /// Build a dirty rect for the full decorated area of a window.
 pub(crate) fn window_dirty_rect(w: &Window) -> DirtyRect {
-    let x0 = w.x.saturating_sub(BORDER as i32).max(0) as u32;
-    let y0 = w.y.saturating_sub(BORDER as i32).max(0) as u32;
-    let ww = w.width + BORDER * 2;
-    let wh = w.height + TITLE_BAR_H + BORDER * 2;
-    DirtyRect::new(x0, y0, ww, wh)
+    let border = if w.title.is_some() {
+        crate::compositor::WINDOW_BORDER
+    } else {
+        0
+    };
+    let x = w.x.saturating_sub(border as i32);
+    let y = w.y.saturating_sub(border as i32);
+    DirtyRect::new(
+        x.max(0) as u32,
+        y.max(0) as u32,
+        w.decorated_width().saturating_sub(x.min(0).unsigned_abs()),
+        w.decorated_height().saturating_sub(y.min(0).unsigned_abs()),
+    )
 }
 
 impl WindowManager {
@@ -692,7 +696,7 @@ mod tests {
     fn test_title_bar_drag() {
         let mut wm = WindowManager::new();
         wm.create_titled_window(10, 10, 100, 100, 0xFF0000, "Test");
-        // y=20 is inside title bar (y=10..30, TITLE_BAR_HEIGHT=20)
+        // y=20 is inside the title bar that starts at y=10.
         wm.on_mouse_down(50, 20);
         assert!(matches!(
             wm.drag,
@@ -729,5 +733,28 @@ mod tests {
         let rects = wm.consume_dirty_rects();
         assert!(!rects.is_empty());
         assert!(wm.consume_dirty_rects().is_empty());
+    }
+
+    #[test]
+    fn titled_window_dirty_rect_matches_compositor_decoration() {
+        let window = Window::new_with_title(WindowId(1), 10, 10, 100, 80, 0, "Test");
+        assert_eq!(window_dirty_rect(&window), DirtyRect::new(9, 9, 102, 110));
+    }
+
+    #[test]
+    fn dirty_rect_clips_windows_above_and_left_of_screen() {
+        let window = Window::new_with_title(WindowId(1), -20, -15, 100, 80, 0, "Test");
+        assert_eq!(window_dirty_rect(&window), DirtyRect::new(0, 0, 81, 94));
+
+        let offscreen = Window::new_with_title(
+            WindowId(2),
+            i32::MIN,
+            i32::MIN,
+            100,
+            80,
+            0,
+            "Offscreen",
+        );
+        assert_eq!(window_dirty_rect(&offscreen), DirtyRect::new(0, 0, 0, 0));
     }
 }
