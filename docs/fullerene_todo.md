@@ -182,3 +182,5 @@ Priority convention:
 - [ ] Execute FREEDOOM
 - [ ] Self-hosted presentation
 - [ ] Browsing internet by Netsurf
+- [ ] Enable the selection of multiple existing desktop environments ( KDE Plasma etc. )
+- [ ] Self-hosted coding use VSCodium
