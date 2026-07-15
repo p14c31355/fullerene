@@ -568,6 +568,30 @@ pub fn set_render_fn(f: fn()) {
     *RENDER_FN.lock() = Some(f);
 }
 
+fn service_explorer_navigation() {
+    let request = RUNTIME
+        .lock()
+        .as_mut()
+        .and_then(|runtime| runtime.explorer.as_mut()?.take_navigation_request());
+    let Some(path) = request else { return };
+
+    // Filesystem and hardware I/O must run without the runtime lock. Rendering
+    // takes locks in the opposite direction and synchronous removable-media I/O
+    // here previously deadlocked the desktop when a directory was opened.
+    let callback = SOLVENT_CALLBACKS.lock().vfs_readdir;
+    let result = callback
+        .ok_or("filesystem unavailable")
+        .and_then(|read| read(&path));
+
+    if let Some(runtime) = RUNTIME.lock().as_mut()
+        && let Some(explorer) = runtime.explorer.as_mut()
+    {
+        explorer.finish_navigation(path, result);
+        runtime.explorer_dirty = true;
+        runtime.frame_due = true;
+    }
+}
+
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
@@ -598,6 +622,7 @@ pub fn tick_core(now: u64) {
     }
 
     process_events();
+    service_explorer_navigation();
     if RUNTIME.lock().as_mut().map_or(false, |r| {
         let p = r.shell_launch_pending;
         r.shell_launch_pending = false;

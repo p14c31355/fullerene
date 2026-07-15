@@ -4,20 +4,31 @@
 //! in a 16-bit internal register space accessed through `RTSX_HAIMR`; treating
 //! those addresses as BAR byte offsets leaves the engine completely untouched.
 
+use core::mem::size_of;
+
 use spin::Mutex;
 
 use crate::driver_context::DriverContext;
-use crate::mmio::MemRegion;
+use crate::mmio::{DmaRegion, MemRegion};
 use crate::pci::{PciConfigSpace, PciDevice, PciScanner};
 use crate::pci_health::PciHealth;
 use crate::timing::delay_ms;
 
+const RTSX_HCBAR: usize = 0x00;
+const RTSX_HCBCTLR: usize = 0x04;
 const RTSX_HAIMR: usize = 0x10;
 const RTSX_BIPR: usize = 0x14;
 const RTSX_BIER: usize = 0x18;
 const HAIMR_START: u32 = 1 << 31;
 const HAIMR_WRITE: u32 = 1 << 30;
 const SD_EXIST: u32 = 1 << 16;
+const TRANS_OK_INT: u32 = 1 << 29;
+const TRANS_FAIL_INT: u32 = 1 << 28;
+const HOST_COMMAND_START: u32 = 1 << 31;
+const HOST_COMMAND_AUTO_RESPONSE: u32 = 1 << 30;
+const HOST_COMMAND_STOP: u32 = 1 << 28;
+const HOST_COMMAND_BUFFER_SIZE: usize = 1024;
+const HOST_COMMAND_CHUNK: usize = HOST_COMMAND_BUFFER_SIZE / size_of::<u32>();
 
 const CARD_PWR_CTL: u16 = 0xFD50;
 const CARD_SHARE_MODE: u16 = 0xFD52;
@@ -95,6 +106,7 @@ pub struct RtsxController {
     sd_card: Option<SdCardInfo>,
     card_was_present: bool,
     health: PciHealth,
+    host_commands: Option<DmaRegion>,
 }
 
 // Access to the controller is serialized by `CONTROLLER`; its pointer denotes
@@ -102,6 +114,13 @@ pub struct RtsxController {
 unsafe impl Send for RtsxController {}
 
 impl RtsxController {
+    fn host_command(kind: u32, address: u16, mask: u8, value: u8) -> u32 {
+        (kind << 30)
+            | (u32::from(address & 0x3FFF) << 16)
+            | (u32::from(mask) << 8)
+            | u32::from(value)
+    }
+
     fn read_reg(&self, address: u16) -> Result<u8, &'static str> {
         self.mmio.write32(
             RTSX_HAIMR,
@@ -294,14 +313,116 @@ impl RtsxController {
         ])
     }
 
-    fn ppbuf_read(&self, buffer: &mut [u8]) -> Result<(), &'static str> {
+    fn run_host_commands(&mut self, count: usize) -> Result<(), &'static str> {
+        let bytes = count
+            .checked_mul(size_of::<u32>())
+            .filter(|&bytes| bytes != 0 && bytes <= HOST_COMMAND_BUFFER_SIZE)
+            .ok_or("RTSX host command overflow")?;
+        let iova = {
+            let commands = self
+                .host_commands
+                .as_ref()
+                .ok_or("RTSX host command buffer unavailable")?;
+            commands.flush_for_device();
+            u32::try_from(commands.dma_iova()).map_err(|_| "RTSX command address exceeds 32-bit")?
+        };
+
+        self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
+        self.mmio.write_batch_then_barrier(&[
+            (RTSX_HCBAR, iova),
+            (
+                RTSX_HCBCTLR,
+                HOST_COMMAND_START | HOST_COMMAND_AUTO_RESPONSE | bytes as u32,
+            ),
+        ]);
+        let result = crate::timing::poll_timeout_us(250_000, || {
+            let status = self.mmio.read32(RTSX_BIPR);
+            (status & TRANS_FAIL_INT != 0)
+                .then_some(Err("RTSX host command failed"))
+                .or_else(|| (status & TRANS_OK_INT != 0).then_some(Ok(())))
+        });
+        self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
+        let result = result.unwrap_or(Err("RTSX host command timed out"));
+        if result.is_err() {
+            self.mmio.write32(RTSX_HCBCTLR, HOST_COMMAND_STOP);
+            let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
+        }
+        result
+    }
+
+    fn ppbuf_read_fast(&mut self, buffer: &mut [u8]) -> Result<(), &'static str> {
+        for (chunk_index, output) in buffer.chunks_mut(HOST_COMMAND_CHUNK).enumerate() {
+            let first_register = PPBUF_BASE2 + (chunk_index * HOST_COMMAND_CHUNK) as u16;
+            {
+                let command_buffer = self
+                    .host_commands
+                    .as_mut()
+                    .ok_or("RTSX host command buffer unavailable")?;
+                for (index, command) in command_buffer
+                    .as_mut_slice()
+                    .chunks_exact_mut(size_of::<u32>())
+                    .take(output.len())
+                    .enumerate()
+                {
+                    command.copy_from_slice(
+                        &Self::host_command(0, first_register + index as u16, 0, 0)
+                            .to_le_bytes(),
+                    );
+                }
+            }
+            self.run_host_commands(output.len())?;
+            let command_buffer = self
+                .host_commands
+                .as_ref()
+                .ok_or("RTSX host command buffer unavailable")?;
+            command_buffer.flush_for_cpu();
+            // AUTO_RESPONSE packs one byte per READ_REG at the start of the
+            // command buffer; responses do not remain in their u32 slots.
+            // This matches Linux rtsx_pci_read_ppbuf/get_cmd_data semantics.
+            output.copy_from_slice(&command_buffer.as_slice()[..output.len()]);
+        }
+        Ok(())
+    }
+
+    fn ppbuf_read(&mut self, buffer: &mut [u8]) -> Result<(), &'static str> {
+        if self.host_commands.is_some() {
+            return self.ppbuf_read_fast(buffer);
+        }
         buffer.iter_mut().enumerate().try_for_each(|(index, byte)| {
             *byte = self.read_reg(PPBUF_BASE2 + index as u16)?;
             Ok(())
         })
     }
 
-    fn ppbuf_write(&self, buffer: &[u8]) -> Result<(), &'static str> {
+    fn ppbuf_write_fast(&mut self, buffer: &[u8]) -> Result<(), &'static str> {
+        for (chunk_index, input) in buffer.chunks(HOST_COMMAND_CHUNK).enumerate() {
+            let first_register = PPBUF_BASE2 + (chunk_index * HOST_COMMAND_CHUNK) as u16;
+            {
+                let command_buffer = self
+                    .host_commands
+                    .as_mut()
+                    .ok_or("RTSX host command buffer unavailable")?;
+                for (index, (command, &value)) in command_buffer
+                    .as_mut_slice()
+                    .chunks_exact_mut(size_of::<u32>())
+                    .zip(input)
+                    .enumerate()
+                {
+                    command.copy_from_slice(
+                        &Self::host_command(1, first_register + index as u16, 0xFF, value)
+                            .to_le_bytes(),
+                    );
+                }
+            }
+            self.run_host_commands(input.len())?;
+        }
+        Ok(())
+    }
+
+    fn ppbuf_write(&mut self, buffer: &[u8]) -> Result<(), &'static str> {
+        if self.host_commands.is_some() {
+            return self.ppbuf_write_fast(buffer);
+        }
         buffer
             .iter()
             .enumerate()
@@ -444,7 +565,7 @@ impl RtsxController {
         }
     }
 
-    fn read_sector(&self, lba: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
+    fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
         self.set_command(CMD17_READ_SINGLE, self.card_address(lba)?)?;
         self.set_data_len()?;
         self.write_regs(&[
@@ -456,8 +577,8 @@ impl RtsxController {
         self.ppbuf_read(buffer)
     }
 
-    fn write_sector(&self, lba: u32, buffer: &[u8]) -> Result<(), &'static str> {
-        let card = self.sd_card.as_ref().ok_or("no initialized card")?;
+    fn write_sector(&mut self, lba: u32, buffer: &[u8]) -> Result<(), &'static str> {
+        let rca = self.sd_card.as_ref().ok_or("no initialized card")?.rca;
         self.command(CMD24_WRITE_SINGLE, self.card_address(lba)?, SD_RSP_R1)?;
         self.ppbuf_write(buffer)?;
         self.set_data_len()?;
@@ -467,7 +588,7 @@ impl RtsxController {
         ])?;
         self.wait_transfer(SD_TRANSFER_END)?;
         if crate::timing::poll_timeout_us(2_000_000, || {
-            self.command(CMD13_SEND_STATUS, u32::from(card.rca) << 16, SD_RSP_R1)
+            self.command(CMD13_SEND_STATUS, u32::from(rca) << 16, SD_RSP_R1)
                 .ok()
                 .filter(|status| status & (1 << 8) != 0)
         }).is_some() {
@@ -477,7 +598,7 @@ impl RtsxController {
     }
 
     pub fn read_sectors(
-        &self,
+        &mut self,
         lba: u32,
         count: u16,
         buffer: &mut [u8],
@@ -494,7 +615,7 @@ impl RtsxController {
             })
     }
 
-    pub fn write_sectors(&self, lba: u32, count: u16, buffer: &[u8]) -> Result<(), &'static str> {
+    pub fn write_sectors(&mut self, lba: u32, count: u16, buffer: &[u8]) -> Result<(), &'static str> {
         let bytes = usize::from(count)
             .checked_mul(512)
             .ok_or("sector count overflow")?;
@@ -570,12 +691,28 @@ pub fn init(context: &dyn DriverContext) {
         },
     );
     let mmio = unsafe { MemRegion::new(virtual_address as *mut u8, 0x1000) };
+    let device_id = (u16::from(device.bus) << 8)
+        | (u16::from(device.device) << 3)
+        | u16::from(device.function);
+    let host_commands = DmaRegion::alloc(context, HOST_COMMAND_BUFFER_SIZE).and_then(|mut buffer| {
+        match buffer.dma_map(context, device_id) {
+            Ok(iova) if u32::try_from(iova).is_ok() => Some(buffer),
+            _ => {
+                buffer.free(context);
+                None
+            }
+        }
+    });
+    if host_commands.is_none() {
+        log::warn!("RTSX: host command DMA unavailable; falling back to slow PIO");
+    }
     *CONTROLLER.lock() = Some(RtsxController {
         device,
         mmio,
         sd_card: None,
         card_was_present: false,
         health,
+        host_commands,
     });
     log::info!("RTSX: RTS5249 registered; SD initialization deferred");
 }
@@ -598,7 +735,7 @@ pub fn sd_card_info() -> Option<SdCardInfo> {
 pub fn read_sectors(lba: u32, count: u16, buffer: &mut [u8]) -> Result<(), &'static str> {
     CONTROLLER
         .lock()
-        .as_ref()
+        .as_mut()
         .ok_or("no RTS5249 controller")?
         .read_sectors(lba, count, buffer)
 }
@@ -606,7 +743,7 @@ pub fn read_sectors(lba: u32, count: u16, buffer: &mut [u8]) -> Result<(), &'sta
 pub fn write_sectors(lba: u32, count: u16, buffer: &[u8]) -> Result<(), &'static str> {
     CONTROLLER
         .lock()
-        .as_ref()
+        .as_mut()
         .ok_or("no RTS5249 controller")?
         .write_sectors(lba, count, buffer)
 }
@@ -627,4 +764,18 @@ pub fn is_card_detected() -> bool {
         .lock()
         .as_ref()
         .is_some_and(|controller| controller.card_was_present)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RtsxController;
+
+    #[test]
+    fn host_command_uses_realtek_wire_format() {
+        assert_eq!(RtsxController::host_command(0, 0xFA00, 0, 0), 0x3A00_0000);
+        assert_eq!(
+            RtsxController::host_command(1, 0xFA00, 0xFF, 0x5A),
+            0x7A00_FF5A
+        );
+    }
 }
