@@ -419,18 +419,25 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
                 crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
             match crate::drivers::fat::FatFileSystem::from_device(bdev) {
                 Ok(fs) => {
-                    vfs.mount(&mount_point, Box::new(fs))?;
+                    if let Err(e) = vfs.mount(&mount_point, Box::new(fs)) {
+                        // Mount failed after device was consumed; clean up registry entry
+                        crate::devfs::unregister_block_device(device_name);
+                        return Err(e);
+                    }
                     vfs.record_device_mount(device, &mount_point);
                     log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
                     Ok(())
                 }
                 Err((e, returned_bdev)) => {
-                    // Re-register the device so subsequent mount attempts can reuse it
                     if let Some(bdev) = returned_bdev {
+                        // Device wasn't consumed — return it to the registry
                         crate::devfs::register_block_device(
                             alloc::string::String::from(device_name),
                             bdev,
                         );
+                    } else {
+                        // Device was consumed but construction failed; remove stale entry
+                        crate::devfs::unregister_block_device(device_name);
                     }
                     Err(e)
                 }
