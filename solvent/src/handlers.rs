@@ -7,6 +7,8 @@ use crate::{FB_DIMS, RUNTIME, SUPER_HELD};
 use lattice::shell_overlay::ShellState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
+const DOUBLE_CLICK_TICKS: u64 = 500;
+
 pub(crate) struct WmEventHandler;
 
 impl EventHandler for WmEventHandler {
@@ -192,20 +194,17 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                 let now = crate::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
                 let is_double = explorer.selected_index == Some(idx)
                     && explorer.last_click_entry == Some(idx)
-                    && now.wrapping_sub(explorer.last_click_tick) < 60;
+                    && now.wrapping_sub(explorer.last_click_tick) <= DOUBLE_CLICK_TICKS;
 
                 explorer.selected_index = Some(idx);
 
                 if is_double {
-                    if idx < explorer.raw_is_dir.len() && explorer.raw_is_dir[idx] {
-                        explorer.open_selected(idx);
-                        explorer.last_click_entry = None;
-                    } else if let Some(path) = explorer.get_file_path(idx) {
+                    let launch_path = explorer.activate_entry(idx);
+                    explorer.last_click_entry = None;
+                    if let Some(path) = launch_path {
                         // Save path, drop explorer borrow, then launch
-                        explorer.last_click_entry = None;
-                        let file_path = path;
                         let _ = explorer;
-                        crate::launch_file(rt, &file_path);
+                        crate::launch_file(rt, &path);
                         return;
                     }
                 } else {

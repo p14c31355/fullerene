@@ -475,20 +475,14 @@ impl ExplorerContext {
         self.navigate_to(&parent);
     }
 
-    pub fn open_selected(&mut self, idx: usize) {
-        if idx < self.raw_is_dir.len() && self.raw_is_dir[idx] {
-            let name = &self.raw_names[idx];
-            let new_path = join_path(&self.current_dir, name);
-            self.navigate_to(&new_path);
-        }
-    }
-
-    /// Get the full path of a file entry (for launching).
-    pub fn get_file_path(&self, idx: usize) -> Option<String> {
-        if idx < self.raw_names.len() {
-            Some(join_path(&self.current_dir, &self.raw_names[idx]))
-        } else {
+    /// Queue a directory navigation or return a file path for launching.
+    pub fn activate_entry(&mut self, idx: usize) -> Option<String> {
+        let path = join_path(&self.current_dir, self.raw_names.get(idx)?);
+        if *self.raw_is_dir.get(idx)? {
+            self.navigate_to(&path);
             None
+        } else {
+            Some(path)
         }
     }
 
@@ -1199,5 +1193,23 @@ mod tests {
         );
         assert_eq!(explorer.current_dir, "/mnt/sdcard");
         assert_eq!(explorer.entries[0].name, "Bootlog.txt");
+    }
+
+    #[test]
+    fn activating_entries_uses_one_path_for_keyboard_and_mouse() {
+        let mut explorer = ExplorerContext::new();
+        explorer.current_dir = String::from("/mnt");
+        explorer.raw_names = alloc::vec![String::from("sdcard"), String::from("Bootlog.txt")];
+        explorer.raw_is_dir = alloc::vec![true, false];
+
+        assert_eq!(explorer.activate_entry(0), None);
+        assert_eq!(
+            explorer.take_navigation_request().as_deref(),
+            Some("/mnt/sdcard")
+        );
+        assert_eq!(
+            explorer.activate_entry(1).as_deref(),
+            Some("/mnt/Bootlog.txt")
+        );
     }
 }

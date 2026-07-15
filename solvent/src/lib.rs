@@ -954,7 +954,7 @@ fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
     let key = scancode_to_resonance_keycode(scancode);
     let visible_rows = 20usize;
     // Pre-compute enter action to avoid borrow conflicts.
-    let mut enter_action: Option<(String, bool)> = None;
+    let mut enter_action = None;
     match key {
         resonance::KeyCode::Up => {
             let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
@@ -981,28 +981,14 @@ fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
         resonance::KeyCode::Enter => {
             let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
             if let Some(idx) = explorer.selected_index {
-                let name = match explorer.raw_names.get(idx) {
-                    Some(n) => n,
-                    None => return,
-                };
-                let is_dir = explorer.raw_is_dir.get(idx).copied().unwrap_or(false);
-                let path = if explorer.current_dir.ends_with('/') {
-                    alloc::format!("{}{}", explorer.current_dir, name)
-                } else {
-                    alloc::format!("{}/{}", explorer.current_dir, name)
-                };
-                if is_dir {
-                    explorer.navigate_to(&path);
-                    rt.explorer_dirty = true;
-                    rt.frame_due = true;
-                } else {
-                    enter_action = Some((path, is_dir));
-                }
+                enter_action = explorer.activate_entry(idx);
+                rt.explorer_dirty = true;
+                rt.frame_due = true;
             }
         }
         _ => {}
     }
-    if let Some((path, false)) = enter_action {
+    if let Some(path) = enter_action {
         launch_file(rt, &path);
     }
 }
