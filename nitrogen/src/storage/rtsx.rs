@@ -16,6 +16,7 @@ use crate::timing::delay_ms;
 
 const RTSX_HCBAR: usize = 0x00;
 const RTSX_HCBCTLR: usize = 0x04;
+const RTSX_HDBCTLR: usize = 0x0C;
 const RTSX_HAIMR: usize = 0x10;
 const RTSX_BIPR: usize = 0x14;
 const RTSX_BIER: usize = 0x18;
@@ -27,15 +28,15 @@ const TRANS_FAIL_INT: u32 = 1 << 28;
 const HOST_COMMAND_START: u32 = 1 << 31;
 const HOST_COMMAND_AUTO_RESPONSE: u32 = 1 << 30;
 const HOST_COMMAND_STOP: u32 = 1 << 28;
+const HOST_DMA_STOP: u32 = 1 << 28;
 const HOST_COMMAND_BUFFER_SIZE: usize = 1024;
 const HOST_COMMAND_CHUNK: usize = HOST_COMMAND_BUFFER_SIZE / size_of::<u32>();
 
 #[repr(u32)]
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostCommandKind {
     Read,
     Write,
-    Check,
 }
 
 type RegisterCommand = (HostCommandKind, u16, u8, u8);
@@ -51,6 +52,8 @@ const CARD_PULL_CTL2: u16 = 0xFD61;
 const CARD_PULL_CTL3: u16 = 0xFD62;
 const CARD_PULL_CTL4: u16 = 0xFD63;
 const CARD_CLK_EN: u16 = 0xFD69;
+const DMACTL: u16 = 0xFE2C;
+const RBCTL: u16 = 0xFE34;
 const SD_CFG1: u16 = 0xFDA0;
 const SD_CFG2: u16 = 0xFDA1;
 const SD_STAT1: u16 = 0xFDA3;
@@ -257,11 +260,11 @@ impl RtsxController {
         }) {
             Some(Ok(())) => Ok(()),
             Some(Err(e)) => {
-                let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
+                self.stop_transfer();
                 Err(e)
             }
             None => {
-                let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
+                self.stop_transfer();
                 Err("SD transfer timed out")
             }
         }
@@ -354,10 +357,27 @@ impl RtsxController {
         self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
         let result = result.unwrap_or(Err("RTSX host command timed out"));
         if result.is_err() {
-            self.mmio.write32(RTSX_HCBCTLR, HOST_COMMAND_STOP);
-            let _ = self.write_reg(CARD_STOP, 0x44, 0x44);
+            self.stop_transfer();
         }
         result
+    }
+
+    fn stop_transfer(&self) {
+        // Mirror Linux's rtsx_pci_stop_cmd recovery. Stopping only HCBCTLR
+        // leaves the DMA/ring-buffer state dirty and makes the next mount
+        // capable of stalling after a timed-out host command.
+        self.mmio.write_batch_then_barrier(&[
+            (RTSX_HCBCTLR, HOST_COMMAND_STOP),
+            (RTSX_HDBCTLR, HOST_DMA_STOP),
+        ]);
+        for &(register, mask, value) in &[
+            (DMACTL, 0x80, 0x80),
+            (RBCTL, 0x80, 0x80),
+            (CARD_STOP, 0x44, 0x44),
+        ] {
+            let _ = self.write_reg(register, mask, value);
+        }
+        self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
     }
 
     fn run_register_commands(&mut self, commands: &[RegisterCommand]) -> Result<(), &'static str> {
@@ -377,7 +397,7 @@ impl RtsxController {
         self.run_host_commands(commands.len())
     }
 
-    fn read_sector_commands(argument: u32) -> [RegisterCommand; 13] {
+    fn read_sector_commands(argument: u32) -> [RegisterCommand; 12] {
         let [arg0, arg1, arg2, arg3] = argument.to_be_bytes();
         [
             (
@@ -402,16 +422,10 @@ impl RtsxController {
                 0xFF,
                 SD_TRANSFER_START | SD_TM_NORMAL_READ,
             ),
-            (
-                HostCommandKind::Check,
-                SD_TRANSFER,
-                SD_TRANSFER_END,
-                SD_TRANSFER_END,
-            ),
         ]
     }
 
-    fn write_sector_commands() -> [RegisterCommand; 8] {
+    fn write_sector_commands() -> [RegisterCommand; 7] {
         [
             (HostCommandKind::Write, SD_BYTE_CNT_L, 0xFF, 0),
             (HostCommandKind::Write, SD_BYTE_CNT_H, 0xFF, 2),
@@ -424,12 +438,6 @@ impl RtsxController {
                 SD_TRANSFER,
                 0xFF,
                 SD_TRANSFER_START | SD_TM_AUTO_WRITE_3,
-            ),
-            (
-                HostCommandKind::Check,
-                SD_TRANSFER,
-                SD_TRANSFER_END,
-                SD_TRANSFER_END,
             ),
         ]
     }
@@ -663,6 +671,10 @@ impl RtsxController {
         let argument = self.card_address(lba)?;
         if self.host_commands.is_some() {
             self.run_register_commands(&Self::read_sector_commands(argument))?;
+            // CHECK_REG_CMD stalls the host engine on the tested RTS5249.
+            // Keep the register writes batched, but observe completion through
+            // the bounded HAIMR path so a failed card transfer stays recoverable.
+            self.wait_transfer(SD_TRANSFER_END)?;
         } else {
             self.set_command(CMD17_READ_SINGLE, argument)?;
             self.set_data_len()?;
@@ -682,6 +694,7 @@ impl RtsxController {
         self.ppbuf_write(buffer)?;
         if self.host_commands.is_some() {
             self.run_register_commands(&Self::write_sector_commands())?;
+            self.wait_transfer(SD_TRANSFER_END)?;
         } else {
             self.set_data_len()?;
             self.write_regs(&[
@@ -871,7 +884,9 @@ pub fn is_card_detected() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{HostCommandKind, RtsxController, SD_TRANSFER, SD_TRANSFER_END};
+    use super::{
+        HostCommandKind, RtsxController, SD_TRANSFER, SD_TRANSFER_START, SD_TM_NORMAL_READ,
+    };
 
     #[test]
     fn host_command_uses_realtek_wire_format() {
@@ -883,14 +898,23 @@ mod tests {
             RtsxController::host_command(HostCommandKind::Write, 0xFA00, 0xFF, 0x5A),
             0x7A00_FF5A
         );
+    }
+
+    #[test]
+    fn sector_setup_leaves_completion_polling_to_haimr() {
+        let commands = RtsxController::read_sector_commands(0x1234_5678);
+
+        assert_eq!(commands.len(), 12);
+        assert_eq!(commands[1].3, 0x12);
+        assert_eq!(commands[4].3, 0x78);
         assert_eq!(
-            RtsxController::host_command(
-                HostCommandKind::Check,
+            commands.last(),
+            Some(&(
+                HostCommandKind::Write,
                 SD_TRANSFER,
-                SD_TRANSFER_END,
-                SD_TRANSFER_END,
-            ),
-            0xBDB3_4040
+                0xFF,
+                SD_TRANSFER_START | SD_TM_NORMAL_READ,
+            ))
         );
     }
 }
