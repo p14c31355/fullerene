@@ -417,11 +417,23 @@ pub struct RegisterContext {
 //  Legacy / Extended Capabilities
 // ══════════════════════════════════════════════════════════════
 
+fn extended_cap_in_bounds(dword_offset: usize, bytes: usize) -> bool {
+    dword_offset != 0
+        && dword_offset
+            .checked_mul(4)
+            .and_then(|offset| offset.checked_add(bytes))
+            .is_some_and(|end| end <= crate::usb::HOST_CONTROLLER_BAR_SIZE)
+}
+
+fn next_extended_cap(offset: usize, next: u8) -> Option<usize> {
+    (next != 0).then(|| offset.checked_add(next as usize)).flatten()
+}
+
 pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
     let m = Mmio(mmio_base);
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
-    while off != 0 && off < 0x100000 {
+    while extended_cap_in_bounds(off, 12) {
         iters += 1;
         if iters > 64 {
             log::warn!("xHCI: EC list exceeded max iterations");
@@ -459,10 +471,8 @@ pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
                 if major_rev >= 3 { "USB 3.x" } else { "USB 2.0" }
             );
         }
-        if ec_next == 0 {
-            break;
-        }
-        off += ec_next as usize;
+        let Some(next) = next_extended_cap(off, ec_next) else { break };
+        off = next;
     }
 }
 
@@ -478,7 +488,7 @@ pub fn parse_port_protocols(
     let mut bitmap = alloc::vec![0u32; n_words];
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
-    while off != 0 && off < 0x100000 {
+    while extended_cap_in_bounds(off, 12) {
         iters += 1;
         if iters > 64 {
             log::warn!("xHCI: parse_port_protocols exceeded max iterations");
@@ -490,10 +500,8 @@ pub fn parse_port_protocols(
             let port_off = (dw2 & 0xFF) as u32;
             if port_off == 0 {
                 let next = (m.read32(off * 4) >> 8) as u8;
-                if next == 0 {
-                    break;
-                }
-                off += next as usize;
+                let Some(next) = next_extended_cap(off, next) else { break };
+                off = next;
                 continue;
             }
             let port_cnt = ((dw2 >> 8) & 0xFF) as u32;
@@ -515,10 +523,8 @@ pub fn parse_port_protocols(
             }
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;
-        if ec_next == 0 {
-            break;
-        }
-        off += ec_next as usize;
+        let Some(next) = next_extended_cap(off, ec_next) else { break };
+        off = next;
     }
     bitmap
 }
@@ -526,15 +532,14 @@ pub fn parse_port_protocols(
 pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
     const BIOS_OWNED: u32 = 1 << 16;
     const OS_OWNED: u32 = 1 << 24;
-    // Preserve SMI enables (bits 29-31) in their BIOS-default state.
-    // Enabling USB SMIs on real hardware can cause SMM-BIOS/OS-MMIO
-    // conflicts that manifest as a complete system hang.
-    const LEGACY_PRESERVE: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17) | (0x7 << 29);
+    // Preserve reserved fields, disable SMI enables, and clear RW1C events.
+    const LEGACY_DISABLE_SMI: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17);
+    const LEGACY_SMI_EVENTS: u32 = 0x7 << 29;
 
     let m = Mmio(mmio_base);
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
-    while off != 0 && off < 0x100000 {
+    while extended_cap_in_bounds(off, 8) {
         iters += 1;
         if iters > 64 {
             return Err("circular capability list");
@@ -545,7 +550,10 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
             let legsup = m.read32(cap_base);
             if legsup & BIOS_OWNED == 0 {
                 let control = m.read32(cap_base + 4);
-                m.write32(cap_base + 4, control & LEGACY_PRESERVE);
+                m.write32(
+                    cap_base + 4,
+                    (control & LEGACY_DISABLE_SMI) | LEGACY_SMI_EVENTS,
+                );
                 return Ok(true);
             }
             m.write32(cap_base, legsup | OS_OWNED);
@@ -558,14 +566,15 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
                 m.write32(cap_base, (m.read32(cap_base) | OS_OWNED) & !BIOS_OWNED);
             }
             let control = m.read32(cap_base + 4);
-            m.write32(cap_base + 4, control & LEGACY_PRESERVE);
+            m.write32(
+                cap_base + 4,
+                (control & LEGACY_DISABLE_SMI) | LEGACY_SMI_EVENTS,
+            );
             return Ok(false);
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;
-        if ec_next == 0 {
-            break;
-        }
-        off += ec_next as usize;
+        let Some(next) = next_extended_cap(off, ec_next) else { break };
+        off = next;
     }
     Ok(true)
 }
@@ -805,9 +814,23 @@ mod tests {
     #[test]
     fn test_legacy_handoff_no_bios() {
         let sim = SimHc::new(2);
-        let result = try_legacy_handoff(sim.base(), 0x3000);
+        let result = try_legacy_handoff(sim.base(), 0x3000 / 4);
         // No legacy support capability → Ok(true) = OS owns controller
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_legacy_handoff_disables_smi_and_clears_events() {
+        let mut sim = SimHc::new(2);
+        let ec_base = 0x3000;
+        sim.write_hw(ec_base, 1 | (1 << 24));
+        sim.write_hw(ec_base + 4, u32::MAX);
+
+        assert_eq!(try_legacy_handoff(sim.base(), (ec_base / 4) as u16), Ok(true));
+        assert_eq!(
+            sim.read_hw(ec_base + 4),
+            (0x7 << 1) | (0xFF << 5) | (0x7 << 17) | (0x7 << 29)
+        );
     }
 
     #[test]

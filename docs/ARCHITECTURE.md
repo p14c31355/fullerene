@@ -405,6 +405,11 @@ released, the kernel integration layer performs FAT probing and mounts through
 Genome. This lock boundary must be preserved: recursively borrowing a
 `USBContext` from a mount callback is prohibited.
 
+USB controller service registration is boot-safe and does not activate BAR
+MMIO. Solvent-triggered polling or explicit re-enumeration activates the
+Nitrogen controller state machine; device discovery and `/dev` registration
+remain separate from filesystem mount policy.
+
 The kernel device registry preserves `/dev/<name>` identity while transferring
 exclusive block-device ownership to a mounted filesystem. An available entry
 contains a device lease; a present entry without a lease means mounted or in

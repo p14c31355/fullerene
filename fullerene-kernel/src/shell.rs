@@ -530,14 +530,17 @@ fn register_nozzle_hooks() {
             for name in crate::devfs::list_block_device_names() {
                 tline!(ctx.terminal, "  /dev/{}", name);
             }
-            // Also show full USB context status
-            registry::with_ctx(|ctx_usb| {
+            // Also show full USB context status without assuming a controller exists.
+            if registry::try_with_ctx(|ctx_usb| {
+                tline!(ctx.terminal, "USB controller: {}", if ctx_usb.is_enabled() { "active" } else { "deferred" });
                 tline!(ctx.terminal, "USBContext: {} disk(s) enumerated", ctx_usb.disks().len());
                 for disk in ctx_usb.disks() {
                     tline!(ctx.terminal, "  ctrl={} dev_addr={} ep_out=0x{:02x} ep_in=0x{:02x} blk_size={} total_blocks={}",
                         disk.ctrl_type, disk.dev_addr, disk.ep_out, disk.ep_in, disk.block_size, disk.total_blocks);
                 }
-            });
+            }).is_none() {
+                tline!(ctx.terminal, "USB controller: unavailable");
+            }
         }
         "pci" => {
             use alloc::format;

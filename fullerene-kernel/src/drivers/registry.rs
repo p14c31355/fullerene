@@ -12,16 +12,24 @@
 //!
 //! No other kernel file needs to change.
 
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::boxed::Box;
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(nitrogen_no_usb))]
 use core::sync::atomic::AtomicUsize;
+#[cfg(not(nitrogen_no_usb))]
 use spin::Mutex;
 
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use genome::block::BlockDevice;
-use nitrogen::driver_api::{Driver, DriverBox, UsbHostDriver};
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use nitrogen::driver_api::{Driver, DriverBox};
+#[cfg(not(nitrogen_no_usb))]
+use nitrogen::driver_api::UsbHostDriver;
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use nitrogen::pci::PciDevice;
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use nitrogen::DriverContext;
 
 // ────────────────────────────────────────────────────────────
@@ -47,9 +55,16 @@ pub fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&mut nitrogen::usb::context::USBContext) -> R,
 {
-    let mut guard = USB_CTX.lock();
-    let ctx = guard.as_mut().expect("USB context not initialized");
-    f(ctx)
+    try_with_ctx(f).expect("USB context not initialized")
+}
+
+/// Access the USB controller context when a host driver was discovered.
+#[cfg(not(nitrogen_no_usb))]
+pub fn try_with_ctx<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut nitrogen::usb::context::USBContext) -> R,
+{
+    USB_CTX.lock().as_mut().map(f)
 }
 
 #[cfg(nitrogen_no_usb)]
@@ -58,6 +73,10 @@ pub struct DummyUsbContext;
 
 #[cfg(nitrogen_no_usb)]
 impl DummyUsbContext {
+    pub fn is_enabled(&self) -> bool {
+        false
+    }
+
     pub fn disks(&self) -> &[DummyUsbDisk] {
         &[]
     }
@@ -79,6 +98,14 @@ where
     F: FnOnce(&mut DummyUsbContext) -> R,
 {
     panic!("USB support not compiled in");
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn try_with_ctx<F, R>(_f: F) -> Option<R>
+where
+    F: FnOnce(&mut DummyUsbContext) -> R,
+{
+    None
 }
 
 // ── SD card state (formerly drivers/sd_card.rs) ────────────
@@ -194,19 +221,11 @@ struct UsbHostCtl;
 #[cfg(not(nitrogen_no_usb))]
 impl UsbHostDriver for UsbHostCtl {
     fn init(&mut self) -> Result<(), &'static str> {
-        crate::boot_stage::draw_boot_label(b"USB STORAGE");
         nitrogen::debug::set_hint_callback(crate::boot_stage::draw_step_hint);
-
-        let mut ctx = nitrogen::usb::context::USBContext::new(
+        init_usb_ctx(nitrogen::usb::context::USBContext::new(
             &crate::driver_context_impl::KernelDriverContext,
-        );
-        if let Err(e) = ctx.enable() {
-            log::warn!("USB: enable failed: {:?}", e);
-        }
-        crate::drivers::registry::init_usb_ctx(ctx);
-        crate::boot_stage::draw_step_hint(b"usb_pol");
-        crate::drivers::registry::usb_poll_and_register();
-        crate::boot_stage::draw_step_hint(b"usb_reg");
+        ));
+        log::info!("USB: service registered; controller activation deferred");
         Ok(())
     }
     fn poll(&self) {
@@ -266,7 +285,9 @@ impl StorageDriver for SdCardStorageCtl {
 
 /// Populate the `DriverRegistry` with every available driver.
 pub fn build_registry() -> DriverRegistry {
-    let mut reg = DriverRegistry::new();
+    let reg = DriverRegistry::new();
+    #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+    let mut reg = reg;
     #[cfg(not(nitrogen_no_storage))]
     {
         reg.register("ahci", Box::new(AhciDriver));
@@ -337,6 +358,14 @@ pub fn poll_usb() -> bool {
     {
         let mut guard = with_ctx_inner();
         if let Some(ctx) = guard.as_mut() {
+            if !ctx.is_enabled() {
+                crate::boot_stage::draw_step_hint(b"usb_init");
+                if let Err(e) = ctx.enable() {
+                    log::warn!("USB: enable failed: {:?}", e);
+                    return false;
+                }
+            }
+            crate::boot_stage::draw_step_hint(b"usb_poll");
             ctx.poll();
         }
     }
@@ -357,29 +386,13 @@ pub fn poll_usb() -> bool {
 #[cfg(not(nitrogen_no_usb))]
 fn usb_poll_and_register() {
     for i in 0..8 {
-        {
-            let mut guard = with_ctx_inner();
-            if let Some(ctx) = guard.as_mut() {
-                let disk_count_before = ctx.disks().len();
-                log::info!(
-                    "USB: poll #{}, disks before: {}",
-                    i + 1, disk_count_before
-                );
-                ctx.poll();
-                let disk_count_after = ctx.disks().len();
-                log::info!(
-                    "USB: poll #{}, disks after: {}",
-                    i + 1, disk_count_after
-                );
-                if !ctx.disks().is_empty() {
-                    log::info!("USB: device detected after {} retries", i + 1);
-                    break;
-                }
-            }
+        log::info!("USB: poll #{}", i + 1);
+        if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
+            log::info!("USB: device detected after {} polls", i + 1);
+            break;
         }
         nitrogen::timing::delay_ms(250);
     }
-    register_pending_usb();
 }
 
 /// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
@@ -402,12 +415,9 @@ pub fn poll_usb_all() -> bool {
     }
     LAST_REGISTERED_USB_COUNT.store(0, Ordering::Relaxed);
 
-    use crate::driver_context_impl::KernelDriverContext;
-    let mut ctx = nitrogen::usb::context::USBContext::new(&KernelDriverContext);
-    if let Err(e) = ctx.enable() {
-        log::warn!("USB: enable failed during re-enumeration: {:?}", e);
-    }
-    init_usb_ctx(ctx);
+    init_usb_ctx(nitrogen::usb::context::USBContext::new(
+        &crate::driver_context_impl::KernelDriverContext,
+    ));
     usb_poll_and_register();
     let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
     let _ = crate::klog::flush_to_vfs();
@@ -559,10 +569,8 @@ impl BlockDevice for SdBlockDev {
 /// Call from a background timer tick.  Returns `true` if any
 /// driver reported a state change.
 pub fn poll_all(_registry: &DriverRegistry) -> bool {
-    let mut changed = false;
     #[cfg(not(nitrogen_no_usb))]
-    {
-        changed |= poll_usb();
-    }
-    changed
+    return poll_usb();
+    #[cfg(nitrogen_no_usb)]
+    false
 }

@@ -96,14 +96,15 @@ impl XhciContext {
         crate::timing::delay_us(100);
 
         // ── Step 1: Read capability registers ─────────────────
+        crate::debug::hint(b"xh_cap");
         let Some(cap_regs) = (unsafe { CapabilityRegisters::read(mmio_base) }) else {
             log::warn!("xHCI: invalid or inaccessible capability header");
             return None;
         };
-        let caplength = cap_regs.caplength;
-        let op_off = caplength;
-        let rt_off = cap_regs.rt_offset;
-        let db_off = cap_regs.db_offset;
+        crate::debug::hint(b"xh_capok");
+        let op_off = cap_regs.caplength as usize;
+        let rt_off = cap_regs.rt_offset as usize;
+        let db_off = cap_regs.db_offset as usize;
 
         let hcs1 = cap_regs.hcs_params1();
         let hcc1 = cap_regs.hcc_params1();
@@ -119,6 +120,25 @@ impl XhciContext {
             || cap_regs.rt_offset == 0
         {
             log::warn!("xHCI: invalid or inaccessible capability registers");
+            return None;
+        }
+
+        let bar_size = crate::usb::HOST_CONTROLLER_BAR_SIZE;
+        let in_bar = |offset: usize, len: usize| {
+            offset
+                .checked_add(len)
+                .is_some_and(|end| end <= bar_size)
+        };
+        let op_len = OP_PORTSC_BASE
+            .checked_add(n_ports as usize * OP_PORTSC_STRIDE)
+            .and_then(|len| len.checked_add(4));
+        let rt_len = RT_INTERRUPTER_STRIDE * 2;
+        let db_len = (max_slots as usize + 1) * 4;
+        if op_len.is_none_or(|len| !in_bar(op_off, len))
+            || !in_bar(rt_off, rt_len)
+            || !in_bar(db_off, db_len)
+        {
+            log::warn!("xHCI: capability offsets exceed mapped BAR window");
             return None;
         }
 
@@ -140,12 +160,12 @@ impl XhciContext {
         );
         log::info!("xHCI: HCIVERSION=0x{:04X}", cap_regs.hci_version,);
 
-        // ── Step 2: Dump extended capabilities ────────────────
-        if hcc1.ext_cap_ptr != 0 {
-            dump_extended_capabilities(mmio_base, hcc1.ext_cap_ptr);
-        }
+        // ── Step 2: Extended capabilities ─────────────────────
+        // Consumers below traverse them as needed; a diagnostic dump would
+        // duplicate every risky MMIO read.
 
         // ── Step 3: Legacy handoff ────────────────────────────
+        crate::debug::hint(b"xh_leg");
         let legacy_ok = match try_legacy_handoff(mmio_base, hcc1.ext_cap_ptr) {
             Ok(true) => true,  // OS already owns
             Ok(false) => true, // handoff succeeded
@@ -154,11 +174,13 @@ impl XhciContext {
                 return None;
             }
         };
+        crate::debug::hint(b"xh_legok");
 
         // ── Step 4: Create sub-contexts ───────────────────────
-        let op_base = unsafe { mmio_base.add(op_off as usize) };
-        let rt_base = unsafe { mmio_base.add(rt_off as usize) };
-        let db_base = unsafe { mmio_base.add(db_off as usize) };
+        let op_base = unsafe { mmio_base.add(op_off) };
+        // Runtime interrupter set 0 starts 0x20 bytes after MFINDEX.
+        let rt_base = unsafe { mmio_base.add(rt_off + RT_INTERRUPTER_STRIDE) };
+        let db_base = unsafe { mmio_base.add(db_off) };
 
         let registers = RegisterContext {
             mmio_base,
@@ -168,13 +190,14 @@ impl XhciContext {
             doorbell: unsafe { DoorbellRegisters::new(db_base) },
         };
 
+        crate::debug::hint(b"xh_dma");
         let rings = RingContext::alloc(ctx, 256, 256)?;
         let device = DeviceContextSet::new(ctx, max_slots, scratchpad_bufs)?;
         let port_protocols = parse_port_protocols(mmio_base, hcc1.ext_cap_ptr, n_ports);
         let ports = PortContext::new(n_ports, ppc, Some(&port_protocols));
         let interrupts = InterruptContext::new();
 
-        Some(Self {
+        let controller = Self {
             registers,
             rings,
             device,
@@ -186,7 +209,9 @@ impl XhciContext {
             legacy_handoff_done: legacy_ok,
             erst_phys: None,
             deferred_free_list: Vec::new(),
-        })
+        };
+        crate::debug::hint(b"xh_newok");
+        Some(controller)
     }
 
     /// Get a reference to the driver context.
@@ -238,6 +263,17 @@ impl XhciContext {
             return Err("xHCI device gone");
         }
 
+        // Match Linux's early handoff: wait until the controller accepts
+        // operational-register accesses before attempting halt or reset.
+        crate::debug::hint(b"xh_cnr");
+        if crate::timing::wait_timeout_us(5_000_000, || {
+            self.registers.op.usbsts() & USBSTS_CNR == 0
+        })
+        .is_err()
+        {
+            return Err("controller not ready before init");
+        }
+
         // Phase 1: Full HCRST.
         // Stop the controller first (it cannot be running during HCRST).
         let sts = self.registers.op.usbsts();
@@ -245,7 +281,9 @@ impl XhciContext {
             log::info!("xHCI: controller running, halting before HCRST");
             self.registers
                 .op
-                .set_usbcmd(self.registers.op.usbcmd() & !USBCMD_RS);
+                .set_usbcmd(
+                    self.registers.op.usbcmd() & !(USBCMD_RS | USBCMD_INTE | USBCMD_HSEE),
+                );
             if crate::timing::wait_timeout_us(500_000, || {
                 self.registers.op.usbsts() & USBSTS_HCH != 0
             }).is_err() {
@@ -253,6 +291,7 @@ impl XhciContext {
             }
         }
 
+        crate::debug::hint(b"xh_reset");
         self.controller_reset()?;
         self.configure_before_start();
         self.setup_erst()?;
@@ -264,9 +303,12 @@ impl XhciContext {
             self.clear_hse_and_recover();
         }
 
+        crate::debug::hint(b"xh_start");
         self.start_controller()?;
         self.clear_hse_and_recover();
+        crate::debug::hint(b"xh_ports");
         self.init_ports();
+        crate::debug::hint(b"xh_ready");
 
         Ok(())
     }
