@@ -376,6 +376,9 @@ impl RtsxController {
                 .as_ref()
                 .ok_or("RTSX host command buffer unavailable")?;
             command_buffer.flush_for_cpu();
+            // AUTO_RESPONSE packs one byte per READ_REG at the start of the
+            // command buffer; responses do not remain in their u32 slots.
+            // This matches Linux rtsx_pci_read_ppbuf/get_cmd_data semantics.
             output.copy_from_slice(&command_buffer.as_slice()[..output.len()]);
         }
         Ok(())
