@@ -104,6 +104,21 @@ Priority convention:
 - [ ] `nitrogen`: register backend trait → state-machine test
 - [ ] `lattice`: deterministic scene snapshot / PPM hash
 
+### P1-9. REAL HARDWARE ISSUE
+- [ ] filesystem: Issue where opening mounted external storage containing two or more files causes a hang.
+
+### P1-10. Extension support using external crates
+- [ ] mp4: use `shiguredo_mp4`
+- [ ] jpg
+- [ ] png
+- [ ] mp3
+- [ ] wav
+- [ ] tar
+- [ ] tgz
+- [ ] zip
+- [ ] md
+- [ ] gz
+- [ ] 
 ---
 
 ## P2: Developer Experience & Performance
@@ -158,9 +173,11 @@ Priority convention:
 
 ## Stretch Goals
 
-- [ ] Network stack
+- [ ] Network stack ( iwlwifi )
 - [ ] Audio output
 - [ ] SMP
 - [ ] Rust userspace SDK
 - [ ] Package manager
 - [ ] Self-hosted build
+- [ ] Execute FREEDOOM
+- [ ] self-hosted presentation
