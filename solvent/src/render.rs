@@ -375,22 +375,4 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         }
     }
 
-    if rt.usb_poll_pending {
-        rt.usb_poll_pending = false;
-        drop(rt_lock);
-        let poll_fn = {
-            let cb_guard = SOLVENT_CALLBACKS.lock();
-            cb_guard.usb_poll
-        };
-        if let Some(f) = poll_fn {
-            let _ = f();
-        }
-        if let Some(ref mut rt) = *RUNTIME.lock() {
-            if let Some(ref mut explorer) = rt.explorer {
-                explorer.refresh_sidebar();
-                rt.explorer_dirty = true;
-                rt.frame_due = true;
-            }
-        }
-    }
 }

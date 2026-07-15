@@ -522,6 +522,16 @@ fn register_nozzle_hooks() {
                 }
             }
         }
+        "usb_rescan" => {
+            ctx.terminal.write_str(
+                "USB rescan: explicitly activating controller MMIO; this may not return on broken hardware.\n",
+            );
+            if crate::drivers::registry::rescan_usb_all() {
+                ctx.terminal.write_str("USB rescan: storage device registered.\n");
+            } else {
+                ctx.terminal.write_str("USB rescan: no storage device registered.\n");
+            }
+        }
         "usb_info" => {
             use crate::drivers::registry;
             let count = crate::devfs::list_block_device_names().len();

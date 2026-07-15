@@ -268,7 +268,6 @@ pub struct RuntimeState {
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
     pub cursor_only_update: bool,
-    pub usb_poll_pending: bool,
 }
 
 pub fn init() {
@@ -328,7 +327,6 @@ pub fn init() {
         settings_window: None,
         settings_dirty: false,
         cursor_only_update: false,
-        usb_poll_pending: false,
     });
 }
 

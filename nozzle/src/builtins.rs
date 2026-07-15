@@ -245,6 +245,7 @@ pub fn cmd_write(ctx: &mut CommandContext) -> bool {
 }
 
 sys_info_cmd!(cmd_usb_info, "usb_info");
+sys_info_cmd!(cmd_usb_rescan, "usb_rescan");
 
 /// `mount` — mount a block device to a directory
 ///

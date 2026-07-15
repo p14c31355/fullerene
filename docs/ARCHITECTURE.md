@@ -406,9 +406,10 @@ Genome. This lock boundary must be preserved: recursively borrowing a
 `USBContext` from a mount callback is prohibited.
 
 USB controller service registration is boot-safe and does not activate BAR
-MMIO. Solvent-triggered polling or explicit re-enumeration activates the
-Nitrogen controller state machine; device discovery and `/dev` registration
-remain separate from filesystem mount policy.
+MMIO. Solvent polling observes only an already-active controller and must never
+activate the Nitrogen state machine from rendering or input dispatch. Explicit
+`usb_rescan` is the activation boundary; device discovery and `/dev`
+registration remain separate from filesystem mount policy.
 
 The kernel device registry preserves `/dev/<name>` identity while transferring
 exclusive block-device ownership to a mounted filesystem. An available entry

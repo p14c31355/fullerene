@@ -155,6 +155,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ),
         ("usb_info", "Show USB device status", builtins::cmd_usb_info),
         (
+            "usb_rescan",
+            "Explicitly activate and rescan USB",
+            builtins::cmd_usb_rescan
+        ),
+        (
             "hello_linux",
             "Launch the built-in Linux test binary",
             builtins::cmd_hello_linux
