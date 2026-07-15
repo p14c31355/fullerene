@@ -89,6 +89,12 @@ impl XhciContext {
     /// `mmio_base` must reference a mapped xHCI register BAR for the lifetime
     /// of the returned controller.
     pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
+        // Brief delay after PCI config-space setup before first MMIO access.
+        // On real hardware the controller may need time to stabilise after
+        // D0 restoration, memory-space enable, and ASPM disable; skipping
+        // this delay can cause the first non-posted MMIO read to stall.
+        crate::timing::delay_us(100);
+
         // ── Step 1: Read capability registers ─────────────────
         let Some(cap_regs) = (unsafe { CapabilityRegisters::read(mmio_base) }) else {
             log::warn!("xHCI: invalid or inaccessible capability header");
@@ -339,8 +345,10 @@ impl XhciContext {
         // Assert HCRST
         op.set_usbcmd(USBCMD_HCRST);
 
-        // Intel-specific: 1ms delay after HCRST (Linux xhci_reset quirk)
-        // Without this, register access may cause hangs on Intel controllers.
+        // Post-HCRST delay — required by the xHCI spec and known to prevent
+        // register-access hangs on many real-hardware controllers (Intel,
+        // AMD, ASMedia, Renesas).  Without this, subsequent MMIO reads to
+        // operational registers may stall the CPU.
         super::port::delay_us(1000);
 
         if crate::timing::wait_timeout_us(500_000, || {

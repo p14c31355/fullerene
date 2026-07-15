@@ -118,6 +118,9 @@ impl EhciContext {
     /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
     /// of the returned controller.
     pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
+        // Brief delay after PCI config-space setup before first MMIO access;
+        // mirrors the same guard in the xHCI path.
+        crate::timing::delay_us(100);
         let registers = unsafe { EhciRegisterContext::new(mmio_base) }?;
         crate::debug::hint(b"eh_csp");
         let n_ports = registers.hcs_params & 0x0F;

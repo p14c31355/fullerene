@@ -48,8 +48,8 @@ pub fn delay_ms(milliseconds: u64) {
 ///
 /// # Arguments
 ///
-/// * `timeout_us` - Microsecond deadline.  `0` means **no timeout** (poll
-///   forever — use sparingly on real hardware).
+/// * `timeout_us` - Microsecond deadline.  `0` polls once (avoids an
+///   infinite spin-loop that would hang the kernel).
 /// * `condition_fn` - Closure that returns `Some(value)` when the condition
 ///   is satisfied, or `None` to keep polling.
 ///
@@ -61,13 +61,9 @@ where
     F: FnMut() -> Option<T>,
 {
     if timeout_us == 0 {
-        // Poll forever — caller is responsible for ensuring termination.
-        loop {
-            if let Some(v) = condition_fn() {
-                return Some(v);
-            }
-            core::hint::spin_loop();
-        }
+        // A zero timeout is unsupported and would loop forever.
+        // Poll once; if the condition is not satisfied, return None immediately.
+        return condition_fn();
     }
 
     let deadline = unsafe { core::arch::x86_64::_rdtsc() }
