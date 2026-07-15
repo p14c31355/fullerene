@@ -37,6 +37,7 @@ use nitrogen::DriverContext;
 // ────────────────────────────────────────────────────────────
 
 pub use nitrogen::driver_api::DriverRegistry;
+use nitrogen::driver_api::StorageDriver;
 
 // ── USB storage state (formerly drivers/usb_storage.rs) ────
 

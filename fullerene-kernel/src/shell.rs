@@ -533,11 +533,23 @@ fn register_nozzle_hooks() {
             }
         }
         "sd_rescan" => {
-            if crate::drivers::registry::sd_probe_and_register() {
-                ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n");
-            } else {
-                ctx.terminal
-                    .write_str("SD rescan: no usable card; see dmesg for details.\n");
+            #[cfg(not(nitrogen_no_storage))]
+            {
+                if crate::devfs::block_device_exists("sd0") && !crate::devfs::block_device_available("sd0") {
+                    ctx.terminal.write_str("SD rescan: refusing rescan while SD card is mounted.\n");
+                } else {
+                    crate::drivers::registry::SD_PROBED.store(false, core::sync::atomic::Ordering::Release);
+                    if crate::drivers::registry::sd_probe_and_register() {
+                        ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n");
+                    } else {
+                        ctx.terminal
+                            .write_str("SD rescan: no usable card; see dmesg for details.\n");
+                    }
+                }
+            }
+            #[cfg(nitrogen_no_storage)]
+            {
+                ctx.terminal.write_str("SD rescan: storage support not compiled in.\n");
             }
         }
         "usb_info" => {
