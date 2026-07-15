@@ -569,11 +569,20 @@ pub fn set_render_fn(f: fn()) {
 }
 
 fn service_explorer_navigation() {
-    let request = RUNTIME
+    let step = RUNTIME
         .lock()
         .as_mut()
-        .and_then(|runtime| runtime.explorer.as_mut()?.take_navigation_request());
-    let Some(path) = request else { return };
+        .and_then(|runtime| runtime.explorer.as_mut()?.take_navigation_step());
+    let Some(step) = step else { return };
+    let path = match step {
+        explorer::NavigationStep::Checkpoint(path) => {
+            // Return to the frame loop before synchronous media I/O so the
+            // taskbar keeps the last checkpoint visible if VFS stalls.
+            nitrogen::debug_status!("Explorer", "readdir {}", path);
+            return;
+        }
+        explorer::NavigationStep::Read(path) => path,
+    };
 
     // Filesystem and hardware I/O must run without the runtime lock. Rendering
     // takes locks in the opposite direction and synchronous removable-media I/O
@@ -582,6 +591,10 @@ fn service_explorer_navigation() {
     let result = callback
         .ok_or("filesystem unavailable")
         .and_then(|read| read(&path));
+    match &result {
+        Ok(entries) => nitrogen::debug_status!("Explorer", "ready: {} entries", entries.len()),
+        Err(error) => nitrogen::debug_status!("Explorer", "readdir failed: {}", error),
+    }
 
     if let Some(runtime) = RUNTIME.lock().as_mut()
         && let Some(explorer) = runtime.explorer.as_mut()
