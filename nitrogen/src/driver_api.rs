@@ -89,9 +89,9 @@ pub struct DriverDescriptor {
     pub vendor: u16,
     /// PCI device ID (0xFFFF = wildcard; ignored when vendor is wildcard).
     pub device: u16,
-    /// PCI class code (0xFF = wildcard).
+    /// PCI class code (`0xFF/0xFF` class/subclass pair = unspecified).
     pub class: u8,
-    /// PCI subclass (only meaningful when class is not wildcard).
+    /// PCI subclass (`0xFF/0xFF` class/subclass pair = unspecified).
     pub subclass: u8,
 }
 
@@ -131,11 +131,51 @@ impl DriverDescriptor {
         let vendor = self.vendor != 0xFFFF
             && self.vendor == device.vendor_id
             && (self.device == 0xFFFF || self.device == device.device_id);
-        let class = self.class != 0xFF
+        // PCI class 0xff is a real vendor-specific class. Treat only the
+        // pair (class, subclass) == (0xff, 0xff) as unspecified.
+        let class = (self.class != 0xFF || self.subclass != 0xFF)
             && self.class == device.class_code
             && self.subclass == device.subclass;
-        let wildcard = self.vendor == 0xFFFF && self.device == 0xFFFF && self.class == 0xFF;
+        let wildcard = self.vendor == 0xFFFF
+            && self.device == 0xFFFF
+            && self.class == 0xFF
+            && self.subclass == 0xFF;
         vendor || class || wildcard
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DriverDescriptor;
+    use crate::pci::PciDevice;
+
+    fn device(class_code: u8, subclass: u8) -> PciDevice {
+        PciDevice {
+            bus: 0,
+            device: 0,
+            function: 0,
+            handle: 0,
+            vendor_id: 0x10EC,
+            device_id: 0x5249,
+            class_code,
+            subclass,
+            prog_if: 0,
+            header_type: 0,
+        }
+    }
+
+    #[test]
+    fn vendor_specific_class_is_not_a_wildcard() {
+        let descriptor = DriverDescriptor::from_class(0xFF, 0x00);
+        assert!(descriptor.matches(&device(0xFF, 0x00)));
+        assert!(!descriptor.matches(&device(0x03, 0x00)));
+    }
+
+    #[test]
+    fn explicit_wildcard_still_matches_every_class() {
+        let descriptor = DriverDescriptor::wildcard();
+        assert!(descriptor.matches(&device(0x03, 0x00)));
+        assert!(descriptor.matches(&device(0xFF, 0x00)));
     }
 }
 

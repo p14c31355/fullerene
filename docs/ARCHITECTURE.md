@@ -416,6 +416,12 @@ exclusive block-device ownership to a mounted filesystem. An available entry
 contains a device lease; a present entry without a lease means mounted or in
 use. Controller re-enumeration must not invalidate an outstanding lease.
 
+`/dev` is a `DevFs` mount backed directly by that registry, not a tmpfs with
+manually-created placeholder files. Consequently registration and removal are
+visible immediately and `/dev/null` is supplied by DevFs itself. Media
+discovery remains distinct from mounting: `sd_rescan` may retry an inserted SD
+card, while `mount /dev/sd0 <path>` only acquires and mounts its existing lease.
+
 The kernel crate re-exports Genome types and adds the singleton `VfsContext` (wrapping `Vfs` with `spin::Mutex` + handle table) through the kernel's `vfs` and `fs` modules, keeping the core logic framework-agnostic.
 
 ---

@@ -77,8 +77,7 @@ pub fn init_initramfs() {
         let _ = crate::contexts::vfs::mkdir(dir);
     }
 
-    // Create /dev/null
-    let _ = crate::contexts::vfs::create("/dev/null");
+    // /dev/null is provided by the dynamic DevFs mount.
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");

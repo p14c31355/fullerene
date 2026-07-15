@@ -532,6 +532,14 @@ fn register_nozzle_hooks() {
                 ctx.terminal.write_str("USB rescan: no storage device registered.\n");
             }
         }
+        "sd_rescan" => {
+            if crate::drivers::registry::sd_probe_and_register() {
+                ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n");
+            } else {
+                ctx.terminal
+                    .write_str("SD rescan: no usable card; see dmesg for details.\n");
+            }
+        }
         "usb_info" => {
             use crate::drivers::registry;
             let count = crate::devfs::list_block_device_names().len();

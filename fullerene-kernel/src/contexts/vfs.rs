@@ -332,6 +332,7 @@ where
 ///
 /// Supported `fs_type` values:
 /// - `"tmpfs"` — mounts a fresh in-memory filesystem ([`MemFileSystem`]).
+/// - `"devfs"` — mounts the kernel's dynamic device filesystem.
 /// - `"fat32"` — mounts a FAT32/exFAT filesystem backed by a block device.
 ///
 /// The `device` argument is the path to a block device that the kernel
@@ -342,6 +343,11 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             let memfs = Box::new(MemFileSystem::new());
             vfs.mount(mount_point, memfs)?;
             log::info!("VFS: mounted tmpfs from {} at {}", device, mount_point);
+            Ok(())
+        }
+        "devfs" => {
+            vfs.mount(mount_point, Box::new(crate::devfs::DevFs::new()))?;
+            log::info!("VFS: mounted devfs at {}", mount_point);
             Ok(())
         }
         "fat32" => {
