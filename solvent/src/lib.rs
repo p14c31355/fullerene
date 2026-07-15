@@ -581,16 +581,21 @@ fn service_explorer_navigation() {
         .and_then(|read| read(&path));
     let outcome = result.as_ref().map(Vec::len).map_err(|error| *error);
 
-    if let Some(runtime) = RUNTIME.lock().as_mut()
+    let applied = if let Some(runtime) = RUNTIME.lock().as_mut()
         && let Some(explorer) = runtime.explorer.as_mut()
     {
         explorer.finish_navigation(path, result);
         runtime.explorer_dirty = true;
         runtime.frame_due = true;
-    }
-    match outcome {
-        Ok(entries) => nitrogen::debug_status!("Explorer", "applied: {} entries", entries),
-        Err(error) => nitrogen::debug_status!("Explorer", "readdir failed: {}", error),
+        true
+    } else {
+        false
+    };
+    if applied {
+        match outcome {
+            Ok(entries) => nitrogen::debug_status!("Explorer", "applied: {} entries", entries),
+            Err(error) => nitrogen::debug_status!("Explorer", "readdir failed: {}", error),
+        }
     }
 }
 

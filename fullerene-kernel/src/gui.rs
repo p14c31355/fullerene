@@ -187,7 +187,7 @@ fn render_fallback(label: &[u8]) {
     }
 }
 
-/// Submit a frame for backends that require an explicit present.
+/// Flush backends that require explicit frame submission.
 fn finish_frame() {
     crate::graphics::flush_gpu();
 }

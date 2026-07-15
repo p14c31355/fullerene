@@ -68,11 +68,13 @@ pub(crate) fn window_dirty_rect(w: &Window) -> DirtyRect {
     } else {
         0
     };
+    let x = w.x.saturating_sub(border as i32);
+    let y = w.y.saturating_sub(border as i32);
     DirtyRect::new(
-        w.x.saturating_sub(border as i32).max(0) as u32,
-        w.y.saturating_sub(border as i32).max(0) as u32,
-        w.decorated_width(),
-        w.decorated_height(),
+        x.max(0) as u32,
+        y.max(0) as u32,
+        w.decorated_width().saturating_sub(x.min(0).unsigned_abs()),
+        w.decorated_height().saturating_sub(y.min(0).unsigned_abs()),
     )
 }
 
@@ -737,5 +739,22 @@ mod tests {
     fn titled_window_dirty_rect_matches_compositor_decoration() {
         let window = Window::new_with_title(WindowId(1), 10, 10, 100, 80, 0, "Test");
         assert_eq!(window_dirty_rect(&window), DirtyRect::new(9, 9, 102, 110));
+    }
+
+    #[test]
+    fn dirty_rect_clips_windows_above_and_left_of_screen() {
+        let window = Window::new_with_title(WindowId(1), -20, -15, 100, 80, 0, "Test");
+        assert_eq!(window_dirty_rect(&window), DirtyRect::new(0, 0, 81, 94));
+
+        let offscreen = Window::new_with_title(
+            WindowId(2),
+            i32::MIN,
+            i32::MIN,
+            100,
+            80,
+            0,
+            "Offscreen",
+        );
+        assert_eq!(window_dirty_rect(&offscreen), DirtyRect::new(0, 0, 0, 0));
     }
 }

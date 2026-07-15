@@ -453,7 +453,10 @@ impl ExplorerContext {
             }
             let cmp = match self.sort_mode {
                 SortMode::Name => ea.name.cmp(&eb.name),
-                SortMode::Size => ea.size.cmp(&eb.size),
+                SortMode::Size => ea
+                    .size
+                    .cmp(&eb.size)
+                    .then_with(|| ea.name.cmp(&eb.name)),
                 SortMode::Date => ea.name.cmp(&eb.name),
             };
             if ascending { cmp } else { cmp.reverse() }
@@ -1156,7 +1159,7 @@ fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExplorerContext, NavigationStep};
+    use super::{ExplorerContext, NavigationStep, SortMode};
     use crate::VfsEntry;
     use alloc::string::String;
 
@@ -1220,5 +1223,28 @@ mod tests {
             explorer.activate_entry(1).as_deref(),
             Some("/mnt/Bootlog.txt")
         );
+    }
+
+    #[test]
+    fn size_sort_uses_names_as_a_deterministic_tiebreaker() {
+        let mut explorer = ExplorerContext::new();
+        explorer.sort_mode = SortMode::Size;
+        explorer.finish_navigation(
+            String::from("/mnt/sdcard"),
+            Ok(alloc::vec![
+                VfsEntry {
+                    name: String::from("b.txt"),
+                    size: 512,
+                    is_dir: false,
+                },
+                VfsEntry {
+                    name: String::from("a.txt"),
+                    size: 512,
+                    is_dir: false,
+                },
+            ]),
+        );
+        assert_eq!(explorer.entries[0].name, "a.txt");
+        assert_eq!(explorer.entries[1].name, "b.txt");
     }
 }
