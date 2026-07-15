@@ -409,13 +409,6 @@ impl Desktop {
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
     }
 
-    /// Returns `true` when any transient overlay (context menu, network
-    /// menu, password dialog) is open.  Callers can use this to decide
-    /// whether a cursor‑only update is safe.
-    pub fn has_active_overlays(&self) -> bool {
-        self.active_menu.is_some() || self.network_menu_open || self.pwd_dialog_open
-    }
-
     /// Force a full-screen redraw on the next frame.
     ///
     /// Useful when overlay modes (TaskOverview / AppGrid) need every frame
@@ -712,13 +705,7 @@ impl Desktop {
     pub fn scene(&self) -> Scene<'_> {
         Scene {
             windows: self.wm.windows(),
-            // Cursor is drawn by solvent::render() via
-            // `draw_cursor_direct` as the final layer.
-            // Including it here would cause the compositor to
-            // render it into the back‑buffer, which then gets
-            // captured by the lightweight‑update save buffer,
-            // producing ghost cursors after overlay transitions.
-            cursor: None,
+            cursor: Some(&self.cursor),
             bg_color: self.bg_color,
             dirty_rects: &self.dirty_cache,
             taskbar: Some(&self.taskbar),
@@ -794,6 +781,12 @@ mod tests {
 
         // Top‑left corner of the window should be red.
         assert_eq!(target.pixels[0], 0xFF0000);
+    }
+
+    #[test]
+    fn scene_delegates_cursor_rendering_to_compositor() {
+        let dt = Desktop::new(0x202020);
+        assert!(dt.scene().cursor.is_some());
     }
 
     #[test]

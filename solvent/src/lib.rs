@@ -31,7 +31,7 @@ mod viewers;
 
 // ── Sub-module re-exports ─────────────────────────────────────
 pub use clock::clock_string;
-pub use render::{cursor_save_background, render, set_render_progress_fn};
+pub use render::{render, set_render_progress_fn};
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
 
 use alloc::boxed::Box;
@@ -253,11 +253,6 @@ pub struct RuntimeState {
     pub shell_state: ShellState,
     pub shell_launch_pending: bool,
     pub clock_changed: bool,
-    pub cursor_save_buf: [u32;
-        lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
-    pub cursor_save_x: i32,
-    pub cursor_save_y: i32,
-    pub cursor_save_valid: bool,
     pub editor_window: Option<WindowId>,
     pub editor_buf: EditorBuffer,
     pub editor_launch_pending: bool,
@@ -267,7 +262,6 @@ pub struct RuntimeState {
     pub explorer_dirty: bool,
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
-    pub cursor_only_update: bool,
 }
 
 pub fn init() {
@@ -312,11 +306,6 @@ pub fn init() {
         shell_state: ShellState::Desktop,
         shell_launch_pending: false,
         clock_changed: false,
-        cursor_save_buf: [0u32;
-            lattice::cursor::Cursor::SIZE as usize * lattice::cursor::Cursor::SIZE as usize],
-        cursor_save_x: 0,
-        cursor_save_y: 0,
-        cursor_save_valid: false,
         editor_window: None,
         editor_buf: EditorBuffer::new(),
         editor_launch_pending: false,
@@ -326,7 +315,6 @@ pub fn init() {
         explorer_dirty: false,
         settings_window: None,
         settings_dirty: false,
-        cursor_only_update: false,
     });
 }
 
