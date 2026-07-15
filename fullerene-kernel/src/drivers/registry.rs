@@ -246,8 +246,8 @@ pub struct SdCardDriver;
 
 #[cfg(not(nitrogen_no_storage))]
 impl Driver for SdCardDriver {
-    fn pci_class(&self) -> Option<(u8, u8)> {
-        Some((0xFF, 0x00)) // vendor-specific (RTSX)
+    fn pci_id(&self) -> (u16, u16) {
+        (0x10EC, 0x5249)
     }
     fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
         DriverBox::Storage(Box::new(SdCardStorageCtl))
@@ -510,9 +510,6 @@ fn register_pending_usb() {
 
         crate::klog_fmt!("USB: registered /dev/{} (bulk-only)\n", dev_name);
         crate::devfs::register_block_device(dev_name.clone(), bdev);
-
-        let _ = crate::contexts::vfs::mkdir("/dev");
-        let _ = crate::contexts::vfs::create(&alloc::format!("/dev/{}", dev_name));
     }
     let _ = crate::klog::flush_to_vfs();
 }
@@ -569,9 +566,6 @@ pub fn sd_probe_and_register() -> bool {
     let dev_name = alloc::format!("sd{}", 0);
     crate::klog_fmt!("SD card: registered /dev/{}\n", dev_name);
     crate::devfs::register_block_device(dev_name.clone(), bdev);
-
-    let _ = crate::contexts::vfs::mkdir("/dev");
-    let _ = crate::contexts::vfs::create(&alloc::format!("/dev/{}", dev_name));
     true
 }
 

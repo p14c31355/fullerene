@@ -207,8 +207,9 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         petroleum::init_step!("devfs", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs start\n");
             let _ = crate::contexts::vfs::mkdir("/dev");
-            let _ = crate::contexts::vfs::mount("", "/dev", "tmpfs");
-            petroleum::serial::serial_log(format_args!("DevFS /dev/ mounted\n"));
+            crate::contexts::vfs::mount("", "/dev", "devfs")
+                .map_err(|_| "Failed to mount DevFS")?;
+            petroleum::serial::serial_log(format_args!("DevFS mounted at /dev\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs done\n");
             Ok(())
         }),

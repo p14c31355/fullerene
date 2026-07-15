@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -11,6 +11,7 @@ use genome::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
 use nitrogen::driver_api::DriverBox;
 
 static DEVICE_REGISTRY: Mutex<BTreeMap<String, DriverBox>> = Mutex::new(BTreeMap::new());
+const NULL_DEVICE: &str = "null";
 
 pub fn register_driver(name: &str, driver: DriverBox) {
     DEVICE_REGISTRY.lock().insert(name.to_string(), driver);
@@ -42,17 +43,17 @@ impl FileSystem for DevFs {
         if path.is_empty() {
             return None;
         }
-        let registry = DEVICE_REGISTRY.lock();
-        if registry.contains_key(path) {
-            drop(registry);
-            let ino = stable_ino(path);
-            let fd = next_fd();
-            let name = path.to_string();
-            FD_TABLE.lock().push(FdEntry { name, fd, offset: 0 });
-            Some(FileDescriptor { fd, ino, offset: 0, flags: 0 })
-        } else {
-            None
+        if path != NULL_DEVICE
+            && !DEVICE_REGISTRY.lock().contains_key(path)
+            && !block_device_exists(path)
+        {
+            return None;
         }
+        let ino = stable_ino(path);
+        let fd = next_fd();
+        let name = path.to_string();
+        FD_TABLE.lock().push(FdEntry { name, fd, offset: 0 });
+        Some(FileDescriptor { fd, ino, offset: 0, flags: 0 })
     }
 
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
@@ -61,6 +62,9 @@ impl FileSystem for DevFs {
             let entry = table.iter().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
             (entry.name.clone(), entry.offset)
         };
+        if name == NULL_DEVICE {
+            return Ok(0);
+        }
         // TODO: registry lock held during I/O blocks other registry ops.
         // Refactor to use ref-counted driver handles so the lock is dropped before I/O.
         let (result, new_offset) = {
@@ -112,6 +116,12 @@ impl FileSystem for DevFs {
             let entry = table.iter().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
             (entry.name.clone(), entry.offset)
         };
+        if name == NULL_DEVICE {
+            if let Some(entry) = FD_TABLE.lock().iter_mut().find(|entry| entry.fd == fd) {
+                entry.offset = entry.offset.saturating_add(data.len());
+            }
+            return Ok(data.len());
+        }
         let (result, new_offset) = {
             let registry = DEVICE_REGISTRY.lock();
             match registry.get(&name) {
@@ -194,9 +204,12 @@ impl FileSystem for DevFs {
         if !path.is_empty() {
             return Err(FsError::NotADirectory);
         }
-        let registry = DEVICE_REGISTRY.lock();
-        Ok(registry.keys().map(|name| VNode {
-            name: name.clone(),
+        let mut names = BTreeSet::new();
+        names.insert(String::from(NULL_DEVICE));
+        names.extend(DEVICE_REGISTRY.lock().keys().cloned());
+        names.extend(BLOCK_DEVICE_REGISTRY.lock().keys().cloned());
+        Ok(names.into_iter().map(|name| VNode {
+            name,
             size: 0,
             is_dir: false,
         }).collect())
@@ -204,7 +217,10 @@ impl FileSystem for DevFs {
 
     fn exists(&mut self, path: &str) -> bool {
         let path = path.trim_start_matches('/');
-        path.is_empty() || DEVICE_REGISTRY.lock().contains_key(path)
+        path.is_empty()
+            || path == NULL_DEVICE
+            || DEVICE_REGISTRY.lock().contains_key(path)
+            || block_device_exists(path)
     }
 }
 

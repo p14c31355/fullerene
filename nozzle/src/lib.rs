@@ -160,6 +160,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_usb_rescan
         ),
         (
+            "sd_rescan",
+            "Rescan the SD card reader without mounting",
+            builtins::cmd_sd_rescan
+        ),
+        (
             "hello_linux",
             "Launch the built-in Linux test binary",
             builtins::cmd_hello_linux
