@@ -10,7 +10,9 @@ use core::pin::Pin;
 
 use genome::fs::FsError;
 use hadris_fat::FatError;
-use hadris_fat::exfat::{ExFatDir, ExFatFileWriter, ExFatFs, ExFatTable};
+use hadris_fat::exfat::{
+    ExFatBootSector, ExFatDir, ExFatFileWriter, ExFatFs, ExFatInfo, ExFatTable,
+};
 use hadris_fat::sync::{Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
 use spin::Mutex;
 
@@ -19,7 +21,8 @@ use crate::drivers::fat::BlockDevice;
 use crate::klog_fmt;
 
 const SECTOR_SIZE: usize = 512;
-const METADATA_CACHE_SECTORS: usize = 16;
+const ROOT_SCAN_SECTORS: usize = 256;
+const METADATA_CACHE_SECTORS: usize = ROOT_SCAN_SECTORS + 16;
 
 type MetadataCache = BTreeMap<u32, [u8; SECTOR_SIZE]>;
 
@@ -47,6 +50,10 @@ impl ExFatDevice {
         count: u16,
         buf: &mut [u8],
     ) -> Result<(), IoError> {
+        let expected_len = usize::from(count) * SECTOR_SIZE;
+        let buf = buf
+            .get_mut(..expected_len)
+            .ok_or_else(|| Self::error(ErrorKind::InvalidInput, "exFAT read buffer too small"))?;
         if count == 1 {
             if let Some(sector) = self.cache.lock().get(&lba) {
                 buf[..SECTOR_SIZE].copy_from_slice(sector);
@@ -74,6 +81,10 @@ impl ExFatDevice {
         count: u16,
         buf: &[u8],
     ) -> Result<(), IoError> {
+        let expected_len = usize::from(count) * SECTOR_SIZE;
+        let buf = buf
+            .get(..expected_len)
+            .ok_or_else(|| Self::error(ErrorKind::InvalidInput, "exFAT write buffer too small"))?;
         device
             .write_sectors(lba, count, buf)
             .map_err(|message| Self::error(ErrorKind::Other, message))?;
@@ -227,12 +238,26 @@ impl ExFatFileSystem {
         };
         let shared = Arc::new(Mutex::new(device));
         let cache = Arc::new(Mutex::new(MetadataCache::new()));
-        let adapter = ExFatDevice {
+        let mut adapter = ExFatDevice {
             inner: Arc::clone(&shared),
             cache: Arc::clone(&cache),
             position: 0,
             size,
         };
+        let prefetch = ExFatBootSector::read(&mut adapter)
+            .map_err(Self::map_error)
+            .and_then(|boot| {
+                cache.lock().clear();
+                Self::scan_root(&mut adapter, boot.info(), |sector| {
+                    sector.chunks_exact(32).any(|entry| entry[0] == 0)
+                })
+            });
+        if let Err(error) = prefetch {
+            klog_fmt!("exFAT: root prefetch error: {:?}\n", error);
+            drop(adapter);
+            let device = Arc::try_unwrap(shared).ok().map(Mutex::into_inner);
+            return Err((error, device));
+        }
         let inner = match ExFatInner::open(adapter) {
             Ok(inner) => inner,
             Err(error) => {
@@ -283,6 +308,48 @@ impl ExFatFileSystem {
             ErrorKind::PermissionDenied => FsError::PermissionDenied,
             ErrorKind::OutOfMemory | ErrorKind::WriteZero => FsError::DiskFull,
             _ => FsError::InvalidInput,
+        }
+    }
+
+    fn scan_root(
+        device: &mut ExFatDevice,
+        info: &ExFatInfo,
+        mut visit: impl FnMut(&[u8; SECTOR_SIZE]) -> bool,
+    ) -> Result<(), FsError> {
+        let cluster_size = info.bytes_per_cluster;
+        if cluster_size < SECTOR_SIZE || !cluster_size.is_multiple_of(SECTOR_SIZE) {
+            return Err(FsError::InvalidInput);
+        }
+        let fat = ExFatTable::new(info);
+        let mut cluster = info.root_cluster;
+        let mut visited = BTreeSet::new();
+        let mut sector = [0; SECTOR_SIZE];
+        let mut sectors = 0;
+
+        loop {
+            if !visited.insert(cluster) {
+                return Err(FsError::InvalidInput);
+            }
+            device
+                .seek(SeekFrom::Start(info.cluster_to_offset(cluster)))
+                .map_err(Self::map_io_error)?;
+            for _ in 0..cluster_size / SECTOR_SIZE {
+                if sectors == ROOT_SCAN_SECTORS {
+                    return Err(FsError::InvalidInput);
+                }
+                device.read_exact(&mut sector).map_err(Self::map_io_error)?;
+                sectors += 1;
+                if visit(&sector) {
+                    return Ok(());
+                }
+            }
+            match fat
+                .next_cluster(device, cluster)
+                .map_err(Self::map_error)?
+            {
+                Some(next) => cluster = next,
+                None => return Ok(()),
+            }
         }
     }
 
@@ -354,48 +421,22 @@ impl ExFatFileSystem {
 
     fn root_entries(&self) -> Result<Vec<VNode>, FsError> {
         let info = self.fs().info();
-        let cluster_size = info.bytes_per_cluster;
-        if cluster_size < SECTOR_SIZE || !cluster_size.is_multiple_of(SECTOR_SIZE) {
-            return Err(FsError::InvalidInput);
-        }
-        let fat = ExFatTable::new(info);
         let mut device = ExFatDevice {
             inner: Arc::clone(&self.device),
             cache: Arc::clone(&self.cache),
             position: 0,
             size: self.device_size,
         };
-        let mut cluster = info.root_cluster;
-        let mut visited = BTreeSet::new();
         let mut pending = Vec::with_capacity(19);
         let mut entries = Vec::new();
-        let mut sector = [0; SECTOR_SIZE];
-
-        loop {
-            if !visited.insert(cluster) {
-                return Err(FsError::InvalidInput);
-            }
-            device
-                .seek(SeekFrom::Start(info.cluster_to_offset(cluster)))
-                .map_err(Self::map_io_error)?;
-            for _ in 0..cluster_size / SECTOR_SIZE {
-                device.read_exact(&mut sector).map_err(Self::map_io_error)?;
-                for chunk in sector.chunks_exact(32) {
-                    let mut raw = [0; 32];
-                    raw.copy_from_slice(chunk);
-                    if Self::consume_entry(raw, &mut pending, &mut entries) {
-                        return Ok(entries);
-                    }
-                }
-            }
-            match fat
-                .next_cluster(&mut device, cluster)
-                .map_err(Self::map_error)?
-            {
-                Some(next) => cluster = next,
-                None => return Ok(entries),
-            }
-        }
+        Self::scan_root(&mut device, info, |sector| {
+            sector.chunks_exact(32).any(|chunk| {
+                let mut raw = [0; 32];
+                raw.copy_from_slice(chunk);
+                Self::consume_entry(raw, &mut pending, &mut entries)
+            })
+        })?;
+        Ok(entries)
     }
 
     fn consume_entry(raw: [u8; 32], pending: &mut Vec<[u8; 32]>, entries: &mut Vec<VNode>) -> bool {
@@ -654,6 +695,27 @@ mod tests {
     }
 
     #[test]
+    fn cached_io_rejects_short_sector_buffers() {
+        let image = Arc::new(Mutex::new(vec![0; IMAGE_SIZE]));
+        let mut device = MemoryDevice::new(image);
+        let adapter = ExFatDevice {
+            inner: Arc::new(Mutex::new(Box::new(device.clone()))),
+            cache: Arc::new(Mutex::new(MetadataCache::new())),
+            position: 0,
+            size: IMAGE_SIZE as u64,
+        };
+        let mut read = [0; SECTOR_SIZE - 1];
+        assert_eq!(
+            adapter.read_cached(&mut device, 0, 1, &mut read).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+        assert_eq!(
+            adapter.write_cached(&mut device, 0, 1, &read).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
     fn mounts_and_streams_a_windows_sized_exfat_cluster() {
         let image = Arc::new(Mutex::new(vec![0; IMAGE_SIZE]));
         let block_device = MemoryDevice::new(Arc::clone(&image));
@@ -712,6 +774,22 @@ mod tests {
             0,
             "root scan repeated media I/O instead of using mount metadata"
         );
+        assert_eq!(block_device.read_calls.load(Ordering::Relaxed), 0);
+
+        for index in 0..48 {
+            let path = alloc::format!("/entry-{index:02}.txt");
+            assert_eq!(fs.create(&path, InodeType::File), Some(0));
+        }
+        drop(fs);
+        let mut fs = match crate::drivers::fat::mount_device(Box::new(block_device.clone())) {
+            Ok(filesystem) => filesystem,
+            Err((error, _)) => panic!("large-root remount failed: {error}"),
+        };
+        block_device.reads.store(0, Ordering::Relaxed);
+        block_device.read_calls.store(0, Ordering::Relaxed);
+        let entries = fs.readdir("/").unwrap();
+        assert!(entries.iter().any(|entry| entry.name == "entry-47.txt"));
+        assert_eq!(block_device.reads.load(Ordering::Relaxed), 0);
         assert_eq!(block_device.read_calls.load(Ordering::Relaxed), 0);
 
         drop(fs);
