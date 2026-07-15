@@ -199,10 +199,6 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     if let Some(ref mut explorer) = rt.explorer {
         if let Some(id) = explorer.window_id {
             if rt.desktop.wm.windows().iter().any(|w| w.id == id) {
-                // Defer USB poll to avoid blocking the event loop
-                if crate::get_usb_drives().is_empty() {
-                    rt.usb_poll_pending = true;
-                }
                 explorer.refresh_sidebar();
                 rt.desktop.wm.raise_to_top(id);
                 rt.explorer_dirty = true;
@@ -213,10 +209,8 @@ fn open_explorer_window(rt: &mut RuntimeState) {
         // Window was closed; fall through to create a new one
     }
 
-    // Create the explorer window first so the user sees immediate feedback,
-    // then conditionally poll USB in the background.  The sidebar is populated
-    // from refresh_sidebar() which calls get_usb_drives() — if drives are
-    // already available from boot, no poll is needed.
+    // The sidebar is a read-only view of devices already registered in /dev.
+    // Controller activation must not run in the window/input path.
     let win_w: u32 = 640;
     let win_h: u32 = 400;
     let id = rt
@@ -226,10 +220,6 @@ fn open_explorer_window(rt: &mut RuntimeState) {
     let mut explorer = crate::explorer::ExplorerContext::new();
     explorer.window_id = Some(id);
 
-    // Defer USB poll to avoid blocking before window is shown
-    if crate::get_usb_drives().is_empty() {
-        rt.usb_poll_pending = true;
-    }
     explorer.refresh_sidebar();
     explorer.navigate_to("/");
     {

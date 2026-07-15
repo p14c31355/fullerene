@@ -349,8 +349,11 @@ impl BlockDevice for UsbBlockDevice {
     fn total_sectors(&self) -> u64 { self.total_blocks }
 }
 
-/// Poll USB controller once and register newly-discovered devices
-/// in the block device registry (no mount).
+/// Poll an already-active USB controller and register newly-discovered
+/// devices in the block device registry (no mount).
+///
+/// This function is safe to call from the desktop scheduler: it never turns
+/// deferred controller registration into BAR MMIO activation.
 /// Returns `true` if a new device was registered.
 #[cfg(not(nitrogen_no_usb))]
 pub fn poll_usb() -> bool {
@@ -359,11 +362,7 @@ pub fn poll_usb() -> bool {
         let mut guard = with_ctx_inner();
         if let Some(ctx) = guard.as_mut() {
             if !ctx.is_enabled() {
-                crate::boot_stage::draw_step_hint(b"usb_init");
-                if let Err(e) = ctx.enable() {
-                    log::warn!("USB: enable failed: {:?}", e);
-                    return false;
-                }
+                return false;
             }
             crate::boot_stage::draw_step_hint(b"usb_poll");
             ctx.poll();
@@ -382,9 +381,36 @@ pub fn poll_usb() -> bool {
     false
 }
 
+/// Explicitly activate the USB controller service.
+///
+/// A non-posted MMIO read cannot be made recoverable in software, so callers
+/// must never invoke this from boot, rendering, or input-dispatch paths.
+#[cfg(not(nitrogen_no_usb))]
+fn activate_usb() -> bool {
+    let mut guard = with_ctx_inner();
+    let Some(ctx) = guard.as_mut() else {
+        log::warn!("USB: no host-controller service registered");
+        return false;
+    };
+    if ctx.is_enabled() {
+        return true;
+    }
+    crate::boot_stage::draw_step_hint(b"usb_init");
+    match ctx.enable() {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("USB: enable failed: {:?}", e);
+            false
+        }
+    }
+}
+
 /// Initial USB poll with retries, then register block devices.
 #[cfg(not(nitrogen_no_usb))]
 fn usb_poll_and_register() {
+    if !activate_usb() {
+        return;
+    }
     for i in 0..8 {
         log::info!("USB: poll #{}", i + 1);
         if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
@@ -397,7 +423,7 @@ fn usb_poll_and_register() {
 
 /// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
 #[cfg(not(nitrogen_no_usb))]
-pub fn poll_usb_all() -> bool {
+pub fn rescan_usb_all() -> bool {
     let names = crate::devfs::list_block_device_names();
     if names
         .iter()
@@ -422,6 +448,11 @@ pub fn poll_usb_all() -> bool {
     let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
     let _ = crate::klog::flush_to_vfs();
     registered
+}
+
+#[cfg(nitrogen_no_usb)]
+pub fn rescan_usb_all() -> bool {
+    false
 }
 
 /// Access the inner USB context static for poll operations.

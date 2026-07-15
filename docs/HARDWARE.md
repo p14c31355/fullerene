@@ -24,12 +24,13 @@ companion at `00:1d.0`. Before the first xHCI BAR0 load, Fullerene now:
    waits for `USBSTS.CNR` to clear before operational-register access.
 
 Boot registers the USB service without touching either controller BAR. The
-sequence above starts on the first service poll or explicit re-enumeration, so
-an uncompleted PCIe read cannot block the boot-critical path. xHCI is
-initialized before its companion; after Intel routing is confirmed and xHCI is
-active, Fullerene does not access the unsupported EHCI companion. EHCI-only
-systems still use the EHCI path, which is initialized once and never restarted
-by polling.
+sequence above starts only on the explicit `usb_rescan` command. Desktop and
+File Manager polling never activates a deferred controller, so an uncompleted
+PCIe read cannot block boot, rendering, or input dispatch. xHCI is initialized
+before its companion; after Intel routing is confirmed and xHCI is active,
+Fullerene does not access the unsupported EHCI companion. EHCI-only systems
+still use the EHCI path, which is initialized once and never restarted by
+polling.
 
 The runtime interrupter register set begins at `RTSOFF + 0x20` (after
 `MFINDEX`); using `RTSOFF` directly writes the wrong registers. Capability,
