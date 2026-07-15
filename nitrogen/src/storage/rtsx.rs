@@ -463,10 +463,12 @@ impl RtsxController {
             .as_ref()
             .ok_or("RTSX host command buffer unavailable")?
             .flush_for_device();
-        self.data_buffer
-            .as_ref()
-            .ok_or("RTSX data buffer unavailable")?
-            .flush_for_device();
+        if device_to_host {
+            self.data_buffer
+                .as_ref()
+                .ok_or("RTSX data buffer unavailable")?
+                .flush_for_device();
+        }
 
         self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
         self.mmio.write_batch_then_barrier(&[
