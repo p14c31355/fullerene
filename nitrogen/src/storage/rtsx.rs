@@ -159,6 +159,7 @@ impl RtsxController {
     }
 
     fn prepare_device(&mut self) -> Result<(), &'static str> {
+        crate::debug::hint(b"sd_pci");
         if !self.device.prepare_mmio() {
             return Err("RTSX PCI command or power transition failed");
         }
@@ -169,10 +170,13 @@ impl RtsxController {
 
     fn init_hardware(&mut self) -> Result<(), &'static str> {
         self.prepare_device()?;
+        crate::debug::hint(b"sd_mmio");
         self.mmio.write32(RTSX_BIER, 0);
+        crate::debug::hint(b"sd_bier");
         if !self.card_present() {
             return Err("no SD card inserted");
         }
+        crate::debug::hint(b"sd_card");
 
         self.write_regs(&[
             (CARD_SELECT, 0x07, 0x02),

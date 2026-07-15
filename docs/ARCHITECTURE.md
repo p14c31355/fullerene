@@ -200,6 +200,13 @@ higher layers decide policy
 
 Nitrogen should prefer safe abstractions over leaking raw hardware interfaces upward.
 
+The kernel owns PCI resource and page-table policy. Driver MMIO requests use a
+kernel capability that validates and preserves an existing physical direct map
+before creating a new mapping; drivers must not split boot huge pages or assume
+that changing page-table cache flags is harmless on firmware-defined PCI
+apertures. Likewise, firmware-assigned non-zero BARs are immutable inputs to
+boot resource allocation and are never size-probed destructively.
+
 ---
 
 ## Solvent (Runtime)
@@ -704,4 +711,3 @@ The goal is to reduce cognitive load, improve maintainability, and provide a sta
 Rule of thumb:
 
 > If multiple functions share the same conceptual state, create a Context structure and move the state into it.
-
