@@ -57,9 +57,9 @@ pub struct SolventCallbacks {
     pub vfs_readdir: Option<fn(&str) -> Result<Vec<VfsEntry>, &'static str>>,
     pub vfs_read: Option<fn(&str) -> Result<Vec<u8>, &'static str>>,
     pub vfs_write: Option<fn(&str, &[u8]) -> Result<(), &'static str>>,
-    pub vfs_create: Option<fn(&str) -> Result<(), &'static str>>,
-    pub vfs_mkdir: Option<fn(&str) -> Result<(), &'static str>>,
-    pub vfs_unlink: Option<fn(&str) -> Result<(), &'static str>>,
+    pub vfs_copy: Option<fn(&str, &str, bool) -> Result<(), &'static str>>,
+    pub vfs_move: Option<fn(&str, &str, bool) -> Result<(), &'static str>>,
+    pub vfs_remove: Option<fn(&str, bool) -> Result<(), &'static str>>,
     pub process_list: Option<fn() -> Vec<ProcessEntry>>,
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
     pub mounted_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
@@ -77,9 +77,9 @@ impl SolventCallbacks {
             vfs_readdir: None,
             vfs_read: None,
             vfs_write: None,
-            vfs_create: None,
-            vfs_mkdir: None,
-            vfs_unlink: None,
+            vfs_copy: None,
+            vfs_move: None,
+            vfs_remove: None,
             process_list: None,
             device_list: None,
             mounted_drive_list: None,
@@ -918,6 +918,13 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
 
 // ── Explorer keyboard handling ──────────────────────────────
 fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
+    if let Some(explorer) = rt.explorer.as_mut()
+        && explorer.handle_operation_key(scancode, pressed)
+    {
+        rt.explorer_dirty = true;
+        rt.frame_due = true;
+        return;
+    }
     if !pressed { return; }
     let key = scancode_to_resonance_keycode(scancode);
     let visible_rows = 20usize;

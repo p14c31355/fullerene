@@ -309,6 +309,23 @@ impl RtsxController {
     }
 
     pub fn init_sd_card(&mut self) -> Result<(), &'static str> {
+        // A registered card is already in transfer state. Sending CMD0 and
+        // ACMD41 again without a removal/power-cycle resets the protocol under
+        // a live block device and is known to time out on RTS5249 hardware.
+        if let Some(rca) = self.sd_card.as_ref().map(|card| card.rca) {
+            self.prepare_device()?;
+            if self.card_present()
+                && self
+                    .command(CMD13_SEND_STATUS, u32::from(rca) << 16, SD_RSP_R1)
+                    .is_ok_and(|status| status & (1 << 8) != 0)
+            {
+                self.card_was_present = true;
+                log::info!("RTSX: reusing initialized SD card");
+                return Ok(());
+            }
+            self.sd_card = None;
+        }
+
         // Overall timeout: must complete within 5 seconds on real hardware.
         let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
         let duration_ticks = 5_000_000u64.saturating_mul(crate::timing::ticks_per_us());

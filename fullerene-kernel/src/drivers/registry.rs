@@ -113,7 +113,7 @@ where
 // ── SD card state (formerly drivers/sd_card.rs) ────────────
 
 #[cfg(not(nitrogen_no_storage))]
-pub static SD_PROBED: AtomicBool = AtomicBool::new(false);
+static SD_PROBED: AtomicBool = AtomicBool::new(false);
 
 // ────────────────────────────────────────────────────────────
 //  Driver implementations
@@ -451,6 +451,10 @@ fn register_pending_usb() {
 /// Probe and register an SD card as a block device (no mount).
 #[cfg(not(nitrogen_no_storage))]
 pub fn sd_probe_and_register() -> bool {
+    if crate::devfs::block_device_exists("sd0") {
+        crate::klog_fmt!("SD card: /dev/sd0 already registered\n");
+        return true;
+    }
     if SD_PROBED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -502,6 +506,34 @@ pub fn sd_probe_and_register() -> bool {
 #[cfg(nitrogen_no_storage)]
 pub fn sd_probe_and_register() -> bool {
     false
+}
+
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdRescanResult {
+    Registered,
+    AlreadyRegistered,
+    Mounted,
+    Unavailable,
+}
+
+/// Reconcile the SD device node without destructively reinitializing a live card.
+#[cfg(not(nitrogen_no_storage))]
+pub fn rescan_sd() -> SdRescanResult {
+    if crate::devfs::block_device_exists("sd0") {
+        return if crate::devfs::block_device_available("sd0") {
+            SdRescanResult::AlreadyRegistered
+        } else {
+            SdRescanResult::Mounted
+        };
+    }
+
+    SD_PROBED.store(false, Ordering::Release);
+    if sd_probe_and_register() {
+        SdRescanResult::Registered
+    } else {
+        SdRescanResult::Unavailable
+    }
 }
 
 #[cfg(not(nitrogen_no_storage))]

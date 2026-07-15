@@ -2,7 +2,7 @@
 //!
 //! Tracks the furthest boot stage reached.  The current stage can be
 //! queried at any time and is included as a `LastStage=…` line in
-//! `/bootlog.txt` on panic or clean shutdown.
+//! `/bootlog/Bootlog.txt` on panic or clean shutdown.
 //!
 //! # Usage
 //!
@@ -192,7 +192,7 @@ pub fn last_stage() -> Option<BootStage> {
     BootStage::from_u8(raw)
 }
 
-/// Format a `LastStage=…` line for inclusion in `/bootlog.txt`.
+/// Format a `LastStage=…` line for inclusion in `/bootlog/Bootlog.txt`.
 pub fn last_stage_line() -> alloc::string::String {
     match last_stage() {
         Some(s) => alloc::format!("LastStage={}\n", s.label()),

@@ -1,4 +1,4 @@
-//! FAT32/exFAT filesystem driver — thin wrapper around the `fatfs` crate.
+//! FAT12/16/32 filesystem driver and removable-media format dispatcher.
 //!
 //! Implements the `FileSystem` trait over a block device via `fatfs`.
 
@@ -79,6 +79,34 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> 
     }
     klog_fmt!("FAT: no FAT partition found in MBR\n");
     Err(FsError::FileNotFound)
+}
+
+/// Detect the volume format and construct the matching VFS implementation.
+pub fn mount_device(
+    mut device: Box<dyn BlockDevice>,
+) -> Result<Box<dyn FileSystem>, (FsError, Option<Box<dyn BlockDevice>>)> {
+    let lba = match find_fat_partition(&mut *device) {
+        Ok(lba) => lba,
+        Err(error) => return Err((error, Some(device))),
+    };
+    let mut boot = [0; 512];
+    if let Err(error) = device.read_sectors(lba, 1, &mut boot) {
+        klog_fmt!("filesystem probe failed at LBA {}: {}\n", lba, error);
+        return Err((FsError::InvalidInput, Some(device)));
+    }
+    let partition: Box<dyn BlockDevice> = if lba == 0 {
+        device
+    } else {
+        Box::new(PartitionBlockDevice { inner: device, offset: lba })
+    };
+    if is_exfat(&boot) {
+        crate::drivers::exfat::ExFatFileSystem::new(partition)
+            .map(|filesystem| Box::new(filesystem) as Box<dyn FileSystem>)
+    } else {
+        FatFileSystem::new(Box::new(BlockCache::new(partition, 64)))
+            .map(|filesystem| Box::new(filesystem) as Box<dyn FileSystem>)
+            .map_err(|error| (error, None))
+    }
 }
 
 pub use genome::block::{BlockDevice, BlockError};
@@ -296,22 +324,6 @@ pub struct FatFileSystem {
 }
 
 impl FatFileSystem {
-    pub fn from_device(device: Box<dyn BlockDevice>) -> Result<Self, (FsError, Option<Box<dyn BlockDevice>>)> {
-        let mut device = device;
-        let lba = match find_fat_partition(&mut *device) {
-            Ok(lba) => lba,
-            Err(e) => return Err((e, Some(device))),
-        };
-        if lba > 0 {
-            let wrapped = PartitionBlockDevice { inner: device, offset: lba };
-            let cached = BlockCache::new(wrapped, 64);
-            Self::new(Box::new(cached)).map_err(|e| (e, None))
-        } else {
-            let cached = BlockCache::new(device, 64);
-            Self::new(Box::new(cached)).map_err(|e| (e, None))
-        }
-    }
-
     pub fn new(device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
         let fat_dev = FatDevice::new(device);
         let opts = fatfs::FsOptions::new();

@@ -323,7 +323,7 @@ fn register_nozzle_hooks() {
                 return;
             }
             let (device, mount_point) = (ctx.args[1], ctx.args[2]);
-            match crate::contexts::vfs::mount(device, mount_point, "fat32") {
+            match crate::contexts::vfs::mount(device, mount_point, "auto") {
                 Ok(()) => {
                     tline!(ctx.terminal, "mount: OK — {} mounted at {}", device, mount_point);
                     let _ = crate::klog::flush_to_vfs();
@@ -535,19 +535,20 @@ fn register_nozzle_hooks() {
         "sd_rescan" => {
             #[cfg(not(nitrogen_no_storage))]
             {
-                if crate::devfs::block_device_exists("sd0") && !crate::devfs::block_device_available("sd0") {
-                    ctx.terminal.write_str("SD rescan: refusing rescan while SD card is mounted.\n");
-                } else {
-                    ctx.terminal.write_str(
-                        "SD rescan: explicitly activating controller MMIO; this may not return on broken hardware.\n",
-                    );
-                    crate::drivers::registry::SD_PROBED.store(false, core::sync::atomic::Ordering::Release);
-                    if crate::drivers::registry::sd_probe_and_register() {
-                        ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n");
-                    } else {
-                        ctx.terminal
-                            .write_str("SD rescan: no usable card; see dmesg for details.\n");
+                use crate::drivers::registry::SdRescanResult;
+                match crate::drivers::registry::rescan_sd() {
+                    SdRescanResult::Registered => {
+                        ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n")
                     }
+                    SdRescanResult::AlreadyRegistered => ctx
+                        .terminal
+                        .write_str("SD rescan: /dev/sd0 is already ready.\n"),
+                    SdRescanResult::Mounted => ctx
+                        .terminal
+                        .write_str("SD rescan: /dev/sd0 is mounted; keeping it online.\n"),
+                    SdRescanResult::Unavailable => ctx.terminal.write_str(
+                        "SD rescan: no usable card; see dmesg for details.\n",
+                    ),
                 }
             }
             #[cfg(nitrogen_no_storage)]

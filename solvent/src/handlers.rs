@@ -145,9 +145,13 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
 
     // If context menu is open, handle clicks on it first
     if explorer.context_menu.open {
-        crate::explorer::handle_context_menu_click(explorer, rel_x, rel_y);
+        let launch_path = crate::explorer::handle_context_menu_click(explorer, rel_x, rel_y)
+            .and_then(|action| explorer.dispatch_context_action(action));
         rt.explorer_dirty = true;
         rt.frame_due = true;
+        if let Some(path) = launch_path {
+            crate::launch_file(rt, &path);
+        }
         return;
     }
 
@@ -216,17 +220,16 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
         MouseButton::Right => {
             let win_w = window.width;
             let win_h = window.height;
-            // Only show context menu for file list hits
-            if crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y).is_some() {
+            // The empty portion of a directory must expose Paste as well.
+            if crate::explorer::hit_file_area(win_w, win_h, rel_x, rel_y) {
+                let hit = crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y);
                 explorer.context_menu.open = true;
-                explorer.context_menu.x = rel_x as u32;
-                explorer.context_menu.y = rel_y as u32;
-                // Also select the item under cursor
-                if let Some(idx) =
-                    crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y)
-                {
-                    explorer.selected_index = Some(idx);
-                }
+                explorer.context_menu.x = (rel_x.max(0) as u32)
+                    .min(win_w.saturating_sub(crate::explorer::CONTEXT_MENU_W));
+                explorer.context_menu.y = (rel_y.max(0) as u32).min(
+                    win_h.saturating_sub(6 * crate::explorer::ROW_HEIGHT),
+                );
+                explorer.selected_index = hit;
                 rt.explorer_dirty = true;
                 rt.frame_due = true;
             }
