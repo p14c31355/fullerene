@@ -28,7 +28,6 @@ struct MbrPartitionEntry {
     lba_start: u32,
     sector_count: u32,
 }
-
 const MBR_SIGNATURE: u16 = 0xAA55;
 const PARTITION_FAT32: u8 = 0x0B;
 const PARTITION_FAT32_LBA: u8 = 0x0C;
@@ -99,11 +98,12 @@ pub fn mount_device(
     } else {
         Box::new(PartitionBlockDevice { inner: device, offset: lba })
     };
+    let cached: Box<dyn BlockDevice> = Box::new(BlockCache::new(partition, 64));
     if is_exfat(&boot) {
-        crate::drivers::exfat::ExFatFileSystem::new(partition)
+        crate::drivers::exfat::ExFatFileSystem::new(cached)
             .map(|filesystem| Box::new(filesystem) as Box<dyn FileSystem>)
     } else {
-        FatFileSystem::new(Box::new(BlockCache::new(partition, 64)))
+        FatFileSystem::new(cached)
             .map(|filesystem| Box::new(filesystem) as Box<dyn FileSystem>)
             .map_err(|error| (error, None))
     }
