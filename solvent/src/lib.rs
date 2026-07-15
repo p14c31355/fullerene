@@ -579,10 +579,7 @@ fn service_explorer_navigation() {
     let result = callback
         .ok_or("filesystem unavailable")
         .and_then(|read| read(&path));
-    match &result {
-        Ok(entries) => nitrogen::debug_status!("Explorer", "ready: {} entries", entries.len()),
-        Err(error) => nitrogen::debug_status!("Explorer", "readdir failed: {}", error),
-    }
+    let outcome = result.as_ref().map(Vec::len).map_err(|error| *error);
 
     if let Some(runtime) = RUNTIME.lock().as_mut()
         && let Some(explorer) = runtime.explorer.as_mut()
@@ -590,6 +587,10 @@ fn service_explorer_navigation() {
         explorer.finish_navigation(path, result);
         runtime.explorer_dirty = true;
         runtime.frame_due = true;
+    }
+    match outcome {
+        Ok(entries) => nitrogen::debug_status!("Explorer", "applied: {} entries", entries),
+        Err(error) => nitrogen::debug_status!("Explorer", "readdir failed: {}", error),
     }
 }
 
@@ -860,6 +861,9 @@ pub(crate) fn render_explorer(rt: &mut RuntimeState) {
         }
     };
     explorer::render_explorer(explorer, &mut window.surface);
+    if let Some(entries) = explorer.take_rendered_navigation() {
+        nitrogen::debug_status!("Explorer", "displayed: {} entries", entries);
+    }
     rt.desktop.invalidate_window(explorer_id);
     rt.explorer_dirty = false;
 }

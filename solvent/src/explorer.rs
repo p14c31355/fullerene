@@ -157,6 +157,7 @@ pub enum SortMode {
 pub struct FileEntryDisplay {
     pub name: String,
     pub size_str: String,
+    pub size: u64,
     pub is_dir: bool,
 }
 
@@ -232,8 +233,6 @@ pub struct ExplorerContext {
     pub window_id: Option<WindowId>,
     pub current_dir: String,
     pub entries: Vec<FileEntryDisplay>,
-    pub raw_names: Vec<String>,
-    pub raw_is_dir: Vec<bool>,
     pub selected_index: Option<usize>,
     pub scroll_offset: usize,
     pub sidebar_items: Vec<SidebarItem>,
@@ -252,6 +251,7 @@ pub struct ExplorerContext {
     status_message: Option<String>,
     rename_shift_held: bool,
     pending_navigation: Option<PendingNavigation>,
+    rendered_navigation: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -279,8 +279,6 @@ impl ExplorerContext {
             window_id: None,
             current_dir: String::from("/"),
             entries: Vec::new(),
-            raw_names: Vec::new(),
-            raw_is_dir: Vec::new(),
             selected_index: None,
             scroll_offset: 0,
             sidebar_items: Self::default_sidebar(),
@@ -298,6 +296,7 @@ impl ExplorerContext {
             status_message: None,
             rename_shift_held: false,
             pending_navigation: None,
+            rendered_navigation: None,
         }
     }
 
@@ -362,12 +361,11 @@ impl ExplorerContext {
             Ok(entries) => entries,
             Err(error) => {
                 self.status_message = Some(format!("Open failed: {}", error));
+                self.rendered_navigation = None;
                 return;
             }
         };
         self.current_dir = path.clone();
-        self.raw_names = entries.iter().map(|entry| entry.name.clone()).collect();
-        self.raw_is_dir = entries.iter().map(|entry| entry.is_dir).collect();
         self.entries = entries
             .into_iter()
             .map(|entry| FileEntryDisplay {
@@ -377,6 +375,7 @@ impl ExplorerContext {
                     format_size(entry.size)
                 },
                 name: entry.name,
+                size: entry.size,
                 is_dir: entry.is_dir,
             })
             .collect();
@@ -384,11 +383,16 @@ impl ExplorerContext {
         self.selected_index = None;
         self.scroll_offset = 0;
         self.status_message = None;
+        self.rendered_navigation = Some(self.entries.len());
         if self.history_pos >= self.history.len() || self.history[self.history_pos] != path {
             self.history.truncate(self.history_pos + 1);
             self.history.push(path);
             self.history_pos = self.history.len() - 1;
         }
+    }
+
+    pub(crate) fn take_rendered_navigation(&mut self) -> Option<usize> {
+        self.rendered_navigation.take()
     }
 
     pub fn refresh(&mut self) {
@@ -443,33 +447,17 @@ impl ExplorerContext {
 
     fn sort_entries(&mut self) {
         let ascending = self.sort_ascending;
-        // Keep directories first
-        let mut indices: Vec<usize> = (0..self.entries.len()).collect();
-        indices.sort_by(|&a, &b| {
-            let ea = &self.entries[a];
-            let eb = &self.entries[b];
+        self.entries.sort_unstable_by(|ea, eb| {
             if ea.is_dir != eb.is_dir {
                 return eb.is_dir.cmp(&ea.is_dir);
             }
             let cmp = match self.sort_mode {
                 SortMode::Name => ea.name.cmp(&eb.name),
-                SortMode::Size => {
-                    let sa = parse_size_for_sort(&ea.size_str);
-                    let sb = parse_size_for_sort(&eb.size_str);
-                    sa.cmp(&sb)
-                }
+                SortMode::Size => ea.size.cmp(&eb.size),
                 SortMode::Date => ea.name.cmp(&eb.name),
             };
             if ascending { cmp } else { cmp.reverse() }
         });
-        let sorted_entries: Vec<FileEntryDisplay> =
-            indices.iter().map(|&i| self.entries[i].clone()).collect();
-        let sorted_names: Vec<String> =
-            indices.iter().map(|&i| self.raw_names[i].clone()).collect();
-        let sorted_is_dir: Vec<bool> = indices.iter().map(|&i| self.raw_is_dir[i]).collect();
-        self.entries = sorted_entries;
-        self.raw_names = sorted_names;
-        self.raw_is_dir = sorted_is_dir;
     }
 
     pub fn go_back(&mut self) {
@@ -495,8 +483,9 @@ impl ExplorerContext {
 
     /// Queue a directory navigation or return a file path for launching.
     pub fn activate_entry(&mut self, idx: usize) -> Option<String> {
-        let path = join_path(&self.current_dir, self.raw_names.get(idx)?);
-        if *self.raw_is_dir.get(idx)? {
+        let entry = self.entries.get(idx)?;
+        let path = join_path(&self.current_dir, &entry.name);
+        if entry.is_dir {
             self.navigate_to(&path);
             None
         } else {
@@ -505,9 +494,9 @@ impl ExplorerContext {
     }
 
     fn selected_entry(&self) -> Option<(String, String, bool)> {
-        let index = self.selected_index?;
-        let name = self.raw_names.get(index)?.clone();
-        Some((join_path(&self.current_dir, &name), name, *self.raw_is_dir.get(index)?))
+        let entry = self.entries.get(self.selected_index?)?;
+        let name = entry.name.clone();
+        Some((join_path(&self.current_dir, &name), name, entry.is_dir))
     }
 
     /// Execute an Explorer context-menu command. A returned path is a file
@@ -761,25 +750,6 @@ fn format_size(size: u64) -> String {
         format!("{}.{} KB", size / 1024, (size % 1024) * 10 / 1024)
     } else {
         format!("{} B", size)
-    }
-}
-
-fn parse_size_for_sort(s: &str) -> u64 {
-    if s == "<DIR>" {
-        return 0;
-    }
-    let mut num = 0u64;
-    for c in s.bytes() {
-        if c >= b'0' && c <= b'9' {
-            num = num * 10 + (c - b'0') as u64;
-        }
-    }
-    if s.ends_with("KB") {
-        num * 1024
-    } else if s.ends_with("MB") {
-        num * 1048576
-    } else {
-        num
     }
 }
 
@@ -1221,8 +1191,21 @@ mod tests {
     fn activating_entries_uses_one_path_for_keyboard_and_mouse() {
         let mut explorer = ExplorerContext::new();
         explorer.current_dir = String::from("/mnt");
-        explorer.raw_names = alloc::vec![String::from("sdcard"), String::from("Bootlog.txt")];
-        explorer.raw_is_dir = alloc::vec![true, false];
+        explorer.finish_navigation(
+            String::from("/mnt"),
+            Ok(alloc::vec![
+                VfsEntry {
+                    name: String::from("sdcard"),
+                    size: 0,
+                    is_dir: true,
+                },
+                VfsEntry {
+                    name: String::from("Bootlog.txt"),
+                    size: 512,
+                    is_dir: false,
+                },
+            ]),
+        );
 
         assert_eq!(explorer.activate_entry(0), None);
         assert_eq!(
