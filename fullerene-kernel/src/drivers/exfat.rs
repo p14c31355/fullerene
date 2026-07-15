@@ -247,6 +247,7 @@ impl ExFatFileSystem {
         let prefetch = ExFatBootSector::read(&mut adapter)
             .map_err(Self::map_error)
             .and_then(|boot| {
+                cache.lock().clear();
                 Self::scan_root(&mut adapter, boot.info(), |sector| {
                     sector.chunks_exact(32).any(|entry| entry[0] == 0)
                 })

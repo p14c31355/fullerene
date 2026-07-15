@@ -18,6 +18,7 @@
 //! ```
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use petroleum::graphics::Renderer;
 use solvent;
 
 use genome::fs::FsError;
@@ -187,8 +188,13 @@ fn render_fallback(label: &[u8]) {
     }
 }
 
-/// Flush backends that require explicit frame submission.
+/// Signal present and flush GPU after rendering.
 fn finish_frame() {
+    crate::contexts::kernel::with_kernel_mut(|k| {
+        if let Some(ref mut renderer) = k.framebuffer.renderer {
+            renderer.present();
+        }
+    });
     crate::graphics::flush_gpu();
 }
 
