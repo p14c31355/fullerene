@@ -8,7 +8,7 @@
 use core::ptr;
 
 use super::context::XhciContext;
-use super::ring::{Trb, trb_flag, trb_type, COMP_SUCCESS};
+use super::ring::{COMP_SHORT_PACKET, COMP_SUCCESS, Trb, trb_flag, trb_type};
 use crate::usb::{UsbDirection, UsbSetupPacket};
 
 impl XhciContext {
@@ -95,21 +95,27 @@ impl XhciContext {
         self.registers.doorbell.ring(slot_id, 1);
         let res = self.wait_event(5_000_000);
 
-        if res.is_ok() && is_in && data_len > 0 {
+        let actual = res
+            .as_ref()
+            .ok()
+            .filter(|ev| matches!(ev.completion_code(), COMP_SUCCESS | COMP_SHORT_PACKET))
+            .map(|ev| data_len.saturating_sub((ev.remaining() as usize).min(data_len)));
+
+        if let Some(actual) = actual.filter(|_| is_in && data_len > 0) {
             unsafe {
-                ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), data_len);
+                ptr::copy_nonoverlapping(staging_virt, buf.as_mut_ptr(), actual);
             }
         }
 
-        match res {
-            Ok(_) => {
+        match (res, actual) {
+            (Ok(_), Some(actual)) => {
                 if staging_phys != 0 {
                     self.driver_ctx
                         .free_contiguous_frames(staging_phys, (data_len + 4095) / 4096);
                 }
-                Ok(data_len)
+                Ok(actual)
             }
-            Err(_) => {
+            _ => {
                 if staging_phys != 0 {
                     self.deferred_free_list
                         .push((staging_phys, (data_len + 4095) / 4096));
@@ -178,16 +184,11 @@ impl XhciContext {
                 UsbDirection::Out => slot.bulk_out_ring.as_mut().unwrap(),
             };
 
-            let dir_flag = if dir == UsbDirection::In {
-                trb_flag::DIR_IN
-            } else {
-                0
-            };
             ring.enqueue(
                 Trb::new(trb_type::NORMAL, ring.cycle)
                     .with_data_ptr(staging_phys)
                     .with_length(len as u32)
-                    .with_flags(dir_flag | trb_flag::IOC | trb_flag::ENT),
+                    .with_flags(trb_flag::IOC),
             );
 
             let ep_num = (endpoint & 0x0F) as u32;
@@ -200,9 +201,8 @@ impl XhciContext {
 
         match res {
             Ok(ev) => {
-                if ev.completion_code() != COMP_SUCCESS {
-                    self.deferred_free_list
-                        .push((staging_phys, staging_pages));
+                if !matches!(ev.completion_code(), COMP_SUCCESS | COMP_SHORT_PACKET) {
+                    self.deferred_free_list.push((staging_phys, staging_pages));
                     return Err("bulk completion code not success");
                 }
                 let remainder = ev.remaining() as usize;
@@ -217,8 +217,7 @@ impl XhciContext {
                 Ok(xfer_len)
             }
             Err(_) => {
-                self.deferred_free_list
-                    .push((staging_phys, staging_pages));
+                self.deferred_free_list.push((staging_phys, staging_pages));
                 Err("bulk transfer failed")
             }
         }

@@ -27,10 +27,13 @@ pub mod trb_type {
     pub const SET_TR_DEQUEUE: u8 = 16;
     pub const RESET_DEVICE: u8 = 17;
     pub const NO_OP: u8 = 23;
+    pub const TRANSFER_EVENT: u8 = 32;
+    pub const COMMAND_COMPLETION_EVENT: u8 = 33;
 }
 
 /// Command completion code for Success (xHCI spec §6.4.2.1, Table 6-93).
 pub const COMP_SUCCESS: u8 = 1;
+pub const COMP_SHORT_PACKET: u8 = 13;
 
 pub mod trb_flag {
     pub const CYCLE: u32 = 1 << 0;
@@ -38,7 +41,6 @@ pub mod trb_flag {
     pub const CHAIN: u32 = 1 << 4;
     pub const IOC: u32 = 1 << 5;
     pub const IDT: u32 = 1 << 6;
-    pub const ENT: u32 = 1 << 11;
     pub const DIR_IN: u32 = 1 << 16;
     pub const TRB_TYPE_SHIFT: u32 = 10;
     pub const TRB_TYPE_MASK: u32 = 0x3F << TRB_TYPE_SHIFT;

@@ -40,6 +40,10 @@ pub struct VfsContext {
     /// Open-handle tracking so that `read(fd)` / `close(fd)` routes a
     /// VFS-global descriptor to the owning mount and its local descriptor.
     handle_table: Mutex<HandleTable>,
+
+    /// Block-device source and its mount point. Genome remains generic while
+    /// device-facing kernel code can expose only reachable storage.
+    mounted_devices: Mutex<Vec<(String, String)>>,
 }
 
 /// Tracks which mount owns each VFS-global file descriptor.
@@ -125,6 +129,7 @@ impl VfsContext {
         Self {
             inner: Mutex::new(Vfs::new(root_fs)),
             handle_table: Mutex::new(HandleTable::new()),
+            mounted_devices: Mutex::new(Vec::new()),
         }
     }
 
@@ -159,24 +164,44 @@ impl VfsContext {
     /// unmounted filesystem are discarded, and indices of remaining mounts
     /// that shifted left are decremented.
     pub fn unmount(&self, mount_point: &str) -> Result<bool, FsError> {
-        let mut vfs = self.inner.lock();
-        let mut handle_table = self.handle_table.lock();
-        let target_idx = match vfs.mounted_fs_index(mount_point) {
-            Some(idx) => idx,
-            None => return Ok(false),
-        };
-        let removed = vfs.unmount(mount_point)?;
-        if removed {
-            handle_table
-                .entries
-                .retain(|entry| entry.mount_index != target_idx);
-            for entry in &mut handle_table.entries {
-                if entry.mount_index > target_idx {
-                    entry.mount_index -= 1;
+        let mount_point = self.inner.lock().resolve_path(mount_point);
+        let removed = {
+            let mut vfs = self.inner.lock();
+            let mut handle_table = self.handle_table.lock();
+            let target_idx = match vfs.mounted_fs_index(&mount_point) {
+                Some(idx) => idx,
+                None => return Ok(false),
+            };
+            let removed = vfs.unmount(&mount_point)?;
+            if removed {
+                handle_table
+                    .entries
+                    .retain(|entry| entry.mount_index != target_idx);
+                for entry in &mut handle_table.entries {
+                    if entry.mount_index > target_idx {
+                        entry.mount_index -= 1;
+                    }
                 }
             }
+            removed
+        };
+        if removed {
+            self.mounted_devices
+                .lock()
+                .retain(|(_, path)| path != &mount_point);
         }
         Ok(removed)
+    }
+
+    fn record_device_mount(&self, device: &str, mount_point: &str) {
+        let mut mounts = self.mounted_devices.lock();
+        mounts.retain(|(source, path)| source != device && path != mount_point);
+        mounts.push((String::from(device), String::from(mount_point)));
+    }
+
+    /// Return block devices which are currently reachable through the VFS.
+    pub fn mounted_block_devices(&self) -> Vec<(String, String)> {
+        self.mounted_devices.lock().clone()
     }
 
     // ── File operations ─────────────────────────────────────────
@@ -200,25 +225,41 @@ impl VfsContext {
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.read_at(handle.mount_index, handle.local_fd, buf)
     }
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.write_at(handle.mount_index, handle.local_fd, data)
     }
 
     pub fn close(&self, fd: u32) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().take(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .take(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.close_at(handle.mount_index, handle.local_fd)
     }
 
     pub fn seek(&self, fd: u32, pos: usize) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.seek_at(handle.mount_index, handle.local_fd, pos)
     }
 
@@ -351,6 +392,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             Ok(())
         }
         "fat32" => {
+            let mount_point = vfs.inner.lock().resolve_path(mount_point);
             let device_name = device
                 .strip_prefix("/dev/")
                 .filter(|name| !name.is_empty() && !name.contains('/'))
@@ -359,20 +401,26 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             if !crate::devfs::block_device_exists(device_name) {
                 return Err(FsError::FileNotFound);
             }
-            if vfs.inner.lock().mounted_fs_index(mount_point).is_some() {
+            if vfs
+                .inner
+                .lock()
+                .mounted_fs_index(&mount_point)
+                .is_some()
+            {
                 return Err(FsError::FileExists);
             }
 
             // Validate mount point before consuming the block device
-            if !vfs.exists(mount_point) {
-                vfs.mkdir(mount_point)?;
+            if !vfs.exists(&mount_point) {
+                vfs.mkdir(&mount_point)?;
             }
 
-            let bdev = crate::devfs::lease_block_device(device_name)
-                .ok_or(FsError::PermissionDenied)?;
+            let bdev =
+                crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
             match crate::drivers::fat::FatFileSystem::from_device(bdev) {
                 Ok(fs) => {
-                    vfs.mount(mount_point, Box::new(fs))?;
+                    vfs.mount(&mount_point, Box::new(fs))?;
+                    vfs.record_device_mount(device, &mount_point);
                     log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
                     Ok(())
                 }
@@ -507,8 +555,7 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
 
     // SAFETY: inner_guard and handle_table_guard also borrow from global
     // statics inside KernelContext.vfs, which lives forever.
-    let inner_guard: spin::MutexGuard<'static, Vfs> =
-        unsafe { core::mem::transmute(inner_guard) };
+    let inner_guard: spin::MutexGuard<'static, Vfs> = unsafe { core::mem::transmute(inner_guard) };
     let handle_table_guard: spin::MutexGuard<'static, HandleTable> =
         unsafe { core::mem::transmute(handle_table_guard) };
 
@@ -568,5 +615,22 @@ mod tests {
         context.read(mounted_file.fd, &mut mounted_data).unwrap();
         assert_eq!(&root_data, b"root");
         assert_eq!(&mounted_data, b"mounted");
+    }
+
+    #[test]
+    fn unmount_removes_device_mount_metadata() {
+        let context = VfsContext::new();
+        context.mkdir("/mnt").unwrap();
+        context
+            .mount("/mnt", Box::new(MemFileSystem::new()))
+            .unwrap();
+        context.record_device_mount("/dev/sd0", "/mnt");
+
+        assert_eq!(
+            context.mounted_block_devices(),
+            vec![(String::from("/dev/sd0"), String::from("/mnt"))]
+        );
+        assert!(context.unmount("/mnt").unwrap());
+        assert!(context.mounted_block_devices().is_empty());
     }
 }

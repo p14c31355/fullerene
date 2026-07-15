@@ -10,7 +10,7 @@
 //! let mut usb = USBContext::new(&kernel_ctx);
 //! usb.enable()?;         // PCI scan → init → poll → storage discovery
 //! for disk in usb.disks() {
-//!     println!("{}", disk.name());
+//!     println!("{} blocks", disk.total_blocks);
 //! }
 //! ```
 
@@ -136,7 +136,11 @@ impl ControllerManager {
             }
             log::info!(
                 "USB: found controller at {:02x}:{:02x}.{} (vendor={:#06x} device={:#06x})",
-                dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id
+                dev.bus,
+                dev.device,
+                dev.function,
+                dev.vendor_id,
+                dev.device_id
             );
 
             let mmio_base = match dev.read_bar(0) {
@@ -174,7 +178,9 @@ impl ControllerManager {
             crate::debug::hint(b"us_map");
             log::info!(
                 "USB: mapping MMIO BAR0 {:#x} -> virt {:#p} ({} bytes)",
-                mmio_base, mmio_virt, bar_size
+                mmio_base,
+                mmio_virt,
+                bar_size
             );
             if ctx
                 .map_mmio_region(mmio_base as usize, mmio_virt as usize, bar_size)
@@ -182,7 +188,9 @@ impl ControllerManager {
             {
                 log::info!(
                     "USB: failed to map MMIO for {:02x}:{:02x}.{}, skipping",
-                    dev.bus, dev.device, dev.function
+                    dev.bus,
+                    dev.device,
+                    dev.function
                 );
                 continue;
             }
@@ -198,7 +206,10 @@ impl ControllerManager {
                 bridge.class_code == 0x06
                     && bridge.subclass == 0x04
                     && PciConfigSpace::read_config_byte(
-                        bridge.bus, bridge.device, bridge.function, 0x19,
+                        bridge.bus,
+                        bridge.device,
+                        bridge.function,
+                        0x19,
                     ) == dev.bus
             });
             if let Some(up) = upstream {
@@ -209,15 +220,20 @@ impl ControllerManager {
             let mut health = upstream.map_or_else(
                 || PciHealth::new(dev),
                 |bridge| {
-                    PciHealth::new(dev)
-                        .with_upstream_bridge(bridge.bus, bridge.device, bridge.function)
+                    PciHealth::new(dev).with_upstream_bridge(
+                        bridge.bus,
+                        bridge.device,
+                        bridge.function,
+                    )
                 },
             );
             if health.pre_mmio_access().is_err() {
                 log::info!(
                     "USB: device at {:02x}:{:02x}.{} failed health check (not in D0 or link \
                      down) — skipping",
-                    dev.bus, dev.device, dev.function
+                    dev.bus,
+                    dev.device,
+                    dev.function
                 );
                 continue;
             }
@@ -237,12 +253,20 @@ impl ControllerManager {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
                         } else {
-                            log::info!("USB: EHCI init failed for {:02x}:{:02x}.{}",
-                                dev.bus, dev.device, dev.function);
+                            log::info!(
+                                "USB: EHCI init failed for {:02x}:{:02x}.{}",
+                                dev.bus,
+                                dev.device,
+                                dev.function
+                            );
                         }
                     } else {
-                        log::info!("USB: EHCI new failed for {:02x}:{:02x}.{}",
-                            dev.bus, dev.device, dev.function);
+                        log::info!(
+                            "USB: EHCI new failed for {:02x}:{:02x}.{}",
+                            dev.bus,
+                            dev.device,
+                            dev.function
+                        );
                     }
                 }
                 0x30 => {
@@ -258,12 +282,20 @@ impl ControllerManager {
                             self.xhci.push(Box::new(hc));
                             intel_xhci_active |= dev.vendor_id == 0x8086;
                         } else {
-                            log::info!("USB: xHCI init failed for {:02x}:{:02x}.{}",
-                                dev.bus, dev.device, dev.function);
+                            log::info!(
+                                "USB: xHCI init failed for {:02x}:{:02x}.{}",
+                                dev.bus,
+                                dev.device,
+                                dev.function
+                            );
                         }
                     } else {
-                        log::info!("USB: xHCI new failed for {:02x}:{:02x}.{}",
-                            dev.bus, dev.device, dev.function);
+                        log::info!(
+                            "USB: xHCI new failed for {:02x}:{:02x}.{}",
+                            dev.bus,
+                            dev.device,
+                            dev.function
+                        );
                     }
                 }
                 _ => {
@@ -313,7 +345,6 @@ impl ControllerManager {
             xhci_devices,
         }
     }
-
 }
 
 /// Events from a single poll cycle.
@@ -453,7 +484,7 @@ impl USBContext {
 
     fn register_ehci_storage(&mut self, ctrl_idx: usize, dev_idx: usize) {
         // Borrow scope to avoid conflicting with self.storage later.
-        let (dev_addr, bulk_out, bulk_in) = {
+        let (dev_addr, bulk_out, bulk_out_mps, bulk_in, bulk_in_mps, block_size, total_blocks) = {
             let ehci: &mut EhciContext = &mut *self.controllers.ehci[ctrl_idx];
             ehci.reset_pools();
 
@@ -470,7 +501,14 @@ impl USBContext {
             };
             let dev = match dev {
                 Ok(d) if d.is_mass_storage() => d,
-                _ => return,
+                Ok(_) => {
+                    log::warn!("USB: EHCI device {} is not mass storage", dev_idx);
+                    return;
+                }
+                Err(error) => {
+                    log::warn!("USB: EHCI enumeration failed: {}", error);
+                    return;
+                }
             };
 
             if let Some(slot) = ehci.devices_mut().get_mut(dev_idx) {
@@ -478,36 +516,82 @@ impl USBContext {
             }
 
             let mut bulk_out = 0u8;
+            let mut bulk_out_mps = 0u16;
             let mut bulk_in = 0u8;
+            let mut bulk_in_mps = 0u16;
             for ep in &dev.endpoints {
                 if ep.xfer_type() != super::UsbXferType::Bulk {
                     continue;
                 }
                 match ep.direction() {
-                    super::UsbDirection::Out => bulk_out = ep.b_endpoint_address,
-                    super::UsbDirection::In => bulk_in = ep.b_endpoint_address,
+                    super::UsbDirection::Out => {
+                        bulk_out = ep.b_endpoint_address;
+                        bulk_out_mps = ep.w_max_packet_size;
+                    }
+                    super::UsbDirection::In => {
+                        bulk_in = ep.b_endpoint_address;
+                        bulk_in_mps = ep.w_max_packet_size;
+                    }
                 }
             }
-            if bulk_out == 0 || bulk_in == 0 {
+            if bulk_out == 0 || bulk_out_mps == 0 || bulk_in == 0 || bulk_in_mps == 0 {
+                log::warn!("USB: EHCI mass-storage device has incomplete bulk endpoints");
                 return;
             }
-            (dev.address, bulk_out, bulk_in)
+            let mut tag = 1;
+            let (block_size, total_blocks) = match super::usb_bus::bot_read_capacity(
+                ehci,
+                dev.address,
+                bulk_out,
+                bulk_out_mps,
+                bulk_in,
+                bulk_in_mps,
+                &mut tag,
+            ) {
+                Ok(capacity) => capacity,
+                Err(error) => {
+                    log::warn!("USB: EHCI READ CAPACITY failed: {}", error);
+                    return;
+                }
+            };
+            (
+                dev.address,
+                bulk_out,
+                bulk_out_mps,
+                bulk_in,
+                bulk_in_mps,
+                block_size,
+                total_blocks,
+            )
         };
 
-        self.storage
-            .try_register("EHCI", dev_addr, bulk_out, bulk_in, ctrl_idx);
+        self.storage.try_register(Disk {
+            dev_addr,
+            ep_out: bulk_out,
+            ep_out_mps: bulk_out_mps,
+            ep_in: bulk_in,
+            ep_in_mps: bulk_in_mps,
+            block_size,
+            total_blocks,
+            ctrl_type: "EHCI",
+            ctrl_idx,
+        });
     }
 
     fn register_xhci_storage(&mut self, ctrl_idx: usize, dev_idx: usize) {
-        let (dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps) = {
+        let (dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, block_size, total_blocks) = {
             let xhci: &mut XhciContext = &mut *self.controllers.xhci[ctrl_idx];
 
             let slot_id = match xhci.enable_slot() {
                 Ok(id) => id,
-                Err(_) => return,
+                Err(error) => {
+                    log::warn!("USB: xHCI Enable Slot failed: {}", error);
+                    return;
+                }
             };
-            if xhci.address_device(slot_id).is_err() {
-                let _ = xhci.disable_slot(slot_id);
+            if let Err(error) = xhci.address_device(slot_id, dev_idx) {
+                log::warn!("USB: xHCI Address Device failed: {}", error);
+                xhci.disable_slot(slot_id);
                 return;
             }
 
@@ -517,10 +601,11 @@ impl USBContext {
                 dev_addr,
                 dev_idx,
             );
-            let (ep_out, ep_out_mps, ep_in, ep_in_mps, _blk) = match result {
+            let (ep_out, ep_out_mps, ep_in, ep_in_mps) = match result {
                 Ok(v) => v,
-                Err(_) => {
-                    let _ = xhci.disable_slot(slot_id);
+                Err(error) => {
+                    log::warn!("USB: xHCI mass-storage enumeration failed: {}", error);
+                    xhci.disable_slot(slot_id);
                     return;
                 }
             };
@@ -535,21 +620,50 @@ impl USBContext {
                 .configure_endpoint_bulk(slot_id, ep_out, ep_out_mps)
                 .is_err()
             {
-                let _ = xhci.disable_slot(slot_id);
+                log::warn!("USB: xHCI bulk OUT endpoint configuration failed");
+                xhci.disable_slot(slot_id);
                 return;
             }
             if xhci
                 .configure_endpoint_bulk(slot_id, ep_in, ep_in_mps)
                 .is_err()
             {
-                let _ = xhci.disable_slot(slot_id);
+                log::warn!("USB: xHCI bulk IN endpoint configuration failed");
+                xhci.disable_slot(slot_id);
                 return;
             }
-            (dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps)
+            let mut tag = 1;
+            let (block_size, total_blocks) = match super::usb_bus::bot_read_capacity(
+                xhci, dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, &mut tag,
+            ) {
+                Ok(capacity) => capacity,
+                Err(error) => {
+                    log::warn!("USB: xHCI READ CAPACITY failed: {}", error);
+                    xhci.disable_slot(slot_id);
+                    return;
+                }
+            };
+            (
+                dev_addr,
+                ep_out,
+                ep_out_mps,
+                ep_in,
+                ep_in_mps,
+                block_size,
+                total_blocks,
+            )
         };
 
-        self.storage.try_register_with_mps(
-            "xHCI", dev_addr, ep_out, ep_out_mps, ep_in, ep_in_mps, ctrl_idx,
-        );
+        self.storage.try_register(Disk {
+            dev_addr,
+            ep_out,
+            ep_out_mps,
+            ep_in,
+            ep_in_mps,
+            block_size,
+            total_blocks,
+            ctrl_type: "xHCI",
+            ctrl_idx,
+        });
     }
 }

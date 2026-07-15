@@ -3,7 +3,6 @@
 //! [`StorageManager`] owns discovered block-device metadata. Filesystem and
 //! mount policy remain in the kernel integration layer.
 
-use alloc::string::String;
 use alloc::vec::Vec;
 
 // ============================================================================
@@ -13,8 +12,6 @@ use alloc::vec::Vec;
 /// A discovered USB mass-storage disk.
 #[derive(Clone)]
 pub struct Disk {
-    /// Human-readable name (e.g. "USB Drive 1").
-    pub name: String,
     /// Index into the owning host controller's device list.
     pub dev_addr: u8,
     /// Bulk OUT endpoint address.
@@ -55,47 +52,12 @@ impl StorageManager {
         &self.disks
     }
 
-    /// Register a mass-storage device using default high-speed packet sizes.
-    pub fn try_register(
-        &mut self,
-        ctrl_type: &'static str,
-        dev_addr: u8,
-        ep_out: u8,
-        ep_in: u8,
-        ctrl_idx: usize,
-    ) -> bool {
-        self.try_register_with_mps(ctrl_type, dev_addr, ep_out, 512, ep_in, 512, ctrl_idx)
-    }
-
-    /// Register a mass-storage device with its reported endpoint packet sizes.
-    pub fn try_register_with_mps(
-        &mut self,
-        ctrl_type: &'static str,
-        dev_addr: u8,
-        ep_out: u8,
-        ep_out_mps: u16,
-        ep_in: u8,
-        ep_in_mps: u16,
-        ctrl_idx: usize,
-    ) -> bool {
-        let disk_num = self.disks.len() + 1;
-        let name = alloc::format!("USB Drive {}", disk_num);
-
-        let disk = Disk {
-            name,
-            dev_addr,
-            ep_out,
-            ep_out_mps,
-            ep_in,
-            ep_in_mps,
-            block_size: 512,
-            total_blocks: 0,
-            ctrl_type,
-            ctrl_idx,
-        };
-
+    /// Register a fully enumerated disk, rejecting controller-local duplicates.
+    pub fn try_register(&mut self, disk: Disk) -> bool {
         if self.disks.iter().any(|known| {
-            known.ctrl_type == ctrl_type && known.ctrl_idx == ctrl_idx && known.dev_addr == dev_addr
+            known.ctrl_type == disk.ctrl_type
+                && known.ctrl_idx == disk.ctrl_idx
+                && known.dev_addr == disk.dev_addr
         }) {
             return false;
         }
