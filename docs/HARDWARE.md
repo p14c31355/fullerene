@@ -20,10 +20,21 @@ companion at `00:1d.0`. Before the first xHCI BAR0 load, Fullerene now:
    routes the firmware-declared USB2 ports (`XUSB2PR`, config `0xd0`) to xHCI;
 3. disables standard ASPM and enables PCI memory decoding/bus mastering;
 4. maps BAR0 uncached and reads the capability header as a 32-bit register;
-5. performs the xHCI BIOS/OS ownership handoff and disables legacy SMIs.
+5. performs the xHCI BIOS/OS ownership handoff, disables legacy SMIs, and
+   waits for `USBSTS.CNR` to clear before operational-register access.
 
-The USB subsystem owns this sequence once per boot, rather than once for every
-USB PCI function. EHCI is initialized once and is not restarted by each poll.
+Boot registers the USB service without touching either controller BAR. The
+sequence above starts on the first service poll or explicit re-enumeration, so
+an uncompleted PCIe read cannot block the boot-critical path. xHCI is
+initialized before its companion; after Intel routing is confirmed and xHCI is
+active, Fullerene does not access the unsupported EHCI companion. EHCI-only
+systems still use the EHCI path, which is initialized once and never restarted
+by polling.
+
+The runtime interrupter register set begins at `RTSOFF + 0x20` (after
+`MFINDEX`); using `RTSOFF` directly writes the wrong registers. Capability,
+operational, runtime, doorbell, and extended-capability offsets are rejected if
+they exceed the mapped BAR window.
 
 `core::ptr::read_volatile`, an MMIO wrapper, inline assembly, and an external
 xHCI crate all ultimately issue the same non-posted CPU load. None can impose a

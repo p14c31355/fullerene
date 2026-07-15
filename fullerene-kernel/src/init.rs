@@ -219,12 +219,9 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             let mut scanner = nitrogen::pci::PciScanner::new();
             let _ = scanner.scan_all_buses();
 
-            // Pre-process: establish safe PCI state for every device before
-            // any driver is probed.  This ensures bridges have memory decoding
-            // enabled and all endpoints are in D0 with ASPM disabled, so the
-            // first MMIO access by any driver never hits a device in L1 or
-            // behind a bridge with memory decoding off.
-            let mut healthy_devices = alloc::vec::Vec::new();
+            // Keep discovery read-only.  Each Nitrogen driver owns the power,
+            // decode and link-state transition immediately before its MMIO.
+            let mut present_devices = alloc::vec::Vec::new();
             for dev in scanner.get_devices() {
                 // Log each device so we can identify where real hardware hangs.
                 {
@@ -242,20 +239,16 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     hex_char(dev.function >> 4), hex_char(dev.function & 0xF),
                 ];
                 crate::boot_stage::draw_step_hint(&hint_bcd);
-                dev.disable_pcie_aspm();
-                dev.enable_memory_access();
-                dev.ensure_d0();
-                // Quick MMIO-safety check
                 let vid = nitrogen::pci::PciConfigSpace::read_config_word(
                     dev.bus, dev.device, dev.function, 0,
                 );
                 if vid == 0xFFFF || vid == 0x0000 { continue; }
-                healthy_devices.push(dev.clone());
+                present_devices.push(dev.clone());
             }
 
             // DriverManager orchestrates probe → priority → attach → registration
             let mgr = DRIVER_MGR.call_once(crate::hardware::driver_manager::DriverManager::new);
-            mgr.discover_and_attach(&registry, ctx, &healthy_devices);
+            mgr.discover_and_attach(&registry, ctx, &present_devices);
 
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
@@ -331,15 +324,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 .map_err(|_| "Failed to initialize device manager")?;
             petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr done\n");
-            Ok(())
-        }),
-        petroleum::init_step!("usb_storage", || {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] usb_storage start\n");
-            crate::boot_stage::draw_boot_label(b"USB STORAGE");
-            crate::boot_stage::draw_step_hint(b"pre_log"); // drawn BEFORE serial_log
-            petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
-            crate::boot_stage::draw_step_hint(b"usb_ok ");
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] usb_storage done\n");
             Ok(())
         }),
         petroleum::init_step!("sd_card", || {

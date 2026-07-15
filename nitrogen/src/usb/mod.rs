@@ -34,6 +34,9 @@ pub mod msd;
 pub mod scsi;
 pub mod usb_bus;
 
+/// MMIO window mapped for a USB host-controller BAR.
+pub(crate) const HOST_CONTROLLER_BAR_SIZE: usize = 0x1_0000;
+
 /// USB device speed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsbSpeed {

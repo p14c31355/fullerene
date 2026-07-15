@@ -1,8 +1,8 @@
 //! USBContext — top-level USB subsystem.
 //!
 //! Owns all controllers, port managers, device drivers, and storage
-//! devices.  The kernel calls [`USBContext::enable`] once at boot,
-//! then [`USBContext::poll`] periodically for hotplug.
+//! devices.  The service may be registered during boot and activated on
+//! demand with [`USBContext::enable`], then polled for hotplug.
 //!
 //! # Usage
 //!
@@ -35,7 +35,7 @@ struct ControllerManager {
 }
 
 impl ControllerManager {
-    fn route_intel_ports_to_xhci(devices: &[crate::pci::PciDevice]) {
+    fn route_intel_ports_to_xhci(devices: &[crate::pci::PciDevice]) -> bool {
         use crate::pci::PciConfigSpace;
 
         let has_intel_ehci = devices.iter().any(|dev| {
@@ -45,9 +45,10 @@ impl ControllerManager {
                 && dev.prog_if == 0x20
         });
         if !has_intel_ehci {
-            return;
+            return false;
         }
 
+        let mut routed = false;
         for dev in devices.iter().filter(|dev| {
             dev.vendor_id == 0x8086
                 && dev.class_code == 0x0C
@@ -85,14 +86,18 @@ impl ControllerManager {
                 XUSB2PR,
                 usb2,
             );
+            let usb2_active = read(XUSB2PR);
+            let usb3_active = read(USB3_PSSEN);
+            routed |= usb2 != 0 && usb2_active == usb2;
             log::info!(
                 "USB: Intel routing USB2={:#x}/{:#x} USB3={:#x}/{:#x}",
-                read(XUSB2PR),
+                usb2_active,
                 usb2,
-                read(USB3_PSSEN),
+                usb3_active,
                 usb3,
             );
         }
+        routed
     }
 
     /// Scan the PCI bus and initialise every USB controller found.
@@ -105,13 +110,30 @@ impl ControllerManager {
             log::info!("USB: PCI scan failed: {:?}", e);
             return;
         }
-        Self::route_intel_ports_to_xhci(scanner.get_devices());
-        let mut found_any = false;
-        for dev in scanner.get_devices() {
-            if dev.class_code != 0x0C || dev.subclass != 0x03 {
+        let intel_ports_routed = Self::route_intel_ports_to_xhci(scanner.get_devices());
+        let mut controllers: Vec<_> = scanner
+            .get_devices()
+            .iter()
+            .filter(|dev| dev.class_code == 0x0C && dev.subclass == 0x03)
+            .collect();
+        // Initialise xHCI before its EHCI companion regardless of PCI scan order.
+        controllers.sort_by_key(|dev| dev.prog_if != 0x30);
+        let found_any = !controllers.is_empty();
+        let mut intel_xhci_active = false;
+        for dev in controllers {
+            if dev.prog_if == 0x20
+                && dev.vendor_id == 0x8086
+                && intel_ports_routed
+                && intel_xhci_active
+            {
+                log::info!(
+                    "USB: skipping routed Intel EHCI companion at {:02x}:{:02x}.{}",
+                    dev.bus,
+                    dev.device,
+                    dev.function
+                );
                 continue;
             }
-            found_any = true;
             log::info!(
                 "USB: found controller at {:02x}:{:02x}.{} (vendor={:#06x} device={:#06x})",
                 dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id
@@ -128,8 +150,7 @@ impl ControllerManager {
             // Avoid destructive BAR-size probing while firmware or a previous
             // controller instance may still be active. Mapping extra pages is
             // harmless; no transaction occurs until a register is accessed.
-            const USB_BAR_MAP_SIZE: usize = 0x1_0000;
-            let bar_size = USB_BAR_MAP_SIZE;
+            let bar_size = super::HOST_CONTROLLER_BAR_SIZE;
 
             let mmio_virt = ctx.phys_to_virt(mmio_base) as *mut u8;
             if mmio_virt.is_null() {
@@ -237,6 +258,7 @@ impl ControllerManager {
                         if hc.init().is_ok() {
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));
+                            intel_xhci_active |= dev.vendor_id == 0x8086;
                         } else {
                             log::info!("USB: xHCI init failed for {:02x}:{:02x}.{}",
                                 dev.bus, dev.device, dev.function);
@@ -268,7 +290,6 @@ impl ControllerManager {
         let mut xhci_devices: Vec<(usize, usize)> = Vec::new();
 
         for (idx, ehci) in self.ehci.iter_mut().enumerate() {
-            let _ = ehci.start();
             let old = ehci.devices().len();
             let new = ehci.poll_ports();
             if new > 0 {
@@ -295,51 +316,6 @@ impl ControllerManager {
         }
     }
 
-    fn debug_dump(&self) {
-        log::info!("=== USB DEBUG ===");
-        for (i, ehci) in self.ehci.iter().enumerate() {
-            log::info!("EHCI[{}]: {} ports", i, ehci.n_ports());
-            for p in 0..(ehci.n_ports().min(4)) {
-                let ps = ehci.read_portsc(p);
-                log::info!(
-                    "  PORTSC[{}]=0x{:08X} CCS={} PE={}",
-                    p,
-                    ps,
-                    ps & 1,
-                    (ps >> 2) & 1
-                );
-            }
-        }
-        for (i, xhci) in self.xhci.iter().enumerate() {
-            log::info!(
-                "xHCI[{}] ppc={} n_ports={} max_slots={} ports_done={:#x} legacy={}",
-                i,
-                xhci.ppc_enabled(),
-                xhci.n_ports(),
-                xhci.max_slots(),
-                xhci.ports_done_mask(),
-                xhci.legacy_handoff_done()
-            );
-            for p in 0..xhci.n_ports() {
-                let ps = xhci.read_portsc(p);
-                if ps == 0xFFFF_FFFF {
-                    continue;
-                }
-                log::info!(
-                    "xHCI PORTSC[{}]={:#x} CCS={} PED={} PLS={} PP={} PR={} speed={}",
-                    p,
-                    ps,
-                    ps & 1,
-                    (ps >> 1) & 1,
-                    (ps >> 5) & 0xF,
-                    (ps >> 9) & 1,
-                    (ps >> 4) & 1,
-                    (ps >> 10) & 0xF
-                );
-            }
-        }
-        log::info!("=== USB END ===");
-    }
 }
 
 /// Events from a single poll cycle.
@@ -354,12 +330,13 @@ struct ControllerEvent {
 
 /// Top-level USB subsystem handle.
 ///
-/// Call [`enable`](Self::enable) once at boot; call [`poll`](Self::poll)
-/// from a background timer to handle hotplug.
+/// Call [`enable`](Self::enable) before the first poll, then call
+/// [`poll`](Self::poll) from the service scheduler to handle hotplug.
 pub struct USBContext {
     controllers: ControllerManager,
     storage: StorageManager,
     driver_ctx: &'static dyn DriverContext,
+    enabled: bool,
 }
 
 impl USBContext {
@@ -369,16 +346,22 @@ impl USBContext {
             controllers: ControllerManager::default(),
             storage: StorageManager::new(),
             driver_ctx,
+            enabled: false,
         }
     }
 
-    /// Enable USB: scan PCI, initialise controllers, poll once, and discover
-    /// mass-storage devices without invoking filesystem policy.
+    /// Enable USB hardware without invoking polling or filesystem policy.
     pub fn enable(&mut self) -> Result<(), &'static str> {
+        if self.enabled {
+            return Ok(());
+        }
         self.controllers.init_controllers(self.driver_ctx);
-        self.controllers.debug_dump();
-        self.poll();
+        self.enabled = true;
         Ok(())
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     /// Poll all controllers for hotplug events and register new storage.
