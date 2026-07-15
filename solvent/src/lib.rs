@@ -62,7 +62,7 @@ pub struct SolventCallbacks {
     pub vfs_unlink: Option<fn(&str) -> Result<(), &'static str>>,
     pub process_list: Option<fn() -> Vec<ProcessEntry>>,
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
-    pub usb_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
+    pub mounted_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
     pub usb_poll: Option<fn() -> bool>,
     pub settings_save: Option<fn()>,
 }
@@ -82,7 +82,7 @@ impl SolventCallbacks {
             vfs_unlink: None,
             process_list: None,
             device_list: None,
-            usb_drive_list: None,
+            mounted_drive_list: None,
             usb_poll: None,
             settings_save: None,
         }
@@ -148,10 +148,10 @@ const FRAME_TIMER_ID: TimerId = TimerId(2);
 pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
 
-pub fn get_usb_drives() -> Vec<(String, String)> {
+pub fn get_mounted_drives() -> Vec<(String, String)> {
     SOLVENT_CALLBACKS
         .lock()
-        .usb_drive_list
+        .mounted_drive_list
         .map(|f| f())
         .unwrap_or_default()
 }

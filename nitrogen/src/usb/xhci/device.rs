@@ -148,20 +148,42 @@ impl InputContext {
         &mut self.ep_ctx[0]
     }
 
-    /// Set up minimal Input Context for Address Device:
-    /// - Add slot context (bit 0) + EP0 context (bit 1)
-    /// - Set device address in slot context
-    /// - Set EP0 context: MPS=64, type=Control (4), ring pointer
-    pub fn setup_address_device(&mut self, dev_addr: u8, ep0_ring_phys: u64) {
+    /// Set up a root-port device for the Address Device command.
+    pub fn setup_address_device(&mut self, root_port: u8, speed_id: u8, ep0_ring_phys: u64) {
         self.add_flags = 3; // add slot + EP0
         self.drop_flags = 0;
-        self.slot_ctx[0] = 0; // route string = 0 (root port)
-        self.slot_ctx[1] = (dev_addr as u32) << 24; // slot state: addressed
-        // EP0 context: dword 1 contains MPS and EP Type
-        self.ep_ctx[0][1] = (64 << 16) | (4 << 3); // MPS=64, type=Control(4)
-        // TR Dequeue Pointer: dwords 2-3, with DCS bit in low bit of dword 2
-        self.ep_ctx[0][2] = (ep0_ring_phys as u32) | 1; // TR Dequeue Pointer Low + DCS
-        self.ep_ctx[0][3] = (ep0_ring_phys >> 32) as u32; // TR Dequeue Pointer High
+        self.slot_ctx = [0; 8];
+        self.slot_ctx[0] = ((speed_id as u32) << 20) | (1 << 27);
+        self.slot_ctx[1] = (root_port as u32) << 16;
+
+        let max_packet_size = match speed_id {
+            3 => 64,
+            4 | 5 => 512,
+            _ => 8,
+        };
+        let ep0 = &mut self.ep_ctx[0];
+        *ep0 = [0; 8];
+        ep0[1] = (max_packet_size << 16) | (3 << 1) | (4 << 3);
+        ep0[2] = (ep0_ring_phys as u32) | 1;
+        ep0[3] = (ep0_ring_phys >> 32) as u32;
+        ep0[4] = 8;
+    }
+
+    /// Add one bulk endpoint context and keep Slot Context Entries monotonic.
+    pub fn setup_bulk_endpoint(&mut self, ctx_idx: u32, mps: u16, ring_phys: u64) {
+        self.add_flags = (1 << ctx_idx) | 1;
+        self.drop_flags = 0;
+        let entries = (self.slot_ctx[0] >> 27).max(ctx_idx);
+        self.slot_ctx[0] = (self.slot_ctx[0] & !0xF800_0000) | (entries << 27);
+
+        if let Some(ep) = self.ep_ctx_mut(ctx_idx) {
+            *ep = [0; 8];
+            let ep_type = if ctx_idx & 1 == 0 { 2 } else { 6 };
+            ep[1] = ((mps as u32) << 16) | (3 << 1) | (ep_type << 3);
+            ep[2] = (ring_phys as u32) | 1;
+            ep[3] = (ring_phys >> 32) as u32;
+            ep[4] = mps as u32;
+        }
     }
 }
 
@@ -419,5 +441,39 @@ mod tests {
         // Cannot allocate in tests without a real DriverContext,
         // but we can check the limit.
         assert_eq!(mgr.max_slots, 1);
+    }
+
+    #[test]
+    fn address_context_encodes_root_port_speed_and_ep0() {
+        let mut ctx = InputContext {
+            drop_flags: 0,
+            add_flags: 0,
+            _rsvd: [0; 6],
+            slot_ctx: [0; 8],
+            ep_ctx: [[0; 8]; 31],
+        };
+        ctx.setup_address_device(5, 3, 0x1234_5000);
+
+        assert_eq!((ctx.slot_ctx[0] >> 20) & 0xf, 3);
+        assert_eq!((ctx.slot_ctx[0] >> 27) & 0x1f, 1);
+        assert_eq!((ctx.slot_ctx[1] >> 16) & 0xff, 5);
+        assert_eq!(ctx.ep0_ctx()[1] >> 16, 64);
+        assert_eq!(ctx.ep0_ctx()[2], 0x1234_5001);
+    }
+
+    #[test]
+    fn bulk_endpoint_context_uses_direction_specific_type() {
+        let mut ctx = InputContext {
+            drop_flags: 0,
+            add_flags: 0,
+            _rsvd: [0; 6],
+            slot_ctx: [0; 8],
+            ep_ctx: [[0; 8]; 31],
+        };
+        ctx.setup_bulk_endpoint(3, 512, 0x2233_4000);
+        let ep = ctx.ep_ctx_mut(3).unwrap();
+        assert_eq!((ep[1] >> 3) & 7, 6);
+        assert_eq!(ep[1] >> 16, 512);
+        assert_eq!(ep[2], 0x2233_4001);
     }
 }

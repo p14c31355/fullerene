@@ -140,16 +140,9 @@ pub fn init() {
             }
             result
         }),
-        usb_drive_list: Some(|| {
-            let names = crate::devfs::list_block_device_names();
-            names.iter().map(|n| {
-                let status = if crate::devfs::block_device_available(n) {
-                    "(not mounted — use mount command)"
-                } else {
-                    "(mounted or in use)"
-                };
-                (alloc::format!("/dev/{}", n), alloc::string::String::from(status))
-            }).collect()
+        mounted_drive_list: Some(|| {
+            crate::contexts::vfs::with_vfs(|vfs| vfs.mounted_block_devices())
+                .unwrap_or_default()
         }),
         usb_poll: Some(|| crate::drivers::registry::poll_usb()),
         shell_cmd: None,

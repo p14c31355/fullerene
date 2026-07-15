@@ -376,7 +376,7 @@ impl ExplorerContext {
                 is_usb: false,
             },
         ];
-        for (name, mount_path) in crate::get_usb_drives() {
+        for (name, mount_path) in crate::get_mounted_drives() {
             items.push(SidebarItem {
                 label: name,
                 path: mount_path,

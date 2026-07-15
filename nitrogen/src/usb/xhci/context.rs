@@ -22,8 +22,8 @@
 //! xhci.poll_ports();
 //! ```
 
-use core::ptr;
 use alloc::vec::Vec;
+use core::ptr;
 
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
@@ -88,7 +88,11 @@ impl XhciContext {
     /// # Safety
     /// `mmio_base` must reference a mapped xHCI register BAR for the lifetime
     /// of the returned controller.
-    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
+    pub unsafe fn new(
+        mmio_base: *mut u8,
+        ctx: &'static dyn DriverContext,
+        health: PciHealth,
+    ) -> Option<Self> {
         // Brief delay after PCI config-space setup before first MMIO access.
         // On real hardware the controller may need time to stabilise after
         // D0 restoration, memory-space enable, and ASPM disable; skipping
@@ -114,21 +118,14 @@ impl XhciContext {
         let ppc = hcs1.ppc;
         let scratchpad_bufs = hcs1.max_scratchpad_bufs;
 
-        if n_ports == 0
-            || max_slots == 0
-            || cap_regs.db_offset == 0
-            || cap_regs.rt_offset == 0
-        {
+        if n_ports == 0 || max_slots == 0 || cap_regs.db_offset == 0 || cap_regs.rt_offset == 0 {
             log::warn!("xHCI: invalid or inaccessible capability registers");
             return None;
         }
 
         let bar_size = crate::usb::HOST_CONTROLLER_BAR_SIZE;
-        let in_bar = |offset: usize, len: usize| {
-            offset
-                .checked_add(len)
-                .is_some_and(|end| end <= bar_size)
-        };
+        let in_bar =
+            |offset: usize, len: usize| offset.checked_add(len).is_some_and(|end| end <= bar_size);
         let op_len = OP_PORTSC_BASE
             .checked_add(n_ports as usize * OP_PORTSC_STRIDE)
             .and_then(|len| len.checked_add(4));
@@ -281,12 +278,12 @@ impl XhciContext {
             log::info!("xHCI: controller running, halting before HCRST");
             self.registers
                 .op
-                .set_usbcmd(
-                    self.registers.op.usbcmd() & !(USBCMD_RS | USBCMD_INTE | USBCMD_HSEE),
-                );
+                .set_usbcmd(self.registers.op.usbcmd() & !(USBCMD_RS | USBCMD_INTE | USBCMD_HSEE));
             if crate::timing::wait_timeout_us(500_000, || {
                 self.registers.op.usbsts() & USBSTS_HCH != 0
-            }).is_err() {
+            })
+            .is_err()
+            {
                 return Err("controller failed to halt before HCRST");
             }
         }
@@ -393,17 +390,13 @@ impl XhciContext {
         // operational registers may stall the CPU.
         super::port::delay_us(1000);
 
-        if crate::timing::wait_timeout_us(500_000, || {
-            op.usbcmd() & USBCMD_HCRST == 0
-        }).is_err() {
+        if crate::timing::wait_timeout_us(500_000, || op.usbcmd() & USBCMD_HCRST == 0).is_err() {
             log::warn!("xHCI: HCRST did not clear");
             return Err("HCRST timeout");
         }
 
         // Wait for HCHalted
-        if crate::timing::wait_timeout_us(500_000, || {
-            op.usbsts() & USBSTS_HCH != 0
-        }).is_err() {
+        if crate::timing::wait_timeout_us(500_000, || op.usbsts() & USBSTS_HCH != 0).is_err() {
             log::warn!("xHCI: controller did not halt after HCRST");
             return Err("HCHalted timeout");
         }
@@ -411,9 +404,7 @@ impl XhciContext {
         // Wait for CNR (Controller Not Ready) to clear
         // The xHC needs time to initialise its internal state
         // before accepting register writes (xHCI spec §5.4.2).
-        if crate::timing::wait_timeout_us(500_000, || {
-            op.usbsts() & USBSTS_CNR == 0
-        }).is_err() {
+        if crate::timing::wait_timeout_us(500_000, || op.usbsts() & USBSTS_CNR == 0).is_err() {
             log::warn!("xHCI: CNR did not clear after HCRST");
             return Err("CNR timeout");
         }
@@ -473,9 +464,7 @@ impl XhciContext {
         let op = &self.registers.op;
 
         op.set_usbcmd_bits(USBCMD_RS | USBCMD_HSEE);
-        if crate::timing::wait_timeout_us(500_000, || {
-            op.usbsts() & USBSTS_HCH == 0
-        }).is_err() {
+        if crate::timing::wait_timeout_us(500_000, || op.usbsts() & USBSTS_HCH == 0).is_err() {
             log::error!("xHCI: controller failed to start (HCHalted)");
             return Err("controller failed to start");
         }
@@ -601,7 +590,10 @@ impl XhciContext {
         // Determine whether WPR was already attempted for this port on this
         // connect cycle, so ensure_port_ready skips Phase-4 WPR.
         let wpr_done = if is_usb3 && !op.portsc(port_idx).ccs() {
-            self.ports.get(port_idx).map(|p| p.wpr_attempted).unwrap_or(true)
+            self.ports
+                .get(port_idx)
+                .map(|p| p.wpr_attempted)
+                .unwrap_or(true)
         } else {
             true
         };
@@ -719,8 +711,16 @@ impl XhciContext {
     }
 
     /// Address a device.
-    pub fn address_device(&mut self, slot_id: u32) -> Result<(), &'static str> {
+    pub fn address_device(&mut self, slot_id: u32, dev_idx: usize) -> Result<(), &'static str> {
         let dev_addr = slot_id as u8;
+
+        let port_index = self
+            .devices
+            .get(dev_idx)
+            .ok_or("bad device index")?
+            .port_index;
+        let root_port = u8::try_from(port_index + 1).map_err(|_| "root port out of range")?;
+        let speed_id = self.registers.op.portsc(port_index).speed() as u8;
 
         let ep0_ring_phys = {
             let slot = self.device.slots.get(slot_id).ok_or("bad slot")?;
@@ -729,7 +729,7 @@ impl XhciContext {
 
         // Set up input context
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
-            in_ctx.setup_address_device(dev_addr, ep0_ring_phys);
+            in_ctx.setup_address_device(root_port, speed_id, ep0_ring_phys);
         }
 
         let in_ctx_phys = {
@@ -740,7 +740,7 @@ impl XhciContext {
         self.send_cmd(
             Trb::new(trb_type::ADDRESS_DEVICE, self.rings.command.cycle)
                 .with_data_ptr(in_ctx_phys)
-                .with_flags((slot_id << 24) | trb_flag::IOC),
+                .with_flags(slot_id << 24),
         )?;
 
         // Update slot state
@@ -749,11 +749,8 @@ impl XhciContext {
         }
 
         // Update device address
-        for dev in self.devices.iter_mut() {
-            if dev.address == 0 {
-                dev.address = dev_addr;
-                break;
-            }
+        if let Some(dev) = self.devices.get_mut(dev_idx) {
+            dev.address = dev_addr;
         }
 
         Ok(())
@@ -779,18 +776,7 @@ impl XhciContext {
 
         // Set up input context
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
-            in_ctx.add_flags = (1 << ctx_idx) | 1; // Add endpoint + slot context
-            in_ctx.drop_flags = 0;
-
-            // Update Context Entries in Slot Context to the highest active endpoint index
-            in_ctx.slot_ctx[0] = (in_ctx.slot_ctx[0] & !0xF800_0000) | ((ctx_idx as u32) << 27);
-
-            if let Some(ep_ctx) = in_ctx.ep_ctx_mut(ctx_idx as u32) {
-                ep_ctx[0] = (mps as u32) << 16 | 2 << 3; // MPS, type=Bulk(2)
-                ep_ctx[1] = b_phys as u32;
-                ep_ctx[2] = (b_phys >> 32) as u32;
-                ep_ctx[3] = 0; // Average TRB Length = 0
-            }
+            in_ctx.setup_bulk_endpoint(ctx_idx as u32, mps, b_phys);
         }
 
         // Get in_ctx_phys before borrowing slot mutably
@@ -802,7 +788,7 @@ impl XhciContext {
         let cmd = self.send_cmd(
             Trb::new(trb_type::CONFIGURE_ENDPOINT, self.rings.command.cycle)
                 .with_data_ptr(in_ctx_phys)
-                .with_flags((slot_id << 24) | trb_flag::IOC),
+                .with_flags(slot_id << 24),
         );
         if cmd.is_err() {
             bulk_ring.free(self.driver_ctx);
@@ -879,7 +865,12 @@ impl XhciContext {
         // the xHC may read stale TRB data from cache.
         crate::mmio::write_barrier();
         self.registers.doorbell.ring(0, 0);
-        let ev = wait_event(&mut self.rings.event, &self.registers.runtime, 5_000_000)?;
+        let ev = wait_event_type(
+            &mut self.rings.event,
+            &self.registers.runtime,
+            5_000_000,
+            trb_type::COMMAND_COMPLETION_EVENT,
+        )?;
         if ev.completion_code() != COMP_SUCCESS {
             return Err("command completion code not success");
         }
@@ -888,9 +879,13 @@ impl XhciContext {
 
     /// Wait for an event with timeout.
     pub fn wait_event(&mut self, timeout: u32) -> Result<Trb, &'static str> {
-        wait_event(&mut self.rings.event, &self.registers.runtime, timeout)
+        wait_event_type(
+            &mut self.rings.event,
+            &self.registers.runtime,
+            timeout,
+            trb_type::TRANSFER_EVENT,
+        )
     }
-
 }
 
 // ============================================================================
