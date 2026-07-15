@@ -71,11 +71,11 @@
 |---------|-------|-------|-------|
 | Read | ✅ | ✅ | ✅ |
 | Write | ✅ | ✅ | ✅ |
-| Create | ✅ | ❌ | ❌ |
-| Mkdir | ✅ | ❌ | ❌ |
-| Unlink | ✅ | ❌ | ❌ |
+| Create | ✅ | ✅ | ✅ |
+| Mkdir | ✅ | ✅ | ✅ |
+| Unlink | ✅ | ✅ | ✅ |
 | Symlink | ✅ | ❌ | ❌ |
-| Large files (>4GB) | ✅ | ❌ | 🔶 |
+| Large files (>4GB) | ✅ | ❌ | ✅ |
 
 ## Drivers
 

@@ -365,7 +365,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     ];
     InitSequence::new(&common_steps).run();
 
-    // Flush boot log to /bootlog.txt so early init messages survive
+    // Flush the early log to /bootlog/Bootlog.txt for File Manager access.
     // even if the system hangs or panics shortly after boot.
     if let Err(e) = crate::klog::flush_to_vfs() {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flush failed\n");

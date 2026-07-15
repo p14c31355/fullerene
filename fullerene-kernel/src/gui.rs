@@ -83,26 +83,17 @@ pub fn init() {
             Ok(buf)
         }),
         vfs_write: Some(|path, data| {
-            // Open existing file, write, close
-            let fd = crate::contexts::vfs::open(path, 0).map_err(fs_err_str)?;
-            match crate::contexts::vfs::write(fd.fd, data) {
-                Ok(_) => {
-                    let _ = crate::contexts::vfs::close(fd.fd);
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = crate::contexts::vfs::close(fd.fd);
-                    Err(fs_err_str(e))
-                }
-            }
+            crate::contexts::vfs::replace_file(path, data).map_err(fs_err_str)
         }),
-        vfs_create: Some(|path| {
-            let fd = crate::contexts::vfs::create(path).map_err(fs_err_str)?;
-            let _ = crate::contexts::vfs::close(fd.fd);
-            Ok(())
+        vfs_copy: Some(|source, destination, is_dir| {
+            crate::contexts::vfs::copy_path(source, destination, is_dir).map_err(fs_err_str)
         }),
-        vfs_mkdir: Some(|path| crate::contexts::vfs::mkdir(path).map_err(fs_err_str)),
-        vfs_unlink: Some(|path| crate::contexts::vfs::unlink(path).map_err(fs_err_str)),
+        vfs_move: Some(|source, destination, is_dir| {
+            crate::contexts::vfs::move_path(source, destination, is_dir).map_err(fs_err_str)
+        }),
+        vfs_remove: Some(|path, is_dir| {
+            crate::contexts::vfs::remove_path(path, is_dir).map_err(fs_err_str)
+        }),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
             crate::process::SCHEDULER.with_list(|list| {

@@ -60,6 +60,12 @@ because PCI class `0xff` is a real vendor-specific class rather than a driver
 wildcard. Boot registers the reader without accessing its device registers.
 The explicit `sd_rescan` command is the first BAR0 MMIO boundary; a successfully
 initialized SDXC then appears dynamically as `/dev/sd0` without being mounted.
+Later `sd_rescan` calls are idempotent while that device is registered or
+mounted; they do not reset the live card with CMD0/ACMD41.
+Mount FAT or exFAT media with, for example,
+`mount /dev/sd0 /mnt/sdcard`. The mount point is any absolute VFS directory;
+`mount` creates it when absent. Refresh an already-open File Manager to add the
+mounted drive to its sidebar.
 This keeps an uncompleted PCIe load out of the boot path. AHCI and NVMe are not
 attached at boot until their kernel adapters can publish usable block devices;
 their former adapters reset hardware but returned zero-sized placeholder

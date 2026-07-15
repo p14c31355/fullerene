@@ -307,6 +307,95 @@ impl VfsContext {
         self.inner.lock().exists(path)
     }
 
+    /// Replace a regular file and persist the complete buffer, even when the
+    /// backing filesystem accepts only a partial write per call.
+    pub fn replace_file(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
+        if self.exists(path) {
+            self.unlink(path)?;
+        }
+        let descriptor = self.create(path)?;
+        let result = self.write_all(descriptor.fd, data);
+        let close_result = self.close(descriptor.fd);
+        result.and(close_result)
+    }
+
+    fn write_all(&self, fd: u32, mut data: &[u8]) -> Result<(), FsError> {
+        while !data.is_empty() {
+            let written = self.write(fd, data)?;
+            if written == 0 {
+                return Err(FsError::InvalidInput);
+            }
+            data = &data[written..];
+        }
+        Ok(())
+    }
+
+    /// Copy a file or directory tree without buffering whole files in the GUI.
+    pub fn copy_path(&self, source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+        let destination_suffix = destination.strip_prefix(source);
+        if source == destination
+            || is_dir
+                && destination_suffix.is_some_and(|suffix| suffix.starts_with('/'))
+        {
+            return Err(FsError::InvalidPath);
+        }
+        if is_dir {
+            self.mkdir(destination)?;
+            for entry in self.readdir(source)? {
+                self.copy_path(
+                    &join_path(source, &entry.name),
+                    &join_path(destination, &entry.name),
+                    entry.is_dir,
+                )?;
+            }
+            return Ok(());
+        }
+
+        let source_fd = self.open(source, 0).ok_or(FsError::FileNotFound)?;
+        if self.exists(destination) {
+            if let Err(error) = self.unlink(destination) {
+                let _ = self.close(source_fd.fd);
+                return Err(error);
+            }
+        }
+        let destination_fd = match self.create(destination) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                let _ = self.close(source_fd.fd);
+                return Err(error);
+            }
+        };
+        let result = (|| {
+            let mut buffer = [0; 4096];
+            loop {
+                let read = self.read(source_fd.fd, &mut buffer)?;
+                if read == 0 {
+                    return Ok(());
+                }
+                self.write_all(destination_fd.fd, &buffer[..read])?;
+            }
+        })();
+        let source_close = self.close(source_fd.fd);
+        let destination_close = self.close(destination_fd.fd);
+        result.and(source_close).and(destination_close)
+    }
+
+    /// Recursively remove a path selected by the file manager.
+    pub fn remove_path(&self, path: &str, is_dir: bool) -> Result<(), FsError> {
+        if is_dir {
+            for entry in self.readdir(path)? {
+                self.remove_path(&join_path(path, &entry.name), entry.is_dir)?;
+            }
+        }
+        self.unlink(path)
+    }
+
+    /// Move within or across mounts while preserving the source until copy succeeds.
+    pub fn move_path(&self, source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+        self.copy_path(source, destination, is_dir)?;
+        self.remove_path(source, is_dir)
+    }
+
     fn register_handle(
         &self,
         mount_index: usize,
@@ -340,7 +429,7 @@ impl VfsContext {
 pub fn init_vfs() {
     // VfsContext is already created inside KernelContext::new().
     // This function exists for the bootstrap sequence and backward
-    // compatibility.  Additional per-fs init (e.g. creating /bootlogs)
+    // compatibility. Additional per-filesystem initialization
     // is handled by the caller.
     log::info!("VFS: mounted MemFileSystem at /");
 }
@@ -374,7 +463,8 @@ where
 /// Supported `fs_type` values:
 /// - `"tmpfs"` — mounts a fresh in-memory filesystem ([`MemFileSystem`]).
 /// - `"devfs"` — mounts the kernel's dynamic device filesystem.
-/// - `"fat32"` — mounts a FAT32/exFAT filesystem backed by a block device.
+/// - `"auto"` — detects and mounts a FAT12/16/32 or exFAT block device.
+/// - `"fat32"` — retained as a backward-compatible alias for `"auto"`.
 ///
 /// The `device` argument is the path to a block device that the kernel
 /// can open.  For `tmpfs`, `device` is ignored.
@@ -391,7 +481,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             log::info!("VFS: mounted devfs at {}", mount_point);
             Ok(())
         }
-        "fat32" => {
+        "auto" | "fat32" => {
             let mount_point = vfs.inner.lock().resolve_path(mount_point);
             let device_name = device
                 .strip_prefix("/dev/")
@@ -417,15 +507,15 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
 
             let bdev =
                 crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
-            match crate::drivers::fat::FatFileSystem::from_device(bdev) {
+            match crate::drivers::fat::mount_device(bdev) {
                 Ok(fs) => {
-                    if let Err(e) = vfs.mount(&mount_point, Box::new(fs)) {
+                    if let Err(e) = vfs.mount(&mount_point, fs) {
                         // Mount failed after device was consumed; clean up registry entry
                         crate::devfs::unregister_block_device(device_name);
                         return Err(e);
                     }
                     vfs.record_device_mount(device, &mount_point);
-                    log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
+                    log::info!("VFS: mounted removable filesystem from {} at {}", device, mount_point);
                     Ok(())
                 }
                 Err((e, returned_bdev)) => {
@@ -503,6 +593,33 @@ pub fn unlink(path: &str) -> Result<(), FsError> {
 /// Backward-compatible wrapper: exists.
 pub fn exists(path: &str) -> bool {
     with_vfs(|vfs| vfs.exists(path)).unwrap_or(false)
+}
+
+/// Replace a complete file through the canonical VFS context.
+pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.replace_file(path, data)).ok_or(FsError::PermissionDenied)?
+}
+
+pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir))
+        .ok_or(FsError::PermissionDenied)?
+}
+
+pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.move_path(source, destination, is_dir))
+        .ok_or(FsError::PermissionDenied)?
+}
+
+pub fn remove_path(path: &str, is_dir: bool) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.remove_path(path, is_dir)).ok_or(FsError::PermissionDenied)?
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        alloc::format!("/{}", name)
+    } else {
+        alloc::format!("{}/{}", parent.trim_end_matches('/'), name)
+    }
 }
 
 /// Backward-compatible wrapper: working directory.
@@ -639,5 +756,56 @@ mod tests {
         );
         assert!(context.unmount("/mnt").unwrap());
         assert!(context.mounted_block_devices().is_empty());
+    }
+
+    #[test]
+    fn copy_path_streams_complete_files_across_mounts() {
+        let context = VfsContext::new();
+        context.mkdir("/mnt").unwrap();
+        context
+            .mount("/mnt", Box::new(MemFileSystem::new()))
+            .unwrap();
+        let expected: Vec<u8> = (0..9_000).map(|index| (index % 251) as u8).collect();
+
+        context.replace_file("/source.bin", &expected).unwrap();
+        context
+            .copy_path("/source.bin", "/mnt/copied.bin", false)
+            .unwrap();
+
+        let descriptor = context.open("/mnt/copied.bin", 0).unwrap();
+        let mut actual = vec![0; expected.len()];
+        let mut offset = 0;
+        while offset < actual.len() {
+            let read = context.read(descriptor.fd, &mut actual[offset..]).unwrap();
+            if read == 0 {
+                break;
+            }
+            offset += read;
+        }
+        context.close(descriptor.fd).unwrap();
+        assert_eq!(offset, expected.len());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn recursive_file_operations_preserve_source_until_copy_finishes() {
+        let context = VfsContext::new();
+        context.mkdir("/tree").unwrap();
+        context.mkdir("/tree/nested").unwrap();
+        context.replace_file("/tree/nested/file", b"data").unwrap();
+
+        assert_eq!(
+            context.copy_path("/tree", "/tree/child", true),
+            Err(FsError::InvalidPath)
+        );
+        context.copy_path("/tree", "/copied", true).unwrap();
+        assert!(context.exists("/tree/nested/file"));
+        assert!(context.exists("/copied/nested/file"));
+
+        context.move_path("/copied", "/moved", true).unwrap();
+        assert!(!context.exists("/copied"));
+        assert!(context.exists("/moved/nested/file"));
+        context.remove_path("/moved", true).unwrap();
+        assert!(!context.exists("/moved"));
     }
 }
