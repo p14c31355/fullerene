@@ -8,6 +8,9 @@ Priority convention:
 - **P1** = structural improvement (ownership, types, tests)
 - **P2** = developer experience, performance
 
+Please refer to the issues for other TODO items.  
+You may close them using the "Development" section of the PR, or create new issues based on this Markdown.  
+
 ---
 
 ## P0: Memory Safety & Process Isolation
