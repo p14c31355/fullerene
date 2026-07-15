@@ -22,7 +22,7 @@
 //! +-----------------------------------------------------------+
 //! ```
 
-use crate::SOLVENT_CALLBACKS;
+use crate::{SOLVENT_CALLBACKS, VfsEntry};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -239,6 +239,7 @@ pub struct ExplorerContext {
     pending_operation: Option<PendingOperation>,
     status_message: Option<String>,
     rename_shift_held: bool,
+    pending_navigation: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +285,7 @@ impl ExplorerContext {
             pending_operation: None,
             status_message: None,
             rename_shift_held: false,
+            pending_navigation: None,
         }
     }
 
@@ -325,43 +327,49 @@ impl ExplorerContext {
     }
 
     pub fn navigate_to(&mut self, path: &str) {
-        let path_str = String::from(path);
-        let readdir = match SOLVENT_CALLBACKS.lock().vfs_readdir {
-            Some(f) => f,
-            None => return,
-        };
-        match readdir(&path_str) {
-            Ok(entries) => {
-                self.current_dir = path_str.clone();
-                self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
-                self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries
-                    .iter()
-                    .map(|e| {
-                        let size_str = if e.is_dir {
-                            String::from("<DIR>")
-                        } else {
-                            format_size(e.size)
-                        };
-                        FileEntryDisplay {
-                            name: e.name.clone(),
-                            size_str,
-                            is_dir: e.is_dir,
-                        }
-                    })
-                    .collect();
-                self.sort_entries();
-                self.selected_index = None;
-                self.scroll_offset = 0;
-                if self.history_pos >= self.history.len()
-                    || self.history[self.history_pos] != path_str
-                {
-                    self.history.truncate(self.history_pos + 1);
-                    self.history.push(path_str);
-                    self.history_pos = self.history.len() - 1;
-                }
+        self.pending_navigation = Some(String::from(path));
+        self.status_message = Some(String::from("Loading..."));
+    }
+
+    pub(crate) fn take_navigation_request(&mut self) -> Option<String> {
+        self.pending_navigation.take()
+    }
+
+    pub(crate) fn finish_navigation(
+        &mut self,
+        path: String,
+        result: Result<Vec<VfsEntry>, &'static str>,
+    ) {
+        let entries = match result {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.status_message = Some(format!("Open failed: {}", error));
+                return;
             }
-            Err(_) => {}
+        };
+        self.current_dir = path.clone();
+        self.raw_names = entries.iter().map(|entry| entry.name.clone()).collect();
+        self.raw_is_dir = entries.iter().map(|entry| entry.is_dir).collect();
+        self.entries = entries
+            .into_iter()
+            .map(|entry| FileEntryDisplay {
+                size_str: if entry.is_dir {
+                    String::from("<DIR>")
+                } else {
+                    format_size(entry.size)
+                },
+                name: entry.name,
+                is_dir: entry.is_dir,
+            })
+            .collect();
+        self.sort_entries();
+        self.selected_index = None;
+        self.scroll_offset = 0;
+        self.status_message = None;
+        if self.history_pos >= self.history.len() || self.history[self.history_pos] != path {
+            self.history.truncate(self.history_pos + 1);
+            self.history.push(path);
+            self.history_pos = self.history.len() - 1;
         }
     }
 
@@ -450,33 +458,7 @@ impl ExplorerContext {
         if self.history_pos > 0 {
             self.history_pos -= 1;
             let path = self.history[self.history_pos].clone();
-            let readdir = match SOLVENT_CALLBACKS.lock().vfs_readdir {
-                Some(f) => f,
-                None => return,
-            };
-            if let Ok(entries) = readdir(&path) {
-                self.current_dir = path;
-                self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
-                self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries
-                    .iter()
-                    .map(|e| {
-                        let size_str = if e.is_dir {
-                            String::from("<DIR>")
-                        } else {
-                            format_size(e.size)
-                        };
-                        FileEntryDisplay {
-                            name: e.name.clone(),
-                            size_str,
-                            is_dir: e.is_dir,
-                        }
-                    })
-                    .collect();
-                self.sort_entries();
-                self.selected_index = None;
-                self.scroll_offset = 0;
-            }
+            self.navigate_to(&path);
         }
     }
 
@@ -484,33 +466,7 @@ impl ExplorerContext {
         if self.history_pos + 1 < self.history.len() {
             self.history_pos += 1;
             let path = self.history[self.history_pos].clone();
-            let readdir = match SOLVENT_CALLBACKS.lock().vfs_readdir {
-                Some(f) => f,
-                None => return,
-            };
-            if let Ok(entries) = readdir(&path) {
-                self.current_dir = path;
-                self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
-                self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries
-                    .iter()
-                    .map(|e| {
-                        let size_str = if e.is_dir {
-                            String::from("<DIR>")
-                        } else {
-                            format_size(e.size)
-                        };
-                        FileEntryDisplay {
-                            name: e.name.clone(),
-                            size_str,
-                            is_dir: e.is_dir,
-                        }
-                    })
-                    .collect();
-                self.sort_entries();
-                self.selected_index = None;
-                self.scroll_offset = 0;
-            }
+            self.navigate_to(&path);
         }
     }
 
@@ -1213,5 +1169,35 @@ fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
                 pixels[row_base + dx + gx] = fg;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExplorerContext;
+    use crate::VfsEntry;
+    use alloc::string::String;
+
+    #[test]
+    fn navigation_is_deferred_until_io_completes() {
+        let mut explorer = ExplorerContext::new();
+        explorer.navigate_to("/mnt/sdcard");
+
+        assert_eq!(explorer.current_dir, "/");
+        assert_eq!(
+            explorer.take_navigation_request().as_deref(),
+            Some("/mnt/sdcard")
+        );
+
+        explorer.finish_navigation(
+            String::from("/mnt/sdcard"),
+            Ok(alloc::vec![VfsEntry {
+                name: String::from("Bootlog.txt"),
+                size: 512,
+                is_dir: false,
+            }]),
+        );
+        assert_eq!(explorer.current_dir, "/mnt/sdcard");
+        assert_eq!(explorer.entries[0].name, "Bootlog.txt");
     }
 }
