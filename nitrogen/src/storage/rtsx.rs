@@ -46,6 +46,25 @@ enum HostCommandKind {
 
 type RegisterCommand = (HostCommandKind, u16, u8, u8);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataPath {
+    Sdma,
+    HostPpbuf,
+    Pio,
+}
+
+impl DataPath {
+    const fn preferred(host_commands: bool, data_buffer: bool) -> Self {
+        if host_commands && data_buffer {
+            Self::Sdma
+        } else if host_commands {
+            Self::HostPpbuf
+        } else {
+            Self::Pio
+        }
+    }
+}
+
 const CARD_PWR_CTL: u16 = 0xFD50;
 const CARD_SHARE_MODE: u16 = 0xFD52;
 const CARD_STOP: u16 = 0xFD54;
@@ -138,7 +157,7 @@ pub struct RtsxController {
     health: PciHealth,
     host_commands: Option<DmaRegion>,
     data_buffer: Option<DmaRegion>,
-    data_dma_failed: bool,
+    data_path: DataPath,
 }
 
 // Access to the controller is serialized by `CONTROLLER`; its pointer denotes
@@ -221,7 +240,8 @@ impl RtsxController {
     fn init_hardware(&mut self) -> Result<(), &'static str> {
         crate::debug::hint(b"sd_pci");
         self.prepare_device()?;
-        self.data_dma_failed = false;
+        self.data_path =
+            DataPath::preferred(self.host_commands.is_some(), self.data_buffer.is_some());
         crate::debug::hint(b"sd_mmio");
         self.mmio.write32(RTSX_BIER, 0);
         crate::debug::hint(b"sd_bier");
@@ -425,10 +445,6 @@ impl RtsxController {
         Ok(())
     }
 
-    fn has_data_dma(&self) -> bool {
-        !self.data_dma_failed && self.host_commands.is_some() && self.data_buffer.is_some()
-    }
-
     fn dma_iova(region: &Option<DmaRegion>) -> Result<u32, &'static str> {
         u32::try_from(
             region
@@ -615,13 +631,6 @@ impl RtsxController {
         Ok(())
     }
 
-    fn ppbuf_read(&mut self, buffer: &mut [u8]) -> Result<(), &'static str> {
-        if self.host_commands.is_some() {
-            return self.ppbuf_read_fast(buffer);
-        }
-        self.ppbuf_read_pio(buffer)
-    }
-
     fn ppbuf_read_pio(&self, buffer: &mut [u8]) -> Result<(), &'static str> {
         buffer.iter_mut().enumerate().try_for_each(|(index, byte)| {
             *byte = self.read_reg(PPBUF_BASE2 + index as u16)?;
@@ -659,13 +668,6 @@ impl RtsxController {
         Ok(())
     }
 
-    fn ppbuf_write(&mut self, buffer: &[u8]) -> Result<(), &'static str> {
-        if self.host_commands.is_some() {
-            return self.ppbuf_write_fast(buffer);
-        }
-        self.ppbuf_write_pio(buffer)
-    }
-
     fn ppbuf_write_pio(&self, buffer: &[u8]) -> Result<(), &'static str> {
         buffer
             .iter()
@@ -685,6 +687,16 @@ impl RtsxController {
         self.ppbuf_read_pio(buffer)
     }
 
+    fn read_sector_host_ppbuf(
+        &mut self,
+        argument: u32,
+        buffer: &mut [u8],
+    ) -> Result<(), &'static str> {
+        self.run_register_commands(&Self::read_sector_commands(argument))?;
+        self.wait_transfer(SD_TRANSFER_END)?;
+        self.ppbuf_read_fast(buffer)
+    }
+
     fn write_sector_pio(&self, buffer: &[u8]) -> Result<(), &'static str> {
         self.ppbuf_write_pio(buffer)?;
         self.set_data_len()?;
@@ -692,6 +704,12 @@ impl RtsxController {
             (SD_CFG2, 0xFF, SD_WRITE_CONFIG),
             (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
         ])?;
+        self.wait_transfer(SD_TRANSFER_END)
+    }
+
+    fn write_sector_host_ppbuf(&mut self, buffer: &[u8]) -> Result<(), &'static str> {
+        self.ppbuf_write_fast(buffer)?;
+        self.run_register_commands(&Self::write_sector_commands())?;
         self.wait_transfer(SD_TRANSFER_END)
     }
 
@@ -835,69 +853,68 @@ impl RtsxController {
 
     fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
         let argument = self.card_address(lba)?;
-        if self.has_data_dma() {
-            self.command(CMD17_READ_SINGLE, argument, SD_RSP_R1)?;
-            if let Err(error) = self.run_data_dma(&Self::read_sector_dma_commands(), true) {
-                self.data_dma_failed = true;
-                log::warn!("RTSX: {error}; using bounded PPBUF PIO fallback");
-                return self.read_sector_pio(argument, buffer);
+        loop {
+            match self.data_path {
+                DataPath::Sdma => {
+                    self.command(CMD17_READ_SINGLE, argument, SD_RSP_R1)?;
+                    match self.run_data_dma(&Self::read_sector_dma_commands(), true) {
+                        Ok(()) => {
+                            self.data_buffer
+                                .as_ref()
+                                .ok_or("RTSX data buffer unavailable")?
+                                .read_into(buffer);
+                            return Ok(());
+                        }
+                        Err(error) => {
+                            self.data_path = DataPath::HostPpbuf;
+                            log::warn!("RTSX: {error}; falling back to batched PPBUF");
+                        }
+                    }
+                }
+                DataPath::HostPpbuf => match self.read_sector_host_ppbuf(argument, buffer) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => {
+                        self.stop_transfer();
+                        self.data_path = DataPath::Pio;
+                        log::warn!("RTSX: {error}; falling back to bounded PPBUF PIO");
+                    }
+                },
+                DataPath::Pio => return self.read_sector_pio(argument, buffer),
             }
-            self.data_buffer
-                .as_ref()
-                .ok_or("RTSX data buffer unavailable")?
-                .read_into(buffer);
-            return Ok(());
-        } else if self.data_dma_failed {
-            return self.read_sector_pio(argument, buffer);
-        } else if self.host_commands.is_some() {
-            self.run_register_commands(&Self::read_sector_commands(argument))?;
-            // CHECK_REG_CMD stalls the host engine on the tested RTS5249.
-            // Keep the register writes batched, but observe completion through
-            // the bounded HAIMR path so a failed card transfer stays recoverable.
-            self.wait_transfer(SD_TRANSFER_END)?;
-        } else {
-            self.set_command(CMD17_READ_SINGLE, argument)?;
-            self.set_data_len()?;
-            self.write_regs(&[
-                (SD_CFG2, 0xFF, SD_RSP_R1),
-                (CARD_DATA_SOURCE, 0x01, 0x01),
-                (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_NORMAL_READ),
-            ])?;
-            self.wait_transfer(SD_TRANSFER_END)?;
         }
-        self.ppbuf_read(buffer)
     }
 
     fn write_sector(&mut self, lba: u32, buffer: &[u8]) -> Result<(), &'static str> {
         let rca = self.sd_card.as_ref().ok_or("no initialized card")?.rca;
         let argument = self.card_address(lba)?;
-        self.command(CMD24_WRITE_SINGLE, argument, SD_RSP_R1)?;
-        let data_dma = self.has_data_dma();
-        if data_dma {
-            self.data_buffer
-                .as_mut()
-                .ok_or("RTSX data buffer unavailable")?
-                .write_from(buffer);
-            if let Err(error) = self.run_data_dma(&Self::write_sector_dma_commands(), false) {
-                self.data_dma_failed = true;
-                log::warn!("RTSX: {error}; using bounded PPBUF PIO fallback");
-                self.command(CMD24_WRITE_SINGLE, argument, SD_RSP_R1)?;
-                self.write_sector_pio(buffer)?;
-            }
-        } else if self.data_dma_failed {
-            self.write_sector_pio(buffer)?;
-        } else {
-            self.ppbuf_write(buffer)?;
-            if self.host_commands.is_some() {
-                self.run_register_commands(&Self::write_sector_commands())?;
-                self.wait_transfer(SD_TRANSFER_END)?;
-            } else {
-                self.set_data_len()?;
-                self.write_regs(&[
-                    (SD_CFG2, 0xFF, 0),
-                    (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
-                ])?;
-                self.wait_transfer(SD_TRANSFER_END)?;
+        loop {
+            self.command(CMD24_WRITE_SINGLE, argument, SD_RSP_R1)?;
+            match self.data_path {
+                DataPath::Sdma => {
+                    self.data_buffer
+                        .as_mut()
+                        .ok_or("RTSX data buffer unavailable")?
+                        .write_from(buffer);
+                    match self.run_data_dma(&Self::write_sector_dma_commands(), false) {
+                        Ok(()) => break,
+                        Err(error) => {
+                            self.data_path = DataPath::HostPpbuf;
+                            log::warn!("RTSX: {error}; falling back to batched PPBUF");
+                        }
+                    }
+                }
+                DataPath::HostPpbuf => match self.write_sector_host_ppbuf(buffer) {
+                    Ok(()) => break,
+                    Err(error) => {
+                        self.stop_transfer();
+                        self.data_path = DataPath::Pio;
+                        log::warn!("RTSX: {error}; falling back to bounded PPBUF PIO");
+                    }
+                },
+                DataPath::Pio => {
+                    self.write_sector_pio(buffer)?;
+                    break;
+                }
             }
         }
         if crate::timing::poll_timeout_us(2_000_000, || {
@@ -1032,6 +1049,7 @@ pub fn init(context: &dyn DriverContext) {
     } else {
         None
     };
+    let data_path = DataPath::preferred(host_commands.is_some(), data_buffer.is_some());
     if host_commands.is_none() {
         log::warn!("RTSX: host command DMA unavailable; falling back to slow PIO");
     } else if data_buffer.is_none() {
@@ -1045,7 +1063,7 @@ pub fn init(context: &dyn DriverContext) {
         health,
         host_commands,
         data_buffer,
-        data_dma_failed: false,
+        data_path,
     });
     log::info!("RTSX: RTS5249 registered; SD initialization deferred");
 }
@@ -1102,7 +1120,7 @@ pub fn is_card_detected() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        HostCommandKind, RtsxController, SD_TM_AUTO_READ_3, SD_TRANSFER, SD_TRANSFER_END,
+        DataPath, HostCommandKind, RtsxController, SD_TM_AUTO_READ_3, SD_TRANSFER, SD_TRANSFER_END,
         SD_TRANSFER_START,
     };
 
@@ -1145,5 +1163,12 @@ mod tests {
         assert_eq!(RtsxController::write_sector_dma_commands()[11].3, 0xA4);
         assert_eq!(RtsxController::data_dma_control(true), 0xA000_0200);
         assert_eq!(RtsxController::data_dma_control(false), 0x8000_0200);
+    }
+
+    #[test]
+    fn data_path_prefers_bounded_acceleration() {
+        assert_eq!(DataPath::preferred(true, true), DataPath::Sdma);
+        assert_eq!(DataPath::preferred(true, false), DataPath::HostPpbuf);
+        assert_eq!(DataPath::preferred(false, false), DataPath::Pio);
     }
 }
