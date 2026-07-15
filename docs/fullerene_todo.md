@@ -180,4 +180,5 @@ Priority convention:
 - [ ] Package manager
 - [ ] Self-hosted build
 - [ ] Execute FREEDOOM
-- [ ] self-hosted presentation
+- [ ] Self-hosted presentation
+- [ ] Browsing internet by Netsurf
