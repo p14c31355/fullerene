@@ -104,7 +104,7 @@ const SD_STAT_IDLE: u8 = 0x20;
 const SD_TRANSFER_ERR: u8 = 0x10;
 const SD_TM_CMD_RSP: u8 = 0x08;
 const SD_TM_NORMAL_READ: u8 = 0x0C;
-const SD_TM_AUTO_READ_3: u8 = 0x05;
+const SD_TM_AUTO_READ_2: u8 = 0x0E;
 const SD_TM_AUTO_WRITE_3: u8 = 0x01;
 const SD_NO_CALCULATE_CRC7: u8 = 0x80;
 const SD_NO_CHECK_WAIT_CRC_TO: u8 = 0x20;
@@ -584,8 +584,31 @@ impl RtsxController {
         ]
     }
 
-    fn read_sector_dma_commands() -> [RegisterCommand; 14] {
-        Self::data_dma_commands(DMA_FROM_CARD, SD_NO_CHECK_WAIT_CRC_TO, SD_TM_AUTO_READ_3)
+    fn read_sector_dma_commands(argument: u32) -> [RegisterCommand; 19] {
+        let argument = argument.to_be_bytes();
+        let command = [
+            (
+                HostCommandKind::Write,
+                SD_CMD0,
+                0xFF,
+                SD_CMD_START | CMD17_READ_SINGLE,
+            ),
+            (HostCommandKind::Write, SD_CMD1, 0xFF, argument[0]),
+            (HostCommandKind::Write, SD_CMD1 + 1, 0xFF, argument[1]),
+            (HostCommandKind::Write, SD_CMD1 + 2, 0xFF, argument[2]),
+            (HostCommandKind::Write, SD_CMD1 + 3, 0xFF, argument[3]),
+        ];
+        let transfer = Self::data_dma_commands(
+            DMA_FROM_CARD,
+            SD_NO_CHECK_WAIT_CRC_TO | SD_RSP_R1,
+            SD_TM_AUTO_READ_2,
+        );
+        core::array::from_fn(|index| {
+            command
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| transfer[index - command.len()])
+        })
     }
 
     fn write_sector_dma_commands() -> [RegisterCommand; 14] {
@@ -856,8 +879,7 @@ impl RtsxController {
         loop {
             match self.data_path {
                 DataPath::Sdma => {
-                    self.command(CMD17_READ_SINGLE, argument, SD_RSP_R1)?;
-                    match self.run_data_dma(&Self::read_sector_dma_commands(), true) {
+                    match self.run_data_dma(&Self::read_sector_dma_commands(argument), true) {
                         Ok(()) => {
                             self.data_buffer
                                 .as_ref()
@@ -1120,8 +1142,9 @@ pub fn is_card_detected() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataPath, HostCommandKind, RtsxController, SD_TM_AUTO_READ_3, SD_TRANSFER, SD_TRANSFER_END,
-        SD_TRANSFER_START,
+        DataPath, HostCommandKind, RtsxController, CMD17_READ_SINGLE, SD_CFG2, SD_CMD0, SD_CMD1,
+        SD_CMD_START, SD_NO_CHECK_WAIT_CRC_TO, SD_RSP_R1, SD_TM_AUTO_READ_2, SD_TRANSFER,
+        SD_TRANSFER_END, SD_TRANSFER_START,
     };
 
     #[test]
@@ -1147,9 +1170,24 @@ mod tests {
 
     #[test]
     fn sector_dma_setup_uses_ring_buffer_and_completion_check() {
-        let commands = RtsxController::read_sector_dma_commands();
+        let commands = RtsxController::read_sector_dma_commands(0x1234_5678);
 
-        assert_eq!(commands.len(), 14);
+        assert_eq!(commands.len(), 19);
+        assert_eq!(
+            &commands[..5],
+            &[
+                (
+                    HostCommandKind::Write,
+                    SD_CMD0,
+                    0xFF,
+                    SD_CMD_START | CMD17_READ_SINGLE,
+                ),
+                (HostCommandKind::Write, SD_CMD1, 0xFF, 0x12),
+                (HostCommandKind::Write, SD_CMD1 + 1, 0xFF, 0x34),
+                (HostCommandKind::Write, SD_CMD1 + 2, 0xFF, 0x56),
+                (HostCommandKind::Write, SD_CMD1 + 3, 0xFF, 0x78),
+            ]
+        );
         assert_eq!(
             commands.last(),
             Some(&(
@@ -1159,7 +1197,9 @@ mod tests {
                 SD_TRANSFER_END,
             ))
         );
-        assert_eq!(commands[12].3, SD_TRANSFER_START | SD_TM_AUTO_READ_3);
+        assert_eq!(commands[16].1, SD_CFG2);
+        assert_eq!(commands[16].3, SD_NO_CHECK_WAIT_CRC_TO | SD_RSP_R1);
+        assert_eq!(commands[17].3, SD_TRANSFER_START | SD_TM_AUTO_READ_2);
         assert_eq!(RtsxController::write_sector_dma_commands()[11].3, 0xA4);
         assert_eq!(RtsxController::data_dma_control(true), 0xA000_0200);
         assert_eq!(RtsxController::data_dma_control(false), 0x8000_0200);
