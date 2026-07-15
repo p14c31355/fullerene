@@ -58,7 +58,7 @@ fn main() {
     }
 
     // ── Build WASI test app ──────────────────────────────────────
-    let wasm_src = manifest_dir.join("..").join("apps").join("hello_wasi.rs");
+    let wasm_src = manifest_dir.join("..").join("toluene").join("apps").join("hello_wasi.rs");
     let wasm_out = out_dir.join("hello.wasm");
 
     println!("cargo:rerun-if-changed={}", wasm_src.display());
