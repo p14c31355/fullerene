@@ -168,11 +168,9 @@ impl ControllerManager {
                 continue;
             }
 
-            // ── Map the MMIO BAR before touching any registers ──────────
-            // Without this, MMIO reads to an unmapped page-table entry will
-            // page-fault and hang the CPU.  PCI MMIO aperture is NOT part of
-            // the direct physical-memory map, so phys_to_virt alone is
-            // insufficient.
+            // Validate or create the MMIO mapping before touching registers.
+            // The kernel preserves a verified boot direct mapping instead of
+            // splitting its huge pages, which is unsafe on the target firmware.
             crate::debug::hint(b"us_map");
             log::info!(
                 "USB: mapping MMIO BAR0 {:#x} -> virt {:#p} ({} bytes)",

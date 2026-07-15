@@ -383,18 +383,16 @@ impl PciDevice {
         }
     }
 
-    pub fn get_bar_info(&self, index: u8) -> Option<PciBar> {
+    /// Read the firmware-programmed BAR without issuing a size probe.
+    pub fn read_bar_info(&self, index: u8) -> Option<PciBar> {
         if index >= self.max_bars() {
             return None;
         }
         let offset = 0x10 + (index * 4);
         let value = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-
-        let size = self.detect_bar_size(index);
-        if size == 0 {
+        if value == u32::MAX {
             return None;
         }
-
         let is_io = (value & 0x1) != 0;
         let is_64bit = !is_io && ((value & 0x6) == 0x4);
         let is_prefetchable = !is_io && ((value & 0x8) != 0);
@@ -414,11 +412,18 @@ impl PciDevice {
         Some(PciBar {
             index,
             address,
-            size,
+            size: 0,
             is_io,
             is_64bit,
             is_prefetchable,
         })
+    }
+
+    /// Read BAR metadata, destructively probing only its size field.
+    pub fn get_bar_info(&self, index: u8) -> Option<PciBar> {
+        let mut bar = self.read_bar_info(index)?;
+        bar.size = self.detect_bar_size(index);
+        (bar.size != 0).then_some(bar)
     }
 
     /// Ensure the PCI Power Management capability is set to D0.

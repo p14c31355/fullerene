@@ -10,6 +10,12 @@ Running on real hardware with InsydeH2O UEFI firmware required three fixes:
 
 3. **Skip `safe_map_page` WC remap on real hardware**: The kernel's `safe_map_page` (via `map_page_4k_l1`) attempts to split the boot-phase 2MB/1GB huge-page WB mapping into 4KB WC pages for the framebuffer. On InsydeH2O this operation breaks the mapping entirely, making the framebuffer inaccessible. The fix relies on the existing boot-phase huge-page identity mapping (WB via PAT/MTRR), which is already functional and confirmed working via direct `write_volatile` tests.
 
+The same rule applies to PCI device MMIO. `map_mmio_region` first verifies the
+start and end of the requested higher-half direct mapping and reuses it when it
+already resolves to the BAR. This keeps USB xHCI and the RTS5249 reader from
+splitting a working boot huge page immediately before their first register
+access. Only an actually missing or non-direct mapping is created dynamically.
+
 ## Intel Wildcat Point-LP USB (8086:9cb1 / 8086:9ca6)
 
 The target machine exposes an xHCI controller at `00:14.0` and an EHCI
@@ -19,7 +25,8 @@ companion at `00:1d.0`. Before the first xHCI BAR0 load, Fullerene now:
 2. enables the Intel USB3 terminations (`USB3_PSSEN`, config `0xd8`), then
    routes the firmware-declared USB2 ports (`XUSB2PR`, config `0xd0`) to xHCI;
 3. disables standard ASPM and enables PCI memory decoding/bus mastering;
-4. maps BAR0 uncached and reads the capability header as a 32-bit register;
+4. verifies the existing BAR0 direct mapping and reads the capability header as
+   a 32-bit register;
 5. performs the xHCI BIOS/OS ownership handoff, disables legacy SMIs, and
    waits for `USBSTS.CNR` to clear before operational-register access.
 
@@ -57,6 +64,11 @@ This keeps an uncompleted PCIe load out of the boot path. AHCI and NVMe are not
 attached at boot until their kernel adapters can publish usable block devices;
 their former adapters reset hardware but returned zero-sized placeholder
 devices.
+
+PCI resource assignment preserves every non-zero firmware BAR without issuing
+the destructive all-ones size probe. Fullerene probes and assigns only a BAR
+whose address is genuinely zero. This matters for firmware-initialized USB and
+card-reader endpoints whose state must survive until their explicit rescan.
 
 Reference: Linux [`drivers/usb/host/pci-quirks.c`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/pci-quirks.c)
 and [`drivers/usb/host/xhci-ext-caps.h`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci-ext-caps.h).
