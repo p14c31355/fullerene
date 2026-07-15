@@ -16,6 +16,7 @@ use crate::timing::delay_ms;
 
 const RTSX_HCBAR: usize = 0x00;
 const RTSX_HCBCTLR: usize = 0x04;
+const RTSX_HDBAR: usize = 0x08;
 const RTSX_HDBCTLR: usize = 0x0C;
 const RTSX_HAIMR: usize = 0x10;
 const RTSX_BIPR: usize = 0x14;
@@ -29,14 +30,21 @@ const HOST_COMMAND_START: u32 = 1 << 31;
 const HOST_COMMAND_AUTO_RESPONSE: u32 = 1 << 30;
 const HOST_COMMAND_STOP: u32 = 1 << 28;
 const HOST_DMA_STOP: u32 = 1 << 28;
+const HOST_DMA_ADMA: u32 = 2 << 26;
+const HOST_DMA_DEVICE_TO_HOST: u32 = 1 << 29;
+const HOST_DMA_START: u32 = 1 << 31;
 const HOST_COMMAND_BUFFER_SIZE: usize = 1024;
 const HOST_COMMAND_CHUNK: usize = HOST_COMMAND_BUFFER_SIZE / size_of::<u32>();
+const DATA_BUFFER_SIZE: usize = 512;
+const SG_DESCRIPTOR_SIZE: usize = size_of::<u64>();
+const SG_TRANSFER_END: u64 = 0x20 | 0x02 | 0x01;
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostCommandKind {
     Read,
     Write,
+    Check,
 }
 
 type RegisterCommand = (HostCommandKind, u16, u8, u8);
@@ -53,6 +61,11 @@ const CARD_PULL_CTL3: u16 = 0xFD62;
 const CARD_PULL_CTL4: u16 = 0xFD63;
 const CARD_CLK_EN: u16 = 0xFD69;
 const DMACTL: u16 = 0xFE2C;
+const IRQSTAT0: u16 = 0xFE21;
+const DMATC0: u16 = 0xFE28;
+const DMATC1: u16 = 0xFE29;
+const DMATC2: u16 = 0xFE2A;
+const DMATC3: u16 = 0xFE2B;
 const RBCTL: u16 = 0xFE34;
 const SD_CFG1: u16 = 0xFDA0;
 const SD_CFG2: u16 = 0xFDA1;
@@ -75,7 +88,13 @@ const SD_STAT_IDLE: u8 = 0x20;
 const SD_TRANSFER_ERR: u8 = 0x10;
 const SD_TM_CMD_RSP: u8 = 0x08;
 const SD_TM_NORMAL_READ: u8 = 0x0C;
+const SD_TM_AUTO_READ_2: u8 = 0x0E;
 const SD_TM_AUTO_WRITE_3: u8 = 0x01;
+const SD_NO_CALCULATE_CRC7: u8 = 0x80;
+const SD_NO_CHECK_WAIT_CRC_TO: u8 = 0x20;
+const SD_NO_CHECK_CRC7: u8 = 0x04;
+const DMA_FROM_CARD: u8 = 0x23;
+const DMA_TO_CARD: u8 = 0x21;
 const SD_RSP_R0: u8 = 0x04;
 const SD_RSP_R1: u8 = 0x01;
 const SD_RSP_R1B: u8 = 0x09;
@@ -120,6 +139,8 @@ pub struct RtsxController {
     card_was_present: bool,
     health: PciHealth,
     host_commands: Option<DmaRegion>,
+    data_buffer: Option<DmaRegion>,
+    scatter_table: Option<DmaRegion>,
 }
 
 // Access to the controller is serialized by `CONTROLLER`; its pointer denotes
@@ -191,7 +212,6 @@ impl RtsxController {
     }
 
     fn prepare_device(&mut self) -> Result<(), &'static str> {
-        crate::debug::hint(b"sd_pci");
         if !self.device.prepare_mmio() {
             return Err("RTSX PCI command or power transition failed");
         }
@@ -201,6 +221,7 @@ impl RtsxController {
     }
 
     fn init_hardware(&mut self) -> Result<(), &'static str> {
+        crate::debug::hint(b"sd_pci");
         self.prepare_device()?;
         crate::debug::hint(b"sd_mmio");
         self.mmio.write32(RTSX_BIER, 0);
@@ -244,19 +265,17 @@ impl RtsxController {
     }
 
     fn wait_transfer(&self, required: u8) -> Result<(), &'static str> {
-        match crate::timing::poll_timeout_us(500_000, || {
-            match self.read_reg(SD_TRANSFER) {
-                Ok(state) => {
-                    if state & SD_TRANSFER_ERR != 0 {
-                        Some(Err("SD transfer failed"))
-                    } else if state & required == required {
-                        Some(Ok(()))
-                    } else {
-                        None
-                    }
+        match crate::timing::poll_timeout_us(500_000, || match self.read_reg(SD_TRANSFER) {
+            Ok(state) => {
+                if state & SD_TRANSFER_ERR != 0 {
+                    Some(Err("SD transfer failed"))
+                } else if state & required == required {
+                    Some(Ok(()))
+                } else {
+                    None
                 }
-                Err(_) => Some(Err("SD transfer register read error")),
             }
+            Err(_) => Some(Err("SD transfer register read error")),
         }) {
             Some(Ok(())) => Ok(()),
             Some(Err(e)) => {
@@ -381,6 +400,16 @@ impl RtsxController {
     }
 
     fn run_register_commands(&mut self, commands: &[RegisterCommand]) -> Result<(), &'static str> {
+        self.load_register_commands(commands)?;
+        self.run_host_commands(commands.len())
+    }
+
+    fn load_register_commands(&mut self, commands: &[RegisterCommand]) -> Result<(), &'static str> {
+        commands
+            .len()
+            .checked_mul(size_of::<u32>())
+            .filter(|&bytes| bytes != 0 && bytes <= HOST_COMMAND_BUFFER_SIZE)
+            .ok_or("RTSX host command overflow")?;
         {
             let command_buffer = self
                 .host_commands
@@ -394,7 +423,84 @@ impl RtsxController {
                 slot.copy_from_slice(&Self::host_command(kind, address, mask, value).to_le_bytes());
             }
         }
-        self.run_host_commands(commands.len())
+        Ok(())
+    }
+
+    fn has_data_dma(&self) -> bool {
+        self.host_commands.is_some() && self.data_buffer.is_some() && self.scatter_table.is_some()
+    }
+
+    fn scatter_descriptor(data_iova: u32) -> u64 {
+        (u64::from(data_iova) << 32) | ((DATA_BUFFER_SIZE as u64) << 12) | SG_TRANSFER_END
+    }
+
+    fn dma_iova(region: &Option<DmaRegion>) -> Result<u32, &'static str> {
+        u32::try_from(
+            region
+                .as_ref()
+                .ok_or("RTSX DMA buffer unavailable")?
+                .dma_iova(),
+        )
+        .map_err(|_| "RTSX DMA address exceeds 32-bit")
+    }
+
+    fn run_data_dma(
+        &mut self,
+        commands: &[RegisterCommand],
+        device_to_host: bool,
+    ) -> Result<(), &'static str> {
+        self.load_register_commands(commands)?;
+        let bytes = (commands.len() * size_of::<u32>()) as u32;
+        let command_iova = Self::dma_iova(&self.host_commands)?;
+        let data_iova = Self::dma_iova(&self.data_buffer)?;
+        let scatter_iova = Self::dma_iova(&self.scatter_table)?;
+
+        self.scatter_table
+            .as_mut()
+            .ok_or("RTSX scatter table unavailable")?
+            .write_from(&Self::scatter_descriptor(data_iova).to_le_bytes());
+        self.host_commands
+            .as_ref()
+            .ok_or("RTSX host command buffer unavailable")?
+            .flush_for_device();
+        if device_to_host {
+            self.data_buffer
+                .as_ref()
+                .ok_or("RTSX data buffer unavailable")?
+                .flush_for_device();
+        }
+
+        self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
+        self.mmio.write_batch_then_barrier(&[
+            (RTSX_HCBAR, command_iova),
+            (
+                RTSX_HCBCTLR,
+                HOST_COMMAND_START | HOST_COMMAND_AUTO_RESPONSE | bytes,
+            ),
+            (RTSX_HDBAR, scatter_iova),
+            (
+                RTSX_HDBCTLR,
+                HOST_DMA_START
+                    | HOST_DMA_ADMA
+                    | if device_to_host {
+                        HOST_DMA_DEVICE_TO_HOST
+                    } else {
+                        0
+                    },
+            ),
+        ]);
+        let result = crate::timing::poll_timeout_us(1_000_000, || {
+            let status = self.mmio.read32(RTSX_BIPR);
+            (status & TRANS_FAIL_INT != 0)
+                .then_some(Err("RTSX data DMA failed"))
+                .or_else(|| (status & TRANS_OK_INT != 0).then_some(Ok(())))
+        })
+        .unwrap_or(Err("RTSX data DMA timed out"));
+        self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
+        if result.is_err() {
+            self.stop_transfer();
+        }
+        result
     }
 
     fn read_sector_commands(argument: u32) -> [RegisterCommand; 12] {
@@ -440,6 +546,71 @@ impl RtsxController {
                 SD_TRANSFER_START | SD_TM_AUTO_WRITE_3,
             ),
         ]
+    }
+
+    fn data_dma_commands(dma_control: u8, sd_config: u8, transfer: u8) -> [RegisterCommand; 14] {
+        [
+            (HostCommandKind::Write, SD_BLOCK_CNT_L, 0xFF, 1),
+            (HostCommandKind::Write, SD_BLOCK_CNT_H, 0xFF, 0),
+            (HostCommandKind::Write, SD_BYTE_CNT_L, 0xFF, 0),
+            (HostCommandKind::Write, SD_BYTE_CNT_H, 0xFF, 2),
+            (HostCommandKind::Write, IRQSTAT0, 0x80, 0x80),
+            (HostCommandKind::Write, DMATC3, 0xFF, 0),
+            (HostCommandKind::Write, DMATC2, 0xFF, 0),
+            (HostCommandKind::Write, DMATC1, 0xFF, 2),
+            (HostCommandKind::Write, DMATC0, 0xFF, 0),
+            (HostCommandKind::Write, DMACTL, 0x33, dma_control),
+            (HostCommandKind::Write, CARD_DATA_SOURCE, 0x01, 0),
+            (HostCommandKind::Write, SD_CFG2, 0xFF, sd_config),
+            (
+                HostCommandKind::Write,
+                SD_TRANSFER,
+                0xFF,
+                SD_TRANSFER_START | transfer,
+            ),
+            (
+                HostCommandKind::Check,
+                SD_TRANSFER,
+                SD_TRANSFER_END,
+                SD_TRANSFER_END,
+            ),
+        ]
+    }
+
+    fn read_sector_dma_commands(argument: u32) -> [RegisterCommand; 19] {
+        let [arg0, arg1, arg2, arg3] = argument.to_be_bytes();
+        let command = [
+            (
+                HostCommandKind::Write,
+                SD_CMD0,
+                0xFF,
+                SD_CMD_START | CMD17_READ_SINGLE,
+            ),
+            (HostCommandKind::Write, SD_CMD1, 0xFF, arg0),
+            (HostCommandKind::Write, SD_CMD1 + 1, 0xFF, arg1),
+            (HostCommandKind::Write, SD_CMD1 + 2, 0xFF, arg2),
+            (HostCommandKind::Write, SD_CMD1 + 3, 0xFF, arg3),
+        ];
+        let data = Self::data_dma_commands(
+            DMA_FROM_CARD,
+            SD_NO_CHECK_WAIT_CRC_TO | SD_RSP_R1,
+            SD_TM_AUTO_READ_2,
+        );
+        core::array::from_fn(|index| {
+            if index < command.len() {
+                command[index]
+            } else {
+                data[index - command.len()]
+            }
+        })
+    }
+
+    fn write_sector_dma_commands() -> [RegisterCommand; 14] {
+        Self::data_dma_commands(
+            DMA_TO_CARD,
+            SD_NO_CALCULATE_CRC7 | SD_NO_CHECK_WAIT_CRC_TO | SD_NO_CHECK_CRC7,
+            SD_TM_AUTO_WRITE_3,
+        )
     }
 
     fn ppbuf_read_fast(&mut self, buffer: &mut [u8]) -> Result<(), &'static str> {
@@ -555,7 +726,8 @@ impl RtsxController {
 
         macro_rules! check_timeout {
             () => {
-                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= duration_ticks {
+                if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= duration_ticks
+                {
                     return Err("SD init timed out");
                 }
             };
@@ -577,7 +749,8 @@ impl RtsxController {
                 Ok(response) if response & (1 << 31) != 0 => Some(response),
                 _ => None,
             }
-        }).ok_or("ACMD41 timed out")?;
+        })
+        .ok_or("ACMD41 timed out")?;
         let block_addressed = ocr & (1 << 30) != 0;
 
         self.command(CMD2_ALL_SEND_CID, 0, SD_RSP_R2)?;
@@ -669,7 +842,14 @@ impl RtsxController {
 
     fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
         let argument = self.card_address(lba)?;
-        if self.host_commands.is_some() {
+        if self.has_data_dma() {
+            self.run_data_dma(&Self::read_sector_dma_commands(argument), true)?;
+            self.data_buffer
+                .as_ref()
+                .ok_or("RTSX data buffer unavailable")?
+                .read_into(buffer);
+            return Ok(());
+        } else if self.host_commands.is_some() {
             self.run_register_commands(&Self::read_sector_commands(argument))?;
             // CHECK_REG_CMD stalls the host engine on the tested RTS5249.
             // Keep the register writes batched, but observe completion through
@@ -691,23 +871,34 @@ impl RtsxController {
     fn write_sector(&mut self, lba: u32, buffer: &[u8]) -> Result<(), &'static str> {
         let rca = self.sd_card.as_ref().ok_or("no initialized card")?.rca;
         self.command(CMD24_WRITE_SINGLE, self.card_address(lba)?, SD_RSP_R1)?;
-        self.ppbuf_write(buffer)?;
-        if self.host_commands.is_some() {
-            self.run_register_commands(&Self::write_sector_commands())?;
-            self.wait_transfer(SD_TRANSFER_END)?;
+        let data_dma = self.has_data_dma();
+        if data_dma {
+            self.data_buffer
+                .as_mut()
+                .ok_or("RTSX data buffer unavailable")?
+                .write_from(buffer);
+            self.run_data_dma(&Self::write_sector_dma_commands(), false)?;
         } else {
-            self.set_data_len()?;
-            self.write_regs(&[
-                (SD_CFG2, 0xFF, 0),
-                (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
-            ])?;
-            self.wait_transfer(SD_TRANSFER_END)?;
+            self.ppbuf_write(buffer)?;
+            if self.host_commands.is_some() {
+                self.run_register_commands(&Self::write_sector_commands())?;
+                self.wait_transfer(SD_TRANSFER_END)?;
+            } else {
+                self.set_data_len()?;
+                self.write_regs(&[
+                    (SD_CFG2, 0xFF, 0),
+                    (SD_TRANSFER, 0xFF, SD_TRANSFER_START | SD_TM_AUTO_WRITE_3),
+                ])?;
+                self.wait_transfer(SD_TRANSFER_END)?;
+            }
         }
         if crate::timing::poll_timeout_us(2_000_000, || {
             self.command(CMD13_SEND_STATUS, u32::from(rca) << 16, SD_RSP_R1)
                 .ok()
                 .filter(|status| status & (1 << 8) != 0)
-        }).is_some() {
+        })
+        .is_some()
+        {
             return Ok(());
         }
         Err("card programming timed out")
@@ -732,7 +923,12 @@ impl RtsxController {
             })
     }
 
-    pub fn write_sectors(&mut self, lba: u32, count: u16, buffer: &[u8]) -> Result<(), &'static str> {
+    pub fn write_sectors(
+        &mut self,
+        lba: u32,
+        count: u16,
+        buffer: &[u8],
+    ) -> Result<(), &'static str> {
         self.prepare_device()?;
         let bytes = usize::from(count)
             .checked_mul(512)
@@ -809,20 +1005,40 @@ pub fn init(context: &dyn DriverContext) {
         },
     );
     let mmio = unsafe { MemRegion::new(virtual_address as *mut u8, 0x1000) };
-    let device_id = (u16::from(device.bus) << 8)
-        | (u16::from(device.device) << 3)
-        | u16::from(device.function);
-    let host_commands = DmaRegion::alloc(context, HOST_COMMAND_BUFFER_SIZE).and_then(|mut buffer| {
-        match buffer.dma_map(context, device_id) {
-            Ok(iova) if u32::try_from(iova).is_ok() => Some(buffer),
-            _ => {
-                buffer.free(context);
-                None
+    let device_id =
+        (u16::from(device.bus) << 8) | (u16::from(device.device) << 3) | u16::from(device.function);
+    let allocate_dma = |size| {
+        DmaRegion::alloc(context, size).and_then(|mut buffer| {
+            match buffer.dma_map(context, device_id) {
+                Ok(iova) if u32::try_from(iova).is_ok() => Some(buffer),
+                _ => {
+                    buffer.free(context);
+                    None
+                }
             }
+        })
+    };
+    let host_commands = allocate_dma(HOST_COMMAND_BUFFER_SIZE);
+    let (mut data_buffer, mut scatter_table) = if host_commands.is_some() {
+        (
+            allocate_dma(DATA_BUFFER_SIZE),
+            allocate_dma(SG_DESCRIPTOR_SIZE),
+        )
+    } else {
+        (None, None)
+    };
+    if data_buffer.is_none() || scatter_table.is_none() {
+        if let Some(mut buffer) = data_buffer.take() {
+            buffer.free(context);
         }
-    });
+        if let Some(mut buffer) = scatter_table.take() {
+            buffer.free(context);
+        }
+    }
     if host_commands.is_none() {
         log::warn!("RTSX: host command DMA unavailable; falling back to slow PIO");
+    } else if data_buffer.is_none() {
+        log::warn!("RTSX: data DMA unavailable; falling back to PPBUF");
     }
     *CONTROLLER.lock() = Some(RtsxController {
         device,
@@ -831,6 +1047,8 @@ pub fn init(context: &dyn DriverContext) {
         card_was_present: false,
         health,
         host_commands,
+        data_buffer,
+        scatter_table,
     });
     log::info!("RTSX: RTS5249 registered; SD initialization deferred");
 }
@@ -887,7 +1105,8 @@ pub fn is_card_detected() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        HostCommandKind, RtsxController, SD_TRANSFER, SD_TRANSFER_START, SD_TM_NORMAL_READ,
+        HostCommandKind, RtsxController, SD_TM_AUTO_READ_2, SD_TRANSFER, SD_TRANSFER_END,
+        SD_TRANSFER_START,
     };
 
     #[test]
@@ -900,23 +1119,42 @@ mod tests {
             RtsxController::host_command(HostCommandKind::Write, 0xFA00, 0xFF, 0x5A),
             0x7A00_FF5A
         );
+        assert_eq!(
+            RtsxController::host_command(
+                HostCommandKind::Check,
+                SD_TRANSFER,
+                SD_TRANSFER_END,
+                SD_TRANSFER_END,
+            ),
+            0xBDB3_4040
+        );
     }
 
     #[test]
-    fn sector_setup_leaves_completion_polling_to_haimr() {
-        let commands = RtsxController::read_sector_commands(0x1234_5678);
+    fn sector_dma_setup_uses_ring_buffer_and_completion_check() {
+        let commands = RtsxController::read_sector_dma_commands(0x1234_5678);
 
-        assert_eq!(commands.len(), 12);
+        assert_eq!(commands.len(), 19);
         assert_eq!(commands[1].3, 0x12);
         assert_eq!(commands[4].3, 0x78);
         assert_eq!(
             commands.last(),
             Some(&(
-                HostCommandKind::Write,
+                HostCommandKind::Check,
                 SD_TRANSFER,
-                0xFF,
-                SD_TRANSFER_START | SD_TM_NORMAL_READ,
+                SD_TRANSFER_END,
+                SD_TRANSFER_END,
             ))
+        );
+        assert_eq!(commands[17].3, SD_TRANSFER_START | SD_TM_AUTO_READ_2);
+        assert_eq!(RtsxController::write_sector_dma_commands()[11].3, 0xA4);
+    }
+
+    #[test]
+    fn scatter_descriptor_encodes_one_512_byte_segment() {
+        assert_eq!(
+            RtsxController::scatter_descriptor(0x1234_5678),
+            0x1234_5678_0020_0023
         );
     }
 }
