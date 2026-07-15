@@ -181,16 +181,15 @@ fn blit_button(fb: &mut [u32], fbw: u32, cache: &[u32; 14 * 14], bx: i32, by: i3
     }
 }
 
-fn draw_cursor_impl(
+/// Blend the cursor into a RAM-backed render target within `clip`.
+pub fn render_cursor(
     fb: &mut [u32],
     fbw: u32,
     fbh: u32,
     cur: &Cursor,
-    cx: u32,
-    cy: u32,
-    cw: u32,
-    ch: u32,
+    clip: DirtyRect,
 ) {
+    let DirtyRect { x: cx, y: cy, width: cw, height: ch } = clip;
     let pixels = Cursor::shape();
     let sz = Cursor::SIZE as i32;
     let dst_x = cur.x - Cursor::HOTSPOT_X;
@@ -434,11 +433,17 @@ impl Compositor {
         // new cursor positions is already pushed by prepare_frame(), so
         // the compositor redraws both the restored old area and the new
         // cursor position in a single pass.
-        if let Some(c) = scene.cursor {
-            if c.visible {
-                Self::draw_cursor_clipped(framebuffer, fb_width, fb_height, c, dx, dy, dw, dh);
-                inc_draw_calls();
-            }
+        if let Some(c) = scene.cursor
+            && c.visible
+        {
+            render_cursor(
+                framebuffer,
+                fb_width,
+                fb_height,
+                c,
+                DirtyRect::new(dx, dy, dw, dh),
+            );
+            inc_draw_calls();
         }
 
         // Debug overlay (FPS + draw calls)
@@ -515,24 +520,6 @@ impl Compositor {
         let mut p = crate::painter::Painter::new(fb, fbw, fbh);
         let x = (fbw.saturating_sub(150)) as i32;
         p.draw_text(x, 4, text_str, accent, 13.0);
-    }
-
-    // ── Cursor ────────────────────────────────────────────
-
-    pub fn draw_cursor_direct(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor) {
-        draw_cursor_impl(fb, fbw, fbh, cur, 0, 0, fbw, fbh);
-    }
-    fn draw_cursor_clipped(
-        fb: &mut [u32],
-        fbw: u32,
-        fbh: u32,
-        cur: &Cursor,
-        cx: u32,
-        cy: u32,
-        cw: u32,
-        ch: u32,
-    ) {
-        draw_cursor_impl(fb, fbw, fbh, cur, cx, cy, cw, ch);
     }
 
     // ── Window drawing ────────────────────────────────────

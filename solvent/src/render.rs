@@ -1,9 +1,9 @@
-//! Desktop rendering — compositor pass, brightness, cursor save/restore.
+//! Desktop rendering — compositor pass, brightness, and framebuffer blit.
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
 use crate::{DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, RUNTIME, SOLVENT_CALLBACKS};
-use lattice::compositor::{Compositor, RenderTarget};
+use lattice::compositor::{Compositor, RenderTarget, render_cursor};
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use spin::Mutex;
 
@@ -25,52 +25,6 @@ impl RenderTarget for FramebufferTarget<'_> {
     }
 }
 
-// ── Cursor helpers ────────────────────────────────────────────
-
-pub fn cursor_save_background(
-    cursor: &lattice::cursor::Cursor,
-    buf: &mut [u32; lattice::cursor::Cursor::SIZE as usize
-             * lattice::cursor::Cursor::SIZE as usize],
-    save_x: &mut i32,
-    save_y: &mut i32,
-    save_valid: &mut bool,
-    fb: &[u32],
-    fb_stride: u32,
-    fb_width: u32,
-    fb_height: u32,
-) {
-    if !cursor.visible {
-        return;
-    }
-    let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-    let cx = cursor.x - lattice::cursor::Cursor::HOTSPOT_X;
-    let cy = cursor.y - lattice::cursor::Cursor::HOTSPOT_Y;
-    let stride_i = fb_stride as i32;
-    let fbw_i = fb_width as i32;
-    let fbh_i = fb_height as i32;
-    let fb_len = (fb_stride as usize).saturating_mul(fb_height as usize);
-    for row in 0..cur_sz {
-        let sy = cy + row;
-        for col in 0..cur_sz {
-            let val = if sy >= 0 && sy < fbh_i {
-                let sx = cx + col;
-                if sx >= 0 && sx < fbw_i {
-                    let idx = (sy * stride_i + sx) as usize;
-                    if idx < fb_len { fb[idx] } else { 0 }
-                } else {
-                    0
-                }
-            } else {
-                0
-            };
-            buf[(row * cur_sz + col) as usize] = val;
-        }
-    }
-    *save_x = cx;
-    *save_y = cy;
-    *save_valid = true;
-}
-
 // ── Progress callback ────────────────────────────────────────
 
 static RENDER_PROGRESS_FN: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
@@ -82,6 +36,52 @@ pub fn set_render_progress_fn(f: fn(&[u8])) {
 fn render_progress(label: &[u8]) {
     if let Some(f) = *RENDER_PROGRESS_FN.lock() {
         f(label);
+    }
+}
+
+fn clip_region(
+    region: lattice::scene::DirtyRect,
+    width: u32,
+    height: u32,
+) -> Option<lattice::scene::DirtyRect> {
+    (region.x < width && region.y < height)
+        .then(|| {
+            lattice::scene::DirtyRect::new(
+                region.x,
+                region.y,
+                region.width.min(width - region.x),
+                region.height.min(height - region.y),
+            )
+        })
+        .filter(|region| region.width != 0 && region.height != 0)
+}
+
+fn blit_region(
+    back: &[u32],
+    back_width: usize,
+    framebuffer: &mut [u32],
+    framebuffer_stride: usize,
+    region: lattice::scene::DirtyRect,
+) {
+    for row in region.y as usize..(region.y + region.height) as usize {
+        let src = row * back_width + region.x as usize;
+        let dst = row * framebuffer_stride + region.x as usize;
+        let width = region.width as usize;
+        let (Some(src_end), Some(dst_end)) = (src.checked_add(width), dst.checked_add(width)) else {
+            return;
+        };
+        let Some(source) = back.get(src..src_end) else {
+            return;
+        };
+        if dst_end > framebuffer.len() {
+            return;
+        }
+        // SAFETY: the range checks above prove that each destination pixel is
+        // inside the framebuffer. Volatile stores are required for GOP MMIO.
+        let destination = unsafe { framebuffer.as_mut_ptr().add(dst) };
+        for (column, &pixel) in source.iter().enumerate() {
+            unsafe { core::ptr::write_volatile(destination.add(column), pixel) };
+        }
     }
 }
 
@@ -111,7 +111,6 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         let prev = *PREV_SHELL_STATE.lock();
         if rt.shell_state != prev {
             rt.desktop.force_full_redraw();
-            rt.cursor_only_update = false;
             *PREV_SHELL_STATE.lock() = rt.shell_state;
             *PREV_TRANSITION.lock() = true;
         }
@@ -195,10 +194,6 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
 
     let has_dirty = rt.desktop.has_pending_dirty_rects();
     if has_dirty {
-        let cursor_only = core::mem::replace(&mut rt.cursor_only_update, false);
-
-        // When cursor_only, skip compositor + overlay — just update cursor below.
-        if !cursor_only {
         render_progress(b"RENDER: has dirty");
         {
             let back_needed = back_len.saturating_mul(4);
@@ -235,7 +230,10 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 height: fb_height,
             };
             render_progress(b"RENDER: compositor");
-            let scene = rt.desktop.scene();
+            let mut scene = rt.desktop.scene();
+            // Cursor must remain the final system layer, but is composed in RAM
+            // so rendering never needs to sample the physical GOP framebuffer.
+            let cursor = scene.cursor.take();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
             render_progress(b"RENDER: compositor done");
             let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
@@ -261,118 +259,94 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                     }
                 }
             }
-            if was_transition || (bw > 0 && bh > 0) {
-                let back_w = fb_width as usize;
-                render_progress(b"RENDER: copy to fb");
-                let fb_base = fb_pixels.as_mut_ptr();
-                let fb_stride_u = fb_stride;
-                if was_transition {
-                    for row in 0..fb_height as usize {
-                        let src_off = row * back_w;
-                        let dst_off = row * fb_stride_u;
-                        for col in 0..back_w {
-                            unsafe {
-                                core::ptr::write_volatile(
-                                    fb_base.add(dst_off + col),
-                                    back[src_off + col],
-                                );
-                            }
-                        }
-                    }
-                } else {
-                    for row in 0..bh {
-                        let src_off = ((by + row) as usize) * back_w + (bx as usize);
-                        let dst_off = ((by + row) as usize) * fb_stride_u + (bx as usize);
-                        for col in 0..bw as usize {
-                            unsafe {
-                                core::ptr::write_volatile(
-                                    fb_base.add(dst_off + col),
-                                    back[src_off + col],
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
 
-        match rt.shell_state {
-            ShellState::TaskOverview => render_task_overview(
-                fb_pixels,
-                fb_width,
-                fb_height,
-                fb_stride_pixels,
-                rt.desktop.wm.windows(),
-            ),
-            ShellState::AppGrid => {
-                render_app_grid(fb_pixels, fb_width, fb_height, fb_stride_pixels)
-            }
-            ShellState::TimeZoneSelector => {
-                let offset =
-                    crate::clock::TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-                lattice::shell_overlay::render_timezone_selector(
-                    fb_pixels,
+            render_progress(b"RENDER: system layers");
+            match rt.shell_state {
+                ShellState::TaskOverview => render_task_overview(
+                    back,
                     fb_width,
                     fb_height,
-                    fb_stride_pixels,
-                    offset,
+                    fb_width,
+                    scene.windows,
+                ),
+                ShellState::AppGrid => render_app_grid(back, fb_width, fb_height, fb_width),
+                ShellState::TimeZoneSelector => {
+                    let offset = crate::clock::TIMEZONE_OFFSET_HOURS
+                        .load(core::sync::atomic::Ordering::Relaxed);
+                    lattice::shell_overlay::render_timezone_selector(
+                        back, fb_width, fb_height, fb_width, offset,
+                    );
+                }
+                ShellState::Desktop => {}
+            }
+            if rt.shell_state == ShellState::Desktop
+                && lattice::top_panel::is_top_panel_enabled()
+            {
+                rt.desktop
+                    .top_panel
+                    .render(back, fb_width, fb_height, fb_width);
+            }
+            if let Some(cursor) = cursor.filter(|cursor| cursor.visible) {
+                render_cursor(
+                    back,
+                    fb_width,
+                    fb_height,
+                    cursor,
+                    lattice::scene::DirtyRect::full(fb_width, fb_height),
                 );
             }
-            ShellState::Desktop => {}
-        }
 
-        if rt.shell_state == ShellState::Desktop && lattice::top_panel::is_top_panel_enabled() {
-            rt.desktop
-                .top_panel
-                .render(fb_pixels, fb_width, fb_height, fb_stride_pixels);
-        }
-        } // end !cursor_only
-
-        // Cursor handling: restore old cursor, save background, draw new cursor
-        let cur_sz = lattice::cursor::Cursor::SIZE as i32;
-        if rt.cursor_save_valid {
-            let sx = rt.cursor_save_x;
-            let sy = rt.cursor_save_y;
-            let fbw_i = fb_width as i32;
-            let fbh_i = fb_height as i32;
-            for row in 0..cur_sz {
-                let dy = sy + row;
-                if dy < 0 || dy >= fbh_i {
-                    continue;
-                }
-                for col in 0..cur_sz {
-                    let dx = sx + col;
-                    if dx < 0 || dx >= fbw_i {
-                        continue;
-                    }
-                    let idx = (dy as usize) * fb_stride + (dx as usize);
-                    if idx < fb_pixels_len {
-                        fb_pixels[idx] = rt.cursor_save_buf[(row * cur_sz + col) as usize];
+            if was_transition {
+                render_progress(b"RENDER: copy to fb");
+                blit_region(
+                    back,
+                    fb_width as usize,
+                    fb_pixels,
+                    fb_stride,
+                    lattice::scene::DirtyRect::full(fb_width, fb_height),
+                );
+            } else if bw > 0 && bh > 0 {
+                render_progress(b"RENDER: copy dirty regions");
+                for &region in scene.dirty_rects {
+                    if let Some(region) = clip_region(region, fb_width, fb_height) {
+                        blit_region(back, fb_width as usize, fb_pixels, fb_stride, region);
                     }
                 }
             }
-            rt.cursor_save_valid = false;
-        }
-
-        if rt.desktop.cursor.visible {
-            cursor_save_background(
-                &rt.desktop.cursor,
-                &mut rt.cursor_save_buf,
-                &mut rt.cursor_save_x,
-                &mut rt.cursor_save_y,
-                &mut rt.cursor_save_valid,
-                fb_pixels,
-                fb_stride_pixels,
-                fb_width,
-                fb_height,
-            );
-            Compositor::draw_cursor_direct(
-                fb_pixels,
-                fb_stride_pixels,
-                fb_height,
-                &rt.desktop.cursor,
-            );
         }
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clips_regions_to_visible_framebuffer() {
+        assert_eq!(
+            clip_region(lattice::scene::DirtyRect::new(2, 1, 4, 3), 5, 3),
+            Some(lattice::scene::DirtyRect::new(2, 1, 3, 2))
+        );
+        assert_eq!(
+            clip_region(lattice::scene::DirtyRect::new(5, 0, 1, 1), 5, 3),
+            None
+        );
+    }
+
+    #[test]
+    fn blits_only_the_requested_region_and_preserves_stride_padding() {
+        let back = [1, 2, 3, 4, 5, 6];
+        let mut framebuffer = [0; 8];
+
+        blit_region(
+            &back,
+            3,
+            &mut framebuffer,
+            4,
+            lattice::scene::DirtyRect::new(1, 0, 2, 2),
+        );
+
+        assert_eq!(framebuffer, [0, 2, 3, 0, 0, 5, 6, 0]);
+    }
 }
