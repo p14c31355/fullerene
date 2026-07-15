@@ -719,6 +719,7 @@ impl RtsxController {
         count: u16,
         buffer: &mut [u8],
     ) -> Result<(), &'static str> {
+        self.prepare_device()?;
         let bytes = usize::from(count)
             .checked_mul(512)
             .ok_or("sector count overflow")?;
@@ -732,6 +733,7 @@ impl RtsxController {
     }
 
     pub fn write_sectors(&mut self, lba: u32, count: u16, buffer: &[u8]) -> Result<(), &'static str> {
+        self.prepare_device()?;
         let bytes = usize::from(count)
             .checked_mul(512)
             .ok_or("sector count overflow")?;

@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
 use core::pin::Pin;
@@ -19,6 +20,7 @@ use crate::drivers::fat::BlockDevice;
 use crate::klog_fmt;
 
 const SECTOR_SIZE: usize = 512;
+const DIRECTORY_READ_SIZE: usize = 4096;
 
 struct ExFatDevice {
     inner: Arc<Mutex<Box<dyn BlockDevice>>>,
@@ -293,6 +295,10 @@ impl ExFatFileSystem {
 
     fn root_entries(&self) -> Result<Vec<VNode>, FsError> {
         let info = self.fs().info();
+        let cluster_size = usize::try_from(info.bytes_per_cluster)
+            .ok()
+            .filter(|size| *size >= SECTOR_SIZE && size % 32 == 0)
+            .ok_or(FsError::InvalidInput)?;
         let fat = ExFatTable::new(info);
         let mut device = ExFatDevice {
             inner: Arc::clone(&self.device),
@@ -303,6 +309,7 @@ impl ExFatFileSystem {
         let mut visited = BTreeSet::new();
         let mut pending = Vec::with_capacity(19);
         let mut entries = Vec::new();
+        let mut buffer = vec![0; cluster_size.min(DIRECTORY_READ_SIZE)];
 
         loop {
             if !visited.insert(cluster) {
@@ -311,12 +318,20 @@ impl ExFatFileSystem {
             device
                 .seek(SeekFrom::Start(info.cluster_to_offset(cluster)))
                 .map_err(Self::map_io_error)?;
-            for _ in 0..info.bytes_per_cluster / 32 {
-                let mut raw = [0; 32];
-                device.read_exact(&mut raw).map_err(Self::map_io_error)?;
-                if Self::consume_entry(raw, &mut pending, &mut entries) {
-                    return Ok(entries);
+            let mut remaining = cluster_size;
+            while remaining != 0 {
+                let bytes = remaining.min(buffer.len());
+                device
+                    .read_exact(&mut buffer[..bytes])
+                    .map_err(Self::map_io_error)?;
+                for chunk in buffer[..bytes].chunks_exact(32) {
+                    let mut raw = [0; 32];
+                    raw.copy_from_slice(chunk);
+                    if Self::consume_entry(raw, &mut pending, &mut entries) {
+                        return Ok(entries);
+                    }
                 }
+                remaining -= bytes;
             }
             match fat
                 .next_cluster(&mut device, cluster)
@@ -526,6 +541,7 @@ mod tests {
     struct MemoryDevice {
         image: Arc<Mutex<Vec<u8>>>,
         reads: Arc<AtomicUsize>,
+        read_calls: Arc<AtomicUsize>,
     }
 
     impl BlockDevice for MemoryDevice {
@@ -539,6 +555,7 @@ mod tests {
             if buf.len() < len {
                 return Err("test read buffer too small");
             }
+            self.read_calls.fetch_add(1, Ordering::Relaxed);
             self.reads.fetch_add(count as usize, Ordering::Relaxed);
             buf[..len].copy_from_slice(&self.image.lock()[start..start + len]);
             Ok(())
@@ -567,6 +584,7 @@ mod tests {
             Self {
                 image,
                 reads: Arc::new(AtomicUsize::new(0)),
+                read_calls: Arc::new(AtomicUsize::new(0)),
             }
         }
 
@@ -636,11 +654,16 @@ mod tests {
             Err((error, _)) => panic!("remount failed: {error}"),
         };
         block_device.reads.store(0, Ordering::Relaxed);
+        block_device.read_calls.store(0, Ordering::Relaxed);
         let entries = fs.readdir("/").unwrap();
         assert!(entries.iter().any(|entry| entry.name == "Bootlog.txt"));
         assert!(
             block_device.reads.load(Ordering::Relaxed) <= 256,
             "root scan escaped its FAT chain"
+        );
+        assert!(
+            block_device.read_calls.load(Ordering::Relaxed) <= 33,
+            "root scan did not batch contiguous sectors"
         );
     }
 
