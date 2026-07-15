@@ -1,7 +1,7 @@
 //! exFAT filesystem adapter for the kernel VFS.
 
 use alloc::boxed::Box;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -19,9 +19,13 @@ use crate::drivers::fat::BlockDevice;
 use crate::klog_fmt;
 
 const SECTOR_SIZE: usize = 512;
+const METADATA_CACHE_SECTORS: usize = 16;
+
+type MetadataCache = BTreeMap<u32, [u8; SECTOR_SIZE]>;
 
 struct ExFatDevice {
     inner: Arc<Mutex<Box<dyn BlockDevice>>>,
+    cache: Arc<Mutex<MetadataCache>>,
     position: u64,
     size: u64,
 }
@@ -34,6 +38,59 @@ impl ExFatDevice {
     fn lba(position: u64) -> Result<u32, IoError> {
         u32::try_from(position / SECTOR_SIZE as u64)
             .map_err(|_| Self::error(ErrorKind::InvalidInput, "exFAT LBA overflow"))
+    }
+
+    fn read_cached(
+        &self,
+        device: &mut dyn BlockDevice,
+        lba: u32,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<(), IoError> {
+        if count == 1 {
+            if let Some(sector) = self.cache.lock().get(&lba) {
+                buf[..SECTOR_SIZE].copy_from_slice(sector);
+                return Ok(());
+            }
+        }
+        device
+            .read_sectors(lba, count, buf)
+            .map_err(|message| Self::error(ErrorKind::Other, message))?;
+        if count == 1 {
+            let mut cache = self.cache.lock();
+            if cache.len() < METADATA_CACHE_SECTORS {
+                let mut sector = [0; SECTOR_SIZE];
+                sector.copy_from_slice(&buf[..SECTOR_SIZE]);
+                cache.insert(lba, sector);
+            }
+        }
+        Ok(())
+    }
+
+    fn write_cached(
+        &self,
+        device: &mut dyn BlockDevice,
+        lba: u32,
+        count: u16,
+        buf: &[u8],
+    ) -> Result<(), IoError> {
+        device
+            .write_sectors(lba, count, buf)
+            .map_err(|message| Self::error(ErrorKind::Other, message))?;
+        let mut cache = self.cache.lock();
+        for (index, sector) in buf
+            .chunks_exact(SECTOR_SIZE)
+            .take(usize::from(count))
+            .enumerate()
+        {
+            if let Some(cached) = lba
+                .checked_add(index as u32)
+                .and_then(|sector_lba| cache.get_mut(&sector_lba))
+            {
+                cached.copy_from_slice(sector);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -56,15 +113,16 @@ impl Read for ExFatDevice {
             if offset == 0 && remaining >= SECTOR_SIZE {
                 let count = (remaining / SECTOR_SIZE).min(u16::MAX as usize) as u16;
                 let bytes = count as usize * SECTOR_SIZE;
-                device
-                    .read_sectors(Self::lba(position)?, count, &mut buf[done..done + bytes])
-                    .map_err(|message| Self::error(ErrorKind::Other, message))?;
+                self.read_cached(
+                    &mut **device,
+                    Self::lba(position)?,
+                    count,
+                    &mut buf[done..done + bytes],
+                )?;
                 done += bytes;
                 continue;
             }
-            device
-                .read_sectors(Self::lba(position)?, 1, &mut sector)
-                .map_err(|message| Self::error(ErrorKind::Other, message))?;
+            self.read_cached(&mut **device, Self::lba(position)?, 1, &mut sector)?;
             let bytes = (SECTOR_SIZE - offset).min(remaining);
             buf[done..done + bytes].copy_from_slice(&sector[offset..offset + bytes]);
             done += bytes;
@@ -93,20 +151,19 @@ impl Write for ExFatDevice {
             if offset == 0 && remaining >= SECTOR_SIZE {
                 let count = (remaining / SECTOR_SIZE).min(u16::MAX as usize) as u16;
                 let bytes = count as usize * SECTOR_SIZE;
-                device
-                    .write_sectors(Self::lba(position)?, count, &buf[done..done + bytes])
-                    .map_err(|message| Self::error(ErrorKind::Other, message))?;
+                self.write_cached(
+                    &mut **device,
+                    Self::lba(position)?,
+                    count,
+                    &buf[done..done + bytes],
+                )?;
                 done += bytes;
                 continue;
             }
-            device
-                .read_sectors(Self::lba(position)?, 1, &mut sector)
-                .map_err(|message| Self::error(ErrorKind::Other, message))?;
+            self.read_cached(&mut **device, Self::lba(position)?, 1, &mut sector)?;
             let bytes = (SECTOR_SIZE - offset).min(remaining);
             sector[offset..offset + bytes].copy_from_slice(&buf[done..done + bytes]);
-            device
-                .write_sectors(Self::lba(position)?, 1, &sector)
-                .map_err(|message| Self::error(ErrorKind::Other, message))?;
+            self.write_cached(&mut **device, Self::lba(position)?, 1, &sector)?;
             done += bytes;
         }
         self.position += done as u64;
@@ -152,6 +209,7 @@ pub struct ExFatFileSystem {
     handles: Vec<Handle>,
     inner: Pin<Box<ExFatInner>>,
     device: Arc<Mutex<Box<dyn BlockDevice>>>,
+    cache: Arc<Mutex<MetadataCache>>,
     device_size: u64,
     next_fd: u32,
 }
@@ -168,8 +226,10 @@ impl ExFatFileSystem {
             None => return Err((FsError::InvalidInput, Some(device))),
         };
         let shared = Arc::new(Mutex::new(device));
+        let cache = Arc::new(Mutex::new(MetadataCache::new()));
         let adapter = ExFatDevice {
             inner: Arc::clone(&shared),
+            cache: Arc::clone(&cache),
             position: 0,
             size,
         };
@@ -191,6 +251,7 @@ impl ExFatFileSystem {
             handles: Vec::new(),
             inner: Box::pin(inner),
             device: shared,
+            cache,
             device_size: size,
             next_fd: 1,
         })
@@ -300,6 +361,7 @@ impl ExFatFileSystem {
         let fat = ExFatTable::new(info);
         let mut device = ExFatDevice {
             inner: Arc::clone(&self.device),
+            cache: Arc::clone(&self.cache),
             position: 0,
             size: self.device_size,
         };
@@ -599,6 +661,7 @@ mod tests {
             Arc::new(Mutex::new(Box::new(block_device.clone())));
         let adapter = ExFatDevice {
             inner: shared,
+            cache: Arc::new(Mutex::new(MetadataCache::new())),
             position: 0,
             size: IMAGE_SIZE as u64,
         };
@@ -644,10 +707,12 @@ mod tests {
         block_device.read_calls.store(0, Ordering::Relaxed);
         let entries = fs.readdir("/").unwrap();
         assert!(entries.iter().any(|entry| entry.name == "Bootlog.txt"));
-        assert!(
-            block_device.reads.load(Ordering::Relaxed) <= 1,
-            "root scan read past its first end marker"
+        assert_eq!(
+            block_device.reads.load(Ordering::Relaxed),
+            0,
+            "root scan repeated media I/O instead of using mount metadata"
         );
+        assert_eq!(block_device.read_calls.load(Ordering::Relaxed), 0);
 
         drop(fs);
         remove_root_end_marker(&mut image.lock());
