@@ -1,6 +1,7 @@
 //! exFAT filesystem adapter for the kernel VFS.
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -9,7 +10,7 @@ use core::pin::Pin;
 
 use genome::fs::FsError;
 use hadris_fat::FatError;
-use hadris_fat::exfat::{ExFatDir, ExFatFileWriter, ExFatFs};
+use hadris_fat::exfat::{ExFatDir, ExFatFileWriter, ExFatFs, ExFatTable};
 use hadris_fat::sync::{Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
 use spin::Mutex;
 
@@ -150,6 +151,8 @@ pub struct ExFatFileSystem {
     // contain a stable reference to the pinned filesystem allocation.
     handles: Vec<Handle>,
     inner: Pin<Box<ExFatInner>>,
+    device: Arc<Mutex<Box<dyn BlockDevice>>>,
+    device_size: u64,
     next_fd: u32,
 }
 
@@ -187,6 +190,8 @@ impl ExFatFileSystem {
         Ok(Self {
             handles: Vec::new(),
             inner: Box::pin(inner),
+            device: shared,
+            device_size: size,
             next_fd: 1,
         })
     }
@@ -284,6 +289,94 @@ impl ExFatFileSystem {
         // SAFETY: `inner` is pinned in a Box and is therefore never moved. Every
         // writer is removed/finalized before `inner` is dropped (see `Drop`).
         Ok(unsafe { mem::transmute::<ExFatFileWriter<'_, ExFatDevice>, Writer>(writer) })
+    }
+
+    fn root_entries(&self) -> Result<Vec<VNode>, FsError> {
+        let info = self.fs().info();
+        let fat = ExFatTable::new(info);
+        let mut device = ExFatDevice {
+            inner: Arc::clone(&self.device),
+            position: 0,
+            size: self.device_size,
+        };
+        let mut cluster = info.root_cluster;
+        let mut visited = BTreeSet::new();
+        let mut pending = Vec::with_capacity(19);
+        let mut entries = Vec::new();
+
+        loop {
+            if !visited.insert(cluster) {
+                return Err(FsError::InvalidInput);
+            }
+            device
+                .seek(SeekFrom::Start(info.cluster_to_offset(cluster)))
+                .map_err(Self::map_io_error)?;
+            for _ in 0..info.bytes_per_cluster / 32 {
+                let mut raw = [0; 32];
+                device.read_exact(&mut raw).map_err(Self::map_io_error)?;
+                if Self::consume_entry(raw, &mut pending, &mut entries) {
+                    return Ok(entries);
+                }
+            }
+            match fat
+                .next_cluster(&mut device, cluster)
+                .map_err(Self::map_error)?
+            {
+                Some(next) => cluster = next,
+                None => return Ok(entries),
+            }
+        }
+    }
+
+    fn consume_entry(raw: [u8; 32], pending: &mut Vec<[u8; 32]>, entries: &mut Vec<VNode>) -> bool {
+        if raw[0] == 0 {
+            return true;
+        }
+        if pending.is_empty() {
+            if raw[0] == 0x85 && (2..=18).contains(&raw[1]) {
+                pending.push(raw);
+            }
+            return false;
+        }
+
+        pending.push(raw);
+        let expected = pending[0][1] as usize + 1;
+        if pending.len() < expected {
+            return false;
+        }
+        if let Some(entry) = Self::parse_entry(pending) {
+            entries.push(entry);
+        }
+        pending.clear();
+        false
+    }
+
+    fn parse_entry(raw: &[[u8; 32]]) -> Option<VNode> {
+        let stream = raw.get(1)?;
+        if stream[0] != 0xC0 {
+            return None;
+        }
+        let name_len = stream[3] as usize;
+        if name_len == 0 {
+            return None;
+        }
+        let mut name = Vec::with_capacity(name_len);
+        for entry in raw.get(2..)? {
+            if entry[0] != 0xC1 {
+                return None;
+            }
+            for bytes in entry[2..].chunks_exact(2) {
+                if name.len() == name_len {
+                    break;
+                }
+                name.push(u16::from_le_bytes([bytes[0], bytes[1]]));
+            }
+        }
+        (name.len() == name_len).then(|| VNode {
+            size: u64::from_le_bytes(stream[8..16].try_into().unwrap()),
+            is_dir: u16::from_le_bytes(raw[0][4..6].try_into().unwrap()) & 0x10 != 0,
+            name: String::from_utf16_lossy(&name),
+        })
     }
 }
 
@@ -396,6 +489,9 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
+        if path.trim_matches('/').is_empty() {
+            return self.root_entries();
+        }
         self.directory(path)?
             .entries()
             .map(|entry| {
@@ -418,6 +514,7 @@ impl FileSystem for ExFatFileSystem {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
 
     use hadris_fat::exfat::{ExFatFormatOptions, format_exfat};
 
@@ -426,7 +523,10 @@ mod tests {
     const IMAGE_SIZE: usize = 16 * 1024 * 1024;
 
     #[derive(Clone)]
-    struct MemoryDevice(Arc<Mutex<Vec<u8>>>);
+    struct MemoryDevice {
+        image: Arc<Mutex<Vec<u8>>>,
+        reads: Arc<AtomicUsize>,
+    }
 
     impl BlockDevice for MemoryDevice {
         fn read_sectors(
@@ -439,7 +539,8 @@ mod tests {
             if buf.len() < len {
                 return Err("test read buffer too small");
             }
-            buf[..len].copy_from_slice(&self.0.lock()[start..start + len]);
+            self.reads.fetch_add(count as usize, Ordering::Relaxed);
+            buf[..len].copy_from_slice(&self.image.lock()[start..start + len]);
             Ok(())
         }
 
@@ -448,7 +549,7 @@ mod tests {
             if buf.len() < len {
                 return Err("test write buffer too small");
             }
-            self.0.lock()[start..start + len].copy_from_slice(&buf[..len]);
+            self.image.lock()[start..start + len].copy_from_slice(&buf[..len]);
             Ok(())
         }
 
@@ -462,6 +563,13 @@ mod tests {
     }
 
     impl MemoryDevice {
+        fn new(image: Arc<Mutex<Vec<u8>>>) -> Self {
+            Self {
+                image,
+                reads: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
         fn range(lba: u32, count: u16) -> Result<(usize, usize), &'static str> {
             let start = lba as usize * SECTOR_SIZE;
             let len = count as usize * SECTOR_SIZE;
@@ -475,7 +583,7 @@ mod tests {
     #[test]
     fn mounts_and_streams_a_windows_sized_exfat_cluster() {
         let image = Arc::new(Mutex::new(vec![0; IMAGE_SIZE]));
-        let block_device = MemoryDevice(Arc::clone(&image));
+        let block_device = MemoryDevice::new(Arc::clone(&image));
         let shared: Arc<Mutex<Box<dyn BlockDevice>>> =
             Arc::new(Mutex::new(Box::new(block_device.clone())));
         let adapter = ExFatDevice {
@@ -492,7 +600,7 @@ mod tests {
         // triggered the magenta panic screen during `mount`.
         assert_eq!(image.lock()[109], 8);
 
-        let mut fs = match crate::drivers::fat::mount_device(Box::new(block_device)) {
+        let mut fs = match crate::drivers::fat::mount_device(Box::new(block_device.clone())) {
             Ok(filesystem) => filesystem,
             Err((error, _)) => panic!("mount failed: {error}"),
         };
@@ -520,5 +628,34 @@ mod tests {
         fs.close(fd).unwrap();
         assert_eq!(offset, expected.len());
         assert_eq!(actual, expected);
+
+        drop(fs);
+        remove_root_end_marker(&mut image.lock());
+        let mut fs = match crate::drivers::fat::mount_device(Box::new(block_device.clone())) {
+            Ok(filesystem) => filesystem,
+            Err((error, _)) => panic!("remount failed: {error}"),
+        };
+        block_device.reads.store(0, Ordering::Relaxed);
+        let entries = fs.readdir("/").unwrap();
+        assert!(entries.iter().any(|entry| entry.name == "Bootlog.txt"));
+        assert!(
+            block_device.reads.load(Ordering::Relaxed) <= 256,
+            "root scan escaped its FAT chain"
+        );
+    }
+
+    fn remove_root_end_marker(image: &mut [u8]) {
+        let le_u32 = |offset| u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap());
+        let sector_size = 1usize << image[108];
+        let sectors_per_cluster = 1usize << image[109];
+        let cluster_heap = le_u32(88) as usize;
+        let root_cluster = le_u32(96) as usize;
+        let start = (cluster_heap + (root_cluster - 2) * sectors_per_cluster) * sector_size;
+        let end = start + sectors_per_cluster * sector_size;
+        for offset in (start..end).step_by(32) {
+            if image[offset] == 0 {
+                image[offset] = 0x05;
+            }
+        }
     }
 }
