@@ -85,8 +85,8 @@
 | PS/2 Mouse | ✅ | ✅ | Stable |
 | UEFI Framebuffer | ✅ | ✅ | Stable |
 | VGA Text Mode | ✅ | ✅ | Stable |
-| AHCI | ✅ | 🔶 | Beta |
-| NVMe | ✅ | ✅ | Beta |
+| AHCI | ✅ | 🔶 | Mechanism only; block adapter pending |
+| NVMe | ✅ | ✅ | Mechanism only; block adapter pending |
 | xHCI | ✅ | 🔶 | Beta |
 | eHCI | ✅ | ❌ | Alpha |
 | RTSX | ❌ | ✅ | Alpha |

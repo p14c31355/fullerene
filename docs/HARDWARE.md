@@ -50,8 +50,13 @@ port enumeration, and mass-storage path on this machine.
 
 The Realtek RTS5249 reader (`10ec:5249`) is matched by vendor/device identity,
 because PCI class `0xff` is a real vendor-specific class rather than a driver
-wildcard. An SDXC successfully initialized at boot appears dynamically as
-`/dev/sd0`; `sd_rescan` retries discovery after insertion without mounting it.
+wildcard. Boot registers the reader without accessing its device registers.
+The explicit `sd_rescan` command is the first BAR0 MMIO boundary; a successfully
+initialized SDXC then appears dynamically as `/dev/sd0` without being mounted.
+This keeps an uncompleted PCIe load out of the boot path. AHCI and NVMe are not
+attached at boot until their kernel adapters can publish usable block devices;
+their former adapters reset hardware but returned zero-sized placeholder
+devices.
 
 Reference: Linux [`drivers/usb/host/pci-quirks.c`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/pci-quirks.c)
 and [`drivers/usb/host/xhci-ext-caps.h`](https://github.com/torvalds/linux/blob/master/drivers/usb/host/xhci-ext-caps.h).

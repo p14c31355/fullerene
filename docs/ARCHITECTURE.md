@@ -411,6 +411,13 @@ activate the Nitrogen state machine from rendering or input dispatch. Explicit
 `usb_rescan` is the activation boundary; device discovery and `/dev`
 registration remain separate from filesystem mount policy.
 
+PCI storage follows the same lifecycle rule. Boot may discover an RTSX
+controller and prepare its service, but card-register MMIO begins only at the
+explicit `sd_rescan` boundary. AHCI and NVMe drivers must not be registered in
+the boot attach pipeline until they expose real block-device ownership; a
+controller reset performed by a placeholder wrapper is not service
+registration.
+
 The kernel device registry preserves `/dev/<name>` identity while transferring
 exclusive block-device ownership to a mounted filesystem. An available entry
 contains a device lease; a present entry without a lease means mounted or in
@@ -418,9 +425,10 @@ use. Controller re-enumeration must not invalidate an outstanding lease.
 
 `/dev` is a `DevFs` mount backed directly by that registry, not a tmpfs with
 manually-created placeholder files. Consequently registration and removal are
-visible immediately and `/dev/null` is supplied by DevFs itself. Media
-discovery remains distinct from mounting: `sd_rescan` may retry an inserted SD
-card, while `mount /dev/sd0 <path>` only acquires and mounts its existing lease.
+visible immediately and `/dev/null` is supplied by DevFs itself. Seeing only
+`/dev/null` before an explicit media rescan is expected. Media discovery remains
+distinct from mounting: `sd_rescan` may retry an inserted SD card, while
+`mount /dev/sd0 <path>` only acquires and mounts its existing lease.
 
 The kernel crate re-exports Genome types and adds the singleton `VfsContext` (wrapping `Vfs` with `spin::Mutex` + handle table) through the kernel's `vfs` and `fs` modules, keeping the core logic framework-agnostic.
 
@@ -696,5 +704,4 @@ The goal is to reduce cognitive load, improve maintainability, and provide a sta
 Rule of thumb:
 
 > If multiple functions share the same conceptual state, create a Context structure and move the state into it.
-
 

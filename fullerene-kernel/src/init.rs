@@ -205,6 +205,8 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("devfs", || {
+            crate::boot_stage::draw_boot_label(b"DEVFS");
+            crate::boot_stage::draw_step_hint(b"devfs");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs start\n");
             let _ = crate::contexts::vfs::mkdir("/dev");
             crate::contexts::vfs::mount("", "/dev", "devfs")
@@ -214,6 +216,8 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("device_probe", || {
+            crate::boot_stage::draw_boot_label(b"DEVICE PROBE");
+            crate::boot_stage::draw_step_hint(b"pci_scan");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step start\n");
             let registry = crate::drivers::registry::build_registry();
             let ctx = &crate::driver_context_impl::KernelDriverContext;
@@ -325,16 +329,6 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 .map_err(|_| "Failed to initialize device manager")?;
             petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr done\n");
-            Ok(())
-        }),
-        petroleum::init_step!("sd_card", || {
-            crate::boot_stage::draw_step_hint(b"sd_strt");
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card start\n");
-            crate::boot_stage::draw_boot_label(b"SD CARD");
-            crate::drivers::registry::sd_probe_and_register();
-            petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
-            crate::boot_stage::draw_step_hint(b"sd_ok  ");
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card done\n");
             Ok(())
         }),
         #[cfg(not(nitrogen_no_iwlwifi))]

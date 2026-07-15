@@ -37,6 +37,7 @@ use nitrogen::DriverContext;
 // ────────────────────────────────────────────────────────────
 
 pub use nitrogen::driver_api::DriverRegistry;
+#[cfg(not(nitrogen_no_storage))]
 use nitrogen::driver_api::StorageDriver;
 
 // ── USB storage state (formerly drivers/usb_storage.rs) ────
@@ -117,74 +118,6 @@ pub static SD_PROBED: AtomicBool = AtomicBool::new(false);
 // ────────────────────────────────────────────────────────────
 //  Driver implementations
 // ────────────────────────────────────────────────────────────
-
-// -- AHCI ----------------------------------------------------
-
-#[cfg(not(nitrogen_no_storage))]
-pub struct AhciDriver;
-
-#[cfg(not(nitrogen_no_storage))]
-impl Driver for AhciDriver {
-    fn pci_class(&self) -> Option<(u8, u8)> {
-        Some((0x01, 0x06)) // mass-storage, SATA (AHCI)
-    }
-    fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
-        DriverBox::Storage(Box::new(AhciStorageCtl))
-    }
-}
-
-#[cfg(not(nitrogen_no_storage))]
-struct AhciStorageCtl;
-
-#[cfg(not(nitrogen_no_storage))]
-impl StorageDriver for AhciStorageCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
-        nitrogen::storage::ahci::init(&crate::driver_context_impl::KernelDriverContext);
-        Ok(())
-    }
-    fn read_blocks(&self, _lba: u64, _count: usize, _buf: &mut [u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn write_blocks(&self, _lba: u64, _count: usize, _buf: &[u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn block_size(&self) -> u32 { 0 }
-    fn total_blocks(&self) -> u64 { 0 }
-}
-
-// -- NVMe ----------------------------------------------------
-
-#[cfg(not(nitrogen_no_storage))]
-pub struct NvmeDriver;
-
-#[cfg(not(nitrogen_no_storage))]
-impl Driver for NvmeDriver {
-    fn pci_class(&self) -> Option<(u8, u8)> {
-        Some((0x01, 0x08)) // mass-storage, NVM Express
-    }
-    fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
-        DriverBox::Storage(Box::new(NvmeStorageCtl))
-    }
-}
-
-#[cfg(not(nitrogen_no_storage))]
-struct NvmeStorageCtl;
-
-#[cfg(not(nitrogen_no_storage))]
-impl StorageDriver for NvmeStorageCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
-        nitrogen::storage::nvme::init(&crate::driver_context_impl::KernelDriverContext);
-        Ok(())
-    }
-    fn read_blocks(&self, _lba: u64, _count: usize, _buf: &mut [u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn write_blocks(&self, _lba: u64, _count: usize, _buf: &[u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn block_size(&self) -> u32 { 0 }
-    fn total_blocks(&self) -> u64 { 0 }
-}
 
 // -- USB storage (formerly usb_storage::init) -----------------
 
@@ -290,11 +223,7 @@ pub fn build_registry() -> DriverRegistry {
     #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
     let mut reg = reg;
     #[cfg(not(nitrogen_no_storage))]
-    {
-        reg.register("ahci", Box::new(AhciDriver));
-        reg.register("nvme", Box::new(NvmeDriver));
-        reg.register("sd_card", Box::new(SdCardDriver));
-    }
+    reg.register("sd_card", Box::new(SdCardDriver));
     #[cfg(not(nitrogen_no_usb))]
     reg.register("usb_storage", Box::new(UsbStorageDriver::new()));
     // Future: virtio_gpu, iwlwifi, hda, …

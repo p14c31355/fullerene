@@ -538,6 +538,9 @@ fn register_nozzle_hooks() {
                 if crate::devfs::block_device_exists("sd0") && !crate::devfs::block_device_available("sd0") {
                     ctx.terminal.write_str("SD rescan: refusing rescan while SD card is mounted.\n");
                 } else {
+                    ctx.terminal.write_str(
+                        "SD rescan: explicitly activating controller MMIO; this may not return on broken hardware.\n",
+                    );
                     crate::drivers::registry::SD_PROBED.store(false, core::sync::atomic::Ordering::Release);
                     if crate::drivers::registry::sd_probe_and_register() {
                         ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n");
