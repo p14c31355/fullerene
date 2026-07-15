@@ -320,10 +320,9 @@ impl FileSystem for ExFatFileSystem {
         if self.handles[index].writer.is_some() {
             return Err(FsError::PermissionDenied);
         }
-        let path = self.handles[index].path.clone();
         let offset = self.handles[index].offset;
         let read = {
-            let mut file = self.fs().open_file(&path).map_err(Self::map_error)?;
+            let mut file = self.fs().open_file(&self.handles[index].path).map_err(Self::map_error)?;
             if offset != 0 {
                 file.seek(SeekFrom::Start(offset))
                     .map_err(Self::map_io_error)?;
