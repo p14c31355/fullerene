@@ -387,16 +387,26 @@ pub fn poll_usb() -> bool {
 /// must never invoke this from boot, rendering, or input-dispatch paths.
 #[cfg(not(nitrogen_no_usb))]
 fn activate_usb() -> bool {
-    let mut guard = with_ctx_inner();
-    let Some(ctx) = guard.as_mut() else {
+    // Do not hold USB_CTX across enable(): a broken non-posted MMIO read may
+    // never return. Pollers must be able to observe None and keep the GUI
+    // responsive while explicit activation is in progress.
+    let Some(mut ctx) = ({
+        let mut guard = with_ctx_inner();
+        guard.take()
+    }) else {
         log::warn!("USB: no host-controller service registered");
         return false;
     };
-    if ctx.is_enabled() {
-        return true;
-    }
-    crate::boot_stage::draw_step_hint(b"usb_init");
-    match ctx.enable() {
+
+    let result = if ctx.is_enabled() {
+        Ok(())
+    } else {
+        crate::boot_stage::draw_step_hint(b"usb_init");
+        ctx.enable()
+    };
+    *with_ctx_inner() = Some(ctx);
+
+    match result {
         Ok(()) => true,
         Err(e) => {
             log::warn!("USB: enable failed: {:?}", e);
