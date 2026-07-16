@@ -10,7 +10,7 @@ use fullerene_abi::syscall_errors;
 pub type SyscallResult = Result<u64, SyscallError>;
 
 /// System call errors
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyscallError {
     /// Invalid system call number
     InvalidSyscall = 1,
@@ -18,12 +18,18 @@ pub enum SyscallError {
     FileNotFound = 2,
     /// No such process
     NoSuchProcess = 3,
+    /// Device or block I/O error
+    Io = 5,
     /// Bad file descriptor
     BadFileDescriptor = 9,
     /// Out of memory
     OutOfMemory = 12,
     /// Permission denied
     PermissionDenied = 13,
+    /// Invalid or inaccessible address
+    AddressFault = 14,
+    /// Resource or device is busy
+    Busy = 16,
     /// Invalid argument
     InvalidArgument = 22,
     /// Resource temporarily unavailable (try again)
@@ -36,6 +42,16 @@ pub enum SyscallError {
     AlreadyExists = 17,
     /// No such device
     NoSuchDevice = 19,
+    /// Expected a directory
+    NotADirectory = 20,
+    /// Expected a non-directory object
+    IsADirectory = 21,
+    /// Storage capacity exhausted
+    NoSpace = 28,
+    /// Directory must be empty
+    DirectoryNotEmpty = 39,
+    /// Numeric or address overflow
+    Overflow = 75,
     /// Bad handle
     BadHandle = 104,
     /// Operation would block
@@ -48,34 +64,125 @@ petroleum::error_chain!(SyscallError, petroleum::common::logging::SystemError,
     SyscallError::PermissionDenied => petroleum::common::logging::SystemError::PermissionDenied,
     SyscallError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
     SyscallError::NoSuchProcess => petroleum::common::logging::SystemError::NoSuchProcess,
+    SyscallError::Io => petroleum::common::logging::SystemError::DeviceError,
     SyscallError::InvalidArgument => petroleum::common::logging::SystemError::InvalidArgument,
     SyscallError::OutOfMemory => petroleum::common::logging::SystemError::SyscallOutOfMemory,
+    SyscallError::AddressFault => petroleum::common::logging::SystemError::MappingFailed,
+    SyscallError::Busy => petroleum::common::logging::SystemError::OperationAgain,
     SyscallError::Again => petroleum::common::logging::SystemError::OperationAgain,
     SyscallError::TimedOut => petroleum::common::logging::SystemError::OperationTimedOut,
     SyscallError::NotSupported => petroleum::common::logging::SystemError::NotSupported,
     SyscallError::AlreadyExists => petroleum::common::logging::SystemError::FileExists,
     SyscallError::NoSuchDevice => petroleum::common::logging::SystemError::NoSuchDevice,
+    SyscallError::NotADirectory => petroleum::common::logging::SystemError::InvalidArgument,
+    SyscallError::IsADirectory => petroleum::common::logging::SystemError::InvalidArgument,
+    SyscallError::NoSpace => petroleum::common::logging::SystemError::DiskFull,
+    SyscallError::DirectoryNotEmpty => petroleum::common::logging::SystemError::InvalidArgument,
+    SyscallError::Overflow => petroleum::common::logging::SystemError::InvalidArgument,
     SyscallError::BadHandle => petroleum::common::logging::SystemError::BadHandle,
     SyscallError::WouldBlock => petroleum::common::logging::SystemError::WouldBlock,
 );
 
 impl From<petroleum::common::logging::SystemError> for SyscallError {
     fn from(error: petroleum::common::logging::SystemError) -> Self {
+        use petroleum::common::logging::SystemError;
         match error {
-            petroleum::common::logging::SystemError::MemOutOfMemory => SyscallError::OutOfMemory,
-            petroleum::common::logging::SystemError::InvalidArgument => {
-                SyscallError::InvalidArgument
+            SystemError::InvalidSyscall => Self::InvalidSyscall,
+            SystemError::BadFileDescriptor | SystemError::FsInvalidFileDescriptor => {
+                Self::BadFileDescriptor
             }
-            petroleum::common::logging::SystemError::PermissionDenied => {
-                SyscallError::PermissionDenied
+            SystemError::PermissionDenied => Self::PermissionDenied,
+            SystemError::FileNotFound => Self::FileNotFound,
+            SystemError::NoSuchProcess => Self::NoSuchProcess,
+            SystemError::InvalidArgument
+            | SystemError::InvalidSeek
+            | SystemError::UnmappingFailed
+            | SystemError::InvalidFormat
+            | SystemError::LoadFailed
+            | SystemError::InternalError
+            | SystemError::UnknownError => Self::InvalidArgument,
+            SystemError::SyscallOutOfMemory
+            | SystemError::FrameAllocationFailed
+            | SystemError::MemOutOfMemory => Self::OutOfMemory,
+            SystemError::FileExists => Self::AlreadyExists,
+            SystemError::DiskFull => Self::NoSpace,
+            SystemError::MappingFailed => Self::AddressFault,
+            SystemError::DeviceNotFound | SystemError::NoSuchDevice => Self::NoSuchDevice,
+            SystemError::DeviceError | SystemError::PortError => Self::Io,
+            SystemError::NotImplemented | SystemError::NotSupported => Self::NotSupported,
+            SystemError::TooManyProcesses | SystemError::OperationAgain => Self::Again,
+            SystemError::OperationTimedOut => Self::TimedOut,
+            SystemError::BadHandle => Self::BadHandle,
+            SystemError::WouldBlock => Self::WouldBlock,
+        }
+    }
+}
+
+impl From<genome::fs::FsError> for SyscallError {
+    fn from(error: genome::fs::FsError) -> Self {
+        use genome::fs::FsError;
+        match error {
+            FsError::FileNotFound => Self::FileNotFound,
+            FsError::FileExists => Self::AlreadyExists,
+            FsError::PermissionDenied => Self::PermissionDenied,
+            FsError::InvalidFileDescriptor => Self::BadFileDescriptor,
+            FsError::InvalidSeek | FsError::InvalidPath | FsError::InvalidInput => {
+                Self::InvalidArgument
             }
-            petroleum::common::logging::SystemError::FileNotFound => SyscallError::FileNotFound,
-            petroleum::common::logging::SystemError::NoSuchProcess => SyscallError::NoSuchProcess,
-            petroleum::common::logging::SystemError::BadFileDescriptor => {
-                SyscallError::BadFileDescriptor
-            }
-            // Default to InvalidArgument for unhandled errors
-            _ => SyscallError::InvalidArgument,
+            FsError::DiskFull => Self::NoSpace,
+            FsError::NotADirectory => Self::NotADirectory,
+            FsError::DirectoryNotEmpty => Self::DirectoryNotEmpty,
+            FsError::IsADirectory => Self::IsADirectory,
+            FsError::NotSupported => Self::NotSupported,
+        }
+    }
+}
+
+impl From<genome::block::BlockError> for SyscallError {
+    fn from(error: genome::block::BlockError) -> Self {
+        use genome::block::BlockError;
+        match error {
+            BlockError::Device(_) => Self::Io,
+            BlockError::BufferTooSmall { .. } => Self::InvalidArgument,
+            BlockError::LbaOverflow => Self::Overflow,
+            BlockError::SectorNotFound => Self::FileNotFound,
+        }
+    }
+}
+
+impl From<nitrogen::DriverError> for SyscallError {
+    fn from(error: nitrogen::DriverError) -> Self {
+        use nitrogen::DriverError;
+        match error {
+            DriverError::DeviceNotFound => Self::NoSuchDevice,
+            DriverError::NotReady => Self::Again,
+            DriverError::InvalidArgument => Self::InvalidArgument,
+            DriverError::OutOfMemory => Self::OutOfMemory,
+            DriverError::MmioMappingFailed => Self::OutOfMemory,
+            DriverError::DmaMappingFailed
+            | DriverError::Io
+            | DriverError::Protocol
+            | DriverError::DeviceFault => Self::Io,
+            DriverError::TimedOut => Self::TimedOut,
+            DriverError::Busy => Self::Busy,
+            DriverError::NotSupported => Self::NotSupported,
+        }
+    }
+}
+
+impl From<petroleum::MemoryError> for SyscallError {
+    fn from(error: petroleum::MemoryError) -> Self {
+        use petroleum::MemoryError;
+        match error {
+            MemoryError::OutOfMemory | MemoryError::FrameAllocationFailed => Self::OutOfMemory,
+            MemoryError::MappingFailed | MemoryError::InvalidAddress => Self::AddressFault,
+            MemoryError::UnmappingFailed
+            | MemoryError::InvalidAlignment
+            | MemoryError::InvalidSize
+            | MemoryError::NotMapped => Self::InvalidArgument,
+            MemoryError::AddressOverflow => Self::Overflow,
+            MemoryError::AlreadyMapped => Self::AlreadyExists,
+            MemoryError::PermissionDenied => Self::PermissionDenied,
         }
     }
 }
@@ -120,6 +227,7 @@ mod tests {
             SyscallError::NoSuchProcess as i64,
             syscall_errors::NO_SUCH_PROCESS
         );
+        assert_eq!(SyscallError::Io as i64, syscall_errors::IO_ERROR);
         assert_eq!(
             SyscallError::BadFileDescriptor as i64,
             syscall_errors::BAD_FILE_DESCRIPTOR
@@ -134,6 +242,11 @@ mod tests {
             syscall_errors::PERMISSION_DENIED
         );
         assert_eq!(
+            SyscallError::AddressFault as i64,
+            syscall_errors::ADDRESS_FAULT
+        );
+        assert_eq!(SyscallError::Busy as i64, syscall_errors::BUSY);
+        assert_eq!(
             SyscallError::AlreadyExists as i64,
             syscall_errors::ALREADY_EXISTS
         );
@@ -141,6 +254,20 @@ mod tests {
             SyscallError::NoSuchDevice as i64,
             syscall_errors::NO_SUCH_DEVICE
         );
+        assert_eq!(
+            SyscallError::NotADirectory as i64,
+            syscall_errors::NOT_A_DIRECTORY
+        );
+        assert_eq!(
+            SyscallError::IsADirectory as i64,
+            syscall_errors::IS_A_DIRECTORY
+        );
+        assert_eq!(SyscallError::NoSpace as i64, syscall_errors::NO_SPACE);
+        assert_eq!(
+            SyscallError::DirectoryNotEmpty as i64,
+            syscall_errors::DIRECTORY_NOT_EMPTY
+        );
+        assert_eq!(SyscallError::Overflow as i64, syscall_errors::OVERFLOW);
         assert_eq!(
             SyscallError::InvalidArgument as i64,
             syscall_errors::INVALID_ARGUMENT
@@ -152,5 +279,41 @@ mod tests {
         assert_eq!(SyscallError::BadHandle as i64, syscall_errors::BAD_HANDLE);
         assert_eq!(SyscallError::TimedOut as i64, syscall_errors::TIMED_OUT);
         assert_eq!(SyscallError::WouldBlock as i64, syscall_errors::WOULD_BLOCK);
+    }
+
+    #[test]
+    fn domain_errors_preserve_native_syscall_meaning() {
+        assert_eq!(
+            SyscallError::from(genome::fs::FsError::DirectoryNotEmpty),
+            SyscallError::DirectoryNotEmpty
+        );
+        assert_eq!(
+            SyscallError::from(genome::block::BlockError::LbaOverflow),
+            SyscallError::Overflow
+        );
+        assert_eq!(
+            SyscallError::from(nitrogen::DriverError::TimedOut),
+            SyscallError::TimedOut
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::MemoryError::AlreadyMapped),
+            SyscallError::AlreadyExists
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::MemoryError::MappingFailed),
+            SyscallError::AddressFault
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::SystemError::MappingFailed),
+            SyscallError::AddressFault
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::SystemError::SyscallOutOfMemory),
+            SyscallError::OutOfMemory
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::SystemError::WouldBlock),
+            SyscallError::WouldBlock
+        );
     }
 }

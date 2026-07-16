@@ -251,23 +251,86 @@ impl LinuxFdTable {
     }
 }
 
+/// Typed positive Linux errno used at domain-to-ABI conversion boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct LinuxErrno(i32);
+
+impl LinuxErrno {
+    pub const fn get(self) -> i32 {
+        self.0
+    }
+}
+
+impl From<genome::fs::FsError> for LinuxErrno {
+    fn from(error: genome::fs::FsError) -> Self {
+        use genome::fs::FsError;
+        Self(match error {
+            FsError::FileNotFound => ENOENT,
+            FsError::FileExists => EEXIST,
+            FsError::PermissionDenied => EACCES,
+            FsError::InvalidFileDescriptor => EBADF,
+            FsError::InvalidSeek | FsError::InvalidPath | FsError::InvalidInput => EINVAL,
+            FsError::DiskFull => ENOSPC,
+            FsError::NotADirectory => ENOTDIR,
+            FsError::DirectoryNotEmpty => ENOTEMPTY,
+            FsError::IsADirectory => EISDIR,
+            FsError::NotSupported => ENOTSUP,
+        })
+    }
+}
+
+impl From<genome::block::BlockError> for LinuxErrno {
+    fn from(error: genome::block::BlockError) -> Self {
+        use genome::block::BlockError;
+        Self(match error {
+            BlockError::Device(_) => EIO,
+            BlockError::BufferTooSmall { .. } => EINVAL,
+            BlockError::LbaOverflow => EOVERFLOW,
+            BlockError::SectorNotFound => ENOENT,
+        })
+    }
+}
+
+impl From<nitrogen::DriverError> for LinuxErrno {
+    fn from(error: nitrogen::DriverError) -> Self {
+        use nitrogen::DriverError;
+        Self(match error {
+            DriverError::DeviceNotFound => ENODEV,
+            DriverError::NotReady => EAGAIN,
+            DriverError::InvalidArgument => EINVAL,
+            DriverError::OutOfMemory | DriverError::MmioMappingFailed => ENOMEM,
+            DriverError::DmaMappingFailed
+            | DriverError::Io
+            | DriverError::Protocol
+            | DriverError::DeviceFault => EIO,
+            DriverError::TimedOut => ETIMEDOUT,
+            DriverError::Busy => EBUSY,
+            DriverError::NotSupported => ENOTSUP,
+        })
+    }
+}
+
+impl From<petroleum::MemoryError> for LinuxErrno {
+    fn from(error: petroleum::MemoryError) -> Self {
+        use petroleum::MemoryError;
+        Self(match error {
+            MemoryError::OutOfMemory | MemoryError::FrameAllocationFailed => ENOMEM,
+            MemoryError::MappingFailed | MemoryError::InvalidAddress => EFAULT,
+            MemoryError::UnmappingFailed
+            | MemoryError::InvalidAlignment
+            | MemoryError::InvalidSize
+            | MemoryError::NotMapped => EINVAL,
+            MemoryError::AddressOverflow => EOVERFLOW,
+            MemoryError::AlreadyMapped => EEXIST,
+            MemoryError::PermissionDenied => EACCES,
+        })
+    }
+}
+
 /// Translate FsError to a Linux errno.
 pub fn fs_errno(err: &genome::fs::FsError) -> i32 {
-    use genome::fs::FsError;
-    match err {
-        FsError::FileNotFound => ENOENT,
-        FsError::FileExists => EEXIST,
-        FsError::PermissionDenied => EACCES,
-        FsError::InvalidFileDescriptor => EBADF,
-        FsError::InvalidSeek => EINVAL,
-        FsError::DiskFull => ENOSPC,
-        FsError::NotADirectory => ENOTDIR,
-        FsError::DirectoryNotEmpty => ENOTEMPTY,
-        FsError::IsADirectory => EISDIR,
-        FsError::InvalidPath => EINVAL,
-        FsError::NotSupported => ENOSYS,
-        FsError::InvalidInput => EINVAL,
-    }
+    LinuxErrno::from(*err).get()
 }
 
 /// Translate errno from FsError/C errors to Linux errno.
@@ -404,6 +467,38 @@ mod user_copy_tests {
         assert_eq!(
             linux_user_copy_error(UserCopyError::System(SystemError::PermissionDenied)),
             EFAULT
+        );
+    }
+
+    #[test]
+    fn domain_errors_preserve_linux_errno_meaning() {
+        assert_eq!(
+            LinuxErrno::from(genome::fs::FsError::DiskFull).get(),
+            ENOSPC
+        );
+        assert_eq!(
+            LinuxErrno::from(genome::block::BlockError::LbaOverflow).get(),
+            EOVERFLOW
+        );
+        assert_eq!(
+            LinuxErrno::from(nitrogen::DriverError::TimedOut).get(),
+            ETIMEDOUT
+        );
+        assert_eq!(
+            LinuxErrno::from(petroleum::MemoryError::AlreadyMapped).get(),
+            EEXIST
+        );
+        assert_eq!(
+            LinuxErrno::from(petroleum::MemoryError::MappingFailed).get(),
+            EFAULT
+        );
+        assert_eq!(
+            LinuxErrno::from(petroleum::MemoryError::InvalidAddress).get(),
+            EFAULT
+        );
+        assert_eq!(
+            LinuxErrno::from(genome::fs::FsError::NotSupported).get(),
+            ENOTSUP
         );
     }
 }
