@@ -297,4 +297,48 @@ mod tests {
         let mut terminal = FakeTerminal::default();
         assert!(!dispatch(commands, &mut terminal, "stop"));
     }
+
+    #[test]
+    fn dispatch_with_services_injects_service() {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        struct MyService(u32);
+
+    fn check_service(ctx: &mut CommandContext) -> bool {
+        let value = ctx.services::<MyService>().map(|s| s.0).unwrap_or(0);
+        ctx.terminal.write_str(&alloc::format!("service={}", value));
+        true
+    }
+
+        static CHECK: NamedCommand = NamedCommand {
+            name: "check",
+            description: "check",
+            func: check_service,
+        };
+
+        let service = MyService(42);
+        let mut terminal = FakeTerminal::default();
+        let commands: &[&dyn Command] = &[&CHECK];
+        assert!(dispatch_with_services(&commands, &mut terminal, "check", &service));
+        assert!(terminal.output.contains("service=42"));
+    }
+
+    #[test]
+    fn dispatch_without_services_returns_none() {
+    fn check_service(ctx: &mut CommandContext) -> bool {
+        let has = ctx.services::<u32>().is_some();
+        ctx.terminal.write_str(&alloc::format!("has_service={}", has));
+        true
+    }
+
+        static CHECK: NamedCommand = NamedCommand {
+            name: "check",
+            description: "check",
+            func: check_service,
+        };
+
+        let mut terminal = FakeTerminal::default();
+        let commands: &[&dyn Command] = &[&CHECK];
+        assert!(dispatch(commands, &mut terminal, "check"));
+        assert!(terminal.output.contains("has_service=false"));
+    }
 }

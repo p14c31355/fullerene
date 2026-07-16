@@ -40,10 +40,24 @@ pub struct SupportSection {
 }
 
 pub fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("tools crate must be inside the workspace root")
-        .to_path_buf()
+    // Try CARGO_WORKSPACE_DIR first (Cargo sets this at runtime).
+    if let Some(dir) = env::var_os("CARGO_WORKSPACE_DIR") {
+        return PathBuf::from(dir);
+    }
+    // Fall back to parent of CARGO_MANIFEST_DIR (compile-time).
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut candidate = Some(manifest);
+    while let Some(dir) = candidate {
+        if dir.join("Cargo.toml").exists() {
+            if let Ok(content) = fs::read_to_string(dir.join("Cargo.toml")) {
+                if content.contains("[workspace]") {
+                    return dir.to_path_buf();
+                }
+            }
+        }
+        candidate = dir.parent();
+    }
+    panic!("tools crate cannot find the workspace root from {}", manifest.display());
 }
 
 pub fn check_dependency_duplicates(root: &Path) -> ToolResult {

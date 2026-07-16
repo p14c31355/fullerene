@@ -26,23 +26,23 @@ use block_device::read_boot_sector;
 pub fn mount_device(
     mut device: Box<dyn BlockDevice>,
 ) -> Result<Box<dyn FileSystem>, (FsError, Option<Box<dyn BlockDevice>>)> {
-    let lba = match find_fat_partition(&mut *device) {
-        Ok(lba) => lba,
+    let info = match find_fat_partition(&mut *device) {
+        Ok(info) => info,
         Err(error) => return Err((error, Some(device))),
     };
 
-    let boot = match read_boot_sector(&mut *device, lba) {
+    let boot = match read_boot_sector(&mut *device, info.start_lba) {
         Ok(boot) => boot,
         Err(error) => {
-            klog_fmt!("filesystem probe failed at LBA {}: {}\n", lba, error);
+            klog_fmt!("filesystem probe failed at LBA {}: {}\n", info.start_lba, error);
             return Err((FsError::InvalidInput, Some(device)));
         }
     };
 
-    let partition: Box<dyn BlockDevice> = if lba == 0 {
+    let partition: Box<dyn BlockDevice> = if info.start_lba == 0 {
         device
     } else {
-        Box::new(PartitionBlockDevice::new(device, lba))
+        Box::new(PartitionBlockDevice::new(device, info.start_lba, info.total_sectors))
     };
     let cached: Box<dyn BlockDevice> = Box::new(BlockCache::new(partition, 64));
 

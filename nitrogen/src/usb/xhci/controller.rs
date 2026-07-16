@@ -102,7 +102,7 @@ impl XhciContext {
         crate::debug::hint(b"xh_legok");
 
         let op_base = unsafe { mmio_base.add(op_off) };
-        let rt_base = unsafe { mmio_base.add(rt_off + RT_INTERRUPTER_STRIDE) };
+        let rt_base = unsafe { mmio_base.add(rt_off) };
         let db_base = unsafe { mmio_base.add(db_off) };
         let registers = RegisterContext {
             mmio_base,

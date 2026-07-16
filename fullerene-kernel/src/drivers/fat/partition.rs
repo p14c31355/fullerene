@@ -16,27 +16,31 @@ const PARTITION_FAT16: u8 = 0x06;
 const PARTITION_FAT16_LBA: u8 = 0x0E;
 const PARTITION_EXFAT: u8 = 0x07;
 
-pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u64, FsError> {
+pub struct PartitionInfo {
+    pub start_lba: u64,
+    pub total_sectors: u64,
+}
+
+pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo, FsError> {
     let boot = read_boot_sector(device, 0)?;
 
     if is_exfat(&boot) {
         klog_fmt!("FAT: raw exFAT at LBA 0\n");
-        return Ok(0);
+        return Ok(PartitionInfo { start_lba: 0, total_sectors: device.total_sectors() });
     }
     let bytes_per_sector = u16::from_le_bytes([boot[11], boot[12]]);
     if matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096) {
         klog_fmt!("FAT: raw FAT32 at LBA 0 (bps={})\n", bytes_per_sector);
-        return Ok(0);
+        return Ok(PartitionInfo { start_lba: 0, total_sectors: device.total_sectors() });
     }
 
     let signature = u16::from_le_bytes([boot[0x1FE], boot[0x1FF]]);
     if signature != MBR_SIGNATURE {
         klog_fmt!("FAT: no MBR signature at LBA 0 (0x{:04X})\n", signature);
-        return Ok(0);
+        return Ok(PartitionInfo { start_lba: 0, total_sectors: device.total_sectors() });
     }
 
-    let mut best_lba = None;
-    let mut best_sectors = 0;
+    let mut best: Option<PartitionInfo> = None;
     for index in 0..4 {
         let offset = 0x1BE + index * 16;
         let partition_type = boot[offset + 4];
@@ -60,19 +64,18 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u64, FsError> 
                 | PARTITION_FAT16_LBA
                 | PARTITION_EXFAT
         );
-        if is_fat && sector_count > best_sectors {
-            best_lba = Some(lba_start);
-            best_sectors = sector_count;
+        if is_fat && (best.as_ref().map_or(true, |b| sector_count > b.total_sectors as u32)) {
+            best = Some(PartitionInfo { start_lba: lba_start as u64, total_sectors: sector_count as u64 });
         }
     }
 
-    if let Some(lba) = best_lba {
+    if let Some(info) = best {
         klog_fmt!(
             "FAT: selected partition at LBA {} ({} sectors)\n",
-            lba,
-            best_sectors
+            info.start_lba,
+            info.total_sectors,
         );
-        return Ok(lba as u64);
+        return Ok(info);
     }
 
     klog_fmt!("FAT: no FAT partition found in MBR\n");
@@ -82,21 +85,28 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u64, FsError> 
 pub struct PartitionBlockDevice {
     inner: Box<dyn BlockDevice>,
     offset: u64,
+    total_sectors: u64,
 }
 
 impl PartitionBlockDevice {
-    pub fn new(inner: Box<dyn BlockDevice>, offset: u64) -> Self {
-        Self { inner, offset }
+    pub fn new(inner: Box<dyn BlockDevice>, offset: u64, total_sectors: u64) -> Self {
+        Self { inner, offset, total_sectors }
     }
 
     fn absolute_lba(&self, lba: u64, count: u16) -> Result<u64, BlockError> {
         let absolute = lba
             .checked_add(self.offset)
             .ok_or(BlockError::LbaOverflow)?;
-        let end = absolute
+        let end = lba
             .checked_add(count as u64)
             .ok_or(BlockError::LbaOverflow)?;
-        if end > self.inner.total_sectors() {
+        if end > self.total_sectors {
+            return Err(BlockError::LbaOverflow);
+        }
+        let media_end = absolute
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if media_end > self.inner.total_sectors() {
             return Err(BlockError::LbaOverflow);
         }
         Ok(absolute)
@@ -119,7 +129,7 @@ impl BlockDevice for PartitionBlockDevice {
     }
 
     fn total_sectors(&self) -> u64 {
-        self.inner.total_sectors().saturating_sub(self.offset)
+        self.total_sectors
     }
 }
 
@@ -217,7 +227,7 @@ mod tests {
         boot[11..13].copy_from_slice(&512u16.to_le_bytes());
         let mut device = MemoryBlockDevice::with_boot_sector(boot);
 
-        assert_eq!(find_fat_partition(&mut device), Ok(0));
+        assert_eq!(find_fat_partition(&mut device).map(|i| i.start_lba), Ok(0));
     }
 
     #[test]
@@ -226,7 +236,7 @@ mod tests {
         sector[11..13].copy_from_slice(&4096u16.to_le_bytes());
         let mut device = FourKnBlockDevice { sector };
 
-        assert_eq!(find_fat_partition(&mut device), Ok(0));
+        assert_eq!(find_fat_partition(&mut device).map(|i| i.start_lba), Ok(0));
     }
 
     #[test]
@@ -238,19 +248,31 @@ mod tests {
         set_partition(&mut boot, 2, 0x83, 8192, 16_384);
         let mut device = MemoryBlockDevice::with_boot_sector(boot);
 
-        assert_eq!(find_fat_partition(&mut device), Ok(512));
+        let info = find_fat_partition(&mut device).unwrap();
+        assert_eq!(info.start_lba, 512);
+        assert_eq!(info.total_sectors, 4096);
     }
 
     #[test]
-    fn partition_device_rejects_reads_past_media_end() {
+    fn partition_device_rejects_reads_past_partition_end() {
         let device = MemoryBlockDevice {
-            data: vec![0; 4 * 512],
+            data: vec![0; 8 * 512],
         };
-        let mut partition = PartitionBlockDevice::new(Box::new(device), 2);
+        // partition at LBA 2 with 2 sectors
+        let mut partition = PartitionBlockDevice::new(Box::new(device), 2, 2);
         let mut buf = [0; 512];
 
+        // read within partition
+        assert!(partition.read_sectors(0, 1, &mut buf).is_ok());
+        assert!(partition.read_sectors(1, 1, &mut buf).is_ok());
+        // read past partition end
         assert_eq!(
             partition.read_sectors(2, 1, &mut buf),
+            Err(BlockError::LbaOverflow)
+        );
+        // read past media end (offset + lba + count > media)
+        assert_eq!(
+            partition.read_sectors(5, 1, &mut buf),
             Err(BlockError::LbaOverflow)
         );
     }

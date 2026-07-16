@@ -11,7 +11,8 @@ const KERNEL_CAPABILITIES: fullerene_abi::CapabilitySet = fullerene_abi::Capabil
     .with(fullerene_abi::Capability::IpcChannels)
     .with(fullerene_abi::Capability::IpcPipes)
     .with(fullerene_abi::Capability::TimerSystem)
-    .with(fullerene_abi::Capability::DeviceEnumeration);
+    .with(fullerene_abi::Capability::DeviceEnumeration)
+    .with(fullerene_abi::Capability::ProcessSpawn);
 
 pub(crate) fn syscall_abi_query(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
     if info_buf.is_null() {

@@ -139,6 +139,7 @@ pub unsafe extern "C" fn handle_syscall(
         Ok(SyscallNumber::Sleep) => time::syscall_sleep(arg1),
         Ok(SyscallNumber::Uptime) => time::syscall_uptime(arg1 as *mut u8),
 
+        Ok(_) => Err(SyscallError::InvalidSyscall),
         Err(()) => Err(SyscallError::InvalidSyscall),
     };
 

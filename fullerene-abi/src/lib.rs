@@ -10,6 +10,7 @@ use core::convert::TryFrom;
 /// A Fullerene native syscall number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
+#[non_exhaustive]
 pub enum SyscallNumber {
     AbiQuery = 0,
     Exit = 1,
@@ -215,6 +216,7 @@ pub mod syscall_numbers {
 /// A positive error code returned as its negated value from a syscall.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
+#[non_exhaustive]
 pub enum SyscallErrorCode {
     InvalidSyscall = 1,
     FileNotFound = 2,
@@ -276,11 +278,31 @@ impl TryFrom<i64> for SyscallErrorCode {
     type Error = ();
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|code| code.as_i64() == value)
-            .ok_or(())
+        match value {
+            1 => Ok(Self::InvalidSyscall),
+            2 => Ok(Self::FileNotFound),
+            3 => Ok(Self::NoSuchProcess),
+            5 => Ok(Self::Io),
+            9 => Ok(Self::BadFileDescriptor),
+            11 => Ok(Self::Again),
+            12 => Ok(Self::OutOfMemory),
+            13 => Ok(Self::PermissionDenied),
+            14 => Ok(Self::AddressFault),
+            16 => Ok(Self::Busy),
+            17 => Ok(Self::AlreadyExists),
+            19 => Ok(Self::NoSuchDevice),
+            20 => Ok(Self::NotADirectory),
+            21 => Ok(Self::IsADirectory),
+            22 => Ok(Self::InvalidArgument),
+            28 => Ok(Self::NoSpace),
+            39 => Ok(Self::DirectoryNotEmpty),
+            75 => Ok(Self::Overflow),
+            95 => Ok(Self::NotSupported),
+            104 => Ok(Self::BadHandle),
+            110 => Ok(Self::TimedOut),
+            140 => Ok(Self::WouldBlock),
+            _ => Err(()),
+        }
     }
 }
 
@@ -352,6 +374,7 @@ impl AbiVersion {
 /// One capability advertised by [`AbiInfo`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
+#[non_exhaustive]
 pub enum Capability {
     NativeSyscall = 1 << 0,
     LinuxCompat = 1 << 1,
@@ -420,9 +443,9 @@ pub struct AbiInfo {
 }
 
 impl AbiInfo {
-    /// Size accepted from clients built against ABI version 0.3.
+    /// Minimum size accepted from older clients.
     /// This value remains fixed when fields are appended in later versions.
-    pub const MIN_BYTE_SIZE: usize = 40;
+    pub const MIN_BYTE_SIZE: usize = 24;
     pub const BYTE_SIZE: usize = 40;
     pub const EMPTY: Self = Self {
         version: AbiVersion {
