@@ -112,7 +112,7 @@ pub fn _print(args: fmt::Arguments) {
 
 // Fallback graphics initialization for when framebuffer config is not available
 #[inline(always)]
-pub fn init_fallback_graphics() -> Result<(), &'static str> {
+pub fn init_fallback_graphics() -> Result<(), petroleum::SystemError> {
     #[cfg(target_os = "uefi")]
     {
         let vga_config = petroleum::common::VgaFramebufferConfig {

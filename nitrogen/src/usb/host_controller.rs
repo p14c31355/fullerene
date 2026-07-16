@@ -32,7 +32,7 @@ pub trait HostController {
     ///
     /// xHCI controllers handle register configuration in their own `init()`
     /// method. EHCI controllers only need reset() and start().
-    fn initialize(&mut self) -> Result<(), &'static str> {
+    fn initialize(&mut self) -> Result<(), crate::DriverError> {
         self.reset()?;
         // Note: xHCI requires register and ring configuration between reset and start.
         // This is handled in XhciContext::init(), which is called by the concrete type.
@@ -41,10 +41,10 @@ pub trait HostController {
     }
 
     /// Hardware reset (HCRST / HCRESET).
-    fn reset(&mut self) -> Result<(), &'static str>;
+    fn reset(&mut self) -> Result<(), crate::DriverError>;
 
     /// Start the controller schedule (run/stop bit).
-    fn start(&mut self) -> Result<(), &'static str>;
+    fn start(&mut self) -> Result<(), crate::DriverError>;
 
     /// Scan all root-hub ports for newly-connected devices.
     /// Returns the number of new devices discovered during this call.
@@ -73,7 +73,7 @@ pub trait HostController {
         dev_addr: u8,
         setup: &UsbSetupPacket,
         buf: &mut [u8],
-    ) -> Result<usize, &'static str>;
+    ) -> Result<usize, crate::DriverError>;
 
     /// Perform a USB bulk transfer.
     ///
@@ -86,7 +86,7 @@ pub trait HostController {
         buf: &mut [u8],
         dir: UsbDirection,
         mps: u16,
-    ) -> Result<usize, &'static str>;
+    ) -> Result<usize, crate::DriverError>;
 }
 
 // ============================================================================

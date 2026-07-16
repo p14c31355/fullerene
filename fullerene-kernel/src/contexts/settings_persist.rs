@@ -76,8 +76,8 @@ fn parse_bool(s: &str) -> Option<bool> {
 ///
 /// Returns `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded)` so the
 /// caller can sync to solvent.
-pub fn load_settings(
-    read_fn: impl FnOnce(&str) -> Result<Vec<u8>, &'static str>,
+pub fn load_settings<E>(
+    read_fn: impl FnOnce(&str) -> Result<Vec<u8>, E>,
 ) -> (f32, u32, bool, bool) {
     let data = match read_fn("/etc/settings.toml") {
         Ok(data) => data,

@@ -113,7 +113,7 @@ impl VirtualMemoryContext {
         phys: u64,
         size_bytes: u64,
         preferred_virt: Option<u64>,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<u64, crate::MemoryError> {
         let va = preferred_virt.unwrap_or(phys + self.physical_offset);
 
         // Record the mapping.
@@ -144,7 +144,7 @@ impl VirtualMemoryContext {
         size_bytes: u64,
         flags: PageTableFlags,
         name: &'static str,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<u64, crate::MemoryError> {
         let va = phys_start + self.physical_offset;
         let l4 = unsafe { self.l4_table_mut() };
         // Build mapper from the raw L4 pointer (avoids borrowing self twice).
@@ -160,7 +160,7 @@ impl VirtualMemoryContext {
             unsafe {
                 mapper
                     .map_to(page, frame, flags, &mut self.frame_allocator)
-                    .map_err(|_| "map_identity_huge: map_to failed")?
+                    .map_err(|_| crate::MemoryError::MappingFailed)?
                     .flush();
             }
         }
@@ -185,7 +185,7 @@ impl VirtualMemoryContext {
         size_bytes: u64,
         flags: PageTableFlags,
         name: &'static str,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         let page_count = (size_bytes + 0xFFF) / 0x1000;
         let l4 = unsafe { self.l4_table_mut() };
 
@@ -202,7 +202,7 @@ impl VirtualMemoryContext {
                     &mut self.frame_allocator,
                     VirtAddr::new(self.physical_offset),
                 )
-                .map_err(|_| "map_range_4k: map_page_4k_l1 failed")?;
+                .map_err(|_| crate::MemoryError::MappingFailed)?;
             }
         }
 
@@ -219,7 +219,7 @@ impl VirtualMemoryContext {
     }
 
     /// Map a heap region (owned, writable, no-execute).
-    pub fn map_heap(&mut self, phys: u64, size_bytes: u64) -> Result<u64, &'static str> {
+    pub fn map_heap(&mut self, phys: u64, size_bytes: u64) -> Result<u64, crate::MemoryError> {
         let va = phys + self.physical_offset;
         self.map_range_4k(
             phys,
@@ -237,7 +237,7 @@ impl VirtualMemoryContext {
     pub fn direct_map_physical(
         &mut self,
         memory_map: &[crate::page_table::memory_map::MemoryMapDescriptor],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         for desc in memory_map {
             let phys = desc.physical_start();
             let size = desc.number_of_pages() as u64 * 0x1000;
@@ -260,11 +260,11 @@ impl VirtualMemoryContext {
     /// This copies the PML4 structure but preserves all existing mappings
     /// (including `.data` and `.bss` sections) unlike the previous
     /// `clone_page_table` which zeroed temporary VA ranges.
-    pub fn clone_for_process(&mut self) -> Result<VirtualMemoryContext, &'static str> {
+    pub fn clone_for_process(&mut self) -> Result<VirtualMemoryContext, crate::MemoryError> {
         let new_frame = self
             .frame_allocator
             .allocate_frame()
-            .ok_or("clone_for_process: allocate_frame failed")?;
+            .ok_or(crate::MemoryError::FrameAllocationFailed)?;
         let new_pml4_phys = new_frame.start_address().as_u64();
 
         // Copy the current L4 entries to the new table.

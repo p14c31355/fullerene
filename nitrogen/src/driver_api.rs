@@ -7,24 +7,25 @@ use core::cmp::Reverse;
 /// Block-device interface for mass-storage controllers
 /// (NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage, etc.).
 pub trait StorageDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn read_blocks(&self, lba: u64, count: usize, buf: &mut [u8]) -> Result<(), &'static str>;
-    fn write_blocks(&self, lba: u64, count: usize, buf: &[u8]) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
+    fn read_blocks(&self, lba: u64, count: usize, buf: &mut [u8])
+    -> Result<(), crate::DriverError>;
+    fn write_blocks(&self, lba: u64, count: usize, buf: &[u8]) -> Result<(), crate::DriverError>;
     fn block_size(&self) -> u32;
     fn total_blocks(&self) -> u64;
 }
 
 /// Network interface controller (Ethernet, Wi-Fi, etc.).
 pub trait NetworkDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn send(&self, buf: &[u8]) -> Result<(), &'static str>;
-    fn receive(&self, buf: &mut [u8]) -> Result<usize, &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
+    fn send(&self, buf: &[u8]) -> Result<(), crate::DriverError>;
+    fn receive(&self, buf: &mut [u8]) -> Result<usize, crate::DriverError>;
     fn mac_address(&self) -> [u8; 6];
 }
 
 /// Display / GPU controller (VGA-compatible, VirtIO-GPU, etc.).
 pub trait DisplayDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
     fn framebuffer(&self) -> &[u8];
     fn resolution(&self) -> (usize, usize);
     fn stride(&self) -> usize;
@@ -33,13 +34,13 @@ pub trait DisplayDriver: Send {
 
 /// Audio controller (HDA, AC97, USB audio, etc.).
 pub trait AudioDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn play(&self, buf: &[u8]) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
+    fn play(&self, buf: &[u8]) -> Result<(), crate::DriverError>;
 }
 
 /// USB host controller (EHCI, XHCI, OHCI, UHCI).
 pub trait UsbHostDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
     fn poll(&self);
 }
 
@@ -62,7 +63,7 @@ impl DriverBox {
     ///
     /// This is the **attach** step in the probe → priority → attach →
     /// driver-manager pipeline.
-    pub fn attach(&mut self) -> Result<(), &'static str> {
+    pub fn attach(&mut self) -> Result<(), crate::DriverError> {
         match self {
             DriverBox::Storage(d) => d.init(),
             DriverBox::Network(d) => d.init(),

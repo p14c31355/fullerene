@@ -129,7 +129,7 @@ fn parse_entry(data: &[u8], offset: usize) -> Option<(CpioHeader, usize, usize)>
 /// Creates directories with `crate::contexts::vfs::mkdir` and files with
 /// `crate::fs::write_entire_file`.  The caller is responsible for
 /// ensuring the VFS is initialised before calling this function.
-pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
+pub fn unpack(archive: &[u8]) -> Result<usize, genome::FsError> {
     let mut count = 0usize;
     let mut offset = 0usize;
 
@@ -157,10 +157,9 @@ pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
                 .filter(|&end| end <= archive.len())
                 .unwrap_or(body_start);
             let body = archive.get(body_start..body_end).unwrap_or(&[]);
-            if let Ok(parent) = parent_of(path) {
-                if !parent.is_empty() && !crate::contexts::vfs::exists(parent) {
-                    let _ = crate::contexts::vfs::mkdir(parent);
-                }
+            let parent = parent_of(path);
+            if !parent.is_empty() && !crate::contexts::vfs::exists(parent) {
+                let _ = crate::contexts::vfs::mkdir(parent);
             }
             if crate::contexts::vfs::exists(path) {
                 let _ = crate::fs::remove(path);
@@ -180,15 +179,15 @@ pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
 }
 
 /// Return the parent directory of `path`, or empty string if root.
-fn parent_of(path: &str) -> Result<&str, &'static str> {
+fn parent_of(path: &str) -> &str {
     match path.rfind('/') {
         Some(pos) => {
             if pos == 0 {
-                Ok("/")
+                "/"
             } else {
-                Ok(&path[..pos])
+                &path[..pos]
             }
         }
-        None => Ok(""),
+        None => "",
     }
 }

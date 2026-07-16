@@ -356,7 +356,7 @@ impl ExplorerContext {
     pub(crate) fn finish_navigation(
         &mut self,
         path: String,
-        result: Result<Vec<VfsEntry>, &'static str>,
+        result: Result<Vec<VfsEntry>, genome::FsError>,
     ) {
         let entries = match result {
             Ok(entries) => entries,
@@ -752,27 +752,27 @@ fn unique_destination(directory: &str, name: &str) -> String {
         .unwrap_or_else(|| join_path(directory, &format!("{} - Copy{}", stem, extension)))
 }
 
-fn copy_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), &'static str> {
+fn copy_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {
     let copy = SOLVENT_CALLBACKS
         .lock()
         .vfs_copy
-        .ok_or("copy unavailable")?;
+        .ok_or(genome::FsError::NotSupported)?;
     copy(source, destination, is_dir)
 }
 
-fn move_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), &'static str> {
+fn move_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {
     let move_path = SOLVENT_CALLBACKS
         .lock()
         .vfs_move
-        .ok_or("move unavailable")?;
+        .ok_or(genome::FsError::NotSupported)?;
     move_path(source, destination, is_dir)
 }
 
-fn delete_entry(path: &str, is_dir: bool) -> Result<(), &'static str> {
+fn delete_entry(path: &str, is_dir: bool) -> Result<(), genome::FsError> {
     let remove = SOLVENT_CALLBACKS
         .lock()
         .vfs_remove
-        .ok_or("delete unavailable")?;
+        .ok_or(genome::FsError::NotSupported)?;
     remove(path, is_dir)
 }
 

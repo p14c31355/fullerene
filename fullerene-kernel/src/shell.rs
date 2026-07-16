@@ -38,17 +38,14 @@ fn wasm_yield_now() {
     kernel_syscall(22, 0, 0, 0);
 }
 
-fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
-    crate::fs::read_entire_file(path).map_err(|e| match e {
-        crate::fs::FsError::FileNotFound => "file not found",
-        _ => "read failed",
-    })
+fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
+    crate::fs::read_entire_file(path)
 }
 
 fn wasm_read_directory(
     path: &str,
-) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, &'static str> {
-    let entries = crate::contexts::vfs::readdir(path).map_err(|_| "readdir failed")?;
+) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, genome::FsError> {
+    let entries = crate::contexts::vfs::readdir(path)?;
     Ok(entries
         .iter()
         .map(|e| {
@@ -96,11 +93,8 @@ macro_rules! launch_cmd {
 
 /// Read the entire contents of a file at `path`. Returns the raw bytes.
 /// Limited to MAX_FILE_SIZE to prevent unbounded memory growth.
-fn read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
-    crate::fs::read_entire_file(path).map_err(|e| match e {
-        crate::fs::FsError::FileNotFound => "file not found",
-        _ => "read failed",
-    })
+fn read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
+    crate::fs::read_entire_file(path)
 }
 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)

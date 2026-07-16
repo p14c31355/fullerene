@@ -276,6 +276,7 @@ impl From<genome::fs::FsError> for LinuxErrno {
             FsError::DirectoryNotEmpty => ENOTEMPTY,
             FsError::IsADirectory => EISDIR,
             FsError::NotSupported => ENOTSUP,
+            FsError::Io => EIO,
         })
     }
 }
@@ -284,7 +285,7 @@ impl From<genome::block::BlockError> for LinuxErrno {
     fn from(error: genome::block::BlockError) -> Self {
         use genome::block::BlockError;
         Self(match error {
-            BlockError::Device(_) => EIO,
+            BlockError::Device => EIO,
             BlockError::BufferTooSmall { .. } => EINVAL,
             BlockError::LbaOverflow => EOVERFLOW,
             BlockError::SectorNotFound => ENOENT,
@@ -324,6 +325,7 @@ impl From<petroleum::MemoryError> for LinuxErrno {
             MemoryError::AddressOverflow => EOVERFLOW,
             MemoryError::AlreadyMapped => EEXIST,
             MemoryError::PermissionDenied => EACCES,
+            MemoryError::NotInitialized => EFAULT,
         })
     }
 }
@@ -499,6 +501,11 @@ mod user_copy_tests {
         assert_eq!(
             LinuxErrno::from(genome::fs::FsError::NotSupported).get(),
             ENOTSUP
+        );
+        assert_eq!(LinuxErrno::from(genome::fs::FsError::Io).get(), EIO);
+        assert_eq!(
+            LinuxErrno::from(petroleum::MemoryError::NotInitialized).get(),
+            EFAULT
         );
     }
 }

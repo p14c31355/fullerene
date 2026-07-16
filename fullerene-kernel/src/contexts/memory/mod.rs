@@ -48,22 +48,26 @@ impl MemoryContext {
 
     // ── High-level VM operations (preferred) ─────────────────
 
-    pub fn map_framebuffer_vm(&mut self, phys: u64, size: u64) -> Result<u64, &'static str> {
+    pub fn map_framebuffer_vm(
+        &mut self,
+        phys: u64,
+        size: u64,
+    ) -> Result<u64, petroleum::MemoryError> {
         self.vm_mut()?.map_framebuffer(phys, size, None)
     }
 
-    pub fn map_heap_vm(&mut self, phys: u64, size: u64) -> Result<u64, &'static str> {
+    pub fn map_heap_vm(&mut self, phys: u64, size: u64) -> Result<u64, petroleum::MemoryError> {
         self.vm_mut()?.map_heap(phys, size)
     }
 
     pub fn direct_map_physical_vm(
         &mut self,
         map: &[petroleum::page_table::memory_map::MemoryMapDescriptor],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), petroleum::MemoryError> {
         self.vm_mut()?.direct_map_physical(map)
     }
 
-    pub fn clone_for_process_vm(&mut self) -> Result<VirtualMemoryContext, &'static str> {
+    pub fn clone_for_process_vm(&mut self) -> Result<VirtualMemoryContext, petroleum::MemoryError> {
         self.vm_mut()?.clone_for_process()
     }
 
@@ -79,35 +83,48 @@ impl MemoryContext {
         self.vm.as_ref()
     }
 
-    fn vm_mut(&mut self) -> Result<&mut VirtualMemoryContext, &'static str> {
-        self.vm.as_mut().ok_or("VM not initialised")
+    fn vm_mut(&mut self) -> Result<&mut VirtualMemoryContext, petroleum::MemoryError> {
+        self.vm
+            .as_mut()
+            .ok_or(petroleum::MemoryError::NotInitialized)
     }
 
     // ── Legacy operations (backward-compatible) ──────────────
 
-    pub fn allocate_frame(&mut self) -> Result<usize, &'static str> {
-        self.mgr()?.allocate_frame().map_err(|_| "FrameAllocFailed")
+    pub fn allocate_frame(&mut self) -> Result<usize, petroleum::MemoryError> {
+        self.mgr()?
+            .allocate_frame()
+            .map_err(|_| petroleum::MemoryError::FrameAllocationFailed)
     }
-    pub fn free_frame(&mut self, phys: usize) -> Result<(), &'static str> {
-        self.mgr()?.free_frame(phys).map_err(|_| "FreeFailed")
+    pub fn free_frame(&mut self, phys: usize) -> Result<(), petroleum::MemoryError> {
+        self.mgr()?
+            .free_frame(phys)
+            .map_err(|_| petroleum::MemoryError::UnmappingFailed)
     }
-    pub fn allocate_contiguous(&mut self, n: usize) -> Result<usize, &'static str> {
+    pub fn allocate_contiguous(&mut self, n: usize) -> Result<usize, petroleum::MemoryError> {
         self.mgr()?
             .allocate_contiguous_frames(n)
-            .map_err(|_| "ContiguousAllocFailed")
+            .map_err(|_| petroleum::MemoryError::FrameAllocationFailed)
     }
     pub fn map_page(
         &mut self,
         v: usize,
         p: usize,
         f: x86_64::structures::paging::PageTableFlags,
-    ) -> Result<(), &'static str> {
-        self.mgr()?.safe_map_page(v, p, f).map_err(|_| "MapFailed")
+    ) -> Result<(), petroleum::MemoryError> {
+        self.mgr()?
+            .safe_map_page(v, p, f)
+            .map_err(|_| petroleum::MemoryError::MappingFailed)
     }
-    pub fn map_mmio(&mut self, phys: usize, virt: usize, size: usize) -> Result<(), &'static str> {
+    pub fn map_mmio(
+        &mut self,
+        phys: usize,
+        virt: usize,
+        size: usize,
+    ) -> Result<(), petroleum::MemoryError> {
         self.mgr()?
             .map_mmio_region(phys, virt, size)
-            .map_err(|_| "MMIOMapFailed")
+            .map_err(|_| petroleum::MemoryError::MappingFailed)
     }
     pub unsafe fn extend_heap(&self, additional: usize) -> Result<(), ()> {
         unsafe { crate::heap::extend_kernel_heap(additional) }
@@ -115,8 +132,10 @@ impl MemoryContext {
     pub fn heap_stats(&self) -> petroleum::HeapStats {
         petroleum::heap_stats()
     }
-    fn mgr(&mut self) -> Result<&mut UnifiedMemoryManager, &'static str> {
-        self.manager.as_mut().ok_or("Not init")
+    fn mgr(&mut self) -> Result<&mut UnifiedMemoryManager, petroleum::MemoryError> {
+        self.manager
+            .as_mut()
+            .ok_or(petroleum::MemoryError::NotInitialized)
     }
 }
 

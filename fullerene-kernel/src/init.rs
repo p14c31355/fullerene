@@ -264,7 +264,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs start\n");
             let _ = crate::contexts::vfs::mkdir("/dev");
             crate::contexts::vfs::mount("", "/dev", "devfs")
-                .map_err(|_| "Failed to mount DevFS")?;
+                .map_err(|_| petroleum::SystemError::DeviceError)?;
             petroleum::serial::serial_log(format_args!("DevFS mounted at /dev\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs done\n");
             Ok(())
@@ -406,7 +406,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr start\n");
             crate::boot_stage::draw_boot_label(b"DEVICE MANAGER");
             crate::hardware::device_manager::init_device_manager()
-                .map_err(|_| "Failed to initialize device manager")?;
+                .map_err(|_| petroleum::SystemError::DeviceError)?;
             petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr done\n");
             Ok(())

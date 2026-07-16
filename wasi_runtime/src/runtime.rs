@@ -17,8 +17,8 @@ pub fn run(
     write_stderr: fn(&[u8]),
     read_stdin: fn() -> Option<u8>,
     yield_now: fn(),
-    read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
-    read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
+    read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+    read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     get_monotonic_ns: fn() -> u64,
 ) -> i32 {
     let engine = Engine::default();

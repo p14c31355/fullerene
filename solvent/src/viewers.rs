@@ -12,8 +12,11 @@ const MAX_IMG_W: u32 = 1920;
 const MAX_IMG_H: u32 = 1080;
 const GLYPH_SIZE: u32 = 8;
 
-fn read_file(path: &str) -> Result<Vec<u8>, &'static str> {
-    let read_fn = SOLVENT_CALLBACKS.lock().vfs_read.ok_or("no VFS read")?;
+fn read_file(path: &str) -> Result<Vec<u8>, genome::FsError> {
+    let read_fn = SOLVENT_CALLBACKS
+        .lock()
+        .vfs_read
+        .ok_or(genome::FsError::NotSupported)?;
     read_fn(path)
 }
 

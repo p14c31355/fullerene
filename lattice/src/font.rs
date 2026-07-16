@@ -111,25 +111,46 @@ struct PsfFont {
     height: u32,
 }
 
+/// Failures encountered while validating a PSF2 font.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontError {
+    HeaderTooShort,
+    InvalidMagic,
+    UnsupportedDimensions,
+    SizeOverflow,
+    TruncatedBitmap,
+}
+
+impl core::fmt::Display for FontError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::HeaderTooShort => "PSF2 header is truncated",
+            Self::InvalidMagic => "invalid PSF2 magic",
+            Self::UnsupportedDimensions => "PSF2 glyphs must be 8x16",
+            Self::SizeOverflow => "PSF2 bitmap size overflow",
+            Self::TruncatedBitmap => "PSF2 bitmap is truncated",
+        })
+    }
+}
+
 /// Try to load a PSF2 font from raw bytes.
 ///
 /// Returns `Ok(())` on success — subsequent calls to [`glyph()`] will
-/// use the PSF glyphs.  Returns `Err(&str)` with a human‑readable
-/// error if the data is not valid PSF2 or the glyph dimensions don't
-/// match 8×16.
+/// use the PSF glyphs. Returns a [`FontError`] if the data is malformed
+/// or the glyph dimensions do not match 8×16.
 ///
 /// # Safety
 ///
 /// The caller must ensure `data` remains valid for the lifetime of the
 /// kernel (it is stored as `&'static [u8]`).
-pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
+pub fn load_psf2(data: &'static [u8]) -> Result<(), FontError> {
     if data.len() < PSF2_HEADER_SIZE as usize {
-        return Err("PSF2 data too short for header");
+        return Err(FontError::HeaderTooShort);
     }
 
     let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
     if magic != PSF2_MAGIC {
-        return Err("not a PSF2 font (bad magic)");
+        return Err(FontError::InvalidMagic);
     }
 
     let _header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
@@ -141,16 +162,20 @@ pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
 
     // We require 8×16 for compatibility with the embedded font.
     if width != 8 || height != 16 {
-        return Err("PSF2 font must be 8×16");
+        return Err(FontError::UnsupportedDimensions);
     }
 
     let header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let bitmap_size = (glyph_count as usize).saturating_mul(glyph_bytes as usize);
+    let bitmap_size = (glyph_count as usize)
+        .checked_mul(glyph_bytes as usize)
+        .ok_or(FontError::SizeOverflow)?;
     let bitmap_start = header_size as usize;
-    let bitmap_end = bitmap_start.saturating_add(bitmap_size);
+    let bitmap_end = bitmap_start
+        .checked_add(bitmap_size)
+        .ok_or(FontError::SizeOverflow)?;
 
     if data.len() < bitmap_end {
-        return Err("PSF2 data truncated (bitmap exceeds data)");
+        return Err(FontError::TruncatedBitmap);
     }
 
     let bitmap: &'static [u8] = &data[bitmap_start..bitmap_end];
@@ -571,4 +596,18 @@ pub fn render_text_ttf(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn psf2_validation_preserves_failure_categories() {
+        static SHORT: [u8; 4] = [0; 4];
+        static BAD_MAGIC: [u8; PSF2_HEADER_SIZE as usize] = [0; PSF2_HEADER_SIZE as usize];
+
+        assert_eq!(load_psf2(&SHORT), Err(FontError::HeaderTooShort));
+        assert_eq!(load_psf2(&BAD_MAGIC), Err(FontError::InvalidMagic));
+    }
 }

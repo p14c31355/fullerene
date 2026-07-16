@@ -27,6 +27,8 @@ pub enum MemoryError {
     NotMapped,
     /// The requested access violates mapping permissions.
     PermissionDenied,
+    /// The memory subsystem required for the operation has not been initialized.
+    NotInitialized,
 }
 
 impl fmt::Display for MemoryError {
@@ -43,6 +45,7 @@ impl fmt::Display for MemoryError {
             Self::AlreadyMapped => "memory range already mapped",
             Self::NotMapped => "memory range is not mapped",
             Self::PermissionDenied => "memory access denied",
+            Self::NotInitialized => "memory subsystem not initialized",
         })
     }
 }
@@ -55,6 +58,7 @@ impl From<MemoryError> for SystemError {
             MemoryError::MappingFailed | MemoryError::AlreadyMapped => Self::MappingFailed,
             MemoryError::UnmappingFailed | MemoryError::NotMapped => Self::UnmappingFailed,
             MemoryError::PermissionDenied => Self::PermissionDenied,
+            MemoryError::NotInitialized => Self::InternalError,
             MemoryError::InvalidAddress
             | MemoryError::InvalidAlignment
             | MemoryError::InvalidSize

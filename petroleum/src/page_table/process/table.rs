@@ -500,7 +500,7 @@ unsafe fn split_huge_page_2mb(
     virtual_addr: VirtAddr,
     default_flags: PageTableFlags,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::MemoryError> {
     let phys_offset = mapper.phys_offset();
 
     // Compute the 2MB-aligned virtual address covering this page
@@ -517,7 +517,7 @@ unsafe fn split_huge_page_2mb(
 
     // L3 table
     if !l4[p4].flags().contains(PageTableFlags::PRESENT) {
-        return Err("L4 entry not present during huge page split");
+        return Err(crate::MemoryError::NotMapped);
     }
     let l3_phys = l4[p4].addr();
     let l3_virt = phys_offset + l3_phys.as_u64();
@@ -525,14 +525,14 @@ unsafe fn split_huge_page_2mb(
 
     // L2 entry
     if !l3[p3].flags().contains(PageTableFlags::PRESENT) {
-        return Err("L3 entry not present during huge page split");
+        return Err(crate::MemoryError::NotMapped);
     }
     let l2_phys = l3[p3].addr();
     let l2_virt = phys_offset + l2_phys.as_u64();
     let l2 = unsafe { &mut *(l2_virt.as_mut_ptr::<PageTable>()) };
 
     if !l2[p2].flags().contains(PageTableFlags::HUGE_PAGE) {
-        return Err("L2 entry is not a huge page during split");
+        return Err(crate::MemoryError::InvalidSize);
     }
 
     // Get the physical base address and flags of the existing huge page
@@ -548,7 +548,7 @@ unsafe fn split_huge_page_2mb(
     // Allocate and zero a new L1 page table
     let l1_frame = frame_allocator
         .allocate_frame()
-        .ok_or("split: alloc L1 failed")?;
+        .ok_or(crate::MemoryError::FrameAllocationFailed)?;
     let l1_phys = l1_frame.start_address();
     let l1_virt = phys_offset + l1_phys.as_u64();
     unsafe {

@@ -201,6 +201,7 @@ pub enum LoadError {
     UnsupportedArchitecture,
     MappingFailed,
     AddressAlreadyMapped,
+    FileNotFound,
 }
 
 impl From<LoadError> for petroleum::common::logging::SystemError {
@@ -211,6 +212,7 @@ impl From<LoadError> for petroleum::common::logging::SystemError {
             LoadError::AddressAlreadyMapped => {
                 petroleum::common::logging::SystemError::MappingFailed
             }
+            LoadError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
             LoadError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
             LoadError::NotExecutable | LoadError::UnsupportedArchitecture => {
                 petroleum::common::logging::SystemError::LoadFailed

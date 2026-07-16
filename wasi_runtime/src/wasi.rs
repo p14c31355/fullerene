@@ -52,8 +52,8 @@ pub struct WasiCtx {
     pub write_stderr: fn(&[u8]),
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
-    pub read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
-    pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
+    pub read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+    pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
 }
 
@@ -64,8 +64,8 @@ impl WasiCtx {
         write_stderr: fn(&[u8]),
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
-        read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
-        read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
+        read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+        read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         get_monotonic_ns: fn() -> u64,
     ) -> Self {
         let args_vec: Vec<Vec<u8>> = args

@@ -26,7 +26,7 @@ pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<Process
 }
 
 /// Launch BusyBox shell from embedded initramfs data.
-pub fn launch_busybox() -> Result<ProcessId, &'static str> {
+pub fn launch_busybox() -> Result<ProcessId, LoadError> {
     // Look for busybox in standard locations
     let locations = [
         "/bin/busybox",
@@ -40,11 +40,11 @@ pub fn launch_busybox() -> Result<ProcessId, &'static str> {
     for path in &locations {
         if crate::contexts::vfs::exists(path) {
             log::info!("Found BusyBox at {}", path);
-            return launch_linux_binary(path).map_err(|_| "Failed to load BusyBox");
+            return launch_linux_binary(path);
         }
     }
 
-    Err("BusyBox not found in filesystem")
+    Err(LoadError::FileNotFound)
 }
 
 /// Initialize the initramfs: creates basic Linux filesystem structure

@@ -134,6 +134,7 @@ impl From<genome::fs::FsError> for SyscallError {
             FsError::DirectoryNotEmpty => Self::DirectoryNotEmpty,
             FsError::IsADirectory => Self::IsADirectory,
             FsError::NotSupported => Self::NotSupported,
+            FsError::Io => Self::Io,
         }
     }
 }
@@ -142,7 +143,7 @@ impl From<genome::block::BlockError> for SyscallError {
     fn from(error: genome::block::BlockError) -> Self {
         use genome::block::BlockError;
         match error {
-            BlockError::Device(_) => Self::Io,
+            BlockError::Device => Self::Io,
             BlockError::BufferTooSmall { .. } => Self::InvalidArgument,
             BlockError::LbaOverflow => Self::Overflow,
             BlockError::SectorNotFound => Self::FileNotFound,
@@ -183,6 +184,7 @@ impl From<petroleum::MemoryError> for SyscallError {
             MemoryError::AddressOverflow => Self::Overflow,
             MemoryError::AlreadyMapped => Self::AlreadyExists,
             MemoryError::PermissionDenied => Self::PermissionDenied,
+            MemoryError::NotInitialized => Self::AddressFault,
         }
     }
 }
@@ -314,6 +316,14 @@ mod tests {
         assert_eq!(
             SyscallError::from(petroleum::SystemError::WouldBlock),
             SyscallError::WouldBlock
+        );
+        assert_eq!(
+            SyscallError::from(genome::fs::FsError::Io),
+            SyscallError::Io
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::MemoryError::NotInitialized),
+            SyscallError::AddressFault
         );
     }
 }

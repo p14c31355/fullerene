@@ -188,9 +188,9 @@ impl WpaSupplicant {
     }
 
     /// Handle EAPOL-Key Message 1 (from AP).
-    pub fn handle_message_1(&mut self, frame: &[u8]) -> Result<Vec<u8>, &'static str> {
+    pub fn handle_message_1(&mut self, frame: &[u8]) -> Result<Vec<u8>, crate::NetError> {
         if frame.len() < 4 + 97 {
-            return Err("EAPOL-Key frame too short");
+            return Err(crate::NetError::Protocol);
         }
         let body = &frame[4..];
 
@@ -199,7 +199,7 @@ impl WpaSupplicant {
         // Extract ANonce (bytes 13-44 relative to key descriptor)
         let anonce_start = 13;
         if anonce_start + 32 > body.len() {
-            return Err("Frame too short for ANonce");
+            return Err(crate::NetError::Protocol);
         }
         self.anonce
             .copy_from_slice(&body[anonce_start..anonce_start + 32]);
@@ -273,9 +273,9 @@ impl WpaSupplicant {
     }
 
     /// Handle EAPOL-Key Message 3 (from AP, contains GTK).
-    pub fn handle_message_3(&mut self, frame: &[u8]) -> Result<Vec<u8>, &'static str> {
+    pub fn handle_message_3(&mut self, frame: &[u8]) -> Result<Vec<u8>, crate::NetError> {
         if frame.len() < 4 + 97 {
-            return Err("EAPOL-Key Message 3 too short");
+            return Err(crate::NetError::Protocol);
         }
 
         // Verify MIC: zero the MIC field in a copy, compute, compare
@@ -290,7 +290,7 @@ impl WpaSupplicant {
             }
         }
         if !mic_verified {
-            return Err("MIC verification failed");
+            return Err(crate::NetError::AuthenticationFailed);
         }
 
         let body = &frame[4..];
@@ -298,7 +298,7 @@ impl WpaSupplicant {
         let key_data_len = u16::from_be_bytes([body[93], body[94]]);
         let key_data_end = 95 + key_data_len as usize;
         if body.len() < key_data_end {
-            return Err("Frame too short for key data");
+            return Err(crate::NetError::Protocol);
         }
 
         // Parse Key Data Descriptors to extract GTK

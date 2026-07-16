@@ -22,7 +22,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
-use genome::block::BlockDevice;
+use genome::block::{BlockDevice, BlockError};
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use nitrogen::DriverContext;
 #[cfg(not(nitrogen_no_usb))]
@@ -154,7 +154,7 @@ struct UsbHostCtl;
 
 #[cfg(not(nitrogen_no_usb))]
 impl UsbHostDriver for UsbHostCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
+    fn init(&mut self) -> Result<(), nitrogen::DriverError> {
         nitrogen::debug::set_hint_callback(crate::boot_stage::draw_step_hint);
         init_usb_ctx(nitrogen::usb::context::USBContext::new(
             &crate::driver_context_impl::KernelDriverContext,
@@ -193,7 +193,7 @@ struct SdCardStorageCtl;
 
 #[cfg(not(nitrogen_no_storage))]
 impl StorageDriver for SdCardStorageCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
+    fn init(&mut self) -> Result<(), nitrogen::DriverError> {
         crate::boot_stage::draw_boot_label(b"SD CARD");
         nitrogen::storage::rtsx::init(&crate::driver_context_impl::KernelDriverContext);
         if nitrogen::storage::rtsx::is_present() {
@@ -203,11 +203,21 @@ impl StorageDriver for SdCardStorageCtl {
         }
         Ok(())
     }
-    fn read_blocks(&self, _lba: u64, _count: usize, _buf: &mut [u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
+    fn read_blocks(
+        &self,
+        _lba: u64,
+        _count: usize,
+        _buf: &mut [u8],
+    ) -> Result<(), nitrogen::DriverError> {
+        Err(nitrogen::DriverError::NotSupported)
     }
-    fn write_blocks(&self, _lba: u64, _count: usize, _buf: &[u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
+    fn write_blocks(
+        &self,
+        _lba: u64,
+        _count: usize,
+        _buf: &[u8],
+    ) -> Result<(), nitrogen::DriverError> {
+        Err(nitrogen::DriverError::NotSupported)
     }
     fn block_size(&self) -> u32 {
         0
@@ -261,7 +271,7 @@ unsafe impl Send for UsbBlockDevice {}
 
 #[cfg(not(nitrogen_no_usb))]
 impl BlockDevice for UsbBlockDevice {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         with_ctx(|ctx| {
             ctx.bot_read(
                 self.ctrl_type,
@@ -278,8 +288,9 @@ impl BlockDevice for UsbBlockDevice {
                 &mut self.tag,
             )
         })
+        .map_err(|_| BlockError::Device)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         with_ctx(|ctx| {
             ctx.bot_write(
                 self.ctrl_type,
@@ -296,6 +307,7 @@ impl BlockDevice for UsbBlockDevice {
                 &mut self.tag,
             )
         })
+        .map_err(|_| BlockError::Device)
     }
     fn sector_size(&self) -> u32 {
         self.block_size
@@ -575,11 +587,11 @@ unsafe impl Send for SdBlockDev {}
 
 #[cfg(not(nitrogen_no_storage))]
 impl BlockDevice for SdBlockDev {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
-        nitrogen::storage::rtsx::read_sectors(lba, count, buf)
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        nitrogen::storage::rtsx::read_sectors(lba, count, buf).map_err(|_| BlockError::Device)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-        nitrogen::storage::rtsx::write_sectors(lba, count, buf)
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        nitrogen::storage::rtsx::write_sectors(lba, count, buf).map_err(|_| BlockError::Device)
     }
     fn sector_size(&self) -> u32 {
         self.block_size

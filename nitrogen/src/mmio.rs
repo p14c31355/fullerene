@@ -551,10 +551,10 @@ impl DmaRegion {
         &mut self,
         ctx: &dyn DriverContext,
         device_id: u16,
-    ) -> Result<u64, &'static str> {
+    ) -> Result<u64, crate::DriverError> {
         let iova = ctx
             .dma_map(device_id, self.phys, self.len)
-            .map_err(|_| "dma_map failed")?;
+            .map_err(|_| crate::DriverError::DmaMappingFailed)?;
         self.dma_iova = iova;
         self.mapped = true;
         Ok(iova)

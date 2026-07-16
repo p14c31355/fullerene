@@ -265,23 +265,23 @@ impl DhcpClient {
     }
 
     /// Parse a DHCP response.
-    pub fn parse_response(&mut self, data: &[u8]) -> Result<DhcpMessageType, &'static str> {
+    pub fn parse_response(&mut self, data: &[u8]) -> Result<DhcpMessageType, crate::NetError> {
         if data.len() < DhcpHeader::SIZE + 4 {
-            return Err("Response too short");
+            return Err(crate::NetError::Protocol);
         }
 
         let header = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const DhcpHeader) };
         let magic = header.magic;
         if magic != DHCP_MAGIC_COOKIE {
-            return Err("Invalid magic cookie");
+            return Err(crate::NetError::Protocol);
         }
         let op = header.op;
         if op != 2 {
-            return Err("Not a BOOTREPLY");
+            return Err(crate::NetError::Protocol);
         }
         let xid = header.xid;
         if xid != self.xid.to_be_bytes() {
-            return Err("Transaction ID mismatch");
+            return Err(crate::NetError::Protocol);
         }
 
         let mut offset = DhcpHeader::SIZE;
@@ -342,7 +342,7 @@ impl DhcpClient {
             offset += 2 + opt_len;
         }
 
-        let msg_type = msg_type.ok_or("No DHCP message type option")?;
+        let msg_type = msg_type.ok_or(crate::NetError::Protocol)?;
 
         match msg_type {
             DhcpMessageType::Offer | DhcpMessageType::Ack => {

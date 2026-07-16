@@ -67,7 +67,7 @@ pub fn bot_exec_command(
     cdb: &[u8],
     data: Option<BotBuffer<'_>>,
     tag: &mut u32,
-) -> Result<usize, &'static str> {
+) -> Result<usize, crate::DriverError> {
     let t = *tag;
     *tag = tag.wrapping_add(1);
 
@@ -121,14 +121,14 @@ pub fn bot_exec_command(
 
     let sig = u32::from_le_bytes([csw_raw[0], csw_raw[1], csw_raw[2], csw_raw[3]]);
     if sig != CSW_SIGNATURE {
-        return Err("bad CSW signature");
+        return Err(crate::DriverError::Protocol);
     }
     let csw_tag = u32::from_le_bytes([csw_raw[4], csw_raw[5], csw_raw[6], csw_raw[7]]);
     if csw_tag != t {
-        return Err("CSW tag mismatch");
+        return Err(crate::DriverError::Protocol);
     }
     if csw_raw[12] != 0 {
-        return Err("CSW reported error");
+        return Err(crate::DriverError::Protocol);
     }
     // Compute actual bytes transferred (BOT spec §5.2.3).
     let requested = dlen as usize;
@@ -146,7 +146,7 @@ pub fn bot_read_capacity(
     ep_in: u8,
     ep_in_mps: u16,
     tag: &mut u32,
-) -> Result<(u32, u64), &'static str> {
+) -> Result<(u32, u64), crate::DriverError> {
     let mut response = [0u8; 8];
     let mut cdb = [0u8; 10];
     cdb[0] = 0x25;
@@ -162,12 +162,12 @@ pub fn bot_read_capacity(
         tag,
     )?;
     if actual != response.len() {
-        return Err("short READ CAPACITY response");
+        return Err(crate::DriverError::Protocol);
     }
     let last_lba = u32::from_be_bytes(response[..4].try_into().unwrap());
     let block_size = u32::from_be_bytes(response[4..].try_into().unwrap());
     if block_size == 0 || !block_size.is_power_of_two() || block_size > 1024 * 1024 {
-        return Err("invalid logical block size");
+        return Err(crate::DriverError::InvalidArgument);
     }
     Ok((block_size, u64::from(last_lba) + 1))
 }
@@ -185,10 +185,10 @@ pub fn bot_read_sectors(
     block_size: u32,
     buf: &mut [u8],
     tag: &mut u32,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::DriverError> {
     let dlen = count as u32 * block_size;
     if buf.len() < dlen as usize {
-        return Err("buffer too small");
+        return Err(crate::DriverError::InvalidArgument);
     }
     let mut cdb = [0u8; 10];
     cdb[0] = 0x28; // READ_10
@@ -206,7 +206,7 @@ pub fn bot_read_sectors(
         tag,
     )?;
     if actual != dlen as usize {
-        return Err("short read");
+        return Err(crate::DriverError::Protocol);
     }
     Ok(())
 }
@@ -224,10 +224,10 @@ pub fn bot_write_sectors(
     block_size: u32,
     buf: &[u8],
     tag: &mut u32,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::DriverError> {
     let dlen = count as u32 * block_size;
     if buf.len() < dlen as usize {
-        return Err("buffer too small");
+        return Err(crate::DriverError::InvalidArgument);
     }
     let mut cdb = [0u8; 10];
     cdb[0] = 0x2A; // WRITE_10
@@ -245,7 +245,7 @@ pub fn bot_write_sectors(
         tag,
     )?;
     if actual != dlen as usize {
-        return Err("short write");
+        return Err(crate::DriverError::Protocol);
     }
     Ok(())
 }
@@ -262,7 +262,7 @@ pub fn enumerate_mass_storage(
     host: &mut dyn HostController,
     dev_addr: u8,
     dev_idx: usize,
-) -> Result<(u8, u16, u8, u16), &'static str> {
+) -> Result<(u8, u16, u8, u16), crate::DriverError> {
     // Step 1: Get device descriptor (64 bytes for safety)
     let mut desc_buf = [0u8; 64];
     let setup = UsbSetupPacket {
@@ -274,12 +274,12 @@ pub fn enumerate_mass_storage(
     };
     let len = host.control_transfer(dev_addr, &setup, &mut desc_buf)?;
     if len < 18 {
-        return Err("descriptor too short");
+        return Err(crate::DriverError::Protocol);
     }
 
     let num_cfgs = desc_buf[17];
     if num_cfgs == 0 {
-        return Err("device has no configuration");
+        return Err(crate::DriverError::Protocol);
     }
 
     // Step 2: inspect the configuration before selecting it.
@@ -339,9 +339,9 @@ struct MassStorageConfig {
 fn parse_mass_storage_config(
     cfg_buf: &[u8],
     cfg_len: usize,
-) -> Result<MassStorageConfig, &'static str> {
+) -> Result<MassStorageConfig, crate::DriverError> {
     if cfg_len < 9 || cfg_buf.len() < 9 {
-        return Err("config too short");
+        return Err(crate::DriverError::InvalidArgument);
     }
     let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let mut offset: usize = 9;
@@ -388,7 +388,7 @@ fn parse_mass_storage_config(
         }
         offset += dlen;
     }
-    Err("no BOT mass-storage interface")
+    Err(crate::DriverError::NotSupported)
 }
 
 // EHCI-specific enumeration is in hub.rs (enumerate_device).
