@@ -1,5 +1,7 @@
 use alloc::string::String;
-use petroleum::common::memory::UserSlice;
+use petroleum::common::logging::SystemError;
+
+use crate::user_memory::{self, UserCopyError};
 
 #[cfg(test)]
 use fullerene_abi::syscall_errors;
@@ -80,8 +82,8 @@ impl From<petroleum::common::logging::SystemError> for SyscallError {
 
 /// Helper function to safely copy a null-terminated string from user space.
 ///
-/// Uses `UserSlice` for validated access.  The entire max_len range is
-/// validated first, then bytes are scanned for a NUL terminator.
+/// Uses the shared user-memory implementation for page-wise validation and
+/// copies into a kernel-owned buffer before decoding UTF-8.
 ///
 /// Returns the string if successful, or an error if validation fails.
 ///
@@ -90,34 +92,14 @@ impl From<petroleum::common::logging::SystemError> for SyscallError {
 /// The caller must ensure the user pages are mapped.  Page faults during
 /// copy are caught by the kernel's page fault handler.
 pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
-    if ptr.is_null() || max_len == 0 {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    let mut buf = alloc::vec::Vec::with_capacity(max_len.min(256));
-    let mut offset = 0;
-
-    while offset < max_len {
-        let current = ptr.wrapping_add(offset);
-
-        // Validate page on first access or when crossing a page boundary,
-        // so a valid NUL-terminated string near an unmapped page works.
-        if offset == 0 || ((current as usize) & 0xFFF) == 0 {
-            let bytes_left_in_page = 4096 - ((current as usize) & 0xFFF);
-            let remaining = (max_len - offset).min(bytes_left_in_page);
-            let _ = UserSlice::new(current as *mut u8, remaining, false)
-                .map_err(|_| SyscallError::InvalidArgument)?;
+    unsafe { user_memory::copy_c_string(ptr, max_len) }.map_err(|error| match error {
+        UserCopyError::System(SystemError::MemOutOfMemory | SystemError::SyscallOutOfMemory) => {
+            SyscallError::OutOfMemory
         }
-
-        let byte = unsafe { core::ptr::read_volatile(current) };
-        if byte == 0 {
-            break;
+        UserCopyError::System(_) | UserCopyError::InvalidUtf8 | UserCopyError::MissingNul => {
+            SyscallError::InvalidArgument
         }
-        buf.push(byte);
-        offset += 1;
-    }
-
-    String::from_utf8(buf).map_err(|_| SyscallError::InvalidArgument)
+    })
 }
 
 #[cfg(test)]

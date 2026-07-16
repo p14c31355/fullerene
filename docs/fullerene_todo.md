@@ -29,7 +29,7 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] `validate_user_range` — walks current page table (CR3) page-by-page checking PRESENT / USER_ACCESSIBLE / writable flags
 - [x] Updated `copy_user_string` to use `UserSlice`
 - [x] Updated Linux compat copy functions to use `UserSlice`
-- [ ] Unify native and Linux ABI copy under one implementation (low priority, both already use `UserSlice`)
+- [x] Unify native and Linux ABI copy under one implementation (low priority, both already use `UserSlice`)
 
 ### P0-3. `&'static mut` and mutable global ownership
 - [x] `with_frame_allocator` guard API (replaces raw `get_frame_allocator_mut`)
