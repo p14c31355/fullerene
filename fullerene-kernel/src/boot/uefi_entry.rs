@@ -68,7 +68,8 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         stride_bytes,
         args.fb_bpp,
         args.fb_pixel_format,
-    );
+    )
+    .expect("boot framebuffer snapshot must be initialized only once");
     petroleum::write_serial_bytes(
         0x3F8,
         0x3FD,

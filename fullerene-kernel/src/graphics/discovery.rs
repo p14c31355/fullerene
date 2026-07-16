@@ -1,12 +1,13 @@
 //! Framebuffer discovery — probes hardware for GOP parameters.
 //!
 //! Three probe strategies in priority order:
-//! 1. `.data`-section globals (stored by `efi_main_stage2`)
-//! 2. `KernelArgs` struct via `STORED_ARGS_VA`
+//! 1. An immutable `.data`-section snapshot (stored by `efi_main_stage2`)
+//! 2. `KernelArgs` struct via the preserved virtual address
 //! 3. PCI BAR0 scan
 
 use petroleum::common::EfiGraphicsPixelFormat;
 use petroleum::graphics::boot_screen::BootFramebuffer;
+use spin::Once;
 
 /// Raw probe result — physical address, dimensions, stride (bytes), pixel format.
 pub struct FramebufferProbeResult {
@@ -17,31 +18,86 @@ pub struct FramebufferProbeResult {
     pub pixel_format: EfiGraphicsPixelFormat,
 }
 
-/// GOP parameters stored in `.data` during `efi_main_stage2`.
-/// Simple integers survive the world‑switch + shallow `clone_page_table`.
-#[unsafe(link_section = ".data")]
-pub static mut STORED_FB_PHYS: u64 = 0;
-#[unsafe(link_section = ".data")]
-pub static mut STORED_FB_WIDTH: u32 = 0;
-#[unsafe(link_section = ".data")]
-pub static mut STORED_FB_HEIGHT: u32 = 0;
-#[unsafe(link_section = ".data")]
-pub static mut STORED_FB_STRIDE: u32 = 0;
-#[unsafe(link_section = ".data")]
-pub static mut STORED_FB_BPP: u32 = 0;
-#[unsafe(link_section = ".data")]
-pub static mut STORED_FB_PIXEL_FORMAT: u32 = 0;
+/// GOP parameters copied before the UEFI world switch.
+///
+/// This is deliberately a plain, copyable value: it must survive the shallow
+/// page-table clone and remain usable by the allocation-free panic path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BootFramebufferParams {
+    pub phys: u64,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub bpp: u32,
+    pub pixel_format: u32,
+}
 
-/// KernelArgs virtual address preserved in `.data`.
+impl BootFramebufferParams {
+    fn probe_result(self) -> Option<FramebufferProbeResult> {
+        let minimum_stride = self.width.checked_mul(4)?;
+        let framebuffer_bytes = u64::from(self.stride).checked_mul(u64::from(self.height))?;
+        if !(0x10_0000..1 << 52).contains(&self.phys)
+            || !(80..=16_384).contains(&self.width)
+            || !(25..=16_384).contains(&self.height)
+            || self.bpp != 32
+            || self.stride < minimum_stride
+            || self.stride % 4 != 0
+            || framebuffer_bytes > 1 << 30
+        {
+            return None;
+        }
+        let pixel_format = match self.pixel_format {
+            0 => EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
+            1 => EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
+            _ => return None,
+        };
+        Some(FramebufferProbeResult {
+            phys: self.phys,
+            width: self.width,
+            height: self.height,
+            stride: self.stride,
+            pixel_format,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BootSnapshotError {
+    ConflictingInitialization,
+}
+
+/// Immutable GOP snapshot stored in `.data` during `efi_main_stage2`.
 #[unsafe(link_section = ".data")]
-pub static mut STORED_ARGS_VA: u64 = 0;
+static BOOT_FRAMEBUFFER: Once<BootFramebufferParams> = Once::new();
+
+/// Immutable KernelArgs virtual address preserved in `.data`.
+#[unsafe(link_section = ".data")]
+static KERNEL_ARGS_VA: Once<u64> = Once::new();
+
+fn store_snapshot<T: Copy + Eq>(slot: &Once<T>, value: T) -> Result<(), BootSnapshotError> {
+    let stored = slot.call_once(|| value);
+    if *stored == value {
+        Ok(())
+    } else {
+        Err(BootSnapshotError::ConflictingInitialization)
+    }
+}
+
+/// Return a copy of the immutable boot framebuffer snapshot.
+pub(crate) fn boot_framebuffer_params() -> Option<BootFramebufferParams> {
+    BOOT_FRAMEBUFFER.get().copied()
+}
+
+/// Return the preserved KernelArgs virtual address.
+pub(crate) fn kernel_args_va() -> Option<u64> {
+    KERNEL_ARGS_VA.get().copied()
+}
 
 /// Store the virtual address of KernelArgs.  Called from `efi_main_stage2`.
-pub fn store_args_va(va: u64) {
-    unsafe {
-        STORED_ARGS_VA = va;
-    }
+pub fn store_args_va(va: u64) -> Result<(), BootSnapshotError> {
+    let result = store_snapshot(&KERNEL_ARGS_VA, va);
     petroleum::serial::_print(format_args!("[store_args] va=0x{va:x}\n"));
+    result
 }
 
 /// Store GOP parameters from the bootloader's KernelArgs.
@@ -53,18 +109,22 @@ pub fn store_boot_fb_params(
     stride: u32,
     bpp: u32,
     pixel_format: u32,
-) {
-    unsafe {
-        STORED_FB_PHYS = phys;
-        STORED_FB_WIDTH = width;
-        STORED_FB_HEIGHT = height;
-        STORED_FB_STRIDE = stride;
-        STORED_FB_BPP = bpp;
-        STORED_FB_PIXEL_FORMAT = pixel_format;
-    }
+) -> Result<(), BootSnapshotError> {
+    let result = store_snapshot(
+        &BOOT_FRAMEBUFFER,
+        BootFramebufferParams {
+            phys,
+            width,
+            height,
+            stride,
+            bpp,
+            pixel_format,
+        },
+    );
     petroleum::serial::_print(format_args!(
         "[store_fb] {width}x{height} stride={stride} phys=0x{phys:x} bpp={bpp} fmt={pixel_format}\n"
     ));
+    result
 }
 
 /// Return the framebuffer through the bootstrap's direct mapping.
@@ -73,72 +133,37 @@ pub fn store_boot_fb_params(
 /// map, which is shared by every process page table. Early Bellows diagnostics
 /// may use the identity alias, but kernel-owned rendering must not retain it.
 pub fn direct_boot_framebuffer() -> Option<BootFramebuffer> {
-    let (phys, width, height, stride, bpp, format) = unsafe {
-        (
-            STORED_FB_PHYS,
-            STORED_FB_WIDTH,
-            STORED_FB_HEIGHT,
-            STORED_FB_STRIDE,
-            STORED_FB_BPP,
-            STORED_FB_PIXEL_FORMAT,
-        )
-    };
-    let size = u64::from(stride).checked_mul(u64::from(height))?;
-    if phys.checked_add(size)? > 64 * 1024 * 1024 * 1024 {
+    let params = boot_framebuffer_params()?;
+    let size = u64::from(params.stride).checked_mul(u64::from(params.height))?;
+    if params.phys.checked_add(size)? > 64 * 1024 * 1024 * 1024 {
         return None;
     }
     let direct_map_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
-    let direct_map_address = phys.checked_add(direct_map_offset)?;
-    BootFramebuffer::new(direct_map_address, width, height, stride, bpp, format)
+    let direct_map_address = params.phys.checked_add(direct_map_offset)?;
+    BootFramebuffer::new(
+        direct_map_address,
+        params.width,
+        params.height,
+        params.stride,
+        params.bpp,
+        params.pixel_format,
+    )
 }
 
 /// Discovery engine — tries each probe strategy in order.
 pub struct FramebufferDiscovery;
 
 impl FramebufferDiscovery {
-    /// Probe `.data` globals saved by `efi_main_stage2`.
+    /// Probe the immutable `.data` snapshot saved by `efi_main_stage2`.
     pub fn probe_data_globals() -> Option<FramebufferProbeResult> {
-        let (phys, width, height, stride, bpp, format) = unsafe {
-            (
-                STORED_FB_PHYS,
-                STORED_FB_WIDTH,
-                STORED_FB_HEIGHT,
-                STORED_FB_STRIDE,
-                STORED_FB_BPP,
-                STORED_FB_PIXEL_FORMAT,
-            )
-        };
-        let minimum_stride = width.checked_mul(4)?;
-        let framebuffer_bytes = u64::from(stride).checked_mul(u64::from(height))?;
-        if !(0x10_0000..1 << 52).contains(&phys)
-            || !(80..=16_384).contains(&width)
-            || !(25..=16_384).contains(&height)
-            || bpp != 32
-            || format > 1
-            || stride < minimum_stride
-            || stride % 4 != 0
-            || framebuffer_bytes > 1 << 30
-        {
-            return None;
-        }
-        let pixel_format = match format {
-            0 => EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
-            1 => EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor,
-            _ => return None,
-        };
+        let result = boot_framebuffer_params()?.probe_result()?;
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[discovery] .data globals valid\n");
-        Some(FramebufferProbeResult {
-            phys,
-            width,
-            height,
-            stride,
-            pixel_format,
-        })
+        Some(result)
     }
 
-    /// Probe `KernelArgs` via `STORED_ARGS_VA`.
+    /// Probe `KernelArgs` via its preserved virtual address.
     pub fn probe_kernel_args() -> Option<FramebufferProbeResult> {
-        let args_va = unsafe { STORED_ARGS_VA };
+        let args_va = kernel_args_va()?;
         if args_va < 0xFFFF_8000_0000_0000 {
             return None;
         }
@@ -227,5 +252,61 @@ impl FramebufferDiscovery {
         Self::probe_data_globals()
             .or_else(|| Self::probe_kernel_args())
             .or_else(|| Self::probe_pci(pci_devices))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BootFramebufferParams, BootSnapshotError, store_snapshot};
+    use spin::Once;
+
+    fn valid_params() -> BootFramebufferParams {
+        BootFramebufferParams {
+            phys: 0x100_0000,
+            width: 1920,
+            height: 1080,
+            stride: 1920 * 4,
+            bpp: 32,
+            pixel_format: 1,
+        }
+    }
+
+    #[test]
+    fn snapshot_accepts_idempotent_initialization() {
+        let snapshot = Once::new();
+
+        assert_eq!(store_snapshot(&snapshot, 42_u64), Ok(()));
+        assert_eq!(store_snapshot(&snapshot, 42_u64), Ok(()));
+        assert_eq!(snapshot.get(), Some(&42));
+    }
+
+    #[test]
+    fn snapshot_rejects_conflicting_initialization() {
+        let snapshot = Once::new();
+
+        assert_eq!(store_snapshot(&snapshot, 42_u64), Ok(()));
+        assert_eq!(
+            store_snapshot(&snapshot, 7_u64),
+            Err(BootSnapshotError::ConflictingInitialization)
+        );
+        assert_eq!(snapshot.get(), Some(&42));
+    }
+
+    #[test]
+    fn framebuffer_snapshot_validation_accepts_boot_gop_layout() {
+        let result = valid_params().probe_result().expect("valid GOP snapshot");
+
+        assert_eq!(result.phys, 0x100_0000);
+        assert_eq!(result.width, 1920);
+        assert_eq!(result.height, 1080);
+        assert_eq!(result.stride, 1920 * 4);
+    }
+
+    #[test]
+    fn framebuffer_snapshot_validation_rejects_short_stride() {
+        let mut params = valid_params();
+        params.stride = params.width * 4 - 4;
+
+        assert!(params.probe_result().is_none());
     }
 }
