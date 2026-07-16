@@ -31,6 +31,7 @@ pub mod apic_controller;
 pub mod debug;
 pub mod driver_api;
 pub mod driver_context;
+pub mod error;
 pub mod mmio;
 pub mod pci;
 pub mod pci_error;
@@ -65,6 +66,7 @@ pub mod virtio;
 pub mod wifi;
 
 pub use driver_context::{DriverContext, DriverContextError, PageFlags};
+pub use error::DriverError;
 
 #[cfg(test)]
 mod tests {

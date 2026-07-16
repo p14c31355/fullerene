@@ -10,6 +10,7 @@ pub mod early;
 #[macro_use]
 pub mod common;
 pub mod debug;
+pub mod error;
 pub mod filesystem;
 pub mod graphics;
 pub mod initializer;
@@ -24,6 +25,7 @@ pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
+pub use error::MemoryError;
 pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;

@@ -57,8 +57,8 @@ You may close them using the "Development" section of the PR, or create new issu
 ### P1-1. Typed errors (replace `&'static str`)
 - [x] `BlockError` (done as part of P0-4)
 - [x] `FsError` in `genome` crate (FileNotFound, FileExists, PermissionDenied, InvalidFileDescriptor, InvalidSeek, DiskFull, NotADirectory, DirectoryNotEmpty, IsADirectory, InvalidPath, NotSupported, InvalidInput)
-- [ ] `DriverError`, `MemoryError` in respective crates
-- [ ] `From` impls to convert to `SyscallError` / Linux errno
+- [x] `DriverError`, `MemoryError` in respective crates ([#275](https://github.com/p14c31355/fullerene/issues/275))
+- [x] `From` impls to convert to `SyscallError` / Linux errno ([#275](https://github.com/p14c31355/fullerene/issues/275))
 - [ ] Remove `Result<..., &'static str>` usage (~200+ sites across kernel/nitrogen/genome)
 
 ### P1-2. Syscall ABI crate (`fullerene-abi`)

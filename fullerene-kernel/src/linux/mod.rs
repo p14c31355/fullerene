@@ -30,4 +30,4 @@ pub mod time;
 pub mod types;
 
 pub use numbers::*;
-pub use runtime::{DispatchMode, LinuxRuntime, errno_code};
+pub use runtime::{DispatchMode, LinuxErrno, LinuxRuntime, errno_code};

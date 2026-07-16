@@ -153,6 +153,7 @@ pub const ENOSYS: i32 = 38;
 pub const ELOOP: i32 = 40;
 pub const EOVERFLOW: i32 = 75;
 pub const ENOTSUP: i32 = 95;
+pub const ETIMEDOUT: i32 = 110;
 pub const ECANCELED: i32 = 125;
 pub const ENOTEMPTY: i32 = 39;
 
