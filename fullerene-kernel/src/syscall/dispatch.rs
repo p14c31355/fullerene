@@ -1,12 +1,14 @@
 use fullerene_abi::SyscallNumber;
 
-use super::basic;
+use super::abi;
 use super::cap;
 use super::device;
 use super::event;
+use super::fs;
 use super::interface::SyscallError;
 use super::ipc;
 use super::memory;
+use super::process;
 use super::thread;
 use super::time;
 use super::window;
@@ -61,26 +63,26 @@ pub unsafe extern "C" fn handle_syscall(
     }
 
     let result = match SyscallNumber::try_from(syscall_num) {
-        Ok(SyscallNumber::AbiQuery) => basic::syscall_abi_query(arg1 as *mut u8, arg2 as usize),
+        Ok(SyscallNumber::AbiQuery) => abi::syscall_abi_query(arg1 as *mut u8, arg2 as usize),
 
-        Ok(SyscallNumber::Exit) => basic::syscall_exit(arg1 as i32),
-        Ok(SyscallNumber::Fork) => basic::syscall_fork(),
+        Ok(SyscallNumber::Exit) => process::syscall_exit(arg1 as i32),
+        Ok(SyscallNumber::Fork) => process::syscall_fork(),
         Ok(SyscallNumber::Read) => {
-            basic::syscall_read(arg1 as core::ffi::c_int, arg2 as *mut u8, arg3 as usize)
+            fs::syscall_read(arg1 as core::ffi::c_int, arg2 as *mut u8, arg3 as usize)
         }
         Ok(SyscallNumber::Write) => {
-            basic::syscall_write(arg1 as core::ffi::c_int, arg2 as *const u8, arg3 as usize)
+            fs::syscall_write(arg1 as core::ffi::c_int, arg2 as *const u8, arg3 as usize)
         }
         Ok(SyscallNumber::Open) => {
-            basic::syscall_open(arg1 as *const u8, arg2 as core::ffi::c_int, arg3 as u32)
+            fs::syscall_open(arg1 as *const u8, arg2 as core::ffi::c_int, arg3 as u32)
         }
-        Ok(SyscallNumber::Close) => basic::syscall_close(arg1 as core::ffi::c_int),
-        Ok(SyscallNumber::Wait) => basic::syscall_wait(arg1),
-        Ok(SyscallNumber::GetPid) => basic::syscall_getpid(),
+        Ok(SyscallNumber::Close) => fs::syscall_close(arg1 as core::ffi::c_int),
+        Ok(SyscallNumber::Wait) => process::syscall_wait(arg1),
+        Ok(SyscallNumber::GetPid) => process::syscall_getpid(),
         Ok(SyscallNumber::GetProcessName) => {
-            basic::syscall_get_process_name(arg1 as *mut u8, arg2 as usize)
+            process::syscall_get_process_name(arg1 as *mut u8, arg2 as usize)
         }
-        Ok(SyscallNumber::Yield) => basic::syscall_yield(),
+        Ok(SyscallNumber::Yield) => process::syscall_yield(),
 
         Ok(SyscallNumber::MapMemory) => memory::syscall_map_memory(arg1, arg2, arg3),
         Ok(SyscallNumber::UnmapMemory) => memory::syscall_unmap_memory(arg1, arg2),

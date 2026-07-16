@@ -441,6 +441,13 @@ exclusive block-device ownership to a mounted filesystem. An available entry
 contains a device lease; a present entry without a lease means mounted or in
 use. Controller re-enumeration must not invalidate an outstanding lease.
 
+Native syscall handling is split by context under
+`fullerene-kernel/src/syscall/`. `dispatch` is the only syscall-number router;
+`abi`, `process`, `fs`, `memory`, `event`, `thread`, `window`, `device`, `ipc`,
+`cap`, and `time` own their domain handlers. `interface` owns the shared error
+and user-copy contract, while `types` owns handle-backed kernel object types.
+Domain modules must not perform secondary syscall-number dispatch.
+
 `/dev` is a `DevFs` mount backed directly by that registry, not a tmpfs with
 manually-created placeholder files. Consequently registration and removal are
 visible immediately and `/dev/null` is supplied by DevFs itself. Seeing only

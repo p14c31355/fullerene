@@ -46,6 +46,26 @@ Negative return value = error. The positive codes are fixed by
 `fullerene_abi::SyscallErrorCode` and align with Linux errno values where
 possible.
 
+### Kernel handler boundaries
+
+Native syscall routing is centralized in `syscall/dispatch.rs`. Handler
+implementations are grouped by the resource or lifecycle they own:
+
+| Module | Responsibility |
+|---|---|
+| `abi` | ABI version and capability discovery |
+| `process` | process lifecycle, waiting, identity, and per-process resource access |
+| `fs` | native file descriptors and terminal I/O |
+| `memory` | user address-space mapping and protection |
+| `event`, `thread`, `window` | event, thread, and window lifecycles |
+| `device`, `ipc`, `cap`, `time` | device access, IPC, handles, clocks, and timers |
+| `interface`, `types` | shared errors, user-copy helpers, and kernel object types |
+
+The former mixed-responsibility `handlers.rs` / `basic.rs` path is not part of
+the kernel interface. Adding a syscall requires adding its typed ABI number,
+placing its implementation in the owning domain module, and wiring only the
+central dispatch match.
+
 ---
 
 ## 2. VDSO (Read-Only Metadata Page)
