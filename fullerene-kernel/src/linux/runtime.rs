@@ -275,7 +275,7 @@ impl From<genome::fs::FsError> for LinuxErrno {
             FsError::NotADirectory => ENOTDIR,
             FsError::DirectoryNotEmpty => ENOTEMPTY,
             FsError::IsADirectory => EISDIR,
-            FsError::NotSupported => ENOSYS,
+            FsError::NotSupported => ENOTSUP,
         })
     }
 }
@@ -315,11 +315,9 @@ impl From<petroleum::MemoryError> for LinuxErrno {
     fn from(error: petroleum::MemoryError) -> Self {
         use petroleum::MemoryError;
         Self(match error {
-            MemoryError::OutOfMemory
-            | MemoryError::FrameAllocationFailed
-            | MemoryError::MappingFailed => ENOMEM,
+            MemoryError::OutOfMemory | MemoryError::FrameAllocationFailed => ENOMEM,
+            MemoryError::MappingFailed | MemoryError::InvalidAddress => EFAULT,
             MemoryError::UnmappingFailed
-            | MemoryError::InvalidAddress
             | MemoryError::InvalidAlignment
             | MemoryError::InvalidSize
             | MemoryError::NotMapped => EINVAL,
@@ -489,6 +487,18 @@ mod user_copy_tests {
         assert_eq!(
             LinuxErrno::from(petroleum::MemoryError::AlreadyMapped).get(),
             EEXIST
+        );
+        assert_eq!(
+            LinuxErrno::from(petroleum::MemoryError::MappingFailed).get(),
+            EFAULT
+        );
+        assert_eq!(
+            LinuxErrno::from(petroleum::MemoryError::InvalidAddress).get(),
+            EFAULT
+        );
+        assert_eq!(
+            LinuxErrno::from(genome::fs::FsError::NotSupported).get(),
+            ENOTSUP
         );
     }
 }

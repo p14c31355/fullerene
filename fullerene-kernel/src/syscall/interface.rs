@@ -175,8 +175,7 @@ impl From<petroleum::MemoryError> for SyscallError {
         use petroleum::MemoryError;
         match error {
             MemoryError::OutOfMemory | MemoryError::FrameAllocationFailed => Self::OutOfMemory,
-            MemoryError::MappingFailed => Self::OutOfMemory,
-            MemoryError::InvalidAddress => Self::AddressFault,
+            MemoryError::MappingFailed | MemoryError::InvalidAddress => Self::AddressFault,
             MemoryError::UnmappingFailed
             | MemoryError::InvalidAlignment
             | MemoryError::InvalidSize
@@ -299,6 +298,14 @@ mod tests {
         assert_eq!(
             SyscallError::from(petroleum::MemoryError::AlreadyMapped),
             SyscallError::AlreadyExists
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::MemoryError::MappingFailed),
+            SyscallError::AddressFault
+        );
+        assert_eq!(
+            SyscallError::from(petroleum::SystemError::MappingFailed),
+            SyscallError::AddressFault
         );
         assert_eq!(
             SyscallError::from(petroleum::SystemError::SyscallOutOfMemory),
