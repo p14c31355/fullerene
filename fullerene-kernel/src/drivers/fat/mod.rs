@@ -34,7 +34,11 @@ pub fn mount_device(
     let boot = match read_boot_sector(&mut *device, info.start_lba) {
         Ok(boot) => boot,
         Err(error) => {
-            klog_fmt!("filesystem probe failed at LBA {}: {}\n", info.start_lba, error);
+            klog_fmt!(
+                "filesystem probe failed at LBA {}: {}\n",
+                info.start_lba,
+                error
+            );
             return Err((FsError::InvalidInput, Some(device)));
         }
     };
@@ -42,7 +46,11 @@ pub fn mount_device(
     let partition: Box<dyn BlockDevice> = if info.start_lba == 0 {
         device
     } else {
-        Box::new(PartitionBlockDevice::new(device, info.start_lba, info.total_sectors))
+        Box::new(PartitionBlockDevice::new(
+            device,
+            info.start_lba,
+            info.total_sectors,
+        ))
     };
     let cached: Box<dyn BlockDevice> = Box::new(BlockCache::new(partition, 64));
 

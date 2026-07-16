@@ -57,7 +57,10 @@ pub fn workspace_root() -> PathBuf {
         }
         candidate = dir.parent();
     }
-    panic!("tools crate cannot find the workspace root from {}", manifest.display());
+    panic!(
+        "tools crate cannot find the workspace root from {}",
+        manifest.display()
+    );
 }
 
 pub fn check_dependency_duplicates(root: &Path) -> ToolResult {

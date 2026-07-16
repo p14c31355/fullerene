@@ -26,18 +26,27 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
 
     if is_exfat(&boot) {
         klog_fmt!("FAT: raw exFAT at LBA 0\n");
-        return Ok(PartitionInfo { start_lba: 0, total_sectors: device.total_sectors() });
+        return Ok(PartitionInfo {
+            start_lba: 0,
+            total_sectors: device.total_sectors(),
+        });
     }
     let bytes_per_sector = u16::from_le_bytes([boot[11], boot[12]]);
     if matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096) {
         klog_fmt!("FAT: raw FAT32 at LBA 0 (bps={})\n", bytes_per_sector);
-        return Ok(PartitionInfo { start_lba: 0, total_sectors: device.total_sectors() });
+        return Ok(PartitionInfo {
+            start_lba: 0,
+            total_sectors: device.total_sectors(),
+        });
     }
 
     let signature = u16::from_le_bytes([boot[0x1FE], boot[0x1FF]]);
     if signature != MBR_SIGNATURE {
         klog_fmt!("FAT: no MBR signature at LBA 0 (0x{:04X})\n", signature);
-        return Ok(PartitionInfo { start_lba: 0, total_sectors: device.total_sectors() });
+        return Ok(PartitionInfo {
+            start_lba: 0,
+            total_sectors: device.total_sectors(),
+        });
     }
 
     let mut best: Option<PartitionInfo> = None;
@@ -64,8 +73,15 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
                 | PARTITION_FAT16_LBA
                 | PARTITION_EXFAT
         );
-        if is_fat && (best.as_ref().map_or(true, |b| sector_count > b.total_sectors as u32)) {
-            best = Some(PartitionInfo { start_lba: lba_start as u64, total_sectors: sector_count as u64 });
+        if is_fat
+            && (best
+                .as_ref()
+                .map_or(true, |b| sector_count > b.total_sectors as u32))
+        {
+            best = Some(PartitionInfo {
+                start_lba: lba_start as u64,
+                total_sectors: sector_count as u64,
+            });
         }
     }
 
@@ -90,7 +106,11 @@ pub struct PartitionBlockDevice {
 
 impl PartitionBlockDevice {
     pub fn new(inner: Box<dyn BlockDevice>, offset: u64, total_sectors: u64) -> Self {
-        Self { inner, offset, total_sectors }
+        Self {
+            inner,
+            offset,
+            total_sectors,
+        }
     }
 
     fn absolute_lba(&self, lba: u64, count: u16) -> Result<u64, BlockError> {
