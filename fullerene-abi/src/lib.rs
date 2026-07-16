@@ -22,6 +22,7 @@ pub enum SyscallNumber {
     GetPid = 20,
     GetProcessName = 21,
     Yield = 22,
+    Spawn = 23,
     MapMemory = 30,
     UnmapMemory = 31,
     ProtectMemory = 32,
@@ -68,6 +69,7 @@ impl SyscallNumber {
         Self::GetPid,
         Self::GetProcessName,
         Self::Yield,
+        Self::Spawn,
         Self::MapMemory,
         Self::UnmapMemory,
         Self::ProtectMemory,
@@ -123,6 +125,7 @@ impl TryFrom<u64> for SyscallNumber {
             syscall_numbers::GETPID => Ok(Self::GetPid),
             syscall_numbers::GET_PROCESS_NAME => Ok(Self::GetProcessName),
             syscall_numbers::YIELD => Ok(Self::Yield),
+            syscall_numbers::SPAWN => Ok(Self::Spawn),
             syscall_numbers::MAP_MEMORY => Ok(Self::MapMemory),
             syscall_numbers::UNMAP_MEMORY => Ok(Self::UnmapMemory),
             syscall_numbers::PROTECT_MEMORY => Ok(Self::ProtectMemory),
@@ -175,6 +178,7 @@ pub mod syscall_numbers {
     pub const GETPID: u64 = SyscallNumber::GetPid.as_u64();
     pub const GET_PROCESS_NAME: u64 = SyscallNumber::GetProcessName.as_u64();
     pub const YIELD: u64 = SyscallNumber::Yield.as_u64();
+    pub const SPAWN: u64 = SyscallNumber::Spawn.as_u64();
     pub const MAP_MEMORY: u64 = SyscallNumber::MapMemory.as_u64();
     pub const UNMAP_MEMORY: u64 = SyscallNumber::UnmapMemory.as_u64();
     pub const PROTECT_MEMORY: u64 = SyscallNumber::ProtectMemory.as_u64();
@@ -321,7 +325,7 @@ pub struct AbiVersion {
 impl AbiVersion {
     pub const CURRENT: Self = Self {
         major: 0,
-        minor: 3,
+        minor: 4,
         patch: 0,
         reserved: 0,
     };
@@ -358,6 +362,7 @@ pub enum Capability {
     IpcPipes = 1 << 6,
     TimerSystem = 1 << 7,
     DeviceEnumeration = 1 << 8,
+    ProcessSpawn = 1 << 9,
 }
 
 impl Capability {
@@ -383,7 +388,8 @@ impl CapabilitySet {
             | Capability::IpcChannels.bit()
             | Capability::IpcPipes.bit()
             | Capability::TimerSystem.bit()
-            | Capability::DeviceEnumeration.bit(),
+            | Capability::DeviceEnumeration.bit()
+            | Capability::ProcessSpawn.bit(),
     );
 
     #[inline]

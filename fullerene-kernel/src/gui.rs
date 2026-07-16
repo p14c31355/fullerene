@@ -117,6 +117,10 @@ pub fn init() {
             crate::scheduler::request_shell_launch();
         }),
         settings_save: None,
+        kernel_log: Some(|| {
+            alloc::string::String::from_utf8_lossy(&crate::klog::snapshot()).into_owned()
+        }),
+        metrics: Some(crate::metrics::format_snapshot),
     }
     .install();
 
@@ -161,6 +165,7 @@ fn finish_frame() {
 }
 
 pub fn render() {
+    let frame_start = unsafe { core::arch::x86_64::_rdtsc() };
     // Draw progress labels before acquiring the FramebufferGuard,
     // to avoid mutable aliasing of the framebuffer slice.
     if !BOOT_PROGRESS_DONE.load(Ordering::Relaxed) {
@@ -177,6 +182,9 @@ pub fn render() {
 
     BOOT_PROGRESS_DONE.store(true, Ordering::Release);
     finish_frame();
+    crate::metrics::record_frame_ticks(
+        unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
+    );
 }
 
 /// Perform one tick of the runtime loop with kernel framebuffer access.
@@ -196,6 +204,7 @@ pub fn runtime_tick(now: u64) {
     let full_frame = solvent::consume_frame_due();
     let cursor_only = !full_frame && solvent::cursor_update_due();
     if full_frame || cursor_only {
+        let frame_start = unsafe { core::arch::x86_64::_rdtsc() };
         let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
             if full_frame {
                 solvent::render(framebuffer);
@@ -207,6 +216,9 @@ pub fn runtime_tick(now: u64) {
             crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
         }
         finish_frame();
+        crate::metrics::record_frame_ticks(
+            unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
+        );
     }
 }
 

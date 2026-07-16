@@ -1,6 +1,7 @@
 //! Native process lifecycle syscalls and per-process resource access.
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec;
 use core::alloc::Layout;
 
@@ -272,4 +273,63 @@ pub(crate) fn syscall_get_process_name(buffer: *mut u8, size: usize) -> SyscallR
 pub(crate) fn syscall_yield() -> SyscallResult {
     process::yield_current();
     Ok(0)
+}
+
+const MAX_EXECUTABLE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PROCESS_NAME_BYTES: usize = 64;
+
+/// Copy an ELF image from the caller and start it in a new isolated process.
+pub(crate) fn syscall_spawn(
+    image_ptr: *const u8,
+    image_len: usize,
+    name_ptr: *const u8,
+    name_len: usize,
+) -> SyscallResult {
+    if image_len == 0
+        || image_len > MAX_EXECUTABLE_BYTES
+        || name_len == 0
+        || name_len > MAX_PROCESS_NAME_BYTES
+    {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let image_slice = UserSlice::new(image_ptr as *mut u8, image_len, false)
+        .map_err(|_| SyscallError::AddressFault)?;
+    let name_slice = UserSlice::new(name_ptr as *mut u8, name_len, false)
+        .map_err(|_| SyscallError::AddressFault)?;
+    let mut image = vec![0u8; image_len];
+    let mut name_bytes = vec![0u8; name_len];
+    unsafe {
+        image_slice
+            .copy_from_user(&mut image)
+            .map_err(|_| SyscallError::AddressFault)?;
+        name_slice
+            .copy_from_user(&mut name_bytes)
+            .map_err(|_| SyscallError::AddressFault)?;
+    }
+    let name = core::str::from_utf8(&name_bytes)
+        .map_err(|_| SyscallError::InvalidArgument)?
+        .trim();
+    if name.is_empty()
+        || name
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_control())
+    {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    // Process names are currently stored for the lifetime of the kernel.
+    // The process table is bounded, so leaking this short label is bounded too.
+    let process_name: &'static str = Box::leak(String::from(name).into_boxed_str());
+    crate::loader::load_program(&image, process_name)
+        .map(|pid| pid.0)
+        .map_err(|error| match error {
+            crate::loader::LoadError::OutOfMemory => SyscallError::OutOfMemory,
+            crate::loader::LoadError::FileNotFound => SyscallError::FileNotFound,
+            crate::loader::LoadError::InvalidFormat
+            | crate::loader::LoadError::NotExecutable
+            | crate::loader::LoadError::UnsupportedArchitecture => SyscallError::InvalidArgument,
+            crate::loader::LoadError::MappingFailed
+            | crate::loader::LoadError::AddressAlreadyMapped => SyscallError::Io,
+        })
 }

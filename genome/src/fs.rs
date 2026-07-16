@@ -77,12 +77,14 @@ pub struct PackageEntry {
     pub version: String,
     pub description: String,
     pub binary: String,
+    pub runtime: String,
 }
 
 pub fn parse_manifest(name: &str, text: &str) -> Option<PackageEntry> {
     let mut version = String::from("0.1.0");
     let mut description = String::new();
     let mut binary = String::from("app.bin");
+    let mut runtime = String::from("native");
 
     for line in text.lines() {
         let line = line.trim();
@@ -93,6 +95,7 @@ pub fn parse_manifest(name: &str, text: &str) -> Option<PackageEntry> {
                 "version" => version = String::from(value),
                 "description" => description = String::from(value),
                 "binary" => binary = String::from(value),
+                "runtime" => runtime = String::from(value),
                 _ => {}
             }
         }
@@ -103,5 +106,6 @@ pub fn parse_manifest(name: &str, text: &str) -> Option<PackageEntry> {
         version,
         description,
         binary,
+        runtime,
     })
 }

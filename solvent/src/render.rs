@@ -10,6 +10,11 @@ use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use spin::Mutex;
 
 const MAX_FB_PIXELS: usize = 3840 * 2160; // upper bound for overflow checks
+const STARTUP_FADE_STEP_X100: u32 = 10;
+
+fn fade_brightness(user_brightness: u32, fade_x100: u32) -> u32 {
+    user_brightness.saturating_mul(fade_x100.min(100)) / 100
+}
 
 // ── Framebuffer target for the compositor ────────────────────
 
@@ -371,7 +376,9 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             let cursor = scene.cursor.take();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
             render_progress(b"RENDER: compositor done");
-            let brightness = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
+            let user_brightness =
+                DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
+            let brightness = fade_brightness(user_brightness, rt.startup_fade_x100);
             if brightness < 100 && bw > 0 && bh > 0 {
                 let back_w = fb_width as usize;
                 let rows: core::ops::Range<usize> = if was_transition {
@@ -437,6 +444,11 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             }
         }
     }
+    if rt.startup_fade_x100 < 100 {
+        rt.startup_fade_x100 = (rt.startup_fade_x100 + STARTUP_FADE_STEP_X100).min(100);
+        rt.desktop.force_full_redraw();
+        rt.frame_due = true;
+    }
     rt.cursor_redraw_from = None;
 }
 
@@ -454,6 +466,13 @@ mod tests {
             clip_region(lattice::scene::DirtyRect::new(5, 0, 1, 1), 5, 3),
             None
         );
+    }
+
+    #[test]
+    fn startup_fade_respects_user_brightness() {
+        assert_eq!(fade_brightness(100, 0), 0);
+        assert_eq!(fade_brightness(80, 50), 40);
+        assert_eq!(fade_brightness(75, 100), 75);
     }
 
     #[test]

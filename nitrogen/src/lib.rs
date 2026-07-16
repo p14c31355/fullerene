@@ -32,6 +32,7 @@ pub mod debug;
 pub mod driver_api;
 pub mod driver_context;
 pub mod error;
+pub mod metrics;
 pub mod mmio;
 pub mod pci;
 pub mod pci_error;

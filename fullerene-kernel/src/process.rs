@@ -6,7 +6,6 @@
 //! `SCHEDULER`.
 
 use alloc::boxed::Box;
-use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use petroleum::mem_debug;
@@ -84,17 +83,71 @@ impl Default for ProcessContext {
 }
 
 /// Per-process file descriptor table.
+pub struct FdSlotMap {
+    slots: Vec<Option<crate::fs::FileDesc>>,
+}
+
+impl FdSlotMap {
+    fn new() -> Self {
+        let mut slots = Vec::new();
+        slots.resize_with(3, || None);
+        Self { slots }
+    }
+
+    pub fn insert(&mut self, fd: u32, value: crate::fs::FileDesc) -> Option<crate::fs::FileDesc> {
+        let index = fd as usize;
+        if self.slots.len() <= index {
+            self.slots.resize_with(index + 1, || None);
+        }
+        self.slots[index].replace(value)
+    }
+
+    pub fn get_mut(&mut self, fd: &u32) -> Option<&mut crate::fs::FileDesc> {
+        self.slots.get_mut(*fd as usize)?.as_mut()
+    }
+
+    pub fn remove(&mut self, fd: &u32) -> Option<crate::fs::FileDesc> {
+        self.slots.get_mut(*fd as usize)?.take()
+    }
+
+    pub fn contains_key(&self, fd: &u32) -> bool {
+        self.slots.get(*fd as usize).is_some_and(Option::is_some)
+    }
+
+    pub fn clear(&mut self) {
+        for slot in self.slots.iter_mut().skip(3) {
+            *slot = None;
+        }
+    }
+
+    fn first_free_from(&self, start: u32) -> Option<u32> {
+        self.slots
+            .iter()
+            .enumerate()
+            .skip(start as usize)
+            .find_map(|(index, slot)| slot.is_none().then_some(index as u32))
+    }
+}
+
 pub struct FdTable {
-    pub entries: BTreeMap<u32, crate::fs::FileDesc>,
-    pub next_fd: u32,
+    pub entries: FdSlotMap,
 }
 
 impl FdTable {
     pub fn new() -> Self {
         Self {
-            entries: BTreeMap::new(),
-            next_fd: 3,
+            entries: FdSlotMap::new(),
         }
+    }
+
+    pub fn alloc(&mut self, file_desc: crate::fs::FileDesc) -> Result<u32, ()> {
+        let fd = self
+            .entries
+            .first_free_from(3)
+            .map(Ok)
+            .unwrap_or_else(|| u32::try_from(self.entries.slots.len()).map_err(|_| ()))?;
+        self.entries.insert(fd, file_desc);
+        Ok(fd)
     }
 }
 
@@ -796,6 +849,26 @@ mod tests {
         assert!(!second.fd_table.lock().entries.contains_key(&3));
         assert!(first.handle_table.lock().get(first_handle).is_some());
         assert!(second.handle_table.lock().get(first_handle).is_none());
+    }
+
+    #[test]
+    fn fd_slots_reuse_holes_without_overwriting_later_entries() {
+        fn file_desc(ino: u64) -> crate::fs::FileDesc {
+            crate::fs::FileDesc {
+                fd: 0,
+                ino,
+                offset: 0,
+                flags: 0,
+            }
+        }
+
+        let mut table = FdTable::new();
+        assert_eq!(table.alloc(file_desc(30)), Ok(3));
+        assert_eq!(table.alloc(file_desc(40)), Ok(4));
+        assert_eq!(table.entries.remove(&3).map(|entry| entry.ino), Some(30));
+        assert_eq!(table.alloc(file_desc(31)), Ok(3));
+        assert_eq!(table.alloc(file_desc(50)), Ok(5));
+        assert_eq!(table.entries.get_mut(&4).map(|entry| entry.ino), Some(40));
     }
 
     #[test]

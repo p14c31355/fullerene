@@ -24,7 +24,14 @@ fn main() {
     let ignore_path = Path::new(&manifest_dir).join(".driverignore");
 
     // ── Read .driverignore ───────────────────────────────────
-    let ignored: Vec<String> = if ignore_path.exists() {
+    let ignored: Vec<String> = if let Ok(content) = env::var("NITROGEN_DRIVERIGNORE") {
+        content
+            .lines()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| line.strip_suffix('/').unwrap_or(line).to_string())
+            .collect()
+    } else if ignore_path.exists() {
         let content = fs::read_to_string(&ignore_path).unwrap_or_default();
         content
             .lines()
@@ -89,5 +96,6 @@ fn main() {
 
     // ── Rebuild when driver selection changes ────────────────
     println!("cargo:rerun-if-changed={}", ignore_path.display());
+    println!("cargo:rerun-if-env-changed=NITROGEN_DRIVERIGNORE");
     println!("cargo:rerun-if-changed=build.rs");
 }

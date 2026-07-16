@@ -130,6 +130,16 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("cat", "Print file contents", builtins::cmd_cat),
         ("pwd", "Print working directory", builtins::cmd_pwd),
         ("mem", "Show memory information", builtins::cmd_mem),
+        (
+            "metrics",
+            "Show boot/frame/heap/DMA metrics",
+            builtins::cmd_metrics
+        ),
+        (
+            "cpuinfo",
+            "Show discovered processor topology",
+            builtins::cmd_cpuinfo
+        ),
         ("tasks", "List processes", builtins::cmd_tasks),
         ("windows", "List windows", builtins::cmd_windows),
         ("dmesg", "Show kernel messages", builtins::cmd_dmesg),

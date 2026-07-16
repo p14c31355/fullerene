@@ -437,7 +437,8 @@ pub fn rescan_usb_all() -> bool {
 
 /// Access the inner USB context static for poll operations.
 #[cfg(not(nitrogen_no_usb))]
-fn with_ctx_inner() -> spin::MutexGuard<'static, Option<nitrogen::usb::context::USBContext>> {
+fn with_ctx_inner()
+-> spin::MutexGuard<'static, Option<nitrogen::usb::context::USBContext>, spin::relax::Spin> {
     USB_CTX.lock()
 }
 

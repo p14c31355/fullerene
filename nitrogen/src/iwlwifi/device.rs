@@ -874,7 +874,7 @@ impl IwlWifiDevice {
 
         self.health.recover().map_err(|_| {
             self.fw_state = FwState::Error;
-            "Device not accessible after firmware upload"
+            crate::DriverError::DeviceFault
         })?;
 
         debug::print("iwlwifi", "fw: cpu_started");

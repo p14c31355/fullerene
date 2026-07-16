@@ -643,9 +643,9 @@ pub fn change_directory(path: &str) -> Result<(), FsError> {
 /// `spin::Mutex` does not have poisoning semantics, so re-acquiring
 /// the same locks after dropping this guard is safe in a panic handler.
 pub struct VfsAccessGuard {
-    _kernel: spin::MutexGuard<'static, Option<super::kernel::KernelContext>>,
-    _inner: spin::MutexGuard<'static, Vfs>,
-    _handle_table: spin::MutexGuard<'static, HandleTable>,
+    _kernel: spin::MutexGuard<'static, Option<super::kernel::KernelContext>, spin::relax::Spin>,
+    _inner: spin::MutexGuard<'static, Vfs, spin::relax::Spin>,
+    _handle_table: spin::MutexGuard<'static, HandleTable, spin::relax::Spin>,
 }
 
 // SAFETY: VfsAccessGuard is !Send + !Sync by construction (it holds
@@ -669,8 +669,11 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
     // the entire program.  Transmute to 'static before accessing inner
     // fields to avoid borrow conflicts during the move into VfsAccessGuard.
     let kernel_guard = super::kernel::get_kernel().try_lock()?;
-    let kernel_guard: spin::MutexGuard<'static, Option<super::kernel::KernelContext>> =
-        unsafe { core::mem::transmute(kernel_guard) };
+    let kernel_guard: spin::MutexGuard<
+        'static,
+        Option<super::kernel::KernelContext>,
+        spin::relax::Spin,
+    > = unsafe { core::mem::transmute(kernel_guard) };
     let kernel = kernel_guard.as_ref()?;
 
     // Acquire inner and handle_table while holding the kernel guard
@@ -680,8 +683,9 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
 
     // SAFETY: inner_guard and handle_table_guard also borrow from global
     // statics inside KernelContext.vfs, which lives forever.
-    let inner_guard: spin::MutexGuard<'static, Vfs> = unsafe { core::mem::transmute(inner_guard) };
-    let handle_table_guard: spin::MutexGuard<'static, HandleTable> =
+    let inner_guard: spin::MutexGuard<'static, Vfs, spin::relax::Spin> =
+        unsafe { core::mem::transmute(inner_guard) };
+    let handle_table_guard: spin::MutexGuard<'static, HandleTable, spin::relax::Spin> =
         unsafe { core::mem::transmute(handle_table_guard) };
 
     Some(VfsAccessGuard {

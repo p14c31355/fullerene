@@ -477,6 +477,7 @@ impl DmaRegion {
             core::ptr::write_bytes(virt, 0, alloc_len);
         }
         cache_flush_range(virt, alloc_len);
+        crate::metrics::dma_allocated(alloc_len);
         Some(Self {
             virt,
             phys,
@@ -579,7 +580,9 @@ impl DmaRegion {
             self.mapped = false;
         }
         let pages = (self.len + 4095) / 4096;
+        let alloc_len = pages * 4096;
         ctx.free_contiguous_frames(self.phys, pages);
+        crate::metrics::dma_released(alloc_len);
         self.virt = core::ptr::null_mut();
         self.phys = 0;
         self.len = 0;

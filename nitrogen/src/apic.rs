@@ -20,6 +20,8 @@ impl ApicOffsets {
     pub const EOI: u32 = 0x0B0;
     pub const ID: u32 = 0x20;
     pub const VERSION: u32 = 0x30;
+    pub const ICR_LOW: u32 = 0x300;
+    pub const ICR_HIGH: u32 = 0x310;
 }
 
 /// APIC control bits
@@ -35,6 +37,11 @@ impl ApicFlags {
     // 000 = Fixed, 010 = SMI, 100 = NMI, 101 = INIT, 111 = ExtINT
     pub const DELIVERY_MODE_FIXED: u32 = 0 << 8;
     pub const DELIVERY_MODE_NMI: u32 = 4 << 8;
+    pub const DELIVERY_MODE_INIT: u32 = 5 << 8;
+    pub const DELIVERY_MODE_STARTUP: u32 = 6 << 8;
+    pub const DELIVERY_STATUS_PENDING: u32 = 1 << 12;
+    pub const LEVEL_ASSERT: u32 = 1 << 14;
+    pub const TRIGGER_LEVEL: u32 = 1 << 15;
 }
 
 /// Default IO APIC base address

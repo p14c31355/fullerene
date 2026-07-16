@@ -85,6 +85,7 @@ fn hex_fmt(buf: &mut [u8; 72], bus: u8, dev: u8, func: u8, vid: u16, did: u16, c
 ///
 /// * `physical_memory_offset` - The offset for higher-half kernel mapping
 pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
+    crate::metrics::mark_boot_start();
     petroleum::serial::serial_log(format_args!("Init common start\n"));
 
     crate::boot_stage!(BootStage::KernelEntry);
@@ -213,6 +214,15 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             }
             // ── ECAM setup via MCFG ─────────────────────────────
             if let Some(ref mgr) = acpi_mgr {
+                if let Some(madt) = mgr.parse_madt() {
+                    log::info!(
+                        "MADT: discovered {} processor entries",
+                        madt.processors.len()
+                    );
+                    crate::smp::configure(madt);
+                } else {
+                    log::warn!("MADT: processor topology unavailable; using BSP only");
+                }
                 if let Some(mcfg) = mgr.parse_mcfg() {
                     let phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
                     log::info!(
@@ -443,6 +453,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
         }),
     ];
     InitSequence::new(&common_steps).run();
+    crate::metrics::mark_boot_ready();
 
     // Flush the early log to /bootlog/Bootlog.txt for File Manager access.
     // even if the system hangs or panics shortly after boot.

@@ -220,6 +220,24 @@ pub fn install_package(
     description: &str,
     binary: &[u8],
 ) -> Result<(), FsError> {
+    install_package_with_runtime(name, version, description, "native", binary)
+}
+
+pub fn install_package_with_runtime(
+    name: &str,
+    version: &str,
+    description: &str,
+    runtime: &str,
+    binary: &[u8],
+) -> Result<(), FsError> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || !matches!(runtime, "native" | "linux")
+    {
+        return Err(FsError::InvalidInput);
+    }
     let pkg_dir = alloc::format!("/packages/{}", name);
     if exists(&pkg_dir) {
         return Err(FsError::FileExists);
@@ -227,10 +245,11 @@ pub fn install_package(
     create_dir(&pkg_dir)?;
 
     let manifest = alloc::format!(
-        "name = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\nbinary = \"app.bin\"\n",
+        "name = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\nbinary = \"app.bin\"\nruntime = \"{}\"\n",
         name,
         version,
-        description
+        description,
+        runtime
     );
     let manifest_path = alloc::format!("/packages/{}/manifest.txt", name);
     write_entire_file(&manifest_path, manifest.as_bytes())?;

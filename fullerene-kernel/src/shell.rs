@@ -72,7 +72,12 @@ fn wasm_get_monotonic_ns() -> u64 {
 
 /// Helper: write a formatted line to the terminal.
 macro_rules! tline {
-    ($t:expr, $($arg:tt)*) => { $t.write_str(&alloc::format!("{}{}", alloc::format!($($arg)*), '\n')) };
+    ($t:expr, $($arg:tt)*) => {{
+        use core::fmt::Write as _;
+        let mut line = alloc::string::String::new();
+        let _ = writeln!(&mut line, $($arg)*);
+        $t.write_str(&line)
+    }};
 }
 /// Helper: write a static string + newline to the terminal.
 macro_rules! tstr {
@@ -347,6 +352,12 @@ fn nozzle_services() -> nozzle::ShellServices {
                     total, heap_start, heap_end
                 );
                 ctx.terminal.write_str(&msg);
+            }
+            "metrics" => {
+                ctx.terminal.write_str(&crate::metrics::format_snapshot());
+            }
+            "cpuinfo" => {
+                ctx.terminal.write_str(&crate::smp::format_topology());
             }
             "tasks" => {
                 let list = crate::task::TASK_MANAGER.format_task_list();
@@ -761,12 +772,14 @@ fn nozzle_services() -> nozzle::ShellServices {
                         ctx.terminal.write_str("No packages installed.\n");
                     } else {
                         ctx.terminal
-                            .write_str("NAME         VERSION  DESCRIPTION\n");
+                            .write_str("NAME         VERSION  RUNTIME  DESCRIPTION\n");
                         ctx.terminal
-                            .write_str("-----------  -------  -----------\n");
+                            .write_str("-----------  -------  -------  -----------\n");
                         for p in &pkgs {
-                            let line =
-                                format!("{:<12} {:<8} {}\n", p.name, p.version, p.description);
+                            let line = format!(
+                                "{:<12} {:<8} {:<8} {}\n",
+                                p.name, p.version, p.runtime, p.description
+                            );
                             ctx.terminal.write_str(&line);
                         }
                     }
@@ -776,6 +789,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                     ctx.terminal.write_str(&msg);
                 }
             },
+            "app_catalog" => ctx.terminal.write_str(&crate::ports::catalog_text()),
             _ => {
                 let msg = format!("Unknown sys info command: {}\n", cmd);
                 ctx.terminal.write_str(&msg);
@@ -857,18 +871,30 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
             }
             _ if cmd.starts_with("app_install ") => {
-                let rest = &cmd[12..]; // skip "app_install " (12 characters)
-                if let Some((name, desc)) = rest.split_once(' ') {
-                    let dummy_bin: [u8; 4] = [0x90, 0x90, 0x90, 0x90]; // NOP placeholder
-                    match crate::fs::install_package(name, "0.1.0", desc, &dummy_bin) {
+                let rest = &cmd[12..];
+                if let Some((name, source)) = rest.split_once(' ') {
+                    match crate::ports::install(name, source) {
                         Ok(()) => {
                             let msg = format!("Installed package '{}'\n", name);
                             solvent::write_terminal(&msg);
                         }
                         Err(e) => {
-                            let msg = format!("app install: {}\n", e);
+                            let msg = format!("app install: {:?}\n", e);
                             solvent::write_terminal(&msg);
                         }
+                    }
+                }
+            }
+            _ if cmd.starts_with("app_run ") => {
+                let name = &cmd[8..];
+                match crate::ports::launch(name) {
+                    Ok(pid) => {
+                        let msg = format!("Started '{}' (PID {})\n", name, pid);
+                        solvent::write_terminal(&msg);
+                    }
+                    Err(error) => {
+                        let msg = format!("app run: {:?}\n", error);
+                        solvent::write_terminal(&msg);
                     }
                 }
             }

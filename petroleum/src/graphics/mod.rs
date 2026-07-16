@@ -23,7 +23,7 @@ impl<'a> FramebufferGuard<'a> {
         }
 
         Some(Self {
-            pixels,
+            pixels: &mut pixels[..required_pixels],
             width,
             height,
             stride,

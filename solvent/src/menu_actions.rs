@@ -9,6 +9,7 @@ use lattice::desktop::DesktopAction;
 use lattice::surface::Surface;
 use lattice::terminal_surface;
 use lattice::terminal_surface::Cell as LatticeCell;
+use spin::Mutex;
 /// Glyph dimensions (from lattice::font).
 const GLYPH_W: u32 = 8;
 const GLYPH_H: u32 = 16;
@@ -24,6 +25,8 @@ pub(crate) enum InfoWindow {
     TaskManager,
     DeviceManager,
     FileManager,
+    LogViewer,
+    SystemInfo,
     About,
 }
 
@@ -33,6 +36,8 @@ impl InfoWindow {
             Self::TaskManager => ("Task Manager", 120, 80, 44, 2, 0x0d0d1a, 0xCCCCCC),
             Self::DeviceManager => ("Device Manager", 140, 100, 46, 2, 0x0d1a0d, 0xCCFFCC),
             Self::FileManager => ("File Manager", 160, 120, 50, 3, 0x1a1a0d, 0xFFFFCC),
+            Self::LogViewer => ("Log Viewer", 80, 50, 88, 2, 0x101014, 0xD8D8E8),
+            Self::SystemInfo => ("System Info", 140, 90, 52, 2, 0x101820, 0xCCEEFF),
             Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
         }
     }
@@ -60,6 +65,7 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
         TaskManager => open_info_window(rt, InfoWindow::TaskManager),
         DeviceManager => open_info_window(rt, InfoWindow::DeviceManager),
         FileManager => open_info_window(rt, InfoWindow::FileManager),
+        LogViewer => open_info_window(rt, InfoWindow::LogViewer),
         Refresh => {
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
@@ -80,7 +86,8 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
-        SysInfo | Shutdown | Reboot | Separator => {} // TODO
+        SysInfo => open_info_window(rt, InfoWindow::SystemInfo),
+        Shutdown | Reboot | Separator => {}
         ChangeWallpaperSettings => {
             let presets = crate::wallpaper_presets();
             let next = match crate::get_wallpaper() {
@@ -185,6 +192,16 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::FileManager => String::new(),
+        InfoWindow::LogViewer => RUNTIME_CONTEXT
+            .callback_snapshot()
+            .kernel_log
+            .map(|snapshot| snapshot())
+            .unwrap_or_else(|| String::from("(kernel log callback unavailable)\n")),
+        InfoWindow::SystemInfo => RUNTIME_CONTEXT
+            .callback_snapshot()
+            .metrics
+            .map(|snapshot| snapshot())
+            .unwrap_or_else(|| String::from("(metrics callback unavailable)\n")),
         InfoWindow::About => String::from(
             "Fullerene OS\n============\n\nA microkernel-based\noperating system\nwritten in Rust.\n\nVersion: 0.1.0\nLicense: MIT/Apache-2.0\n\n(c) 2025-2026\n",
         ),
@@ -299,10 +316,11 @@ pub(crate) fn render_text_into_surface(
     fg_color: u32,
     bg_color: u32,
 ) -> u32 {
+    static TEXT_CELLS: Mutex<Vec<LatticeCell>> = Mutex::new(Vec::new());
     let cols = max_cols as usize;
     let lines_count = text.lines().count() as u32;
     let total = cols * lines_count as usize;
-    let mut cells: Vec<LatticeCell> = Vec::new();
+    let mut cells = TEXT_CELLS.lock();
     cells.resize(
         total,
         LatticeCell {

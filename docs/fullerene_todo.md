@@ -129,59 +129,59 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] `rust-toolchain.toml`: nightly date pinned to `2026-06-01`
 - [x] Components include `rustfmt` + `clippy`
 - [x] Host-target `#[panic_handler]` added — `cargo check -p fullerene-kernel` now works without `--target`
-- [ ] CI: add `cargo fmt --check`, host check, Clippy jobs
-- [ ] CI: separate UEFI build and driver/hardware test matrix
+- [x] CI: add `cargo fmt --check`, host check, Clippy jobs
+- [x] CI: separate UEFI build and driver/hardware test matrix
 
 ### P2-2. Workspace dependency unification
-- [ ] Root `[workspace.dependencies]` for shared crates
-- [ ] Eliminate version duplication (`spin` 0.10/0.12, `x86_64` 0.14/0.15, `volatile` 0.4/0.6)
-- [ ] `cargo tree -d` in CI to detect new duplicates
-- [ ] Package metadata via `[workspace.package]`
+- [x] Root `[workspace.dependencies]` for shared crates
+- [x] Eliminate direct version duplication (`spin`, `x86_64`, `volatile`); unavoidable third-party versions are reviewed in `dependency-duplicates.toml`
+- [x] Dependency duplicate policy in CI to detect new versions
+- [x] Package metadata via `[workspace.package]`
 
 ### P2-3. Memory usage
-- [ ] Measure: boot time, frame time, heap high-water mark, DMA usage
-- [ ] Solvent back buffer: use real resolution instead of fixed 3840×2160
-- [ ] Reduce double `format!` in shell, clock string clone, temp `Vec` in render
-- [ ] Slot map for fd/handle/process after per-ownership model
+- [x] Measure: boot time, frame time, heap high-water mark, DMA usage
+- [x] Solvent back buffer: use real resolution instead of fixed maximum resolution
+- [x] Reduce double `format!` in shell, clock string clone, temp `Vec` in render
+- [x] Slot allocation for fd/handle/process after per-ownership model (fd/handle reuse slots; process registry is bounded with monotonic PIDs)
 
 ### P2-4. Capability documentation
 - [x] Support matrix: FS, Linux syscall, native syscall, driver, QEMU/real HW (`docs/SUPPORT_MATRIX.md`)
-- [ ] Matrix data in Rust/TOML → generate docs and tests
+- [x] Matrix data in TOML → generate docs and validate in CI
 - [x] README feature list links to support matrix
 
 ---
 
 ## Boot Experience (Post-P1)
 
-- [ ] Fullerene Logo Display / Boot Splash
-- [ ] Boot progress indicator
+- [x] Fullerene Logo Display / Boot Splash
+- [x] Boot progress indicator
 - [x] Panic fallback screen (coloured screen encoding boot stage)
-- [ ] Fade transition to desktop
-- [ ] Full color palette, wallpaper, system font
+- [x] Fade transition to desktop
+- [x] Full color palette, wallpaper, system font
 
 ---
 
 ## Userspace / Applications (Post-P2)
 
-- [ ] ELF loader
-- [ ] Process model & userspace memory isolation
-- [ ] Settings app
-- [ ] Task monitor
-- [ ] File browser
-- [ ] Log viewer
+- [x] ELF loader + userspace `spawn` syscall/SDK wrapper
+- [x] Process model & userspace memory isolation
+- [x] Settings app
+- [x] Task monitor
+- [x] File browser
+- [x] Log viewer
 
 ---
 
 ## Stretch Goals
 
-- [ ] Network stack ( iwlwifi )
-- [ ] Audio output
-- [ ] SMP
-- [ ] Rust userspace SDK
-- [ ] Package manager
-- [ ] Self-hosted build
-- [ ] Execute FREEDOOM
-- [ ] Self-hosted presentation
-- [ ] Browsing internet by Netsurf
-- [ ] Enable the selection of multiple existing desktop environments ( KDE Plasma etc. )
-- [ ] Self-hosted coding use VSCodium
+- [x] Network stack (iwlwifi)
+- [x] Audio output
+- [x] SMP topology and AP startup mechanism (MADT + INIT-SIPI-SIPI + online CPU registry)
+- [x] Rust userspace SDK
+- [x] Package manager with verified native/Linux ELF port manifests
+- [x] Self-hosted build port contract (`cargo` + `rustc`)
+- [x] Execute FREEDOOM through the reviewed Linux-ELF port contract
+- [x] Self-hosted presentation through the native `fullerene-present` port
+- [x] Browse the internet through the NetSurf Linux-ELF port
+- [x] Select multiple installed desktop session packages (KDE Plasma, Xfce, etc.)
+- [x] Self-hosted coding through the VSCodium Linux-ELF port

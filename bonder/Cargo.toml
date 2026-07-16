@@ -4,17 +4,16 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 description = "A no_std network protocol stack for bare-metal / kernel development"
 documentation = "https://github.com/p14c31355/fullerene"
-repository = "https://github.com/p14c31355/fullerene"
 keywords = ["no-std", "networking", "ethernet", "ipv4", "kernel"]
 categories = ["embedded", "network", "no-std", "os"]
-rust-version = "1.85"
 
 [dependencies]
 log = { workspace = true }
-# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
-spin = { version = "0.10.0", default-features = false, features = ["spin_mutex"] }
+spin = { workspace = true, features = ["spin_mutex"] }
 
 [lib]
 name = "bonder"

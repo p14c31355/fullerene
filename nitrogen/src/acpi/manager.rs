@@ -85,4 +85,10 @@ impl AcpiManager {
         }
         None
     }
+
+    /// Parse enabled/online-capable processors from the MADT.
+    pub fn parse_madt(&self) -> Option<crate::acpi::madt::MadtInfo> {
+        let table_phys = self.find_table(b"APIC")?;
+        crate::acpi::madt::parse(self.table_bytes(table_phys)?)
+    }
 }

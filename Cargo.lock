@@ -154,8 +154,8 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "petroleum",
- "spin 0.10.0",
- "x86_64 0.15.4",
+ "spin 0.12.0",
+ "x86_64",
 ]
 
 [[package]]
@@ -201,7 +201,7 @@ name = "bonder"
 version = "0.1.0"
 dependencies = [
  "log",
- "spin 0.10.0",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -246,7 +246,7 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 name = "carrier"
 version = "0.1.0"
 dependencies = [
- "spin 0.10.0",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -568,12 +568,12 @@ dependencies = [
  "resonance",
  "rle_player",
  "solvent",
- "spin 0.10.0",
+ "spin 0.12.0",
  "starry-fatfs",
  "static_assertions",
  "volatile 0.6.1",
  "wasi_runtime",
- "x86_64 0.15.4",
+ "x86_64",
 ]
 
 [[package]]
@@ -958,9 +958,8 @@ version = "0.1.0"
 dependencies = [
  "bonder",
  "log",
- "ps2-mouse",
- "spin 0.10.0",
- "x86_64 0.15.4",
+ "spin 0.12.0",
+ "x86_64",
 ]
 
 [[package]]
@@ -974,7 +973,7 @@ name = "nozzle"
 version = "0.1.0"
 dependencies = [
  "carrier",
- "spin 0.10.0",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -1055,10 +1054,10 @@ dependencies = [
  "log",
  "once_cell",
  "paste",
- "spin 0.10.0",
+ "spin 0.12.0",
  "static_assertions",
  "volatile 0.6.1",
- "x86_64 0.15.4",
+ "x86_64",
 ]
 
 [[package]]
@@ -1132,16 +1131,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "ps2-mouse"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7a1ea62fa77d411155c765d1ba9d0286b8af83a93cda6109c295a2bde1e04a0"
-dependencies = [
- "bitflags 1.3.2",
- "x86_64 0.14.13",
 ]
 
 [[package]]
@@ -1248,7 +1237,7 @@ name = "resonance"
 version = "0.1.0"
 dependencies = [
  "spin 0.12.0",
- "x86_64 0.15.4",
+ "x86_64",
 ]
 
 [[package]]
@@ -1451,9 +1440,9 @@ dependencies = [
  "pure_wav",
  "resonance",
  "shiguredo_mp4",
- "spin 0.10.0",
+ "spin 0.12.0",
  "tinybmp",
- "x86_64 0.15.4",
+ "x86_64",
  "zune-core",
  "zune-jpeg",
 ]
@@ -2038,18 +2027,6 @@ name = "wit-bindgen"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
-
-[[package]]
-name = "x86_64"
-version = "0.14.13"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c101112411baafbb4bf8d33e4c4a80ab5b02d74d2612331c61e8192fc9710491"
-dependencies = [
- "bit_field",
- "bitflags 2.11.1",
- "rustversion",
- "volatile 0.4.6",
-]
 
 [[package]]
 name = "x86_64"
