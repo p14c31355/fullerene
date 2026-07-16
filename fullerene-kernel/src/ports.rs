@@ -112,24 +112,26 @@ pub fn install(name: &str, source_path: &str) -> Result<(), PortError> {
 }
 
 pub fn launch(name: &str) -> Result<u64, PortError> {
+    let spec = find(name).ok_or(PortError::UnknownPort)?;
     let package = crate::fs::list_packages()?
         .into_iter()
-        .find(|package| package.name == name)
+        .find(|package| package.name == spec.name)
         .ok_or(PortError::FileSystem(genome::FsError::FileNotFound))?;
+    if package.runtime != spec.runtime.as_str() {
+        return Err(PortError::LaunchFailed);
+    }
     let path = alloc::format!("/packages/{}/{}", package.name, package.binary);
-    match package.runtime.as_str() {
-        "native" => {
+    match spec.runtime {
+        PortRuntime::Native => {
             let image = crate::fs::read_entire_file(&path)?;
             validate_elf(&image)?;
-            let label: &'static str = alloc::boxed::Box::leak(package.name.into_boxed_str());
-            crate::loader::load_program(&image, label)
+            crate::loader::load_program(&image, spec.name)
                 .map(|pid| pid.0)
                 .map_err(|_| PortError::LaunchFailed)
         }
-        "linux" => crate::linux::launch::launch_linux_binary(&path)
+        PortRuntime::Linux => crate::linux::launch::launch_linux_binary_named(&path, spec.name)
             .map(|pid| pid.0)
             .map_err(|_| PortError::LaunchFailed),
-        _ => Err(PortError::LaunchFailed),
     }
 }
 

@@ -61,10 +61,15 @@ impl PacketDecoder {
             // Overflow bits mean the relative delta is not representable.
             return Some((MouseState::new(), status & 0x07));
         }
-        let x = i16::from(self.packet[1] as i8);
-        let y = i16::from(self.packet[2] as i8);
+        let x = decode_axis(self.packet[1], status & 0x10 != 0);
+        let y = decode_axis(self.packet[2], status & 0x20 != 0);
         Some((MouseState { x, y }, status & 0x07))
     }
+}
+
+fn decode_axis(low: u8, negative: bool) -> i16 {
+    let value = i16::from(low);
+    if negative { value - 256 } else { value }
 }
 
 static DECODER: Mutex<PacketDecoder> = Mutex::new(PacketDecoder::new());
@@ -153,16 +158,31 @@ mod tests {
     #[test]
     fn decodes_signed_relative_motion_and_buttons() {
         let mut decoder = PacketDecoder::new();
-        assert_eq!(decoder.push(0x0b), None);
+        assert_eq!(decoder.push(0x1b), None);
         assert_eq!(decoder.push(0xfe), None);
         assert_eq!(decoder.push(0x05), Some((MouseState { x: -2, y: 5 }, 0x03)));
+    }
+
+    #[test]
+    fn decodes_full_nine_bit_axis_range() {
+        let mut decoder = PacketDecoder::new();
+        decoder.push(0x08);
+        decoder.push(0xff);
+        assert_eq!(decoder.push(0x80), Some((MouseState { x: 255, y: 128 }, 0)));
+
+        decoder.push(0x38);
+        decoder.push(0x00);
+        assert_eq!(
+            decoder.push(0x7f),
+            Some((MouseState { x: -256, y: -129 }, 0))
+        );
     }
 
     #[test]
     fn resynchronises_on_the_first_byte_marker() {
         let mut decoder = PacketDecoder::new();
         assert_eq!(decoder.push(0x01), None);
-        assert_eq!(decoder.push(0x08), None);
+        assert_eq!(decoder.push(0x28), None);
         assert_eq!(decoder.push(0x01), None);
         assert_eq!(decoder.push(0xff), Some((MouseState { x: 1, y: -1 }, 0)));
     }
