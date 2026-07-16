@@ -1,7 +1,11 @@
+mod command;
 pub mod context;
+mod controller;
 pub mod device;
+mod event;
 pub mod interrupt;
 pub mod port;
 pub mod register;
+mod resources;
 pub mod ring;
 pub mod transfer;

@@ -70,7 +70,7 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] Split `drivers/fat.rs` → `block_device`, `partition`, `cache`, `fat32`, `exfat` ([#281](https://github.com/p14c31355/fullerene/issues/281))
 - [x] Split `syscall/handlers.rs` → `dispatch`, `process`, `fs`, `memory`, etc. ([#283](https://github.com/p14c31355/fullerene/issues/283))
 - [x] Split `solvent/lib.rs` → `runtime_context`, `input_loop`, `event_loop`, etc. ([#285](https://github.com/p14c31355/fullerene/issues/285))
-- [ ] Split `usb/xhci/context.rs` → controller init, command, event, transfer, resources
+- [x] Split `usb/xhci/context.rs` → controller init, command, event, transfer, resources ([#288](https://github.com/p14c31355/fullerene/issues/288))
 - [ ] Split `iwlwifi.rs` → device, firmware, registers, tx, rx, connection_state
 
 ### P1-4. Context ownership for callbacks & hooks
