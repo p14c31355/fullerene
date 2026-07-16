@@ -12,7 +12,7 @@ use lattice::terminal_surface::Cell as LatticeCell;
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, EventQueue};
-use spin::{Mutex, MutexGuard};
+use spin::Mutex;
 
 use crate::callbacks::SolventCallbacks;
 use crate::handlers;
@@ -74,15 +74,17 @@ impl RuntimeContext {
         *self.callbacks.lock()
     }
 
-    pub(crate) fn runtime(&self) -> MutexGuard<'_, Option<RuntimeState>> {
+    pub(crate) fn runtime(&self) -> spin::MutexGuard<'_, Option<RuntimeState>, spin::relax::Spin> {
         self.runtime.lock()
     }
 
-    pub(crate) fn event_queue(&self) -> MutexGuard<'_, Option<EventQueue>> {
+    pub(crate) fn event_queue(
+        &self,
+    ) -> spin::MutexGuard<'_, Option<EventQueue>, spin::relax::Spin> {
         self.event_queue.lock()
     }
 
-    pub(crate) fn dispatcher(&self) -> MutexGuard<'_, Option<Dispatcher>> {
+    pub(crate) fn dispatcher(&self) -> spin::MutexGuard<'_, Option<Dispatcher>, spin::relax::Spin> {
         self.dispatcher.lock()
     }
 }
@@ -123,6 +125,8 @@ pub struct RuntimeState {
     /// Earliest cursor position still drawn on the framebuffer while a redraw
     /// is pending. The full and lightweight render paths both consume it.
     pub(crate) cursor_redraw_from: Option<(i32, i32)>,
+    /// Startup opacity percentage. The first desktop frames ramp to 100.
+    pub(crate) startup_fade_x100: u32,
 }
 
 impl RuntimeState {
@@ -187,6 +191,7 @@ pub fn init() {
         settings_window: None,
         settings_dirty: false,
         cursor_redraw_from: None,
+        startup_fade_x100: 0,
     });
 }
 

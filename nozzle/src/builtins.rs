@@ -75,6 +75,8 @@ macro_rules! sys_info_cmd {
 }
 
 sys_info_cmd!(cmd_mem, "mem");
+sys_info_cmd!(cmd_metrics, "metrics");
+sys_info_cmd!(cmd_cpuinfo, "cpuinfo");
 sys_info_cmd!(cmd_tasks, "tasks");
 sys_info_cmd!(cmd_windows, "windows");
 sys_info_cmd!(cmd_dmesg, "dmesg");
@@ -422,31 +424,30 @@ pub fn cmd_wc(ctx: &mut CommandContext) -> bool {
 pub fn cmd_app(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() < 2 {
         ctx.terminal
-            .write_str("Usage: app <install|remove|list> [name] [description]\n");
+            .write_str("Usage: app <catalog|install|remove|list|run> ...\n");
         return true;
     }
     let sub = ctx.args[1];
     match sub {
         "list" => crate::sys_hooks::call_sys_info_hook(ctx, "app_list"),
-        "install" if ctx.args.len() >= 4 => {
-            let name = &ctx.args[2];
-            let desc = ctx.args[3..].join(" ");
-            // Use sys_control hook: "app_install <name> <desc>"
-            let cmd = alloc::format!("app_install {} {}", name, desc);
+        "catalog" => crate::sys_hooks::call_sys_info_hook(ctx, "app_catalog"),
+        "install" if ctx.args.len() == 4 => {
+            let cmd = alloc::format!("app_install {} {}", ctx.args[2], ctx.args[3]);
             crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
-        "install" => {
-            ctx.terminal
-                .write_str("Usage: app install <name> <description>\n");
-        }
-        "remove" if ctx.args.len() >= 3 => {
-            let name = ctx.args[2];
-            let cmd = alloc::format!("app_remove {}", name);
+        "install" => ctx
+            .terminal
+            .write_str("Usage: app install <catalog-name> <elf-path>\n"),
+        "remove" if ctx.args.len() == 3 => {
+            let cmd = alloc::format!("app_remove {}", ctx.args[2]);
             crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
-        "remove" => {
-            ctx.terminal.write_str("Usage: app remove <name>\n");
+        "remove" => ctx.terminal.write_str("Usage: app remove <name>\n"),
+        "run" if ctx.args.len() == 3 => {
+            let cmd = alloc::format!("app_run {}", ctx.args[2]);
+            crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
+        "run" => ctx.terminal.write_str("Usage: app run <name>\n"),
         _ => {
             let msg = alloc::format!("app: unknown subcommand '{}'\n", sub);
             ctx.terminal.write_str(&msg);

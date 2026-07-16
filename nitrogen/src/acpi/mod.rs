@@ -1,4 +1,5 @@
 pub mod dmar;
+pub mod madt;
 pub mod manager;
 pub mod mcfg;
 

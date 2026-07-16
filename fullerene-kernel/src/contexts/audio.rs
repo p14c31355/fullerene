@@ -179,6 +179,7 @@ fn alloc_dma(pages: usize) -> Option<DmaRegion> {
     unsafe {
         core::ptr::write_bytes(virt, 0, pages * 4096);
     }
+    nitrogen::metrics::dma_allocated(pages * 4096);
     Some(DmaRegion {
         phys,
         virt,

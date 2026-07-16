@@ -1,0 +1,22 @@
+[package]
+name = "fullerene-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.5.11"
+
+[[bin]]
+name = "check-dependency-duplicates"
+path = "src/bin/check_dependency_duplicates.rs"
+
+[[bin]]
+name = "generate-support-matrix"
+path = "src/bin/generate_support_matrix.rs"

@@ -11,13 +11,19 @@ pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
 
 /// Launch a Linux ELF binary from the VFS at `path`.
 pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
+    // General-purpose callers can provide arbitrary paths, so retain a stable
+    // process label for the process table.
+    let static_name: &'static str = Box::leak(path.to_string().into_boxed_str());
+    launch_linux_binary_named(path, static_name)
+}
+
+/// Launch a Linux ELF binary from the VFS with a caller-owned static label.
+pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<ProcessId, LoadError> {
     let data = match crate::fs::read_entire_file(path) {
         Ok(d) => d,
         Err(_) => return Err(LoadError::InvalidFormat),
     };
-    // Leak path string to create &'static str for process name
-    let static_name: &'static str = Box::leak(path.to_string().into_boxed_str());
-    launch_linux_from_data(&data, static_name)
+    launch_linux_from_data(&data, name)
 }
 
 /// Launch a Linux ELF binary from raw bytes.

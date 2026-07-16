@@ -88,6 +88,63 @@ pub fn write(fd: i32, data: &[u8]) -> Result<usize, i64> {
     syscall_result(value).map(|written| written as usize)
 }
 
+/// Open a file read-only.
+pub fn open_read(path: &str) -> Result<i32, i64> {
+    let mut nul_terminated = alloc::vec::Vec::with_capacity(path.len() + 1);
+    nul_terminated.extend_from_slice(path.as_bytes());
+    nul_terminated.push(0);
+    let value = unsafe {
+        raw_syscall(
+            SyscallNumber::Open,
+            nul_terminated.as_ptr() as u64,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+    };
+    syscall_result(value).map(|fd| fd as i32)
+}
+
+/// Read bytes from a file descriptor.
+pub fn read(fd: i32, data: &mut [u8]) -> Result<usize, i64> {
+    let value = unsafe {
+        raw_syscall(
+            SyscallNumber::Read,
+            fd as u64,
+            data.as_mut_ptr() as u64,
+            data.len() as u64,
+            0,
+            0,
+            0,
+        )
+    };
+    syscall_result(value).map(|read| read as usize)
+}
+
+/// Close a file descriptor.
+pub fn close(fd: i32) -> Result<(), i64> {
+    let value = unsafe { raw_syscall(SyscallNumber::Close, fd as u64, 0, 0, 0, 0, 0) };
+    syscall_result(value).map(|_| ())
+}
+
+/// Start an ELF image in a new isolated process.
+pub fn spawn_image(image: &[u8], name: &str) -> Result<u64, i64> {
+    let value = unsafe {
+        raw_syscall(
+            SyscallNumber::Spawn,
+            image.as_ptr() as u64,
+            image.len() as u64,
+            name.as_ptr() as u64,
+            name.len() as u64,
+            0,
+            0,
+        )
+    };
+    syscall_result(value)
+}
+
 /// Write raw bytes to stdout (fd 1).
 pub fn stdout_write(data: &[u8]) -> Result<usize, i64> {
     write(1, data)

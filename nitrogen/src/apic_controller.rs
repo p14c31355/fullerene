@@ -172,6 +172,45 @@ impl ApicController {
         self.lapic_base
     }
 
+    fn wait_for_ipi_delivery(&self) -> Result<(), crate::DriverError> {
+        crate::timing::wait_timeout_us(100_000, || {
+            self.lapic_read(ApicOffsets::ICR_LOW) & ApicFlags::DELIVERY_STATUS_PENDING == 0
+        })
+        .map_err(|_| crate::DriverError::TimedOut)
+    }
+
+    fn send_ipi(&self, apic_id: u8, low: u32) -> Result<(), crate::DriverError> {
+        self.wait_for_ipi_delivery()?;
+        self.lapic_write(ApicOffsets::ICR_HIGH, (apic_id as u32) << 24);
+        self.lapic_write(ApicOffsets::ICR_LOW, low);
+        self.wait_for_ipi_delivery()
+    }
+
+    /// Send the architectural INIT-SIPI-SIPI sequence to an application CPU.
+    ///
+    /// `startup_page` is the 4 KiB physical page number below 1 MiB containing
+    /// a real-mode AP trampoline.
+    pub fn start_application_processor(
+        &self,
+        apic_id: u8,
+        startup_page: u8,
+    ) -> Result<(), crate::DriverError> {
+        self.send_ipi(
+            apic_id,
+            ApicFlags::DELIVERY_MODE_INIT | ApicFlags::LEVEL_ASSERT | ApicFlags::TRIGGER_LEVEL,
+        )?;
+        crate::timing::delay_us(10_000);
+        self.send_ipi(
+            apic_id,
+            ApicFlags::DELIVERY_MODE_STARTUP | startup_page as u32,
+        )?;
+        crate::timing::delay_us(200);
+        self.send_ipi(
+            apic_id,
+            ApicFlags::DELIVERY_MODE_STARTUP | startup_page as u32,
+        )
+    }
+
     // ── I/O APIC — low‑level register access (private) ──────────────
 
     /// Raw I/O APIC register read (static helper used during construction).

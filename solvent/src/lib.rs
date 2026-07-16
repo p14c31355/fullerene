@@ -38,7 +38,6 @@ pub use callbacks::{
     DeviceEntry, ProcessEntry, ProcessStateKind, SolventCallbacks, VfsEntry, exec_shell_command,
     get_mounted_drives, launch_shell,
 };
-pub use clock::clock_string;
 pub use editor_bridge::editor_handle_key;
 pub use event_loop::{
     GLOBAL_TICK, chrono_tick, consume_frame_due, cursor_update_due, process_events, push_key_event,

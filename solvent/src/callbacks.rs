@@ -28,6 +28,8 @@ pub struct SolventCallbacks {
     pub mounted_drive_list: Option<MountedDriveListCallback>,
     pub usb_poll: Option<fn() -> bool>,
     pub settings_save: Option<fn()>,
+    pub kernel_log: Option<fn() -> String>,
+    pub metrics: Option<fn() -> String>,
 }
 
 impl SolventCallbacks {
@@ -48,6 +50,8 @@ impl SolventCallbacks {
             mounted_drive_list: None,
             usb_poll: None,
             settings_save: None,
+            kernel_log: None,
+            metrics: None,
         }
     }
 

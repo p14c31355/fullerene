@@ -100,12 +100,9 @@ pub(crate) fn syscall_open(filename: *const u8, flags: c_int, _mode: u32) -> Sys
 
     match crate::fs::open_file(&filename) {
         Ok(file_desc) => with_current_fd_table(|table| {
-            let fd = table.next_fd;
-            table.next_fd = table
-                .next_fd
-                .checked_add(1)
-                .ok_or(SyscallError::OutOfMemory)?;
-            table.entries.insert(fd, file_desc);
+            let fd = table
+                .alloc(file_desc)
+                .map_err(|_| SyscallError::OutOfMemory)?;
             Ok(fd as u64)
         }),
         Err(crate::fs::FsError::FileNotFound) => Err(SyscallError::FileNotFound),

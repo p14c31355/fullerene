@@ -83,6 +83,12 @@ pub unsafe extern "C" fn handle_syscall(
             process::syscall_get_process_name(arg1 as *mut u8, arg2 as usize)
         }
         Ok(SyscallNumber::Yield) => process::syscall_yield(),
+        Ok(SyscallNumber::Spawn) => process::syscall_spawn(
+            arg1 as *const u8,
+            arg2 as usize,
+            arg3 as *const u8,
+            arg4 as usize,
+        ),
 
         Ok(SyscallNumber::MapMemory) => memory::syscall_map_memory(arg1, arg2, arg3),
         Ok(SyscallNumber::UnmapMemory) => memory::syscall_unmap_memory(arg1, arg2),

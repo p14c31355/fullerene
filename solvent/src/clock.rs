@@ -4,18 +4,10 @@
 
 use crate::RUNTIME_CONTEXT;
 use alloc::string::String;
-use spin::Mutex;
 
 /// Timezone offset in hours (positive = east of UTC).
 pub(crate) static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
     core::sync::atomic::AtomicI8::new(9);
-
-/// Cached wall-clock string (read by the desktop taskbar / top panel).
-static CLOCK_STRING: Mutex<String> = Mutex::new(String::new());
-
-pub fn clock_string() -> String {
-    CLOCK_STRING.lock().clone()
-}
 
 // ── Days per month (non‑leap) ─────────────────────────────────
 
@@ -86,11 +78,10 @@ pub fn update_clock() -> bool {
     if let Some(ref mut r) = *rt {
         if r.desktop.clock_text != time_str {
             r.clock_changed = true;
-            r.desktop.clock_text = time_str.clone();
-            r.desktop.top_panel.clock_text = time_str.clone();
+            r.desktop.clock_text.clone_from(&time_str);
+            r.desktop.top_panel.clock_text.clone_from(&time_str);
             changed = true;
         }
     }
-    *CLOCK_STRING.lock() = time_str;
     changed
 }

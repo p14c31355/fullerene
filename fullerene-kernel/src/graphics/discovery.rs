@@ -164,7 +164,9 @@ impl FramebufferDiscovery {
     /// Probe `KernelArgs` via its preserved virtual address.
     pub fn probe_kernel_args() -> Option<FramebufferProbeResult> {
         let args_va = kernel_args_va()?;
-        if args_va < 0xFFFF_8000_0000_0000 || args_va % core::mem::align_of::<petroleum::assembly::KernelArgs>() as u64 != 0 {
+        if args_va < 0xFFFF_8000_0000_0000
+            || args_va % core::mem::align_of::<petroleum::assembly::KernelArgs>() as u64 != 0
+        {
             return None;
         }
         let args = unsafe { &*(args_va as *const petroleum::assembly::KernelArgs) };
