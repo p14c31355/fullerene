@@ -5,15 +5,15 @@ use alloc::string::{String, ToString};
 use lattice::window::WindowId;
 
 use crate::{
-    DEFAULT_COLS, DEFAULT_ROWS, FB_DIMS, GLYPH_H, GLYPH_W, RUNTIME, RuntimeState,
-    SOLVENT_CALLBACKS, TERM_WIN_H, TERM_WIN_W,
+    DEFAULT_COLS, DEFAULT_ROWS, FB_DIMS, GLYPH_H, GLYPH_W, RUNTIME_CONTEXT, RuntimeState,
+    TERM_WIN_H, TERM_WIN_W,
 };
 
 pub(crate) static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 pub fn write_terminal(text: &str) {
-    if let Some(runtime) = RUNTIME.lock().as_mut() {
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
         runtime.term_buf.put_str(text);
         runtime.term_dirty = true;
     }
@@ -31,7 +31,7 @@ pub fn force_desktop_redraw() {
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    if let Some(runtime) = RUNTIME.lock().as_mut() {
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
         runtime.desktop.force_full_redraw();
         runtime.frame_due = true;
     }
@@ -45,7 +45,7 @@ pub fn create_window(
     width: u32,
     height: u32,
 ) -> Option<WindowId> {
-    RUNTIME.lock().as_mut().map(|runtime| {
+    RUNTIME_CONTEXT.runtime().as_mut().map(|runtime| {
         runtime
             .desktop
             .wm
@@ -57,7 +57,7 @@ pub fn with_window_surface<F, R>(id: WindowId, callback: F) -> Option<R>
 where
     F: FnOnce(&mut [u32], u32, u32) -> R,
 {
-    RUNTIME.lock().as_mut().and_then(|runtime| {
+    RUNTIME_CONTEXT.runtime().as_mut().and_then(|runtime| {
         let window = runtime
             .desktop
             .wm
@@ -73,7 +73,7 @@ where
 }
 
 pub fn invalidate_window(id: WindowId) {
-    if let Some(runtime) = RUNTIME.lock().as_mut() {
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
         runtime.desktop.invalidate_window(id);
         runtime.frame_due = true;
         runtime.term_dirty = true;
@@ -81,8 +81,8 @@ pub fn invalidate_window(id: WindowId) {
 }
 
 pub fn close_window(id: WindowId) -> bool {
-    RUNTIME
-        .lock()
+    RUNTIME_CONTEXT
+        .runtime()
         .as_mut()
         .is_some_and(|runtime| runtime.desktop.wm.close_window(id))
 }
@@ -93,7 +93,7 @@ pub fn framebuffer_dims() -> (u32, u32) {
 }
 
 pub fn ensure_terminal_window() -> Option<WindowId> {
-    let mut runtime = RUNTIME.lock();
+    let mut runtime = RUNTIME_CONTEXT.runtime();
     let runtime = runtime.as_mut()?;
     if let Some(id) = runtime.term_window
         && runtime
@@ -117,8 +117,8 @@ pub fn ensure_terminal_window() -> Option<WindowId> {
 }
 
 pub fn ensure_editor_window() -> Option<WindowId> {
-    RUNTIME
-        .lock()
+    RUNTIME_CONTEXT
+        .runtime()
         .as_mut()
         .and_then(crate::editor_bridge::ensure_editor_window)
 }
@@ -181,7 +181,7 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
     );
 
     if is_text {
-        let read_file = SOLVENT_CALLBACKS.lock().vfs_read;
+        let read_file = RUNTIME_CONTEXT.callback_snapshot().vfs_read;
         let file_content = match read_file {
             Some(read) => match read(path) {
                 Ok(data) => match core::str::from_utf8(&data) {

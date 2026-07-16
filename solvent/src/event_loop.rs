@@ -5,8 +5,8 @@ use resonance::Event;
 use spin::Mutex;
 
 use crate::{
-    CURSOR_TIMER_ID, DISPATCHER, EVENT_QUEUE, FRAME_INTERVAL_MS, FRAME_TIMER_ID, NETWORK_SNAPSHOT,
-    RENDERING_SUSPENDED, RUNTIME, SERVICES, SOLVENT_CALLBACKS, TSC_PER_MS,
+    CURSOR_TIMER_ID, FRAME_INTERVAL_MS, FRAME_TIMER_ID, NETWORK_SNAPSHOT, RENDERING_SUSPENDED,
+    RUNTIME_CONTEXT, SERVICES, TSC_PER_MS,
 };
 
 pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -17,7 +17,7 @@ static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 pub fn chrono_tick(now: u64) {
-    let mut runtime = RUNTIME.lock();
+    let mut runtime = RUNTIME_CONTEXT.runtime();
     let runtime = match runtime.as_mut() {
         Some(runtime) => runtime,
         None => return,
@@ -38,14 +38,14 @@ pub fn chrono_tick(now: u64) {
 }
 
 pub fn push_key_event(event: Event) {
-    if let Some(queue) = EVENT_QUEUE.lock().as_mut() {
+    if let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
         queue.push(event);
     }
 }
 
 pub fn process_events() {
-    let mut dispatcher = DISPATCHER.lock();
-    let mut queue = EVENT_QUEUE.lock();
+    let mut dispatcher = RUNTIME_CONTEXT.dispatcher();
+    let mut queue = RUNTIME_CONTEXT.event_queue();
     if let (Some(dispatcher), Some(queue)) = (dispatcher.as_mut(), queue.as_mut()) {
         dispatcher.dispatch_queue(queue);
     }
@@ -56,8 +56,8 @@ pub fn set_render_fn(render_fn: fn()) {
 }
 
 fn service_explorer_navigation() {
-    let step = RUNTIME
-        .lock()
+    let step = RUNTIME_CONTEXT
+        .runtime()
         .as_mut()
         .and_then(|runtime| runtime.explorer.as_mut()?.take_navigation_step());
     let Some(step) = step else { return };
@@ -74,7 +74,7 @@ fn service_explorer_navigation() {
     // Filesystem and hardware I/O must run without the runtime lock. Rendering
     // takes locks in the opposite direction and synchronous removable-media I/O
     // here previously deadlocked the desktop when a directory was opened.
-    let callback = SOLVENT_CALLBACKS.lock().vfs_readdir;
+    let callback = RUNTIME_CONTEXT.callback_snapshot().vfs_readdir;
     let result = callback
         .ok_or(genome::FsError::NotSupported)
         .and_then(|read| read(&path));
@@ -83,7 +83,7 @@ fn service_explorer_navigation() {
         Err(error) => nitrogen::debug_status!("Explorer", "readdir failed: {}", error),
     }
 
-    if let Some(runtime) = RUNTIME.lock().as_mut()
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
         && let Some(explorer) = runtime.explorer.as_mut()
     {
         explorer.finish_navigation(path, result);
@@ -114,7 +114,7 @@ pub fn tick_core(now: u64) {
         let access_points = snapshot.aps.clone();
         let status = snapshot.status.clone();
         drop(snapshot);
-        if let Some(runtime) = RUNTIME.lock().as_mut()
+        if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
             && runtime.desktop.update_ap_list(access_points, status)
         {
             runtime.frame_due = true;
@@ -123,7 +123,7 @@ pub fn tick_core(now: u64) {
 
     process_events();
     service_explorer_navigation();
-    if RUNTIME.lock().as_mut().is_some_and(|runtime| {
+    if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.shell_launch_pending;
         runtime.shell_launch_pending = false;
         pending
@@ -131,7 +131,7 @@ pub fn tick_core(now: u64) {
         crate::ensure_terminal_window();
         crate::launch_shell();
     }
-    if RUNTIME.lock().as_mut().is_some_and(|runtime| {
+    if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.editor_launch_pending;
         runtime.editor_launch_pending = false;
         pending
@@ -146,7 +146,7 @@ pub fn runtime_tick_no_fb() {
     }
     let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     tick_core(now);
-    let do_render = RUNTIME.lock().as_mut().is_some_and(|runtime| {
+    let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let due = runtime.frame_due;
         if due {
             let frame_tsc = TSC_PER_MS
@@ -173,7 +173,7 @@ pub fn runtime_tick_no_fb() {
 }
 
 pub fn consume_frame_due() -> bool {
-    RUNTIME.lock().as_mut().is_some_and(|runtime| {
+    RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let due = runtime.frame_due;
         runtime.frame_due = false;
         due
@@ -182,8 +182,8 @@ pub fn consume_frame_due() -> bool {
 
 /// Return whether a cursor-only update is waiting for a framebuffer guard.
 pub fn cursor_update_due() -> bool {
-    RUNTIME
-        .lock()
+    RUNTIME_CONTEXT
+        .runtime()
         .as_ref()
         .is_some_and(|runtime| runtime.cursor_redraw_from.is_some())
 }
@@ -197,10 +197,10 @@ pub fn runtime_tick(now: u64, framebuffer: &mut petroleum::graphics::Framebuffer
     let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
     if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
         LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
-        let poll_usb = SOLVENT_CALLBACKS.lock().usb_poll;
+        let poll_usb = RUNTIME_CONTEXT.callback_snapshot().usb_poll;
         if let Some(poll_usb) = poll_usb
             && poll_usb()
-            && let Some(runtime) = RUNTIME.lock().as_mut()
+            && let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
             && let Some(explorer) = runtime.explorer.as_mut()
         {
             explorer.refresh_sidebar();
@@ -209,7 +209,7 @@ pub fn runtime_tick(now: u64, framebuffer: &mut petroleum::graphics::Framebuffer
         }
     }
 
-    let do_render = RUNTIME.lock().as_mut().is_some_and(|runtime| {
+    let do_render = RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let due = runtime.frame_due;
         runtime.frame_due = false;
         due

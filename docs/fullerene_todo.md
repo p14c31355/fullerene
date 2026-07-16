@@ -74,7 +74,7 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] Split `iwlwifi.rs` → device, firmware, registers, tx, rx, connection_state ([#290](https://github.com/p14c31355/fullerene/issues/290))
 
 ### P1-4. Context ownership for callbacks & hooks
-- [ ] Move `solvent::SOLVENT_CALLBACKS`, `RUNTIME`, `EVENT_QUEUE`, `DISPATCHER` into `RuntimeContext`
+- [x] Move `solvent::SOLVENT_CALLBACKS`, `RUNTIME`, `EVENT_QUEUE`, `DISPATCHER` into `RuntimeContext` ([#292](https://github.com/p14c31355/fullerene/issues/292))
 - [ ] Move `nozzle::FS_HOOKS`, `SYS_HOOKS` into constructor-injected services
 - [ ] Move `carrier::SHARED_HISTORY` into terminal session
 - [x] Device registry: persistent `/dev` identity with exclusive take lease

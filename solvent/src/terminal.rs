@@ -2,7 +2,7 @@
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
-use crate::{HEAP_EXTEND_RESERVE, SOLVENT_CALLBACKS};
+use crate::{HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT};
 use alloc::string::String;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
@@ -54,7 +54,7 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
         let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
         if needed > reserve {
             let additional = needed.saturating_sub(reserve).next_multiple_of(4096);
-            match SOLVENT_CALLBACKS.lock().heap_extend {
+            match RUNTIME_CONTEXT.callback_snapshot().heap_extend {
                 Some(f) if f(additional).is_ok() => {
                     HEAP_EXTEND_RESERVE
                         .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
@@ -155,7 +155,7 @@ impl carrier::terminal::Terminal for LatticeTerminal {
         if let Some(ref mut out) = *crate::PIPE_STDOUT.lock() {
             out.push_str(s);
         } else {
-            let mut rt = crate::RUNTIME.lock();
+            let mut rt = crate::RUNTIME_CONTEXT.runtime();
             if let Some(ref mut r) = *rt {
                 r.term_buf.put_str(s);
                 r.term_dirty = true;

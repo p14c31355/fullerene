@@ -2,7 +2,7 @@
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
-use crate::{DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, RUNTIME, SOLVENT_CALLBACKS};
+use crate::{DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT};
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::cursor::Cursor;
 use lattice::scene::DirtyRect;
@@ -195,7 +195,7 @@ pub fn render_cursor_fast(framebuffer: &mut petroleum::graphics::FramebufferGuar
     }
     let _suspend = SuspendGuard;
 
-    let mut runtime = RUNTIME.lock();
+    let mut runtime = RUNTIME_CONTEXT.runtime();
     let Some(runtime) = runtime.as_mut() else {
         return;
     };
@@ -227,7 +227,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
     let _guard = SuspendGuard;
 
-    let mut rt_lock = RUNTIME.lock();
+    let mut rt_lock = RUNTIME_CONTEXT.runtime();
     let rt = match rt_lock.as_mut() {
         Some(r) => r,
         None => return,
@@ -337,7 +337,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
             if back_needed > reserve {
                 let additional = back_needed.saturating_sub(reserve).next_multiple_of(4096);
-                match SOLVENT_CALLBACKS.lock().heap_extend {
+                match RUNTIME_CONTEXT.callback_snapshot().heap_extend {
                     Some(f) if f(additional).is_ok() => {
                         HEAP_EXTEND_RESERVE
                             .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);

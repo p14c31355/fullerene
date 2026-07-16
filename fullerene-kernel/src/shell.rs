@@ -609,7 +609,7 @@ fn register_nozzle_hooks() {
             }
         }
         "date" => {
-            let cb = solvent::SOLVENT_CALLBACKS.lock().wall_clock;
+            let cb = solvent::RUNTIME_CONTEXT.callback_snapshot().wall_clock;
             match cb.and_then(|f| f()) {
                 Some((y, mo, d, h, mi, s)) => tline!(ctx.terminal, "{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s),
                 None => tstr!(ctx.terminal, "date: RTC not available"),

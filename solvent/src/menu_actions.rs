@@ -1,7 +1,7 @@
 //! Menu actions and info-window dispatch.
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
-use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, network_manager, truncate_to_chars};
+use crate::{FB_DIMS, RUNTIME_CONTEXT, RuntimeState, network_manager, truncate_to_chars};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -52,7 +52,7 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
         }
         NewShell => {
             // Defer shell launch — cannot call ensure_terminal_window()
-            // or launch_shell() while holding RUNTIME lock (deadlock).
+            // or launch_shell() while holding RUNTIME_CONTEXT lock (deadlock).
             rt.shell_launch_pending = true;
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
@@ -75,7 +75,7 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
         }
         OpenEditor => {
             // Defer editor launch — cannot call ensure_editor_window()
-            // while holding RUNTIME lock (deadlock).
+            // while holding RUNTIME_CONTEXT lock (deadlock).
             rt.editor_launch_pending = true;
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
@@ -120,7 +120,7 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
     }
     let text = match kind {
         InfoWindow::TaskManager => {
-            let Some(get_procs) = SOLVENT_CALLBACKS.lock().process_list else {
+            let Some(get_procs) = RUNTIME_CONTEXT.callback_snapshot().process_list else {
                 return show_text_window(
                     rt,
                     "Task Manager",
@@ -154,7 +154,7 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::DeviceManager => {
-            let Some(get_devs) = SOLVENT_CALLBACKS.lock().device_list else {
+            let Some(get_devs) = RUNTIME_CONTEXT.callback_snapshot().device_list else {
                 return show_text_window(
                     rt,
                     "Device Manager",
