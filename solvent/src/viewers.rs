@@ -5,6 +5,7 @@
 
 use crate::{GLYPH_H, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
