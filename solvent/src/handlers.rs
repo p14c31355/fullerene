@@ -25,8 +25,9 @@ impl EventHandler for WmEventHandler {
 
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
+                let previous = (rt.desktop.cursor.x, rt.desktop.cursor.y);
                 rt.desktop.mouse_move(*x, *y);
-                rt.frame_due = true;
+                rt.request_cursor_redraw(previous);
                 true
             }
             Event::Input(InputEvent::MouseDown(btn)) => {
@@ -231,8 +232,9 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
 fn handle_overlay_event(rt: &mut crate::RuntimeState, event: &Event) -> bool {
     match event {
         Event::Input(InputEvent::MouseMove { x, y }) => {
+            let previous = (rt.desktop.cursor.x, rt.desktop.cursor.y);
             rt.desktop.mouse_move(*x, *y);
-            rt.frame_due = true;
+            rt.request_cursor_redraw(previous);
             true
         }
         Event::Input(InputEvent::MouseDown(_))

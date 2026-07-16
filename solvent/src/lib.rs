@@ -31,7 +31,7 @@ mod viewers;
 
 // ── Sub-module re-exports ─────────────────────────────────────
 pub use clock::clock_string;
-pub use render::{render, set_render_progress_fn};
+pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
 
 use alloc::boxed::Box;
@@ -262,6 +262,18 @@ pub struct RuntimeState {
     pub explorer_dirty: bool,
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
+    /// Earliest cursor position still drawn on the framebuffer while a redraw
+    /// is pending. The full and lightweight render paths both consume it.
+    pub(crate) cursor_redraw_from: Option<(i32, i32)>,
+}
+
+impl RuntimeState {
+    pub(crate) fn request_cursor_redraw(&mut self, previous: (i32, i32)) {
+        self.cursor_redraw_from.get_or_insert(previous);
+        if self.frame_due || !matches!(self.desktop.wm.drag_state(), lattice::wm::DragState::None) {
+            self.frame_due = true;
+        }
+    }
 }
 
 pub fn init() {
@@ -315,6 +327,7 @@ pub fn init() {
         explorer_dirty: false,
         settings_window: None,
         settings_dirty: false,
+        cursor_redraw_from: None,
     });
 }
 
@@ -740,6 +753,14 @@ pub fn consume_frame_due() -> bool {
     })
 }
 
+/// Return whether a cursor-only update is waiting for a framebuffer guard.
+pub fn cursor_update_due() -> bool {
+    RUNTIME
+        .lock()
+        .as_ref()
+        .is_some_and(|runtime| runtime.cursor_redraw_from.is_some())
+}
+
 pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
     if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return;
@@ -774,6 +795,8 @@ pub fn runtime_tick(now: u64, fb: &mut petroleum::graphics::FramebufferGuard) {
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
     if do_render {
         render(fb);
+    } else if cursor_update_due() {
+        render_cursor_fast(fb);
     }
 }
 
