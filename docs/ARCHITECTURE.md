@@ -63,14 +63,18 @@ Carrier (I/O abstraction) ──── Lattice / Nozzle
 Shared across kernel and userspace:
 
 ```text
-petroleum (no_std library)
+fullerene-abi (no_std leaf crate, no dependencies)
+    └── syscall numbers, error codes, repr(C) DTOs, ABI capabilities
+
+petroleum (no_std support library)
     ├── page_table, memory, graphics
-    ├── syscall numbers + raw syscall instruction
+    ├── raw syscall instruction (numbers come from fullerene-abi)
     ├── VDSO layout (read-only metadata page)
     └── serial, early boot helpers
 ```
 
 New in this revision:
+- **Fullerene ABI** is the dependency-free contract shared directly by the kernel and Toluene SDK. Petroleum re-exports its typed syscall numbers for compatibility but does not own them.
 - **Genome** provides the filesystem framework (`FileSystem` trait, `Vfs` dispatcher, `MemFileSystem`) as a standalone leaf crate. The kernel re-exports Genome types and adds the singleton `VfsContext`.
 - **Carrier** provides the I/O abstraction (`Terminal` trait, pipeline, streaming `dispatch()`) as another leaf crate. Nozzle and Solvent depend on Carrier for terminal I/O and command dispatch.
 

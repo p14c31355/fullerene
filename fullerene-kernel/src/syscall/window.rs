@@ -89,7 +89,7 @@ pub(crate) fn syscall_get_window_event(
     buf: *mut u8,
     buf_size: usize,
 ) -> SyscallResult {
-    if buf.is_null() || buf_size < 128 {
+    if buf.is_null() || buf_size < fullerene_abi::WindowEvent::BYTE_SIZE {
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(buf as usize, buf_size, false)?;
@@ -100,11 +100,11 @@ pub(crate) fn syscall_get_window_event(
 
         let has_event = kernel::with_kernel(|k| k.event.has_pending()).unwrap_or(false);
         if has_event {
-            let slice = UserSlice::new(buf, 8, true).map_err(|_| SyscallError::InvalidArgument)?;
-            let kernel_buf = [0u8; 8];
-            unsafe { slice.copy_to_user(&kernel_buf) }
-                .map_err(|_| SyscallError::InvalidArgument)?;
-            Ok(8)
+            let bytes = fullerene_abi::WindowEvent::default().to_ne_bytes();
+            let slice =
+                UserSlice::new(buf, bytes.len(), true).map_err(|_| SyscallError::AddressFault)?;
+            unsafe { slice.copy_to_user(&bytes) }.map_err(|_| SyscallError::AddressFault)?;
+            Ok(bytes.len() as u64)
         } else {
             Err(SyscallError::Again)
         }

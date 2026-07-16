@@ -1,4 +1,5 @@
 use alloc::string::String;
+use fullerene_abi::SyscallErrorCode;
 use petroleum::common::logging::SystemError;
 
 use crate::user_memory::{self, UserCopyError};
@@ -11,51 +12,52 @@ pub type SyscallResult = Result<u64, SyscallError>;
 
 /// System call errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum SyscallError {
     /// Invalid system call number
-    InvalidSyscall = 1,
+    InvalidSyscall = SyscallErrorCode::InvalidSyscall as i64,
     /// File not found
-    FileNotFound = 2,
+    FileNotFound = SyscallErrorCode::FileNotFound as i64,
     /// No such process
-    NoSuchProcess = 3,
+    NoSuchProcess = SyscallErrorCode::NoSuchProcess as i64,
     /// Device or block I/O error
-    Io = 5,
+    Io = SyscallErrorCode::Io as i64,
     /// Bad file descriptor
-    BadFileDescriptor = 9,
+    BadFileDescriptor = SyscallErrorCode::BadFileDescriptor as i64,
     /// Out of memory
-    OutOfMemory = 12,
+    OutOfMemory = SyscallErrorCode::OutOfMemory as i64,
     /// Permission denied
-    PermissionDenied = 13,
+    PermissionDenied = SyscallErrorCode::PermissionDenied as i64,
     /// Invalid or inaccessible address
-    AddressFault = 14,
+    AddressFault = SyscallErrorCode::AddressFault as i64,
     /// Resource or device is busy
-    Busy = 16,
+    Busy = SyscallErrorCode::Busy as i64,
     /// Invalid argument
-    InvalidArgument = 22,
+    InvalidArgument = SyscallErrorCode::InvalidArgument as i64,
     /// Resource temporarily unavailable (try again)
-    Again = 11,
+    Again = SyscallErrorCode::Again as i64,
     /// Operation timed out
-    TimedOut = 110,
+    TimedOut = SyscallErrorCode::TimedOut as i64,
     /// Operation not supported
-    NotSupported = 95,
+    NotSupported = SyscallErrorCode::NotSupported as i64,
     /// Resource already exists
-    AlreadyExists = 17,
+    AlreadyExists = SyscallErrorCode::AlreadyExists as i64,
     /// No such device
-    NoSuchDevice = 19,
+    NoSuchDevice = SyscallErrorCode::NoSuchDevice as i64,
     /// Expected a directory
-    NotADirectory = 20,
+    NotADirectory = SyscallErrorCode::NotADirectory as i64,
     /// Expected a non-directory object
-    IsADirectory = 21,
+    IsADirectory = SyscallErrorCode::IsADirectory as i64,
     /// Storage capacity exhausted
-    NoSpace = 28,
+    NoSpace = SyscallErrorCode::NoSpace as i64,
     /// Directory must be empty
-    DirectoryNotEmpty = 39,
+    DirectoryNotEmpty = SyscallErrorCode::DirectoryNotEmpty as i64,
     /// Numeric or address overflow
-    Overflow = 75,
+    Overflow = SyscallErrorCode::Overflow as i64,
     /// Bad handle
-    BadHandle = 104,
+    BadHandle = SyscallErrorCode::BadHandle as i64,
     /// Operation would block
-    WouldBlock = 140,
+    WouldBlock = SyscallErrorCode::WouldBlock as i64,
 }
 
 petroleum::error_chain!(SyscallError, petroleum::common::logging::SystemError,

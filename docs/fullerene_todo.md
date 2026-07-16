@@ -62,9 +62,9 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] Remove `Result<..., &'static str>` usage (~200+ sites across kernel/nitrogen/genome) ([#277](https://github.com/p14c31355/fullerene/issues/277))
 
 ### P1-2. Syscall ABI crate (`fullerene-abi`)
-- [ ] Extract syscall numbers, error codes, `#[repr(C)]` DTOs into leaf crate
-- [ ] Both kernel and SDK depend on the shared crate
-- [ ] `AbiVersion` / capability query syscall
+- [x] Extract syscall numbers, error codes, `#[repr(C)]` DTOs into leaf crate ([#279](https://github.com/p14c31355/fullerene/issues/279))
+- [x] Both kernel and SDK depend on the shared crate ([#279](https://github.com/p14c31355/fullerene/issues/279))
+- [x] `AbiVersion` / capability query syscall ([#279](https://github.com/p14c31355/fullerene/issues/279))
 
 ### P1-3. Module splitting by context boundary
 - [ ] Split `drivers/fat.rs` → `block_device`, `partition`, `cache`, `fat32`, `exfat`

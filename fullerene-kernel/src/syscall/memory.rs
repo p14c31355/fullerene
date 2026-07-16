@@ -1,4 +1,3 @@
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -201,14 +200,22 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
 }
 
 pub(crate) fn syscall_query_memory(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
-    if info_buf.is_null() || buf_size < 64 || buf_size > (1 << 20) {
+    if info_buf.is_null() || buf_size < fullerene_abi::MemoryInfo::BYTE_SIZE {
         return Err(SyscallError::InvalidArgument);
     }
-    petroleum::validate_user_buffer(info_buf as usize, buf_size, false)?;
+    petroleum::validate_user_buffer(
+        info_buf as usize,
+        fullerene_abi::MemoryInfo::BYTE_SIZE,
+        false,
+    )?;
 
+    let info = fullerene_abi::MemoryInfo {
+        page_size: 4096,
+        ..fullerene_abi::MemoryInfo::default()
+    };
+    let bytes = info.to_ne_bytes();
     let slice =
-        UserSlice::new(info_buf, buf_size, true).map_err(|_| SyscallError::InvalidArgument)?;
-    let kernel_buf = vec![0u8; buf_size];
-    unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
-    Ok(0)
+        UserSlice::new(info_buf, bytes.len(), true).map_err(|_| SyscallError::AddressFault)?;
+    unsafe { slice.copy_to_user(&bytes) }.map_err(|_| SyscallError::AddressFault)?;
+    Ok(bytes.len() as u64)
 }

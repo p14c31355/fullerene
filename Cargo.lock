@@ -1046,6 +1046,7 @@ dependencies = [
  "conquer-util",
  "embassy-futures",
  "embedded-graphics",
+ "fullerene-abi",
  "futures-util",
  "gimli",
  "goblin",
@@ -1638,6 +1639,7 @@ name = "toluene"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fullerene-abi",
  "lattice",
  "petroleum",
 ]

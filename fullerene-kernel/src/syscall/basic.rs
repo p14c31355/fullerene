@@ -11,13 +11,35 @@ use super::process::{alloc_kernel_stack, free_kernel_stack, with_current_fd_tabl
 use crate::linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 use crate::process::{self, Process, ProcessState};
 
-pub(crate) fn syscall_abi_version() -> SyscallResult {
-    let ver = fullerene_abi::AbiVersion::CURRENT;
-    let packed = (ver.major as u64) << 48
-        | (ver.minor as u64) << 32
-        | (ver.patch as u64) << 16
-        | ver.reserved as u64;
-    Ok(packed)
+const KERNEL_CAPABILITIES: fullerene_abi::CapabilitySet = fullerene_abi::CapabilitySet::EMPTY
+    .with(fullerene_abi::Capability::NativeSyscall)
+    .with(fullerene_abi::Capability::LinuxCompat)
+    .with(fullerene_abi::Capability::MultiWindow)
+    .with(fullerene_abi::Capability::EventSystem)
+    .with(fullerene_abi::Capability::Threading)
+    .with(fullerene_abi::Capability::IpcChannels)
+    .with(fullerene_abi::Capability::IpcPipes)
+    .with(fullerene_abi::Capability::TimerSystem)
+    .with(fullerene_abi::Capability::DeviceEnumeration);
+
+pub(crate) fn syscall_abi_query(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
+    if info_buf.is_null() {
+        return if buf_size == 0 {
+            Ok(fullerene_abi::AbiVersion::CURRENT.pack())
+        } else {
+            Err(SyscallError::InvalidArgument)
+        };
+    }
+
+    if buf_size < fullerene_abi::AbiInfo::BYTE_SIZE {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let slice = UserSlice::new(info_buf, fullerene_abi::AbiInfo::BYTE_SIZE, true)
+        .map_err(|_| SyscallError::AddressFault)?;
+    let bytes = fullerene_abi::AbiInfo::new(KERNEL_CAPABILITIES).to_ne_bytes();
+    unsafe { slice.copy_to_user(&bytes) }.map_err(|_| SyscallError::AddressFault)?;
+    Ok(fullerene_abi::AbiInfo::BYTE_SIZE as u64)
 }
 
 pub(crate) fn syscall_exit(exit_code: i32) -> SyscallResult {
