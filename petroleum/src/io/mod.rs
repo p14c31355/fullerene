@@ -12,16 +12,24 @@ pub struct PortWriter<T> {
 
 impl<T> PortWriter<T> {
     pub fn new(port_addr: u16) -> Self {
-        Self { port: x86_64::instructions::port::Port::new(port_addr) }
+        Self {
+            port: x86_64::instructions::port::Port::new(port_addr),
+        }
     }
 
     pub fn write_safe(&mut self, value: T)
-    where T: Copy + x86_64::instructions::port::PortWrite {
-        unsafe { self.port.write(value); }
+    where
+        T: Copy + x86_64::instructions::port::PortWrite,
+    {
+        unsafe {
+            self.port.write(value);
+        }
     }
 
     pub fn read_safe(&mut self) -> T
-    where T: x86_64::instructions::port::PortRead {
+    where
+        T: x86_64::instructions::port::PortRead,
+    {
         unsafe { self.port.read() }
     }
 }
@@ -69,7 +77,9 @@ pub struct MsrHelper {
 }
 
 impl MsrHelper {
-    pub fn new(index: u32) -> Self { Self { index } }
+    pub fn new(index: u32) -> Self {
+        Self { index }
+    }
 
     pub fn read(&self) -> u64 {
         unsafe { x86_64::registers::model_specific::Msr::new(self.index).read() }
@@ -143,7 +153,10 @@ pub struct VgaRegisterWriter {
 
 impl VgaRegisterWriter {
     pub const fn new(index_port: u16, data_port: u16) -> Self {
-        Self { index_port, data_port }
+        Self {
+            index_port,
+            data_port,
+        }
     }
 
     pub fn write_register(&mut self, index: u8, value: u8) -> Result<(), ()> {
@@ -175,8 +188,11 @@ pub mod convenience {
     }
 
     pub fn write_vga_sequencer(index: u8, value: u8) -> Result<(), ()> {
-        VgaRegisterWriter::new(HardwarePorts::SEQUENCER_INDEX, HardwarePorts::SEQUENCER_DATA)
-            .write_register(index, value)
+        VgaRegisterWriter::new(
+            HardwarePorts::SEQUENCER_INDEX,
+            HardwarePorts::SEQUENCER_DATA,
+        )
+        .write_register(index, value)
     }
 }
 
@@ -219,7 +235,9 @@ macro_rules! port_read_u8 {
 
 #[macro_export]
 macro_rules! port_read {
-    ($port_addr:expr) => { port_read_u8!($port_addr) };
+    ($port_addr:expr) => {
+        port_read_u8!($port_addr)
+    };
 }
 
 /// Enhanced macro for writing port sequences.

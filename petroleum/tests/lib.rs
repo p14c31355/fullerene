@@ -31,7 +31,6 @@ mod tests_with_std {
         let ptr = petroleum::UefiSystemTablePtr(core::ptr::null_mut());
         assert!(ptr.0.is_null());
     }
-
 }
 
 #[cfg(test)]

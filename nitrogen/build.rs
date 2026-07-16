@@ -43,9 +43,18 @@ fn main() {
 
     // Shared list of known driver modules (must match lib.rs gated modules).
     let known_drivers = &[
-        "audio", "framebuffer", "hda", "ioapic", "iommu",
-        "iwlwifi", "pic", "ps2", "storage",
-        "usb", "virtio", "wifi",
+        "audio",
+        "framebuffer",
+        "hda",
+        "ioapic",
+        "iommu",
+        "iwlwifi",
+        "pic",
+        "ps2",
+        "storage",
+        "usb",
+        "virtio",
+        "wifi",
     ];
 
     // Declare all possible cfg names up front.
@@ -55,13 +64,23 @@ fn main() {
 
     for mod_name in &ignored {
         // Sanitize: module names use underscores, cfg flags follow the same.
-        let clean: String = mod_name.chars()
-            .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        let clean: String = mod_name
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
 
         // Validate against known driver list.
         if !known_drivers.contains(&clean.as_str()) {
-            println!("cargo:warning=.driverignore: unknown module '{}' (will be ignored)", mod_name);
+            println!(
+                "cargo:warning=.driverignore: unknown module '{}' (will be ignored)",
+                mod_name
+            );
             continue;
         }
 

@@ -46,14 +46,14 @@ fn read_rtc_us() -> Option<u64> {
     }
 
     // Days since epoch using Zeller-style formula
-    let days_since_epoch =
-        (365 * y) + (y / 4) - (y / 100) + (y / 400)  // Years to days with leap years
+    let days_since_epoch = (365 * y) + (y / 4) - (y / 100) + (y / 400)  // Years to days with leap years
         + (30 * m + 3 * (m + 1) / 5)                  // Months to days
         + (day as i64)                                 // Add day of month
-        - 719561;                                      // Adjust to Unix epoch (days from year 0 to 1970-01-01)
+        - 719561; // Adjust to Unix epoch (days from year 0 to 1970-01-01)
 
     // Convert to seconds
-    let total_seconds = days_since_epoch * 86400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64);
+    let total_seconds =
+        days_since_epoch * 86400 + (hour as i64) * 3600 + (minute as i64) * 60 + (second as i64);
 
     // Convert to microseconds
     if total_seconds < 0 {

@@ -185,7 +185,10 @@ impl FileSystem for MemFileSystem {
     }
 
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-        let desc = self.fds.get_mut(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let desc = self
+            .fds
+            .get_mut(&fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let ino = self.inodes.get(&desc.ino).ok_or(FsError::FileNotFound)?;
         if ino.kind != InodeType::File {
             return Err(FsError::IsADirectory);
@@ -201,8 +204,14 @@ impl FileSystem for MemFileSystem {
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
-        let desc = self.fds.get_mut(&fd).ok_or(FsError::InvalidFileDescriptor)?;
-        let ino = self.inodes.get_mut(&desc.ino).ok_or(FsError::FileNotFound)?;
+        let desc = self
+            .fds
+            .get_mut(&fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
+        let ino = self
+            .inodes
+            .get_mut(&desc.ino)
+            .ok_or(FsError::FileNotFound)?;
         if ino.kind != InodeType::File {
             return Err(FsError::IsADirectory);
         }
@@ -223,7 +232,10 @@ impl FileSystem for MemFileSystem {
     }
 
     fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError> {
-        let desc = self.fds.get_mut(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let desc = self
+            .fds
+            .get_mut(&fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         desc.offset = pos;
         Ok(())
     }
@@ -259,7 +271,9 @@ impl FileSystem for MemFileSystem {
 
     fn unlink(&mut self, path: &str) -> Result<(), FsError> {
         let (parent_ino, name) = self.lookup_parent(path).ok_or(FsError::FileNotFound)?;
-        let child_ino = self.lookup_child(parent_ino, &name).ok_or(FsError::FileNotFound)?;
+        let child_ino = self
+            .lookup_child(parent_ino, &name)
+            .ok_or(FsError::FileNotFound)?;
         let child = self.inodes.get(&child_ino).ok_or(FsError::FileNotFound)?;
         if child.kind == InodeType::Directory && !child.children.is_empty() {
             return Err(FsError::DirectoryNotEmpty);
@@ -337,11 +351,7 @@ impl Vfs {
         Ok(())
     }
 
-    pub fn mount(
-        &mut self,
-        mount_point: &str,
-        fs: Box<dyn FileSystem>,
-    ) -> Result<(), FsError> {
+    pub fn mount(&mut self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), FsError> {
         let mp = normalize_path(mount_point);
         if mp != "/" {
             let (target_fs, remaining) = self.find_fs(&mp).ok_or(FsError::FileNotFound)?;
@@ -430,12 +440,7 @@ impl Vfs {
         fs.open(&remaining, flags)
     }
 
-    pub fn read_at(
-        &mut self,
-        mount_idx: usize,
-        fd: u32,
-        buf: &mut [u8],
-    ) -> Result<usize, FsError> {
+    pub fn read_at(&mut self, mount_idx: usize, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         self.mounts
             .get_mut(mount_idx)
             .ok_or(FsError::InvalidFileDescriptor)?
@@ -443,12 +448,7 @@ impl Vfs {
             .read(fd, buf)
     }
 
-    pub fn write_at(
-        &mut self,
-        mount_idx: usize,
-        fd: u32,
-        data: &[u8],
-    ) -> Result<usize, FsError> {
+    pub fn write_at(&mut self, mount_idx: usize, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         self.mounts
             .get_mut(mount_idx)
             .ok_or(FsError::InvalidFileDescriptor)?
@@ -574,7 +574,10 @@ mod tests {
         let descriptor = fs.open("/documents", 0).unwrap();
         let mut data = [0; 1];
 
-        assert_eq!(fs.read(descriptor.fd, &mut data), Err(FsError::IsADirectory));
+        assert_eq!(
+            fs.read(descriptor.fd, &mut data),
+            Err(FsError::IsADirectory)
+        );
     }
 
     #[test]

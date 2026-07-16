@@ -82,8 +82,7 @@ impl FramebufferContext {
             None => return false,
         };
         let mut fb_va = if fb_end <= DIRECT_MAP_SIZE {
-            let direct_map_offset =
-                petroleum::common::memory::get_physical_memory_offset() as u64;
+            let direct_map_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
             match self.fb_phys.checked_add(direct_map_offset) {
                 Some(address) => address,
                 None => return false,
@@ -95,11 +94,7 @@ impl FramebufferContext {
                 .lock()
                 .as_mut()
                 .and_then(|mm| {
-                    mm.map_framebuffer(
-                        self.fb_phys,
-                        fb_size as usize,
-                        CacheMode::WriteCombining,
-                    )
+                    mm.map_framebuffer(self.fb_phys, fb_size as usize, CacheMode::WriteCombining)
                 }) {
                 Some(address) => address,
                 None => return false,

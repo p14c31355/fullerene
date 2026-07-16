@@ -88,6 +88,5 @@ pub fn wait_timeout_us<F>(timeout_us: u64, mut condition_fn: F) -> Result<(), ()
 where
     F: FnMut() -> bool,
 {
-    poll_timeout_us(timeout_us, || condition_fn().then_some(()))
-        .ok_or(())
+    poll_timeout_us(timeout_us, || condition_fn().then_some(())).ok_or(())
 }

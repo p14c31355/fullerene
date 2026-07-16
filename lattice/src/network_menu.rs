@@ -105,7 +105,11 @@ pub fn render_wifi_icon(
         let bh = 4 + i * 4; // heights: 4, 8, 12
         let by = bar_y + (max_height - bh);
 
-        let bar_color = if (signal_level as u32) > i * 40 { color } else { WIFI_INACTIVE };
+        let bar_color = if (signal_level as u32) > i * 40 {
+            color
+        } else {
+            WIFI_INACTIVE
+        };
 
         for row in 0..bh {
             let py = by + row;
@@ -178,8 +182,10 @@ pub fn render_password_dialog(
             let idx = (py as usize) * fw + px as usize;
             if idx < fb.len() {
                 // Border
-                if row < PWD_BORDER_WIDTH || row >= PWD_DIALOG_H - PWD_BORDER_WIDTH
-                    || col < PWD_BORDER_WIDTH || col >= PWD_DIALOG_W - PWD_BORDER_WIDTH
+                if row < PWD_BORDER_WIDTH
+                    || row >= PWD_DIALOG_H - PWD_BORDER_WIDTH
+                    || col < PWD_BORDER_WIDTH
+                    || col >= PWD_DIALOG_W - PWD_BORDER_WIDTH
                 {
                     fb[idx] = PWD_BORDER_COLOR;
                 } else {
@@ -192,8 +198,24 @@ pub fn render_password_dialog(
     // Title
     let title_x = dialog_x + 10;
     let title_y = dialog_y + 10;
-    render_menu_text(fb, fb_width, fb_height, title_x, title_y, "Connect to ", PWD_TEXT);
-    render_menu_text(fb, fb_width, fb_height, title_x + 11 * 8, title_y, ssid, PWD_TEXT);
+    render_menu_text(
+        fb,
+        fb_width,
+        fb_height,
+        title_x,
+        title_y,
+        "Connect to ",
+        PWD_TEXT,
+    );
+    render_menu_text(
+        fb,
+        fb_width,
+        fb_height,
+        title_x + 11 * 8,
+        title_y,
+        ssid,
+        PWD_TEXT,
+    );
 
     // Password input field
     let input_x = dialog_x + (PWD_DIALOG_W - PWD_INPUT_W) / 2;
@@ -211,9 +233,7 @@ pub fn render_password_dialog(
             }
             let idx = (py as usize) * fw + px as usize;
             if idx < fb.len() {
-                if row == 0 || row == PWD_INPUT_H - 1
-                    || col == 0 || col == PWD_INPUT_W - 1
-                {
+                if row == 0 || row == PWD_INPUT_H - 1 || col == 0 || col == PWD_INPUT_W - 1 {
                     fb[idx] = PWD_BORDER_COLOR;
                 } else {
                     fb[idx] = PWD_INPUT_BG;
@@ -249,11 +269,15 @@ pub fn render_password_dialog(
     let btn_h = 24;
     let btn_x = dialog_x + PWD_DIALOG_W - btn_w - 20;
     let btn_y = dialog_y + PWD_DIALOG_H - btn_h - 10;
-    render_button(fb, fb_width, fb_height, btn_x, btn_y, btn_w, btn_h, "Connect", false);
+    render_button(
+        fb, fb_width, fb_height, btn_x, btn_y, btn_w, btn_h, "Connect", false,
+    );
 
     // Cancel button
     let cancel_x = btn_x - btn_w - 10;
-    render_button(fb, fb_width, fb_height, cancel_x, btn_y, btn_w, btn_h, "Cancel", false);
+    render_button(
+        fb, fb_width, fb_height, cancel_x, btn_y, btn_w, btn_h, "Cancel", false,
+    );
 }
 
 /// Render a simple button.
@@ -330,8 +354,10 @@ pub fn render_network_menu(
             }
             let idx = (py as usize) * fw + px as usize;
             if idx < fb.len() {
-                if row < NET_MENU_BORDER || row >= menu_h - NET_MENU_BORDER
-                    || col < NET_MENU_BORDER || col >= NET_MENU_WIDTH - NET_MENU_BORDER
+                if row < NET_MENU_BORDER
+                    || row >= menu_h - NET_MENU_BORDER
+                    || col < NET_MENU_BORDER
+                    || col >= NET_MENU_WIDTH - NET_MENU_BORDER
                 {
                     fb[idx] = NET_MENU_BORDER_COLOR;
                 } else {
@@ -344,37 +370,133 @@ pub fn render_network_menu(
     // Status line
     match status {
         NetStatus::NoDevice => {
-            render_menu_text(fb, fb_width, fb_height, menu_x + 6, menu_y + 4, "No WiFi device", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                menu_x + 6,
+                menu_y + 4,
+                "No WiFi device",
+                NET_MENU_TEXT,
+            );
         }
         NetStatus::Scanning => {
-            render_menu_text(fb, fb_width, fb_height, menu_x + 6, menu_y + 4, "Scanning...", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                menu_x + 6,
+                menu_y + 4,
+                "Scanning...",
+                NET_MENU_TEXT,
+            );
         }
         NetStatus::Disconnected => {
-            render_menu_text(fb, fb_width, fb_height, menu_x + 6, menu_y + 4, "Select a network:", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                menu_x + 6,
+                menu_y + 4,
+                "Select a network:",
+                NET_MENU_TEXT,
+            );
         }
         NetStatus::Connecting(ssid) => {
             let mut cur_x = menu_x + 6;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "Connecting to ", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                "Connecting to ",
+                NET_MENU_TEXT,
+            );
             cur_x += 14 * 8;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ssid, NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                ssid,
+                NET_MENU_TEXT,
+            );
             cur_x += (ssid.len() as u32) * 8;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "...", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                "...",
+                NET_MENU_TEXT,
+            );
         }
         NetStatus::Connected(ssid, ip) => {
             let mut cur_x = menu_x + 6;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "Connected to ", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                "Connected to ",
+                NET_MENU_TEXT,
+            );
             cur_x += 13 * 8;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ssid, NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                ssid,
+                NET_MENU_TEXT,
+            );
             cur_x += (ssid.len() as u32) * 8;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, " (", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                " (",
+                NET_MENU_TEXT,
+            );
             cur_x += 2 * 8;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ip, NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                ip,
+                NET_MENU_TEXT,
+            );
             cur_x += (ip.len() as u32) * 8;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, ")", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                ")",
+                NET_MENU_TEXT,
+            );
         }
         NetStatus::Error(e) => {
             let mut cur_x = menu_x + 6;
-            render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, "Error: ", NET_MENU_TEXT);
+            render_menu_text(
+                fb,
+                fb_width,
+                fb_height,
+                cur_x,
+                menu_y + 4,
+                "Error: ",
+                NET_MENU_TEXT,
+            );
             cur_x += 7 * 8;
             render_menu_text(fb, fb_width, fb_height, cur_x, menu_y + 4, e, NET_MENU_TEXT);
         }
@@ -442,10 +564,17 @@ pub fn render_network_menu(
         // SSID text
         let text_x = signal_x + 30;
         render_menu_text(
-            fb, fb_width, fb_height,
-            text_x, item_y + 8,
+            fb,
+            fb_width,
+            fb_height,
+            text_x,
+            item_y + 8,
             &ap.ssid,
-            if ap.connected { WIFI_CONNECTED } else { NET_MENU_TEXT },
+            if ap.connected {
+                WIFI_CONNECTED
+            } else {
+                NET_MENU_TEXT
+            },
         );
 
         // Connected indicator
@@ -453,8 +582,11 @@ pub fn render_network_menu(
             let check_x = menu_x + NET_MENU_WIDTH - 20;
             let check_text = "\u{2713}"; // checkmark
             render_menu_text(
-                fb, fb_width, fb_height,
-                check_x, item_y + 8,
+                fb,
+                fb_width,
+                fb_height,
+                check_x,
+                item_y + 8,
                 check_text,
                 WIFI_CONNECTED,
             );
@@ -487,13 +619,7 @@ pub fn hit_wifi_icon(px: i32, py: i32, _fb_width: u32, fb_height: u32, icon_x: u
 }
 
 /// Check if a point hits an AP entry in the network menu.
-pub fn hit_ap_entry(
-    px: i32,
-    py: i32,
-    menu_x: u32,
-    menu_y: u32,
-    num_aps: usize,
-) -> Option<usize> {
+pub fn hit_ap_entry(px: i32, py: i32, menu_x: u32, menu_y: u32, num_aps: usize) -> Option<usize> {
     let start_y = menu_y + NET_MENU_ITEM_HEIGHT; // After status line
     let end_y = start_y + (num_aps as u32) * NET_MENU_ITEM_HEIGHT;
 
@@ -509,24 +635,13 @@ pub fn hit_ap_entry(
 
     let rel_y = py_u - start_y;
     let idx = (rel_y / NET_MENU_ITEM_HEIGHT) as usize;
-    if idx < num_aps {
-        Some(idx)
-    } else {
-        None
-    }
+    if idx < num_aps { Some(idx) } else { None }
 }
 
 /// Check if a point hits the network menu area (for dismissal).
-pub fn hit_network_menu(
-    px: i32,
-    py: i32,
-    menu_x: u32,
-    menu_y: u32,
-    num_aps: usize,
-) -> bool {
+pub fn hit_network_menu(px: i32, py: i32, menu_x: u32, menu_y: u32, num_aps: usize) -> bool {
     let menu_h = 4 + (num_aps + 1) as u32 * NET_MENU_ITEM_HEIGHT;
     let px_u = px as u32;
     let py_u = py as u32;
-    px_u >= menu_x && px_u < menu_x + NET_MENU_WIDTH
-        && py_u >= menu_y && py_u < menu_y + menu_h
+    px_u >= menu_x && px_u < menu_x + NET_MENU_WIDTH && py_u >= menu_y && py_u < menu_y + menu_h
 }

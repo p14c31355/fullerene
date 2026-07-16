@@ -311,7 +311,12 @@ pub fn enumerate_mass_storage(
         dev.device_protocol = config.protocol;
     }
 
-    Ok((config.ep_out, config.ep_out_mps, config.ep_in, config.ep_in_mps))
+    Ok((
+        config.ep_out,
+        config.ep_out_mps,
+        config.ep_in,
+        config.ep_in_mps,
+    ))
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.

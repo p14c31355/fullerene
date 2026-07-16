@@ -7,7 +7,13 @@ use super::types::*;
 use crate::contexts::kernel;
 use crate::process;
 
-pub(crate) fn syscall_create_window(x: i32, y: i32, width: u32, height: u32, _flags: u64) -> SyscallResult {
+pub(crate) fn syscall_create_window(
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    _flags: u64,
+) -> SyscallResult {
     if width == 0 || height == 0 || width > 16384 || height > 16384 {
         return Err(SyscallError::InvalidArgument);
     }
@@ -78,7 +84,11 @@ pub(crate) fn syscall_present_window(handle: u64) -> SyscallResult {
     })
 }
 
-pub(crate) fn syscall_get_window_event(handle: u64, buf: *mut u8, buf_size: usize) -> SyscallResult {
+pub(crate) fn syscall_get_window_event(
+    handle: u64,
+    buf: *mut u8,
+    buf_size: usize,
+) -> SyscallResult {
     if buf.is_null() || buf_size < 128 {
         return Err(SyscallError::InvalidArgument);
     }
@@ -90,8 +100,7 @@ pub(crate) fn syscall_get_window_event(handle: u64, buf: *mut u8, buf_size: usiz
 
         let has_event = kernel::with_kernel(|k| k.event.has_pending()).unwrap_or(false);
         if has_event {
-            let slice = UserSlice::new(buf, 8, true)
-                .map_err(|_| SyscallError::InvalidArgument)?;
+            let slice = UserSlice::new(buf, 8, true).map_err(|_| SyscallError::InvalidArgument)?;
             let kernel_buf = [0u8; 8];
             unsafe { slice.copy_to_user(&kernel_buf) }
                 .map_err(|_| SyscallError::InvalidArgument)?;

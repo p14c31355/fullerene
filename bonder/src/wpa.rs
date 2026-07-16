@@ -4,9 +4,9 @@
 //! Uses PBKDF2-SHA1 for passphrase-to-PMK derivation and
 //! the 4-way handshake for PTK/GTK derivation.
 
+use crate::wifi::Bssid;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::wifi::Bssid;
 
 /// WPA state for a single connection.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -110,36 +110,36 @@ impl WpaSupplicant {
         let pass_bytes = self.passphrase.as_bytes();
         let ssid_bytes = self.ssid.as_bytes();
 
-    // PBKDF2 implementation for WPA2-PSK.
-    let mut output = [0u8; 32];
+        // PBKDF2 implementation for WPA2-PSK.
+        let mut output = [0u8; 32];
 
-    // WPA2 PSK = PBKDF2(HMAC-SHA1, passphrase, ssid, 4096, 256)
-    // HMAC-SHA1 produces 20 bytes per block, so we need 2 blocks for 32 bytes
-    for (i, block) in (1u32..=2).enumerate() {
-        let start = i * 20;
-        let end = core::cmp::min(start + 20, 32);
-        let len = end - start;
+        // WPA2 PSK = PBKDF2(HMAC-SHA1, passphrase, ssid, 4096, 256)
+        // HMAC-SHA1 produces 20 bytes per block, so we need 2 blocks for 32 bytes
+        for (i, block) in (1u32..=2).enumerate() {
+            let start = i * 20;
+            let end = core::cmp::min(start + 20, 32);
+            let len = end - start;
 
-        // U_1 = HMAC-SHA1(P, S || INT(i))
-        let mut salt = ssid_bytes.to_vec();
-        salt.extend_from_slice(&block.to_be_bytes());
+            // U_1 = HMAC-SHA1(P, S || INT(i))
+            let mut salt = ssid_bytes.to_vec();
+            salt.extend_from_slice(&block.to_be_bytes());
 
-        let mut u = hmac_sha1(pass_bytes, &salt);
+            let mut u = hmac_sha1(pass_bytes, &salt);
 
-        let mut t = [0u8; 20];
-        t.copy_from_slice(&u);
+            let mut t = [0u8; 20];
+            t.copy_from_slice(&u);
 
-        // U_j = HMAC-SHA1(P, U_{j-1}) for j = 2..4096
-        for _ in 1..4096 {
-            u = hmac_sha1(pass_bytes, &u);
-            for j in 0..20 {
-                t[j] ^= u[j];
+            // U_j = HMAC-SHA1(P, U_{j-1}) for j = 2..4096
+            for _ in 1..4096 {
+                u = hmac_sha1(pass_bytes, &u);
+                for j in 0..20 {
+                    t[j] ^= u[j];
+                }
             }
-        }
 
-        // Copy the appropriate amount of bytes to output
-        output[start..start + len].copy_from_slice(&t[..len]);
-    }
+            // Copy the appropriate amount of bytes to output
+            output[start..start + len].copy_from_slice(&t[..len]);
+        }
 
         self.pmk = output;
     }
@@ -201,13 +201,13 @@ impl WpaSupplicant {
         if anonce_start + 32 > body.len() {
             return Err("Frame too short for ANonce");
         }
-        self.anonce.copy_from_slice(&body[anonce_start..anonce_start + 32]);
+        self.anonce
+            .copy_from_slice(&body[anonce_start..anonce_start + 32]);
 
         // Update replay counter
         if body.len() >= 13 {
             let rc_bytes: [u8; 8] = [
-                body[5], body[6], body[7], body[8],
-                body[9], body[10], body[11], body[12],
+                body[5], body[6], body[7], body[8], body[9], body[10], body[11], body[12],
             ];
             self.replay_counter = u64::from_be_bytes(rc_bytes);
         }
@@ -311,7 +311,8 @@ impl WpaSupplicant {
                 break;
             }
             // GTK KDE: type=0xDD, OUI=00-0F-AC, data_type=1
-            if kde_type == 0xDD && kde_len >= 6
+            if kde_type == 0xDD
+                && kde_len >= 6
                 && body[pos + 2] == 0x00
                 && body[pos + 3] == 0x0F
                 && body[pos + 4] == 0xAC
@@ -357,8 +358,8 @@ impl WpaSupplicant {
         msg.extend_from_slice(&[0u8; 32]); // Key Nonce (zero for msg4)
 
         msg.extend_from_slice(&[0u8; 16]); // Key IV
-        msg.extend_from_slice(&[0u8; 8]);  // Key RSC
-        msg.extend_from_slice(&[0u8; 8]);  // Key ID
+        msg.extend_from_slice(&[0u8; 8]); // Key RSC
+        msg.extend_from_slice(&[0u8; 8]); // Key ID
 
         // MIC placeholder
         let mic_offset = msg.len();
@@ -498,13 +499,7 @@ fn compute_mic(ptk: &[u8; 48], frame: &[u8]) -> [u8; 16] {
 /// SHA-1 hash function (simplified implementation for WPA2).
 /// This implements the SHA-1 algorithm as specified in FIPS 180-4.
 fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut state: [u32; 5] = [
-        0x67452301,
-        0xEFCDAB89,
-        0x98BADCFE,
-        0x10325476,
-        0xC3D2E1F0,
-    ];
+    let mut state: [u32; 5] = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
 
     let len_bits = (data.len() as u64) * 8;
     let mut padded = Vec::with_capacity(data.len() + 9);
@@ -578,9 +573,8 @@ mod tests {
     fn test_sha1_empty() {
         let result = sha1(b"");
         let expected = [
-            0xDA, 0x39, 0xA3, 0xEE, 0x5E, 0x6B, 0x4B, 0x0D,
-            0x32, 0x55, 0xBF, 0xEF, 0x95, 0x60, 0x18, 0x90,
-            0xAF, 0xD8, 0x07, 0x09,
+            0xDA, 0x39, 0xA3, 0xEE, 0x5E, 0x6B, 0x4B, 0x0D, 0x32, 0x55, 0xBF, 0xEF, 0x95, 0x60,
+            0x18, 0x90, 0xAF, 0xD8, 0x07, 0x09,
         ];
         assert_eq!(result, expected);
     }
@@ -589,9 +583,8 @@ mod tests {
     fn test_sha1_abc() {
         let result = sha1(b"abc");
         let expected = [
-            0xA9, 0x99, 0x3E, 0x36, 0x47, 0x06, 0x81, 0x6A,
-            0xBA, 0x3E, 0x25, 0x71, 0x78, 0x50, 0xC2, 0x6C,
-            0x9C, 0xD0, 0xD8, 0x9D,
+            0xA9, 0x99, 0x3E, 0x36, 0x47, 0x06, 0x81, 0x6A, 0xBA, 0x3E, 0x25, 0x71, 0x78, 0x50,
+            0xC2, 0x6C, 0x9C, 0xD0, 0xD8, 0x9D,
         ];
         assert_eq!(result, expected);
     }

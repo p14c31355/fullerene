@@ -294,8 +294,6 @@ pub unsafe fn map_page_4k_l1(
     }
 }
 
-
-
 /// Initialize page tables by creating a new L4 table and jumping to the kernel.
 #[repr(C)]
 pub struct InitAndJumpArgs {

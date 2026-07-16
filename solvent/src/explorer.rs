@@ -507,7 +507,11 @@ impl ExplorerContext {
     fn selected_entry(&self) -> Option<(String, String, bool)> {
         let index = self.selected_index?;
         let name = self.raw_names.get(index)?.clone();
-        Some((join_path(&self.current_dir, &name), name, *self.raw_is_dir.get(index)?))
+        Some((
+            join_path(&self.current_dir, &name),
+            name,
+            *self.raw_is_dir.get(index)?,
+        ))
     }
 
     /// Execute an Explorer context-menu command. A returned path is a file
@@ -526,7 +530,11 @@ impl ExplorerContext {
             }
             ExplorerAction::Copy => {
                 if let Some((path, name, is_dir)) = self.selected_entry() {
-                    self.clipboard = Some(ClipboardEntry { path, name: name.clone(), is_dir });
+                    self.clipboard = Some(ClipboardEntry {
+                        path,
+                        name: name.clone(),
+                        is_dir,
+                    });
                     self.status_message = Some(format!("Copied {}", name));
                 } else {
                     self.status_message = Some(String::from("Copy: select a file or folder"));
@@ -539,13 +547,15 @@ impl ExplorerContext {
                     return None;
                 };
                 let destination = unique_destination(&self.current_dir, &source.name);
-                self.status_message = Some(match copy_entry(&source.path, &destination, source.is_dir) {
-                    Ok(()) => {
-                        self.refresh();
-                        format!("Pasted {}", basename(&destination))
-                    }
-                    Err(error) => format!("Paste failed: {}", error),
-                });
+                self.status_message = Some(
+                    match copy_entry(&source.path, &destination, source.is_dir) {
+                        Ok(()) => {
+                            self.refresh();
+                            format!("Pasted {}", basename(&destination))
+                        }
+                        Err(error) => format!("Paste failed: {}", error),
+                    },
+                );
                 None
             }
             ExplorerAction::Rename => {
@@ -610,7 +620,9 @@ impl ExplorerContext {
             }
             0x1C => self.commit_pending_operation(),
             0x0E => {
-                if let Some(PendingOperation::Rename { input, .. }) = self.pending_operation.as_mut() {
+                if let Some(PendingOperation::Rename { input, .. }) =
+                    self.pending_operation.as_mut()
+                {
                     input.pop();
                 }
             }
@@ -634,7 +646,9 @@ impl ExplorerContext {
     }
 
     fn commit_pending_operation(&mut self) {
-        let Some(operation) = self.pending_operation.take() else { return };
+        let Some(operation) = self.pending_operation.take() else {
+            return;
+        };
         self.status_message = Some(match operation {
             PendingOperation::Delete { path, is_dir } => match delete_entry(&path, is_dir) {
                 Ok(()) => {
@@ -643,7 +657,11 @@ impl ExplorerContext {
                 }
                 Err(error) => format!("Delete failed: {}", error),
             },
-            PendingOperation::Rename { source, is_dir, input } => {
+            PendingOperation::Rename {
+                source,
+                is_dir,
+                input,
+            } => {
                 let name = input.trim();
                 if name.is_empty() || matches!(name, "." | "..") {
                     String::from("Rename failed: invalid name")
@@ -695,7 +713,10 @@ fn join_path(base: &str, name: &str) -> String {
 }
 
 fn basename(path: &str) -> &str {
-    path.trim_end_matches('/').rsplit('/').next().unwrap_or(path)
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
 }
 
 fn path_exists(path: &str) -> bool {
@@ -704,9 +725,11 @@ fn path_exists(path: &str) -> bool {
     let Some(readdir) = SOLVENT_CALLBACKS.lock().vfs_readdir else {
         return false;
     };
-    readdir(&parent)
-        .ok()
-        .is_some_and(|entries| entries.iter().any(|entry| entry.name.eq_ignore_ascii_case(name)))
+    readdir(&parent).ok().is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry.name.eq_ignore_ascii_case(name))
+    })
 }
 
 fn unique_destination(directory: &str, name: &str) -> String {
@@ -719,33 +742,63 @@ fn unique_destination(directory: &str, name: &str) -> String {
         .filter(|&index| index > 0)
         .map_or((name, ""), |index| (&name[..index], &name[index..]));
     (1..10_000)
-        .map(|index| join_path(directory, &format!("{} - Copy {}{}", stem, index, extension)))
+        .map(|index| {
+            join_path(
+                directory,
+                &format!("{} - Copy {}{}", stem, index, extension),
+            )
+        })
         .find(|candidate| !path_exists(candidate))
         .unwrap_or_else(|| join_path(directory, &format!("{} - Copy{}", stem, extension)))
 }
 
 fn copy_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), &'static str> {
-    let copy = SOLVENT_CALLBACKS.lock().vfs_copy.ok_or("copy unavailable")?;
+    let copy = SOLVENT_CALLBACKS
+        .lock()
+        .vfs_copy
+        .ok_or("copy unavailable")?;
     copy(source, destination, is_dir)
 }
 
 fn move_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), &'static str> {
-    let move_path = SOLVENT_CALLBACKS.lock().vfs_move.ok_or("move unavailable")?;
+    let move_path = SOLVENT_CALLBACKS
+        .lock()
+        .vfs_move
+        .ok_or("move unavailable")?;
     move_path(source, destination, is_dir)
 }
 
 fn delete_entry(path: &str, is_dir: bool) -> Result<(), &'static str> {
-    let remove = SOLVENT_CALLBACKS.lock().vfs_remove.ok_or("delete unavailable")?;
+    let remove = SOLVENT_CALLBACKS
+        .lock()
+        .vfs_remove
+        .ok_or("delete unavailable")?;
     remove(path, is_dir)
 }
 
 fn shifted_ascii(byte: u8) -> u8 {
     match byte {
         b'a'..=b'z' => byte.to_ascii_uppercase(),
-        b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$', b'5' => b'%',
-        b'6' => b'^', b'7' => b'&', b'8' => b'*', b'9' => b'(', b'0' => b')',
-        b'-' => b'_', b'=' => b'+', b'[' => b'{', b']' => b'}', b';' => b':',
-        b'\'' => b'"', b',' => b'<', b'.' => b'>', b'/' => b'?', b'`' => b'~',
+        b'1' => b'!',
+        b'2' => b'@',
+        b'3' => b'#',
+        b'4' => b'$',
+        b'5' => b'%',
+        b'6' => b'^',
+        b'7' => b'&',
+        b'8' => b'*',
+        b'9' => b'(',
+        b'0' => b')',
+        b'-' => b'_',
+        b'=' => b'+',
+        b'[' => b'{',
+        b']' => b'}',
+        b';' => b':',
+        b'\'' => b'"',
+        b',' => b'<',
+        b'.' => b'>',
+        b'/' => b'?',
+        b'`' => b'~',
         other => other,
     }
 }

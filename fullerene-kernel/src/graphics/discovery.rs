@@ -89,14 +89,7 @@ pub fn direct_boot_framebuffer() -> Option<BootFramebuffer> {
     }
     let direct_map_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
     let direct_map_address = phys.checked_add(direct_map_offset)?;
-    BootFramebuffer::new(
-        direct_map_address,
-        width,
-        height,
-        stride,
-        bpp,
-        format,
-    )
+    BootFramebuffer::new(direct_map_address, width, height, stride, bpp, format)
 }
 
 /// Discovery engine — tries each probe strategy in order.
@@ -206,7 +199,10 @@ impl FramebufferDiscovery {
                 );
                 let fb_phys = if (bar & 0x6) == 0x4 {
                     let bar_upper = nitrogen::pci::PciConfigSpace::read_config_dword(
-                        dev.bus, dev.device, 0, bar_reg + 4,
+                        dev.bus,
+                        dev.device,
+                        0,
+                        bar_reg + 4,
                     );
                     ((bar_upper as u64) << 32) | ((bar & 0xFFFFFFF0) as u64)
                 } else {

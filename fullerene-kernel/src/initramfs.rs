@@ -152,7 +152,8 @@ pub fn unpack(archive: &[u8]) -> Result<usize, &'static str> {
             let _ = crate::contexts::vfs::mkdir(path);
             count += 1;
         } else if ftype == 0o100000 {
-            let body_end = body_start.checked_add(header.filesize as usize)
+            let body_end = body_start
+                .checked_add(header.filesize as usize)
                 .filter(|&end| end <= archive.len())
                 .unwrap_or(body_start);
             let body = archive.get(body_start..body_end).unwrap_or(&[]);

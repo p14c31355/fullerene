@@ -30,16 +30,16 @@ const COM1_STATUS: u16 = 0x3FD;
 unsafe fn write_serial_raw(bytes: &[u8]) {
     #[cfg(not(any(feature = "std", test)))]
     unsafe {
-            use x86_64::instructions::port::Port;
-            let mut data = Port::<u8>::new(COM1_DATA);
-            let mut status = Port::<u8>::new(COM1_STATUS);
-            for &b in bytes {
-                let mut timeout = 1_000_000u32;
-                while (status.read() & 0x20) == 0 && timeout > 0 {
-                    timeout -= 1;
-                }
-                data.write(b);
+        use x86_64::instructions::port::Port;
+        let mut data = Port::<u8>::new(COM1_DATA);
+        let mut status = Port::<u8>::new(COM1_STATUS);
+        for &b in bytes {
+            let mut timeout = 1_000_000u32;
+            while (status.read() & 0x20) == 0 && timeout > 0 {
+                timeout -= 1;
             }
+            data.write(b);
+        }
     }
     #[cfg(any(feature = "std", test))]
     let _ = bytes;

@@ -12,8 +12,8 @@ pub mod common;
 pub mod debug;
 pub mod filesystem;
 pub mod graphics;
-pub mod io;
 pub mod initializer;
+pub mod io;
 pub mod page_table;
 pub mod serial;
 pub mod transition;
@@ -63,7 +63,6 @@ use spin::{Mutex, Once};
 
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
-
 
 #[derive(Clone, Copy)]
 pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);

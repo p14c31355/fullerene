@@ -4,27 +4,34 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use bonder::{NetDevice, NetError};
-use bonder::wifi::{self, Ssid, AccessPoint};
-use bonder::wpa::WpaState;
 use bonder::dhcp::DhcpMessageType;
+use bonder::wifi::{self, AccessPoint, Ssid};
+use bonder::wpa::WpaState;
+use bonder::{NetDevice, NetError};
 
 use crate::mmio;
 
+use super::device::IwlWifiDevice;
 use super::regs::*;
 use super::types::*;
-use super::device::IwlWifiDevice;
 
 // ── HCMD interface ────────────────
 
 impl IwlWifiDevice {
-    pub(super) fn send_hcmd(&mut self, opcode: u8, group: u8, data: &[u8]) -> Result<(), &'static str> {
+    pub(super) fn send_hcmd(
+        &mut self,
+        opcode: u8,
+        group: u8,
+        data: &[u8],
+    ) -> Result<(), &'static str> {
         let total_len = core::mem::size_of::<HcmdHeader>() + data.len();
         if total_len > MAX_FRAME_SIZE {
             return Err("HCMD too large");
         }
 
-        self.health.pre_mmio_access().map_err(|_| "device not accessible")?;
+        self.health
+            .pre_mmio_access()
+            .map_err(|_| "device not accessible")?;
 
         let hcmd_header = HcmdHeader {
             opcode,
@@ -76,8 +83,12 @@ impl IwlWifiDevice {
 
     pub fn send_init_commands(&mut self) -> Result<(), &'static str> {
         let ant_cfg: [u8; 8] = [0x03, 0x03, 0, 0, 0, 0, 0, 0];
-        self.send_hcmd(LegacyCmd::TxAntConfig as u8, GroupId::Legacy as u8, &ant_cfg)
-            .map_err(|_| "TX antenna config failed")?;
+        self.send_hcmd(
+            LegacyCmd::TxAntConfig as u8,
+            GroupId::Legacy as u8,
+            &ant_cfg,
+        )
+        .map_err(|_| "TX antenna config failed")?;
         log::info!("iwlwifi: TX antenna config sent");
 
         let mut rxon = [0u8; 36];
@@ -117,10 +128,26 @@ impl IwlWifiDevice {
             num_channels: 4,
             reserved: [0u8; 3],
             channels: [
-                ScanChannel { channel: 1, tx_power: 0, reserved: 0 },
-                ScanChannel { channel: 6, tx_power: 0, reserved: 0 },
-                ScanChannel { channel: 11, tx_power: 0, reserved: 0 },
-                ScanChannel { channel: 36, tx_power: 0, reserved: 0 },
+                ScanChannel {
+                    channel: 1,
+                    tx_power: 0,
+                    reserved: 0,
+                },
+                ScanChannel {
+                    channel: 6,
+                    tx_power: 0,
+                    reserved: 0,
+                },
+                ScanChannel {
+                    channel: 11,
+                    tx_power: 0,
+                    reserved: 0,
+                },
+                ScanChannel {
+                    channel: 36,
+                    tx_power: 0,
+                    reserved: 0,
+                },
             ],
         };
 
@@ -131,7 +158,11 @@ impl IwlWifiDevice {
             )
         };
 
-        self.send_hcmd(LegacyCmd::ScanRequest as u8, GroupId::Legacy as u8, cmd_data)?;
+        self.send_hcmd(
+            LegacyCmd::ScanRequest as u8,
+            GroupId::Legacy as u8,
+            cmd_data,
+        )?;
 
         log::info!("iwlwifi: scan started");
         Ok(())
@@ -144,10 +175,7 @@ impl IwlWifiDevice {
                 return;
             }
 
-            let security = wifi::security_from_beacon(
-                beacon.capability,
-                beacon.rsn.as_ref(),
-            );
+            let security = wifi::security_from_beacon(beacon.capability, beacon.rsn.as_ref());
 
             let ap = AccessPoint {
                 ssid,
@@ -180,12 +208,8 @@ impl IwlWifiDevice {
         self.wifi_conn.connect(ssid, password);
 
         if password.is_some() {
-            self.wpa.init(
-                password.unwrap(),
-                ssid.as_str(),
-                ap.bssid,
-                self.mac,
-            );
+            self.wpa
+                .init(password.unwrap(), ssid.as_str(), ap.bssid, self.mac);
             self.wpa.derive_ptk();
         }
 
@@ -197,8 +221,12 @@ impl IwlWifiDevice {
         log::info!(
             "iwlwifi: authenticating with {} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
             ssid,
-            ap.bssid[0], ap.bssid[1], ap.bssid[2],
-            ap.bssid[3], ap.bssid[4], ap.bssid[5],
+            ap.bssid[0],
+            ap.bssid[1],
+            ap.bssid[2],
+            ap.bssid[3],
+            ap.bssid[4],
+            ap.bssid[5],
         );
 
         Ok(())
@@ -289,26 +317,22 @@ impl IwlWifiDevice {
                 }
             }
             (0, 11) => {
-                if self.iwl_state == IwlState::AuthSent
-                    || self.iwl_state == IwlState::Scanning
-                {
+                if self.iwl_state == IwlState::AuthSent || self.iwl_state == IwlState::Scanning {
                     let body_offset = 24;
                     if frame.len() >= body_offset + 6 {
-                        let status_code = u16::from_le_bytes([
-                            frame[body_offset + 4],
-                            frame[body_offset + 5],
-                        ]);
+                        let status_code =
+                            u16::from_le_bytes([frame[body_offset + 4], frame[body_offset + 5]]);
                         if status_code == 0 {
                             self.iwl_state = IwlState::AssocSent;
                             let bssid = [
-                                frame[10], frame[11], frame[12],
-                                frame[13], frame[14], frame[15],
+                                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
                             ];
-                            let ap_ssid = self.wifi_conn.current_ssid.clone()
+                            let ap_ssid = self
+                                .wifi_conn
+                                .current_ssid
+                                .clone()
                                 .unwrap_or(Ssid::new(b""));
-                            let assoc = wifi::build_assoc_request(
-                                bssid, self.mac, &ap_ssid,
-                            );
+                            let assoc = wifi::build_assoc_request(bssid, self.mac, &ap_ssid);
                             let _ = self.send_raw_80211_frame(&assoc);
                             log::info!("iwlwifi: auth successful, associating");
                         } else {
@@ -322,10 +346,8 @@ impl IwlWifiDevice {
                 if self.iwl_state == IwlState::AssocSent {
                     let body_offset = 24;
                     if frame.len() >= body_offset + 6 {
-                        let status_code = u16::from_le_bytes([
-                            frame[body_offset + 2],
-                            frame[body_offset + 3],
-                        ]);
+                        let status_code =
+                            u16::from_le_bytes([frame[body_offset + 2], frame[body_offset + 3]]);
                         if status_code == 0 {
                             let aid = u16::from_le_bytes([
                                 frame[body_offset + 4],
@@ -334,15 +356,15 @@ impl IwlWifiDevice {
                             self.iwl_state = IwlState::Connected;
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Connected;
                             self.wifi_conn.current_bssid = Some([
-                                frame[10], frame[11], frame[12],
-                                frame[13], frame[14], frame[15],
+                                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
                             ]);
 
                             self.dhcp = Some(bonder::dhcp::DhcpClient::new(self.mac));
                             if let Some(ref mut dhcp) = self.dhcp {
                                 let discover = dhcp.build_discover();
                                 log::info!(
-                                    "iwlwifi: associated (AID={}), sending DHCP discover", aid
+                                    "iwlwifi: associated (AID={}), sending DHCP discover",
+                                    aid
                                 );
                                 let _ = self.send_raw_80211_frame(&discover);
                             }
@@ -358,10 +380,8 @@ impl IwlWifiDevice {
                 if frame.len() > header_len {
                     let llc_offset = header_len;
                     if frame.len() > llc_offset + 8 {
-                        let ether_type = u16::from_be_bytes([
-                            frame[llc_offset + 6],
-                            frame[llc_offset + 7],
-                        ]);
+                        let ether_type =
+                            u16::from_be_bytes([frame[llc_offset + 6], frame[llc_offset + 7]]);
                         let data = &frame[llc_offset + 8..];
                         match ether_type {
                             0x888E => {
@@ -381,21 +401,32 @@ impl IwlWifiDevice {
                                     let ihl = (ip_ver_ihl & 0x0F) as usize * 4;
                                     let protocol = data[9];
                                     if protocol == 17 && data.len() >= ihl + 8 {
-                                        let dst_port = u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
+                                        let dst_port =
+                                            u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
                                         if dst_port == 68 {
                                             if let Some(ref mut dhcp) = self.dhcp {
                                                 let dhcp_data = &data[ihl + 8..];
-                                                if let Ok(msg_type) = dhcp.parse_response(dhcp_data) {
-                                                    log::info!("iwlwifi: DHCP {} received", msg_type as u8);
+                                                if let Ok(msg_type) = dhcp.parse_response(dhcp_data)
+                                                {
+                                                    log::info!(
+                                                        "iwlwifi: DHCP {} received",
+                                                        msg_type as u8
+                                                    );
                                                     if msg_type == DhcpMessageType::Offer {
-                                                        let req = dhcp.build_request(dhcp.lease.ip_address, dhcp.lease.server_id);
+                                                        let req = dhcp.build_request(
+                                                            dhcp.lease.ip_address,
+                                                            dhcp.lease.server_id,
+                                                        );
                                                         let _ = self.send_raw_80211_frame(&req);
                                                     } else if msg_type == DhcpMessageType::Ack {
                                                         self.ip_address = dhcp.lease.ip_address;
                                                         self.subnet_mask = dhcp.lease.subnet_mask;
                                                         self.gateway = dhcp.lease.router;
                                                         self.dns_server = dhcp.lease.dns_server;
-                                                        log::info!("iwlwifi: IP address assigned: {:?}", self.ip_address);
+                                                        log::info!(
+                                                            "iwlwifi: IP address assigned: {:?}",
+                                                            self.ip_address
+                                                        );
                                                     }
                                                     true
                                                 } else {
@@ -463,7 +494,10 @@ impl IwlWifiDevice {
             }
         }
 
-        mmio::cache_flush_range(self.rx_dma_ring.virt(), core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE);
+        mmio::cache_flush_range(
+            self.rx_dma_ring.virt(),
+            core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE,
+        );
         while self.rx_tail != self.rx_head {
             let desc_idx = self.rx_tail;
             let desc = self.rx_desc(desc_idx);

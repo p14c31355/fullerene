@@ -190,12 +190,11 @@ pub fn map_user_page(
     flags: PageFlags,
 ) -> SystemResult<()> {
     if let Some(manager) = MEMORY_MANAGER.lock().as_mut() {
-        manager.page_table_manager.map_page(
-            virtual_addr,
-            physical_addr,
-            flags,
-            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
-        )
+        manager
+            .page_table_manager
+            .map_page(virtual_addr, physical_addr, flags, unsafe {
+                petroleum::page_table::constants::get_frame_allocator_mut()
+            })
     } else {
         Err(SystemError::InternalError)
     }

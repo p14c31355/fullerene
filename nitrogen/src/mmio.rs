@@ -44,7 +44,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 /// writes — use `mfence` after the last `clflush` when ordering matters.
 #[inline]
 pub fn cache_flush(addr: *const u8) {
-    unsafe { core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags));
+    }
 }
 
 /// Flush a range of cache lines and issue a memory fence afterwards.
@@ -74,13 +76,17 @@ pub fn cache_flush_range(base: *const u8, len: usize) {
 /// when WC memory type is involved.
 #[inline]
 pub fn write_barrier() {
-    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("mfence", options(nostack, preserves_flags));
+    }
 }
 
 /// Ensure all prior loads are complete before subsequent loads.
 #[inline]
 pub fn read_barrier() {
-    unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("lfence", options(nostack, preserves_flags));
+    }
 }
 
 // ============================================================================
@@ -172,19 +178,23 @@ pub unsafe fn checked_read_u64(
 ) -> SafeReadResult<u64> {
     let lo = match unsafe { checked_read_u32(addr, health) } {
         SafeReadResult::Value(v) => v,
-        e => return match e {
-            SafeReadResult::Value(_) => unreachable!(),
-            SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
-            SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
-        },
+        e => {
+            return match e {
+                SafeReadResult::Value(_) => unreachable!(),
+                SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
+                SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
+            };
+        }
     };
     let hi = match unsafe { checked_read_u32(addr.add(1), health) } {
         SafeReadResult::Value(v) => v,
-        e => return match e {
-            SafeReadResult::Value(_) => unreachable!(),
-            SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
-            SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
-        },
+        e => {
+            return match e {
+                SafeReadResult::Value(_) => unreachable!(),
+                SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
+                SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
+            };
+        }
     };
     SafeReadResult::Value((lo as u64) | ((hi as u64) << 32))
 }
@@ -321,7 +331,10 @@ unsafe impl MmioSafe for u32 {}
 unsafe impl MmioSafe for u64 {}
 
 /// Operations required for MMIO register read-modify-write.
-pub trait MmioOps: BitAnd<Output = Self> + BitOr<Output = Self> + Not<Output = Self> + Sized {}
+pub trait MmioOps:
+    BitAnd<Output = Self> + BitOr<Output = Self> + Not<Output = Self> + Sized
+{
+}
 impl MmioOps for u8 {}
 impl MmioOps for u16 {}
 impl MmioOps for u32 {}
@@ -460,7 +473,9 @@ impl DmaRegion {
         let alloc_len = pages.checked_mul(4096)?;
         let phys = ctx.allocate_contiguous_frames(pages).ok()?;
         let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe { core::ptr::write_bytes(virt, 0, alloc_len); }
+        unsafe {
+            core::ptr::write_bytes(virt, 0, alloc_len);
+        }
         cache_flush_range(virt, alloc_len);
         Some(Self {
             virt,
@@ -532,7 +547,11 @@ impl DmaRegion {
     }
 
     /// Map this buffer for DMA via IOMMU.
-    pub fn dma_map(&mut self, ctx: &dyn DriverContext, device_id: u16) -> Result<u64, &'static str> {
+    pub fn dma_map(
+        &mut self,
+        ctx: &dyn DriverContext,
+        device_id: u16,
+    ) -> Result<u64, &'static str> {
         let iova = ctx
             .dma_map(device_id, self.phys, self.len)
             .map_err(|_| "dma_map failed")?;
@@ -708,17 +727,15 @@ pub fn mmio_watchdog_nmi_recovery() {
     let (bus, dev, func) = (bdf as u8, (bdf >> 8) as u8, (bdf >> 16) as u8);
 
     let cmd = crate::pci::PciConfigSpace::read_config_word(bus, dev, func, 4);
-    crate::pci::PciConfigSpace::write_config_word_raw(
-        bus,
-        dev,
-        func,
-        4,
-        cmd & !(0x02 | 0x04),
-    );
+    crate::pci::PciConfigSpace::write_config_word_raw(bus, dev, func, 4, cmd & !(0x02 | 0x04));
 
     let bridge_bdf = MMIO_WATCHDOG_BRIDGE_BDF.load(Ordering::Acquire);
     if bridge_bdf != 0 {
-        let (b, d, f) = (bridge_bdf as u8, (bridge_bdf >> 8) as u8, (bridge_bdf >> 16) as u8);
+        let (b, d, f) = (
+            bridge_bdf as u8,
+            (bridge_bdf >> 8) as u8,
+            (bridge_bdf >> 16) as u8,
+        );
         if let Some(lnk_off) = crate::pci_error::find_pcie_cap(b, d, f)
             .and_then(|off| off.checked_add(0x10))
             .filter(|&off| off <= 0xFC)

@@ -33,7 +33,10 @@ impl EhciOperationalRegisters {
         let p = unsafe { self.0.add(off) as *const u32 };
         let value = unsafe { ptr::read_volatile(p) };
         if value == u32::MAX {
-            log::warn!("EHCI: MMIO read at offset {:#x} completed with all ones", off);
+            log::warn!(
+                "EHCI: MMIO read at offset {:#x} completed with all ones",
+                off
+            );
         }
         value
     }

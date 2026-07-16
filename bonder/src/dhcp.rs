@@ -7,8 +7,6 @@
 
 use alloc::vec::Vec;
 
-
-
 /// DHCP magic cookie.
 pub const DHCP_MAGIC_COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
 
@@ -83,8 +81,8 @@ impl DhcpHeader {
     pub fn new(op: u8) -> Self {
         Self {
             op,
-            htype: 1,  // Ethernet
-            hlen: 6,   // MAC address length
+            htype: 1, // Ethernet
+            hlen: 6,  // MAC address length
             hops: 0,
             xid: [0u8; 4],
             secs: [0u8; 2],
@@ -175,10 +173,7 @@ impl DhcpClient {
 
         let mut packet = Vec::new();
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &header as *const DhcpHeader as *const u8,
-                DhcpHeader::SIZE,
-            )
+            core::slice::from_raw_parts(&header as *const DhcpHeader as *const u8, DhcpHeader::SIZE)
         };
         packet.extend_from_slice(header_bytes);
 
@@ -212,10 +207,7 @@ impl DhcpClient {
 
         let mut packet = Vec::new();
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &header as *const DhcpHeader as *const u8,
-                DhcpHeader::SIZE,
-            )
+            core::slice::from_raw_parts(&header as *const DhcpHeader as *const u8, DhcpHeader::SIZE)
         };
         packet.extend_from_slice(header_bytes);
 
@@ -255,10 +247,7 @@ impl DhcpClient {
 
         let mut packet = Vec::new();
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &header as *const DhcpHeader as *const u8,
-                DhcpHeader::SIZE,
-            )
+            core::slice::from_raw_parts(&header as *const DhcpHeader as *const u8, DhcpHeader::SIZE)
         };
         packet.extend_from_slice(header_bytes);
 
@@ -344,9 +333,8 @@ impl DhcpClient {
                     }
                 }
                 OPTION_IP_LEASE_TIME if opt_len >= 4 => {
-                    self.lease.lease_time = u32::from_be_bytes([
-                        opt_data[0], opt_data[1], opt_data[2], opt_data[3],
-                    ]);
+                    self.lease.lease_time =
+                        u32::from_be_bytes([opt_data[0], opt_data[1], opt_data[2], opt_data[3]]);
                 }
                 _ => {}
             }

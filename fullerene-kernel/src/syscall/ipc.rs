@@ -20,7 +20,11 @@ pub(crate) fn syscall_channel_create(_flags: u64) -> SyscallResult {
     alloc_handle(KernelObject::Channel(ChannelState { inner }))
 }
 
-pub(crate) fn syscall_channel_send(handle: u64, data_ptr: *const u8, data_size: u64) -> SyscallResult {
+pub(crate) fn syscall_channel_send(
+    handle: u64,
+    data_ptr: *const u8,
+    data_size: u64,
+) -> SyscallResult {
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::WRITE)?;
     let size = data_size as usize;
@@ -32,8 +36,7 @@ pub(crate) fn syscall_channel_send(handle: u64, data_ptr: *const u8, data_size: 
         .map_err(|_| SyscallError::InvalidArgument)?;
 
     let mut msg_vec = vec![0u8; size];
-    unsafe { slice.copy_from_user(&mut msg_vec) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    unsafe { slice.copy_from_user(&mut msg_vec) }.map_err(|_| SyscallError::InvalidArgument)?;
 
     let recv_waiters: Vec<process::ProcessId> = with_handle_mut(h, |obj| {
         let channel = map_handle!(obj, Channel, ch);
@@ -60,8 +63,7 @@ pub(crate) fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> 
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(buf as usize, max, false)?;
-    let slice = UserSlice::new(buf, max, true)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let slice = UserSlice::new(buf, max, true).map_err(|_| SyscallError::InvalidArgument)?;
 
     let msg: Option<Vec<u8>> = with_handle_mut(h, |obj| {
         let channel = map_handle!(obj, Channel, ch);
@@ -77,8 +79,7 @@ pub(crate) fn syscall_channel_recv(handle: u64, buf: *mut u8, buf_size: u64) -> 
         let copy_len = msg.len().min(max);
         let mut kernel_buf = vec![0u8; max];
         kernel_buf[..copy_len].copy_from_slice(&msg[..copy_len]);
-        unsafe { slice.copy_to_user(&kernel_buf) }
-            .map_err(|_| SyscallError::InvalidArgument)?;
+        unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
         Ok(copy_len as u64)
     } else {
         Err(SyscallError::WouldBlock)
@@ -110,8 +111,8 @@ pub(crate) fn syscall_pipe_create(buf: *mut u64) -> SyscallResult {
         }
     };
 
-    let slice = UserSlice::new(buf as *mut u8, 16, true)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let slice =
+        UserSlice::new(buf as *mut u8, 16, true).map_err(|_| SyscallError::InvalidArgument)?;
     let mut kernel_buf = [0u8; 16];
     kernel_buf[0..8].copy_from_slice(&read_h.to_ne_bytes());
     kernel_buf[8..16].copy_from_slice(&write_h.to_ne_bytes());

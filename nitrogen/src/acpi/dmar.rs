@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use crate::acpi;
+use alloc::vec::Vec;
 
 /// Device scope within a DRHD unit (I/O APIC, HPET, etc.).
 #[derive(Debug, Clone)]
@@ -50,7 +50,9 @@ pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
             let mut scopes = Vec::new();
             let mut scope_off = offset + 16;
             while scope_off + 6 <= offset + slen {
-                let scope_len = unsafe { core::ptr::read_unaligned(p.add(scope_off + 1) as *const u8) } as usize;
+                let scope_len =
+                    unsafe { core::ptr::read_unaligned(p.add(scope_off + 1) as *const u8) }
+                        as usize;
                 if scope_len < 6 || scope_off + scope_len > offset + slen {
                     break;
                 }
@@ -67,10 +69,18 @@ pub fn parse_dmar(rsdp_phys: u64) -> Option<DmarInfo> {
                 scope_off += scope_len;
             }
 
-            drhd_units.push(DmarDrhd { flags, segment, phys_base, scopes });
+            drhd_units.push(DmarDrhd {
+                flags,
+                segment,
+                phys_base,
+                scopes,
+            });
         }
         offset += slen;
     }
 
-    Some(DmarInfo { host_address_width, drhd_units })
+    Some(DmarInfo {
+        host_address_width,
+        drhd_units,
+    })
 }

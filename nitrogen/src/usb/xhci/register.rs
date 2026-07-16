@@ -426,7 +426,9 @@ fn extended_cap_in_bounds(dword_offset: usize, bytes: usize) -> bool {
 }
 
 fn next_extended_cap(offset: usize, next: u8) -> Option<usize> {
-    (next != 0).then(|| offset.checked_add(next as usize)).flatten()
+    (next != 0)
+        .then(|| offset.checked_add(next as usize))
+        .flatten()
 }
 
 pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
@@ -471,7 +473,9 @@ pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
                 if major_rev >= 3 { "USB 3.x" } else { "USB 2.0" }
             );
         }
-        let Some(next) = next_extended_cap(off, ec_next) else { break };
+        let Some(next) = next_extended_cap(off, ec_next) else {
+            break;
+        };
         off = next;
     }
 }
@@ -500,7 +504,9 @@ pub fn parse_port_protocols(
             let port_off = (dw2 & 0xFF) as u32;
             if port_off == 0 {
                 let next = (m.read32(off * 4) >> 8) as u8;
-                let Some(next) = next_extended_cap(off, next) else { break };
+                let Some(next) = next_extended_cap(off, next) else {
+                    break;
+                };
                 off = next;
                 continue;
             }
@@ -523,7 +529,9 @@ pub fn parse_port_protocols(
             }
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;
-        let Some(next) = next_extended_cap(off, ec_next) else { break };
+        let Some(next) = next_extended_cap(off, ec_next) else {
+            break;
+        };
         off = next;
     }
     bitmap
@@ -557,10 +565,8 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
                 return Ok(true);
             }
             m.write32(cap_base, legsup | OS_OWNED);
-            if crate::timing::wait_timeout_us(1_000_000, || {
-                m.read32(cap_base) & BIOS_OWNED == 0
-            })
-            .is_err()
+            if crate::timing::wait_timeout_us(1_000_000, || m.read32(cap_base) & BIOS_OWNED == 0)
+                .is_err()
             {
                 log::warn!("xHCI: BIOS handoff timed out; forcing OS ownership");
                 m.write32(cap_base, (m.read32(cap_base) | OS_OWNED) & !BIOS_OWNED);
@@ -573,7 +579,9 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
             return Ok(false);
         }
         let ec_next = (m.read32(off * 4) >> 8) as u8;
-        let Some(next) = next_extended_cap(off, ec_next) else { break };
+        let Some(next) = next_extended_cap(off, ec_next) else {
+            break;
+        };
         off = next;
     }
     Ok(true)
@@ -808,7 +816,11 @@ mod tests {
         let val = regs.portsc(0).0;
         assert_eq!(val & PORTSC_PP, 0, "PP should be cleared");
         assert_ne!(val & PORTSC_PED, 0, "PED should be set");
-        assert_eq!(val & PORTSC_RW1C_MASK, 0, "RW1C events must not be acknowledged");
+        assert_eq!(
+            val & PORTSC_RW1C_MASK,
+            0,
+            "RW1C events must not be acknowledged"
+        );
     }
 
     #[test]
@@ -826,7 +838,10 @@ mod tests {
         sim.write_hw(ec_base, 1 | (1 << 24));
         sim.write_hw(ec_base + 4, u32::MAX);
 
-        assert_eq!(try_legacy_handoff(sim.base(), (ec_base / 4) as u16), Ok(true));
+        assert_eq!(
+            try_legacy_handoff(sim.base(), (ec_base / 4) as u16),
+            Ok(true)
+        );
         assert_eq!(
             sim.read_hw(ec_base + 4),
             (0x7 << 1) | (0xFF << 5) | (0x7 << 17) | (0x7 << 29)

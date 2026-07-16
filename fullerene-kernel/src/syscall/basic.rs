@@ -62,11 +62,10 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 
     let mut child_page_table =
         petroleum::page_table::ProcessPageTable::new_with_frame(cloned_pml4_frame);
-    petroleum::initializer::Initializable::init(&mut child_page_table)
-        .map_err(|_| {
-            crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
-            SyscallError::InvalidArgument
-        })?;
+    petroleum::initializer::Initializable::init(&mut child_page_table).map_err(|_| {
+        crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+        SyscallError::InvalidArgument
+    })?;
 
     let (kernel_stack_ptr, kernel_stack_top) = alloc_kernel_stack().map_err(|e| {
         crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
@@ -126,13 +125,11 @@ pub(crate) fn syscall_fork() -> SyscallResult {
 
     let child_box = Box::new(child_process);
 
-    crate::process::SCHEDULER
-        .add(child_box)
-        .map_err(|_| {
-            free_kernel_stack(kernel_stack_ptr);
-            crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
-            SyscallError::OutOfMemory
-        })?;
+    crate::process::SCHEDULER.add(child_box).map_err(|_| {
+        free_kernel_stack(kernel_stack_ptr);
+        crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
+        SyscallError::OutOfMemory
+    })?;
 
     Ok(child_pid as u64)
 }
@@ -143,8 +140,7 @@ pub(crate) fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallR
         return Ok(0);
     }
 
-    let slice = UserSlice::new(buffer, count, true)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let slice = UserSlice::new(buffer, count, true).map_err(|_| SyscallError::InvalidArgument)?;
 
     petroleum::validate_syscall_fd(fd)?;
 
@@ -169,21 +165,19 @@ pub(crate) fn syscall_read(fd: c_int, buffer: *mut u8, count: usize) -> SyscallR
         if fd < 0 {
             return Err(SyscallError::BadFileDescriptor);
         }
-        with_current_fd_table(|ft| {
-            match ft.entries.get_mut(&(fd as u32)) {
-                Some(file_desc) => {
-                    let mut kernel_buf = vec![0u8; count];
-                    match crate::fs::read_file(file_desc, &mut kernel_buf) {
-                        Ok(n) => {
-                            unsafe { slice.copy_to_user(&kernel_buf[..n]) }
-                                .map_err(|_| SyscallError::InvalidArgument)?;
-                            Ok(n as u64)
-                        }
-                        Err(_) => Err(SyscallError::BadFileDescriptor),
+        with_current_fd_table(|ft| match ft.entries.get_mut(&(fd as u32)) {
+            Some(file_desc) => {
+                let mut kernel_buf = vec![0u8; count];
+                match crate::fs::read_file(file_desc, &mut kernel_buf) {
+                    Ok(n) => {
+                        unsafe { slice.copy_to_user(&kernel_buf[..n]) }
+                            .map_err(|_| SyscallError::InvalidArgument)?;
+                        Ok(n as u64)
                     }
+                    Err(_) => Err(SyscallError::BadFileDescriptor),
                 }
-                None => Err(SyscallError::BadFileDescriptor),
             }
+            None => Err(SyscallError::BadFileDescriptor),
         })
     }
 }
@@ -199,8 +193,7 @@ pub(crate) fn syscall_write(fd: c_int, buffer: *const u8, count: usize) -> Sysca
         .map_err(|_| SyscallError::InvalidArgument)?;
 
     let mut kernel_buf = vec![0u8; count];
-    unsafe { slice.copy_from_user(&mut kernel_buf) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    unsafe { slice.copy_from_user(&mut kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
 
     if fd == 1 || fd == 2 {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, &kernel_buf);
@@ -244,14 +237,12 @@ pub(crate) fn syscall_close(fd: c_int) -> SyscallResult {
     if fd <= 2 {
         return Err(SyscallError::InvalidArgument);
     }
-    with_current_fd_table(|ft| {
-        match ft.entries.remove(&(fd as u32)) {
-            Some(file_desc) => match crate::fs::close_file(file_desc) {
-                Ok(_) => Ok(0),
-                Err(_) => Err(SyscallError::BadFileDescriptor),
-            },
-            None => Err(SyscallError::BadFileDescriptor),
-        }
+    with_current_fd_table(|ft| match ft.entries.remove(&(fd as u32)) {
+        Some(file_desc) => match crate::fs::close_file(file_desc) {
+            Ok(_) => Ok(0),
+            Err(_) => Err(SyscallError::BadFileDescriptor),
+        },
+        None => Err(SyscallError::BadFileDescriptor),
     })
 }
 

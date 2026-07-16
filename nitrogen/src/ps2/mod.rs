@@ -43,7 +43,8 @@ fn wait_input_buffer_empty(status_port: &mut Port<u8>) -> bool {
     crate::timing::wait_timeout_us(100_000, || {
         let status: u8 = unsafe { status_port.read() };
         status & 0x02 == 0
-    }).is_ok()
+    })
+    .is_ok()
 }
 
 /// Wait for the PS/2 controller output buffer to be full (bit 0 = 1).
@@ -52,7 +53,8 @@ fn wait_output_buffer_full(status_port: &mut Port<u8>) -> bool {
     crate::timing::wait_timeout_us(100_000, || {
         let status: u8 = unsafe { status_port.read() };
         status & 0x01 != 0
-    }).is_ok()
+    })
+    .is_ok()
 }
 
 /// Send a command byte to the PS/2 controller and wait for it to be accepted.

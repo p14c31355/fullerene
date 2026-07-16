@@ -15,9 +15,9 @@ use crate::pci::{PciConfigSpace, PciDevice};
 /// Error type for PCI health operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PciHealthError {
-    DeviceGone,       // vendor=0xFFFF
-    NotD0,            // power state is D1-D3hot
-    LinkDown,         // PCIe link status shows speed=0
+    DeviceGone, // vendor=0xFFFF
+    NotD0,      // power state is D1-D3hot
+    LinkDown,   // PCIe link status shows speed=0
 }
 
 impl core::fmt::Display for PciHealthError {
@@ -117,9 +117,8 @@ impl PciHealth {
                     }
                 }
                 0x10 => {
-                    let lnk_sts = PciConfigSpace::read_config_word(
-                        self.bus, self.dev, self.func, off + 0x12,
-                    );
+                    let lnk_sts =
+                        PciConfigSpace::read_config_word(self.bus, self.dev, self.func, off + 0x12);
                     let speed = lnk_sts & 0xF;
                     if speed == 0 {
                         return Err(PciHealthError::LinkDown);
@@ -211,12 +210,17 @@ impl PciHealth {
         if let Some(lnk_off) = lnk_ctl {
             let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off);
             PciConfigSpace::write_config_word_raw(
-                b, d, f, lnk_off,
+                b,
+                d,
+                f,
+                lnk_off,
                 ctl | (1 << 5), // Set Link Retrain
             );
             log::info!(
                 "PciHealth: link retrain on bridge {:02x}:{:02x}.{}",
-                b, d, f,
+                b,
+                d,
+                f,
             );
             crate::timing::delay_us(10_000);
             true

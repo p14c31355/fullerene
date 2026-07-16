@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::map_handle;
-use petroleum::common::memory::UserSlice;
 use core::sync::atomic::{AtomicU64, Ordering};
+use petroleum::common::memory::UserSlice;
 
 use super::interface::{SyscallError, SyscallResult};
 use super::process::{alloc_handle, with_handle};
@@ -42,8 +42,8 @@ pub fn check_and_fire_timers() {
     };
 
     for (owner_pid, event_handle) in expired {
-        let waiters_to_unblock: Vec<process::ProcessId> =
-            process::SCHEDULER.with_process(owner_pid, |proc| {
+        let waiters_to_unblock: Vec<process::ProcessId> = process::SCHEDULER
+            .with_process(owner_pid, |proc| {
                 let mut ht = proc.resources.handle_table.lock();
                 if let Some(KernelObject::Event(e)) = ht.get_mut(event_handle) {
                     let mut inner = e.inner.lock();
@@ -52,7 +52,8 @@ pub fn check_and_fire_timers() {
                 } else {
                     Vec::new()
                 }
-            }).unwrap_or_default();
+            })
+            .unwrap_or_default();
         for pid in waiters_to_unblock {
             crate::process::unblock_process(pid);
         }
@@ -70,24 +71,25 @@ pub(crate) fn syscall_clock_gettime(clock_id: u64, timespec_buf: *mut u8) -> Sys
             let us = uptime_us();
             (us / 1_000_000, ((us % 1_000_000) * 1000))
         }
-        1 => {
-            (0, 0)
-        }
+        1 => (0, 0),
         _ => return Err(SyscallError::InvalidArgument),
     };
 
-    let slice = UserSlice::new(timespec_buf, 16, true)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let slice =
+        UserSlice::new(timespec_buf, 16, true).map_err(|_| SyscallError::InvalidArgument)?;
     let mut kernel_buf = [0u8; 16];
     kernel_buf[0..8].copy_from_slice(&sec.to_ne_bytes());
     kernel_buf[8..16].copy_from_slice(&nsec.to_ne_bytes());
-    unsafe { slice.copy_to_user(&kernel_buf) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
 
     Ok(0)
 }
 
-pub(crate) fn syscall_timer_create(_clock_id: u64, deadline_ns: u64, event_handle: u64) -> SyscallResult {
+pub(crate) fn syscall_timer_create(
+    _clock_id: u64,
+    deadline_ns: u64,
+    event_handle: u64,
+) -> SyscallResult {
     let h = Handle::from_raw(event_handle);
 
     with_handle(h, |obj| {
@@ -126,10 +128,8 @@ pub(crate) fn syscall_uptime(buf: *mut u8) -> SyscallResult {
     }
     petroleum::validate_user_buffer(buf as usize, 8, false)?;
     let us = uptime_us();
-    let slice = UserSlice::new(buf, 8, true)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let slice = UserSlice::new(buf, 8, true).map_err(|_| SyscallError::InvalidArgument)?;
     let kernel_buf = us.to_ne_bytes();
-    unsafe { slice.copy_to_user(&kernel_buf) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
     Ok(0)
 }

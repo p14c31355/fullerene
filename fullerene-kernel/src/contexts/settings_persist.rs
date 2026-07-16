@@ -132,11 +132,21 @@ pub fn load_settings(
     }
 
     let bright_x100 = (brightness.clamp(0.1, 1.0) * 100.0) as u32;
-    (sensitivity.clamp(0.25, 4.0), bright_x100, top_panel, window_corner)
+    (
+        sensitivity.clamp(0.25, 4.0),
+        bright_x100,
+        top_panel,
+        window_corner,
+    )
 }
 
 /// Build a TOML string from current settings.
-pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: bool, corner_rounded: bool) -> String {
+pub fn format_settings_toml(
+    sensitivity: f32,
+    brightness_x100: u32,
+    top_panel: bool,
+    corner_rounded: bool,
+) -> String {
     alloc::format!(
         "# Fullerene Settings\n\
          # Auto-generated — do not edit while the system is running\n\

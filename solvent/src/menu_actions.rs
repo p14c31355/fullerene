@@ -1,7 +1,7 @@
 //! Menu actions and info-window dispatch.
 //! Extracted from the monolith lib.rs to respect AGENTS.md §10.
 
-use crate::{network_manager, FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, truncate_to_chars};
+use crate::{FB_DIMS, RuntimeState, SOLVENT_CALLBACKS, network_manager, truncate_to_chars};
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;

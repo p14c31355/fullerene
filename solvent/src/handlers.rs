@@ -217,9 +217,8 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                 explorer.context_menu.open = true;
                 explorer.context_menu.x = (rel_x.max(0) as u32)
                     .min(win_w.saturating_sub(crate::explorer::CONTEXT_MENU_W));
-                explorer.context_menu.y = (rel_y.max(0) as u32).min(
-                    win_h.saturating_sub(6 * crate::explorer::ROW_HEIGHT),
-                );
+                explorer.context_menu.y = (rel_y.max(0) as u32)
+                    .min(win_h.saturating_sub(6 * crate::explorer::ROW_HEIGHT));
                 explorer.selected_index = hit;
                 rt.explorer_dirty = true;
                 rt.frame_due = true;
@@ -268,7 +267,8 @@ fn handle_timezone_click(rt: &mut crate::RuntimeState) -> bool {
     for (i, offset) in timezones.iter().enumerate() {
         let ey = start_y + (i as i32) * (entry_h + pad);
         if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
-            crate::clock::TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
+            crate::clock::TIMEZONE_OFFSET_HOURS
+                .store(*offset, core::sync::atomic::Ordering::Relaxed);
             rt.shell_state = ShellState::Desktop;
             rt.frame_due = true;
             return true;

@@ -117,7 +117,11 @@ impl EhciContext {
     /// # Safety
     /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
     /// of the returned controller.
-    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
+    pub unsafe fn new(
+        mmio_base: *mut u8,
+        ctx: &'static dyn DriverContext,
+        health: PciHealth,
+    ) -> Option<Self> {
         // Brief delay after PCI config-space setup before first MMIO access;
         // mirrors the same guard in the xHCI path.
         crate::timing::delay_us(100);
@@ -164,7 +168,10 @@ impl EhciContext {
                 return true;
             }
             cmd & USBCMD_HCRESET == 0
-        }).is_err() || aborted {
+        })
+        .is_err()
+            || aborted
+        {
             return Err("HCRESET timeout or device disconnected");
         }
         crate::debug::hint(b"eh_rdy");
@@ -191,7 +198,10 @@ impl EhciContext {
                 return true;
             }
             sts & USBSTS_HCH == 0
-        }).is_err() || aborted {
+        })
+        .is_err()
+            || aborted
+        {
             return Err("EHCI start timeout or device disconnected");
         }
 
@@ -245,18 +255,16 @@ impl EhciContext {
 
             // Port reset (EHCI spec §4.2.4: PR must be cleared by HC, not by driver)
             op.write_portsc(port_idx, portsc | PORTSC_RESET);
-            let pr_cleared = crate::timing::wait_timeout_us(200_000, || {
-                op.portsc(port_idx) & PORTSC_RESET == 0
-            }).is_ok();
+            let pr_cleared =
+                crate::timing::wait_timeout_us(200_000, || op.portsc(port_idx) & PORTSC_RESET == 0)
+                    .is_ok();
             if !pr_cleared {
                 self.ports.mark_processed(port_idx);
                 continue;
             }
 
             // Wait for PE
-            crate::timing::wait_timeout_us(10_000, || {
-                op.portsc(port_idx) & PORTSC_PE != 0
-            }).ok();
+            crate::timing::wait_timeout_us(10_000, || op.portsc(port_idx) & PORTSC_PE != 0).ok();
 
             // Check CCS survived
             if op.portsc(port_idx) & PORTSC_CCS == 0 {
@@ -351,7 +359,9 @@ impl EhciContext {
                 op.write_usbsts(USBSTS_AAINT);
             }
             ready
-        }).is_err() {
+        })
+        .is_err()
+        {
             return Err("async advance timeout");
         }
         Ok(())
@@ -701,5 +711,4 @@ impl EhciContext {
             .free_contiguous_frames(staging_phys, staging_pages);
         Ok(len)
     }
-
 }

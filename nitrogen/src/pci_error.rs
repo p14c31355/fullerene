@@ -70,7 +70,11 @@ pub fn configure_completion_timeout(bus: u8, dev: u8, func: u8) {
     if new_devctl2 != devctl2 {
         log::info!(
             "PCIe: set Completion Timeout on {:02x}:{:02x}.{} from {:#x} to {:#x}",
-            bus, dev, func, cto_field, new_cto,
+            bus,
+            dev,
+            func,
+            cto_field,
+            new_cto,
         );
         PciConfigSpace::write_config_word_raw(bus, dev, func, devctl2_off, new_devctl2);
     }
@@ -109,11 +113,7 @@ fn find_aer_cap(_bus: u8, _dev: u8, _func: u8) -> Option<u16> {
 ///
 /// `upstream_bus` / `upstream_dev` / `upstream_func` identify the
 /// upstream PCIe Root Port (bridge) for the endpoint.
-pub fn configure_root_port_error_reporting(
-    upstream_bus: u8,
-    upstream_dev: u8,
-    upstream_func: u8,
-) {
+pub fn configure_root_port_error_reporting(upstream_bus: u8, upstream_dev: u8, upstream_func: u8) {
     if let Some(aer_off) = find_aer_cap(upstream_bus, upstream_dev, upstream_func) {
         // ── AER path ───────────────────────────────────────
         // AER registers live in extended config space → must use ECAM.
@@ -126,10 +126,14 @@ pub fn configure_root_port_error_reporting(
         if uem & CT_BIT != 0 {
             log::info!(
                 "PCIe AER: unmasking Completion Timeout on Root Port {:02x}:{:02x}.{}",
-                upstream_bus, upstream_dev, upstream_func,
+                upstream_bus,
+                upstream_dev,
+                upstream_func,
             );
             pci::write_ext_dword(
-                upstream_bus, upstream_dev, upstream_func,
+                upstream_bus,
+                upstream_dev,
+                upstream_func,
                 aer_off + 8,
                 uem & !CT_BIT,
             );
@@ -140,10 +144,14 @@ pub fn configure_root_port_error_reporting(
         if ues & CT_BIT != 0 {
             log::info!(
                 "PCIe AER: setting Completion Timeout severity to Non-Fatal on Root Port {:02x}:{:02x}.{}",
-                upstream_bus, upstream_dev, upstream_func,
+                upstream_bus,
+                upstream_dev,
+                upstream_func,
             );
             pci::write_ext_dword(
-                upstream_bus, upstream_dev, upstream_func,
+                upstream_bus,
+                upstream_dev,
+                upstream_func,
                 aer_off + 0xC,
                 ues & !CT_BIT,
             );
@@ -151,7 +159,8 @@ pub fn configure_root_port_error_reporting(
     } else if let Some(pcie_cap) = find_pcie_cap(upstream_bus, upstream_dev, upstream_func) {
         // ── PCIe Root Control fallback (non-AER) ───────────
         let rctl_off = pcie_cap + 0x1C;
-        let rctl = PciConfigSpace::read_config_word(upstream_bus, upstream_dev, upstream_func, rctl_off);
+        let rctl =
+            PciConfigSpace::read_config_word(upstream_bus, upstream_dev, upstream_func, rctl_off);
         // Bits:
         //   0 = System Error on Fatal Error Enable
         //   1 = System Error on Non-Fatal Error Enable
@@ -161,9 +170,18 @@ pub fn configure_root_port_error_reporting(
         if rctl != want {
             log::info!(
                 "PCIe RootCtl: enabling error reporting on {:02x}:{:02x}.{} (was {:#06x})",
-                upstream_bus, upstream_dev, upstream_func, rctl,
+                upstream_bus,
+                upstream_dev,
+                upstream_func,
+                rctl,
             );
-            PciConfigSpace::write_config_word_raw(upstream_bus, upstream_dev, upstream_func, rctl_off, want);
+            PciConfigSpace::write_config_word_raw(
+                upstream_bus,
+                upstream_dev,
+                upstream_func,
+                rctl_off,
+                want,
+            );
         }
     }
 }

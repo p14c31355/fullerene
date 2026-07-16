@@ -68,7 +68,11 @@ pub fn update_clock() -> bool {
             }
             alloc::format!(
                 "{} {:02}{:02} {:02}{:02}",
-                local_year as u16, local_month as u8, local_day as u8, local_hour as u8, minute
+                local_year as u16,
+                local_month as u8,
+                local_day as u8,
+                local_hour as u8,
+                minute
             )
         } else {
             String::from("---- ---- ----")

@@ -70,22 +70,37 @@ macro_rules! fs_dispatch {
     ($name:ident, $field:ident, $err:expr) => {
         pub fn $name(ctx: &mut CommandContext) {
             let hooks = FS_HOOKS.lock();
-            if let Some(f) = hooks.$field { drop(hooks); f(ctx); }
-            else { drop(hooks); ctx.terminal.write_str($err); }
+            if let Some(f) = hooks.$field {
+                drop(hooks);
+                f(ctx);
+            } else {
+                drop(hooks);
+                ctx.terminal.write_str($err);
+            }
         }
     };
     ($name:ident, $field:ident, $err:expr, $arg:ident: &str) => {
         pub fn $name(ctx: &mut CommandContext, $arg: &str) {
             let hooks = FS_HOOKS.lock();
-            if let Some(f) = hooks.$field { drop(hooks); f(ctx, $arg); }
-            else { drop(hooks); ctx.terminal.write_str($err); }
+            if let Some(f) = hooks.$field {
+                drop(hooks);
+                f(ctx, $arg);
+            } else {
+                drop(hooks);
+                ctx.terminal.write_str($err);
+            }
         }
     };
     ($name:ident, $field:ident, $err:expr, $a:ident: &str, $b:ident: &str) => {
         pub fn $name(ctx: &mut CommandContext, $a: &str, $b: &str) {
             let hooks = FS_HOOKS.lock();
-            if let Some(f) = hooks.$field { drop(hooks); f(ctx, $a, $b); }
-            else { drop(hooks); ctx.terminal.write_str($err); }
+            if let Some(f) = hooks.$field {
+                drop(hooks);
+                f(ctx, $a, $b);
+            } else {
+                drop(hooks);
+                ctx.terminal.write_str($err);
+            }
         }
     };
 }

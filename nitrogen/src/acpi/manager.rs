@@ -25,7 +25,11 @@ impl AcpiManager {
     /// falls back to a legacy EBDA / BIOS ROM scan.
     pub fn init(hint_rsdp: u64) -> Option<Self> {
         let rsdp = if hint_rsdp != 0 {
-            if acpi::find_rsdp_from_addr(hint_rsdp) { hint_rsdp } else { 0 }
+            if acpi::find_rsdp_from_addr(hint_rsdp) {
+                hint_rsdp
+            } else {
+                0
+            }
         } else {
             0
         };
@@ -64,12 +68,21 @@ impl AcpiManager {
             let start_bus = unsafe { core::ptr::read_unaligned(p.add(offset + 10) as *const u8) };
             let end_bus = unsafe { core::ptr::read_unaligned(p.add(offset + 11) as *const u8) };
             if segment == 0 {
-                return Some(McfgEntry { segment, start_bus, end_bus, base_address: base_addr });
+                return Some(McfgEntry {
+                    segment,
+                    start_bus,
+                    end_bus,
+                    base_address: base_addr,
+                });
             }
-            log::debug!("MCFG: skipping segment {} (bus {}-{})", segment, start_bus, end_bus);
+            log::debug!(
+                "MCFG: skipping segment {} (bus {}-{})",
+                segment,
+                start_bus,
+                end_bus
+            );
             offset += 16;
         }
         None
     }
-
 }

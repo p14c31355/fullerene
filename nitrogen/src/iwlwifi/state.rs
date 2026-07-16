@@ -7,15 +7,15 @@ use alloc::vec::Vec;
 use core::sync::atomic::AtomicBool;
 use spin::Mutex;
 
-use bonder::wifi::Ssid;
+use crate::DriverContext;
 use crate::debug;
 use crate::mmio::{self, DmaRegion};
 use crate::pci_health::PciHealth;
-use crate::DriverContext;
+use bonder::wifi::Ssid;
 
+use super::device::IwlWifiDevice;
 use super::regs::*;
 use super::types::*;
-use super::device::IwlWifiDevice;
 
 // ── Global driver context for DMA ──
 
@@ -74,15 +74,25 @@ pub fn force_init_failed() {
     let mut ctx = match WIFI_INIT_CTX.try_lock() {
         Some(c) => c,
         None => {
-            debug::print("iwlwifi", "step: force_init_failed (lock held, skip cleanup)");
+            debug::print(
+                "iwlwifi",
+                "step: force_init_failed (lock held, skip cleanup)",
+            );
             return;
         }
     };
     let _ = ctx.mmio_device.take();
     // Disable PCI bus-mastering before freeing DMA regions
     if let Some(ref pci) = ctx.pci_dev {
-        let cmd = crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
-        crate::pci::PciConfigSpace::write_config_word_raw(pci.bus, pci.device, pci.function, 4, cmd & !0x04);
+        let cmd =
+            crate::pci::PciConfigSpace::read_config_word(pci.bus, pci.device, pci.function, 4);
+        crate::pci::PciConfigSpace::write_config_word_raw(
+            pci.bus,
+            pci.device,
+            pci.function,
+            4,
+            cmd & !0x04,
+        );
     }
     let drv = ctx.driver_ctx;
     for mut buf in ctx.tx_bufs.drain(..) {
@@ -135,14 +145,32 @@ const FW_7265D_27: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D
 fn select_firmware_list(device_id: u16) -> &'static [FirmwareBlob] {
     match device_id {
         0x08B1 | 0x08B2 => &[
-            FirmwareBlob { data: FW_7260_17, name: "iwlwifi-7260-17" },
-            FirmwareBlob { data: FW_7260_16, name: "iwlwifi-7260-16" },
+            FirmwareBlob {
+                data: FW_7260_17,
+                name: "iwlwifi-7260-17",
+            },
+            FirmwareBlob {
+                data: FW_7260_16,
+                name: "iwlwifi-7260-16",
+            },
         ],
         0x095A | 0x095B => &[
-            FirmwareBlob { data: FW_7265D_29, name: "iwlwifi-7265D-29" },
-            FirmwareBlob { data: FW_7265D_27, name: "iwlwifi-7265D-27" },
-            FirmwareBlob { data: FW_7265_17, name: "iwlwifi-7265-17" },
-            FirmwareBlob { data: FW_7265_16, name: "iwlwifi-7265-16" },
+            FirmwareBlob {
+                data: FW_7265D_29,
+                name: "iwlwifi-7265D-29",
+            },
+            FirmwareBlob {
+                data: FW_7265D_27,
+                name: "iwlwifi-7265D-27",
+            },
+            FirmwareBlob {
+                data: FW_7265_17,
+                name: "iwlwifi-7265-17",
+            },
+            FirmwareBlob {
+                data: FW_7265_16,
+                name: "iwlwifi-7265-16",
+            },
         ],
         _ => &[],
     }
@@ -250,7 +278,10 @@ pub fn try_init_wifi_device_step() {
             IwlWifiDevice::reset_device(mmio);
             debug::print("iwlwifi", "step: mmio_clock_req");
             unsafe {
-                core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
+                core::ptr::write_volatile(
+                    mmio.add(CSR_GP_CNTRL as usize),
+                    CSR_GP_CNTRL_MAC_ACCESS_REQ,
+                );
             }
             mmio::write_barrier();
             mmio::disarm_mmio_watchdog();
@@ -297,9 +328,7 @@ pub fn try_init_wifi_device_step() {
             let mac_acquired = {
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
-                match unsafe {
-                    mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize), health)
-                } {
+                match unsafe { mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize), health) } {
                     mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                     mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
                         mmio::disarm_mmio_watchdog();
@@ -309,7 +338,9 @@ pub fn try_init_wifi_device_step() {
                     }
                     _ => {
                         mmio::disarm_mmio_watchdog();
-                        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= TIMEOUT_CYCLES {
+                        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc)
+                            >= TIMEOUT_CYCLES
+                        {
                             debug::print("iwlwifi", "step: mmio_force_mac");
                             unsafe {
                                 core::ptr::write_volatile(
@@ -332,12 +363,13 @@ pub fn try_init_wifi_device_step() {
                                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                                 }
                                 let clock_ready = match unsafe {
-                                    mmio::checked_read_u32(
-                                        mmio.add(CSR_GP_CNTRL as usize),
-                                        health,
-                                    )
+                                    mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize), health)
                                 } {
-                                    mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
+                                    mmio::SafeReadResult::Value(v)
+                                        if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
+                                    {
+                                        true
+                                    }
                                     _ => false,
                                 };
                                 mmio::disarm_mmio_watchdog();
@@ -382,34 +414,59 @@ pub fn try_init_wifi_device_step() {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 let pci_dev = match ctx.pci_dev.take() {
                     Some(d) => d,
-                    None => { set_init_phase(WifiInitPhase::Failed); return; }
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
                 };
                 let mmio = ctx.mmio;
                 let driver_ctx = match ctx.driver_ctx {
                     Some(c) => c,
-                    None => { set_init_phase(WifiInitPhase::Failed); return; }
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
                 };
                 let health = match ctx.health.take() {
                     Some(h) => h,
-                    None => { set_init_phase(WifiInitPhase::Failed); return; }
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
                 };
                 let mac = match ctx.mac {
                     Some(m) => m,
-                    None => { set_init_phase(WifiInitPhase::Failed); return; }
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
                 };
                 let hw_rev = ctx.hw_rev;
-                let mut tx_dma_ring = match DmaRegion::alloc(driver_ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE) {
+                let mut tx_dma_ring = match DmaRegion::alloc(
+                    driver_ctx,
+                    core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE,
+                ) {
                     Some(r) => r,
-                    None => { set_init_phase(WifiInitPhase::Failed); return; }
+                    None => {
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
                 };
                 if tx_dma_ring.dma_map(driver_ctx, pci_dev.device_id).is_err() {
                     tx_dma_ring.free(driver_ctx);
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
-                let mut rx_dma_ring = match DmaRegion::alloc(driver_ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) {
+                let mut rx_dma_ring = match DmaRegion::alloc(
+                    driver_ctx,
+                    core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE,
+                ) {
                     Some(r) => r,
-                    None => { tx_dma_ring.free(driver_ctx); set_init_phase(WifiInitPhase::Failed); return; }
+                    None => {
+                        tx_dma_ring.free(driver_ctx);
+                        set_init_phase(WifiInitPhase::Failed);
+                        return;
+                    }
                 };
                 if rx_dma_ring.dma_map(driver_ctx, pci_dev.device_id).is_err() {
                     rx_dma_ring.free(driver_ctx);
@@ -421,7 +478,9 @@ pub fn try_init_wifi_device_step() {
                 for _ in 0..TX_QUEUE_SIZE {
                     let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
                         Some(b) => b,
-                        None => { break; }
+                        None => {
+                            break;
+                        }
                     };
                     if buf.dma_map(driver_ctx, pci_dev.device_id).is_err() {
                         buf.free(driver_ctx);
@@ -430,7 +489,9 @@ pub fn try_init_wifi_device_step() {
                     tx_bufs.push(buf);
                 }
                 if tx_bufs.len() < TX_QUEUE_SIZE {
-                    for mut b in tx_bufs { b.free(driver_ctx); }
+                    for mut b in tx_bufs {
+                        b.free(driver_ctx);
+                    }
                     tx_dma_ring.free(driver_ctx);
                     rx_dma_ring.free(driver_ctx);
                     set_init_phase(WifiInitPhase::Failed);
@@ -441,11 +502,16 @@ pub fn try_init_wifi_device_step() {
                 for i in 0..RX_QUEUE_SIZE {
                     let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
                         Some(b) => b,
-                        None => { break; }
+                        None => {
+                            break;
+                        }
                     };
                     let dma = match buf.dma_map(driver_ctx, pci_dev.device_id) {
                         Ok(d) => d,
-                        Err(_) => { buf.free(driver_ctx); break; }
+                        Err(_) => {
+                            buf.free(driver_ctx);
+                            break;
+                        }
                     };
                     unsafe {
                         (*rx_virt.add(i)).addr_lo = dma as u32;
@@ -456,20 +522,37 @@ pub fn try_init_wifi_device_step() {
                     rx_bufs.push(buf);
                 }
                 if rx_bufs.len() < RX_QUEUE_SIZE {
-                    for mut b in tx_bufs { b.free(driver_ctx); }
-                    for mut b in rx_bufs { b.free(driver_ctx); }
+                    for mut b in tx_bufs {
+                        b.free(driver_ctx);
+                    }
+                    for mut b in rx_bufs {
+                        b.free(driver_ctx);
+                    }
                     tx_dma_ring.free(driver_ctx);
                     rx_dma_ring.free(driver_ctx);
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
-                (pci_dev, mmio, driver_ctx, health, mac, hw_rev,
-                 tx_dma_ring, rx_dma_ring, tx_bufs, rx_bufs)
+                (
+                    pci_dev,
+                    mmio,
+                    driver_ctx,
+                    health,
+                    mac,
+                    hw_rev,
+                    tx_dma_ring,
+                    rx_dma_ring,
+                    tx_bufs,
+                    rx_bufs,
+                )
             };
             let rx_phys = rx_dma.dma_iova();
             unsafe {
                 core::ptr::write_volatile(mmio.add(FH_TX_CHNL0_WPTR as usize), 0);
-                core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_BASE as usize), rx_phys as u32);
+                core::ptr::write_volatile(
+                    mmio.add(FH_RSCSR_CHNL0_RBDCB_BASE as usize),
+                    rx_phys as u32,
+                );
                 core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize), 0);
             }
             let device = IwlWifiDevice {
@@ -493,7 +576,10 @@ pub fn try_init_wifi_device_step() {
                 rx_queue: alloc::collections::VecDeque::new(),
                 tx_dma_ring: tx_dma,
                 rx_dma_ring: rx_dma,
-                tx_head: 0, tx_tail: 0, rx_head: 0, rx_tail: 0,
+                tx_head: 0,
+                tx_tail: 0,
+                rx_head: 0,
+                rx_tail: 0,
                 tx_bufs,
                 rx_bufs,
                 ip_address: [0u8; 4],
@@ -529,7 +615,8 @@ pub fn try_init_wifi_device_step() {
             };
             log::info!(
                 "iwlwifi: step: trying firmware {} ({} bytes)",
-                fw_name, fw_data.len()
+                fw_name,
+                fw_data.len()
             );
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
@@ -549,7 +636,10 @@ pub fn try_init_wifi_device_step() {
             mmio::disarm_mmio_watchdog();
             match start_result {
                 Ok(()) => {
-                    log::info!("iwlwifi: step: firmware {} upload complete, waiting for alive", fw_name);
+                    log::info!(
+                        "iwlwifi: step: firmware {} upload complete, waiting for alive",
+                        fw_name
+                    );
                     debug::print("iwlwifi", "step: fw_uploaded");
                     let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
                     WIFI_INIT_CTX.lock().alive_start_tsc = now_tsc;
@@ -647,16 +737,24 @@ pub fn try_init_wifi_device_step() {
             let _ = ctx.mmio_device.take();
             let drv = ctx.driver_ctx;
             for mut buf in ctx.tx_bufs.drain(..) {
-                if let Some(c) = drv { buf.free(c); }
+                if let Some(c) = drv {
+                    buf.free(c);
+                }
             }
             for mut buf in ctx.rx_bufs.drain(..) {
-                if let Some(c) = drv { buf.free(c); }
+                if let Some(c) = drv {
+                    buf.free(c);
+                }
             }
             if let Some(mut ring) = ctx.tx_dma_ring.take() {
-                if let Some(c) = drv { ring.free(c); }
+                if let Some(c) = drv {
+                    ring.free(c);
+                }
             }
             if let Some(mut ring) = ctx.rx_dma_ring.take() {
-                if let Some(c) = drv { ring.free(c); }
+                if let Some(c) = drv {
+                    ring.free(c);
+                }
             }
             drop(ctx);
             WIFI_INIT_COMPLETED.store(true, core::sync::atomic::Ordering::Release);
@@ -766,10 +864,7 @@ fn update_wifi_manager(dev: &dyn crate::wifi::WifiDriver) {
         m.connected_ssid = dev.connected_ssid().map(|s| s.to_string());
         let ip = dev.ip_address();
         if ip != [0u8; 4] {
-            m.ip_address = Some(alloc::format!(
-                "{}.{}.{}.{}",
-                ip[0], ip[1], ip[2], ip[3]
-            ));
+            m.ip_address = Some(alloc::format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]));
         } else {
             m.ip_address = None;
         }
@@ -798,7 +893,8 @@ pub fn start_scan_if_idle() {
         let dev_ref: &mut dyn crate::wifi::WifiDriver = &mut **dev;
         // Only start a scan if the device is ready and not already busy.
         if dev_ref.device_available()
-            && dev_ref.get_status() == bonder::wifi::WifiStatus::Disconnected {
+            && dev_ref.get_status() == bonder::wifi::WifiStatus::Disconnected
+        {
             let _ = dev_ref.start_scan();
         }
     }

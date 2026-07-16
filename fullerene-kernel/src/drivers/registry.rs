@@ -14,23 +14,23 @@
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::boxed::Box;
-#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
-use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(nitrogen_no_usb))]
 use core::sync::atomic::AtomicUsize;
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(not(nitrogen_no_usb))]
 use spin::Mutex;
 
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use genome::block::BlockDevice;
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
-use nitrogen::driver_api::{Driver, DriverBox};
+use nitrogen::DriverContext;
 #[cfg(not(nitrogen_no_usb))]
 use nitrogen::driver_api::UsbHostDriver;
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
-use nitrogen::pci::PciDevice;
+use nitrogen::driver_api::{Driver, DriverBox};
 #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
-use nitrogen::DriverContext;
+use nitrogen::pci::PciDevice;
 
 // ────────────────────────────────────────────────────────────
 //  Re-exports (for external callers such as shell / GUI)
@@ -209,8 +209,12 @@ impl StorageDriver for SdCardStorageCtl {
     fn write_blocks(&self, _lba: u64, _count: usize, _buf: &[u8]) -> Result<(), &'static str> {
         Err("not a single block device")
     }
-    fn block_size(&self) -> u32 { 0 }
-    fn total_blocks(&self) -> u64 { 0 }
+    fn block_size(&self) -> u32 {
+        0
+    }
+    fn total_blocks(&self) -> u64 {
+        0
+    }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -260,23 +264,45 @@ impl BlockDevice for UsbBlockDevice {
     fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
         with_ctx(|ctx| {
             ctx.bot_read(
-                self.ctrl_type, self.ctrl_idx, self.dev_addr,
-                self.ep_out, self.ep_out_mps, self.ep_in, self.ep_in_mps,
-                lba, count, self.block_size, buf, &mut self.tag,
+                self.ctrl_type,
+                self.ctrl_idx,
+                self.dev_addr,
+                self.ep_out,
+                self.ep_out_mps,
+                self.ep_in,
+                self.ep_in_mps,
+                lba,
+                count,
+                self.block_size,
+                buf,
+                &mut self.tag,
             )
         })
     }
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
         with_ctx(|ctx| {
             ctx.bot_write(
-                self.ctrl_type, self.ctrl_idx, self.dev_addr,
-                self.ep_out, self.ep_out_mps, self.ep_in, self.ep_in_mps,
-                lba, count, self.block_size, buf, &mut self.tag,
+                self.ctrl_type,
+                self.ctrl_idx,
+                self.dev_addr,
+                self.ep_out,
+                self.ep_out_mps,
+                self.ep_in,
+                self.ep_in_mps,
+                lba,
+                count,
+                self.block_size,
+                buf,
+                &mut self.tag,
             )
         })
     }
-    fn sector_size(&self) -> u32 { self.block_size }
-    fn total_sectors(&self) -> u64 { self.total_blocks }
+    fn sector_size(&self) -> u32 {
+        self.block_size
+    }
+    fn total_sectors(&self) -> u64 {
+        self.total_blocks
+    }
 }
 
 /// Poll an already-active USB controller and register newly-discovered
@@ -489,7 +515,9 @@ pub fn sd_probe_and_register() -> bool {
 
     crate::klog_fmt!(
         "SD card: {:?} {} sectors {} bytes/sector\n",
-        info.card_type, info.total_blocks, info.block_size
+        info.card_type,
+        info.total_blocks,
+        info.block_size
     );
 
     let bdev = Box::new(SdBlockDev {
@@ -553,8 +581,12 @@ impl BlockDevice for SdBlockDev {
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
         nitrogen::storage::rtsx::write_sectors(lba, count, buf)
     }
-    fn sector_size(&self) -> u32 { self.block_size }
-    fn total_sectors(&self) -> u64 { self.total_blocks }
+    fn sector_size(&self) -> u32 {
+        self.block_size
+    }
+    fn total_sectors(&self) -> u64 {
+        self.total_blocks
+    }
 }
 
 // ────────────────────────────────────────────────────────────

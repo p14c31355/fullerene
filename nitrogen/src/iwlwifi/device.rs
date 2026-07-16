@@ -3,18 +3,18 @@
 
 #![allow(dead_code)]
 
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
 
+use bonder::dhcp::DhcpClient;
 use bonder::wifi::{self, AccessPoint};
 use bonder::wpa::WpaSupplicant;
-use bonder::dhcp::DhcpClient;
 
+use crate::DriverContext;
+use crate::debug;
+use crate::mmio::{self, DmaRegion, SafeReadResult};
 use crate::pci::{PciDevice, PciScanner};
 use crate::pci_health::PciHealth;
-use crate::mmio::{self, DmaRegion, SafeReadResult};
-use crate::debug;
-use crate::DriverContext;
 
 use super::regs::*;
 use super::types::*;
@@ -162,7 +162,9 @@ impl IwlWifiDevice {
 
     fn init(device: PciDevice, ctx: &'static dyn DriverContext) -> Result<Self, IwlError> {
         let mut health = PciHealth::new(&device);
-        health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
+        health
+            .pre_mmio_access()
+            .map_err(|_| IwlError::BarNotAvailable)?;
 
         if !device.prepare_mmio() {
             return Err(IwlError::BarNotAvailable);
@@ -177,7 +179,9 @@ impl IwlWifiDevice {
             .unwrap_or(0x1000);
         log::info!(
             "iwlwifi: mapping BAR0 {:#x} -> virt {:#p} ({} bytes)",
-            bar0_addr, mmio_virt as *mut u8, bar0_size
+            bar0_addr,
+            mmio_virt as *mut u8,
+            bar0_size
         );
         ctx.map_mmio_region(bar0_addr as usize, mmio_virt, bar0_size)
             .map_err(|_| {
@@ -187,14 +191,15 @@ impl IwlWifiDevice {
 
         let mmio = mmio_virt as *mut u32;
 
-        health.pre_mmio_access().map_err(|_| IwlError::BarNotAvailable)?;
+        health
+            .pre_mmio_access()
+            .map_err(|_| IwlError::BarNotAvailable)?;
 
-        let hw_rev_raw = match unsafe {
-            mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize), Some(&health))
-        } {
-            mmio::SafeReadResult::Value(v) => v,
-            _ => return Err(IwlError::BarNotAvailable),
-        };
+        let hw_rev_raw =
+            match unsafe { mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize), Some(&health)) } {
+                mmio::SafeReadResult::Value(v) => v,
+                _ => return Err(IwlError::BarNotAvailable),
+            };
         let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
         log::info!("iwlwifi: HW_REV={:#06x}", hw_rev);
 
@@ -216,20 +221,25 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
         }
 
-        let mut tx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
-            .ok_or(IwlError::DmaAllocFailed)
-            .and_then(|mut r| {
-                r.dma_map(ctx, device.device_id)
-                    .map_err(|_| { r.free(ctx); IwlError::DmaAllocFailed })
-                    .map(|_| r)
-            })?;
-        let mut rx_dma_ring = match DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) {
-            Some(r) => r,
-            None => {
-                tx_dma_ring.free(ctx);
-                return Err(IwlError::DmaAllocFailed);
-            }
-        };
+        let mut tx_dma_ring =
+            DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
+                .ok_or(IwlError::DmaAllocFailed)
+                .and_then(|mut r| {
+                    r.dma_map(ctx, device.device_id)
+                        .map_err(|_| {
+                            r.free(ctx);
+                            IwlError::DmaAllocFailed
+                        })
+                        .map(|_| r)
+                })?;
+        let mut rx_dma_ring =
+            match DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) {
+                Some(r) => r,
+                None => {
+                    tx_dma_ring.free(ctx);
+                    return Err(IwlError::DmaAllocFailed);
+                }
+            };
         if rx_dma_ring.dma_map(ctx, device.device_id).is_err() {
             rx_dma_ring.free(ctx);
             tx_dma_ring.free(ctx);
@@ -271,8 +281,12 @@ impl IwlWifiDevice {
         })();
 
         if let Err(e) = init_result {
-            for mut buf in tx_bufs { buf.free(ctx); }
-            for mut buf in rx_bufs { buf.free(ctx); }
+            for mut buf in tx_bufs {
+                buf.free(ctx);
+            }
+            for mut buf in rx_bufs {
+                buf.free(ctx);
+            }
             tx_dma_ring.free(ctx);
             rx_dma_ring.free(ctx);
             return Err(e);
@@ -373,21 +387,26 @@ impl IwlWifiDevice {
         }
 
         debug::print("iwlwifi", "alloc_tx_ring");
-        let mut tx_dma_ring = DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
-            .ok_or(IwlError::DmaAllocFailed)
-            .and_then(|mut r| {
-                r.dma_map(ctx, device.device_id)
-                    .map_err(|_| { r.free(ctx); IwlError::DmaAllocFailed })
-                    .map(|_| r)
-            })?;
+        let mut tx_dma_ring =
+            DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
+                .ok_or(IwlError::DmaAllocFailed)
+                .and_then(|mut r| {
+                    r.dma_map(ctx, device.device_id)
+                        .map_err(|_| {
+                            r.free(ctx);
+                            IwlError::DmaAllocFailed
+                        })
+                        .map(|_| r)
+                })?;
         debug::print("iwlwifi", "alloc_rx_ring");
-        let mut rx_dma_ring = match DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) {
-            Some(r) => r,
-            None => {
-                tx_dma_ring.free(ctx);
-                return Err(IwlError::DmaAllocFailed);
-            }
-        };
+        let mut rx_dma_ring =
+            match DmaRegion::alloc(ctx, core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE) {
+                Some(r) => r,
+                None => {
+                    tx_dma_ring.free(ctx);
+                    return Err(IwlError::DmaAllocFailed);
+                }
+            };
         if rx_dma_ring.dma_map(ctx, device.device_id).is_err() {
             rx_dma_ring.free(ctx);
             tx_dma_ring.free(ctx);
@@ -400,7 +419,8 @@ impl IwlWifiDevice {
         debug::print("iwlwifi", "alloc_tx_bufs");
         let init_result = (|| -> Result<(), IwlError> {
             for _ in 0..TX_QUEUE_SIZE {
-                let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                let mut buf =
+                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 if buf.dma_map(ctx, device.device_id).is_err() {
                     buf.free(ctx);
                     return Err(IwlError::DmaAllocFailed);
@@ -409,7 +429,8 @@ impl IwlWifiDevice {
             }
             debug::print("iwlwifi", "alloc_rx_bufs");
             for i in 0..RX_QUEUE_SIZE {
-                let mut buf = DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
+                let mut buf =
+                    DmaRegion::alloc(ctx, MAX_FRAME_SIZE).ok_or(IwlError::DmaAllocFailed)?;
                 let dma = match buf.dma_map(ctx, device.device_id) {
                     Ok(d) => d,
                     Err(_) => {
@@ -430,8 +451,12 @@ impl IwlWifiDevice {
 
         if let Err(e) = init_result {
             debug::print("iwlwifi", "ERR init_result");
-            for mut buf in tx_bufs { buf.free(ctx); }
-            for mut buf in rx_bufs { buf.free(ctx); }
+            for mut buf in tx_bufs {
+                buf.free(ctx);
+            }
+            for mut buf in rx_bufs {
+                buf.free(ctx);
+            }
             tx_dma_ring.free(ctx);
             rx_dma_ring.free(ctx);
             return Err(e);
@@ -482,10 +507,7 @@ impl IwlWifiDevice {
     /// Reset the device with posted-write + pure TSC delays.
     pub fn reset_device(mmio: *mut u32) {
         unsafe {
-            core::ptr::write_volatile(
-                mmio.add(CSR_RESET as usize),
-                CSR_RESET_BIT_STOP_MASTER,
-            );
+            core::ptr::write_volatile(mmio.add(CSR_RESET as usize), CSR_RESET_BIT_STOP_MASTER);
         }
         crate::timing::delay_us(10_000);
         unsafe {
@@ -524,11 +546,17 @@ impl IwlWifiDevice {
                 0x0D4 / 4
             };
 
-            if let (Some(mac_lo), Some(mac_hi)) = (checked_read(mac_addr_shadow), checked_read(mac_addr_shadow + 1)) {
+            if let (Some(mac_lo), Some(mac_hi)) = (
+                checked_read(mac_addr_shadow),
+                checked_read(mac_addr_shadow + 1),
+            ) {
                 let mac = [
-                    mac_lo as u8, (mac_lo >> 8) as u8,
-                    (mac_lo >> 16) as u8, (mac_lo >> 24) as u8,
-                    mac_hi as u8, (mac_hi >> 8) as u8,
+                    mac_lo as u8,
+                    (mac_lo >> 8) as u8,
+                    (mac_lo >> 16) as u8,
+                    (mac_lo >> 24) as u8,
+                    mac_hi as u8,
+                    (mac_hi >> 8) as u8,
                 ];
                 if mac != [0; 6] && mac != [0xFF; 6] {
                     return mac;
@@ -538,9 +566,12 @@ impl IwlWifiDevice {
 
         if let (Some(mac_lo), Some(mac_hi)) = (checked_read(0x0D4 / 4), checked_read(0x0D8 / 4)) {
             let fallback = [
-                mac_lo as u8, (mac_lo >> 8) as u8,
-                (mac_lo >> 16) as u8, (mac_lo >> 24) as u8,
-                mac_hi as u8, (mac_hi >> 8) as u8,
+                mac_lo as u8,
+                (mac_lo >> 8) as u8,
+                (mac_lo >> 16) as u8,
+                (mac_lo >> 24) as u8,
+                mac_hi as u8,
+                (mac_hi >> 8) as u8,
             ];
             if fallback != [0; 6] && fallback != [0xFF; 6] {
                 return fallback;
@@ -578,16 +609,12 @@ impl IwlWifiDevice {
 
         self.fw_state = FwState::Loading;
 
-        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
+        let gp = self
+            .safe_read32(CSR_GP_CNTRL)
+            .ok_or("Device unresponsive")?;
         unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_GP_CNTRL as usize),
-                gp & !0x04,
-            );
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_RESET as usize),
-                0x00000080,
-            );
+            core::ptr::write_volatile(self.mmio.add(CSR_GP_CNTRL as usize), gp & !0x04);
+            core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0x00000080);
         }
         crate::timing::delay_us(10_000);
 
@@ -619,19 +646,17 @@ impl IwlWifiDevice {
         self.fw_build = unsafe { core::ptr::read_unaligned(fw_ptr.add(76) as *const u32) };
         log::info!(
             "iwlwifi: firmware API v{}, build {}",
-            self.fw_api_ver, self.fw_build
+            self.fw_api_ver,
+            self.fw_build
         );
 
         let mut off = FW_HEADER_SIZE;
         let mut section_count = 0u32;
 
         while off + 8 <= fw_data.len() {
-            let tlv_type: u32 = unsafe {
-                core::ptr::read_unaligned(fw_ptr.add(off) as *const u32)
-            };
-            let tlv_len: u32 = unsafe {
-                core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32)
-            };
+            let tlv_type: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off) as *const u32) };
+            let tlv_len: u32 =
+                unsafe { core::ptr::read_unaligned(fw_ptr.add(off + 4) as *const u32) };
             let tlv_data_off = off + 8;
             let tlv_end = match tlv_data_off.checked_add(tlv_len as usize) {
                 Some(end) => end,
@@ -653,12 +678,15 @@ impl IwlWifiDevice {
                     };
                     let data_size = tlv_len - 4;
                     if data_size > 0 {
-                        let section_data = &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
+                        let section_data =
+                            &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
                         self.upload_section(target, section_data)?;
                         section_count += 1;
                         log::info!(
                             "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
-                            section_count, target, data_size
+                            section_count,
+                            target,
+                            data_size
                         );
                     }
                 }
@@ -685,13 +713,12 @@ impl IwlWifiDevice {
         crate::timing::delay_us(10_000);
 
         unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_UCODE_GP1 as usize),
-                0x00000001,
-            );
+            core::ptr::write_volatile(self.mmio.add(CSR_UCODE_GP1 as usize), 0x00000001);
         }
 
-        let gp = self.safe_read32(CSR_GP_CNTRL).ok_or("Device unresponsive")?;
+        let gp = self
+            .safe_read32(CSR_GP_CNTRL)
+            .ok_or("Device unresponsive")?;
         unsafe {
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
@@ -700,10 +727,7 @@ impl IwlWifiDevice {
         }
 
         unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_INT_MASK as usize),
-                !(1u32 << 0),
-            );
+            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), !(1u32 << 0));
         }
 
         Ok(())
@@ -722,17 +746,17 @@ impl IwlWifiDevice {
             let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
             log::info!(
                 "iwlwifi: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x}",
-                csr_int, csr_gp, csr_ucode, csr_reset
+                csr_int,
+                csr_gp,
+                csr_ucode,
+                csr_reset
             );
         }
         alive?;
 
         debug::print("iwlwifi", "fw: alive_ok");
         unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(CSR_INT_MASK as usize),
-                0xFFFFFFFFu32,
-            );
+            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
         }
 
         self.fw_state = FwState::Ready;
@@ -752,10 +776,7 @@ impl IwlWifiDevice {
         let extra = data.len() % 4;
 
         unsafe {
-            core::ptr::write_volatile(
-                self.mmio.add(HBUS_TARG_MEM_WADDR as usize),
-                target_addr,
-            );
+            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WADDR as usize), target_addr);
 
             for i in 0..dwords {
                 let val = u32::from_le_bytes([
@@ -764,20 +785,14 @@ impl IwlWifiDevice {
                     data[i * 4 + 2],
                     data[i * 4 + 3],
                 ]);
-                core::ptr::write_volatile(
-                    self.mmio.add(HBUS_TARG_MEM_WDAT as usize),
-                    val,
-                );
+                core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WDAT as usize), val);
             }
 
             if extra > 0 {
                 let mut last = [0u8; 4];
                 last[..extra].copy_from_slice(&data[dwords * 4..]);
                 let val = u32::from_le_bytes(last);
-                core::ptr::write_volatile(
-                    self.mmio.add(HBUS_TARG_MEM_WDAT as usize),
-                    val,
-                );
+                core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WDAT as usize), val);
             }
         }
 
@@ -846,7 +861,9 @@ impl IwlWifiDevice {
 
     /// Start firmware upload and CPU boot without waiting for alive.
     pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
-        self.health.recover().map_err(|_| "Device not accessible for firmware upload")?;
+        self.health
+            .recover()
+            .map_err(|_| "Device not accessible for firmware upload")?;
 
         self.upload_firmware_and_start_cpu(fw_data)?;
 
@@ -882,10 +899,7 @@ impl IwlWifiDevice {
         if (int_cause & (1 << 0)) != 0 {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
-                core::ptr::write_volatile(
-                    self.mmio.add(CSR_INT_MASK as usize),
-                    0xFFFFFFFFu32,
-                );
+                core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
             }
             self.fw_state = FwState::Alive;
             debug::print("iwlwifi", "fw: alive_ok");
@@ -910,10 +924,7 @@ impl IwlWifiDevice {
         };
         if (ucode_gp1 & 0x01) == 0 {
             unsafe {
-                core::ptr::write_volatile(
-                    self.mmio.add(CSR_INT_MASK as usize),
-                    0xFFFFFFFFu32,
-                );
+                core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
             }
             self.fw_state = FwState::Alive;
             debug::print("iwlwifi", "fw: alive_ok");

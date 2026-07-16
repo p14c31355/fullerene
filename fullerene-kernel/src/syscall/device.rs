@@ -8,14 +8,17 @@ use super::process::{alloc_handle, with_handle_mut};
 use super::types::*;
 use crate::contexts::kernel;
 
-pub(crate) fn syscall_enumerate_devices(class: u64, buf: *mut u8, buf_size: usize) -> SyscallResult {
+pub(crate) fn syscall_enumerate_devices(
+    class: u64,
+    buf: *mut u8,
+    buf_size: usize,
+) -> SyscallResult {
     if buf.is_null() || buf_size == 0 || buf_size > (1 << 20) {
         return Err(SyscallError::InvalidArgument);
     }
     petroleum::validate_user_buffer(buf as usize, buf_size, false)?;
 
-    let slice = UserSlice::new(buf, buf_size, true)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let slice = UserSlice::new(buf, buf_size, true).map_err(|_| SyscallError::InvalidArgument)?;
 
     let mut kernel_buf = vec![0u8; buf_size];
     let count = kernel::with_kernel(|k| {
@@ -41,8 +44,7 @@ pub(crate) fn syscall_enumerate_devices(class: u64, buf: *mut u8, buf_size: usiz
     })
     .unwrap_or(0);
 
-    unsafe { slice.copy_to_user(&kernel_buf) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
     Ok(count as u64)
 }
 

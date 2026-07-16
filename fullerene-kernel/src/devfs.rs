@@ -52,14 +52,26 @@ impl FileSystem for DevFs {
         let ino = stable_ino(path);
         let fd = next_fd();
         let name = path.to_string();
-        FD_TABLE.lock().push(FdEntry { name, fd, offset: 0 });
-        Some(FileDescriptor { fd, ino, offset: 0, flags: 0 })
+        FD_TABLE.lock().push(FdEntry {
+            name,
+            fd,
+            offset: 0,
+        });
+        Some(FileDescriptor {
+            fd,
+            ino,
+            offset: 0,
+            flags: 0,
+        })
     }
 
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         let (name, entry_offset) = {
             let table = FD_TABLE.lock();
-            let entry = table.iter().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            let entry = table
+                .iter()
+                .find(|e| e.fd == fd)
+                .ok_or(FsError::InvalidFileDescriptor)?;
             (entry.name.clone(), entry.offset)
         };
         if name == NULL_DEVICE {
@@ -72,11 +84,15 @@ impl FileSystem for DevFs {
             match registry.get(&name) {
                 Some(DriverBox::Storage(drv)) => {
                     let bs = drv.block_size() as usize;
-                    if bs == 0 || buf.is_empty() { (Ok(0), entry_offset) }
-                    else {
+                    if bs == 0 || buf.is_empty() {
+                        (Ok(0), entry_offset)
+                    } else {
                         let block_off = entry_offset % bs;
                         let lba = entry_offset / bs;
-                        let count = block_off.checked_add(buf.len()).map(|sum| sum.div_ceil(bs).max(1)).unwrap_or(1);
+                        let count = block_off
+                            .checked_add(buf.len())
+                            .map(|sum| sum.div_ceil(bs).max(1))
+                            .unwrap_or(1);
                         let actual = count.min(64);
                         let read_bytes = actual * bs;
                         let mut tmp = alloc::vec![0u8; read_bytes];
@@ -90,15 +106,15 @@ impl FileSystem for DevFs {
                         }
                     }
                 }
-                Some(DriverBox::Network(drv)) => {
-                    match drv.receive(buf) {
-                        Ok(n) => (Ok(n), entry_offset + n),
-                        Err(_) => (Err(FsError::NotSupported), entry_offset),
-                    }
-                }
-                Some(DriverBox::Audio(_)) | Some(DriverBox::UsbHost(_)) |
-                Some(DriverBox::Display(_)) | Some(DriverBox::None) | None =>
-                    (Err(FsError::NotSupported), entry_offset),
+                Some(DriverBox::Network(drv)) => match drv.receive(buf) {
+                    Ok(n) => (Ok(n), entry_offset + n),
+                    Err(_) => (Err(FsError::NotSupported), entry_offset),
+                },
+                Some(DriverBox::Audio(_))
+                | Some(DriverBox::UsbHost(_))
+                | Some(DriverBox::Display(_))
+                | Some(DriverBox::None)
+                | None => (Err(FsError::NotSupported), entry_offset),
             }
         };
         if result.is_ok() {
@@ -113,7 +129,10 @@ impl FileSystem for DevFs {
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         let (name, entry_offset) = {
             let table = FD_TABLE.lock();
-            let entry = table.iter().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            let entry = table
+                .iter()
+                .find(|e| e.fd == fd)
+                .ok_or(FsError::InvalidFileDescriptor)?;
             (entry.name.clone(), entry.offset)
         };
         if name == NULL_DEVICE {
@@ -127,11 +146,15 @@ impl FileSystem for DevFs {
             match registry.get(&name) {
                 Some(DriverBox::Storage(drv)) => {
                     let bs = drv.block_size() as usize;
-                    if bs == 0 || data.is_empty() { (Ok(0), entry_offset) }
-                    else {
+                    if bs == 0 || data.is_empty() {
+                        (Ok(0), entry_offset)
+                    } else {
                         let block_off = entry_offset % bs;
                         let lba = entry_offset / bs;
-                        let count = block_off.checked_add(data.len()).map(|sum| sum.div_ceil(bs).max(1)).unwrap_or(1);
+                        let count = block_off
+                            .checked_add(data.len())
+                            .map(|sum| sum.div_ceil(bs).max(1))
+                            .unwrap_or(1);
                         let actual = count.min(64);
                         let write_bytes = actual * bs;
                         let n = data.len().min(write_bytes.saturating_sub(block_off));
@@ -148,20 +171,18 @@ impl FileSystem for DevFs {
                         }
                     }
                 }
-                Some(DriverBox::Network(drv)) => {
-                    match drv.send(data) {
-                        Ok(_) => (Ok(data.len()), entry_offset + data.len()),
-                        Err(_) => (Err(FsError::NotSupported), entry_offset),
-                    }
-                }
-                Some(DriverBox::Audio(drv)) => {
-                    match drv.play(data) {
-                        Ok(_) => (Ok(data.len()), entry_offset + data.len()),
-                        Err(_) => (Err(FsError::NotSupported), entry_offset),
-                    }
-                }
-                Some(DriverBox::UsbHost(_)) | Some(DriverBox::Display(_)) |
-                Some(DriverBox::None) | None => (Err(FsError::NotSupported), entry_offset),
+                Some(DriverBox::Network(drv)) => match drv.send(data) {
+                    Ok(_) => (Ok(data.len()), entry_offset + data.len()),
+                    Err(_) => (Err(FsError::NotSupported), entry_offset),
+                },
+                Some(DriverBox::Audio(drv)) => match drv.play(data) {
+                    Ok(_) => (Ok(data.len()), entry_offset + data.len()),
+                    Err(_) => (Err(FsError::NotSupported), entry_offset),
+                },
+                Some(DriverBox::UsbHost(_))
+                | Some(DriverBox::Display(_))
+                | Some(DriverBox::None)
+                | None => (Err(FsError::NotSupported), entry_offset),
             }
         };
         if result.is_ok() {
@@ -177,12 +198,19 @@ impl FileSystem for DevFs {
         let mut table = FD_TABLE.lock();
         let before = table.len();
         table.retain(|e| e.fd != fd);
-        if table.len() == before { Err(FsError::InvalidFileDescriptor) } else { Ok(()) }
+        if table.len() == before {
+            Err(FsError::InvalidFileDescriptor)
+        } else {
+            Ok(())
+        }
     }
 
     fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError> {
         let mut table = FD_TABLE.lock();
-        let entry = table.iter_mut().find(|e| e.fd == fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let entry = table
+            .iter_mut()
+            .find(|e| e.fd == fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         entry.offset = pos;
         Ok(())
     }
@@ -208,11 +236,14 @@ impl FileSystem for DevFs {
         names.insert(String::from(NULL_DEVICE));
         names.extend(DEVICE_REGISTRY.lock().keys().cloned());
         names.extend(BLOCK_DEVICE_REGISTRY.lock().keys().cloned());
-        Ok(names.into_iter().map(|name| VNode {
-            name,
-            size: 0,
-            is_dir: false,
-        }).collect())
+        Ok(names
+            .into_iter()
+            .map(|name| VNode {
+                name,
+                size: 0,
+                is_dir: false,
+            })
+            .collect())
     }
 
     fn exists(&mut self, path: &str) -> bool {

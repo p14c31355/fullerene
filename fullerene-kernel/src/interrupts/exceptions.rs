@@ -195,9 +195,8 @@ pub extern "x86-interrupt" fn nmi_handler(mut frame: InterruptStackFrame) {
     if nitrogen::mmio::mmio_watchdog_armed() {
         raw_log!("NMI: MMIO watchdog expired — forcing recovery\n");
         nitrogen::mmio::mmio_watchdog_nmi_recovery();
-        let trampoline = x86_64::VirtAddr::from_ptr(
-            nitrogen::mmio::mmio_nmi_recovery_trampoline as *const ()
-        );
+        let trampoline =
+            x86_64::VirtAddr::from_ptr(nitrogen::mmio::mmio_nmi_recovery_trampoline as *const ());
         let new_frame = InterruptStackFrameValue::new(
             trampoline,
             frame.code_segment,
@@ -205,7 +204,9 @@ pub extern "x86-interrupt" fn nmi_handler(mut frame: InterruptStackFrame) {
             frame.stack_pointer,
             frame.stack_segment,
         );
-        unsafe { frame.as_mut().write(new_frame); }
+        unsafe {
+            frame.as_mut().write(new_frame);
+        }
         return;
     }
     raw_log!("NMI: unexpected — halting\n");
@@ -254,13 +255,10 @@ pub extern "x86-interrupt" fn double_fault_handler(
     if is_user_mode(&frame) {
         let pid = crate::process::SCHEDULER.current_pid();
         if pid != 0 {
-            crate::process::SCHEDULER.with_process(
-                crate::process::ProcessId(pid as u64),
-                |p| {
-                    p.state = crate::process::ProcessState::Terminated;
-                    p.exit_code = Some(1);
-                },
-            );
+            crate::process::SCHEDULER.with_process(crate::process::ProcessId(pid as u64), |p| {
+                p.state = crate::process::ProcessState::Terminated;
+                p.exit_code = Some(1);
+            });
             crate::process::SCHEDULER.cleanup();
         }
     }

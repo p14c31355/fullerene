@@ -334,8 +334,7 @@ impl VfsContext {
     pub fn copy_path(&self, source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
         let destination_suffix = destination.strip_prefix(source);
         if source == destination
-            || is_dir
-                && destination_suffix.is_some_and(|suffix| suffix.starts_with('/'))
+            || is_dir && destination_suffix.is_some_and(|suffix| suffix.starts_with('/'))
         {
             return Err(FsError::InvalidPath);
         }
@@ -491,12 +490,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             if !crate::devfs::block_device_exists(device_name) {
                 return Err(FsError::FileNotFound);
             }
-            if vfs
-                .inner
-                .lock()
-                .mounted_fs_index(&mount_point)
-                .is_some()
-            {
+            if vfs.inner.lock().mounted_fs_index(&mount_point).is_some() {
                 return Err(FsError::FileExists);
             }
 
@@ -515,7 +509,11 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
                         return Err(e);
                     }
                     vfs.record_device_mount(device, &mount_point);
-                    log::info!("VFS: mounted removable filesystem from {} at {}", device, mount_point);
+                    log::info!(
+                        "VFS: mounted removable filesystem from {} at {}",
+                        device,
+                        mount_point
+                    );
                     Ok(())
                 }
                 Err((e, returned_bdev)) => {
@@ -601,13 +599,11 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir))
-        .ok_or(FsError::PermissionDenied)?
+    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
 }
 
 pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-    with_vfs(|vfs| vfs.move_path(source, destination, is_dir))
-        .ok_or(FsError::PermissionDenied)?
+    with_vfs(|vfs| vfs.move_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
 }
 
 pub fn remove_path(path: &str, is_dir: bool) -> Result<(), FsError> {

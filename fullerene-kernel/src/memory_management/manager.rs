@@ -456,10 +456,9 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Ok(());
         }
         let mut process_manager = ProcessMemoryManagerImpl::new(process_id);
-        process_manager.init_page_table(
-            &mut self.page_table_manager,
-            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
-        )?;
+        process_manager.init_page_table(&mut self.page_table_manager, unsafe {
+            petroleum::page_table::constants::get_frame_allocator_mut()
+        })?;
         if self.process_managers.len() >= MAX_PROCESS_MANAGERS {
             return Err(SystemError::TooManyProcesses);
         }
@@ -728,7 +727,8 @@ impl FrameAllocator for UnifiedMemoryManager {
         Ok(())
     }
     fn is_frame_available(&self, frame_addr: usize) -> bool {
-        unsafe { petroleum::page_table::constants::get_frame_allocator() }.is_frame_available(frame_addr)
+        unsafe { petroleum::page_table::constants::get_frame_allocator() }
+            .is_frame_available(frame_addr)
     }
     fn frame_size(&self) -> usize {
         unsafe { petroleum::page_table::constants::get_frame_allocator() }.frame_size()

@@ -2,8 +2,8 @@ use super::registers::{
     ATTRIBUTE_CONFIG, ATTRIBUTE_TEXT_CONFIG, CRTC_CONFIG, CRTC_TEXT_CONFIG, GRAPHICS_CONFIG,
     GRAPHICS_TEXT_CONFIG, SEQUENCER_CONFIG, SEQUENCER_TEXT_CONFIG,
 };
-use crate::write_port_sequence;
 use crate::io::{HardwarePorts, PortWriter, VgaPortOps};
+use crate::write_port_sequence;
 
 /// Write RGB triples for palette setup (DRY helper).
 fn write_rgb(writer: &mut PortWriter<u8>, val: u8) {

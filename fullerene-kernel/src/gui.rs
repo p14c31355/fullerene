@@ -132,8 +132,7 @@ pub fn init() {
             result
         }),
         mounted_drive_list: Some(|| {
-            crate::contexts::vfs::with_vfs(|vfs| vfs.mounted_block_devices())
-                .unwrap_or_default()
+            crate::contexts::vfs::with_vfs(|vfs| vfs.mounted_block_devices()).unwrap_or_default()
         }),
         usb_poll: Some(|| crate::drivers::registry::poll_usb()),
         shell_cmd: None,
@@ -179,10 +178,15 @@ fn render_fallback(label: &[u8]) {
     crate::boot_stage::draw_boot_label(label);
     if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
         if bfb.address() != 0 {
-            let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
+            let len = (bfb.stride_pixels() as usize)
+                .checked_mul(bfb.height() as usize)
+                .unwrap_or(0);
             let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
             solvent::render(&mut petroleum::graphics::FramebufferGuard::new(
-                pixels, bfb.width(), bfb.height(), bfb.stride_pixels(),
+                pixels,
+                bfb.width(),
+                bfb.height(),
+                bfb.stride_pixels(),
             ));
         }
     }
@@ -232,7 +236,8 @@ pub fn render() {
 pub fn runtime_tick(now: u64) {
     solvent::tick_core(now);
     if solvent::consume_frame_due() {
-        if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none() {
+        if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none()
+        {
             render_fallback(b"RENDER: guard failed, fallback");
         }
         finish_frame();

@@ -45,7 +45,9 @@ fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str
     })
 }
 
-fn wasm_read_directory(path: &str) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, &'static str> {
+fn wasm_read_directory(
+    path: &str,
+) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, &'static str> {
     let entries = crate::contexts::vfs::readdir(path).map_err(|_| "readdir failed")?;
     Ok(entries
         .iter()
@@ -162,12 +164,14 @@ fn register_nozzle_hooks() {
                 tline!(ctx.terminal, "pwd: {}", e);
             }
         }),
-        cd: Some(|ctx, path| match crate::contexts::vfs::change_directory(path) {
-            Ok(()) => {}
-            Err(e) => {
-                tline!(ctx.terminal, "cd: {}: {}", path, e);
-            }
-        }),
+        cd: Some(
+            |ctx, path| match crate::contexts::vfs::change_directory(path) {
+                Ok(()) => {}
+                Err(e) => {
+                    tline!(ctx.terminal, "cd: {}: {}", path, e);
+                }
+            },
+        ),
         tree: Some(|ctx, path| {
             let resolved = if path == "." {
                 match crate::contexts::vfs::working_directory() {
@@ -315,7 +319,8 @@ fn register_nozzle_hooks() {
         .lock()
         .replace(|ctx: &mut nozzle::CommandContext| {
             if ctx.args.len() < 3 {
-                ctx.terminal.write_str("Usage: mount /dev/<device> <mount_point>\n");
+                ctx.terminal
+                    .write_str("Usage: mount /dev/<device> <mount_point>\n");
                 ctx.terminal.write_str("Available devices:\n");
                 for name in crate::devfs::list_block_device_names() {
                     tline!(ctx.terminal, "    /dev/{}", name);
@@ -325,7 +330,12 @@ fn register_nozzle_hooks() {
             let (device, mount_point) = (ctx.args[1], ctx.args[2]);
             match crate::contexts::vfs::mount(device, mount_point, "auto") {
                 Ok(()) => {
-                    tline!(ctx.terminal, "mount: OK — {} mounted at {}", device, mount_point);
+                    tline!(
+                        ctx.terminal,
+                        "mount: OK — {} mounted at {}",
+                        device,
+                        mount_point
+                    );
                     let _ = crate::klog::flush_to_vfs();
                 }
                 Err(e) => {

@@ -442,15 +442,21 @@ fn scancode_to_resonance_keycode(scancode: u8) -> resonance::KeyCode {
 fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
     let action = match scancode {
         0x1C => {
-            if !pressed { return; }
+            if !pressed {
+                return;
+            }
             DesktopAction::SubmitPassword
         }
         0x01 => {
-            if !pressed { return; }
+            if !pressed {
+                return;
+            }
             DesktopAction::DismissPasswordDialog
         }
         0x0E => {
-            if !pressed { return; }
+            if !pressed {
+                return;
+            }
             DesktopAction::PasswordBackspace
         }
         0x2A | 0x36 => {
@@ -458,16 +464,33 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool
             return;
         }
         _ => {
-            if !pressed { return; }
+            if !pressed {
+                return;
+            }
             let mut ch = scancode_to_ascii(scancode);
             if ch != 0 {
                 if rt.desktop.shift_held {
                     let shifted = match ch {
-                        b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$',
-                        b'5' => b'%', b'6' => b'^', b'7' => b'&', b'8' => b'*',
-                        b'9' => b'(', b'0' => b')', b'-' => b'_', b'=' => b'+',
-                        b'[' => b'{', b']' => b'}', b'\\' => b'|', b';' => b':',
-                        b'\'' => b'"', b'`' => b'~', b',' => b'<', b'.' => b'>',
+                        b'1' => b'!',
+                        b'2' => b'@',
+                        b'3' => b'#',
+                        b'4' => b'$',
+                        b'5' => b'%',
+                        b'6' => b'^',
+                        b'7' => b'&',
+                        b'8' => b'*',
+                        b'9' => b'(',
+                        b'0' => b')',
+                        b'-' => b'_',
+                        b'=' => b'+',
+                        b'[' => b'{',
+                        b']' => b'}',
+                        b'\\' => b'|',
+                        b';' => b':',
+                        b'\'' => b'"',
+                        b'`' => b'~',
+                        b',' => b'<',
+                        b'.' => b'>',
                         b'/' => b'?',
                         _ if ch >= b'a' && ch <= b'z' => ch - b'a' + b'A',
                         _ => ch,
@@ -486,19 +509,53 @@ fn handle_password_dialog_key(rt: &mut RuntimeState, scancode: u8, pressed: bool
 
 fn scancode_to_ascii(scancode: u8) -> u8 {
     match scancode {
-        0x10 => b'q', 0x11 => b'w', 0x12 => b'e', 0x13 => b'r',
-        0x14 => b't', 0x15 => b'y', 0x16 => b'u', 0x17 => b'i',
-        0x18 => b'o', 0x19 => b'p', 0x1E => b'a', 0x1F => b's',
-        0x20 => b'd', 0x21 => b'f', 0x22 => b'g', 0x23 => b'h',
-        0x24 => b'j', 0x25 => b'k', 0x26 => b'l', 0x2C => b'z',
-        0x2D => b'x', 0x2E => b'c', 0x2F => b'v', 0x30 => b'b',
-        0x31 => b'n', 0x32 => b'm',
-        0x02 => b'1', 0x03 => b'2', 0x04 => b'3', 0x05 => b'4',
-        0x06 => b'5', 0x07 => b'6', 0x08 => b'7', 0x09 => b'8',
-        0x0A => b'9', 0x0B => b'0',
-        0x2B => b'\\', 0x0C => b'-', 0x0D => b'=', 0x1A => b'[',
-        0x1B => b']', 0x27 => b';', 0x28 => b'\'', 0x29 => b'`',
-        0x33 => b',', 0x34 => b'.', 0x35 => b'/',
+        0x10 => b'q',
+        0x11 => b'w',
+        0x12 => b'e',
+        0x13 => b'r',
+        0x14 => b't',
+        0x15 => b'y',
+        0x16 => b'u',
+        0x17 => b'i',
+        0x18 => b'o',
+        0x19 => b'p',
+        0x1E => b'a',
+        0x1F => b's',
+        0x20 => b'd',
+        0x21 => b'f',
+        0x22 => b'g',
+        0x23 => b'h',
+        0x24 => b'j',
+        0x25 => b'k',
+        0x26 => b'l',
+        0x2C => b'z',
+        0x2D => b'x',
+        0x2E => b'c',
+        0x2F => b'v',
+        0x30 => b'b',
+        0x31 => b'n',
+        0x32 => b'm',
+        0x02 => b'1',
+        0x03 => b'2',
+        0x04 => b'3',
+        0x05 => b'4',
+        0x06 => b'5',
+        0x07 => b'6',
+        0x08 => b'7',
+        0x09 => b'8',
+        0x0A => b'9',
+        0x0B => b'0',
+        0x2B => b'\\',
+        0x0C => b'-',
+        0x0D => b'=',
+        0x1A => b'[',
+        0x1B => b']',
+        0x27 => b';',
+        0x28 => b'\'',
+        0x29 => b'`',
+        0x33 => b',',
+        0x34 => b'.',
+        0x35 => b'/',
         0x39 => b' ',
         _ => 0,
     }
@@ -749,7 +806,10 @@ pub fn force_desktop_redraw() {
 }
 
 // ── Theme / wallpaper bridges ────────────────────────────────
-pub use lattice::theme::{ThemeVariant, ThemeStyle, current_theme_variant, set_theme, toggle_theme, current_style, set_style, toggle_style};
+pub use lattice::theme::{
+    ThemeStyle, ThemeVariant, current_style, current_theme_variant, set_style, set_theme,
+    toggle_style, toggle_theme,
+};
 pub use lattice::wallpaper::{
     WallpaperMode, WallpaperPreset, find_preset, get_wallpaper, set_wallpaper, wallpaper_presets,
 };
@@ -871,9 +931,26 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
     let ext_lower = ext.to_lowercase();
     let is_text = matches!(
         ext_lower.as_str(),
-        "txt" | "md" | "log" | "toml" | "rs" | "c" | "h" | "py" | "js"
-            | "json" | "xml" | "yml" | "yaml" | "ini" | "cfg" | "sh" | "bat"
-            | "env" | "gitignore" | "lock"
+        "txt"
+            | "md"
+            | "log"
+            | "toml"
+            | "rs"
+            | "c"
+            | "h"
+            | "py"
+            | "js"
+            | "json"
+            | "xml"
+            | "yml"
+            | "yaml"
+            | "ini"
+            | "cfg"
+            | "sh"
+            | "bat"
+            | "env"
+            | "gitignore"
+            | "lock"
     );
 
     if is_text {
@@ -911,31 +988,61 @@ pub fn launch_file(rt: &mut RuntimeState, path: &str) {
     }
 
     match ext_lower.as_str() {
-        "bmp" => { crate::viewers::open_bmp(rt, path, name); return; }
+        "bmp" => {
+            crate::viewers::open_bmp(rt, path, name);
+            return;
+        }
         #[cfg(feature = "minipng")]
-        "png" => { crate::viewers::open_png(rt, path, name); return; }
-        "wav" => { crate::viewers::open_wav(rt, path, name); return; }
+        "png" => {
+            crate::viewers::open_png(rt, path, name);
+            return;
+        }
+        "wav" => {
+            crate::viewers::open_wav(rt, path, name);
+            return;
+        }
         #[cfg(feature = "rmp3")]
-        "mp3" => { crate::viewers::open_mp3(rt, path, name); return; }
+        "mp3" => {
+            crate::viewers::open_mp3(rt, path, name);
+            return;
+        }
         #[cfg(feature = "shiguredo_mp4")]
-        "mp4" => { crate::viewers::open_mp4(rt, path, name); return; }
-        "tar" | "gz" | "xz" => { crate::viewers::open_tar(rt, path, name); return; }
+        "mp4" => {
+            crate::viewers::open_mp4(rt, path, name);
+            return;
+        }
+        "tar" | "gz" | "xz" => {
+            crate::viewers::open_tar(rt, path, name);
+            return;
+        }
         _ => {}
     }
 
     let app_name = app.unwrap_or("Unknown");
     let msg = alloc::format!(
         "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
-        name, ext, app_name, app_name
+        name,
+        ext,
+        app_name,
+        app_name
     );
     let cols = 50;
     let rows = (msg.lines().count() as u32) + 3;
     let id = rt.desktop.wm.create_titled_window(
-        200, 160, cols * GLYPH_W, rows * GLYPH_H, 0x1a1a0d, "Open File",
+        200,
+        160,
+        cols * GLYPH_W,
+        rows * GLYPH_H,
+        0x1a1a0d,
+        "Open File",
     );
     if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let _ = crate::menu_actions::render_text_into_surface(
-            &mut w.surface, &msg, cols, 0xFFFFCC, 0x1a1a0d,
+            &mut w.surface,
+            &msg,
+            cols,
+            0xFFFFCC,
+            0x1a1a0d,
         );
     }
     rt.desktop.wm.raise_to_top(id);
@@ -951,36 +1058,61 @@ fn explorer_handle_key(rt: &mut RuntimeState, scancode: u8, pressed: bool) {
         rt.frame_due = true;
         return;
     }
-    if !pressed { return; }
+    if !pressed {
+        return;
+    }
     let key = scancode_to_resonance_keycode(scancode);
     let visible_rows = 20usize;
     // Pre-compute enter action to avoid borrow conflicts.
     let mut enter_action = None;
     match key {
         resonance::KeyCode::Up => {
-            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            let explorer = match rt.explorer.as_mut() {
+                Some(e) => e,
+                None => return,
+            };
             let n = explorer.entries.len();
-            if n == 0 { return; }
+            if n == 0 {
+                return;
+            }
             let idx = explorer.selected_index.unwrap_or(n.saturating_sub(1));
-            explorer.selected_index = if idx == 0 { Some(n.saturating_sub(1)) } else { Some(idx - 1) };
-            if let Some(s) = explorer.selected_index { if s < explorer.scroll_offset { explorer.scroll_offset = s; } }
+            explorer.selected_index = if idx == 0 {
+                Some(n.saturating_sub(1))
+            } else {
+                Some(idx - 1)
+            };
+            if let Some(s) = explorer.selected_index {
+                if s < explorer.scroll_offset {
+                    explorer.scroll_offset = s;
+                }
+            }
             rt.explorer_dirty = true;
             rt.frame_due = true;
         }
         resonance::KeyCode::Down => {
-            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            let explorer = match rt.explorer.as_mut() {
+                Some(e) => e,
+                None => return,
+            };
             let n = explorer.entries.len();
-            if n == 0 { return; }
+            if n == 0 {
+                return;
+            }
             let idx = explorer.selected_index.unwrap_or(0);
             explorer.selected_index = if idx + 1 >= n { Some(0) } else { Some(idx + 1) };
             if let Some(s) = explorer.selected_index {
-                if s >= explorer.scroll_offset + visible_rows { explorer.scroll_offset = s.saturating_sub(visible_rows - 1); }
+                if s >= explorer.scroll_offset + visible_rows {
+                    explorer.scroll_offset = s.saturating_sub(visible_rows - 1);
+                }
             }
             rt.explorer_dirty = true;
             rt.frame_due = true;
         }
         resonance::KeyCode::Enter => {
-            let explorer = match rt.explorer.as_mut() { Some(e) => e, None => return };
+            let explorer = match rt.explorer.as_mut() {
+                Some(e) => e,
+                None => return,
+            };
             if let Some(idx) = explorer.selected_index {
                 enter_action = explorer.activate_entry(idx);
                 rt.explorer_dirty = true;

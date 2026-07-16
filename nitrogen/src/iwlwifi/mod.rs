@@ -12,24 +12,17 @@
 //! - [`io`] — HCMD, scanning, connection, TX/RX, and trait impls
 //! - [`state`] — Global state, incremental init, firmware registry, public API
 
-pub mod regs;
-pub mod types;
 mod device;
 mod io;
+pub mod regs;
 mod state;
+pub mod types;
 
 pub use device::IwlWifiDevice;
 pub use io::try_create_iwl;
 pub use state::{
-    connect_to_ap,
-    force_init_failed,
-    init_wifi_manager,
-    set_wifi_driver_context,
-    start_scan_if_idle,
-    tick_wifi_device,
-    try_init_wifi_device,
-    try_init_wifi_device_step,
-    wifi_init_completed,
-    wifi_state_snapshot,
+    connect_to_ap, force_init_failed, init_wifi_manager, set_wifi_driver_context,
+    start_scan_if_idle, tick_wifi_device, try_init_wifi_device, try_init_wifi_device_step,
+    wifi_init_completed, wifi_state_snapshot,
 };
 pub use types::WifiManager;

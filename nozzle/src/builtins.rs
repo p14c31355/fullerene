@@ -177,7 +177,8 @@ pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
 
 /// `badapple` — play Bad Apple!! on PC speaker with framebuffer animation
 pub fn cmd_badapple(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("Bad Apple!! playing... (press any key to stop)\n");
+    ctx.terminal
+        .write_str("Bad Apple!! playing... (press any key to stop)\n");
     crate::sys_hooks::call_sys_info_hook(ctx, "badapple");
     true
 }

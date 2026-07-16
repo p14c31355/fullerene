@@ -343,10 +343,7 @@ impl ExFatFileSystem {
                     return Ok(());
                 }
             }
-            match fat
-                .next_cluster(device, cluster)
-                .map_err(Self::map_error)?
-            {
+            match fat.next_cluster(device, cluster).map_err(Self::map_error)? {
                 Some(next) => cluster = next,
                 None => return Ok(()),
             }
@@ -526,7 +523,10 @@ impl FileSystem for ExFatFileSystem {
         }
         let offset = self.handles[index].offset;
         let read = {
-            let mut file = self.fs().open_file(&self.handles[index].path).map_err(Self::map_error)?;
+            let mut file = self
+                .fs()
+                .open_file(&self.handles[index].path)
+                .map_err(Self::map_error)?;
             if offset != 0 {
                 file.seek(SeekFrom::Start(offset))
                     .map_err(Self::map_io_error)?;
@@ -706,11 +706,17 @@ mod tests {
         };
         let mut read = [0; SECTOR_SIZE - 1];
         assert_eq!(
-            adapter.read_cached(&mut device, 0, 1, &mut read).unwrap_err().kind(),
+            adapter
+                .read_cached(&mut device, 0, 1, &mut read)
+                .unwrap_err()
+                .kind(),
             ErrorKind::InvalidInput
         );
         assert_eq!(
-            adapter.write_cached(&mut device, 0, 1, &read).unwrap_err().kind(),
+            adapter
+                .write_cached(&mut device, 0, 1, &read)
+                .unwrap_err()
+                .kind(),
             ErrorKind::InvalidInput
         );
     }

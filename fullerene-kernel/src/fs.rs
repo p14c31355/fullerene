@@ -249,5 +249,3 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
 
     remove(&pkg_dir)
 }
-
-

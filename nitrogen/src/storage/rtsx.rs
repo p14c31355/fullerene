@@ -1142,8 +1142,8 @@ pub fn is_card_detected() -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        DataPath, HostCommandKind, RtsxController, CMD17_READ_SINGLE, SD_CFG2, SD_CMD0, SD_CMD1,
-        SD_CMD_START, SD_NO_CHECK_WAIT_CRC_TO, SD_RSP_R1, SD_TM_AUTO_READ_2, SD_TRANSFER,
+        CMD17_READ_SINGLE, DataPath, HostCommandKind, RtsxController, SD_CFG2, SD_CMD_START,
+        SD_CMD0, SD_CMD1, SD_NO_CHECK_WAIT_CRC_TO, SD_RSP_R1, SD_TM_AUTO_READ_2, SD_TRANSFER,
         SD_TRANSFER_END, SD_TRANSFER_START,
     };
 

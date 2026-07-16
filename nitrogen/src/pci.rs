@@ -30,12 +30,10 @@ static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
 #[inline]
 fn pci_config_lock_acquire() {
     let mut retries = 0u32;
-    while PCI_CONFIG_LOCK.compare_exchange_weak(
-        false,
-        true,
-        Ordering::Acquire,
-        Ordering::Relaxed,
-    ).is_err() {
+    while PCI_CONFIG_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         retries += 1;
         if retries > 100_000 {
             log::warn!("PCI: config lock contention exceeded 100k spins");
@@ -302,7 +300,10 @@ impl PciConfigSpace {
         let existing = Self::read_config_dword_unlocked(bus, device, function, aligned);
         let masked = existing & !(0xFFFFu32 << shift);
         Self::write_config_dword_unlocked(
-            bus, device, function, aligned,
+            bus,
+            device,
+            function,
+            aligned,
             masked | ((value as u32) << shift),
         );
     }
@@ -472,7 +473,8 @@ impl PciDevice {
                     self.device,
                     self.function,
                     off + 4,
-                ) & 0x3 == 0;
+                ) & 0x3
+                    == 0;
             }
             let next =
                 PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
@@ -613,12 +615,12 @@ impl PciDevice {
                 if l1sub_enabled != 0 {
                     log::info!(
                         "PCI: disabling L1Sub on {:02x}:{:02x}.{} (was {:#x})",
-                        bus, device, function, l1sub_enabled,
+                        bus,
+                        device,
+                        function,
+                        l1sub_enabled,
                     );
-                    write_ext_dword(
-                        bus, device, function, off + 8,
-                        ctl1 & !0x6u32,
-                    );
+                    write_ext_dword(bus, device, function, off + 8, ctl1 & !0x6u32);
                 }
                 return;
             }
@@ -634,25 +636,47 @@ impl PciDevice {
         let offset = 0x10 + (bar_index * 4);
         pci_config_lock_acquire();
         let original_value = PciConfigSpace::read_config_dword_unlocked(
-            self.bus, self.device, self.function, offset,
+            self.bus,
+            self.device,
+            self.function,
+            offset,
         );
-        let command = PciConfigSpace::read_config_dword_unlocked(
-            self.bus, self.device, self.function, 4,
-        ) as u16;
+        let command =
+            PciConfigSpace::read_config_dword_unlocked(self.bus, self.device, self.function, 4)
+                as u16;
         PciConfigSpace::write_config_word_unlocked(
-            self.bus, self.device, self.function, 4, command & !0x3,
+            self.bus,
+            self.device,
+            self.function,
+            4,
+            command & !0x3,
         );
         PciConfigSpace::write_config_dword_unlocked(
-            self.bus, self.device, self.function, offset, u32::MAX,
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+            u32::MAX,
         );
         let size_mask = PciConfigSpace::read_config_dword_unlocked(
-            self.bus, self.device, self.function, offset,
+            self.bus,
+            self.device,
+            self.function,
+            offset,
         );
         PciConfigSpace::write_config_dword_unlocked(
-            self.bus, self.device, self.function, offset, original_value,
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+            original_value,
         );
         PciConfigSpace::write_config_word_unlocked(
-            self.bus, self.device, self.function, 4, command,
+            self.bus,
+            self.device,
+            self.function,
+            4,
+            command,
         );
         pci_config_lock_release();
 
@@ -805,8 +829,7 @@ impl PciScanner {
             crate::debug::print("pci", "b0_dev_found");
             for function in 0..=7u8 {
                 if function > 0 {
-                    let header_type_fn0 =
-                        PciConfigSpace::read_config_byte(0, device, 0, 0x0E);
+                    let header_type_fn0 = PciConfigSpace::read_config_byte(0, device, 0, 0x0E);
                     if (header_type_fn0 & 0x80) == 0 {
                         break;
                     }
@@ -847,8 +870,7 @@ impl PciScanner {
                 }
                 for function in 0..=7u8 {
                     if function > 0 {
-                        let header_type =
-                            PciConfigSpace::read_config_byte(bus, device, 0, 0x0E);
+                        let header_type = PciConfigSpace::read_config_byte(bus, device, 0, 0x0E);
                         if (header_type & 0x80) == 0 {
                             break;
                         }

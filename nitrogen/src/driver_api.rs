@@ -1,8 +1,8 @@
+use crate::DriverContext;
+use crate::pci::PciDevice;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cmp::Reverse;
-use crate::DriverContext;
-use crate::pci::PciDevice;
 
 /// Block-device interface for mass-storage controllers
 /// (NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage, etc.).
@@ -198,7 +198,12 @@ pub trait Driver: Send {
         let (vid, did) = self.pci_id();
         self.pci_class().map_or(
             DriverDescriptor::from_vid_did(vid, did),
-            |(class, subclass)| DriverDescriptor { vendor: vid, device: did, class, subclass },
+            |(class, subclass)| DriverDescriptor {
+                vendor: vid,
+                device: did,
+                class,
+                subclass,
+            },
         )
     }
 
@@ -279,11 +284,7 @@ impl DriverRegistry {
     /// Strategy: collect all matching drivers, sort by [`priority`](Driver::priority)
     /// (highest first), and call [`probe`](Driver::probe) on each until one
     /// returns a non-`None` instance.
-    pub fn match_device(
-        &self,
-        ctx: &dyn DriverContext,
-        device: &PciDevice,
-    ) -> DriverBox {
+    pub fn match_device(&self, ctx: &dyn DriverContext, device: &PciDevice) -> DriverBox {
         for driver in self.matching_drivers(device) {
             let result = driver.probe(ctx, device);
             if !matches!(result, DriverBox::None) {
@@ -299,11 +300,7 @@ impl DriverRegistry {
     /// successful probe, this returns every driver whose `probe()` returned non-`None`,
     /// sorted by priority (highest first).  The caller can then attempt `attach()` on
     /// each until one succeeds.
-    pub fn probe_candidates(
-        &self,
-        ctx: &dyn DriverContext,
-        device: &PciDevice,
-    ) -> Vec<DriverBox> {
+    pub fn probe_candidates(&self, ctx: &dyn DriverContext, device: &PciDevice) -> Vec<DriverBox> {
         self.matching_drivers(device)
             .into_iter()
             .filter_map(|driver| match driver.probe(ctx, device) {

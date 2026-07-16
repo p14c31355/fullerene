@@ -183,7 +183,9 @@ pub fn draw_step_hint(hint: &[u8]) {
     let panel_y = (fbh - panel_h) / 2;
     let y = panel_y + panel_h - 16;
     let x = panel_x + 24;
-    unsafe { fb.draw_text(x, y, hint, 1, 0x8c8c96); }
+    unsafe {
+        fb.draw_text(x, y, hint, 1, 0x8c8c96);
+    }
 }
 
 /// Get the last boot stage reached.

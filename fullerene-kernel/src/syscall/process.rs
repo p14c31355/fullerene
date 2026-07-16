@@ -68,7 +68,10 @@ where
     })
 }
 
-pub(crate) fn check_handle_permission(h: Handle, required: HandlePerms) -> Result<(), SyscallError> {
+pub(crate) fn check_handle_permission(
+    h: Handle,
+    required: HandlePerms,
+) -> Result<(), SyscallError> {
     with_current_handle_table(|ht| {
         if !ht.check_perm(h, required) {
             Err(SyscallError::PermissionDenied)

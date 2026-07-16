@@ -40,15 +40,30 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
             let dec = key == KeyCode::Left;
             match *sel {
                 0 => {
-                    let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32) / 6.0;
-                    let new_val = if dec { (cur - 0.25).max(0.25) } else { (cur + 0.25).min(4.0) };
-                    MOUSE_SENSITIVITY.store((new_val * 6.0) as i16, core::sync::atomic::Ordering::Relaxed);
+                    let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed)
+                        as f32)
+                        / 6.0;
+                    let new_val = if dec {
+                        (cur - 0.25).max(0.25)
+                    } else {
+                        (cur + 0.25).min(4.0)
+                    };
+                    MOUSE_SENSITIVITY.store(
+                        (new_val * 6.0) as i16,
+                        core::sync::atomic::Ordering::Relaxed,
+                    );
                     persist_settings();
                 }
                 1 => {
-                    let cur = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed) as i32;
-                    let new_val = if dec { (cur - 5).max(10) } else { (cur + 5).min(100) };
-                    DISPLAY_BRIGHTNESS_X100.store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
+                    let cur =
+                        DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed) as i32;
+                    let new_val = if dec {
+                        (cur - 5).max(10)
+                    } else {
+                        (cur + 5).min(100)
+                    };
+                    DISPLAY_BRIGHTNESS_X100
+                        .store(new_val as u32, core::sync::atomic::Ordering::Relaxed);
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
@@ -138,9 +153,9 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         WallpaperMode::SolidColor => "solid",
         WallpaperMode::GridPattern => "grid",
         WallpaperMode::Gradient => "gradient",
-        WallpaperMode::Preset(idx) => {
-            wallpaper::wallpaper_presets().get(idx).map_or("?", |p| p.name)
-        }
+        WallpaperMode::Preset(idx) => wallpaper::wallpaper_presets()
+            .get(idx)
+            .map_or("?", |p| p.name),
     };
 
     let info = alloc::format!(

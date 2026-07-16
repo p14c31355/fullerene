@@ -84,7 +84,8 @@ impl TopPanel {
         }
 
         // "Activities" label using Painter TTF (no separate button background)
-        let mut painter = crate::painter::Painter::new_with_stride(fb, fb_width, fb_height, fb_stride);
+        let mut painter =
+            crate::painter::Painter::new_with_stride(fb, fb_width, fb_height, fb_stride);
         let tx = 12i32;
         let ty = 4i32;
         let activities_color = if self.activities_highlight {

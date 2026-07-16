@@ -2,9 +2,9 @@ use alloc::vec::Vec;
 use log;
 use spin::Mutex;
 
+use nitrogen::DriverContext;
 use nitrogen::driver_api::DriverRegistry;
 use nitrogen::pci::PciDevice;
-use nitrogen::DriverContext;
 
 /// Metadata about an attached driver (without the driver instance itself).
 #[derive(Debug, Clone, Copy)]
@@ -61,8 +61,12 @@ impl DriverManager {
                     Ok(()) => {
                         log::info!(
                             "DriverManager: attached driver for {:04x}:{:04x} (class {:#04x}) at {:02x}:{:02x}.{}",
-                            dev.vendor_id, dev.device_id, dev.class_code,
-                            dev.bus, dev.device, dev.function,
+                            dev.vendor_id,
+                            dev.device_id,
+                            dev.class_code,
+                            dev.bus,
+                            dev.device,
+                            dev.function,
                         );
                         self.attached.lock().push(AttachedDriverInfo {
                             vendor_id: dev.vendor_id,
@@ -79,7 +83,9 @@ impl DriverManager {
                     Err(e) => {
                         log::warn!(
                             "DriverManager: attach failed for {:04x}:{:04x} — {}",
-                            dev.vendor_id, dev.device_id, e,
+                            dev.vendor_id,
+                            dev.device_id,
+                            e,
                         );
                     }
                 }
@@ -87,8 +93,12 @@ impl DriverManager {
             if candidates.is_empty() && !attached {
                 log::debug!(
                     "DriverManager: no driver for {:04x}:{:04x} (class {:#04x}) at {:02x}:{:02x}.{}",
-                    dev.vendor_id, dev.device_id, dev.class_code,
-                    dev.bus, dev.device, dev.function,
+                    dev.vendor_id,
+                    dev.device_id,
+                    dev.class_code,
+                    dev.bus,
+                    dev.device,
+                    dev.function,
                 );
             }
         }

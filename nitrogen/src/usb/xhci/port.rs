@@ -19,8 +19,8 @@ use super::register::{
     OperationalRegisters, PORTSC_CCS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK, PORTSC_PP,
     PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
 };
-use crate::usb::UsbSpeed;
 pub use crate::timing::{delay_ms, delay_us};
+use crate::usb::UsbSpeed;
 
 /// Maximum consecutive port detection failures before marking the port as done.
 pub const MAX_PORT_RETRIES: u32 = 8;
@@ -194,9 +194,7 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
     op.write_portsc(port, (ps_raw & !PORTSC_RW1C_MASK) | PORTSC_PR);
 
     // USB2 reset completes within 50 ms; allow 100 ms for slow hardware.
-    if crate::timing::wait_timeout_us(100_000, || {
-        op.portsc(port).0 & PORTSC_PR == 0
-    }).is_err() {
+    if crate::timing::wait_timeout_us(100_000, || op.portsc(port).0 & PORTSC_PR == 0).is_err() {
         return Err("port reset timeout");
     }
 
@@ -230,17 +228,13 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     op.write_portsc(port, v | PORTSC_WPR);
 
     // Poll for WPR completion (WPR bit cleared by hardware)
-    if crate::timing::wait_timeout_us(100_000, || {
-        op.portsc(port).0 & PORTSC_WPR == 0
-    }).is_err() {
+    if crate::timing::wait_timeout_us(100_000, || op.portsc(port).0 & PORTSC_WPR == 0).is_err() {
         return Err("warm port reset timeout: WPR not cleared");
     }
 
     // Wait for PR (Port Reset) to clear — the xHC signals reset
     // completion by clearing both WPR and PR (xHCI 1.2 §5.4.8).
-    if crate::timing::wait_timeout_us(100_000, || {
-        op.portsc(port).0 & PORTSC_PR == 0
-    }).is_err() {
+    if crate::timing::wait_timeout_us(100_000, || op.portsc(port).0 & PORTSC_PR == 0).is_err() {
         return Err("warm port reset timeout: PR not cleared");
     }
 
@@ -301,12 +295,9 @@ pub fn ensure_port_ready(
 
     status = crate::timing::poll_timeout_us(100_000, || {
         let s = op.portsc(port_idx);
-        if s.ccs() || !ppc {
-            Some(s)
-        } else {
-            None
-        }
-    }).unwrap_or_else(|| op.portsc(port_idx));
+        if s.ccs() || !ppc { Some(s) } else { None }
+    })
+    .unwrap_or_else(|| op.portsc(port_idx));
     if !status.ccs() {
         return false;
     }

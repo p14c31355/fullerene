@@ -67,7 +67,8 @@ fn blit_region(
         let src = row * back_width + region.x as usize;
         let dst = row * framebuffer_stride + region.x as usize;
         let width = region.width as usize;
-        let (Some(src_end), Some(dst_end)) = (src.checked_add(width), dst.checked_add(width)) else {
+        let (Some(src_end), Some(dst_end)) = (src.checked_add(width), dst.checked_add(width))
+        else {
             return;
         };
         let Some(source) = back.get(src..src_end) else {
@@ -199,9 +200,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             let back_needed = back_len.saturating_mul(4);
             let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
             if back_needed > reserve {
-                let additional = back_needed
-                    .saturating_sub(reserve)
-                    .next_multiple_of(4096);
+                let additional = back_needed.saturating_sub(reserve).next_multiple_of(4096);
                 match SOLVENT_CALLBACKS.lock().heap_extend {
                     Some(f) if f(additional).is_ok() => {
                         HEAP_EXTEND_RESERVE
@@ -262,13 +261,9 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
 
             render_progress(b"RENDER: system layers");
             match rt.shell_state {
-                ShellState::TaskOverview => render_task_overview(
-                    back,
-                    fb_width,
-                    fb_height,
-                    fb_width,
-                    scene.windows,
-                ),
+                ShellState::TaskOverview => {
+                    render_task_overview(back, fb_width, fb_height, fb_width, scene.windows)
+                }
                 ShellState::AppGrid => render_app_grid(back, fb_width, fb_height, fb_width),
                 ShellState::TimeZoneSelector => {
                     let offset = crate::clock::TIMEZONE_OFFSET_HOURS
@@ -279,9 +274,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 }
                 ShellState::Desktop => {}
             }
-            if rt.shell_state == ShellState::Desktop
-                && lattice::top_panel::is_top_panel_enabled()
-            {
+            if rt.shell_state == ShellState::Desktop && lattice::top_panel::is_top_panel_enabled() {
                 rt.desktop
                     .top_panel
                     .render(back, fb_width, fb_height, fb_width);
@@ -315,7 +308,6 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             }
         }
     }
-
 }
 
 #[cfg(test)]

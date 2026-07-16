@@ -107,20 +107,21 @@ pub(crate) fn syscall_wait_event(handle: u64, timeout_us: u64) -> SyscallResult 
 pub(crate) fn syscall_signal_event(handle: u64) -> SyscallResult {
     let h = Handle::from_raw(handle);
     check_handle_permission(h, HandlePerms::SIGNAL)?;
-    let (pids_to_unblock, _is_manual_reset): (Vec<process::ProcessId>, bool) = with_handle_mut(h, |obj| {
-        let event = map_handle!(obj, Event, e);
-        let mut inner = event.inner.lock();
-        inner.signaled = true;
-        let is_manual = inner.manual_reset;
-        let waiters = if is_manual {
-            // Manual reset: wake all waiters
-            core::mem::take(&mut inner.waiters)
-        } else {
-            // Auto reset: wake only one waiter
-            inner.waiters.pop().into_iter().collect()
-        };
-        Ok((waiters, is_manual))
-    })?;
+    let (pids_to_unblock, _is_manual_reset): (Vec<process::ProcessId>, bool) =
+        with_handle_mut(h, |obj| {
+            let event = map_handle!(obj, Event, e);
+            let mut inner = event.inner.lock();
+            inner.signaled = true;
+            let is_manual = inner.manual_reset;
+            let waiters = if is_manual {
+                // Manual reset: wake all waiters
+                core::mem::take(&mut inner.waiters)
+            } else {
+                // Auto reset: wake only one waiter
+                inner.waiters.pop().into_iter().collect()
+            };
+            Ok((waiters, is_manual))
+        })?;
 
     for pid in pids_to_unblock {
         crate::process::unblock_process(pid);
@@ -144,29 +145,32 @@ pub(crate) fn syscall_subscribe_event(event_type: u64, event_handle: u64) -> Sys
     })?;
 
     let pid = process::current_pid().ok_or(SyscallError::NoSuchProcess)?;
-    process::SCHEDULER.with_process(pid, |p| {
-        let mut subscriptions = p.resources.subscriptions.lock();
-        let ht = p.resources.handle_table.lock();
+    process::SCHEDULER
+        .with_process(pid, |p| {
+            let mut subscriptions = p.resources.subscriptions.lock();
+            let ht = p.resources.handle_table.lock();
 
-        // Proactively clean up stale subscriptions whose handles have been closed
-        subscriptions.retain(|&(_, h_raw)| {
-            ht.get(Handle::from_raw(h_raw)).is_some()
-        });
-        drop(ht);
+            // Proactively clean up stale subscriptions whose handles have been closed
+            subscriptions.retain(|&(_, h_raw)| ht.get(Handle::from_raw(h_raw)).is_some());
+            drop(ht);
 
-        // Check if this subscription already exists (idempotent)
-        if subscriptions.iter().any(|&(t, h)| t == event_type && h == event_handle) {
-            return Ok(());
-        }
+            // Check if this subscription already exists (idempotent)
+            if subscriptions
+                .iter()
+                .any(|&(t, h)| t == event_type && h == event_handle)
+            {
+                return Ok(());
+            }
 
-        // Enforce capacity limit
-        if subscriptions.len() >= MAX_SUBSCRIPTIONS {
-            return Err(SyscallError::OutOfMemory);
-        }
+            // Enforce capacity limit
+            if subscriptions.len() >= MAX_SUBSCRIPTIONS {
+                return Err(SyscallError::OutOfMemory);
+            }
 
-        subscriptions.push((event_type, event_handle));
-        Ok(())
-    }).ok_or(SyscallError::NoSuchProcess)??;
+            subscriptions.push((event_type, event_handle));
+            Ok(())
+        })
+        .ok_or(SyscallError::NoSuchProcess)??;
 
     Ok(0)
 }

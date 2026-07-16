@@ -146,9 +146,7 @@ impl AhciController {
         let ghc = ctrl.r32(HBA_GHC);
         ctrl.w32(HBA_GHC, ghc | GHC_AE);
         ctrl.w32(HBA_GHC, ghc | GHC_AE | GHC_HR);
-        if crate::timing::wait_timeout_us(500_000, || {
-            (ctrl.r32(HBA_GHC) & GHC_HR) == 0
-        }).is_err() {
+        if crate::timing::wait_timeout_us(500_000, || (ctrl.r32(HBA_GHC) & GHC_HR) == 0).is_err() {
             log::warn!("AHCI: HBA reset timed out — controller may be unresponsive");
             ctrl.w32(HBA_GHC, ctrl.r32(HBA_GHC) & !GHC_HR);
         }
@@ -183,7 +181,8 @@ impl AhciController {
         crate::timing::wait_timeout_us(500_000, || {
             let c = self.r32_port(port_mmio, PXCMD);
             (c & (PXCMD_CR | PXCMD_FR)) == 0
-        }).ok();
+        })
+        .ok();
 
         let ssts = self.r32_port(port_mmio, PXSSTS);
         let det = ssts & SSTS_DET_MASK;
@@ -255,10 +254,7 @@ impl AhciController {
     fn r32(&self, off: usize) -> u32 {
         let val = unsafe { ptr::read_volatile(self.hba_mmio.add(off / 4)) };
         if val == 0xFFFF_FFFF {
-            log::warn!(
-                "AHCI: MMIO read at {:#x} returned 0xFFFF_FFFF",
-                off
-            );
+            log::warn!("AHCI: MMIO read at {:#x} returned 0xFFFF_FFFF", off);
         }
         val
     }
@@ -270,10 +266,7 @@ impl AhciController {
     fn r32_port(&self, base: *mut u32, off: usize) -> u32 {
         let val = unsafe { ptr::read_volatile(base.add(off / 4)) };
         if val == 0xFFFF_FFFF {
-            log::warn!(
-                "AHCI: port MMIO read at {:#x} returned 0xFFFF_FFFF",
-                off
-            );
+            log::warn!("AHCI: port MMIO read at {:#x} returned 0xFFFF_FFFF", off);
         }
         val
     }

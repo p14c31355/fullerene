@@ -1,10 +1,10 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::common::memory::UserSlice;
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::VirtAddr;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::interface::{SyscallError, SyscallResult};
 use super::process::with_kernel_mut_result;
@@ -31,10 +31,9 @@ pub(crate) fn syscall_map_memory(addr_hint: u64, length: u64, flags: u64) -> Sys
         let end_vaddr = addr_hint
             .checked_add(length)
             .ok_or(SyscallError::InvalidArgument)?;
-        let start_addr = VirtAddr::try_new(addr_hint)
-            .map_err(|_| SyscallError::InvalidArgument)?;
-        let end_addr = VirtAddr::try_new(end_vaddr - 1)
-            .map_err(|_| SyscallError::InvalidArgument)?;
+        let start_addr = VirtAddr::try_new(addr_hint).map_err(|_| SyscallError::InvalidArgument)?;
+        let end_addr =
+            VirtAddr::try_new(end_vaddr - 1).map_err(|_| SyscallError::InvalidArgument)?;
         if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
             return Err(SyscallError::PermissionDenied);
         }
@@ -96,10 +95,8 @@ pub(crate) fn syscall_unmap_memory(addr: u64, length: u64) -> SyscallResult {
     let end_vaddr = addr
         .checked_add(length)
         .ok_or(SyscallError::InvalidArgument)?;
-    let start_addr = VirtAddr::try_new(addr)
-        .map_err(|_| SyscallError::InvalidArgument)?;
-    let end_addr = VirtAddr::try_new(end_vaddr - 1)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let start_addr = VirtAddr::try_new(addr).map_err(|_| SyscallError::InvalidArgument)?;
+    let end_addr = VirtAddr::try_new(end_vaddr - 1).map_err(|_| SyscallError::InvalidArgument)?;
     if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
         return Err(SyscallError::PermissionDenied);
     }
@@ -122,12 +119,11 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
     if len == 0 || len > (128 << 20) || (addr % 4096) != 0 {
         return Err(SyscallError::InvalidArgument);
     }
-    let start_addr = VirtAddr::try_new(addr)
-        .map_err(|_| SyscallError::InvalidArgument)?;
-    let end_vaddr = addr.checked_add(length - 1)
+    let start_addr = VirtAddr::try_new(addr).map_err(|_| SyscallError::InvalidArgument)?;
+    let end_vaddr = addr
+        .checked_add(length - 1)
         .ok_or(SyscallError::InvalidArgument)?;
-    let end_addr = VirtAddr::try_new(end_vaddr)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let end_addr = VirtAddr::try_new(end_vaddr).map_err(|_| SyscallError::InvalidArgument)?;
     if !petroleum::is_user_address(start_addr) || !petroleum::is_user_address(end_addr) {
         return Err(SyscallError::PermissionDenied);
     }
@@ -143,7 +139,8 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
         let num_pages = (len + 4095) / 4096;
 
         // First pass: validate all pages are mapped and collect original flags
-        let mut page_info: Vec<(usize, x86_64::structures::paging::PageTableFlags)> = Vec::with_capacity(num_pages);
+        let mut page_info: Vec<(usize, x86_64::structures::paging::PageTableFlags)> =
+            Vec::with_capacity(num_pages);
         for i in 0..num_pages {
             let vaddr = addr as usize + i * 4096;
 
@@ -152,7 +149,8 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
                 .map_err(|_| SyscallError::InvalidArgument)?;
 
             // Get current flags to save for potential rollback
-            let original_flags = ptm.get_page_flags(vaddr)
+            let original_flags = ptm
+                .get_page_flags(vaddr)
                 .map_err(|_| SyscallError::InvalidArgument)?;
 
             page_info.push((vaddr, original_flags));
@@ -208,10 +206,9 @@ pub(crate) fn syscall_query_memory(info_buf: *mut u8, buf_size: usize) -> Syscal
     }
     petroleum::validate_user_buffer(info_buf as usize, buf_size, false)?;
 
-    let slice = UserSlice::new(info_buf, buf_size, true)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let slice =
+        UserSlice::new(info_buf, buf_size, true).map_err(|_| SyscallError::InvalidArgument)?;
     let kernel_buf = vec![0u8; buf_size];
-    unsafe { slice.copy_to_user(&kernel_buf) }
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
     Ok(0)
 }

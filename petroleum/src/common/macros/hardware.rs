@@ -33,11 +33,7 @@ macro_rules! volatile_read_safe {
     ($addr:expr, $ty:ty) => {{
         let address = $addr as *const $ty;
         let val = unsafe { core::ptr::read_volatile(address) };
-        if val == <$ty>::MAX {
-            None
-        } else {
-            Some(val)
-        }
+        if val == <$ty>::MAX { None } else { Some(val) }
     }};
     ($addr:expr, $ty:ty, $health:expr) => {{
         let address = $addr as *const $ty;
@@ -48,11 +44,7 @@ macro_rules! volatile_read_safe {
                 }
             }
             let val = unsafe { core::ptr::read_volatile(address) };
-            if val == <$ty>::MAX {
-                None
-            } else {
-                Some(val)
-            }
+            if val == <$ty>::MAX { None } else { Some(val) }
         })();
         result
     }};

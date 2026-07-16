@@ -89,13 +89,17 @@ pub unsafe extern "C" fn handle_syscall(
         DETACH_THREAD => thread::syscall_detach_thread(arg1),
         EXIT_THREAD => thread::syscall_exit_thread(arg1 as i32),
 
-        CREATE_WINDOW => window::syscall_create_window(arg1 as i32, arg2 as i32, arg3 as u32, arg4 as u32, arg5),
+        CREATE_WINDOW => {
+            window::syscall_create_window(arg1 as i32, arg2 as i32, arg3 as u32, arg4 as u32, arg5)
+        }
         DESTROY_WINDOW => window::syscall_destroy_window(arg1),
         RESIZE_WINDOW => window::syscall_resize_window(arg1, arg2 as u32, arg3 as u32),
         PRESENT_WINDOW => window::syscall_present_window(arg1),
         GET_WINDOW_EVENT => window::syscall_get_window_event(arg1, arg2 as *mut u8, arg3 as usize),
 
-        ENUMERATE_DEVICES => device::syscall_enumerate_devices(arg1, arg2 as *mut u8, arg3 as usize),
+        ENUMERATE_DEVICES => {
+            device::syscall_enumerate_devices(arg1, arg2 as *mut u8, arg3 as usize)
+        }
         OPEN_DEVICE => device::syscall_open_device(arg1 as *const u8),
         DEVICE_IOCTL => device::syscall_device_ioctl(arg1, arg2, arg3),
 

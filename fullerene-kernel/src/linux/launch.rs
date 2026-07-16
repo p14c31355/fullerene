@@ -1,8 +1,8 @@
 // Linux binary launcher
-use alloc::boxed::Box;
-use alloc::string::ToString;
 use crate::loader::LoadError;
 use crate::process::ProcessId;
+use alloc::boxed::Box;
+use alloc::string::ToString;
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {

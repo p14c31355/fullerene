@@ -8,15 +8,18 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::str;
 
-use fatfs::{self, DefaultTimeProvider, IoBase, IoError as FatIoError, LossyOemCpConverter, Read, Write, Seek, SeekFrom};
+use fatfs::{
+    self, DefaultTimeProvider, IoBase, IoError as FatIoError, LossyOemCpConverter, Read, Seek,
+    SeekFrom, Write,
+};
 
 type FatType = fatfs::FileSystem<FatDevice>;
 type FatDir<'a> = fatfs::Dir<'a, FatDevice, DefaultTimeProvider, LossyOemCpConverter>;
 type FatFile<'a> = fatfs::File<'a, FatDevice, DefaultTimeProvider, LossyOemCpConverter>;
 type FatError = fatfs::Error<FatBlockError>;
 
-use crate::klog_fmt;
 use crate::contexts::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
+use crate::klog_fmt;
 use genome::fs::FsError;
 
 #[repr(C, packed)]
@@ -62,10 +65,15 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> 
         let entry_ptr = boot[off..].as_ptr() as *const MbrPartitionEntry;
         let ptype = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).partition_type) };
         let lba_start = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).lba_start) };
-        let sector_count = unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).sector_count) };
+        let sector_count =
+            unsafe { core::ptr::read_unaligned(&raw const (*entry_ptr).sector_count) };
         let is_fat = matches!(
             ptype,
-            PARTITION_FAT32 | PARTITION_FAT32_LBA | PARTITION_FAT16 | PARTITION_FAT16_LBA | PARTITION_EXFAT
+            PARTITION_FAT32
+                | PARTITION_FAT32_LBA
+                | PARTITION_FAT16
+                | PARTITION_FAT16_LBA
+                | PARTITION_EXFAT
         );
         if is_fat && sector_count > best_sectors {
             best_lba = Some(lba_start);
@@ -73,7 +81,11 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> 
         }
     }
     if let Some(lba) = best_lba {
-        klog_fmt!("FAT: selected partition at LBA {} ({} sectors)\n", lba, best_sectors);
+        klog_fmt!(
+            "FAT: selected partition at LBA {} ({} sectors)\n",
+            lba,
+            best_sectors
+        );
         return Ok(lba);
     }
     klog_fmt!("FAT: no FAT partition found in MBR\n");
@@ -96,7 +108,10 @@ pub fn mount_device(
     let partition: Box<dyn BlockDevice> = if lba == 0 {
         device
     } else {
-        Box::new(PartitionBlockDevice { inner: device, offset: lba })
+        Box::new(PartitionBlockDevice {
+            inner: device,
+            offset: lba,
+        })
     };
     let cached: Box<dyn BlockDevice> = Box::new(BlockCache::new(partition, 64));
     if is_exfat(&boot) {
@@ -123,8 +138,16 @@ impl<D: BlockDevice> BlockCache<D> {
     pub fn new(inner: D, capacity: usize) -> Self {
         let bps = inner.sector_size() as usize;
         let mut entries = Vec::with_capacity(capacity);
-        for _ in 0..capacity { entries.push((None, vec![0u8; bps])); }
-        Self { inner, bps, entries, capacity, next_victim: 0 }
+        for _ in 0..capacity {
+            entries.push((None, vec![0u8; bps]));
+        }
+        Self {
+            inner,
+            bps,
+            entries,
+            capacity,
+            next_victim: 0,
+        }
     }
 
     fn lookup(&self, lba: u32) -> Option<usize> {
@@ -132,9 +155,19 @@ impl<D: BlockDevice> BlockCache<D> {
     }
 
     pub fn read_sector(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
-        if buf.len() < self.bps { return Err(BlockError::BufferTooSmall { required: self.bps, provided: buf.len() }); }
-        if (lba as u64) >= self.inner.total_sectors() { return Err(BlockError::LbaOverflow); }
-        if let Some(idx) = self.lookup(lba) { buf[..self.bps].copy_from_slice(&self.entries[idx].1); return Ok(()); }
+        if buf.len() < self.bps {
+            return Err(BlockError::BufferTooSmall {
+                required: self.bps,
+                provided: buf.len(),
+            });
+        }
+        if (lba as u64) >= self.inner.total_sectors() {
+            return Err(BlockError::LbaOverflow);
+        }
+        if let Some(idx) = self.lookup(lba) {
+            buf[..self.bps].copy_from_slice(&self.entries[idx].1);
+            return Ok(());
+        }
         let idx = self.evict_slot();
         let entry = &mut self.entries[idx];
         self.inner.read_sectors(lba, 1, &mut entry.1)?;
@@ -144,8 +177,12 @@ impl<D: BlockDevice> BlockCache<D> {
     }
 
     pub fn get_sector(&mut self, lba: u32) -> Result<&[u8], BlockError> {
-        if (lba as u64) >= self.inner.total_sectors() { return Err(BlockError::LbaOverflow); }
-        if let Some(idx) = self.lookup(lba) { return Ok(&self.entries[idx].1); }
+        if (lba as u64) >= self.inner.total_sectors() {
+            return Err(BlockError::LbaOverflow);
+        }
+        if let Some(idx) = self.lookup(lba) {
+            return Ok(&self.entries[idx].1);
+        }
         let idx = self.evict_slot();
         let entry = &mut self.entries[idx];
         self.inner.read_sectors(lba, 1, &mut entry.1)?;
@@ -154,30 +191,51 @@ impl<D: BlockDevice> BlockCache<D> {
     }
 
     fn evict_slot(&mut self) -> usize {
-        if let Some(idx) = self.entries.iter().position(|(l, _)| l.is_none()) { return idx; }
+        if let Some(idx) = self.entries.iter().position(|(l, _)| l.is_none()) {
+            return idx;
+        }
         let idx = self.next_victim;
         self.next_victim = (self.next_victim + 1) % self.capacity;
         idx
     }
 
     pub fn write_sector(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-        if (lba as u64) >= self.inner.total_sectors() { return Err(BlockError::LbaOverflow); }
-        if buf.len() < self.bps { return Err(BlockError::BufferTooSmall { required: self.bps, provided: buf.len() }); }
-        if let Some(idx) = self.lookup(lba) { self.entries[idx].0 = None; }
-        self.inner.write_sectors(lba, 1, buf).map_err(BlockError::Device)
+        if (lba as u64) >= self.inner.total_sectors() {
+            return Err(BlockError::LbaOverflow);
+        }
+        if buf.len() < self.bps {
+            return Err(BlockError::BufferTooSmall {
+                required: self.bps,
+                provided: buf.len(),
+            });
+        }
+        if let Some(idx) = self.lookup(lba) {
+            self.entries[idx].0 = None;
+        }
+        self.inner
+            .write_sectors(lba, 1, buf)
+            .map_err(BlockError::Device)
     }
 
-    pub fn sector_size(&self) -> u32 { self.bps as u32 }
-    pub fn total_sectors(&self) -> u64 { self.inner.total_sectors() }
+    pub fn sector_size(&self) -> u32 {
+        self.bps as u32
+    }
+    pub fn total_sectors(&self) -> u64 {
+        self.inner.total_sectors()
+    }
 }
 
 impl<D: BlockDevice> BlockDevice for BlockCache<D> {
     fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
         let count = count as usize;
         let needed = count.checked_mul(self.bps).ok_or("count * bps overflow")?;
-        if buf.len() < needed { return Err("buffer too small for multi-sector read"); }
+        if buf.len() < needed {
+            return Err("buffer too small for multi-sector read");
+        }
         let end_lba = (lba as u64) + (count as u64);
-        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 { return Err("LBA range exceeds device capacity or 32-bit limit"); }
+        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
+            return Err("LBA range exceeds device capacity or 32-bit limit");
+        }
         let mut index = 0;
         while index < count {
             let current_lba = lba + index as u32;
@@ -203,7 +261,9 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
                 let slot = self.evict_slot();
                 let offset = sector * self.bps;
                 self.entries[slot].0 = Some(lba + sector as u32);
-                self.entries[slot].1.copy_from_slice(&buf[offset..offset + self.bps]);
+                self.entries[slot]
+                    .1
+                    .copy_from_slice(&buf[offset..offset + self.bps]);
             }
         }
         Ok(())
@@ -211,9 +271,13 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
     fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
         let count = count as usize;
         let needed = count.checked_mul(self.bps).ok_or("count * bps overflow")?;
-        if buf.len() < needed { return Err("buffer too small for multi-sector write"); }
+        if buf.len() < needed {
+            return Err("buffer too small for multi-sector write");
+        }
         let end_lba = (lba as u64) + (count as u64);
-        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 { return Err("LBA range exceeds device capacity or 32-bit limit"); }
+        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
+            return Err("LBA range exceeds device capacity or 32-bit limit");
+        }
         for index in 0..count {
             if let Some(slot) = self.lookup(lba + index as u32) {
                 self.entries[slot].0 = None;
@@ -221,8 +285,12 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
         }
         self.inner.write_sectors(lba, count as u16, &buf[..needed])
     }
-    fn sector_size(&self) -> u32 { self.bps as u32 }
-    fn total_sectors(&self) -> u64 { self.inner.total_sectors() }
+    fn sector_size(&self) -> u32 {
+        self.bps as u32
+    }
+    fn total_sectors(&self) -> u64 {
+        self.inner.total_sectors()
+    }
 }
 
 pub struct PartitionBlockDevice {
@@ -231,10 +299,20 @@ pub struct PartitionBlockDevice {
 }
 
 impl BlockDevice for PartitionBlockDevice {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> { self.inner.read_sectors(lba + self.offset, count, buf) }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> { self.inner.write_sectors(lba + self.offset, count, buf) }
-    fn sector_size(&self) -> u32 { self.inner.sector_size() }
-    fn total_sectors(&self) -> u64 { self.inner.total_sectors().saturating_sub(self.offset as u64) }
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+        self.inner.read_sectors(lba + self.offset, count, buf)
+    }
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        self.inner.write_sectors(lba + self.offset, count, buf)
+    }
+    fn sector_size(&self) -> u32 {
+        self.inner.sector_size()
+    }
+    fn total_sectors(&self) -> u64 {
+        self.inner
+            .total_sectors()
+            .saturating_sub(self.offset as u64)
+    }
 }
 
 // ── fatfs device adapter ─────────────────────────────────────
@@ -257,9 +335,15 @@ impl core::fmt::Display for FatBlockError {
 }
 
 impl FatIoError for FatBlockError {
-    fn is_interrupted(&self) -> bool { false }
-    fn new_unexpected_eof_error() -> Self { FatBlockError::UnexpectedEof }
-    fn new_write_zero_error() -> Self { FatBlockError::WriteZero }
+    fn is_interrupted(&self) -> bool {
+        false
+    }
+    fn new_unexpected_eof_error() -> Self {
+        FatBlockError::UnexpectedEof
+    }
+    fn new_write_zero_error() -> Self {
+        FatBlockError::WriteZero
+    }
 }
 
 pub struct FatDevice {
@@ -273,15 +357,24 @@ impl FatDevice {
     pub fn new(device: Box<dyn BlockDevice>) -> Self {
         let bps = device.sector_size();
         let total_bytes = device.total_sectors() * bps as u64;
-        Self { device, pos: 0, bps, total_bytes }
+        Self {
+            device,
+            pos: 0,
+            bps,
+            total_bytes,
+        }
     }
 }
 
-impl IoBase for FatDevice { type Error = FatBlockError; }
+impl IoBase for FatDevice {
+    type Error = FatBlockError;
+}
 
 impl Read for FatDevice {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-        if self.pos >= self.total_bytes { return Ok(0); }
+        if self.pos >= self.total_bytes {
+            return Ok(0);
+        }
         let end = (self.pos + buf.len() as u64).min(self.total_bytes);
         let len = (end - self.pos) as usize;
         let mut scratch = vec![0u8; self.bps as usize];
@@ -290,7 +383,9 @@ impl Read for FatDevice {
             let current_pos = self.pos + written as u64;
             let sec = (current_pos / self.bps as u64) as u32;
             let off = (current_pos % self.bps as u64) as usize;
-            self.device.read_sectors(sec, 1, &mut scratch).map_err(|e| FatBlockError::Device(e))?;
+            self.device
+                .read_sectors(sec, 1, &mut scratch)
+                .map_err(|e| FatBlockError::Device(e))?;
             let avail = (self.bps as usize - off).min(len - written);
             buf[written..written + avail].copy_from_slice(&scratch[off..off + avail]);
             written += avail;
@@ -302,20 +397,28 @@ impl Read for FatDevice {
 
 impl Write for FatDevice {
     fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-        if buf.is_empty() { return Ok(0); }
+        if buf.is_empty() {
+            return Ok(0);
+        }
         let sector = (self.pos / self.bps as u64) as u32;
         let offset = (self.pos % self.bps as u64) as usize;
         let write_len = buf.len().min((self.bps as usize).saturating_sub(offset));
         let mut scratch = vec![0u8; self.bps as usize];
         if offset > 0 || write_len < self.bps as usize {
-            self.device.read_sectors(sector, 1, &mut scratch).map_err(|e| FatBlockError::Device(e))?;
+            self.device
+                .read_sectors(sector, 1, &mut scratch)
+                .map_err(|e| FatBlockError::Device(e))?;
         }
         scratch[offset..offset + write_len].copy_from_slice(&buf[..write_len]);
-        self.device.write_sectors(sector, 1, &scratch).map_err(|e| FatBlockError::Device(e))?;
+        self.device
+            .write_sectors(sector, 1, &scratch)
+            .map_err(|e| FatBlockError::Device(e))?;
         self.pos += write_len as u64;
         Ok(write_len)
     }
-    fn flush(&mut self) -> Result<(), Self::Error> { Ok(()) }
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 impl Seek for FatDevice {
@@ -323,12 +426,18 @@ impl Seek for FatDevice {
         let new_pos = match pos {
             SeekFrom::Start(off) => off,
             SeekFrom::End(off) => {
-                if off >= 0 { self.total_bytes.saturating_add_signed(off) }
-                else { self.total_bytes.saturating_sub((-off) as u64) }
+                if off >= 0 {
+                    self.total_bytes.saturating_add_signed(off)
+                } else {
+                    self.total_bytes.saturating_sub((-off) as u64)
+                }
             }
             SeekFrom::Current(off) => {
-                if off >= 0 { self.pos.saturating_add_signed(off) }
-                else { self.pos.saturating_sub((-off) as u64) }
+                if off >= 0 {
+                    self.pos.saturating_add_signed(off)
+                } else {
+                    self.pos.saturating_sub((-off) as u64)
+                }
             }
         };
         self.pos = new_pos.min(self.total_bytes);
@@ -352,9 +461,15 @@ impl FatFileSystem {
     pub fn new(device: Box<dyn BlockDevice>) -> Result<Self, FsError> {
         let fat_dev = FatDevice::new(device);
         let opts = fatfs::FsOptions::new();
-        let inner = FatType::new(fat_dev, opts)
-            .map_err(|e| { klog_fmt!("FAT: fatfs init error: {:?}\n", e); FsError::InvalidInput })?;
-        Ok(Self { inner, next_fd: 1, handles: Vec::new() })
+        let inner = FatType::new(fat_dev, opts).map_err(|e| {
+            klog_fmt!("FAT: fatfs init error: {:?}\n", e);
+            FsError::InvalidInput
+        })?;
+        Ok(Self {
+            inner,
+            next_fd: 1,
+            handles: Vec::new(),
+        })
     }
 
     fn map_err<T>(r: Result<T, FatError>) -> Result<T, FsError> {
@@ -370,8 +485,11 @@ impl FatFileSystem {
 
     fn open_dir<'a>(&'a mut self, path: &str) -> Result<FatDir<'a>, FsError> {
         let path = path.trim_matches('/');
-        if path.is_empty() { Ok(self.inner.root_dir()) }
-        else { Self::map_err(self.inner.root_dir().open_dir(path)) }
+        if path.is_empty() {
+            Ok(self.inner.root_dir())
+        } else {
+            Self::map_err(self.inner.root_dir().open_dir(path))
+        }
     }
 
     fn open_file<'a>(&'a mut self, path: &str) -> Result<FatFile<'a>, FsError> {
@@ -396,12 +514,21 @@ impl FileSystem for FatFileSystem {
         let fd = self.next_fd;
         self.next_fd += 1;
         self.handles.push((fd, String::from(path), 0));
-        Some(FileDescriptor { fd, ino: 0, offset: 0, flags })
+        Some(FileDescriptor {
+            fd,
+            ino: 0,
+            offset: 0,
+            flags,
+        })
     }
 
     fn read(&mut self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         let (path, offset) = {
-            let handle = self.handles.iter_mut().find(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            let handle = self
+                .handles
+                .iter_mut()
+                .find(|h| h.0 == fd)
+                .ok_or(FsError::InvalidFileDescriptor)?;
             (handle.1.clone(), handle.2)
         };
         let n = {
@@ -417,7 +544,11 @@ impl FileSystem for FatFileSystem {
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         let (path, offset) = {
-            let handle = self.handles.iter_mut().find(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
+            let handle = self
+                .handles
+                .iter_mut()
+                .find(|h| h.0 == fd)
+                .ok_or(FsError::InvalidFileDescriptor)?;
             (handle.1.clone(), handle.2)
         };
         let n = {
@@ -432,13 +563,21 @@ impl FileSystem for FatFileSystem {
     }
 
     fn close(&mut self, fd: u32) -> Result<(), FsError> {
-        let pos = self.handles.iter().position(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let pos = self
+            .handles
+            .iter()
+            .position(|h| h.0 == fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         self.handles.remove(pos);
         Ok(())
     }
 
     fn seek(&mut self, fd: u32, new_pos: usize) -> Result<(), FsError> {
-        let handle = self.handles.iter_mut().find(|h| h.0 == fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handles
+            .iter_mut()
+            .find(|h| h.0 == fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         handle.2 = new_pos as u64;
         Ok(())
     }
@@ -450,7 +589,9 @@ impl FileSystem for FatFileSystem {
 
     fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
         let path = path.trim_matches('/');
-        if path.is_empty() { return Err(FsError::InvalidInput); }
+        if path.is_empty() {
+            return Err(FsError::InvalidInput);
+        }
         let (parent, name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
             None => ("", path),
@@ -464,7 +605,9 @@ impl FileSystem for FatFileSystem {
 
     fn unlink(&mut self, path: &str) -> Result<(), FsError> {
         let path = path.trim_matches('/');
-        if path.is_empty() { return Err(FsError::InvalidInput); }
+        if path.is_empty() {
+            return Err(FsError::InvalidInput);
+        }
         let (parent, name) = match path.rfind('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
             None => ("", path),

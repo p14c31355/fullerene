@@ -31,34 +31,35 @@ pub struct DesktopIconLayer {
 impl DesktopIconLayer {
     pub fn new() -> Self {
         let icons = alloc::vec![
-        DesktopIcon {
-            label: String::from("Shell"),
-            x: 24,
-            y: 32,
-            size: 64,
-            color: 0x333344,
-        },
-        DesktopIcon {
-            label: String::from("Files"),
-            x: 112,
-            y: 32,
-            size: 64,
-            color: 0x334433,
-        },
-        DesktopIcon {
-            label: String::from("Settings"),
-            x: 200,
-            y: 32,
-            size: 64,
-            color: 0x444433,
-        },
-        DesktopIcon {
-            label: String::from("About"),
-            x: 24,
-            y: 136,
-            size: 64,
-            color: 0x443344,
-        }];
+            DesktopIcon {
+                label: String::from("Shell"),
+                x: 24,
+                y: 32,
+                size: 64,
+                color: 0x333344,
+            },
+            DesktopIcon {
+                label: String::from("Files"),
+                x: 112,
+                y: 32,
+                size: 64,
+                color: 0x334433,
+            },
+            DesktopIcon {
+                label: String::from("Settings"),
+                x: 200,
+                y: 32,
+                size: 64,
+                color: 0x444433,
+            },
+            DesktopIcon {
+                label: String::from("About"),
+                x: 24,
+                y: 136,
+                size: 64,
+                color: 0x443344,
+            }
+        ];
 
         Self {
             icons,

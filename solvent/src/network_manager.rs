@@ -21,7 +21,10 @@ struct WifiService {
 impl WifiService {
     #[allow(dead_code)]
     const fn new() -> Self {
-        Self { init_started: None, init_pending: true }
+        Self {
+            init_started: None,
+            init_pending: true,
+        }
     }
 
     #[cfg(not(nitrogen_no_iwlwifi))]
@@ -41,18 +44,29 @@ impl WifiService {
     fn update_snapshot() {
         use alloc::string::ToString;
         use alloc::vec::Vec;
-        use lattice::network_menu::{ApDisplay, NetStatus};
         use bonder::wifi::WifiStatus;
-        let Some(state) = nitrogen::iwlwifi::wifi_state_snapshot() else { return };
-        let mut aps: Vec<_> = state.scan_results.iter().map(|ap| {
-            let ssid = ap.ssid.to_string();
-            ApDisplay {
-                connected: state.connected_ssid.as_ref() == Some(&ssid),
-                ssid,
-                signal_bars: match ap.rssi { -39.. => 3, -59..=-40 => 2, -74..=-60 => 1, _ => 0 },
-                has_lock: ap.security.needs_password(),
-            }
-        }).collect();
+        use lattice::network_menu::{ApDisplay, NetStatus};
+        let Some(state) = nitrogen::iwlwifi::wifi_state_snapshot() else {
+            return;
+        };
+        let mut aps: Vec<_> = state
+            .scan_results
+            .iter()
+            .map(|ap| {
+                let ssid = ap.ssid.to_string();
+                ApDisplay {
+                    connected: state.connected_ssid.as_ref() == Some(&ssid),
+                    ssid,
+                    signal_bars: match ap.rssi {
+                        -39.. => 3,
+                        -59..=-40 => 2,
+                        -74..=-60 => 1,
+                        _ => 0,
+                    },
+                    has_lock: ap.security.needs_password(),
+                }
+            })
+            .collect();
         aps.sort_by_key(|ap| !ap.connected);
         *crate::NETWORK_SNAPSHOT.lock() = crate::NetworkSnapshot {
             aps,
@@ -81,7 +95,9 @@ impl crate::Service for WifiService {
         #[cfg(nitrogen_no_iwlwifi)]
         let _ = now;
         #[cfg(not(nitrogen_no_iwlwifi))]
-        if self.init_pending { self.advance_init(now); }
+        if self.init_pending {
+            self.advance_init(now);
+        }
         #[cfg(not(nitrogen_no_iwlwifi))]
         nitrogen::iwlwifi::tick_wifi_device();
         #[cfg(not(nitrogen_no_iwlwifi))]
@@ -96,7 +112,9 @@ impl crate::Service for WifiService {
             let _ = (ssid, password);
         }
         #[cfg(not(nitrogen_no_iwlwifi))]
-        if now % 20 == 0 { Self::update_snapshot(); }
+        if now % 20 == 0 {
+            Self::update_snapshot();
+        }
     }
 }
 
@@ -125,7 +143,9 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
                 let ap = &snap.aps[*idx];
                 let ssid = Ssid::new(ap.ssid.as_bytes());
                 drop(snap);
-                crate::WIFI_ACTION_QUEUE.lock().push(crate::WifiAction::Connect(ssid, None));
+                crate::WIFI_ACTION_QUEUE
+                    .lock()
+                    .push(crate::WifiAction::Connect(ssid, None));
             } else {
                 drop(snap);
             }
@@ -149,7 +169,9 @@ pub fn handle_network_action(rt: &mut crate::RuntimeState, action: &DesktopActio
                 let ssid_str = rt.desktop.pwd_dialog_ssid.clone();
                 let password = rt.desktop.pwd_dialog_password.clone();
                 let ssid = Ssid::new(ssid_str.as_bytes());
-                crate::WIFI_ACTION_QUEUE.lock().push(crate::WifiAction::Connect(ssid, Some(password)));
+                crate::WIFI_ACTION_QUEUE
+                    .lock()
+                    .push(crate::WifiAction::Connect(ssid, Some(password)));
             }
             rt.desktop.pwd_dialog_open = false;
             rt.desktop.pwd_target_ap = None;

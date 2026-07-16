@@ -14,7 +14,7 @@ use petroleum::page_table::PageTableHelper as _;
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::linux::runtime::DispatchMode;
-use crate::vdso::{create_vdso_page, VdsoPageRef};
+use crate::vdso::{VdsoPageRef, create_vdso_page};
 
 use crate::syscall::{Handle, HandlePerms, KernelObject};
 
@@ -70,12 +70,8 @@ impl Default for ProcessContext {
             rip: 0,
             segments: [
                 // Use fallback segment selectors if GDT not ready
-                crate::gdt::code()
-                    .as_ref()
-                    .map_or(1, |s| s.0 as u64), // cs
-                crate::gdt::kernel_data()
-                    .as_ref()
-                    .map_or(2, |s| s.0 as u64), // ss
+                crate::gdt::code().as_ref().map_or(1, |s| s.0 as u64), // cs
+                crate::gdt::kernel_data().as_ref().map_or(2, |s| s.0 as u64), // ss
                 0,
                 0,
                 0,
@@ -163,7 +159,10 @@ impl HandleTable {
             }
         }
         let idx = self.slots.len() as u16;
-        self.slots.push(HandleSlot { generation: 0, entry: None });
+        self.slots.push(HandleSlot {
+            generation: 0,
+            entry: None,
+        });
         idx
     }
 
@@ -176,7 +175,8 @@ impl HandleTable {
         }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        self.slots.get_mut(slot)
+        self.slots
+            .get_mut(slot)
             .and_then(|s| s.entry.as_mut())
             .filter(|e| e.generation == gen_val)
             .map(|e| &mut e.object)
@@ -189,7 +189,8 @@ impl HandleTable {
         }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        self.slots.get(slot)
+        self.slots
+            .get(slot)
             .and_then(|s| s.entry.as_ref())
             .filter(|e| e.generation == gen_val)
             .map(|e| &e.object)
@@ -218,25 +219,24 @@ impl HandleTable {
         }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        self.slots.get(slot)
+        self.slots
+            .get(slot)
             .and_then(|s| s.entry.as_ref())
             .filter(|e| e.generation == gen_val)
-            .map_or(false, |e| (e.permissions & required.bits()) == required.bits())
+            .map_or(false, |e| {
+                (e.permissions & required.bits()) == required.bits()
+            })
     }
 
     /// Iterate over all handle objects mutably (for cleanup / thread exit).
-    pub fn iter_objects_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut KernelObject> {
+    pub fn iter_objects_mut(&mut self) -> impl Iterator<Item = &mut KernelObject> {
         self.slots
             .iter_mut()
             .filter_map(|slot| slot.entry.as_mut().map(|e| &mut e.object))
     }
 
     /// Get all handles with their objects.
-    pub fn entries(
-        &self,
-    ) -> impl Iterator<Item = (Handle, &KernelObject)> {
+    pub fn entries(&self) -> impl Iterator<Item = (Handle, &KernelObject)> {
         self.slots.iter().enumerate().filter_map(|(i, slot)| {
             slot.entry.as_ref().map(|e| {
                 let h = Handle::new(i as u8, e.generation, e.permissions);
@@ -246,9 +246,7 @@ impl HandleTable {
     }
 
     /// Get all handles with mutable object references.
-    pub fn entries_mut(
-        &mut self,
-    ) -> impl Iterator<Item = (Handle, &mut KernelObject)> {
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = (Handle, &mut KernelObject)> {
         self.slots.iter_mut().enumerate().filter_map(|(i, slot)| {
             slot.entry.as_mut().map(|e| {
                 let h = Handle::new(i as u8, e.generation, e.permissions);
@@ -302,7 +300,12 @@ impl ProcessResources {
                     KernelObject::Window(w) => {
                         // Notify compositor that window is gone
                         crate::contexts::kernel::with_kernel_mut(|k| {
-                            if let Some(win) = k.window.windows.iter_mut().find(|win| win.id == w.window_id) {
+                            if let Some(win) = k
+                                .window
+                                .windows
+                                .iter_mut()
+                                .find(|win| win.id == w.window_id)
+                            {
                                 win.visible = false;
                             }
                         });
@@ -392,19 +395,12 @@ impl Process {
         if self.is_user {
             // For user processes, the context RSP should be the user stack
             self.context.regs[7] = self.user_stack.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::user_code()
-                .as_ref()
-                .map_or(1, |s| s.0 as u64); // cs
-            self.context.segments[1] = crate::gdt::user_data()
-                .as_ref()
-                .map_or(2, |s| s.0 as u64); // ss
+            self.context.segments[0] = crate::gdt::user_code().as_ref().map_or(1, |s| s.0 as u64); // cs
+            self.context.segments[1] = crate::gdt::user_data().as_ref().map_or(2, |s| s.0 as u64); // ss
         } else {
             // For kernel processes, the context RSP is the kernel stack
             self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::code()
-                .as_ref()
-                .map(|s| s.0 as u64)
-                .unwrap_or(1); // cs
+            self.context.segments[0] = crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1); // cs
             self.context.segments[1] = crate::gdt::kernel_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
@@ -459,8 +455,14 @@ pub fn init(heap_start: usize, heap_end: usize) {
         rip: idle_addr.as_u64(),
         segments: [
             crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1),
-            crate::gdt::kernel_data().as_ref().map(|s| s.0 as u64).unwrap_or(2),
-            0, 0, 0, 0,
+            crate::gdt::kernel_data()
+                .as_ref()
+                .map(|s| s.0 as u64)
+                .unwrap_or(2),
+            0,
+            0,
+            0,
+            0,
         ],
         tss: 0,
         is_user: false,
@@ -485,9 +487,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
         resources: ProcessResources::new(),
     });
 
-    SCHEDULER
-        .add(idle)
-        .expect("Failed to add idle process");
+    SCHEDULER.add(idle).expect("Failed to add idle process");
 
     IDLE_INIT.store(true, core::sync::atomic::Ordering::Release);
     SCHEDULER.set_current_pid(pid.0 as usize);
@@ -611,44 +611,49 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
-    let to_unblock = SCHEDULER.with_process(pid, |process| {
-        // The idle task owns neither an allocated stack nor a replacement task.
-        // It is a scheduler invariant, not a terminable user process.
-        if process.name == "idle" {
-            return Vec::new();
-        }
-        process.state = ProcessState::Terminated;
-        process.exit_code = Some(exit_code);
-
-        // Clean up per-process resources (fd table, handle table)
-        // Collects waiters to unblock outside the process-manager lock.
-        let waiters = process.resources.cleanup();
-
-        // Free resources
-        if let Some(kernel_stack_base) = process
-            .kernel_stack
-            .as_u64()
-            .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
-            .filter(|&base| base != 0)
-        {
-            let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-            unsafe {
-                petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout)
-            };
-        }
-
-        // Properly free page table frames recursively
-        if let Some(page_table) = process.page_table.take() {
-            if let Some(pml4_frame) = page_table.pml4_frame() {
-                drop(page_table);
-                crate::memory_management::deallocate_process_page_table(pml4_frame);
+    let to_unblock = SCHEDULER
+        .with_process(pid, |process| {
+            // The idle task owns neither an allocated stack nor a replacement task.
+            // It is a scheduler invariant, not a terminable user process.
+            if process.name == "idle" {
+                return Vec::new();
             }
-        }
+            process.state = ProcessState::Terminated;
+            process.exit_code = Some(exit_code);
 
-        process.page_table = None;
+            // Clean up per-process resources (fd table, handle table)
+            // Collects waiters to unblock outside the process-manager lock.
+            let waiters = process.resources.cleanup();
 
-        waiters
-    }).unwrap_or_default();
+            // Free resources
+            if let Some(kernel_stack_base) = process
+                .kernel_stack
+                .as_u64()
+                .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+                .filter(|&base| base != 0)
+            {
+                let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(
+                        kernel_stack_base as *mut u8,
+                        layout,
+                    )
+                };
+            }
+
+            // Properly free page table frames recursively
+            if let Some(page_table) = process.page_table.take() {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    drop(page_table);
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
+
+            process.page_table = None;
+
+            waiters
+        })
+        .unwrap_or_default();
 
     // Unblock waiters (handles, parent) outside the process-manager lock.
     for waiter in to_unblock {
