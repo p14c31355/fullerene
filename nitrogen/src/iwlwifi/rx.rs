@@ -106,7 +106,7 @@ impl IwlWifiDevice {
                             0x0800 => {
                                 let dhcp_handled = if data.len() >= 28 {
                                     let ihl = (data[0] & 0x0F) as usize * 4;
-                                    if data[9] == 17 && data.len() >= ihl + 8 {
+                                    if ihl >= 20 && data[9] == 17 && data.len() >= ihl + 8 {
                                         let dst_port =
                                             u16::from_be_bytes([data[ihl + 2], data[ihl + 3]]);
                                         if dst_port == 68 {
