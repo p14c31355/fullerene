@@ -131,7 +131,6 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] Components include `rustfmt` + `clippy`
 - [x] Host-target `#[panic_handler]` added — `cargo check -p fullerene-kernel` now works without `--target`
 - [ ] CI: add `cargo fmt --check`, host check, Clippy jobs
-- [ ] CI: add headless QEMU smoke test with `isa-debug-exit`
 - [ ] CI: separate UEFI build and driver/hardware test matrix
 
 ### P2-2. Workspace dependency unification
