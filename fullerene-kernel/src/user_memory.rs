@@ -74,8 +74,9 @@ pub(crate) unsafe fn copy_c_string(
         let user = UserSlice::new(current as *mut u8, chunk_len, false)?;
         unsafe { user.copy_from_user(&mut bytes[chunk_start..])? };
 
-        if bytes[chunk_start..].contains(&0) {
-            return decode_c_string(bytes);
+        if let Some(nul_idx) = bytes[chunk_start..].iter().position(|&b| b == 0) {
+            bytes.truncate(chunk_start + nul_idx);
+            return String::from_utf8(bytes).map_err(|_| UserCopyError::InvalidUtf8);
         }
         offset += chunk_len;
     }
