@@ -246,6 +246,23 @@ timeout, scan cadence, action consumption, and immutable desktop snapshot. The
 kernel installs the `DriverContext` capability, starts Solvent via `solvent::init()`,
 and explicitly registers the Wi-Fi service via `solvent::register_wifi_service()`.
 
+Solvent's crate root is an API facade rather than an orchestration
+implementation. Runtime responsibilities are divided under `solvent/src/`:
+
+- `runtime_context` defines runtime state, configuration, and initialization.
+- `input_loop` translates PS/2 mouse and keyboard state into desktop actions or
+  Resonance events.
+- `event_loop` owns timer processing, service ticks, event dispatch, and frame
+  pacing.
+- `window_api` owns window lifecycle, redraw control, and file-launch
+  integration.
+- `callbacks` defines the kernel-provided service contract and transfer types.
+- `services` owns runtime-managed services and their shared UI snapshots.
+
+This is a structural boundary only. The current singleton ownership remains
+unchanged until the separate context-ownership work moves callbacks, runtime
+state, the event queue, and the dispatcher into an explicit `RuntimeContext`.
+
 ---
 
 ## Resonance (Events)
