@@ -23,9 +23,17 @@ pub use types::*;
 mod tests {
     #[test]
     fn test_syscall_numbers() {
-        assert_eq!(petroleum::SyscallNumber::Exit as u64, 1);
-        assert_eq!(petroleum::SyscallNumber::Write as u64, 4);
-        assert_eq!(petroleum::SyscallNumber::Read as u64, 3);
+        assert_eq!(fullerene_abi::SyscallNumber::Exit.as_u64(), 1);
+        assert_eq!(fullerene_abi::SyscallNumber::Write.as_u64(), 4);
+        assert_eq!(fullerene_abi::SyscallNumber::Read.as_u64(), 3);
+    }
+
+    #[test]
+    fn abi_query_preserves_the_version_only_call() {
+        assert_eq!(
+            super::basic::syscall_abi_query(core::ptr::null_mut(), 0),
+            Ok(fullerene_abi::AbiVersion::CURRENT.pack())
+        );
     }
 }
 
@@ -50,7 +58,7 @@ mod support_matrix {
     const SYSCALLS: &[SyscallInfo] = &[
         SyscallInfo {
             number: 0,
-            name: "abi_version",
+            name: "abi_query",
             support: Support::Full,
             notes: "",
         },

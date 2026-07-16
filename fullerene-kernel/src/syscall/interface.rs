@@ -1,5 +1,7 @@
 use alloc::string::String;
+use fullerene_abi::SyscallErrorCode;
 use petroleum::common::logging::SystemError;
+use petroleum::common::memory::UserSlice;
 
 use crate::user_memory::{self, UserCopyError};
 
@@ -11,51 +13,52 @@ pub type SyscallResult = Result<u64, SyscallError>;
 
 /// System call errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i64)]
 pub enum SyscallError {
     /// Invalid system call number
-    InvalidSyscall = 1,
+    InvalidSyscall = SyscallErrorCode::InvalidSyscall as i64,
     /// File not found
-    FileNotFound = 2,
+    FileNotFound = SyscallErrorCode::FileNotFound as i64,
     /// No such process
-    NoSuchProcess = 3,
+    NoSuchProcess = SyscallErrorCode::NoSuchProcess as i64,
     /// Device or block I/O error
-    Io = 5,
+    Io = SyscallErrorCode::Io as i64,
     /// Bad file descriptor
-    BadFileDescriptor = 9,
+    BadFileDescriptor = SyscallErrorCode::BadFileDescriptor as i64,
     /// Out of memory
-    OutOfMemory = 12,
+    OutOfMemory = SyscallErrorCode::OutOfMemory as i64,
     /// Permission denied
-    PermissionDenied = 13,
+    PermissionDenied = SyscallErrorCode::PermissionDenied as i64,
     /// Invalid or inaccessible address
-    AddressFault = 14,
+    AddressFault = SyscallErrorCode::AddressFault as i64,
     /// Resource or device is busy
-    Busy = 16,
+    Busy = SyscallErrorCode::Busy as i64,
     /// Invalid argument
-    InvalidArgument = 22,
+    InvalidArgument = SyscallErrorCode::InvalidArgument as i64,
     /// Resource temporarily unavailable (try again)
-    Again = 11,
+    Again = SyscallErrorCode::Again as i64,
     /// Operation timed out
-    TimedOut = 110,
+    TimedOut = SyscallErrorCode::TimedOut as i64,
     /// Operation not supported
-    NotSupported = 95,
+    NotSupported = SyscallErrorCode::NotSupported as i64,
     /// Resource already exists
-    AlreadyExists = 17,
+    AlreadyExists = SyscallErrorCode::AlreadyExists as i64,
     /// No such device
-    NoSuchDevice = 19,
+    NoSuchDevice = SyscallErrorCode::NoSuchDevice as i64,
     /// Expected a directory
-    NotADirectory = 20,
+    NotADirectory = SyscallErrorCode::NotADirectory as i64,
     /// Expected a non-directory object
-    IsADirectory = 21,
+    IsADirectory = SyscallErrorCode::IsADirectory as i64,
     /// Storage capacity exhausted
-    NoSpace = 28,
+    NoSpace = SyscallErrorCode::NoSpace as i64,
     /// Directory must be empty
-    DirectoryNotEmpty = 39,
+    DirectoryNotEmpty = SyscallErrorCode::DirectoryNotEmpty as i64,
     /// Numeric or address overflow
-    Overflow = 75,
+    Overflow = SyscallErrorCode::Overflow as i64,
     /// Bad handle
-    BadHandle = 104,
+    BadHandle = SyscallErrorCode::BadHandle as i64,
     /// Operation would block
-    WouldBlock = 140,
+    WouldBlock = SyscallErrorCode::WouldBlock as i64,
 }
 
 petroleum::error_chain!(SyscallError, petroleum::common::logging::SystemError,
@@ -189,6 +192,38 @@ impl From<petroleum::MemoryError> for SyscallError {
     }
 }
 
+fn versioned_copy_len(
+    caller_size: usize,
+    minimum_size: usize,
+    current_size: usize,
+) -> Result<usize, SyscallError> {
+    if minimum_size == 0 || current_size < minimum_size || caller_size < minimum_size {
+        return Err(SyscallError::InvalidArgument);
+    }
+    Ok(caller_size.min(current_size))
+}
+
+/// Copy the compatible prefix of a versioned DTO to a validated user buffer.
+pub(crate) fn copy_versioned_dto_to_user(
+    destination: *mut u8,
+    caller_size: usize,
+    minimum_size: usize,
+    bytes: &[u8],
+) -> SyscallResult {
+    if destination.is_null() {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let copy_len = versioned_copy_len(caller_size, minimum_size, bytes.len())?;
+    petroleum::validate_user_buffer(destination as usize, copy_len, false)
+        .map_err(|_| SyscallError::AddressFault)?;
+    let destination =
+        UserSlice::new(destination, copy_len, true).map_err(|_| SyscallError::AddressFault)?;
+    unsafe { destination.copy_to_user(&bytes[..copy_len]) }
+        .map_err(|_| SyscallError::AddressFault)?;
+    Ok(copy_len as u64)
+}
+
 /// Helper function to safely copy a null-terminated string from user space.
 ///
 /// Uses the shared user-memory implementation for page-wise validation and
@@ -281,6 +316,17 @@ mod tests {
         assert_eq!(SyscallError::BadHandle as i64, syscall_errors::BAD_HANDLE);
         assert_eq!(SyscallError::TimedOut as i64, syscall_errors::TIMED_OUT);
         assert_eq!(SyscallError::WouldBlock as i64, syscall_errors::WOULD_BLOCK);
+    }
+
+    #[test]
+    fn versioned_dto_copy_length_accepts_older_buffers() {
+        assert_eq!(versioned_copy_len(40, 40, 48), Ok(40));
+        assert_eq!(versioned_copy_len(48, 40, 48), Ok(48));
+        assert_eq!(versioned_copy_len(64, 40, 48), Ok(48));
+        assert_eq!(
+            versioned_copy_len(39, 40, 48),
+            Err(SyscallError::InvalidArgument)
+        );
     }
 
     #[test]

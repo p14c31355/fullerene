@@ -1,12 +1,10 @@
-use alloc::vec;
 use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::common::memory::UserSlice;
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::VirtAddr;
 
-use super::interface::{SyscallError, SyscallResult};
+use super::interface::{SyscallError, SyscallResult, copy_versioned_dto_to_user};
 use super::process::with_kernel_mut_result;
 
 const PROT_READ: u64 = 1;
@@ -201,14 +199,15 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
 }
 
 pub(crate) fn syscall_query_memory(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
-    if info_buf.is_null() || buf_size < 64 || buf_size > (1 << 20) {
-        return Err(SyscallError::InvalidArgument);
-    }
-    petroleum::validate_user_buffer(info_buf as usize, buf_size, false)?;
-
-    let slice =
-        UserSlice::new(info_buf, buf_size, true).map_err(|_| SyscallError::InvalidArgument)?;
-    let kernel_buf = vec![0u8; buf_size];
-    unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
-    Ok(0)
+    let info = fullerene_abi::MemoryInfo {
+        page_size: 4096,
+        ..fullerene_abi::MemoryInfo::default()
+    };
+    let bytes = info.to_ne_bytes();
+    copy_versioned_dto_to_user(
+        info_buf,
+        buf_size,
+        fullerene_abi::MemoryInfo::MIN_BYTE_SIZE,
+        &bytes,
+    )
 }

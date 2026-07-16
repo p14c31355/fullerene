@@ -3,7 +3,7 @@
 
 //! User space system call wrappers for toluene
 
-use petroleum::common::syscall::{exit, getpid, sleep, write};
+use toluene::sys::{current_pid, exit_process, write, yield_now};
 
 petroleum::define_panic_handler!();
 
@@ -20,7 +20,7 @@ pub extern "C" fn main() -> ! {
     safe_print!(1, b"Hello from toluene user program!\n");
 
     // Get our PID and display it
-    let pid = getpid() as usize;
+    let pid = current_pid();
     let mut pid_buffer = [0u8; 20];
     let len = petroleum::serial::format_dec_to_buffer(pid, &mut pid_buffer);
     let pid_msg = &pid_buffer[..len];
@@ -30,10 +30,10 @@ pub extern "C" fn main() -> ! {
 
     // Sleep a bit to simulate work
     for _ in 0..10 {
-        sleep();
+        yield_now();
     }
 
     // Write final message and exit
     safe_print!(1, b"Toluene program finished executing.\n");
-    exit(0);
+    exit_process(0);
 }

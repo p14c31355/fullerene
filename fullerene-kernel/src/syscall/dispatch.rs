@@ -1,4 +1,4 @@
-use fullerene_abi::syscall_numbers::*;
+use fullerene_abi::SyscallNumber;
 
 use super::basic;
 use super::cap;
@@ -60,69 +60,83 @@ pub unsafe extern "C" fn handle_syscall(
         return ret;
     }
 
-    let result = match syscall_num {
-        ABI_VERSION => basic::syscall_abi_version(),
+    let result = match SyscallNumber::try_from(syscall_num) {
+        Ok(SyscallNumber::AbiQuery) => basic::syscall_abi_query(arg1 as *mut u8, arg2 as usize),
 
-        EXIT => basic::syscall_exit(arg1 as i32),
-        FORK => basic::syscall_fork(),
-        READ => basic::syscall_read(arg1 as core::ffi::c_int, arg2 as *mut u8, arg3 as usize),
-        WRITE => basic::syscall_write(arg1 as core::ffi::c_int, arg2 as *const u8, arg3 as usize),
-        OPEN => basic::syscall_open(arg1 as *const u8, arg2 as core::ffi::c_int, arg3 as u32),
-        CLOSE => basic::syscall_close(arg1 as core::ffi::c_int),
-        WAIT => basic::syscall_wait(arg1 as u64),
-        GETPID => basic::syscall_getpid(),
-        GET_PROCESS_NAME => basic::syscall_get_process_name(arg1 as *mut u8, arg2 as usize),
-        YIELD => basic::syscall_yield(),
+        Ok(SyscallNumber::Exit) => basic::syscall_exit(arg1 as i32),
+        Ok(SyscallNumber::Fork) => basic::syscall_fork(),
+        Ok(SyscallNumber::Read) => {
+            basic::syscall_read(arg1 as core::ffi::c_int, arg2 as *mut u8, arg3 as usize)
+        }
+        Ok(SyscallNumber::Write) => {
+            basic::syscall_write(arg1 as core::ffi::c_int, arg2 as *const u8, arg3 as usize)
+        }
+        Ok(SyscallNumber::Open) => {
+            basic::syscall_open(arg1 as *const u8, arg2 as core::ffi::c_int, arg3 as u32)
+        }
+        Ok(SyscallNumber::Close) => basic::syscall_close(arg1 as core::ffi::c_int),
+        Ok(SyscallNumber::Wait) => basic::syscall_wait(arg1),
+        Ok(SyscallNumber::GetPid) => basic::syscall_getpid(),
+        Ok(SyscallNumber::GetProcessName) => {
+            basic::syscall_get_process_name(arg1 as *mut u8, arg2 as usize)
+        }
+        Ok(SyscallNumber::Yield) => basic::syscall_yield(),
 
-        MAP_MEMORY => memory::syscall_map_memory(arg1, arg2, arg3),
-        UNMAP_MEMORY => memory::syscall_unmap_memory(arg1, arg2),
-        PROTECT_MEMORY => memory::syscall_protect_memory(arg1, arg2, arg3),
-        QUERY_MEMORY => memory::syscall_query_memory(arg1 as *mut u8, arg2 as usize),
+        Ok(SyscallNumber::MapMemory) => memory::syscall_map_memory(arg1, arg2, arg3),
+        Ok(SyscallNumber::UnmapMemory) => memory::syscall_unmap_memory(arg1, arg2),
+        Ok(SyscallNumber::ProtectMemory) => memory::syscall_protect_memory(arg1, arg2, arg3),
+        Ok(SyscallNumber::QueryMemory) => {
+            memory::syscall_query_memory(arg1 as *mut u8, arg2 as usize)
+        }
 
-        CREATE_EVENT => event::syscall_create_event(arg1),
-        WAIT_EVENT => event::syscall_wait_event(arg1, arg2),
-        SIGNAL_EVENT => event::syscall_signal_event(arg1),
-        SUBSCRIBE_EVENT => event::syscall_subscribe_event(arg1, arg2),
+        Ok(SyscallNumber::CreateEvent) => event::syscall_create_event(arg1),
+        Ok(SyscallNumber::WaitEvent) => event::syscall_wait_event(arg1, arg2),
+        Ok(SyscallNumber::SignalEvent) => event::syscall_signal_event(arg1),
+        Ok(SyscallNumber::SubscribeEvent) => event::syscall_subscribe_event(arg1, arg2),
 
-        CREATE_THREAD => thread::syscall_create_thread(arg1, arg2, arg3),
-        JOIN_THREAD => thread::syscall_join_thread(arg1),
-        DETACH_THREAD => thread::syscall_detach_thread(arg1),
-        EXIT_THREAD => thread::syscall_exit_thread(arg1 as i32),
+        Ok(SyscallNumber::CreateThread) => thread::syscall_create_thread(arg1, arg2, arg3),
+        Ok(SyscallNumber::JoinThread) => thread::syscall_join_thread(arg1),
+        Ok(SyscallNumber::DetachThread) => thread::syscall_detach_thread(arg1),
+        Ok(SyscallNumber::ExitThread) => thread::syscall_exit_thread(arg1 as i32),
 
-        CREATE_WINDOW => {
+        Ok(SyscallNumber::CreateWindow) => {
             window::syscall_create_window(arg1 as i32, arg2 as i32, arg3 as u32, arg4 as u32, arg5)
         }
-        DESTROY_WINDOW => window::syscall_destroy_window(arg1),
-        RESIZE_WINDOW => window::syscall_resize_window(arg1, arg2 as u32, arg3 as u32),
-        PRESENT_WINDOW => window::syscall_present_window(arg1),
-        GET_WINDOW_EVENT => window::syscall_get_window_event(arg1, arg2 as *mut u8, arg3 as usize),
+        Ok(SyscallNumber::DestroyWindow) => window::syscall_destroy_window(arg1),
+        Ok(SyscallNumber::ResizeWindow) => {
+            window::syscall_resize_window(arg1, arg2 as u32, arg3 as u32)
+        }
+        Ok(SyscallNumber::PresentWindow) => window::syscall_present_window(arg1),
+        Ok(SyscallNumber::GetWindowEvent) => {
+            window::syscall_get_window_event(arg1, arg2 as *mut u8, arg3 as usize)
+        }
 
-        ENUMERATE_DEVICES => {
+        Ok(SyscallNumber::EnumerateDevices) => {
             device::syscall_enumerate_devices(arg1, arg2 as *mut u8, arg3 as usize)
         }
-        OPEN_DEVICE => device::syscall_open_device(arg1 as *const u8),
-        DEVICE_IOCTL => device::syscall_device_ioctl(arg1, arg2, arg3),
+        Ok(SyscallNumber::OpenDevice) => device::syscall_open_device(arg1 as *const u8),
+        Ok(SyscallNumber::DeviceIoctl) => device::syscall_device_ioctl(arg1, arg2, arg3),
 
-        CHANNEL_CREATE => ipc::syscall_channel_create(arg1),
-        CHANNEL_SEND => ipc::syscall_channel_send(arg1, arg2 as *const u8, arg3),
-        CHANNEL_RECV => ipc::syscall_channel_recv(arg1, arg2 as *mut u8, arg3),
-        PIPE_CREATE => ipc::syscall_pipe_create(arg1 as *mut u64),
+        Ok(SyscallNumber::ChannelCreate) => ipc::syscall_channel_create(arg1),
+        Ok(SyscallNumber::ChannelSend) => ipc::syscall_channel_send(arg1, arg2 as *const u8, arg3),
+        Ok(SyscallNumber::ChannelRecv) => ipc::syscall_channel_recv(arg1, arg2 as *mut u8, arg3),
+        Ok(SyscallNumber::PipeCreate) => ipc::syscall_pipe_create(arg1 as *mut u64),
 
-        HANDLE_TRANSFER => cap::syscall_handle_transfer(arg1 as u64, arg2),
-        HANDLE_DUPLICATE => cap::syscall_handle_duplicate(arg1),
-        HANDLE_REVOKE => cap::syscall_handle_revoke(arg1),
+        Ok(SyscallNumber::HandleTransfer) => cap::syscall_handle_transfer(arg1, arg2),
+        Ok(SyscallNumber::HandleDuplicate) => cap::syscall_handle_duplicate(arg1),
+        Ok(SyscallNumber::HandleRevoke) => cap::syscall_handle_revoke(arg1),
 
-        CLOCK_GETTIME => time::syscall_clock_gettime(arg1, arg2 as *mut u8),
-        TIMER_CREATE => time::syscall_timer_create(arg1, arg2, arg3),
-        SLEEP => time::syscall_sleep(arg1),
-        UPTIME => time::syscall_uptime(arg1 as *mut u8),
+        Ok(SyscallNumber::ClockGetTime) => time::syscall_clock_gettime(arg1, arg2 as *mut u8),
+        Ok(SyscallNumber::TimerCreate) => time::syscall_timer_create(arg1, arg2, arg3),
+        Ok(SyscallNumber::Sleep) => time::syscall_sleep(arg1),
+        Ok(SyscallNumber::Uptime) => time::syscall_uptime(arg1 as *mut u8),
 
-        _ => Err(SyscallError::InvalidSyscall),
+        Err(()) => Err(SyscallError::InvalidSyscall),
     };
 
     match result {
         Ok(value) => value,
-        Err(error) => -(error as i32) as u64,
+        Err(error) => (-(error as i64)) as u64,
     }
 }
 

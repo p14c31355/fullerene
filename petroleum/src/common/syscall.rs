@@ -1,114 +1,14 @@
-/// System call numbers
-#[repr(u64)]
-#[derive(Debug, Clone, Copy)]
-pub enum SyscallNumber {
-    /// Exit the current process (exit_code in RDI)
-    Exit = 1,
-    /// Create a new process (entry_point in RDI)
-    Fork = 2,
-    /// Read from file descriptor (fd in RDI, buffer in RSI, count in RDX)
-    Read = 3,
-    /// Write to file descriptor (fd in RDI, buffer in RSI, count in RDX)
-    Write = 4,
-    /// Open file (filename in RDI, flags in RSI, mode in RDX)
-    Open = 5,
-    /// Close file descriptor (fd in RDI)
-    Close = 6,
-    /// Wait for process to finish (pid in RDI)
-    Wait = 7,
-    /// Get current process ID
-    GetPid = 20,
-    /// Get process name (buffer in RDI, size in RSI)
-    GetProcessName = 21,
-    /// Yield to scheduler
-    Yield = 22,
+//! Low-level syscall instruction and compatibility wrappers.
+//!
+//! Syscall numbers are owned by the dependency-free `fullerene-abi` crate.
 
-    // ── Memory API (30–39) ──────────────────────────────────────
-    /// Map virtual memory (addr, length, flags)
-    MapMemory = 30,
-    /// Unmap virtual memory (addr, length)
-    UnmapMemory = 31,
-    /// Change page protection (addr, length, prot)
-    ProtectMemory = 32,
-    /// Query memory region info (addr, info_buf)
-    QueryMemory = 33,
+pub use fullerene_abi::SyscallNumber;
 
-    // ── Event API (40–49) ───────────────────────────────────────
-    /// Create an event object (flags → event_handle)
-    CreateEvent = 40,
-    /// Wait on an event (handle, timeout_us)
-    WaitEvent = 41,
-    /// Signal an event (handle)
-    SignalEvent = 42,
-    /// Subscribe to an event type (event_type, callback_info)
-    SubscribeEvent = 43,
-
-    // ── Thread API (50–59) ──────────────────────────────────────
-    /// Create a thread sharing the parent address space (entry, stack, flags → tid)
-    CreateThread = 50,
-    /// Wait for a thread to finish (tid → exit_code)
-    JoinThread = 51,
-    /// Detach a thread so it is cleaned up automatically (tid)
-    DetachThread = 52,
-    /// Exit the calling thread (exit_code)
-    ExitThread = 53,
-
-    // ── Window API (60–69) ──────────────────────────────────────
-    /// Create a window (x, y, w, h, flags → window_handle)
-    CreateWindow = 60,
-    /// Destroy a window (handle)
-    DestroyWindow = 61,
-    /// Resize a window (handle, w, h)
-    ResizeWindow = 62,
-    /// Present / flush window contents (handle)
-    PresentWindow = 63,
-    /// Poll for the next window event (handle, event_buf)
-    GetWindowEvent = 64,
-
-    // ── Device API (70–79) ──────────────────────────────────────
-    /// Enumerate devices of a given class (class, buf, bufsize → count)
-    EnumerateDevices = 70,
-    /// Open a device by ID (device_id → handle)
-    OpenDevice = 71,
-    /// Perform device-specific I/O control (handle, cmd, arg)
-    DeviceIoctl = 72,
-
-    // ── IPC API (80–89) ─────────────────────────────────────────
-    /// Create a message channel (flags → channel_handle)
-    ChannelCreate = 80,
-    /// Send a message on a channel (handle, data, size)
-    ChannelSend = 81,
-    /// Receive a message from a channel (handle, buf, bufsize)
-    ChannelRecv = 82,
-    /// Create a unidirectional pipe (flags → [read_handle, write_handle])
-    PipeCreate = 83,
-
-    // ── Capability / Handle API (90–99) ─────────────────────────
-    /// Transfer a handle to another process (target_pid, handle)
-    HandleTransfer = 90,
-    /// Duplicate a handle (handle → new_handle)
-    HandleDuplicate = 91,
-    /// Revoke a handle (handle)
-    HandleRevoke = 92,
-
-    // ── Time API (100–109) ──────────────────────────────────────
-    /// Get current time from a clock (clock_id, timespec_buf)
-    ClockGetTime = 100,
-    /// Create a timer that signals an event (clock_id, deadline_ns, event_handle)
-    TimerCreate = 101,
-    /// Sleep for the given number of microseconds (us)
-    Sleep = 102,
-    /// Get system uptime in microseconds (uptime_buf)
-    Uptime = 103,
-}
-
-/// Check if VDSO is available (user-space pointer initialized).
 #[inline]
 fn vdso_available() -> bool {
     crate::vdso::user::vdso_ptr_initialized()
 }
 
-/// Execute a raw `syscall` instruction (always traps to kernel).
 #[inline]
 unsafe fn syscall_insn(
     syscall_num: u64,
@@ -138,7 +38,13 @@ unsafe fn syscall_insn(
     result
 }
 
-/// Raw syscall: uses VDSO for non-blocking queries, `syscall` instruction otherwise.
+/// Raw syscall: uses the VDSO for non-blocking queries and traps otherwise.
+///
+/// # Safety
+///
+/// The caller must follow the ABI contract for `syscall_num`, ensure every
+/// pointer argument is valid for the operation, and uphold any aliasing and
+/// lifetime requirements of buffers that the kernel may read or write.
 #[inline]
 pub unsafe fn syscall(
     syscall_num: u64,
@@ -150,30 +56,24 @@ pub unsafe fn syscall(
     arg6: u64,
 ) -> u64 {
     if vdso_available() {
-        // Truly zero-overhead: read directly from VDSO page, no ring submission.
-        if syscall_num == SyscallNumber::Uptime as u64 {
-            if arg1 != 0 {
-                unsafe {
-                    core::ptr::write_unaligned(
-                        arg1 as *mut u64,
-                        crate::vdso::user::vdso_uptime_us(),
-                    );
-                }
-                return 0;
+        if syscall_num == SyscallNumber::Uptime.as_u64() && arg1 != 0 {
+            unsafe {
+                core::ptr::write_unaligned(arg1 as *mut u64, crate::vdso::user::vdso_uptime_us());
             }
-        } else if syscall_num == SyscallNumber::GetPid as u64 {
+            return 0;
+        }
+        if syscall_num == SyscallNumber::GetPid.as_u64() {
             return crate::vdso::user::vdso_pid();
         }
     }
-    // Fallback: traditional syscall instruction (traps to kernel)
     unsafe { syscall_insn(syscall_num, arg1, arg2, arg3, arg4, arg5, arg6) }
 }
 
-/// Simple write syscall wrapper
+/// Compatibility wrapper. New user-space code should use `toluene::sys`.
 pub fn write(fd: i32, buf: &[u8]) -> i64 {
     unsafe {
         syscall(
-            SyscallNumber::Write as u64,
+            SyscallNumber::Write.as_u64(),
             fd as u64,
             buf.as_ptr() as u64,
             buf.len() as u64,
@@ -184,24 +84,24 @@ pub fn write(fd: i32, buf: &[u8]) -> i64 {
     }
 }
 
-/// Simple exit syscall wrapper
+/// Compatibility wrapper. New user-space code should use `toluene::sys`.
 pub fn exit(code: i32) -> ! {
     unsafe {
-        syscall(SyscallNumber::Exit as u64, code as u64, 0, 0, 0, 0, 0);
+        syscall(SyscallNumber::Exit.as_u64(), code as u64, 0, 0, 0, 0, 0);
     }
     loop {
         core::hint::spin_loop();
     }
 }
 
-/// Get PID syscall wrapper
+/// Compatibility wrapper. New user-space code should use `toluene::sys`.
 pub fn getpid() -> u64 {
-    unsafe { syscall(SyscallNumber::GetPid as u64, 0, 0, 0, 0, 0, 0) }
+    unsafe { syscall(SyscallNumber::GetPid.as_u64(), 0, 0, 0, 0, 0, 0) }
 }
 
-/// Yield syscall wrapper
+/// Compatibility wrapper. New user-space code should use `toluene::sys`.
 pub fn sleep() {
     unsafe {
-        syscall(SyscallNumber::Yield as u64, 0, 0, 0, 0, 0, 0);
+        syscall(SyscallNumber::Yield.as_u64(), 0, 0, 0, 0, 0, 0);
     }
 }

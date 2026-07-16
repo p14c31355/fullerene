@@ -64,7 +64,11 @@ pub(crate) fn syscall_clock_gettime(clock_id: u64, timespec_buf: *mut u8) -> Sys
     if timespec_buf.is_null() {
         return Err(SyscallError::InvalidArgument);
     }
-    petroleum::validate_user_buffer(timespec_buf as usize, 16, false)?;
+    petroleum::validate_user_buffer(
+        timespec_buf as usize,
+        fullerene_abi::TimeSpec::BYTE_SIZE,
+        false,
+    )?;
 
     let (sec, nsec) = match clock_id {
         0 => {
@@ -75,12 +79,14 @@ pub(crate) fn syscall_clock_gettime(clock_id: u64, timespec_buf: *mut u8) -> Sys
         _ => return Err(SyscallError::InvalidArgument),
     };
 
+    let bytes = fullerene_abi::TimeSpec {
+        seconds: sec,
+        nanoseconds: nsec,
+    }
+    .to_ne_bytes();
     let slice =
-        UserSlice::new(timespec_buf, 16, true).map_err(|_| SyscallError::InvalidArgument)?;
-    let mut kernel_buf = [0u8; 16];
-    kernel_buf[0..8].copy_from_slice(&sec.to_ne_bytes());
-    kernel_buf[8..16].copy_from_slice(&nsec.to_ne_bytes());
-    unsafe { slice.copy_to_user(&kernel_buf) }.map_err(|_| SyscallError::InvalidArgument)?;
+        UserSlice::new(timespec_buf, bytes.len(), true).map_err(|_| SyscallError::AddressFault)?;
+    unsafe { slice.copy_to_user(&bytes) }.map_err(|_| SyscallError::AddressFault)?;
 
     Ok(0)
 }

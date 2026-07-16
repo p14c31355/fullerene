@@ -23,6 +23,7 @@ kernel-syscall = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+fullerene-abi = { path = "../fullerene-abi" }
 lattice = { path = "../lattice" }
 petroleum = { path = "../petroleum" }
 

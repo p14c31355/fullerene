@@ -30,15 +30,24 @@ pub(crate) fn syscall_enumerate_devices(
         };
 
         let mut offset = 0;
-        for _dev in devices.iter().take(buf_size / 16) {
-            if offset + 16 > buf_size {
+        for dev in devices
+            .iter()
+            .take(buf_size / fullerene_abi::DeviceInfo::BYTE_SIZE)
+        {
+            if offset + fullerene_abi::DeviceInfo::BYTE_SIZE > buf_size {
                 break;
             }
-            kernel_buf[offset..offset + 4].copy_from_slice(&(class as u32).to_ne_bytes());
-            kernel_buf[offset + 4..offset + 8].copy_from_slice(&0_u32.to_ne_bytes());
-            kernel_buf[offset + 8..offset + 12].copy_from_slice(&0_u32.to_ne_bytes());
-            kernel_buf[offset + 12..offset + 16].copy_from_slice(&0_u32.to_ne_bytes());
-            offset += 16;
+            let bytes = fullerene_abi::DeviceInfo {
+                class: class as u32,
+                device_id: ((dev.bus as u32) << 16)
+                    | ((dev.device as u32) << 8)
+                    | dev.function as u32,
+                vendor_id: dev.vendor_id as u32,
+                product_id: dev.device_id as u32,
+            }
+            .to_ne_bytes();
+            kernel_buf[offset..offset + bytes.len()].copy_from_slice(&bytes);
+            offset += bytes.len();
         }
         devices.len()
     })

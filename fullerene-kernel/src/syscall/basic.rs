@@ -6,18 +6,38 @@ use petroleum::common::memory::UserSlice;
 use petroleum::page_table::PageTableHelper;
 use x86_64::PhysAddr;
 
-use super::interface::{SyscallError, SyscallResult, copy_user_string};
+use super::interface::{SyscallError, SyscallResult, copy_user_string, copy_versioned_dto_to_user};
 use super::process::{alloc_kernel_stack, free_kernel_stack, with_current_fd_table};
 use crate::linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 use crate::process::{self, Process, ProcessState};
 
-pub(crate) fn syscall_abi_version() -> SyscallResult {
-    let ver = fullerene_abi::AbiVersion::CURRENT;
-    let packed = (ver.major as u64) << 48
-        | (ver.minor as u64) << 32
-        | (ver.patch as u64) << 16
-        | ver.reserved as u64;
-    Ok(packed)
+const KERNEL_CAPABILITIES: fullerene_abi::CapabilitySet = fullerene_abi::CapabilitySet::EMPTY
+    .with(fullerene_abi::Capability::NativeSyscall)
+    .with(fullerene_abi::Capability::LinuxCompat)
+    .with(fullerene_abi::Capability::MultiWindow)
+    .with(fullerene_abi::Capability::EventSystem)
+    .with(fullerene_abi::Capability::Threading)
+    .with(fullerene_abi::Capability::IpcChannels)
+    .with(fullerene_abi::Capability::IpcPipes)
+    .with(fullerene_abi::Capability::TimerSystem)
+    .with(fullerene_abi::Capability::DeviceEnumeration);
+
+pub(crate) fn syscall_abi_query(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
+    if info_buf.is_null() {
+        return if buf_size == 0 {
+            Ok(fullerene_abi::AbiVersion::CURRENT.pack())
+        } else {
+            Err(SyscallError::InvalidArgument)
+        };
+    }
+
+    let bytes = fullerene_abi::AbiInfo::new(KERNEL_CAPABILITIES).to_ne_bytes();
+    copy_versioned_dto_to_user(
+        info_buf,
+        buf_size,
+        fullerene_abi::AbiInfo::MIN_BYTE_SIZE,
+        &bytes,
+    )
 }
 
 pub(crate) fn syscall_exit(exit_code: i32) -> SyscallResult {

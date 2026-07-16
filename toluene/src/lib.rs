@@ -24,6 +24,8 @@
 
 extern crate alloc;
 
+pub use fullerene_abi as abi;
+
 pub mod app;
 pub mod calc;
 pub mod clock;

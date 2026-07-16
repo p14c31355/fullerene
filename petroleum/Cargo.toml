@@ -10,6 +10,7 @@ vga_panic = []
 debug_pf = []
 
 [dependencies]
+fullerene-abi = { path = "../fullerene-abi" }
 # Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
 spin = { version = "0.10.0", default-features = false, features = [
   "once",
