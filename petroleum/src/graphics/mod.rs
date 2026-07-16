@@ -63,6 +63,7 @@ mod framebuffer_guard_tests {
         assert_eq!(guard.width(), 3);
         assert_eq!(guard.height(), 2);
         assert_eq!(guard.stride(), 4);
+        assert_eq!(guard.pixels().len(), 8);
         guard.pixels_mut()[5] = 0x00ab_cdef;
         assert_eq!(guard.pixels()[5], 0x00ab_cdef);
     }
