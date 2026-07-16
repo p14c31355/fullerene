@@ -36,7 +36,7 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] Frame allocator access made `unsafe` with doc comment
 - [x] **SchedulerContext**: moved all scheduling state (process list, schedule index, tick counter, NMI recovery RSP/RIP) into a single `pub static SCHEDULER` with explicit lock hierarchy. Replaced old `ProcessManager` global and scattered `AtomicU64` statics in `scheduler.rs`.
 - [x] **VDSO read-only**: removed async ring-buffer (slot state machine, `VdsoFuture`, `poll_all_vdso_rings`). VDSO page now only contains read-only metadata (`time_us`, `uptime_us`, `pid`), mapped without `WRITABLE` in user page tables.
-- [ ] `FramebufferGuard` / `with_framebuffer` closure API
+- [x] `FramebufferGuard` / `with_framebuffer` closure API ([#267](https://github.com/p14c31355/fullerene/issues/267))
 - [ ] Solvent cursor fast path: use `FramebufferGuard` instead of raw address
 - [ ] Trace buffer: fix for multi-CPU safety or document single-core assumption
 - [ ] Boot-only globals: convert to `Once` or immutable after init

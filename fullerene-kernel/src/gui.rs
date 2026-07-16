@@ -173,25 +173,6 @@ pub fn init() {
 /// over the desktop on every frame.
 static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 
-/// Fallback: render directly to the boot framebuffer when KernelContext renderer is unavailable.
-fn render_fallback(label: &[u8]) {
-    crate::boot_stage::draw_boot_label(label);
-    if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
-        if bfb.address() != 0 {
-            let len = (bfb.stride_pixels() as usize)
-                .checked_mul(bfb.height() as usize)
-                .unwrap_or(0);
-            let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
-            solvent::render(&mut petroleum::graphics::FramebufferGuard::new(
-                pixels,
-                bfb.width(),
-                bfb.height(),
-                bfb.stride_pixels(),
-            ));
-        }
-    }
-}
-
 /// Signal present and flush GPU after rendering.
 fn finish_frame() {
     crate::contexts::kernel::with_kernel_mut(|k| {
@@ -213,8 +194,8 @@ pub fn render() {
         solvent::set_render_progress_fn(|_| {});
     }
 
-    if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none() {
-        render_fallback(b"RENDER: guard failed, fallback");
+    if crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_none() {
+        crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
     }
 
     BOOT_PROGRESS_DONE.store(true, Ordering::Release);
@@ -236,9 +217,8 @@ pub fn render() {
 pub fn runtime_tick(now: u64) {
     solvent::tick_core(now);
     if solvent::consume_frame_due() {
-        if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none()
-        {
-            render_fallback(b"RENDER: guard failed, fallback");
+        if crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_none() {
+            crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
         }
         finish_frame();
     }
