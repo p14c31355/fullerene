@@ -166,7 +166,8 @@ pub fn runtime_tick_no_fb() {
     // Release RENDERING_SUSPENDED before calling render_fn, otherwise
     // render() will see it as already-suspended and early-return.
     RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-    if do_render && let Some(render_fn) = *RENDER_FN.lock() {
+    let render_fn = if do_render { *RENDER_FN.lock() } else { None };
+    if let Some(render_fn) = render_fn {
         render_fn();
     }
 }

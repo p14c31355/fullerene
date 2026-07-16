@@ -181,7 +181,8 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
     );
 
     if is_text {
-        let file_content = match SOLVENT_CALLBACKS.lock().vfs_read {
+        let read_file = SOLVENT_CALLBACKS.lock().vfs_read;
+        let file_content = match read_file {
             Some(read) => match read(path) {
                 Ok(data) => match core::str::from_utf8(&data) {
                     Ok(text) => text.to_string(),

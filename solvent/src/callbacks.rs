@@ -78,9 +78,8 @@ pub fn launch_shell() {
 }
 
 pub fn get_mounted_drives() -> Vec<(String, String)> {
-    SOLVENT_CALLBACKS
-        .lock()
-        .mounted_drive_list
+    let list_drives = SOLVENT_CALLBACKS.lock().mounted_drive_list;
+    list_drives
         .map(|list_drives| list_drives())
         .unwrap_or_default()
 }
