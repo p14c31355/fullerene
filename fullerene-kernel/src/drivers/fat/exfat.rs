@@ -26,6 +26,10 @@ const METADATA_CACHE_SECTORS: usize = ROOT_SCAN_SECTORS + 16;
 
 type MetadataCache = BTreeMap<u32, [u8; SECTOR_SIZE]>;
 
+pub fn is_exfat(boot_sector: &[u8; SECTOR_SIZE]) -> bool {
+    &boot_sector[3..11] == b"EXFAT   "
+}
+
 struct ExFatDevice {
     inner: Arc<Mutex<Box<dyn BlockDevice>>>,
     cache: Arc<Mutex<MetadataCache>>,
