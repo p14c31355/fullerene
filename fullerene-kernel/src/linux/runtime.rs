@@ -11,7 +11,9 @@ use super::types::*;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use petroleum::common::memory::UserSlice;
+use petroleum::common::logging::SystemError;
+
+use crate::user_memory::{self, UserCopyError};
 
 /// Dispatch mode for the process: which runtime handles its syscalls.
 pub enum DispatchMode {
@@ -307,60 +309,101 @@ pub fn fs_errno_result(err: &genome::fs::FsError) -> u64 {
 }
 
 /// Convert string from raw user pointer.
+///
+/// # Safety
+///
+/// The current process address space must remain stable while the string is
+/// validated and copied.
 pub unsafe fn copy_user_string(ptr: u64, max_len: usize) -> Result<alloc::string::String, i32> {
-    if ptr == 0 || max_len == 0 {
-        return Err(EFAULT);
-    }
-    let ptr = ptr as *mut u8;
-    let mut buf = alloc::vec::Vec::with_capacity(max_len.min(256));
-    let mut offset = 0;
-    while offset < max_len {
-        let current = unsafe { ptr.add(offset) };
-        if offset == 0 || ((current as usize) & 0xFFF) == 0 {
-            let bytes_left_in_page = 4096 - ((current as usize) & 0xFFF);
-            let remaining = (max_len - offset).min(bytes_left_in_page);
-            let _ = UserSlice::new(current, remaining, false).map_err(|_| EFAULT)?;
-        }
-        let byte = unsafe { core::ptr::read_volatile(current) };
-        if byte == 0 {
-            break;
-        }
-        buf.push(byte);
-        offset += 1;
-    }
-    alloc::string::String::from_utf8(buf).map_err(|_| EINVAL)
+    unsafe { user_memory::copy_c_string(ptr as *const u8, max_len) }.map_err(linux_user_copy_error)
 }
 
-/// Copy data from user space to kernel (capped to prevent memory-exhaustion DoS).
-const MAX_USER_COPY: usize = 65536;
+fn linux_user_copy_error(error: UserCopyError) -> i32 {
+    match error {
+        UserCopyError::System(SystemError::MemOutOfMemory | SystemError::SyscallOutOfMemory) => {
+            ENOMEM
+        }
+        UserCopyError::InvalidUtf8 | UserCopyError::MissingNul => EINVAL,
+        UserCopyError::System(_) => EFAULT,
+    }
+}
+
+/// Copy data from user space to kernel with a hard memory-exhaustion limit.
+const MAX_USER_COPY: usize = 64 * 1024;
+
+fn checked_user_copy_len(count: usize) -> Result<usize, i32> {
+    if count > MAX_USER_COPY {
+        Err(E2BIG)
+    } else {
+        Ok(count)
+    }
+}
+
+/// Copy bytes from a user pointer into kernel-owned memory.
+///
+/// Returns `E2BIG` rather than truncating when `count` exceeds
+/// [`MAX_USER_COPY`].
+///
+/// # Safety
+///
+/// The current process address space must remain stable while the buffer is
+/// validated and copied.
 pub unsafe fn copy_from_user(buf: u64, count: usize) -> Result<alloc::vec::Vec<u8>, i32> {
-    let limit = count.min(MAX_USER_COPY);
     if buf == 0 {
         return Err(EFAULT);
     }
-    let slice = UserSlice::new(buf as *mut u8, limit, false).map_err(|_| EFAULT)?;
-    let mut data = alloc::vec![0; limit];
-    unsafe { slice.copy_from_user(&mut data) }.map_err(|_| EFAULT)?;
-    Ok(data)
+    let len = checked_user_copy_len(count)?;
+    unsafe { user_memory::copy_bytes_from_user(buf as *const u8, len) }
+        .map_err(linux_user_copy_error)
 }
 
 /// Copy data to user space.
+///
+/// # Safety
+///
+/// The current process address space must remain stable while the destination
+/// is validated and written.
 pub unsafe fn copy_to_user(buf: u64, data: &[u8]) -> Result<(), i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    let slice = UserSlice::new(buf as *mut u8, data.len(), true).map_err(|_| EFAULT)?;
-    unsafe { slice.copy_to_user(data) }.map_err(|_| EFAULT)
+    unsafe { user_memory::copy_bytes_to_user(buf as *mut u8, data) }.map_err(linux_user_copy_error)
 }
 
 /// Copy an arbitrary sized value to user space.
+///
+/// # Safety
+///
+/// The current process address space must remain stable while the destination
+/// is validated and written.
 pub unsafe fn copy_val_to_user<T: Copy>(buf: u64, val: &T) -> Result<(), i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    let size = core::mem::size_of::<T>();
-    let slice = UserSlice::new(buf as *mut u8, size, true).map_err(|_| EFAULT)?;
-    let src = val as *const T as *const u8;
-    let tmp = unsafe { core::slice::from_raw_parts(src, size) };
-    unsafe { slice.copy_to_user(tmp) }.map_err(|_| EFAULT)
+    unsafe { user_memory::copy_value_to_user(buf as *mut T, val) }.map_err(linux_user_copy_error)
+}
+
+#[cfg(test)]
+mod user_copy_tests {
+    use super::*;
+
+    #[test]
+    fn linux_copy_limit_rejects_instead_of_truncating() {
+        assert_eq!(checked_user_copy_len(MAX_USER_COPY), Ok(MAX_USER_COPY));
+        assert_eq!(checked_user_copy_len(MAX_USER_COPY + 1), Err(E2BIG));
+    }
+
+    #[test]
+    fn linux_user_copy_errors_keep_errno_meaning() {
+        assert_eq!(linux_user_copy_error(UserCopyError::InvalidUtf8), EINVAL);
+        assert_eq!(linux_user_copy_error(UserCopyError::MissingNul), EINVAL);
+        assert_eq!(
+            linux_user_copy_error(UserCopyError::System(SystemError::MemOutOfMemory)),
+            ENOMEM
+        );
+        assert_eq!(
+            linux_user_copy_error(UserCopyError::System(SystemError::PermissionDenied)),
+            EFAULT
+        );
+    }
 }

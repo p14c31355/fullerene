@@ -189,6 +189,7 @@ pub mod slab;
 pub mod syscall;
 pub mod task;
 pub mod linux;
+mod user_memory;
 pub mod vdso;
 
 // ── Host-target main (enables `cargo check` on Linux) ──
