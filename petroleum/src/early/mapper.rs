@@ -95,7 +95,7 @@ impl EarlyMapper {
         phys: PhysAddr,
         flags: PageTableFlags,
         frame_allocator: &mut EarlyFrameAllocator,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         unsafe {
             let mut mapper = self.offset_mapper();
             let page = Page::<Size4KiB>::containing_address(virt);
@@ -103,7 +103,7 @@ impl EarlyMapper {
             // SAFETY: The caller ensures safety.
             mapper
                 .map_to(page, frame, flags, frame_allocator)
-                .map_err(|_| "map_4k failed")?
+                .map_err(|_| crate::MemoryError::MappingFailed)?
                 .flush();
             Ok(())
         }
@@ -120,7 +120,7 @@ impl EarlyMapper {
         page_count: u64,
         flags: PageTableFlags,
         frame_allocator: &mut EarlyFrameAllocator,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         unsafe {
             for i in 0..page_count {
                 let virt = VirtAddr::new(virt_start.as_u64() + i * 4096);
@@ -144,7 +144,7 @@ impl EarlyMapper {
         page_count: u64,
         flags: PageTableFlags,
         frame_allocator: &mut EarlyFrameAllocator,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         unsafe {
             let flags_2mb = flags | PageTableFlags::HUGE_PAGE;
             for i in 0..page_count {
@@ -158,7 +158,7 @@ impl EarlyMapper {
                 // SAFETY: Caller ensures safety.
                 mapper
                     .map_to(page, frame, flags_2mb, frame_allocator)
-                    .map_err(|_| "map_2mb failed")?
+                    .map_err(|_| crate::MemoryError::MappingFailed)?
                     .flush();
             }
             Ok(())

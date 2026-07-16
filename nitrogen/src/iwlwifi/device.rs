@@ -601,17 +601,17 @@ impl IwlWifiDevice {
 
     /// Common firmware upload and CPU start sequence shared by load_firmware and start_firmware.
     /// Does NOT wait for alive signal - caller must handle that if needed.
-    fn upload_firmware_and_start_cpu(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+    fn upload_firmware_and_start_cpu(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         debug::print("iwlwifi", "fw: check_header");
         if fw_data.len() < FW_HEADER_SIZE {
-            return Err("Firmware data too short");
+            return Err(crate::DriverError::InvalidArgument);
         }
 
         self.fw_state = FwState::Loading;
 
         let gp = self
             .safe_read32(CSR_GP_CNTRL)
-            .ok_or("Device unresponsive")?;
+            .ok_or(crate::DriverError::DeviceNotFound)?;
         unsafe {
             core::ptr::write_volatile(self.mmio.add(CSR_GP_CNTRL as usize), gp & !0x04);
             core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0x00000080);
@@ -623,12 +623,12 @@ impl IwlWifiDevice {
 
         let zero: u32 = unsafe { core::ptr::read_unaligned(fw_ptr as *const u32) };
         if zero != 0 {
-            return Err("Invalid firmware header (zero != 0)");
+            return Err(crate::DriverError::Protocol);
         }
 
         let magic: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(4) as *const u32) };
         if magic != IWL_FW_MAGIC {
-            return Err("Invalid firmware magic");
+            return Err(crate::DriverError::Protocol);
         }
 
         log::info!("iwlwifi: loading firmware payload...");
@@ -696,7 +696,7 @@ impl IwlWifiDevice {
         }
 
         if section_count == 0 {
-            return Err("No firmware sections uploaded");
+            return Err(crate::DriverError::Protocol);
         }
 
         debug::print("iwlwifi", "fw: upload_done");
@@ -718,7 +718,7 @@ impl IwlWifiDevice {
 
         let gp = self
             .safe_read32(CSR_GP_CNTRL)
-            .ok_or("Device unresponsive")?;
+            .ok_or(crate::DriverError::DeviceNotFound)?;
         unsafe {
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
@@ -734,7 +734,7 @@ impl IwlWifiDevice {
     }
 
     /// Load firmware binary into the device.
-    pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+    pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         self.upload_firmware_and_start_cpu(fw_data)?;
 
         debug::print("iwlwifi", "fw: wait_alive");
@@ -771,7 +771,7 @@ impl IwlWifiDevice {
     }
 
     /// Upload a single firmware section to the device SRAM via HBUS direct writes.
-    fn upload_section(&mut self, target_addr: u32, data: &[u8]) -> Result<(), &'static str> {
+    fn upload_section(&mut self, target_addr: u32, data: &[u8]) -> Result<(), crate::DriverError> {
         let dwords = data.len() / 4;
         let extra = data.len() % 4;
 
@@ -800,7 +800,7 @@ impl IwlWifiDevice {
     }
 
     /// Wait for the firmware "alive" response with a TSC-based timeout.
-    fn wait_for_alive(&mut self) -> Result<(), &'static str> {
+    fn wait_for_alive(&mut self) -> Result<(), crate::DriverError> {
         let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
         let timeout_tsc: u64 = 5_000_000_000;
         let mut last_pci_check: u64 = 0;
@@ -816,13 +816,13 @@ impl IwlWifiDevice {
             if now.wrapping_sub(last_pci_check) >= pci_check_interval {
                 last_pci_check = now;
                 if !self.health.is_device_present() {
-                    return Err("Device disappeared from PCI bus during alive wait");
+                    return Err(crate::DriverError::DeviceNotFound);
                 }
             }
 
             let int_cause = match self.safe_read32(CSR_INT) {
                 Some(v) => v,
-                None => return Err("Device unresponsive (PCI master abort)"),
+                None => return Err(crate::DriverError::DeviceNotFound),
             };
             if int_cause != 0 {
                 if (int_cause & 0x01) != 0 {
@@ -836,7 +836,7 @@ impl IwlWifiDevice {
                     unsafe {
                         core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
                     }
-                    return Err("Firmware error");
+                    return Err(crate::DriverError::Protocol);
                 }
                 unsafe {
                     core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
@@ -845,7 +845,7 @@ impl IwlWifiDevice {
 
             let ucode_gp1 = match self.safe_read32(CSR_UCODE_GP1) {
                 Some(v) => v,
-                None => return Err("Device unresponsive (PCI master abort)"),
+                None => return Err(crate::DriverError::DeviceNotFound),
             };
             if (ucode_gp1 & 0x01) == 0 {
                 self.fw_state = FwState::Alive;
@@ -856,14 +856,14 @@ impl IwlWifiDevice {
         }
 
         self.fw_state = FwState::Error;
-        Err("Timeout waiting for firmware alive")
+        Err(crate::DriverError::TimedOut)
     }
 
     /// Start firmware upload and CPU boot without waiting for alive.
-    pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+    pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         self.health
             .recover()
-            .map_err(|_| "Device not accessible for firmware upload")?;
+            .map_err(|_| crate::DriverError::DeviceNotFound)?;
 
         self.upload_firmware_and_start_cpu(fw_data)?;
 
@@ -877,24 +877,24 @@ impl IwlWifiDevice {
     }
 
     /// Check if firmware has signaled alive (non-blocking poll).
-    pub fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str> {
+    pub fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError> {
         let now = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = now.wrapping_sub(start_tsc);
         const TIMEOUT_TSC: u64 = 5_000_000_000;
 
         if elapsed >= TIMEOUT_TSC {
             self.fw_state = FwState::Error;
-            return Err("Timeout waiting for firmware alive");
+            return Err(crate::DriverError::TimedOut);
         }
 
         if !self.health.is_device_present() {
             self.fw_state = FwState::Error;
-            return Err("Device not accessible for MMIO");
+            return Err(crate::DriverError::DeviceNotFound);
         }
 
         let int_cause = match self.safe_read32(CSR_INT) {
             Some(v) => v,
-            None => return Err("Device unresponsive (PCI master abort)"),
+            None => return Err(crate::DriverError::DeviceNotFound),
         };
         if (int_cause & (1 << 0)) != 0 {
             unsafe {
@@ -910,7 +910,7 @@ impl IwlWifiDevice {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
             self.fw_state = FwState::Error;
-            return Err("Firmware error");
+            return Err(crate::DriverError::Protocol);
         }
         if int_cause != 0 {
             unsafe {
@@ -920,7 +920,7 @@ impl IwlWifiDevice {
 
         let ucode_gp1 = match self.safe_read32(CSR_UCODE_GP1) {
             Some(v) => v,
-            None => return Err("Device unresponsive (PCI master abort)"),
+            None => return Err(crate::DriverError::DeviceNotFound),
         };
         if (ucode_gp1 & 0x01) == 0 {
             unsafe {

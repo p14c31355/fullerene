@@ -1455,6 +1455,7 @@ dependencies = [
  "bonder",
  "carrier",
  "chronoline",
+ "genome",
  "lattice",
  "log",
  "minipng",
@@ -1776,6 +1777,7 @@ name = "wasi_runtime"
 version = "0.1.0"
 dependencies = [
  "carrier",
+ "genome",
  "wasmi",
 ]
 

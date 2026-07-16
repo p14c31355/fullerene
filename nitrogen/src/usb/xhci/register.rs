@@ -537,7 +537,10 @@ pub fn parse_port_protocols(
     bitmap
 }
 
-pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, &'static str> {
+pub fn try_legacy_handoff(
+    mmio_base: *mut u8,
+    ext_cap_ptr: u16,
+) -> Result<bool, crate::DriverError> {
     const BIOS_OWNED: u32 = 1 << 16;
     const OS_OWNED: u32 = 1 << 24;
     // Preserve reserved fields, disable SMI enables, and clear RW1C events.
@@ -550,7 +553,7 @@ pub fn try_legacy_handoff(mmio_base: *mut u8, ext_cap_ptr: u16) -> Result<bool, 
     while extended_cap_in_bounds(off, 8) {
         iters += 1;
         if iters > 64 {
-            return Err("circular capability list");
+            return Err(crate::DriverError::InvalidArgument);
         }
         let ec_id = m.read32(off * 4) as u8;
         if ec_id == 1 {

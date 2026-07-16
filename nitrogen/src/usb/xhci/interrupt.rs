@@ -110,7 +110,7 @@ pub fn wait_event_type(
     rt: &RuntimeRegisters,
     timeout_us: u32,
     expected_type: u8,
-) -> Result<Trb, &'static str> {
+) -> Result<Trb, crate::DriverError> {
     for _ in 0..timeout_us {
         if let Some(ev) = ev_ring.pop() {
             rt.set_erdp(ev_ring.dequeue_ptr());
@@ -121,7 +121,7 @@ pub fn wait_event_type(
             core::hint::spin_loop();
         }
     }
-    Err("event timeout")
+    Err(crate::DriverError::TimedOut)
 }
 
 /// Process all pending events on the Event Ring, calling `handler` for each.

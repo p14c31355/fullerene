@@ -18,22 +18,26 @@ impl XhciContext {
         slot_id: u32,
         setup: &UsbSetupPacket,
         buf: &mut [u8],
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, crate::DriverError> {
         let is_in = (setup.bm_request_type & 0x80) != 0;
         let data_len = setup.w_length as usize;
         if data_len > buf.len() {
-            return Err("control buffer too small");
+            return Err(crate::DriverError::InvalidArgument);
         }
 
         let _ep0_cycle = {
-            let slot = self.device.slots.get(slot_id).ok_or("bad slot")?;
+            let slot = self
+                .device
+                .slots
+                .get(slot_id)
+                .ok_or(crate::DriverError::InvalidArgument)?;
             slot.ep0_ring.cycle
         };
 
         let staging_phys = if data_len > 0 {
             self.driver_ctx
                 .allocate_contiguous_frames((data_len + 4095) / 4096)
-                .map_err(|_| "no staging memory")?
+                .map_err(|_| crate::DriverError::OutOfMemory)?
         } else {
             0
         };
@@ -120,7 +124,7 @@ impl XhciContext {
                     self.deferred_free_list
                         .push((staging_phys, (data_len + 4095) / 4096));
                 }
-                Err("control transfer failed")
+                Err(crate::DriverError::Protocol)
             }
         }
     }
@@ -133,9 +137,9 @@ impl XhciContext {
         buf: &mut [u8],
         dir: UsbDirection,
         _mps: u16,
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, crate::DriverError> {
         if buf.len() > 65536 {
-            return Err("bulk transfer too large");
+            return Err(crate::DriverError::InvalidArgument);
         }
         if buf.is_empty() {
             return Ok(0);
@@ -143,13 +147,23 @@ impl XhciContext {
         let len = buf.len();
 
         {
-            let slot = self.device.slots.get(slot_id).ok_or("bad slot")?;
+            let slot = self
+                .device
+                .slots
+                .get(slot_id)
+                .ok_or(crate::DriverError::InvalidArgument)?;
             match dir {
                 UsbDirection::In => {
-                    let _ = slot.bulk_in_ring.as_ref().ok_or("no bulk in ring")?;
+                    let _ = slot
+                        .bulk_in_ring
+                        .as_ref()
+                        .ok_or(crate::DriverError::NotReady)?;
                 }
                 UsbDirection::Out => {
-                    let _ = slot.bulk_out_ring.as_ref().ok_or("no bulk out ring")?;
+                    let _ = slot
+                        .bulk_out_ring
+                        .as_ref()
+                        .ok_or(crate::DriverError::NotReady)?;
                 }
             }
         }
@@ -158,7 +172,7 @@ impl XhciContext {
         let staging_phys = self
             .driver_ctx
             .allocate_contiguous_frames(staging_pages)
-            .map_err(|_| "no staging memory")?;
+            .map_err(|_| crate::DriverError::OutOfMemory)?;
         let staging_virt = self.driver_ctx.phys_to_virt(staging_phys) as *mut u8;
 
         if dir == UsbDirection::Out {
@@ -176,7 +190,7 @@ impl XhciContext {
             if ep_is_in != dir_is_in {
                 self.driver_ctx
                     .free_contiguous_frames(staging_phys, staging_pages);
-                return Err("endpoint direction mismatch");
+                return Err(crate::DriverError::InvalidArgument);
             }
 
             let ring = match dir {
@@ -203,7 +217,7 @@ impl XhciContext {
             Ok(ev) => {
                 if !matches!(ev.completion_code(), COMP_SUCCESS | COMP_SHORT_PACKET) {
                     self.deferred_free_list.push((staging_phys, staging_pages));
-                    return Err("bulk completion code not success");
+                    return Err(crate::DriverError::Protocol);
                 }
                 let remainder = ev.remaining() as usize;
                 let xfer_len = len.saturating_sub(remainder.min(len));
@@ -218,7 +232,7 @@ impl XhciContext {
             }
             Err(_) => {
                 self.deferred_free_list.push((staging_phys, staging_pages));
-                Err("bulk transfer failed")
+                Err(crate::DriverError::Protocol)
             }
         }
     }
@@ -227,7 +241,7 @@ impl XhciContext {
     pub fn get_device_descriptor(
         &mut self,
         slot_id: u32,
-    ) -> Result<crate::usb::UsbDeviceDescriptor, &'static str> {
+    ) -> Result<crate::usb::UsbDeviceDescriptor, crate::DriverError> {
         let mut buf = [0u8; 18];
         let setup = UsbSetupPacket {
             bm_request_type: 0x80,
@@ -243,7 +257,7 @@ impl XhciContext {
     }
 
     /// Set device address.
-    pub fn set_address(&mut self, slot_id: u32, addr: u8) -> Result<(), &'static str> {
+    pub fn set_address(&mut self, slot_id: u32, addr: u8) -> Result<(), crate::DriverError> {
         let setup = UsbSetupPacket {
             bm_request_type: 0x00,
             b_request: crate::usb::REQ_SET_ADDRESS,
@@ -260,7 +274,7 @@ impl XhciContext {
         &mut self,
         slot_id: u32,
         config_value: u8,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         let setup = UsbSetupPacket {
             bm_request_type: 0x00,
             b_request: crate::usb::REQ_SET_CONFIGURATION,

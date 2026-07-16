@@ -38,6 +38,21 @@ impl ExFatDevice {
         IoError::new_static(kind, message)
     }
 
+    fn block_error(error: genome::block::BlockError) -> IoError {
+        match error {
+            genome::block::BlockError::BufferTooSmall { .. }
+            | genome::block::BlockError::LbaOverflow => {
+                Self::error(ErrorKind::InvalidInput, "invalid block I/O request")
+            }
+            genome::block::BlockError::SectorNotFound => {
+                Self::error(ErrorKind::NotFound, "block sector not found")
+            }
+            genome::block::BlockError::Device => {
+                Self::error(ErrorKind::Other, "block device I/O failed")
+            }
+        }
+    }
+
     fn lba(position: u64) -> Result<u32, IoError> {
         u32::try_from(position / SECTOR_SIZE as u64)
             .map_err(|_| Self::error(ErrorKind::InvalidInput, "exFAT LBA overflow"))
@@ -62,7 +77,7 @@ impl ExFatDevice {
         }
         device
             .read_sectors(lba, count, buf)
-            .map_err(|message| Self::error(ErrorKind::Other, message))?;
+            .map_err(Self::block_error)?;
         if count == 1 {
             let mut cache = self.cache.lock();
             if cache.len() < METADATA_CACHE_SECTORS {
@@ -87,7 +102,7 @@ impl ExFatDevice {
             .ok_or_else(|| Self::error(ErrorKind::InvalidInput, "exFAT write buffer too small"))?;
         device
             .write_sectors(lba, count, buf)
-            .map_err(|message| Self::error(ErrorKind::Other, message))?;
+            .map_err(Self::block_error)?;
         let mut cache = self.cache.lock();
         for (index, sector) in buf
             .chunks_exact(SECTOR_SIZE)
@@ -646,10 +661,13 @@ mod tests {
             lba: u32,
             count: u16,
             buf: &mut [u8],
-        ) -> Result<(), &'static str> {
+        ) -> Result<(), genome::block::BlockError> {
             let (start, len) = Self::range(lba, count)?;
             if buf.len() < len {
-                return Err("test read buffer too small");
+                return Err(genome::block::BlockError::BufferTooSmall {
+                    required: len,
+                    provided: buf.len(),
+                });
             }
             self.read_calls.fetch_add(1, Ordering::Relaxed);
             self.reads.fetch_add(count as usize, Ordering::Relaxed);
@@ -657,10 +675,18 @@ mod tests {
             Ok(())
         }
 
-        fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+        fn write_sectors(
+            &mut self,
+            lba: u32,
+            count: u16,
+            buf: &[u8],
+        ) -> Result<(), genome::block::BlockError> {
             let (start, len) = Self::range(lba, count)?;
             if buf.len() < len {
-                return Err("test write buffer too small");
+                return Err(genome::block::BlockError::BufferTooSmall {
+                    required: len,
+                    provided: buf.len(),
+                });
             }
             self.image.lock()[start..start + len].copy_from_slice(&buf[..len]);
             Ok(())
@@ -684,11 +710,11 @@ mod tests {
             }
         }
 
-        fn range(lba: u32, count: u16) -> Result<(usize, usize), &'static str> {
+        fn range(lba: u32, count: u16) -> Result<(usize, usize), genome::block::BlockError> {
             let start = lba as usize * SECTOR_SIZE;
             let len = count as usize * SECTOR_SIZE;
             if start.checked_add(len).is_none_or(|end| end > IMAGE_SIZE) {
-                return Err("test LBA out of range");
+                return Err(genome::block::BlockError::LbaOverflow);
             }
             Ok((start, len))
         }

@@ -66,4 +66,8 @@ pub enum NetError {
     NotInitialized,
     /// Invalid parameter (null MAC, unspecified IP, etc.)
     InvalidParameter,
+    /// A received network-control message was malformed or inconsistent.
+    Protocol,
+    /// Authentication or message-integrity verification failed.
+    AuthenticationFailed,
 }

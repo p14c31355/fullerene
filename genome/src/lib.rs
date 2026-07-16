@@ -4,3 +4,6 @@ extern crate alloc;
 pub mod block;
 pub mod fs;
 pub mod vfs;
+
+pub use block::BlockError;
+pub use fs::FsError;

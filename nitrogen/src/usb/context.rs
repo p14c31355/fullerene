@@ -380,7 +380,7 @@ impl USBContext {
     }
 
     /// Enable USB hardware without invoking polling or filesystem policy.
-    pub fn enable(&mut self) -> Result<(), &'static str> {
+    pub fn enable(&mut self) -> Result<(), crate::DriverError> {
         if self.enabled {
             return Ok(());
         }
@@ -425,17 +425,17 @@ impl USBContext {
         block_size: u32,
         buf: &mut [u8],
         tag: &mut u32,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         let host: &mut dyn HostController = match ctrl_type {
             "xHCI" => {
                 if ctrl_idx >= self.controllers.xhci.len() {
-                    return Err("xHCI controller index out of bounds");
+                    return Err(crate::DriverError::InvalidArgument);
                 }
                 &mut *self.controllers.xhci[ctrl_idx]
             }
             _ => {
                 if ctrl_idx >= self.controllers.ehci.len() {
-                    return Err("EHCI controller index out of bounds");
+                    return Err(crate::DriverError::InvalidArgument);
                 }
                 &mut *self.controllers.ehci[ctrl_idx]
             }
@@ -460,17 +460,17 @@ impl USBContext {
         block_size: u32,
         buf: &[u8],
         tag: &mut u32,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         let host: &mut dyn HostController = match ctrl_type {
             "xHCI" => {
                 if ctrl_idx >= self.controllers.xhci.len() {
-                    return Err("xHCI controller index out of bounds");
+                    return Err(crate::DriverError::InvalidArgument);
                 }
                 &mut *self.controllers.xhci[ctrl_idx]
             }
             _ => {
                 if ctrl_idx >= self.controllers.ehci.len() {
-                    return Err("EHCI controller index out of bounds");
+                    return Err(crate::DriverError::InvalidArgument);
                 }
                 &mut *self.controllers.ehci[ctrl_idx]
             }

@@ -385,16 +385,22 @@ impl WorldSwitchBuilder {
         self
     }
 
-    pub fn build(self) -> Result<WorldSwitch, &'static str> {
+    pub fn build(self) -> Result<WorldSwitch, crate::SystemError> {
         Ok(WorldSwitch {
-            load_gdt: self.load_gdt.ok_or("Missing GDT")?,
-            load_idt: self.load_idt.ok_or("Missing IDT")?,
-            page_table: self.page_table.ok_or("Missing Page Table")?,
-            phys_offset: self.phys_offset.ok_or("Missing Phys Offset")?,
-            stack_top: self.stack_top.ok_or("Missing Stack Top")?,
-            entry_point: self.entry_point.ok_or("Missing Entry Point")?,
-            kernel_args: self.kernel_args.ok_or("Missing Kernel Args")?,
-            allocator: self.allocator.ok_or("Missing Allocator")?,
+            load_gdt: self.load_gdt.ok_or(crate::SystemError::InvalidArgument)?,
+            load_idt: self.load_idt.ok_or(crate::SystemError::InvalidArgument)?,
+            page_table: self.page_table.ok_or(crate::SystemError::InvalidArgument)?,
+            phys_offset: self
+                .phys_offset
+                .ok_or(crate::SystemError::InvalidArgument)?,
+            stack_top: self.stack_top.ok_or(crate::SystemError::InvalidArgument)?,
+            entry_point: self
+                .entry_point
+                .ok_or(crate::SystemError::InvalidArgument)?,
+            kernel_args: self
+                .kernel_args
+                .ok_or(crate::SystemError::InvalidArgument)?,
+            allocator: self.allocator.ok_or(crate::SystemError::InvalidArgument)?,
         })
     }
 }

@@ -172,7 +172,7 @@ impl RtsxController {
             | u32::from(value)
     }
 
-    fn read_reg(&self, address: u16) -> Result<u8, &'static str> {
+    fn read_reg(&self, address: u16) -> Result<u8, crate::DriverError> {
         self.mmio.write32(
             RTSX_HAIMR,
             HAIMR_START | (u32::from(address & 0x3FFF) << 16),
@@ -186,11 +186,11 @@ impl RtsxController {
             }
         }) {
             Some(v) => Ok(v),
-            None => Err("RTSX internal register read timed out"),
+            None => Err(crate::DriverError::TimedOut),
         }
     }
 
-    fn write_reg(&self, address: u16, mask: u8, value: u8) -> Result<(), &'static str> {
+    fn write_reg(&self, address: u16, mask: u8, value: u8) -> Result<(), crate::DriverError> {
         self.mmio.write32(
             RTSX_HAIMR,
             HAIMR_START
@@ -211,14 +211,14 @@ impl RtsxController {
                 if result as u8 == value {
                     Ok(())
                 } else {
-                    Err("RTSX internal register write failed")
+                    Err(crate::DriverError::DeviceFault)
                 }
             }
-            None => Err("RTSX internal register write timed out"),
+            None => Err(crate::DriverError::TimedOut),
         }
     }
 
-    fn write_regs(&self, writes: &[(u16, u8, u8)]) -> Result<(), &'static str> {
+    fn write_regs(&self, writes: &[(u16, u8, u8)]) -> Result<(), crate::DriverError> {
         writes
             .iter()
             .try_for_each(|&(register, mask, value)| self.write_reg(register, mask, value))
@@ -228,16 +228,16 @@ impl RtsxController {
         self.mmio.read32(RTSX_BIPR) & SD_EXIST != 0
     }
 
-    fn prepare_device(&mut self) -> Result<(), &'static str> {
+    fn prepare_device(&mut self) -> Result<(), crate::DriverError> {
         if !self.device.prepare_mmio() {
-            return Err("RTSX PCI command or power transition failed");
+            return Err(crate::DriverError::DeviceFault);
         }
         self.health
             .pre_mmio_access()
-            .map_err(|_| "RTSX device is not safely accessible")
+            .map_err(|_| crate::DriverError::DeviceNotFound)
     }
 
-    fn init_hardware(&mut self) -> Result<(), &'static str> {
+    fn init_hardware(&mut self) -> Result<(), crate::DriverError> {
         crate::debug::hint(b"sd_pci");
         self.prepare_device()?;
         self.data_path =
@@ -246,7 +246,7 @@ impl RtsxController {
         self.mmio.write32(RTSX_BIER, 0);
         crate::debug::hint(b"sd_bier");
         if !self.card_present() {
-            return Err("no SD card inserted");
+            return Err(crate::DriverError::DeviceNotFound);
         }
         crate::debug::hint(b"sd_card");
 
@@ -274,7 +274,7 @@ impl RtsxController {
         Ok(())
     }
 
-    fn set_command(&self, command: u8, argument: u32) -> Result<(), &'static str> {
+    fn set_command(&self, command: u8, argument: u32) -> Result<(), crate::DriverError> {
         let bytes = argument.to_be_bytes();
         self.write_reg(SD_CMD0, 0xFF, SD_CMD_START | command)?;
         bytes
@@ -283,18 +283,18 @@ impl RtsxController {
             .try_for_each(|(index, &byte)| self.write_reg(SD_CMD1 + index as u16, 0xFF, byte))
     }
 
-    fn wait_transfer(&self, required: u8) -> Result<(), &'static str> {
+    fn wait_transfer(&self, required: u8) -> Result<(), crate::DriverError> {
         match crate::timing::poll_timeout_us(500_000, || match self.read_reg(SD_TRANSFER) {
             Ok(state) => {
                 if state & SD_TRANSFER_ERR != 0 {
-                    Some(Err("SD transfer failed"))
+                    Some(Err(crate::DriverError::Protocol))
                 } else if state & required == required {
                     Some(Ok(()))
                 } else {
                     None
                 }
             }
-            Err(_) => Some(Err("SD transfer register read error")),
+            Err(_) => Some(Err(crate::DriverError::DeviceFault)),
         }) {
             Some(Ok(())) => Ok(()),
             Some(Err(e)) => {
@@ -303,12 +303,12 @@ impl RtsxController {
             }
             None => {
                 self.stop_transfer();
-                Err("SD transfer timed out")
+                Err(crate::DriverError::TimedOut)
             }
         }
     }
 
-    fn command(&self, command: u8, argument: u32, response: u8) -> Result<u32, &'static str> {
+    fn command(&self, command: u8, argument: u32, response: u8) -> Result<u32, crate::DriverError> {
         self.set_command(command, argument)?;
         self.write_regs(&[
             (SD_CFG2, 0xFF, response),
@@ -325,7 +325,7 @@ impl RtsxController {
             *byte = self.read_reg(SD_CMD1 + index as u16)?;
         }
         if self.read_reg(SD_STAT1)? & 0x80 != 0 && response != SD_RSP_R3 {
-            return Err("SD response CRC error");
+            return Err(crate::DriverError::Protocol);
         }
         Ok(u32::from_be_bytes(bytes))
     }
@@ -336,15 +336,15 @@ impl RtsxController {
         command: u8,
         argument: u32,
         response: u8,
-    ) -> Result<u32, &'static str> {
+    ) -> Result<u32, crate::DriverError> {
         let r1 = self.command(CMD55_APP_CMD, u32::from(rca) << 16, SD_RSP_R1)?;
         if r1 & (1 << 5) == 0 {
-            return Err("card rejected APP_CMD");
+            return Err(crate::DriverError::Protocol);
         }
         self.command(command, argument, response)
     }
 
-    fn long_response(&self) -> Result<[u8; 16], &'static str> {
+    fn long_response(&self) -> Result<[u8; 16], crate::DriverError> {
         let mut raw = [0; 17];
         for (index, byte) in raw[..16].iter_mut().enumerate() {
             *byte = self.read_reg(PPBUF_BASE2 + index as u16)?;
@@ -355,7 +355,7 @@ impl RtsxController {
         Ok(response)
     }
 
-    fn set_data_len(&self) -> Result<(), &'static str> {
+    fn set_data_len(&self) -> Result<(), crate::DriverError> {
         self.write_regs(&[
             (SD_BYTE_CNT_L, 0xFF, 0),
             (SD_BYTE_CNT_H, 0xFF, 2),
@@ -364,18 +364,18 @@ impl RtsxController {
         ])
     }
 
-    fn run_host_commands(&mut self, count: usize) -> Result<(), &'static str> {
+    fn run_host_commands(&mut self, count: usize) -> Result<(), crate::DriverError> {
         let bytes = count
             .checked_mul(size_of::<u32>())
             .filter(|&bytes| bytes != 0 && bytes <= HOST_COMMAND_BUFFER_SIZE)
-            .ok_or("RTSX host command overflow")?;
+            .ok_or(crate::DriverError::InvalidArgument)?;
         let iova = {
             let commands = self
                 .host_commands
                 .as_ref()
-                .ok_or("RTSX host command buffer unavailable")?;
+                .ok_or(crate::DriverError::OutOfMemory)?;
             commands.flush_for_device();
-            u32::try_from(commands.dma_iova()).map_err(|_| "RTSX command address exceeds 32-bit")?
+            u32::try_from(commands.dma_iova()).map_err(|_| crate::DriverError::DmaMappingFailed)?
         };
 
         self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
@@ -389,11 +389,11 @@ impl RtsxController {
         let result = crate::timing::poll_timeout_us(250_000, || {
             let status = self.mmio.read32(RTSX_BIPR);
             (status & TRANS_FAIL_INT != 0)
-                .then_some(Err("RTSX host command failed"))
+                .then_some(Err(crate::DriverError::DeviceFault))
                 .or_else(|| (status & TRANS_OK_INT != 0).then_some(Ok(())))
         });
         self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
-        let result = result.unwrap_or(Err("RTSX host command timed out"));
+        let result = result.unwrap_or(Err(crate::DriverError::TimedOut));
         if result.is_err() {
             self.stop_transfer();
         }
@@ -418,22 +418,28 @@ impl RtsxController {
         self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
     }
 
-    fn run_register_commands(&mut self, commands: &[RegisterCommand]) -> Result<(), &'static str> {
+    fn run_register_commands(
+        &mut self,
+        commands: &[RegisterCommand],
+    ) -> Result<(), crate::DriverError> {
         self.load_register_commands(commands)?;
         self.run_host_commands(commands.len())
     }
 
-    fn load_register_commands(&mut self, commands: &[RegisterCommand]) -> Result<(), &'static str> {
+    fn load_register_commands(
+        &mut self,
+        commands: &[RegisterCommand],
+    ) -> Result<(), crate::DriverError> {
         commands
             .len()
             .checked_mul(size_of::<u32>())
             .filter(|&bytes| bytes != 0 && bytes <= HOST_COMMAND_BUFFER_SIZE)
-            .ok_or("RTSX host command overflow")?;
+            .ok_or(crate::DriverError::InvalidArgument)?;
         {
             let command_buffer = self
                 .host_commands
                 .as_mut()
-                .ok_or("RTSX host command buffer unavailable")?;
+                .ok_or(crate::DriverError::OutOfMemory)?;
             for (slot, &(kind, address, mask, value)) in command_buffer
                 .as_mut_slice()
                 .chunks_exact_mut(size_of::<u32>())
@@ -445,14 +451,14 @@ impl RtsxController {
         Ok(())
     }
 
-    fn dma_iova(region: &Option<DmaRegion>) -> Result<u32, &'static str> {
+    fn dma_iova(region: &Option<DmaRegion>) -> Result<u32, crate::DriverError> {
         u32::try_from(
             region
                 .as_ref()
-                .ok_or("RTSX DMA buffer unavailable")?
+                .ok_or(crate::DriverError::DmaMappingFailed)?
                 .dma_iova(),
         )
-        .map_err(|_| "RTSX DMA address exceeds 32-bit")
+        .map_err(|_| crate::DriverError::DmaMappingFailed)
     }
 
     fn data_dma_control(device_to_host: bool) -> u32 {
@@ -469,7 +475,7 @@ impl RtsxController {
         &mut self,
         commands: &[RegisterCommand],
         device_to_host: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         self.load_register_commands(commands)?;
         let bytes = (commands.len() * size_of::<u32>()) as u32;
         let command_iova = Self::dma_iova(&self.host_commands)?;
@@ -477,12 +483,12 @@ impl RtsxController {
 
         self.host_commands
             .as_ref()
-            .ok_or("RTSX host command buffer unavailable")?
+            .ok_or(crate::DriverError::OutOfMemory)?
             .flush_for_device();
         if device_to_host {
             self.data_buffer
                 .as_ref()
-                .ok_or("RTSX data buffer unavailable")?
+                .ok_or(crate::DriverError::OutOfMemory)?
                 .flush_for_device();
         }
 
@@ -499,10 +505,10 @@ impl RtsxController {
         let result = crate::timing::poll_timeout_us(1_000_000, || {
             let status = self.mmio.read32(RTSX_BIPR);
             (status & TRANS_FAIL_INT != 0)
-                .then_some(Err("RTSX data DMA failed"))
+                .then_some(Err(crate::DriverError::DeviceFault))
                 .or_else(|| (status & TRANS_OK_INT != 0).then_some(Ok(())))
         })
-        .unwrap_or(Err("RTSX data DMA timed out"));
+        .unwrap_or(Err(crate::DriverError::TimedOut));
         self.mmio.write32(RTSX_BIPR, TRANS_OK_INT | TRANS_FAIL_INT);
         if result.is_err() {
             self.stop_transfer();
@@ -615,14 +621,14 @@ impl RtsxController {
         Self::data_dma_commands(DMA_TO_CARD, SD_WRITE_CONFIG, SD_TM_AUTO_WRITE_3)
     }
 
-    fn ppbuf_read_fast(&mut self, buffer: &mut [u8]) -> Result<(), &'static str> {
+    fn ppbuf_read_fast(&mut self, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
         for (chunk_index, output) in buffer.chunks_mut(HOST_COMMAND_CHUNK).enumerate() {
             let first_register = PPBUF_BASE2 + (chunk_index * HOST_COMMAND_CHUNK) as u16;
             {
                 let command_buffer = self
                     .host_commands
                     .as_mut()
-                    .ok_or("RTSX host command buffer unavailable")?;
+                    .ok_or(crate::DriverError::OutOfMemory)?;
                 for (index, command) in command_buffer
                     .as_mut_slice()
                     .chunks_exact_mut(size_of::<u32>())
@@ -644,7 +650,7 @@ impl RtsxController {
             let command_buffer = self
                 .host_commands
                 .as_ref()
-                .ok_or("RTSX host command buffer unavailable")?;
+                .ok_or(crate::DriverError::OutOfMemory)?;
             command_buffer.flush_for_cpu();
             // AUTO_RESPONSE packs one byte per READ_REG at the start of the
             // command buffer; responses do not remain in their u32 slots.
@@ -654,21 +660,21 @@ impl RtsxController {
         Ok(())
     }
 
-    fn ppbuf_read_pio(&self, buffer: &mut [u8]) -> Result<(), &'static str> {
+    fn ppbuf_read_pio(&self, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
         buffer.iter_mut().enumerate().try_for_each(|(index, byte)| {
             *byte = self.read_reg(PPBUF_BASE2 + index as u16)?;
             Ok(())
         })
     }
 
-    fn ppbuf_write_fast(&mut self, buffer: &[u8]) -> Result<(), &'static str> {
+    fn ppbuf_write_fast(&mut self, buffer: &[u8]) -> Result<(), crate::DriverError> {
         for (chunk_index, input) in buffer.chunks(HOST_COMMAND_CHUNK).enumerate() {
             let first_register = PPBUF_BASE2 + (chunk_index * HOST_COMMAND_CHUNK) as u16;
             {
                 let command_buffer = self
                     .host_commands
                     .as_mut()
-                    .ok_or("RTSX host command buffer unavailable")?;
+                    .ok_or(crate::DriverError::OutOfMemory)?;
                 for (index, (command, &value)) in command_buffer
                     .as_mut_slice()
                     .chunks_exact_mut(size_of::<u32>())
@@ -691,14 +697,14 @@ impl RtsxController {
         Ok(())
     }
 
-    fn ppbuf_write_pio(&self, buffer: &[u8]) -> Result<(), &'static str> {
+    fn ppbuf_write_pio(&self, buffer: &[u8]) -> Result<(), crate::DriverError> {
         buffer
             .iter()
             .enumerate()
             .try_for_each(|(index, &byte)| self.write_reg(PPBUF_BASE2 + index as u16, 0xFF, byte))
     }
 
-    fn read_sector_pio(&self, argument: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
+    fn read_sector_pio(&self, argument: u32, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
         self.set_command(CMD17_READ_SINGLE, argument)?;
         self.set_data_len()?;
         self.write_regs(&[
@@ -714,13 +720,13 @@ impl RtsxController {
         &mut self,
         argument: u32,
         buffer: &mut [u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         self.run_register_commands(&Self::read_sector_commands(argument))?;
         self.wait_transfer(SD_TRANSFER_END)?;
         self.ppbuf_read_fast(buffer)
     }
 
-    fn write_sector_pio(&self, buffer: &[u8]) -> Result<(), &'static str> {
+    fn write_sector_pio(&self, buffer: &[u8]) -> Result<(), crate::DriverError> {
         self.ppbuf_write_pio(buffer)?;
         self.set_data_len()?;
         self.write_regs(&[
@@ -730,13 +736,13 @@ impl RtsxController {
         self.wait_transfer(SD_TRANSFER_END)
     }
 
-    fn write_sector_host_ppbuf(&mut self, buffer: &[u8]) -> Result<(), &'static str> {
+    fn write_sector_host_ppbuf(&mut self, buffer: &[u8]) -> Result<(), crate::DriverError> {
         self.ppbuf_write_fast(buffer)?;
         self.run_register_commands(&Self::write_sector_commands())?;
         self.wait_transfer(SD_TRANSFER_END)
     }
 
-    pub fn init_sd_card(&mut self) -> Result<(), &'static str> {
+    pub fn init_sd_card(&mut self) -> Result<(), crate::DriverError> {
         // A registered card is already in transfer state. Sending CMD0 and
         // ACMD41 again without a removal/power-cycle resets the protocol under
         // a live block device and is known to time out on RTS5249 hardware.
@@ -762,7 +768,7 @@ impl RtsxController {
             () => {
                 if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc) >= duration_ticks
                 {
-                    return Err("SD init timed out");
+                    return Err(crate::DriverError::TimedOut);
                 }
             };
         }
@@ -784,7 +790,7 @@ impl RtsxController {
                 _ => None,
             }
         })
-        .ok_or("ACMD41 timed out")?;
+        .ok_or(crate::DriverError::TimedOut)?;
         let block_addressed = ocr & (1 << 30) != 0;
 
         self.command(CMD2_ALL_SEND_CID, 0, SD_RSP_R2)?;
@@ -794,7 +800,7 @@ impl RtsxController {
         let rca = (self.command(CMD3_SEND_RELATIVE_ADDR, 0, SD_RSP_R1)? >> 16) as u16;
         check_timeout!();
         if rca == 0 {
-            return Err("card returned RCA zero");
+            return Err(crate::DriverError::InvalidArgument);
         }
         self.command(CMD9_SEND_CSD, u32::from(rca) << 16, SD_RSP_R2)?;
         check_timeout!();
@@ -842,7 +848,7 @@ impl RtsxController {
         Ok(())
     }
 
-    fn parse_csd(csd: &[u8; 16], block_addressed: bool) -> Result<u64, &'static str> {
+    fn parse_csd(csd: &[u8; 16], block_addressed: bool) -> Result<u64, crate::DriverError> {
         if block_addressed {
             let c_size =
                 (u32::from(csd[7] & 0x3F) << 16) | (u32::from(csd[8]) << 8) | u32::from(csd[9]);
@@ -851,7 +857,7 @@ impl RtsxController {
 
         let block_len = 1u64
             .checked_shl(u32::from(csd[5] & 0x0F))
-            .ok_or("invalid CSD block length")?;
+            .ok_or(crate::DriverError::InvalidArgument)?;
         let c_size =
             (u32::from(csd[6] & 3) << 10) | (u32::from(csd[7]) << 2) | u32::from(csd[8] >> 6);
         let multiplier = 1u64 << (u32::from((csd[9] & 3) << 1 | csd[10] >> 7) + 2);
@@ -859,22 +865,24 @@ impl RtsxController {
             .checked_mul(multiplier)
             .and_then(|blocks| blocks.checked_mul(block_len))
             .map(|bytes| bytes / 512)
-            .ok_or("CSD capacity overflow")
+            .ok_or(crate::DriverError::InvalidArgument)
     }
 
-    fn card_address(&self, lba: u32) -> Result<u32, &'static str> {
+    fn card_address(&self, lba: u32) -> Result<u32, crate::DriverError> {
         match self
             .sd_card
             .as_ref()
-            .ok_or("no initialized card")?
+            .ok_or(crate::DriverError::NotReady)?
             .card_type
         {
-            SdCardType::Sdsc => lba.checked_mul(512).ok_or("LBA overflow"),
+            SdCardType::Sdsc => lba
+                .checked_mul(512)
+                .ok_or(crate::DriverError::InvalidArgument),
             SdCardType::Sdhc | SdCardType::Sdxc => Ok(lba),
         }
     }
 
-    fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
+    fn read_sector(&mut self, lba: u32, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
         let argument = self.card_address(lba)?;
         loop {
             match self.data_path {
@@ -883,7 +891,7 @@ impl RtsxController {
                         Ok(()) => {
                             self.data_buffer
                                 .as_ref()
-                                .ok_or("RTSX data buffer unavailable")?
+                                .ok_or(crate::DriverError::OutOfMemory)?
                                 .read_into(buffer);
                             return Ok(());
                         }
@@ -906,8 +914,12 @@ impl RtsxController {
         }
     }
 
-    fn write_sector(&mut self, lba: u32, buffer: &[u8]) -> Result<(), &'static str> {
-        let rca = self.sd_card.as_ref().ok_or("no initialized card")?.rca;
+    fn write_sector(&mut self, lba: u32, buffer: &[u8]) -> Result<(), crate::DriverError> {
+        let rca = self
+            .sd_card
+            .as_ref()
+            .ok_or(crate::DriverError::NotReady)?
+            .rca;
         let argument = self.card_address(lba)?;
         loop {
             self.command(CMD24_WRITE_SINGLE, argument, SD_RSP_R1)?;
@@ -915,7 +927,7 @@ impl RtsxController {
                 DataPath::Sdma => {
                     self.data_buffer
                         .as_mut()
-                        .ok_or("RTSX data buffer unavailable")?
+                        .ok_or(crate::DriverError::OutOfMemory)?
                         .write_from(buffer);
                     match self.run_data_dma(&Self::write_sector_dma_commands(), false) {
                         Ok(()) => break,
@@ -948,7 +960,7 @@ impl RtsxController {
         {
             return Ok(());
         }
-        Err("card programming timed out")
+        Err(crate::DriverError::TimedOut)
     }
 
     pub fn read_sectors(
@@ -956,17 +968,23 @@ impl RtsxController {
         lba: u32,
         count: u16,
         buffer: &mut [u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         self.prepare_device()?;
         let bytes = usize::from(count)
             .checked_mul(512)
-            .ok_or("sector count overflow")?;
-        let destination = buffer.get_mut(..bytes).ok_or("read buffer too small")?;
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        let destination = buffer
+            .get_mut(..bytes)
+            .ok_or(crate::DriverError::InvalidArgument)?;
         destination
             .chunks_exact_mut(512)
             .enumerate()
             .try_for_each(|(index, sector)| {
-                self.read_sector(lba.checked_add(index as u32).ok_or("LBA overflow")?, sector)
+                self.read_sector(
+                    lba.checked_add(index as u32)
+                        .ok_or(crate::DriverError::InvalidArgument)?,
+                    sector,
+                )
             })
     }
 
@@ -975,17 +993,23 @@ impl RtsxController {
         lba: u32,
         count: u16,
         buffer: &[u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         self.prepare_device()?;
         let bytes = usize::from(count)
             .checked_mul(512)
-            .ok_or("sector count overflow")?;
-        let source = buffer.get(..bytes).ok_or("write buffer too small")?;
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        let source = buffer
+            .get(..bytes)
+            .ok_or(crate::DriverError::InvalidArgument)?;
         source
             .chunks_exact(512)
             .enumerate()
             .try_for_each(|(index, sector)| {
-                self.write_sector(lba.checked_add(index as u32).ok_or("LBA overflow")?, sector)
+                self.write_sector(
+                    lba.checked_add(index as u32)
+                        .ok_or(crate::DriverError::InvalidArgument)?,
+                    sector,
+                )
             })
     }
 
@@ -1090,11 +1114,11 @@ pub fn init(context: &dyn DriverContext) {
     log::info!("RTSX: RTS5249 registered; SD initialization deferred");
 }
 
-pub fn init_sd_card() -> Result<(), &'static str> {
+pub fn init_sd_card() -> Result<(), crate::DriverError> {
     CONTROLLER
         .lock()
         .as_mut()
-        .ok_or("no RTS5249 controller")?
+        .ok_or(crate::DriverError::DeviceNotFound)?
         .init_sd_card()
 }
 
@@ -1105,19 +1129,19 @@ pub fn sd_card_info() -> Option<SdCardInfo> {
         .and_then(|controller| controller.sd_card.clone())
 }
 
-pub fn read_sectors(lba: u32, count: u16, buffer: &mut [u8]) -> Result<(), &'static str> {
+pub fn read_sectors(lba: u32, count: u16, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
     CONTROLLER
         .lock()
         .as_mut()
-        .ok_or("no RTS5249 controller")?
+        .ok_or(crate::DriverError::DeviceNotFound)?
         .read_sectors(lba, count, buffer)
 }
 
-pub fn write_sectors(lba: u32, count: u16, buffer: &[u8]) -> Result<(), &'static str> {
+pub fn write_sectors(lba: u32, count: u16, buffer: &[u8]) -> Result<(), crate::DriverError> {
     CONTROLLER
         .lock()
         .as_mut()
-        .ok_or("no RTS5249 controller")?
+        .ok_or(crate::DriverError::DeviceNotFound)?
         .write_sectors(lba, count, buffer)
 }
 

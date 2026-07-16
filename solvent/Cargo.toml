@@ -23,6 +23,7 @@ nozzle = { path = "../nozzle" }
 lattice = { path = "../lattice" }
 resonance = { path = "../resonance" }
 chronoline = { path = "../chronoline" }
+genome = { path = "../genome" }
 log = { workspace = true }
 
 # Media format parsers

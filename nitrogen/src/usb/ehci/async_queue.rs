@@ -297,18 +297,18 @@ impl TransferContext {
     }
 
     /// Wait for a qTD to complete (active bit cleared).
-    pub fn wait_qtd(&self, qtd: &Qtd, timeout_us: u32) -> Result<(), &'static str> {
+    pub fn wait_qtd(&self, qtd: &Qtd, timeout_us: u32) -> Result<(), crate::DriverError> {
         for _ in 0..timeout_us {
             let token = unsafe { ptr::read_volatile(&qtd.token) };
             if token & QTD_ACTIVE == 0 {
                 if token & QTD_HALTED != 0 {
-                    return Err("qTD halted");
+                    return Err(crate::DriverError::Protocol);
                 }
                 return Ok(());
             }
             core::hint::spin_loop();
         }
-        Err("qTD timeout")
+        Err(crate::DriverError::TimedOut)
     }
 
     /// Reset all pools (reclaim all qH and qTD resources).

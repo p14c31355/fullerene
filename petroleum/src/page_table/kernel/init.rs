@@ -84,8 +84,8 @@ impl<'a> KernelMemoryOperations<'a> {
     unsafe fn allocate_zeroed_table_from(
         frame_allocator: *mut BitmapFrameAllocator,
         page_table_access_offset: VirtAddr,
-        error: &'static str,
-    ) -> Result<PhysAddr, &'static str> {
+        error: crate::MemoryError,
+    ) -> Result<PhysAddr, crate::MemoryError> {
         let frame = unsafe { &mut *frame_allocator }
             .allocate_frame()
             .ok_or(error)?;
@@ -107,7 +107,7 @@ impl<'a> KernelMemoryOperations<'a> {
         virt: VirtAddr,
         phys: PhysAddr,
         flags: PageTableFlags,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         unsafe {
             let indices = PageTableIndices::new(virt);
             let offset = self.page_table_access_offset.as_u64();
@@ -119,7 +119,7 @@ impl<'a> KernelMemoryOperations<'a> {
                 let addr = Self::allocate_zeroed_table_from(
                     frame_allocator,
                     page_table_access_offset,
-                    "4k: alloc L3 failed",
+                    crate::MemoryError::FrameAllocationFailed,
                 )?;
                 l4[indices.l4].set_addr(addr, flags | PageTableFlags::PRESENT);
                 &mut *((l4[indices.l4].addr().as_u64() + offset) as *mut PageTable)
@@ -133,7 +133,7 @@ impl<'a> KernelMemoryOperations<'a> {
                 let l2_phys = Self::allocate_zeroed_table_from(
                     frame_allocator,
                     page_table_access_offset,
-                    "4k: alloc L2 for 1GB split failed",
+                    crate::MemoryError::FrameAllocationFailed,
                 )?;
                 let l2_ref = &mut *self.table_ptr(l2_phys);
                 for j in 0..ENTRIES_PER_TABLE {
@@ -151,7 +151,7 @@ impl<'a> KernelMemoryOperations<'a> {
                 let addr = Self::allocate_zeroed_table_from(
                     frame_allocator,
                     page_table_access_offset,
-                    "4k: alloc L2 failed",
+                    crate::MemoryError::FrameAllocationFailed,
                 )?;
                 l3[indices.l3].set_addr(addr, flags | PageTableFlags::PRESENT);
                 &mut *((l3[indices.l3].addr().as_u64() + offset) as *mut PageTable)
@@ -163,7 +163,7 @@ impl<'a> KernelMemoryOperations<'a> {
                 let l1_phys = Self::allocate_zeroed_table_from(
                     frame_allocator,
                     page_table_access_offset,
-                    "4k: alloc L1 failed",
+                    crate::MemoryError::FrameAllocationFailed,
                 )?;
                 l2[indices.l2].set_addr(l1_phys, flags | PageTableFlags::PRESENT);
             } else if l2[indices.l2].flags().contains(PageTableFlags::HUGE_PAGE) {
@@ -173,7 +173,7 @@ impl<'a> KernelMemoryOperations<'a> {
                 let l1_phys = Self::allocate_zeroed_table_from(
                     frame_allocator,
                     page_table_access_offset,
-                    "4k: split L1 failed",
+                    crate::MemoryError::FrameAllocationFailed,
                 )?;
                 let l1_ref = &mut *self.table_ptr(l1_phys);
                 for j in 0..ENTRIES_PER_TABLE {
@@ -198,7 +198,7 @@ impl<'a> KernelMemoryOperations<'a> {
         phys_start: PhysAddr,
         page_count: u64,
         flags: PageTableFlags,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         for i in 0..page_count {
             let virt = VirtAddr::new(virt_start.as_u64() + i * PAGE_SIZE_4K);
             let phys = PhysAddr::new(phys_start.as_u64() + i * PAGE_SIZE_4K);
@@ -214,7 +214,7 @@ impl<'a> KernelMemoryOperations<'a> {
         phys_start: PhysAddr,
         page_count: u64,
         flags: PageTableFlags,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         unsafe {
             let flags_2mb = flags | PageTableFlags::HUGE_PAGE;
             for i in 0..page_count {
@@ -230,7 +230,7 @@ impl<'a> KernelMemoryOperations<'a> {
                     let addr = Self::allocate_zeroed_table_from(
                         frame_allocator,
                         page_table_access_offset,
-                        "huge: alloc L3 failed",
+                        crate::MemoryError::FrameAllocationFailed,
                     )?;
                     l4[indices.l4].set_addr(addr, flags | PageTableFlags::PRESENT);
                 }
@@ -241,7 +241,7 @@ impl<'a> KernelMemoryOperations<'a> {
                     let addr = Self::allocate_zeroed_table_from(
                         frame_allocator,
                         page_table_access_offset,
-                        "huge: alloc L2 failed",
+                        crate::MemoryError::FrameAllocationFailed,
                     )?;
                     l3[indices.l3].set_addr(addr, flags | PageTableFlags::PRESENT);
                 }
@@ -257,7 +257,7 @@ impl<'a> KernelMemoryOperations<'a> {
     pub unsafe fn map_bootstrap_windows(
         &mut self,
         physical_memory_offset: VirtAddr,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::MemoryError> {
         unsafe {
             self.map_range_2mb_huge(
                 VirtAddr::new(0),
@@ -287,7 +287,7 @@ pub unsafe fn map_page_4k_l1(
     flags: PageTableFlags,
     frame_allocator: &mut crate::page_table::allocator::bitmap::BitmapFrameAllocator,
     phys_offset: VirtAddr,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::MemoryError> {
     unsafe {
         KernelMemoryOperations::new(l4, frame_allocator, phys_offset, flags)
             .map_page_4k(virt, phys, flags)

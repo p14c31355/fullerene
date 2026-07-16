@@ -212,9 +212,7 @@ impl<D: BlockDevice> BlockCache<D> {
         if let Some(idx) = self.lookup(lba) {
             self.entries[idx].0 = None;
         }
-        self.inner
-            .write_sectors(lba, 1, buf)
-            .map_err(BlockError::Device)
+        self.inner.write_sectors(lba, 1, buf)
     }
 
     pub fn sector_size(&self) -> u32 {
@@ -226,15 +224,18 @@ impl<D: BlockDevice> BlockCache<D> {
 }
 
 impl<D: BlockDevice> BlockDevice for BlockCache<D> {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         let count = count as usize;
-        let needed = count.checked_mul(self.bps).ok_or("count * bps overflow")?;
+        let needed = count.checked_mul(self.bps).ok_or(BlockError::LbaOverflow)?;
         if buf.len() < needed {
-            return Err("buffer too small for multi-sector read");
+            return Err(BlockError::BufferTooSmall {
+                required: needed,
+                provided: buf.len(),
+            });
         }
         let end_lba = (lba as u64) + (count as u64);
         if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
-            return Err("LBA range exceeds device capacity or 32-bit limit");
+            return Err(BlockError::LbaOverflow);
         }
         let mut index = 0;
         while index < count {
@@ -268,15 +269,18 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
         }
         Ok(())
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let count = count as usize;
-        let needed = count.checked_mul(self.bps).ok_or("count * bps overflow")?;
+        let needed = count.checked_mul(self.bps).ok_or(BlockError::LbaOverflow)?;
         if buf.len() < needed {
-            return Err("buffer too small for multi-sector write");
+            return Err(BlockError::BufferTooSmall {
+                required: needed,
+                provided: buf.len(),
+            });
         }
         let end_lba = (lba as u64) + (count as u64);
         if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
-            return Err("LBA range exceeds device capacity or 32-bit limit");
+            return Err(BlockError::LbaOverflow);
         }
         for index in 0..count {
             if let Some(slot) = self.lookup(lba + index as u32) {
@@ -299,11 +303,17 @@ pub struct PartitionBlockDevice {
 }
 
 impl BlockDevice for PartitionBlockDevice {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
-        self.inner.read_sectors(lba + self.offset, count, buf)
+    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        let lba = lba
+            .checked_add(self.offset)
+            .ok_or(BlockError::LbaOverflow)?;
+        self.inner.read_sectors(lba, count, buf)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-        self.inner.write_sectors(lba + self.offset, count, buf)
+    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        let lba = lba
+            .checked_add(self.offset)
+            .ok_or(BlockError::LbaOverflow)?;
+        self.inner.write_sectors(lba, count, buf)
     }
     fn sector_size(&self) -> u32 {
         self.inner.sector_size()
@@ -319,7 +329,7 @@ impl BlockDevice for PartitionBlockDevice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FatBlockError {
-    Device(&'static str),
+    Device(BlockError),
     UnexpectedEof,
     WriteZero,
 }
@@ -327,7 +337,7 @@ pub enum FatBlockError {
 impl core::fmt::Display for FatBlockError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            FatBlockError::Device(msg) => write!(f, "device error: {}", msg),
+            FatBlockError::Device(error) => write!(f, "device error: {}", error),
             FatBlockError::UnexpectedEof => write!(f, "unexpected eof"),
             FatBlockError::WriteZero => write!(f, "write zero"),
         }
@@ -474,7 +484,7 @@ impl FatFileSystem {
 
     fn map_err<T>(r: Result<T, FatError>) -> Result<T, FsError> {
         r.map_err(|e| match e {
-            fatfs::Error::Io(FatBlockError::Device(_)) => FsError::InvalidInput,
+            fatfs::Error::Io(FatBlockError::Device(error)) => error.into(),
             fatfs::Error::NotFound => FsError::FileNotFound,
             fatfs::Error::AlreadyExists => FsError::FileExists,
             fatfs::Error::NotEnoughSpace => FsError::DiskFull,

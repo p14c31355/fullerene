@@ -208,15 +208,15 @@ impl IommuEngine {
 static GLOBAL_IOMMU: Mutex<Option<IommuEngine>> = Mutex::new(None);
 static IOMMU_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
+pub fn init(rsdp_phys: u64) -> Result<(), crate::DriverError> {
     if IOMMU_INITIALIZED.load(core::sync::atomic::Ordering::Relaxed) {
         log::info!("IOMMU: already initialized, re-init skipped");
         return Ok(());
     }
 
-    let dmar = acpi::dmar::parse_dmar(rsdp_phys).ok_or("failed to parse DMAR table")?;
+    let dmar = acpi::dmar::parse_dmar(rsdp_phys).ok_or(crate::DriverError::Protocol)?;
     if dmar.drhd_units.is_empty() {
-        return Err("IOMMU: no DRHD units found");
+        return Err(crate::DriverError::DeviceNotFound);
     }
 
     let drhd = &dmar.drhd_units[0];
@@ -232,10 +232,10 @@ pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
 
     let mmio_virt = {
         let guard = MEM.lock();
-        let cbs = guard.as_ref().ok_or("IOMMU: MemCallbacks not set")?;
+        let cbs = guard.as_ref().ok_or(crate::DriverError::NotReady)?;
         // Map VT-d MMIO region as uncached (required by VT-d spec)
-        let virt =
-            (cbs.map_mmio)(mmio_base as usize, 4096).map_err(|_| "IOMMU: MMIO mapping failed")?;
+        let virt = (cbs.map_mmio)(mmio_base as usize, 4096)
+            .map_err(|_| crate::DriverError::MmioMappingFailed)?;
         virt as *mut u8
     };
     let regs = VtdRegisters::new(mmio_virt);
@@ -253,27 +253,27 @@ pub fn init(rsdp_phys: u64) -> Result<(), &'static str> {
     );
 
     let mut engine =
-        IommuEngine::new(regs, iova_bits).map_err(|_| "IOMMU engine creation failed")?;
+        IommuEngine::new(regs, iova_bits).map_err(|_| crate::DriverError::DeviceFault)?;
     engine
         .setup_pass_through_all()
-        .map_err(|_| "IOMMU pass-through setup failed")?;
+        .map_err(|_| crate::DriverError::DeviceFault)?;
 
     if engine.registers.gsts() & vtd::GSTS_TES != 0 {
         log::info!("IOMMU: already enabled by firmware");
     }
 
     if !engine.registers.write_buffer_flush() {
-        return Err("IOMMU: write buffer flush failed");
+        return Err(crate::DriverError::DeviceFault);
     }
     engine.registers.set_rtaddr(engine.root_table.root_phys());
     engine.registers.set_root_table_ptr();
     if !engine.registers.wait_for_root_table_ptr() {
-        return Err("IOMMU: root table pointer setup timed out");
+        return Err(crate::DriverError::TimedOut);
     }
 
     engine.registers.enable_translation();
     if !engine.registers.wait_for_translation_enable() {
-        return Err("IOMMU: translation enable timed out");
+        return Err(crate::DriverError::TimedOut);
     }
 
     // TODO: Support multiple DRHD remapping units. Currently only the first

@@ -97,15 +97,15 @@ fn mouse_port_present() -> bool {
 ///
 /// # Errors
 ///
-/// Returns an error string if any PS/2 controller command fails (e.g. the
-/// mouse does not respond) or if the mouse port is not present.
-pub fn init_mouse() -> Result<(), &'static str> {
+/// Returns a typed driver error if a PS/2 controller command fails or if the
+/// mouse port is not present.
+pub fn init_mouse() -> Result<(), crate::DriverError> {
     // Safety check: verify the mouse port exists before attempting init.
     // On many modern laptops (including InsydeH2O-based systems), the PS/2
     // mouse port may be absent.  Probing it anyway can hang the system.
     if !mouse_port_present() {
         log::info!("[nitrogen] PS/2 mouse port not present — skipping init");
-        return Err("Mouse port not present");
+        return Err(crate::DriverError::DeviceNotFound);
     }
 
     let mut mouse = Ps2MouseInner::new();
@@ -124,7 +124,7 @@ pub fn init_mouse() -> Result<(), &'static str> {
         }
         Err(e) => {
             log::error!("[nitrogen] PS/2 mouse: init() FAILED: {}", e);
-            Err(e)
+            Err(crate::DriverError::DeviceFault)
         }
     }
 }

@@ -310,21 +310,23 @@ impl SlotManager {
         &mut self,
         ctx: &dyn DriverContext,
         slot_id: u32,
-    ) -> Result<(u32, &mut Slot), &'static str> {
+    ) -> Result<(u32, &mut Slot), crate::DriverError> {
         if slot_id == 0 || slot_id > self.max_slots {
-            return Err("invalid slot ID");
+            return Err(crate::DriverError::InvalidArgument);
         }
         if self.n_used >= self.max_slots {
-            return Err("no free slots");
+            return Err(crate::DriverError::OutOfMemory);
         }
         self.n_used += 1;
 
         // Allocate device and input context pages
         let (_dev_ctx_virt, dev_ctx_phys) =
-            DeviceContext::alloc(ctx).ok_or("no device ctx page")?;
-        let (_in_ctx_virt, in_ctx_phys) = InputContext::alloc(ctx).ok_or("no input ctx page")?;
+            DeviceContext::alloc(ctx).ok_or(crate::DriverError::OutOfMemory)?;
+        let (_in_ctx_virt, in_ctx_phys) =
+            InputContext::alloc(ctx).ok_or(crate::DriverError::OutOfMemory)?;
 
-        let slot = Slot::new(ctx, slot_id, dev_ctx_phys, in_ctx_phys).ok_or("no slot resources")?;
+        let slot = Slot::new(ctx, slot_id, dev_ctx_phys, in_ctx_phys)
+            .ok_or(crate::DriverError::OutOfMemory)?;
         self.slots.push(slot);
 
         Ok((slot_id, self.slots.last_mut().unwrap()))

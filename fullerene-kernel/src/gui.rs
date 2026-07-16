@@ -21,32 +21,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::Renderer;
 use solvent;
 
-use genome::fs::FsError;
-
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
     LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
     is_initialized, poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core,
     write_terminal,
 };
-
-/// Convert an FsError to a static string for the solvent callback boundary.
-fn fs_err_str(e: FsError) -> &'static str {
-    match e {
-        FsError::FileNotFound => "file not found",
-        FsError::FileExists => "file exists",
-        FsError::PermissionDenied => "permission denied",
-        FsError::InvalidFileDescriptor => "bad fd",
-        FsError::InvalidSeek => "invalid seek",
-        FsError::DiskFull => "disk full",
-        FsError::NotADirectory => "not a directory",
-        FsError::DirectoryNotEmpty => "directory not empty",
-        FsError::IsADirectory => "is a directory",
-        FsError::InvalidPath => "invalid path",
-        FsError::NotSupported => "not supported",
-        FsError::InvalidInput => "invalid input",
-    }
-}
 
 /// Initialise the GUI subsystem via Solvent runtime.
 pub fn init() {
@@ -55,7 +35,7 @@ pub fn init() {
         heap_extend: Some(|additional| unsafe { crate::heap::extend_kernel_heap(additional) }),
         wall_clock: Some(read_cmos_time),
         vfs_readdir: Some(|path| {
-            let entries = crate::contexts::vfs::readdir(path).map_err(fs_err_str)?;
+            let entries = crate::contexts::vfs::readdir(path)?;
             let mut result = alloc::vec::Vec::new();
             for vn in entries {
                 result.push(solvent::VfsEntry {
@@ -67,7 +47,7 @@ pub fn init() {
             Ok(result)
         }),
         vfs_read: Some(|path| {
-            let fd = crate::contexts::vfs::open(path, 0).map_err(fs_err_str)?;
+            let fd = crate::contexts::vfs::open(path, 0)?;
             let mut buf = alloc::vec::Vec::new();
             let mut tmp = [0u8; 4096];
             loop {
@@ -76,25 +56,21 @@ pub fn init() {
                     Ok(n) => buf.extend_from_slice(&tmp[..n]),
                     Err(e) => {
                         let _ = crate::contexts::vfs::close(fd.fd);
-                        return Err(fs_err_str(e));
+                        return Err(e);
                     }
                 }
             }
             let _ = crate::contexts::vfs::close(fd.fd);
             Ok(buf)
         }),
-        vfs_write: Some(|path, data| {
-            crate::contexts::vfs::replace_file(path, data).map_err(fs_err_str)
-        }),
+        vfs_write: Some(|path, data| crate::contexts::vfs::replace_file(path, data)),
         vfs_copy: Some(|source, destination, is_dir| {
-            crate::contexts::vfs::copy_path(source, destination, is_dir).map_err(fs_err_str)
+            crate::contexts::vfs::copy_path(source, destination, is_dir)
         }),
         vfs_move: Some(|source, destination, is_dir| {
-            crate::contexts::vfs::move_path(source, destination, is_dir).map_err(fs_err_str)
+            crate::contexts::vfs::move_path(source, destination, is_dir)
         }),
-        vfs_remove: Some(|path, is_dir| {
-            crate::contexts::vfs::remove_path(path, is_dir).map_err(fs_err_str)
-        }),
+        vfs_remove: Some(|path, is_dir| crate::contexts::vfs::remove_path(path, is_dir)),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
             crate::process::SCHEDULER.with_list(|list| {

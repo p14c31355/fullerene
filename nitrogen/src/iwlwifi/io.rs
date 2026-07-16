@@ -23,15 +23,15 @@ impl IwlWifiDevice {
         opcode: u8,
         group: u8,
         data: &[u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         let total_len = core::mem::size_of::<HcmdHeader>() + data.len();
         if total_len > MAX_FRAME_SIZE {
-            return Err("HCMD too large");
+            return Err(crate::DriverError::InvalidArgument);
         }
 
         self.health
             .pre_mmio_access()
-            .map_err(|_| "device not accessible")?;
+            .map_err(|_| crate::DriverError::DeviceNotFound)?;
 
         let hcmd_header = HcmdHeader {
             opcode,
@@ -43,7 +43,7 @@ impl IwlWifiDevice {
 
         let used = self.tx_head.wrapping_sub(self.tx_tail);
         if used >= TX_QUEUE_SIZE {
-            return Err("TX ring full");
+            return Err(crate::DriverError::Busy);
         }
         let desc_idx = self.tx_head % TX_QUEUE_SIZE;
         let desc_ptr = self.tx_dma_ring.virt() as *mut TxDmaDesc;
@@ -81,14 +81,13 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    pub fn send_init_commands(&mut self) -> Result<(), &'static str> {
+    pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
         let ant_cfg: [u8; 8] = [0x03, 0x03, 0, 0, 0, 0, 0, 0];
         self.send_hcmd(
             LegacyCmd::TxAntConfig as u8,
             GroupId::Legacy as u8,
             &ant_cfg,
-        )
-        .map_err(|_| "TX antenna config failed")?;
+        )?;
         log::info!("iwlwifi: TX antenna config sent");
 
         let mut rxon = [0u8; 36];
@@ -98,8 +97,7 @@ impl IwlWifiDevice {
         rxon[12..18].copy_from_slice(&mac);
         rxon[22] = 100;
         rxon[23] = 0;
-        self.send_hcmd(LegacyCmd::Rxon as u8, GroupId::Legacy as u8, &rxon)
-            .map_err(|_| "RXON config failed")?;
+        self.send_hcmd(LegacyCmd::Rxon as u8, GroupId::Legacy as u8, &rxon)?;
         log::info!("iwlwifi: RXON config sent");
 
         self.fw_state = FwState::Ready;
@@ -111,9 +109,9 @@ impl IwlWifiDevice {
 // ── Scanning ──────────────────────
 
 impl IwlWifiDevice {
-    pub fn start_scan(&mut self) -> Result<(), &'static str> {
+    pub fn start_scan(&mut self) -> Result<(), crate::DriverError> {
         if self.fw_state != FwState::Ready {
-            return Err("Firmware not ready");
+            return Err(crate::DriverError::NotReady);
         }
 
         self.wifi_conn.start_scan();
@@ -195,14 +193,18 @@ impl IwlWifiDevice {
 // ── Connection management ─────────
 
 impl IwlWifiDevice {
-    pub fn connect(&mut self, ssid: &Ssid, password: Option<&str>) -> Result<(), &'static str> {
+    pub fn connect(
+        &mut self,
+        ssid: &Ssid,
+        password: Option<&str>,
+    ) -> Result<(), crate::DriverError> {
         if self.fw_state != FwState::Ready {
-            return Err("Firmware not ready");
+            return Err(crate::DriverError::NotReady);
         }
 
         let ap = match self.scan_results.iter().find(|a| a.ssid == *ssid) {
             Some(a) => a.clone(),
-            None => return Err("AP not found in scan results"),
+            None => return Err(crate::DriverError::DeviceNotFound),
         };
 
         self.wifi_conn.connect(ssid, password);
@@ -250,7 +252,7 @@ impl IwlWifiDevice {
         log::info!("iwlwifi: disconnected");
     }
 
-    pub fn send_raw_80211_frame(&mut self, frame: &[u8]) -> Result<(), &'static str> {
+    pub fn send_raw_80211_frame(&mut self, frame: &[u8]) -> Result<(), crate::DriverError> {
         self.tx_queue.push_back(frame.to_vec());
         self.process_tx_queue();
         Ok(())
@@ -631,19 +633,19 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
         self.ip_address
     }
 
-    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         IwlWifiDevice::load_firmware(self, fw_data)
     }
 
-    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str> {
+    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         IwlWifiDevice::start_firmware(self, fw_data)
     }
 
-    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str> {
+    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError> {
         IwlWifiDevice::check_alive_nonblocking(self, start_tsc)
     }
 
-    fn send_init_commands(&mut self) -> Result<(), &'static str> {
+    fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
         IwlWifiDevice::send_init_commands(self)
     }
 }

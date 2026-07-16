@@ -54,12 +54,12 @@ pub struct SolventCallbacks {
     pub launch_shell: Option<fn()>,
     pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
     pub wall_clock: Option<fn() -> Option<(u16, u8, u8, u8, u8, u8)>>,
-    pub vfs_readdir: Option<fn(&str) -> Result<Vec<VfsEntry>, &'static str>>,
-    pub vfs_read: Option<fn(&str) -> Result<Vec<u8>, &'static str>>,
-    pub vfs_write: Option<fn(&str, &[u8]) -> Result<(), &'static str>>,
-    pub vfs_copy: Option<fn(&str, &str, bool) -> Result<(), &'static str>>,
-    pub vfs_move: Option<fn(&str, &str, bool) -> Result<(), &'static str>>,
-    pub vfs_remove: Option<fn(&str, bool) -> Result<(), &'static str>>,
+    pub vfs_readdir: Option<fn(&str) -> Result<Vec<VfsEntry>, genome::FsError>>,
+    pub vfs_read: Option<fn(&str) -> Result<Vec<u8>, genome::FsError>>,
+    pub vfs_write: Option<fn(&str, &[u8]) -> Result<(), genome::FsError>>,
+    pub vfs_copy: Option<fn(&str, &str, bool) -> Result<(), genome::FsError>>,
+    pub vfs_move: Option<fn(&str, &str, bool) -> Result<(), genome::FsError>>,
+    pub vfs_remove: Option<fn(&str, bool) -> Result<(), genome::FsError>>,
     pub process_list: Option<fn() -> Vec<ProcessEntry>>,
     pub device_list: Option<fn() -> Vec<DeviceEntry>>,
     pub mounted_drive_list: Option<fn() -> Vec<(alloc::string::String, alloc::string::String)>>,
@@ -647,7 +647,7 @@ fn service_explorer_navigation() {
     // here previously deadlocked the desktop when a directory was opened.
     let callback = SOLVENT_CALLBACKS.lock().vfs_readdir;
     let result = callback
-        .ok_or("filesystem unavailable")
+        .ok_or(genome::FsError::NotSupported)
         .and_then(|read| read(&path));
     match &result {
         Ok(entries) => nitrogen::debug_status!("Explorer", "ready: {} entries", entries.len()),

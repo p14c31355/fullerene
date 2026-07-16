@@ -74,19 +74,19 @@ pub trait WifiDriver: Send {
 
     /// Load firmware blob into the device.
     /// Returns `Ok(())` on success.
-    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str>;
+    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError>;
 
     /// Start firmware upload and CPU boot without waiting for alive.
     /// Used by the step-based init to avoid blocking the render loop.
-    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str>;
+    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError>;
 
     /// Non-blocking check if firmware has signaled alive.
     /// Returns Ok(true) if alive, Ok(false) if still waiting, Err on error/timeout.
-    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str>;
+    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError>;
 
     /// Send post-boot init commands (TX antenna config, RXON, queue setup).
     /// Called by the step-based init after firmware alive is confirmed.
-    fn send_init_commands(&mut self) -> Result<(), &'static str>;
+    fn send_init_commands(&mut self) -> Result<(), crate::DriverError>;
 }
 
 // ── Hardware info (from PCI config space, always safe) ───────────────
