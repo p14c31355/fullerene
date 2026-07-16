@@ -337,7 +337,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
             if back_needed > reserve {
                 let additional = back_needed.saturating_sub(reserve).next_multiple_of(4096);
-                match RUNTIME_CONTEXT.callbacks().heap_extend {
+                match RUNTIME_CONTEXT.callback_snapshot().heap_extend {
                     Some(f) if f(additional).is_ok() => {
                         HEAP_EXTEND_RESERVE
                             .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);

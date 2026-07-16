@@ -120,7 +120,7 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
     }
     let text = match kind {
         InfoWindow::TaskManager => {
-            let Some(get_procs) = RUNTIME_CONTEXT.callbacks().process_list else {
+            let Some(get_procs) = RUNTIME_CONTEXT.callback_snapshot().process_list else {
                 return show_text_window(
                     rt,
                     "Task Manager",
@@ -154,7 +154,7 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::DeviceManager => {
-            let Some(get_devs) = RUNTIME_CONTEXT.callbacks().device_list else {
+            let Some(get_devs) = RUNTIME_CONTEXT.callback_snapshot().device_list else {
                 return show_text_window(
                     rt,
                     "Device Manager",

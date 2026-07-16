@@ -181,7 +181,7 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
     );
 
     if is_text {
-        let read_file = RUNTIME_CONTEXT.callbacks().vfs_read;
+        let read_file = RUNTIME_CONTEXT.callback_snapshot().vfs_read;
         let file_content = match read_file {
             Some(read) => match read(path) {
                 Ok(data) => match core::str::from_utf8(&data) {

@@ -114,7 +114,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
 
 fn persist_settings() {
     let save_fn = {
-        let cb_guard = RUNTIME_CONTEXT.callbacks();
+        let cb_guard = RUNTIME_CONTEXT.callback_snapshot();
         cb_guard.settings_save
     };
     if let Some(f) = save_fn {

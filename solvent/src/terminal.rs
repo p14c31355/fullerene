@@ -54,7 +54,7 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
         let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
         if needed > reserve {
             let additional = needed.saturating_sub(reserve).next_multiple_of(4096);
-            match RUNTIME_CONTEXT.callbacks().heap_extend {
+            match RUNTIME_CONTEXT.callback_snapshot().heap_extend {
                 Some(f) if f(additional).is_ok() => {
                     HEAP_EXTEND_RESERVE
                         .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);

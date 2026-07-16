@@ -14,7 +14,7 @@ const GLYPH_SIZE: u32 = 8;
 
 fn read_file(path: &str) -> Result<Vec<u8>, genome::FsError> {
     let read_fn = RUNTIME_CONTEXT
-        .callbacks()
+        .callback_snapshot()
         .vfs_read
         .ok_or(genome::FsError::NotSupported)?;
     read_fn(path)

@@ -37,7 +37,7 @@ fn days_in_month(month: i16, year: i16) -> i16 {
 /// dirty rect for the taskbar / top panel).
 pub fn update_clock() -> bool {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-    let time_str = if let Some(get_time) = RUNTIME_CONTEXT.callbacks().wall_clock {
+    let time_str = if let Some(get_time) = RUNTIME_CONTEXT.callback_snapshot().wall_clock {
         if let Some((year, month, day, hour, minute, _second)) = get_time() {
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;

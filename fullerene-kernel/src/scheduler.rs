@@ -26,7 +26,7 @@ use crate::scheduler_context::SCHEDULER;
 /// Returns `None` if RTC is unavailable or invalid.
 fn read_rtc_us() -> Option<u64> {
     // Obtain wall-clock callback from Solvent
-    let cb = solvent::RUNTIME_CONTEXT.callbacks().wall_clock?;
+    let cb = solvent::RUNTIME_CONTEXT.callback_snapshot().wall_clock?;
     let (year, month, day, hour, minute, second) = cb()?;
 
     // Validate ranges

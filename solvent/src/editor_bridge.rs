@@ -41,7 +41,7 @@ pub(crate) fn render_editor(rt: &mut crate::RuntimeState) {
             let additional = needed
                 .saturating_sub(HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed))
                 .next_multiple_of(4096);
-            let extend_fn = RUNTIME_CONTEXT.callbacks().heap_extend;
+            let extend_fn = RUNTIME_CONTEXT.callback_snapshot().heap_extend;
             if extend_fn.is_none() || extend_fn.unwrap()(additional).is_err() {
                 return;
             }
@@ -136,7 +136,7 @@ pub(crate) fn editor_save_current(rt: &mut crate::RuntimeState) {
         None => return,
     };
     let content = rt.editor_buf.full_text();
-    let write_fn = match RUNTIME_CONTEXT.callbacks().vfs_write {
+    let write_fn = match RUNTIME_CONTEXT.callback_snapshot().vfs_write {
         Some(f) => f,
         None => return,
     };

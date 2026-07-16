@@ -74,7 +74,7 @@ fn service_explorer_navigation() {
     // Filesystem and hardware I/O must run without the runtime lock. Rendering
     // takes locks in the opposite direction and synchronous removable-media I/O
     // here previously deadlocked the desktop when a directory was opened.
-    let callback = RUNTIME_CONTEXT.callbacks().vfs_readdir;
+    let callback = RUNTIME_CONTEXT.callback_snapshot().vfs_readdir;
     let result = callback
         .ok_or(genome::FsError::NotSupported)
         .and_then(|read| read(&path));
@@ -197,7 +197,7 @@ pub fn runtime_tick(now: u64, framebuffer: &mut petroleum::graphics::Framebuffer
     let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
     if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
         LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
-        let poll_usb = RUNTIME_CONTEXT.callbacks().usb_poll;
+        let poll_usb = RUNTIME_CONTEXT.callback_snapshot().usb_poll;
         if let Some(poll_usb) = poll_usb
             && poll_usb()
             && let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()

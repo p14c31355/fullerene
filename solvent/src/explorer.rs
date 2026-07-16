@@ -722,7 +722,7 @@ fn basename(path: &str) -> &str {
 fn path_exists(path: &str) -> bool {
     let parent = parent_path(path);
     let name = basename(path);
-    let Some(readdir) = RUNTIME_CONTEXT.callbacks().vfs_readdir else {
+    let Some(readdir) = RUNTIME_CONTEXT.callback_snapshot().vfs_readdir else {
         return false;
     };
     readdir(&parent).ok().is_some_and(|entries| {
@@ -754,7 +754,7 @@ fn unique_destination(directory: &str, name: &str) -> String {
 
 fn copy_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {
     let copy = RUNTIME_CONTEXT
-        .callbacks()
+        .callback_snapshot()
         .vfs_copy
         .ok_or(genome::FsError::NotSupported)?;
     copy(source, destination, is_dir)
@@ -762,7 +762,7 @@ fn copy_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genom
 
 fn move_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {
     let move_path = RUNTIME_CONTEXT
-        .callbacks()
+        .callback_snapshot()
         .vfs_move
         .ok_or(genome::FsError::NotSupported)?;
     move_path(source, destination, is_dir)
@@ -770,7 +770,7 @@ fn move_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genom
 
 fn delete_entry(path: &str, is_dir: bool) -> Result<(), genome::FsError> {
     let remove = RUNTIME_CONTEXT
-        .callbacks()
+        .callback_snapshot()
         .vfs_remove
         .ok_or(genome::FsError::NotSupported)?;
     remove(path, is_dir)

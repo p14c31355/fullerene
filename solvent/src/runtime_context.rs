@@ -67,8 +67,10 @@ impl RuntimeContext {
         *self.callbacks.lock() = callbacks;
     }
 
-    pub fn callbacks(&self) -> MutexGuard<'_, SolventCallbacks> {
-        self.callbacks.lock()
+    /// Copy the callback table so callers never execute kernel code while
+    /// holding the callbacks lock.
+    pub fn callback_snapshot(&self) -> SolventCallbacks {
+        *self.callbacks.lock()
     }
 
     pub(crate) fn runtime(&self) -> MutexGuard<'_, Option<RuntimeState>> {
@@ -224,7 +226,7 @@ mod tests {
         };
         context.install_callbacks(callbacks);
 
-        assert!(context.callbacks().launch_shell.is_some());
+        assert!(context.callback_snapshot().launch_shell.is_some());
         assert!(context.runtime().is_none());
     }
 }
