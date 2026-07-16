@@ -221,32 +221,23 @@ pub(crate) fn syscall_wait(pid: u64) -> SyscallResult {
     }
 
     let process_id = process::ProcessId(pid);
-    let result = process::SCHEDULER
-        .with_process(process_id, |process| {
-            if process.state == ProcessState::Terminated {
-                Some(process.exit_code.unwrap_or(0))
-            } else {
-                None
+    loop {
+        let state = process::SCHEDULER
+            .with_process(process_id, |process| (process.state, process.exit_code));
+
+        match state {
+            Some((ProcessState::Terminated, exit_code)) => {
+                return Ok(exit_code.unwrap_or(0) as u64);
             }
-        })
-        .flatten();
-
-    if let Some(exit_code) = result {
-        return Ok(exit_code as u64);
+            Some(_) => {
+                // A sibling child can also wake this parent. Re-check the
+                // requested child after every wakeup instead of treating any
+                // parent wakeup as completion of this wait.
+                process::block_current();
+            }
+            None => return Err(SyscallError::NoSuchProcess),
+        }
     }
-    if process::SCHEDULER
-        .with_process(process_id, |_| {})
-        .is_none()
-    {
-        return Err(SyscallError::NoSuchProcess);
-    }
-
-    process::block_current();
-    let exit_code = process::SCHEDULER
-        .with_process(process_id, |process| process.exit_code)
-        .flatten()
-        .unwrap_or(0);
-    Ok(exit_code as u64)
 }
 
 pub(crate) fn syscall_getpid() -> SyscallResult {
