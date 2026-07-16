@@ -20,6 +20,8 @@ pub use cache::BlockCache;
 pub use fat32::FatFileSystem;
 pub use partition::{PartitionBlockDevice, find_fat_partition};
 
+use block_device::read_boot_sector;
+
 /// Detect the volume format and construct the matching VFS implementation.
 pub fn mount_device(
     mut device: Box<dyn BlockDevice>,
@@ -29,11 +31,13 @@ pub fn mount_device(
         Err(error) => return Err((error, Some(device))),
     };
 
-    let mut boot = [0; 512];
-    if let Err(error) = device.read_sectors(lba, 1, &mut boot) {
-        klog_fmt!("filesystem probe failed at LBA {}: {}\n", lba, error);
-        return Err((FsError::InvalidInput, Some(device)));
-    }
+    let boot = match read_boot_sector(&mut *device, lba) {
+        Ok(boot) => boot,
+        Err(error) => {
+            klog_fmt!("filesystem probe failed at LBA {}: {}\n", lba, error);
+            return Err((FsError::InvalidInput, Some(device)));
+        }
+    };
 
     let partition: Box<dyn BlockDevice> = if lba == 0 {
         device

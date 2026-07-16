@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 
 use genome::fs::FsError;
 
+use super::block_device::read_boot_sector;
 use super::exfat::is_exfat;
 use super::{BlockDevice, BlockError};
 use crate::klog_fmt;
@@ -16,8 +17,7 @@ const PARTITION_FAT16_LBA: u8 = 0x0E;
 const PARTITION_EXFAT: u8 = 0x07;
 
 pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> {
-    let mut boot = [0u8; 512];
-    device.read_sectors(0, 1, &mut boot)?;
+    let boot = read_boot_sector(device, 0)?;
 
     if is_exfat(&boot) {
         klog_fmt!("FAT: raw exFAT at LBA 0\n");
@@ -134,6 +134,38 @@ mod tests {
         data: Vec<u8>,
     }
 
+    struct FourKnBlockDevice {
+        sector: [u8; 4096],
+    }
+
+    impl BlockDevice for FourKnBlockDevice {
+        fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+            if lba != 0 || count != 1 {
+                return Err(BlockError::LbaOverflow);
+            }
+            if buf.len() < self.sector.len() {
+                return Err(BlockError::BufferTooSmall {
+                    required: self.sector.len(),
+                    provided: buf.len(),
+                });
+            }
+            buf[..self.sector.len()].copy_from_slice(&self.sector);
+            Ok(())
+        }
+
+        fn write_sectors(&mut self, _lba: u32, _count: u16, _buf: &[u8]) -> Result<(), BlockError> {
+            Err(BlockError::Device)
+        }
+
+        fn sector_size(&self) -> u32 {
+            4096
+        }
+
+        fn total_sectors(&self) -> u64 {
+            1
+        }
+    }
+
     impl MemoryBlockDevice {
         fn with_boot_sector(boot: [u8; 512]) -> Self {
             Self { data: boot.into() }
@@ -184,6 +216,15 @@ mod tests {
         let mut boot = [0; 512];
         boot[11..13].copy_from_slice(&512u16.to_le_bytes());
         let mut device = MemoryBlockDevice::with_boot_sector(boot);
+
+        assert_eq!(find_fat_partition(&mut device), Ok(0));
+    }
+
+    #[test]
+    fn raw_fat_volume_supports_four_kn_media() {
+        let mut sector = [0; 4096];
+        sector[11..13].copy_from_slice(&4096u16.to_le_bytes());
+        let mut device = FourKnBlockDevice { sector };
 
         assert_eq!(find_fat_partition(&mut device), Ok(0));
     }
