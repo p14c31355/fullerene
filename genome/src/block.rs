@@ -22,17 +22,17 @@ impl fmt::Display for BlockError {
 }
 
 pub trait BlockDevice: Send {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError>;
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError>;
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError>;
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError>;
     fn sector_size(&self) -> u32;
     fn total_sectors(&self) -> u64;
 }
 
 impl BlockDevice for alloc::boxed::Box<dyn BlockDevice> {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         (**self).read_sectors(lba, count, buf)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         (**self).write_sectors(lba, count, buf)
     }
     fn sector_size(&self) -> u32 {

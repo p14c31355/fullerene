@@ -8,7 +8,7 @@ use super::{BlockDevice, BlockError};
 pub struct BlockCache<D: BlockDevice> {
     inner: D,
     bytes_per_sector: usize,
-    entries: Vec<(Option<u32>, Vec<u8>)>,
+    entries: Vec<(Option<u64>, Vec<u8>)>,
     next_victim: usize,
 }
 
@@ -28,7 +28,7 @@ impl<D: BlockDevice> BlockCache<D> {
         }
     }
 
-    fn lookup(&self, lba: u32) -> Option<usize> {
+    fn lookup(&self, lba: u64) -> Option<usize> {
         self.entries
             .iter()
             .position(|(entry, _)| *entry == Some(lba))
@@ -43,14 +43,14 @@ impl<D: BlockDevice> BlockCache<D> {
         index
     }
 
-    pub fn read_sector(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+    pub fn read_sector(&mut self, lba: u64, buf: &mut [u8]) -> Result<(), BlockError> {
         if buf.len() < self.bytes_per_sector {
             return Err(BlockError::BufferTooSmall {
                 required: self.bytes_per_sector,
                 provided: buf.len(),
             });
         }
-        if lba as u64 >= self.inner.total_sectors() {
+        if lba >= self.inner.total_sectors() {
             return Err(BlockError::LbaOverflow);
         }
         if let Some(index) = self.lookup(lba) {
@@ -66,8 +66,8 @@ impl<D: BlockDevice> BlockCache<D> {
         Ok(())
     }
 
-    pub fn get_sector(&mut self, lba: u32) -> Result<&[u8], BlockError> {
-        if lba as u64 >= self.inner.total_sectors() {
+    pub fn get_sector(&mut self, lba: u64) -> Result<&[u8], BlockError> {
+        if lba >= self.inner.total_sectors() {
             return Err(BlockError::LbaOverflow);
         }
         if let Some(index) = self.lookup(lba) {
@@ -81,8 +81,8 @@ impl<D: BlockDevice> BlockCache<D> {
         Ok(&self.entries[index].1)
     }
 
-    pub fn write_sector(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-        if lba as u64 >= self.inner.total_sectors() {
+    pub fn write_sector(&mut self, lba: u64, buf: &[u8]) -> Result<(), BlockError> {
+        if lba >= self.inner.total_sectors() {
             return Err(BlockError::LbaOverflow);
         }
         if buf.len() < self.bytes_per_sector {
@@ -107,7 +107,7 @@ impl<D: BlockDevice> BlockCache<D> {
 }
 
 impl<D: BlockDevice> BlockDevice for BlockCache<D> {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         let count = count as usize;
         let needed = count
             .checked_mul(self.bytes_per_sector)
@@ -118,14 +118,16 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
                 provided: buf.len(),
             });
         }
-        let end_lba = lba as u64 + count as u64;
-        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
+        let end_lba = lba
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end_lba > self.inner.total_sectors() {
             return Err(BlockError::LbaOverflow);
         }
 
         let mut index = 0;
         while index < count {
-            let current_lba = lba + index as u32;
+            let current_lba = lba + index as u64;
             if let Some(slot) = self.lookup(current_lba) {
                 let offset = index * self.bytes_per_sector;
                 buf[offset..offset + self.bytes_per_sector].copy_from_slice(&self.entries[slot].1);
@@ -134,20 +136,20 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
             }
 
             let first = index;
-            while index < count && self.lookup(lba + index as u32).is_none() {
+            while index < count && self.lookup(lba + index as u64).is_none() {
                 index += 1;
             }
             let start = first * self.bytes_per_sector;
             let end = index * self.bytes_per_sector;
             self.inner.read_sectors(
-                lba + first as u32,
+                lba + first as u64,
                 (index - first) as u16,
                 &mut buf[start..end],
             )?;
             for sector in first..index {
                 let slot = self.evict_slot();
                 let offset = sector * self.bytes_per_sector;
-                self.entries[slot].0 = Some(lba + sector as u32);
+                self.entries[slot].0 = Some(lba + sector as u64);
                 self.entries[slot]
                     .1
                     .copy_from_slice(&buf[offset..offset + self.bytes_per_sector]);
@@ -156,7 +158,7 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
         Ok(())
     }
 
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let count = count as usize;
         let needed = count
             .checked_mul(self.bytes_per_sector)
@@ -167,13 +169,15 @@ impl<D: BlockDevice> BlockDevice for BlockCache<D> {
                 provided: buf.len(),
             });
         }
-        let end_lba = lba as u64 + count as u64;
-        if end_lba > self.inner.total_sectors() || end_lba > u32::MAX as u64 {
+        let end_lba = lba
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end_lba > self.inner.total_sectors() {
             return Err(BlockError::LbaOverflow);
         }
 
         for index in 0..count {
-            if let Some(slot) = self.lookup(lba + index as u32) {
+            if let Some(slot) = self.lookup(lba + index as u64) {
                 self.entries[slot].0 = None;
             }
         }
@@ -221,7 +225,7 @@ mod tests {
     }
 
     impl BlockDevice for MemoryBlockDevice {
-        fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
             let len = count as usize * SECTOR_SIZE;
             let start = lba as usize * SECTOR_SIZE;
             let end = start.checked_add(len).ok_or(BlockError::LbaOverflow)?;
@@ -234,7 +238,7 @@ mod tests {
             Ok(())
         }
 
-        fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
             let len = count as usize * SECTOR_SIZE;
             let start = lba as usize * SECTOR_SIZE;
             let end = start.checked_add(len).ok_or(BlockError::LbaOverflow)?;

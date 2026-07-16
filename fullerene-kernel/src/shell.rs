@@ -100,16 +100,14 @@ fn read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> 
 /// Initialize the shell subsystem (formerly keyboard init, etc.)
 pub fn init() {
     nitrogen::ps2::keyboard::init_keyboard();
-    register_nozzle_hooks();
     petroleum::serial::serial_log(format_args!("Shell/CLI initialized\n"));
 }
 
-// ── Nozzle hook registration ──────────────────────────────────────
+// ── Nozzle service construction ───────────────────────────────────
 
-/// Register kernel implementations for nozzle's filesystem and system hooks.
-fn register_nozzle_hooks() {
-    // ── Install all FS hooks at once (single lock) ──────────────
-    nozzle::fs_hooks::FsHooks {
+/// Build the immutable kernel services injected into one Nozzle session.
+fn nozzle_services() -> nozzle::ShellServices {
+    let fs = nozzle::fs_hooks::FsHooks {
         list: Some(|ctx| {
             let path = if ctx.args.len() > 1 && !ctx.args[1].starts_with('-') {
                 ctx.args[1]
@@ -305,13 +303,10 @@ fn register_nozzle_hooks() {
                 }
             }
         }),
-    }
-    .install();
+    };
 
-    // ── Install sys info / control hooks ───────────────────────
-    nozzle::sys_hooks::MOUNT_HOOK
-        .lock()
-        .replace(|ctx: &mut nozzle::CommandContext| {
+    let mount: Option<fn(&mut nozzle::CommandContext)> =
+        Some(|ctx: &mut nozzle::CommandContext| {
             if ctx.args.len() < 3 {
                 ctx.terminal
                     .write_str("Usage: mount /dev/<device> <mount_point>\n");
@@ -338,238 +333,260 @@ fn register_nozzle_hooks() {
             }
         });
 
-    nozzle::sys_hooks::SysHooks {
+    let sys = nozzle::sys_hooks::SysHooks {
         info: Some(|ctx, cmd| match cmd {
-        "mem" => {
-            let (heap_start, heap_end) = petroleum::common::memory::get_heap_range();
-            let total = if heap_end > heap_start {
-                (heap_end - heap_start) / 1024
-            } else {
-                0
-            };
-            let msg = format!(
-                "Memory: heap {} KiB total (start=0x{:x}, end=0x{:x})\n",
-                total, heap_start, heap_end
-            );
-            ctx.terminal.write_str(&msg);
-        }
-        "tasks" => {
-            let list = crate::task::TASK_MANAGER.format_task_list();
-            ctx.terminal.write_str(&list);
-        }
-        "taskmon" => {
-            let list = crate::task::TASK_MANAGER.format_task_list();
-            ctx.terminal.write_str(&list);
-        }
-        "devices" => {
-            if let Some(ref manager) = *crate::hardware::device_manager::get_device_manager().lock()
-            {
-                let devs = manager.list_devices();
-                if devs.is_empty() {
-                    ctx.terminal.write_str("No devices registered.\n");
+            "mem" => {
+                let (heap_start, heap_end) = petroleum::common::memory::get_heap_range();
+                let total = if heap_end > heap_start {
+                    (heap_end - heap_start) / 1024
                 } else {
-                    ctx.terminal
-                        .write_str("DEVICE            TYPE        ENABLED\n");
-                    ctx.terminal
-                        .write_str("----------------  ----------  -------\n");
-                    for d in devs {
-                        let status = if d.enabled { "yes" } else { "no" };
-                        let line = format!("{:<16}  {:<10}  {}\n", d.name, d.device_type, status);
-                        ctx.terminal.write_str(&line);
-                    }
-                }
-            } else {
-                ctx.terminal.write_str("Device manager not initialized.\n");
-            }
-        }
-        "calc" => {
-            ctx.terminal.write_str("Usage: calc <expression>\n");
-            ctx.terminal.write_str("Example: calc (2+3)*4\n");
-        }
-        "theme" => {
-            let style = solvent::current_style();
-            let variant = solvent::current_theme_variant();
-            let style_name = match style {
-                solvent::ThemeStyle::Classic => "classic",
-                solvent::ThemeStyle::Modern => "modern",
-            };
-            let var_name = match variant {
-                solvent::ThemeVariant::Dark => "dark",
-                solvent::ThemeVariant::Light => "light",
-            };
-            let msg = format!("Style: {}  Variant: {}\n", style_name, var_name);
-            ctx.terminal.write_str(&msg);
-            ctx.terminal.write_str(
-                "Usage: theme ( classic | modern | dark | light | toggle | toggle-style )\n",
-            );
-        }
-        "wallpaper" => {
-            let current = solvent::get_wallpaper();
-            let name = match current {
-                solvent::WallpaperMode::SolidColor => "solid",
-                solvent::WallpaperMode::GridPattern => "grid",
-                solvent::WallpaperMode::Gradient => "gradient",
-                solvent::WallpaperMode::Preset(idx) => {
-                    let presets = solvent::wallpaper_presets();
-                    presets.get(idx).map_or("unknown", |p| p.name)
-                }
-            };
-            let msg = format!("Current wallpaper: {}\n", name);
-            ctx.terminal.write_str(&msg);
-            ctx.terminal
-                .write_str("Usage: wallpaper solid | grid | gradient | beach | mountain | city | fullerene | fullerene-sharp\n");
-        }
-        "windows" => {
-            if solvent::is_initialized() {
-                ctx.terminal
-                    .write_str("Windows: managed by Lattice compositor\n");
-                ctx.terminal
-                    .write_str("Use the GUI to interact with windows.\n");
-            } else {
-                ctx.terminal.write_str("Windowing system not active.\n");
-            }
-        }
-        "dmesg" => {
-            let klog_len = crate::klog::len();
-            if klog_len > 0 {
-                ctx.terminal.write_str("=== Kernel log ===\n");
-                crate::klog::write_to(|s| ctx.terminal.write_str(s));
-                ctx.terminal.write_str("\n=== End kernel log ===\n");
-            }
-            // ── HDA diagnostic info (read via KernelContext) ──
-            {
-                let diag = crate::contexts::kernel::with_kernel(|k| k.audio.diag).unwrap_or(
-                    nitrogen::hda::controller::HdaDiagInfo {
-                        gcap: 0,
-                        gcap64: false,
-                        corb_phys: 0,
-                        rirb_phys: 0,
-                        states_after_crst: 0,
-                        populated: false,
-                    },
+                    0
+                };
+                let msg = format!(
+                    "Memory: heap {} KiB total (start=0x{:x}, end=0x{:x})\n",
+                    total, heap_start, heap_end
                 );
-                if diag.populated {
-                    ctx.terminal.write_str("\n=== HDA diagnostic ===\n");
-                    let line = alloc::format!(
-                        "GCAP: 0x{:08x}  (64-bit: {})\nCORB phys: 0x{:016x}\nRIRB phys: 0x{:016x}\nSTATESTS after CRST: 0x{:04x} (SDIN0={})\n",
-                        diag.gcap,
-                        if diag.gcap64 { "YES" } else { "NO" },
-                        diag.corb_phys,
-                        diag.rirb_phys,
-                        diag.states_after_crst,
-                        if diag.states_after_crst & 0x0001 != 0 {
-                            1u8
-                        } else {
-                            0u8
+                ctx.terminal.write_str(&msg);
+            }
+            "tasks" => {
+                let list = crate::task::TASK_MANAGER.format_task_list();
+                ctx.terminal.write_str(&list);
+            }
+            "taskmon" => {
+                let list = crate::task::TASK_MANAGER.format_task_list();
+                ctx.terminal.write_str(&list);
+            }
+            "devices" => {
+                if let Some(ref manager) =
+                    *crate::hardware::device_manager::get_device_manager().lock()
+                {
+                    let devs = manager.list_devices();
+                    if devs.is_empty() {
+                        ctx.terminal.write_str("No devices registered.\n");
+                    } else {
+                        ctx.terminal
+                            .write_str("DEVICE            TYPE        ENABLED\n");
+                        ctx.terminal
+                            .write_str("----------------  ----------  -------\n");
+                        for d in devs {
+                            let status = if d.enabled { "yes" } else { "no" };
+                            let line =
+                                format!("{:<16}  {:<10}  {}\n", d.name, d.device_type, status);
+                            ctx.terminal.write_str(&line);
+                        }
+                    }
+                } else {
+                    ctx.terminal.write_str("Device manager not initialized.\n");
+                }
+            }
+            "calc" => {
+                ctx.terminal.write_str("Usage: calc <expression>\n");
+                ctx.terminal.write_str("Example: calc (2+3)*4\n");
+            }
+            "theme" => {
+                let style = solvent::current_style();
+                let variant = solvent::current_theme_variant();
+                let style_name = match style {
+                    solvent::ThemeStyle::Classic => "classic",
+                    solvent::ThemeStyle::Modern => "modern",
+                };
+                let var_name = match variant {
+                    solvent::ThemeVariant::Dark => "dark",
+                    solvent::ThemeVariant::Light => "light",
+                };
+                let msg = format!("Style: {}  Variant: {}\n", style_name, var_name);
+                ctx.terminal.write_str(&msg);
+                ctx.terminal.write_str(
+                    "Usage: theme ( classic | modern | dark | light | toggle | toggle-style )\n",
+                );
+            }
+            "wallpaper" => {
+                let current = solvent::get_wallpaper();
+                let name = match current {
+                    solvent::WallpaperMode::SolidColor => "solid",
+                    solvent::WallpaperMode::GridPattern => "grid",
+                    solvent::WallpaperMode::Gradient => "gradient",
+                    solvent::WallpaperMode::Preset(idx) => {
+                        let presets = solvent::wallpaper_presets();
+                        presets.get(idx).map_or("unknown", |p| p.name)
+                    }
+                };
+                let msg = format!("Current wallpaper: {}\n", name);
+                ctx.terminal.write_str(&msg);
+                ctx.terminal
+                .write_str("Usage: wallpaper solid | grid | gradient | beach | mountain | city | fullerene | fullerene-sharp\n");
+            }
+            "windows" => {
+                if solvent::is_initialized() {
+                    ctx.terminal
+                        .write_str("Windows: managed by Lattice compositor\n");
+                    ctx.terminal
+                        .write_str("Use the GUI to interact with windows.\n");
+                } else {
+                    ctx.terminal.write_str("Windowing system not active.\n");
+                }
+            }
+            "dmesg" => {
+                let klog_len = crate::klog::len();
+                if klog_len > 0 {
+                    ctx.terminal.write_str("=== Kernel log ===\n");
+                    crate::klog::write_to(|s| ctx.terminal.write_str(s));
+                    ctx.terminal.write_str("\n=== End kernel log ===\n");
+                }
+                // ── HDA diagnostic info (read via KernelContext) ──
+                {
+                    let diag = crate::contexts::kernel::with_kernel(|k| k.audio.diag).unwrap_or(
+                        nitrogen::hda::controller::HdaDiagInfo {
+                            gcap: 0,
+                            gcap64: false,
+                            corb_phys: 0,
+                            rirb_phys: 0,
+                            states_after_crst: 0,
+                            populated: false,
                         },
                     );
-                    ctx.terminal.write_str(&line);
-                    ctx.terminal.write_str("=== End HDA diagnostic ===\n");
+                    if diag.populated {
+                        ctx.terminal.write_str("\n=== HDA diagnostic ===\n");
+                        let line = alloc::format!(
+                            "GCAP: 0x{:08x}  (64-bit: {})\nCORB phys: 0x{:016x}\nRIRB phys: 0x{:016x}\nSTATESTS after CRST: 0x{:04x} (SDIN0={})\n",
+                            diag.gcap,
+                            if diag.gcap64 { "YES" } else { "NO" },
+                            diag.corb_phys,
+                            diag.rirb_phys,
+                            diag.states_after_crst,
+                            if diag.states_after_crst & 0x0001 != 0 {
+                                1u8
+                            } else {
+                                0u8
+                            },
+                        );
+                        ctx.terminal.write_str(&line);
+                        ctx.terminal.write_str("=== End HDA diagnostic ===\n");
+                    }
+                }
+                ctx.terminal.write_str("\n=== Kernel trace buffer ===\n");
+                let events = resonance::tracing::snapshot();
+                if events.is_empty() {
+                    ctx.terminal.write_str("(no trace events recorded)\n");
+                } else {
+                    let mut buf = alloc::string::String::with_capacity(events.len() * 48);
+                    for ev in events {
+                        let cat = core::str::from_utf8(&ev.category)
+                            .unwrap_or("?")
+                            .trim_end_matches('\0');
+                        let msg = core::str::from_utf8(&ev.message)
+                            .unwrap_or("?")
+                            .trim_end_matches('\0');
+                        use core::fmt::Write;
+                        let _ = write!(buf, "[{}] {}: {}\n", ev.tick, cat, msg);
+                    }
+                    ctx.terminal.write_str(&buf);
                 }
             }
-            ctx.terminal.write_str("\n=== Kernel trace buffer ===\n");
-            let events = resonance::tracing::snapshot();
-            if events.is_empty() {
-                ctx.terminal.write_str("(no trace events recorded)\n");
-            } else {
-                let mut buf = alloc::string::String::with_capacity(events.len() * 48);
-                for ev in events {
-                    let cat = core::str::from_utf8(&ev.category)
-                        .unwrap_or("?")
-                        .trim_end_matches('\0');
-                    let msg = core::str::from_utf8(&ev.message)
-                        .unwrap_or("?")
-                        .trim_end_matches('\0');
-                    use core::fmt::Write;
-                    let _ = write!(buf, "[{}] {}: {}\n", ev.tick, cat, msg);
-                }
-                ctx.terminal.write_str(&buf);
+            "run" => {
+                ctx.terminal.write_str("Usage: run <app_name>\n");
+                ctx.terminal.write_str("Available: toluene, hello\n");
             }
-        }
-        "run" => {
-            ctx.terminal.write_str("Usage: run <app_name>\n");
-            ctx.terminal.write_str("Available: toluene, hello\n");
-        }
-        "linux_run" => {
-            if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: linux_run <path>"); }
-            tline!(ctx.terminal, "Loading Linux binary: {}", ctx.args[1]);
-            launch_cmd!(ctx.terminal, crate::linux::launch::launch_linux_binary(ctx.args[1]), "Linux process started (PID: {})");
-        }
-        "run_busybox" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_busybox(), "BusyBox shell started (PID: {})"),
-        "hello_linux" => launch_cmd!(ctx.terminal, crate::linux::launch::launch_test_binary(), "Test Linux binary started (PID: {})"),
-        "wasm" => {
-            if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: wasm <path> [args...]"); }
-            let path = ctx.args[1];
-            tline!(ctx.terminal, "Loading WASM binary: {}", path);
-            match crate::fs::read_entire_file(path) {
-                Ok(binary) => {
-                    let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
-                    let code = wasi_runtime::runtime::run(
-                        &binary,
-                        &wasm_args,
-                        wasm_write_stdout,
-                        wasm_write_stderr,
-                        wasm_read_stdin,
-                        wasm_yield_now,
-                        wasm_read_entire_file,
-                        wasm_read_directory,
-                        wasm_get_monotonic_ns,
-                    );
-                    tline!(ctx.terminal, "WASI process exited with code {}", code);
+            "linux_run" => {
+                if ctx.args.len() <= 1 {
+                    return tstr!(ctx.terminal, "Usage: linux_run <path>");
                 }
-                Err(e) => {
-                    let err_str = match e {
-                        crate::fs::FsError::FileNotFound => "file not found",
-                        _ => "read failed",
-                    };
-                    tline!(ctx.terminal, "wasm: {}: {}", path, err_str);
+                tline!(ctx.terminal, "Loading Linux binary: {}", ctx.args[1]);
+                launch_cmd!(
+                    ctx.terminal,
+                    crate::linux::launch::launch_linux_binary(ctx.args[1]),
+                    "Linux process started (PID: {})"
+                );
+            }
+            "run_busybox" => launch_cmd!(
+                ctx.terminal,
+                crate::linux::launch::launch_busybox(),
+                "BusyBox shell started (PID: {})"
+            ),
+            "hello_linux" => launch_cmd!(
+                ctx.terminal,
+                crate::linux::launch::launch_test_binary(),
+                "Test Linux binary started (PID: {})"
+            ),
+            "wasm" => {
+                if ctx.args.len() <= 1 {
+                    return tstr!(ctx.terminal, "Usage: wasm <path> [args...]");
+                }
+                let path = ctx.args[1];
+                tline!(ctx.terminal, "Loading WASM binary: {}", path);
+                match crate::fs::read_entire_file(path) {
+                    Ok(binary) => {
+                        let wasm_args: alloc::vec::Vec<&str> =
+                            ctx.args.iter().skip(1).copied().collect();
+                        let code = wasi_runtime::runtime::run(
+                            &binary,
+                            &wasm_args,
+                            wasm_write_stdout,
+                            wasm_write_stderr,
+                            wasm_read_stdin,
+                            wasm_yield_now,
+                            wasm_read_entire_file,
+                            wasm_read_directory,
+                            wasm_get_monotonic_ns,
+                        );
+                        tline!(ctx.terminal, "WASI process exited with code {}", code);
+                    }
+                    Err(e) => {
+                        let err_str = match e {
+                            crate::fs::FsError::FileNotFound => "file not found",
+                            _ => "read failed",
+                        };
+                        tline!(ctx.terminal, "wasm: {}: {}", path, err_str);
+                    }
                 }
             }
-        }
-        "usb_rescan" => {
-            ctx.terminal.write_str(
+            "usb_rescan" => {
+                ctx.terminal.write_str(
                 "USB rescan: explicitly activating controller MMIO; this may not return on broken hardware.\n",
             );
-            if crate::drivers::registry::rescan_usb_all() {
-                ctx.terminal.write_str("USB rescan: storage device registered.\n");
-            } else {
-                ctx.terminal.write_str("USB rescan: no storage device registered.\n");
-            }
-        }
-        "sd_rescan" => {
-            #[cfg(not(nitrogen_no_storage))]
-            {
-                use crate::drivers::registry::SdRescanResult;
-                match crate::drivers::registry::rescan_sd() {
-                    SdRescanResult::Registered => {
-                        ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n")
-                    }
-                    SdRescanResult::AlreadyRegistered => ctx
-                        .terminal
-                        .write_str("SD rescan: /dev/sd0 is already ready.\n"),
-                    SdRescanResult::Mounted => ctx
-                        .terminal
-                        .write_str("SD rescan: /dev/sd0 is mounted; keeping it online.\n"),
-                    SdRescanResult::Unavailable => ctx.terminal.write_str(
-                        "SD rescan: no usable card; see dmesg for details.\n",
-                    ),
+                if crate::drivers::registry::rescan_usb_all() {
+                    ctx.terminal
+                        .write_str("USB rescan: storage device registered.\n");
+                } else {
+                    ctx.terminal
+                        .write_str("USB rescan: no storage device registered.\n");
                 }
             }
-            #[cfg(nitrogen_no_storage)]
-            {
-                ctx.terminal.write_str("SD rescan: storage support not compiled in.\n");
+            "sd_rescan" => {
+                #[cfg(not(nitrogen_no_storage))]
+                {
+                    use crate::drivers::registry::SdRescanResult;
+                    match crate::drivers::registry::rescan_sd() {
+                        SdRescanResult::Registered => {
+                            ctx.terminal.write_str("SD rescan: /dev/sd0 registered.\n")
+                        }
+                        SdRescanResult::AlreadyRegistered => ctx
+                            .terminal
+                            .write_str("SD rescan: /dev/sd0 is already ready.\n"),
+                        SdRescanResult::Mounted => ctx
+                            .terminal
+                            .write_str("SD rescan: /dev/sd0 is mounted; keeping it online.\n"),
+                        SdRescanResult::Unavailable => ctx
+                            .terminal
+                            .write_str("SD rescan: no usable card; see dmesg for details.\n"),
+                    }
+                }
+                #[cfg(nitrogen_no_storage)]
+                {
+                    ctx.terminal
+                        .write_str("SD rescan: storage support not compiled in.\n");
+                }
             }
-        }
-        "usb_info" => {
-            use crate::drivers::registry;
-            let count = crate::devfs::list_block_device_names().len();
-            tline!(ctx.terminal, "Registered block devices: {}", count);
-            tline!(ctx.terminal, "Registered /dev/ entries:");
-            for name in crate::devfs::list_block_device_names() {
-                tline!(ctx.terminal, "  /dev/{}", name);
-            }
-            // Also show full USB context status without assuming a controller exists.
-            if registry::try_with_ctx(|ctx_usb| {
+            "usb_info" => {
+                use crate::drivers::registry;
+                let count = crate::devfs::list_block_device_names().len();
+                tline!(ctx.terminal, "Registered block devices: {}", count);
+                tline!(ctx.terminal, "Registered /dev/ entries:");
+                for name in crate::devfs::list_block_device_names() {
+                    tline!(ctx.terminal, "  /dev/{}", name);
+                }
+                // Also show full USB context status without assuming a controller exists.
+                if registry::try_with_ctx(|ctx_usb| {
                 tline!(ctx.terminal, "USB controller: {}", if ctx_usb.is_enabled() { "active" } else { "deferred" });
                 tline!(ctx.terminal, "USBContext: {} disk(s) enumerated", ctx_usb.disks().len());
                 for disk in ctx_usb.disks() {
@@ -579,246 +596,328 @@ fn register_nozzle_hooks() {
             }).is_none() {
                 tline!(ctx.terminal, "USB controller: unavailable");
             }
-        }
-        "pci" => {
-            use alloc::format;
-            use nitrogen::pci::PciScanner;
-            ctx.terminal
-                .write_str("BUS  DEV  FUN  VENDOR  DEVICE  CLASS      SUBCLASS  DESCRIPTION\n");
-            ctx.terminal
-                .write_str("---- ---- ----  ------  ------  ---------  --------  -----------\n");
-            let mut scanner = PciScanner::new();
-            if scanner.scan_all_buses().is_ok() {
-                for dev in scanner.get_devices() {
-                    let desc = pci_device_description(dev.class_code, dev.subclass);
-                    let line = format!(
-                        "{:<4}  {:<4} {:<4}  0x{:04x} 0x{:04x}  0x{:02x}       0x{:02x}       {}\n",
-                        dev.bus,
-                        dev.device,
-                        dev.function,
-                        dev.vendor_id,
-                        dev.device_id,
-                        dev.class_code,
-                        dev.subclass,
-                        desc,
-                    );
-                    ctx.terminal.write_str(&line);
-                }
-            } else {
-                ctx.terminal.write_str("PCI scan failed.\n");
             }
-        }
-        "date" => {
-            let cb = solvent::RUNTIME_CONTEXT.callback_snapshot().wall_clock;
-            match cb.and_then(|f| f()) {
-                Some((y, mo, d, h, mi, s)) => tline!(ctx.terminal, "{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s),
-                None => tstr!(ctx.terminal, "date: RTC not available"),
-            }
-        }
-        "uptime" => {
-            let seconds = solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed) / 1000;
-            let days = seconds / 86400;
-            let hms = (seconds % 86400) / 3600;
-            let mins = (seconds % 3600) / 60;
-            let secs = seconds % 60;
-            if days > 0 { tline!(ctx.terminal, "up {} days {:02}:{:02}:{:02}", days, hms, mins, secs); }
-            else { tline!(ctx.terminal, "up {:02}:{:02}:{:02}", hms, mins, secs); }
-        }
-        "sleep" => {
-            if ctx.args.len() > 1 {
-                if let Ok(secs) = ctx.args[1].parse::<u64>() {
-                    let tsc_per_ms = solvent::get_tsc_per_ms();
-                    let total_ticks = tsc_per_ms.saturating_mul(secs.saturating_mul(1000));
-                    let start = unsafe { core::arch::x86_64::_rdtsc() };
-                    // Yield via HLT-hinted syscall periodically to avoid
-                    // starving other tasks during the wait.
-                    let mut last_yield = start;
-                    let yield_interval = tsc_per_ms.saturating_mul(10); // every ~10 ms
-                    loop {
-                        let now = unsafe { core::arch::x86_64::_rdtsc() };
-                        if now.wrapping_sub(start) >= total_ticks {
-                            break;
-                        }
-                        if now.wrapping_sub(last_yield) >= yield_interval {
-                            crate::syscall::kernel_syscall(22, 0, 0, 0);
-                            last_yield = now;
-                        }
-                        core::hint::spin_loop();
+            "pci" => {
+                use alloc::format;
+                use nitrogen::pci::PciScanner;
+                ctx.terminal
+                    .write_str("BUS  DEV  FUN  VENDOR  DEVICE  CLASS      SUBCLASS  DESCRIPTION\n");
+                ctx.terminal.write_str(
+                    "---- ---- ----  ------  ------  ---------  --------  -----------\n",
+                );
+                let mut scanner = PciScanner::new();
+                if scanner.scan_all_buses().is_ok() {
+                    for dev in scanner.get_devices() {
+                        let desc = pci_device_description(dev.class_code, dev.subclass);
+                        let line = format!(
+                            "{:<4}  {:<4} {:<4}  0x{:04x} 0x{:04x}  0x{:02x}       0x{:02x}       {}\n",
+                            dev.bus,
+                            dev.device,
+                            dev.function,
+                            dev.vendor_id,
+                            dev.device_id,
+                            dev.class_code,
+                            dev.subclass,
+                            desc,
+                        );
+                        ctx.terminal.write_str(&line);
                     }
                 } else {
-                    ctx.terminal.write_str("sleep: invalid number of seconds\n");
+                    ctx.terminal.write_str("PCI scan failed.\n");
                 }
             }
-        }
-        "grep" => {
-            if ctx.args.len() < 3 { return tstr!(ctx.terminal, "grep: pattern and file required"); }
-            let pattern = ctx.args[1];
-            let show_filename = ctx.args.len() > 3;
-            for &path in &ctx.args[2..] {
-                match read_entire_file(path) {
+            "date" => {
+                let cb = solvent::RUNTIME_CONTEXT.callback_snapshot().wall_clock;
+                match cb.and_then(|f| f()) {
+                    Some((y, mo, d, h, mi, s)) => tline!(
+                        ctx.terminal,
+                        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                        y,
+                        mo,
+                        d,
+                        h,
+                        mi,
+                        s
+                    ),
+                    None => tstr!(ctx.terminal, "date: RTC not available"),
+                }
+            }
+            "uptime" => {
+                let seconds =
+                    solvent::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed) / 1000;
+                let days = seconds / 86400;
+                let hms = (seconds % 86400) / 3600;
+                let mins = (seconds % 3600) / 60;
+                let secs = seconds % 60;
+                if days > 0 {
+                    tline!(
+                        ctx.terminal,
+                        "up {} days {:02}:{:02}:{:02}",
+                        days,
+                        hms,
+                        mins,
+                        secs
+                    );
+                } else {
+                    tline!(ctx.terminal, "up {:02}:{:02}:{:02}", hms, mins, secs);
+                }
+            }
+            "sleep" => {
+                if ctx.args.len() > 1 {
+                    if let Ok(secs) = ctx.args[1].parse::<u64>() {
+                        let tsc_per_ms = solvent::get_tsc_per_ms();
+                        let total_ticks = tsc_per_ms.saturating_mul(secs.saturating_mul(1000));
+                        let start = unsafe { core::arch::x86_64::_rdtsc() };
+                        // Yield via HLT-hinted syscall periodically to avoid
+                        // starving other tasks during the wait.
+                        let mut last_yield = start;
+                        let yield_interval = tsc_per_ms.saturating_mul(10); // every ~10 ms
+                        loop {
+                            let now = unsafe { core::arch::x86_64::_rdtsc() };
+                            if now.wrapping_sub(start) >= total_ticks {
+                                break;
+                            }
+                            if now.wrapping_sub(last_yield) >= yield_interval {
+                                crate::syscall::kernel_syscall(22, 0, 0, 0);
+                                last_yield = now;
+                            }
+                            core::hint::spin_loop();
+                        }
+                    } else {
+                        ctx.terminal.write_str("sleep: invalid number of seconds\n");
+                    }
+                }
+            }
+            "grep" => {
+                if ctx.args.len() < 3 {
+                    return tstr!(ctx.terminal, "grep: pattern and file required");
+                }
+                let pattern = ctx.args[1];
+                let show_filename = ctx.args.len() > 3;
+                for &path in &ctx.args[2..] {
+                    match read_entire_file(path) {
+                        Ok(data) => {
+                            let text = alloc::string::String::from_utf8_lossy(&data);
+                            for line in text.lines().filter(|l| l.contains(pattern)) {
+                                if show_filename {
+                                    ctx.terminal.write_str(&alloc::format!("{}:", path));
+                                }
+                                tline!(ctx.terminal, "{}", line);
+                            }
+                        }
+                        Err(e) => tline!(ctx.terminal, "grep: {}: {}", path, e),
+                    }
+                }
+            }
+            "sort" => {
+                let reverse = ctx.args.contains(&"-r");
+                let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" {
+                    2
+                } else {
+                    1
+                };
+                if path_idx >= ctx.args.len() {
+                    return tstr!(ctx.terminal, "Usage: sort [-r] <file>");
+                }
+                match read_entire_file(ctx.args[path_idx]) {
                     Ok(data) => {
                         let text = alloc::string::String::from_utf8_lossy(&data);
-                        for line in text.lines().filter(|l| l.contains(pattern)) {
-                            if show_filename { ctx.terminal.write_str(&alloc::format!("{}:", path)); }
+                        let mut lines: alloc::vec::Vec<&str> = text.lines().collect();
+                        lines.sort();
+                        if reverse {
+                            lines.reverse();
+                        }
+                        for line in lines {
                             tline!(ctx.terminal, "{}", line);
                         }
                     }
-                    Err(e) => tline!(ctx.terminal, "grep: {}: {}", path, e),
+                    Err(e) => tline!(ctx.terminal, "sort: {}: {}", ctx.args[path_idx], e),
                 }
             }
-        }
-        "sort" => {
-            let reverse = ctx.args.contains(&"-r");
-            let path_idx = if ctx.args.len() > 1 && ctx.args[1] == "-r" { 2 } else { 1 };
-            if path_idx >= ctx.args.len() {
-                return tstr!(ctx.terminal, "Usage: sort [-r] <file>");
-            }
-            match read_entire_file(ctx.args[path_idx]) {
-                Ok(data) => {
-                    let text = alloc::string::String::from_utf8_lossy(&data);
-                    let mut lines: alloc::vec::Vec<&str> = text.lines().collect();
-                    lines.sort();
-                    if reverse { lines.reverse(); }
-                    for line in lines { tline!(ctx.terminal, "{}", line); }
+            "wc" => {
+                if ctx.args.len() <= 1 {
+                    return tstr!(ctx.terminal, "Usage: wc <file>");
                 }
-                Err(e) => tline!(ctx.terminal, "sort: {}: {}", ctx.args[path_idx], e),
-            }
-        }
-        "wc" => {
-            if ctx.args.len() <= 1 { return tstr!(ctx.terminal, "Usage: wc <file>"); }
-            match read_entire_file(ctx.args[1]) {
-                Ok(data) => {
-                    let text = alloc::string::String::from_utf8_lossy(&data);
-                    let lines = data.iter().filter(|&&b| b == b'\n').count();
-                    let words = text.split_whitespace().count();
-                    tline!(ctx.terminal, "{} {} {} {}", lines, words, data.len(), ctx.args[1]);
+                match read_entire_file(ctx.args[1]) {
+                    Ok(data) => {
+                        let text = alloc::string::String::from_utf8_lossy(&data);
+                        let lines = data.iter().filter(|&&b| b == b'\n').count();
+                        let words = text.split_whitespace().count();
+                        tline!(
+                            ctx.terminal,
+                            "{} {} {} {}",
+                            lines,
+                            words,
+                            data.len(),
+                            ctx.args[1]
+                        );
+                    }
+                    Err(e) => tline!(ctx.terminal, "wc: {}: {}", ctx.args[1], e),
                 }
-                Err(e) => tline!(ctx.terminal, "wc: {}: {}", ctx.args[1], e),
             }
-        }
-        "app_list" => match crate::fs::list_packages() {
-            Ok(pkgs) => {
-                if pkgs.is_empty() {
-                    ctx.terminal.write_str("No packages installed.\n");
+            "app_list" => match crate::fs::list_packages() {
+                Ok(pkgs) => {
+                    if pkgs.is_empty() {
+                        ctx.terminal.write_str("No packages installed.\n");
+                    } else {
+                        ctx.terminal
+                            .write_str("NAME         VERSION  DESCRIPTION\n");
+                        ctx.terminal
+                            .write_str("-----------  -------  -----------\n");
+                        for p in &pkgs {
+                            let line =
+                                format!("{:<12} {:<8} {}\n", p.name, p.version, p.description);
+                            ctx.terminal.write_str(&line);
+                        }
+                    }
+                }
+                Err(e) => {
+                    let msg = format!("app list: {}\n", e);
+                    ctx.terminal.write_str(&msg);
+                }
+            },
+            _ => {
+                let msg = format!("Unknown sys info command: {}\n", cmd);
+                ctx.terminal.write_str(&msg);
+            }
+        }),
+        ctl: Some(|cmd| match cmd {
+            "theme dark" => {
+                solvent::set_theme(solvent::ThemeVariant::Dark);
+                solvent::force_desktop_redraw();
+            }
+            "theme light" => {
+                solvent::set_theme(solvent::ThemeVariant::Light);
+                solvent::force_desktop_redraw();
+            }
+            "theme toggle" => {
+                solvent::toggle_theme();
+                solvent::force_desktop_redraw();
+            }
+            "theme toggle-style" => {
+                solvent::toggle_style();
+                solvent::force_desktop_redraw();
+            }
+            "theme classic" => {
+                solvent::set_style(solvent::ThemeStyle::Classic);
+                solvent::force_desktop_redraw();
+            }
+            "theme modern" => {
+                solvent::set_style(solvent::ThemeStyle::Modern);
+                solvent::force_desktop_redraw();
+            }
+            "wallpaper solid" => {
+                solvent::set_wallpaper(solvent::WallpaperMode::SolidColor);
+                solvent::force_desktop_redraw();
+            }
+            "wallpaper grid" => {
+                solvent::set_wallpaper(solvent::WallpaperMode::GridPattern);
+                solvent::force_desktop_redraw();
+            }
+            "wallpaper gradient" => {
+                solvent::set_wallpaper(solvent::WallpaperMode::Gradient);
+                solvent::force_desktop_redraw();
+            }
+            _ if cmd.starts_with("wallpaper ") => {
+                let name = &cmd[10..];
+                if let Some(idx) = solvent::find_preset(name) {
+                    solvent::set_wallpaper(solvent::WallpaperMode::Preset(idx));
+                    solvent::force_desktop_redraw();
                 } else {
-                    ctx.terminal
-                        .write_str("NAME         VERSION  DESCRIPTION\n");
-                    ctx.terminal
-                        .write_str("-----------  -------  -----------\n");
-                    for p in &pkgs {
-                        let line = format!("{:<12} {:<8} {}\n", p.name, p.version, p.description);
-                        ctx.terminal.write_str(&line);
+                    solvent::write_terminal("wallpaper: preset not found\n");
+                }
+            }
+            "reboot" => {
+                petroleum::serial::serial_log(format_args!("Reboot requested via shell\n"));
+                unsafe {
+                    let port: u16 = 0x64;
+                    while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02
+                        != 0
+                    {}
+                    x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
+                }
+            }
+            "shutdown" => {
+                petroleum::serial::serial_log(format_args!("Shutdown requested via shell\n"));
+                unsafe {
+                    x86_64::instructions::port::PortWriteOnly::<u16>::new(0x604).write(0x2000u16);
+                }
+                unsafe {
+                    let shutdown_str = b"Shutdown";
+                    let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0xB004);
+                    for &byte in shutdown_str {
+                        port.write(byte);
+                    }
+                }
+                unsafe {
+                    x86_64::instructions::port::PortWriteOnly::<u16>::new(0x4004).write(0x3400u16);
+                }
+                loop {
+                    x86_64::instructions::hlt();
+                }
+            }
+            _ if cmd.starts_with("app_install ") => {
+                let rest = &cmd[12..]; // skip "app_install " (12 characters)
+                if let Some((name, desc)) = rest.split_once(' ') {
+                    let dummy_bin: [u8; 4] = [0x90, 0x90, 0x90, 0x90]; // NOP placeholder
+                    match crate::fs::install_package(name, "0.1.0", desc, &dummy_bin) {
+                        Ok(()) => {
+                            let msg = format!("Installed package '{}'\n", name);
+                            solvent::write_terminal(&msg);
+                        }
+                        Err(e) => {
+                            let msg = format!("app install: {}\n", e);
+                            solvent::write_terminal(&msg);
+                        }
                     }
                 }
             }
-            Err(e) => {
-                let msg = format!("app list: {}\n", e);
-                ctx.terminal.write_str(&msg);
-            }
-        },
-        _ => {
-            let msg = format!("Unknown sys info command: {}\n", cmd);
-            ctx.terminal.write_str(&msg);
-        }
-        }),
-        ctl: Some(|cmd| match cmd {
-        "theme dark" => { solvent::set_theme(solvent::ThemeVariant::Dark); solvent::force_desktop_redraw(); }
-        "theme light" => { solvent::set_theme(solvent::ThemeVariant::Light); solvent::force_desktop_redraw(); }
-        "theme toggle" => { solvent::toggle_theme(); solvent::force_desktop_redraw(); }
-        "theme toggle-style" => { solvent::toggle_style(); solvent::force_desktop_redraw(); }
-        "theme classic" => { solvent::set_style(solvent::ThemeStyle::Classic); solvent::force_desktop_redraw(); }
-        "theme modern" => { solvent::set_style(solvent::ThemeStyle::Modern); solvent::force_desktop_redraw(); }
-        "wallpaper solid" => { solvent::set_wallpaper(solvent::WallpaperMode::SolidColor); solvent::force_desktop_redraw(); }
-        "wallpaper grid" => { solvent::set_wallpaper(solvent::WallpaperMode::GridPattern); solvent::force_desktop_redraw(); }
-        "wallpaper gradient" => { solvent::set_wallpaper(solvent::WallpaperMode::Gradient); solvent::force_desktop_redraw(); }
-        _ if cmd.starts_with("wallpaper ") => {
-            let name = &cmd[10..];
-            if let Some(idx) = solvent::find_preset(name) {
-                solvent::set_wallpaper(solvent::WallpaperMode::Preset(idx));
-                solvent::force_desktop_redraw();
-            } else {
-                solvent::write_terminal("wallpaper: preset not found\n");
-            }
-        }
-        "reboot" => {
-            petroleum::serial::serial_log(format_args!("Reboot requested via shell\n"));
-            unsafe {
-                let port: u16 = 0x64;
-                while x86_64::instructions::port::PortReadOnly::<u8>::new(port).read() & 0x02 != 0 {
-                }
-                x86_64::instructions::port::PortWriteOnly::<u8>::new(port).write(0xFEu8);
-            }
-        }
-        "shutdown" => {
-            petroleum::serial::serial_log(format_args!("Shutdown requested via shell\n"));
-            unsafe {
-                x86_64::instructions::port::PortWriteOnly::<u16>::new(0x604).write(0x2000u16);
-            }
-            unsafe {
-                let shutdown_str = b"Shutdown";
-                let mut port = x86_64::instructions::port::PortWriteOnly::<u8>::new(0xB004);
-                for &byte in shutdown_str {
-                    port.write(byte);
-                }
-            }
-            unsafe {
-                x86_64::instructions::port::PortWriteOnly::<u16>::new(0x4004).write(0x3400u16);
-            }
-            loop {
-                x86_64::instructions::hlt();
-            }
-        }
-        _ if cmd.starts_with("app_install ") => {
-            let rest = &cmd[12..]; // skip "app_install " (12 characters)
-            if let Some((name, desc)) = rest.split_once(' ') {
-                let dummy_bin: [u8; 4] = [0x90, 0x90, 0x90, 0x90]; // NOP placeholder
-                match crate::fs::install_package(name, "0.1.0", desc, &dummy_bin) {
+            _ if cmd.starts_with("app_remove ") => {
+                let name = &cmd[11..]; // skip "app_remove " (11 characters)
+                match crate::fs::remove_package(name) {
                     Ok(()) => {
-                        let msg = format!("Installed package '{}'\n", name);
+                        let msg = format!("Removed package '{}'\n", name);
                         solvent::write_terminal(&msg);
                     }
                     Err(e) => {
-                        let msg = format!("app install: {}\n", e);
+                        let msg = format!("app remove: {}\n", e);
                         solvent::write_terminal(&msg);
                     }
                 }
             }
-        }
-        _ if cmd.starts_with("app_remove ") => {
-            let name = &cmd[11..]; // skip "app_remove " (11 characters)
-            match crate::fs::remove_package(name) {
-                Ok(()) => {
-                    let msg = format!("Removed package '{}'\n", name);
-                    solvent::write_terminal(&msg);
-                }
-                Err(e) => {
-                    let msg = format!("app remove: {}\n", e);
-                    solvent::write_terminal(&msg);
-                }
-            }
-        }
-        _ => {}
-    }),
-}
-.install();
+            _ => {}
+        }),
+    };
+    nozzle::ShellServices::new(fs, sys, mount)
 }
 
 /// Main shell entry point — called from the scheduler as a kernel process.
 pub fn shell_main() {
     petroleum::debug_log!("Shell main started");
 
-    register_nozzle_hooks();
+    let services = nozzle_services();
 
     if solvent::is_initialized() {
-        solvent::run_shell_on(&mut solvent::LatticeTerminal, "fullerene> ");
+        solvent::run_shell_on(&mut solvent::LatticeTerminal, "fullerene> ", services);
     } else {
-        solvent::run_shell_on(&mut KernelTerminal, "fullerene> ");
+        let mut terminal = KernelTerminal::new();
+        solvent::run_shell_on(&mut terminal, "fullerene> ", services);
     }
 }
 
 // ── Kernel terminal ─────────────────────────────────────────────────
 
-struct KernelTerminal;
+struct KernelTerminal {
+    history: alloc::collections::VecDeque<String>,
+}
+
+impl KernelTerminal {
+    fn new() -> Self {
+        Self {
+            history: alloc::collections::VecDeque::with_capacity(128),
+        }
+    }
+}
 
 impl nozzle::Terminal for KernelTerminal {
     fn write_str(&mut self, s: &str) {
@@ -838,6 +937,20 @@ impl nozzle::Terminal for KernelTerminal {
 
     fn input_available(&self) -> bool {
         nitrogen::ps2::keyboard::input_available()
+    }
+
+    fn record_history(&mut self, line: &str) {
+        if line.is_empty() || self.history.front().is_some_and(|entry| entry == line) {
+            return;
+        }
+        if self.history.len() >= 128 {
+            self.history.pop_back();
+        }
+        self.history.push_front(String::from(line));
+    }
+
+    fn history_snapshot(&self) -> alloc::vec::Vec<String> {
+        self.history.iter().cloned().collect()
     }
 }
 

@@ -1282,16 +1282,6 @@ name = "rle_player"
 version = "0.1.0"
 
 [[package]]
-name = "rmp3"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3d9fb2c89a819645c57007782fd4db5bfa1abe290e1df5f530a441dc21ab1ad"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1305,12 +1295,6 @@ checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
 ]
-
-[[package]]
-name = "rust_h264"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbedf5e104105e8783a77926f1e212ea37e78fd3b38b2c928938a283d083d6f1"
 
 [[package]]
 name = "rustix"
@@ -1460,17 +1444,18 @@ dependencies = [
  "lattice",
  "log",
  "minipng",
+ "miniz_oxide",
  "nitrogen",
  "nozzle",
  "petroleum",
  "pure_wav",
  "resonance",
- "rmp3",
- "rust_h264",
  "shiguredo_mp4",
  "spin 0.10.0",
  "tinybmp",
  "x86_64 0.15.4",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

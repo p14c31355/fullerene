@@ -5,16 +5,16 @@
 //! `pwd`, `cd`, `tree`, `find`, `cp`, `mv`, and `write` commands
 //! call into.
 //!
-//! All 13 function pointers are bundled into a single [`FsHooks`] struct
-//! stored under one `Mutex`, eliminating repetitive per‑hook statics.
+//! All function pointers are bundled into a single [`FsHooks`] value which is
+//! constructor-injected into a shell session.
 
 use carrier::exec::CommandContext;
-use spin::Mutex;
 
 /// Aggregated filesystem hooks for shell built‑in commands.
 ///
-/// Set all hooks at once via [`FsHooks::install()`] or by assigning
-/// to [`FS_HOOKS`] directly.
+/// Construct this value at the integration boundary and pass it through
+/// [`crate::ShellServices`] to the shell session.
+#[derive(Clone, Copy)]
 pub struct FsHooks {
     pub list: Option<fn(&mut CommandContext)>,
     pub read: Option<fn(&mut CommandContext, &str)>,
@@ -50,55 +50,35 @@ impl FsHooks {
             df: None,
         }
     }
-
-    /// Atomically install this set of hooks into the global [`FS_HOOKS`].
-    pub fn install(self) {
-        *FS_HOOKS.lock() = self;
-    }
 }
 
-/// Global filesystem‑hooks bag.
-///
-/// Access is always via the dispatcher functions below; the caller
-/// never locks `FS_HOOKS` directly.
-pub static FS_HOOKS: Mutex<FsHooks> = Mutex::new(FsHooks::none());
-
 // ── Dispatchers ────────────────────────────────────────────────
-// Each function reads the single `FS_HOOKS` lock once and forwards.
+// Each function reads the immutable service table injected into the shell.
 
 macro_rules! fs_dispatch {
     ($name:ident, $field:ident, $err:expr) => {
         pub fn $name(ctx: &mut CommandContext) {
-            let hooks = FS_HOOKS.lock();
-            if let Some(f) = hooks.$field {
-                drop(hooks);
+            if let Some(f) = crate::services(ctx).and_then(|services| services.fs.$field) {
                 f(ctx);
             } else {
-                drop(hooks);
                 ctx.terminal.write_str($err);
             }
         }
     };
     ($name:ident, $field:ident, $err:expr, $arg:ident: &str) => {
         pub fn $name(ctx: &mut CommandContext, $arg: &str) {
-            let hooks = FS_HOOKS.lock();
-            if let Some(f) = hooks.$field {
-                drop(hooks);
+            if let Some(f) = crate::services(ctx).and_then(|services| services.fs.$field) {
                 f(ctx, $arg);
             } else {
-                drop(hooks);
                 ctx.terminal.write_str($err);
             }
         }
     };
     ($name:ident, $field:ident, $err:expr, $a:ident: &str, $b:ident: &str) => {
         pub fn $name(ctx: &mut CommandContext, $a: &str, $b: &str) {
-            let hooks = FS_HOOKS.lock();
-            if let Some(f) = hooks.$field {
-                drop(hooks);
+            if let Some(f) = crate::services(ctx).and_then(|services| services.fs.$field) {
                 f(ctx, $a, $b);
             } else {
-                drop(hooks);
                 ctx.terminal.write_str($err);
             }
         }
@@ -119,12 +99,9 @@ fs_dispatch!(touch_file, touch, "touch: no filesystem\n", path: &str);
 fs_dispatch!(disk_usage, df, "df: no filesystem\n");
 
 pub fn read_file(ctx: &mut CommandContext, path: &str) {
-    let hooks = FS_HOOKS.lock();
-    if let Some(f) = hooks.read {
-        drop(hooks);
+    if let Some(f) = crate::services(ctx).and_then(|services| services.fs.read) {
         f(ctx, path);
     } else {
-        drop(hooks);
         ctx.terminal.write_str("(no filesystem mounted: ");
         ctx.terminal.write_str(path);
         ctx.terminal.write_str(")\n");

@@ -26,6 +26,7 @@ pub mod wm;
 
 #[cfg(test)]
 mod tests {
+    use crate::compositor::Compositor;
     use crate::cursor::Cursor;
     use crate::renderer::VecFramebuffer;
     use crate::scene::{DirtyRect, Scene};
@@ -103,6 +104,29 @@ mod tests {
         let ppm = fb.to_ppm_bytes();
         let pixels_start = ppm.len() - 2 * 3;
         assert_eq!(&ppm[pixels_start..], &[0xFF, 0x88, 0x00, 0x00, 0xFF, 0x44]);
+    }
+
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        })
+    }
+
+    #[test]
+    fn deterministic_scene_ppm_snapshot_hash() {
+        let windows = [Window::new(WindowId(7), 4, 5, 24, 18, 0x336699)];
+        let cursor = Cursor::new(12, 13);
+        let scene = Scene::new(&windows, Some(&cursor), 0x102030);
+        let mut first = VecFramebuffer::new(64, 48);
+        let mut second = VecFramebuffer::new(64, 48);
+
+        Compositor::render(&scene, &mut first);
+        Compositor::render(&scene, &mut second);
+
+        let first_hash = fnv1a(&first.to_ppm_bytes());
+        let second_hash = fnv1a(&second.to_ppm_bytes());
+        assert_eq!(first_hash, second_hash);
+        assert_ne!(first_hash, 0);
     }
 
     #[test]

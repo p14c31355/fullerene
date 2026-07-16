@@ -21,22 +21,54 @@ pub use prompt::Prompt;
 
 pub const DEFAULT_PROMPT: &str = "nozzle> ";
 
+/// Immutable services required by Nozzle built-ins.
+#[derive(Clone, Copy)]
+pub struct ShellServices {
+    pub fs: fs_hooks::FsHooks,
+    pub sys: sys_hooks::SysHooks,
+    pub mount: Option<fn(&mut CommandContext)>,
+}
+
+impl ShellServices {
+    pub const fn new(
+        fs: fs_hooks::FsHooks,
+        sys: sys_hooks::SysHooks,
+        mount: Option<fn(&mut CommandContext)>,
+    ) -> Self {
+        Self { fs, sys, mount }
+    }
+
+    pub const fn none() -> Self {
+        Self::new(fs_hooks::FsHooks::none(), sys_hooks::SysHooks::none(), None)
+    }
+}
+
+pub(crate) fn services(ctx: &CommandContext) -> Option<ShellServices> {
+    ctx.services::<ShellServices>()
+}
+
 pub struct Shell<'a> {
     terminal: &'a mut dyn Terminal,
     commands: &'a [&'a dyn Command],
     editor: LineEditor,
     prompt: Prompt,
     welcome_shown: bool,
+    services: ShellServices,
 }
 
 impl<'a> Shell<'a> {
-    pub fn new(terminal: &'a mut dyn Terminal, commands: &'a [&'a dyn Command]) -> Self {
+    pub fn new(
+        terminal: &'a mut dyn Terminal,
+        commands: &'a [&'a dyn Command],
+        services: ShellServices,
+    ) -> Self {
         Self {
             terminal,
             commands,
             editor: LineEditor::new(),
             prompt: Prompt::new(DEFAULT_PROMPT),
             welcome_shown: false,
+            services,
         }
     }
 
@@ -62,8 +94,12 @@ impl<'a> Shell<'a> {
                 continue;
             }
 
-            let should_continue =
-                carrier::exec::dispatch(self.commands, &mut *self.terminal, trimmed);
+            let should_continue = carrier::exec::dispatch_with_services(
+                self.commands,
+                &mut *self.terminal,
+                trimmed,
+                &self.services,
+            );
             if !should_continue {
                 break;
             }
