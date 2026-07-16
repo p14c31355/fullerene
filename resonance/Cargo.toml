@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+spin = { workspace = true, features = ["spin_mutex"] }
 x86_64 = { workspace = true, features = [
   "instructions",
 ] }

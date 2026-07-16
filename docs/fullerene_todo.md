@@ -38,7 +38,7 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] **VDSO read-only**: removed async ring-buffer (slot state machine, `VdsoFuture`, `poll_all_vdso_rings`). VDSO page now only contains read-only metadata (`time_us`, `uptime_us`, `pid`), mapped without `WRITABLE` in user page tables.
 - [x] `FramebufferGuard` / `with_framebuffer` closure API ([#267](https://github.com/p14c31355/fullerene/issues/267))
 - [x] Solvent cursor fast path: use `FramebufferGuard` instead of raw address ([#269](https://github.com/p14c31355/fullerene/issues/269))
-- [ ] Trace buffer: fix for multi-CPU safety or document single-core assumption
+- [x] Trace buffer: fix for multi-CPU safety or document single-core assumption ([#271](https://github.com/p14c31355/fullerene/issues/271))
 - [ ] Boot-only globals: convert to `Once` or immutable after init
 
 ### P0-4. Block cache boundary checks & eviction
