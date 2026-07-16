@@ -414,6 +414,9 @@ pub struct AbiInfo {
 }
 
 impl AbiInfo {
+    /// Size accepted from clients built against ABI version 0.3.
+    /// This value remains fixed when fields are appended in later versions.
+    pub const MIN_BYTE_SIZE: usize = 40;
     pub const BYTE_SIZE: usize = 40;
     pub const EMPTY: Self = Self {
         version: AbiVersion {
@@ -472,6 +475,9 @@ pub struct MemoryInfo {
 }
 
 impl MemoryInfo {
+    /// Size accepted from clients built against ABI version 0.3.
+    /// This value remains fixed when fields are appended in later versions.
+    pub const MIN_BYTE_SIZE: usize = 64;
     pub const BYTE_SIZE: usize = 64;
 
     pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
@@ -543,6 +549,9 @@ pub struct WindowEvent {
 }
 
 impl WindowEvent {
+    /// Size accepted from clients built against ABI version 0.3.
+    /// This value remains fixed when fields are appended in later versions.
+    pub const MIN_BYTE_SIZE: usize = 128;
     pub const BYTE_SIZE: usize = 128;
 
     pub fn to_ne_bytes(self) -> [u8; Self::BYTE_SIZE] {
@@ -564,14 +573,17 @@ const _: () = {
     assert!(core::mem::size_of::<CapabilitySet>() == 8);
     assert!(core::mem::align_of::<CapabilitySet>() == 8);
     assert!(core::mem::size_of::<AbiInfo>() == AbiInfo::BYTE_SIZE);
+    assert!(AbiInfo::MIN_BYTE_SIZE <= AbiInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<AbiInfo>() == 8);
     assert!(core::mem::size_of::<MemoryInfo>() == MemoryInfo::BYTE_SIZE);
+    assert!(MemoryInfo::MIN_BYTE_SIZE <= MemoryInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<MemoryInfo>() == 8);
     assert!(core::mem::size_of::<TimeSpec>() == TimeSpec::BYTE_SIZE);
     assert!(core::mem::align_of::<TimeSpec>() == 8);
     assert!(core::mem::size_of::<DeviceInfo>() == DeviceInfo::BYTE_SIZE);
     assert!(core::mem::align_of::<DeviceInfo>() == 4);
     assert!(core::mem::size_of::<WindowEvent>() == WindowEvent::BYTE_SIZE);
+    assert!(WindowEvent::MIN_BYTE_SIZE <= WindowEvent::BYTE_SIZE);
     assert!(core::mem::align_of::<WindowEvent>() == 8);
 };
 

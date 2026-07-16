@@ -15,9 +15,11 @@ this crate.
 - `MemoryInfo`, `TimeSpec`, `DeviceInfo`, and `WindowEvent`: fixed-layout
   `#[repr(C)]` records for pointer-based syscall arguments.
 
-Every pointer-facing type has a public `BYTE_SIZE`, native-endian serializer,
-and a compile-time size/alignment assertion. Reserved fields must be written as
-zero and retained when extending a structure.
+Every extensible pointer-facing type has a fixed `MIN_BYTE_SIZE`, a current
+`BYTE_SIZE`, a native-endian serializer, and compile-time size/alignment
+assertions. Kernels accept buffers at least as large as `MIN_BYTE_SIZE` and
+copy only the prefix that fits in the caller's buffer. Reserved fields must be
+written as zero and retained when extending a structure.
 
 ## ABI query
 

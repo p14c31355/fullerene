@@ -1,6 +1,7 @@
 use alloc::string::String;
 use fullerene_abi::SyscallErrorCode;
 use petroleum::common::logging::SystemError;
+use petroleum::common::memory::UserSlice;
 
 use crate::user_memory::{self, UserCopyError};
 
@@ -191,6 +192,38 @@ impl From<petroleum::MemoryError> for SyscallError {
     }
 }
 
+fn versioned_copy_len(
+    caller_size: usize,
+    minimum_size: usize,
+    current_size: usize,
+) -> Result<usize, SyscallError> {
+    if minimum_size == 0 || current_size < minimum_size || caller_size < minimum_size {
+        return Err(SyscallError::InvalidArgument);
+    }
+    Ok(caller_size.min(current_size))
+}
+
+/// Copy the compatible prefix of a versioned DTO to a validated user buffer.
+pub(crate) fn copy_versioned_dto_to_user(
+    destination: *mut u8,
+    caller_size: usize,
+    minimum_size: usize,
+    bytes: &[u8],
+) -> SyscallResult {
+    if destination.is_null() {
+        return Err(SyscallError::InvalidArgument);
+    }
+
+    let copy_len = versioned_copy_len(caller_size, minimum_size, bytes.len())?;
+    petroleum::validate_user_buffer(destination as usize, copy_len, false)
+        .map_err(|_| SyscallError::AddressFault)?;
+    let destination =
+        UserSlice::new(destination, copy_len, true).map_err(|_| SyscallError::AddressFault)?;
+    unsafe { destination.copy_to_user(&bytes[..copy_len]) }
+        .map_err(|_| SyscallError::AddressFault)?;
+    Ok(copy_len as u64)
+}
+
 /// Helper function to safely copy a null-terminated string from user space.
 ///
 /// Uses the shared user-memory implementation for page-wise validation and
@@ -283,6 +316,17 @@ mod tests {
         assert_eq!(SyscallError::BadHandle as i64, syscall_errors::BAD_HANDLE);
         assert_eq!(SyscallError::TimedOut as i64, syscall_errors::TIMED_OUT);
         assert_eq!(SyscallError::WouldBlock as i64, syscall_errors::WOULD_BLOCK);
+    }
+
+    #[test]
+    fn versioned_dto_copy_length_accepts_older_buffers() {
+        assert_eq!(versioned_copy_len(40, 40, 48), Ok(40));
+        assert_eq!(versioned_copy_len(48, 40, 48), Ok(48));
+        assert_eq!(versioned_copy_len(64, 40, 48), Ok(48));
+        assert_eq!(
+            versioned_copy_len(39, 40, 48),
+            Err(SyscallError::InvalidArgument)
+        );
     }
 
     #[test]

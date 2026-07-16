@@ -1,10 +1,8 @@
-use crate::map_handle;
-use petroleum::common::memory::UserSlice;
-
-use super::interface::{SyscallError, SyscallResult};
+use super::interface::{SyscallError, SyscallResult, copy_versioned_dto_to_user};
 use super::process::{alloc_handle, check_handle_permission, with_handle_mut};
 use super::types::*;
 use crate::contexts::kernel;
+use crate::map_handle;
 use crate::process;
 
 pub(crate) fn syscall_create_window(
@@ -89,10 +87,9 @@ pub(crate) fn syscall_get_window_event(
     buf: *mut u8,
     buf_size: usize,
 ) -> SyscallResult {
-    if buf.is_null() || buf_size < fullerene_abi::WindowEvent::BYTE_SIZE {
+    if buf.is_null() || buf_size < fullerene_abi::WindowEvent::MIN_BYTE_SIZE {
         return Err(SyscallError::InvalidArgument);
     }
-    petroleum::validate_user_buffer(buf as usize, buf_size, false)?;
 
     let h = Handle::from_raw(handle);
     with_handle_mut(h, |obj| {
@@ -101,10 +98,12 @@ pub(crate) fn syscall_get_window_event(
         let has_event = kernel::with_kernel(|k| k.event.has_pending()).unwrap_or(false);
         if has_event {
             let bytes = fullerene_abi::WindowEvent::default().to_ne_bytes();
-            let slice =
-                UserSlice::new(buf, bytes.len(), true).map_err(|_| SyscallError::AddressFault)?;
-            unsafe { slice.copy_to_user(&bytes) }.map_err(|_| SyscallError::AddressFault)?;
-            Ok(bytes.len() as u64)
+            copy_versioned_dto_to_user(
+                buf,
+                buf_size,
+                fullerene_abi::WindowEvent::MIN_BYTE_SIZE,
+                &bytes,
+            )
         } else {
             Err(SyscallError::Again)
         }

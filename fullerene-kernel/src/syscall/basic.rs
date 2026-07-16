@@ -6,7 +6,7 @@ use petroleum::common::memory::UserSlice;
 use petroleum::page_table::PageTableHelper;
 use x86_64::PhysAddr;
 
-use super::interface::{SyscallError, SyscallResult, copy_user_string};
+use super::interface::{SyscallError, SyscallResult, copy_user_string, copy_versioned_dto_to_user};
 use super::process::{alloc_kernel_stack, free_kernel_stack, with_current_fd_table};
 use crate::linux::{O_APPEND, O_CREAT, O_RDONLY, O_RDWR, O_TRUNC, O_WRONLY};
 use crate::process::{self, Process, ProcessState};
@@ -31,15 +31,13 @@ pub(crate) fn syscall_abi_query(info_buf: *mut u8, buf_size: usize) -> SyscallRe
         };
     }
 
-    if buf_size < fullerene_abi::AbiInfo::BYTE_SIZE {
-        return Err(SyscallError::InvalidArgument);
-    }
-
-    let slice = UserSlice::new(info_buf, fullerene_abi::AbiInfo::BYTE_SIZE, true)
-        .map_err(|_| SyscallError::AddressFault)?;
     let bytes = fullerene_abi::AbiInfo::new(KERNEL_CAPABILITIES).to_ne_bytes();
-    unsafe { slice.copy_to_user(&bytes) }.map_err(|_| SyscallError::AddressFault)?;
-    Ok(fullerene_abi::AbiInfo::BYTE_SIZE as u64)
+    copy_versioned_dto_to_user(
+        info_buf,
+        buf_size,
+        fullerene_abi::AbiInfo::MIN_BYTE_SIZE,
+        &bytes,
+    )
 }
 
 pub(crate) fn syscall_exit(exit_code: i32) -> SyscallResult {

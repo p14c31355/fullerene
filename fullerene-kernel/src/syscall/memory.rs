@@ -1,11 +1,10 @@
 use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use petroleum::common::memory::UserSlice;
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::VirtAddr;
 
-use super::interface::{SyscallError, SyscallResult};
+use super::interface::{SyscallError, SyscallResult, copy_versioned_dto_to_user};
 use super::process::with_kernel_mut_result;
 
 const PROT_READ: u64 = 1;
@@ -200,22 +199,15 @@ pub(crate) fn syscall_protect_memory(addr: u64, length: u64, prot: u64) -> Sysca
 }
 
 pub(crate) fn syscall_query_memory(info_buf: *mut u8, buf_size: usize) -> SyscallResult {
-    if info_buf.is_null() || buf_size < fullerene_abi::MemoryInfo::BYTE_SIZE {
-        return Err(SyscallError::InvalidArgument);
-    }
-    petroleum::validate_user_buffer(
-        info_buf as usize,
-        fullerene_abi::MemoryInfo::BYTE_SIZE,
-        false,
-    )?;
-
     let info = fullerene_abi::MemoryInfo {
         page_size: 4096,
         ..fullerene_abi::MemoryInfo::default()
     };
     let bytes = info.to_ne_bytes();
-    let slice =
-        UserSlice::new(info_buf, bytes.len(), true).map_err(|_| SyscallError::AddressFault)?;
-    unsafe { slice.copy_to_user(&bytes) }.map_err(|_| SyscallError::AddressFault)?;
-    Ok(bytes.len() as u64)
+    copy_versioned_dto_to_user(
+        info_buf,
+        buf_size,
+        fullerene_abi::MemoryInfo::MIN_BYTE_SIZE,
+        &bytes,
+    )
 }
