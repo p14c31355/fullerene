@@ -281,7 +281,136 @@ pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
 
 // ── MP3 info viewer ─────────────────────────────────────────
 
-#[cfg(feature = "rmp3")]
+#[derive(Debug, PartialEq)]
+struct Mp3Info {
+    frames: u32,
+    sample_rate: u32,
+    channels: u16,
+    duration_seconds: f64,
+}
+
+#[derive(Clone, Copy)]
+struct Mp3FrameHeader {
+    frame_len: usize,
+    sample_rate: u32,
+    channels: u16,
+    samples: u32,
+}
+
+fn mp3_audio_start(data: &[u8]) -> usize {
+    if data.len() < 10 || &data[..3] != b"ID3" {
+        return 0;
+    }
+
+    let size_bytes = &data[6..10];
+    if size_bytes.iter().any(|byte| byte & 0x80 != 0) {
+        return 0;
+    }
+    let tag_size = size_bytes
+        .iter()
+        .fold(0usize, |size, byte| (size << 7) | usize::from(*byte));
+    let footer_size = if data[5] & 0x10 != 0 { 10 } else { 0 };
+    10usize
+        .checked_add(tag_size)
+        .and_then(|size| size.checked_add(footer_size))
+        .unwrap_or(data.len())
+        .min(data.len())
+}
+
+fn parse_mp3_frame_header(data: &[u8], offset: usize) -> Option<Mp3FrameHeader> {
+    let bytes = data.get(offset..offset.checked_add(4)?)?;
+    let header = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    if header & 0xffe0_0000 != 0xffe0_0000 {
+        return None;
+    }
+
+    let version = (header >> 19) & 0x3;
+    let layer = (header >> 17) & 0x3;
+    let bitrate_index = ((header >> 12) & 0xf) as usize;
+    let sample_rate_index = ((header >> 10) & 0x3) as usize;
+    if version == 1
+        || layer != 1
+        || bitrate_index == 0
+        || bitrate_index == 15
+        || sample_rate_index == 3
+    {
+        return None;
+    }
+
+    const MPEG1_BITRATES: [u32; 16] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+    ];
+    const MPEG2_BITRATES: [u32; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
+    const MPEG1_SAMPLE_RATES: [u32; 3] = [44_100, 48_000, 32_000];
+
+    let bitrate_kbps = if version == 3 {
+        MPEG1_BITRATES[bitrate_index]
+    } else {
+        MPEG2_BITRATES[bitrate_index]
+    };
+    let sample_rate = match version {
+        3 => MPEG1_SAMPLE_RATES[sample_rate_index],
+        2 => MPEG1_SAMPLE_RATES[sample_rate_index] / 2,
+        0 => MPEG1_SAMPLE_RATES[sample_rate_index] / 4,
+        _ => return None,
+    };
+    let padding = ((header >> 9) & 1) as u32;
+    let (coefficient, samples) = if version == 3 {
+        (144_000u32, 1_152u32)
+    } else {
+        (72_000u32, 576u32)
+    };
+    let frame_len = coefficient
+        .checked_mul(bitrate_kbps)?
+        .checked_div(sample_rate)?
+        .checked_add(padding)?;
+    let channels = if (header >> 6) & 0x3 == 3 { 1 } else { 2 };
+
+    Some(Mp3FrameHeader {
+        frame_len: usize::try_from(frame_len).ok()?,
+        sample_rate,
+        channels,
+        samples,
+    })
+}
+
+fn parse_mp3(data: &[u8]) -> Option<Mp3Info> {
+    let mut offset = mp3_audio_start(data);
+    let mut frames = 0u32;
+    let mut sample_rate = 0u32;
+    let mut channels = 0u16;
+    let mut duration_seconds = 0.0;
+
+    while offset.checked_add(4)? <= data.len() {
+        let Some(header) = parse_mp3_frame_header(data, offset) else {
+            offset = offset.checked_add(1)?;
+            continue;
+        };
+        let frame_end = offset.checked_add(header.frame_len)?;
+        if frame_end > data.len() {
+            offset = offset.checked_add(1)?;
+            continue;
+        }
+
+        if frames == 0 {
+            sample_rate = header.sample_rate;
+            channels = header.channels;
+        }
+        frames = frames.saturating_add(1);
+        duration_seconds += f64::from(header.samples) / f64::from(header.sample_rate);
+        offset = frame_end;
+    }
+
+    (frames > 0).then_some(Mp3Info {
+        frames,
+        sample_rate,
+        channels,
+        duration_seconds,
+    })
+}
+
 pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
@@ -291,29 +420,13 @@ pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
         }
     };
 
-    // Use rmp3: Decoder::new(&data), iterate frames
-    let mut dec = rmp3::Decoder::new(&data);
-    let mut frames = 0u32;
-    let mut sample_rate = 0u32;
-    let mut channels = 0u16;
-    while let Some(frame) = dec.next() {
-        if let rmp3::Frame::Audio(audio) = frame {
-            if frames == 0 {
-                sample_rate = audio.sample_rate();
-                channels = audio.channels();
-            }
-            frames += 1;
-        }
-    }
-
-    let duration_sec = if sample_rate > 0 {
-        (frames as f64 * 1152.0) / sample_rate as f64
-    } else {
-        0.0
+    let Some(info) = parse_mp3(&data) else {
+        show_error(rt, "MP3 Error", "No valid MP3 audio frames found.");
+        return;
     };
     let msg = format!(
         "File: {}\n\nFormat: MP3\nChannels: {}\nSample Rate: {} Hz\nFrames: {}\nDuration: {:.1} s\n\nPlayback not yet implemented.",
-        name, channels, sample_rate, frames, duration_sec,
+        name, info.channels, info.sample_rate, info.frames, info.duration_seconds,
     );
     show_text_window(rt, "Music Player", &msg, 50, 0x0d0d1a, 0xCCCCFF);
 }
@@ -729,7 +842,7 @@ fn build_annex_b(nal_data: &[u8]) -> alloc::vec::Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{tar_entries, zip_entries};
+    use super::{parse_mp3, tar_entries, zip_entries};
     use alloc::vec;
 
     #[test]
@@ -759,5 +872,21 @@ mod tests {
         let entries = zip_entries(&archive);
         assert_eq!(entries.len(), 1);
         assert!(entries[0].contains("notes.md"));
+    }
+
+    #[test]
+    fn mp3_parser_skips_id3_and_counts_layer_three_frames() {
+        const FRAME_LEN: usize = 417;
+        let mut data = vec![0u8; 10 + FRAME_LEN * 2];
+        data[..3].copy_from_slice(b"ID3");
+        data[3] = 4;
+        data[10..14].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+        data[10 + FRAME_LEN..14 + FRAME_LEN].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
+
+        let info = parse_mp3(&data).expect("valid MP3 frames");
+        assert_eq!(info.frames, 2);
+        assert_eq!(info.sample_rate, 44_100);
+        assert_eq!(info.channels, 2);
+        assert!((info.duration_seconds - 2_304.0 / 44_100.0).abs() < 0.000_001);
     }
 }

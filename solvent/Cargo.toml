@@ -30,7 +30,6 @@ log = { workspace = true }
 tinybmp = { version = "0.7", default-features = false, optional = true }
 minipng = { version = "1", default-features = false, optional = true }
 pure_wav = { version = "2", default-features = false, optional = true }
-rmp3 = { version = "0.3", default-features = false, optional = true }
 shiguredo_mp4 = { version = "2026.3", default-features = false, optional = true }
 rust_h264 = { version = "0.4", default-features = false, optional = true }
 zune-jpeg = { version = "0.5", default-features = false, optional = true }
@@ -42,7 +41,6 @@ default = [
   "tinybmp",
   "minipng",
   "pure_wav",
-  "rmp3",
   "shiguredo_mp4",
   "zune-jpeg",
   "gzip",
@@ -50,7 +48,6 @@ default = [
 tinybmp = ["dep:tinybmp"]
 minipng = ["dep:minipng"]
 pure_wav = ["dep:pure_wav"]
-rmp3 = ["dep:rmp3"]
 shiguredo_mp4 = ["dep:shiguredo_mp4", "dep:rust_h264"]
 zune-jpeg = ["dep:zune-jpeg", "dep:zune-core"]
 gzip = ["dep:miniz_oxide"]

@@ -239,7 +239,6 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
             crate::viewers::open_wav(runtime, path, name);
             return;
         }
-        #[cfg(feature = "rmp3")]
         "mp3" => {
             crate::viewers::open_mp3(runtime, path, name);
             return;

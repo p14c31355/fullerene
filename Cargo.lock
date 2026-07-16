@@ -1282,16 +1282,6 @@ name = "rle_player"
 version = "0.1.0"
 
 [[package]]
-name = "rmp3"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3d9fb2c89a819645c57007782fd4db5bfa1abe290e1df5f530a441dc21ab1ad"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1466,7 +1456,6 @@ dependencies = [
  "petroleum",
  "pure_wav",
  "resonance",
- "rmp3",
  "rust_h264",
  "shiguredo_mp4",
  "spin 0.10.0",
