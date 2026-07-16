@@ -1,0 +1,225 @@
+//! Event dispatch, timer processing, service ticking, and frame pacing.
+
+use lattice::shell_overlay::ShellState;
+use resonance::Event;
+use spin::Mutex;
+
+use crate::{
+    CURSOR_TIMER_ID, DISPATCHER, EVENT_QUEUE, FRAME_INTERVAL_MS, FRAME_TIMER_ID, NETWORK_SNAPSHOT,
+    RENDERING_SUSPENDED, RUNTIME, SERVICES, SOLVENT_CALLBACKS, TSC_PER_MS,
+};
+
+pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
+static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+pub fn chrono_tick(now: u64) {
+    let mut runtime = RUNTIME.lock();
+    let runtime = match runtime.as_mut() {
+        Some(runtime) => runtime,
+        None => return,
+    };
+    runtime.chrono.tick(now);
+    while let Some(timer) = runtime.chrono.pop_expired() {
+        match timer.id {
+            CURSOR_TIMER_ID => {
+                runtime.cursor_visible = !runtime.cursor_visible;
+                runtime.term_dirty = true;
+            }
+            FRAME_TIMER_ID if runtime.shell_state == ShellState::Desktop => {
+                runtime.frame_due = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn push_key_event(event: Event) {
+    if let Some(queue) = EVENT_QUEUE.lock().as_mut() {
+        queue.push(event);
+    }
+}
+
+pub fn process_events() {
+    let mut dispatcher = DISPATCHER.lock();
+    let mut queue = EVENT_QUEUE.lock();
+    if let (Some(dispatcher), Some(queue)) = (dispatcher.as_mut(), queue.as_mut()) {
+        dispatcher.dispatch_queue(queue);
+    }
+}
+
+pub fn set_render_fn(render_fn: fn()) {
+    *RENDER_FN.lock() = Some(render_fn);
+}
+
+fn service_explorer_navigation() {
+    let step = RUNTIME
+        .lock()
+        .as_mut()
+        .and_then(|runtime| runtime.explorer.as_mut()?.take_navigation_step());
+    let Some(step) = step else { return };
+    let path = match step {
+        crate::explorer::NavigationStep::Checkpoint(path) => {
+            // Return to the frame loop before synchronous media I/O so the
+            // taskbar keeps the last checkpoint visible if VFS stalls.
+            nitrogen::debug_status!("Explorer", "readdir {}", path);
+            return;
+        }
+        crate::explorer::NavigationStep::Read(path) => path,
+    };
+
+    // Filesystem and hardware I/O must run without the runtime lock. Rendering
+    // takes locks in the opposite direction and synchronous removable-media I/O
+    // here previously deadlocked the desktop when a directory was opened.
+    let callback = SOLVENT_CALLBACKS.lock().vfs_readdir;
+    let result = callback
+        .ok_or(genome::FsError::NotSupported)
+        .and_then(|read| read(&path));
+    match &result {
+        Ok(entries) => nitrogen::debug_status!("Explorer", "ready: {} entries", entries.len()),
+        Err(error) => nitrogen::debug_status!("Explorer", "readdir failed: {}", error),
+    }
+
+    if let Some(runtime) = RUNTIME.lock().as_mut()
+        && let Some(explorer) = runtime.explorer.as_mut()
+    {
+        explorer.finish_navigation(path, result);
+        runtime.explorer_dirty = true;
+        runtime.frame_due = true;
+    }
+}
+
+pub fn tick_core(now: u64) {
+    GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
+
+    crate::poll_mouse_state();
+    crate::poll_keyboard();
+    crate::clock::update_clock();
+    chrono_tick(now);
+
+    // Callbacks may acquire runtime locks or register another service.
+    let mut services = core::mem::take(&mut *SERVICES.lock());
+    for service in &mut services {
+        service.tick(now);
+    }
+    let mut registry = SERVICES.lock();
+    services.append(&mut *registry);
+    *registry = services;
+
+    if now.is_multiple_of(20) {
+        let snapshot = NETWORK_SNAPSHOT.lock();
+        let access_points = snapshot.aps.clone();
+        let status = snapshot.status.clone();
+        drop(snapshot);
+        if let Some(runtime) = RUNTIME.lock().as_mut()
+            && runtime.desktop.update_ap_list(access_points, status)
+        {
+            runtime.frame_due = true;
+        }
+    }
+
+    process_events();
+    service_explorer_navigation();
+    if RUNTIME.lock().as_mut().is_some_and(|runtime| {
+        let pending = runtime.shell_launch_pending;
+        runtime.shell_launch_pending = false;
+        pending
+    }) {
+        crate::ensure_terminal_window();
+        crate::launch_shell();
+    }
+    if RUNTIME.lock().as_mut().is_some_and(|runtime| {
+        let pending = runtime.editor_launch_pending;
+        runtime.editor_launch_pending = false;
+        pending
+    }) {
+        crate::ensure_editor_window();
+    }
+}
+
+pub fn runtime_tick_no_fb() {
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let now = YIELD_TICK.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    tick_core(now);
+    let do_render = RUNTIME.lock().as_mut().is_some_and(|runtime| {
+        let due = runtime.frame_due;
+        if due {
+            let frame_tsc = TSC_PER_MS
+                .load(core::sync::atomic::Ordering::Relaxed)
+                .saturating_mul(FRAME_INTERVAL_MS);
+            let last = LAST_RENDER_TSC.load(core::sync::atomic::Ordering::Relaxed);
+            let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+            if now_tsc.wrapping_sub(last) < frame_tsc {
+                runtime.frame_due = true;
+                return false;
+            }
+            LAST_RENDER_TSC.store(now_tsc, core::sync::atomic::Ordering::Relaxed);
+            runtime.frame_due = false;
+        }
+        due
+    });
+    // Release RENDERING_SUSPENDED before calling render_fn, otherwise
+    // render() will see it as already-suspended and early-return.
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+    let render_fn = if do_render { *RENDER_FN.lock() } else { None };
+    if let Some(render_fn) = render_fn {
+        render_fn();
+    }
+}
+
+pub fn consume_frame_due() -> bool {
+    RUNTIME.lock().as_mut().is_some_and(|runtime| {
+        let due = runtime.frame_due;
+        runtime.frame_due = false;
+        due
+    })
+}
+
+/// Return whether a cursor-only update is waiting for a framebuffer guard.
+pub fn cursor_update_due() -> bool {
+    RUNTIME
+        .lock()
+        .as_ref()
+        .is_some_and(|runtime| runtime.cursor_redraw_from.is_some())
+}
+
+pub fn runtime_tick(now: u64, framebuffer: &mut petroleum::graphics::FramebufferGuard) {
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    tick_core(now);
+
+    let tick = GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
+    if tick.wrapping_sub(LAST_USB_POLL.load(core::sync::atomic::Ordering::Relaxed)) >= 100 {
+        LAST_USB_POLL.store(tick, core::sync::atomic::Ordering::Relaxed);
+        let poll_usb = SOLVENT_CALLBACKS.lock().usb_poll;
+        if let Some(poll_usb) = poll_usb
+            && poll_usb()
+            && let Some(runtime) = RUNTIME.lock().as_mut()
+            && let Some(explorer) = runtime.explorer.as_mut()
+        {
+            explorer.refresh_sidebar();
+            runtime.explorer_dirty = true;
+            runtime.frame_due = true;
+        }
+    }
+
+    let do_render = RUNTIME.lock().as_mut().is_some_and(|runtime| {
+        let due = runtime.frame_due;
+        runtime.frame_due = false;
+        due
+    });
+    // Release RENDERING_SUSPENDED before calling render(), otherwise
+    // render() will see it as already-suspended and early-return.
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+    if do_render {
+        crate::render(framebuffer);
+    } else if cursor_update_due() {
+        crate::render_cursor_fast(framebuffer);
+    }
+}

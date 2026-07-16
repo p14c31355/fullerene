@@ -28,7 +28,7 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`nitrogen`**: A hardware abstraction and device driver library providing PCI enumeration, APIC/PIC interrupt controllers, PS/2 keyboard/mouse drivers, HDA audio, VirtIO block/net/gpu drivers, USB (xHCI/EHCI), NVMe/AHCI storage, Intel wireless (iwlwifi), and framebuffer management. It owns PCI power/decode transitions and MMIO preflight for matched devices.
 
-- **`solvent`**: An application framework providing file explorer, viewers (image/audio), menu actions, and handler infrastructure for building user-facing applications on top of Lattice and Nozzle.
+- **`solvent`**: The runtime/orchestration layer coordinating runtime state, input translation, event dispatch, services, frame pacing, window lifecycle, file explorer, and viewers on top of Lattice and Nozzle. Its crate root is a stable API facade over context-specific modules.
 
 - **`toluene`**: The user-space SDK and example binary. Its typed syscall wrappers consume the shared `fullerene-abi` contract directly.
 
