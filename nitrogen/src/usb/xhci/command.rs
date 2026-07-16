@@ -30,24 +30,19 @@ impl XhciContext {
         let root_port =
             u8::try_from(port_index + 1).map_err(|_| crate::DriverError::InvalidArgument)?;
         let speed_id = self.registers.op.portsc(port_index).speed() as u8;
-        let ep0_ring_phys = self
-            .device
-            .slots
-            .get(slot_id)
-            .ok_or(crate::DriverError::InvalidArgument)?
-            .ep0_ring
-            .phys;
+        let (ep0_ring_phys, in_ctx_phys) = {
+            let slot = self
+                .device
+                .slots
+                .get(slot_id)
+                .ok_or(crate::DriverError::InvalidArgument)?;
+            (slot.ep0_ring.phys, slot.in_ctx_phys)
+        };
 
         if let Some(in_ctx) = self.device.slots.input_ctx_mut(self.driver_ctx, slot_id) {
             in_ctx.setup_address_device(root_port, speed_id, ep0_ring_phys);
         }
 
-        let in_ctx_phys = self
-            .device
-            .slots
-            .get(slot_id)
-            .ok_or(crate::DriverError::InvalidArgument)?
-            .in_ctx_phys;
         self.send_cmd(
             Trb::new(trb_type::ADDRESS_DEVICE, self.rings.command.cycle)
                 .with_data_ptr(in_ctx_phys)

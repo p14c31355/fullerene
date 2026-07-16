@@ -231,10 +231,10 @@ impl XhciContext {
             self.ports.refresh_all(&self.registers.op);
 
             for port_idx in 0..self.ports.n_ports {
-                let ccs = self.ports.get(port_idx).map(|p| p.ccs()).unwrap_or(false);
-                let was = pre_ccs.get(port_idx as usize).copied().unwrap_or(false);
-                if ccs != was {
-                    if let Some(port) = self.ports.get_mut(port_idx) {
+                if let Some(port) = self.ports.get_mut(port_idx) {
+                    let ccs = port.ccs();
+                    let was = pre_ccs.get(port_idx as usize).copied().unwrap_or(false);
+                    if ccs != was {
                         port.done = false;
                         port.wpr_attempted = false;
                         port.retry_count = 0;
@@ -244,8 +244,8 @@ impl XhciContext {
                             was,
                             ccs
                         );
+                        self.devices.retain(|device| device.port_index != port_idx);
                     }
-                    self.devices.retain(|device| device.port_index != port_idx);
                 }
             }
         } else {
@@ -419,21 +419,23 @@ impl XhciContext {
 
     fn try_connect_port(&mut self, port_idx: u32) -> bool {
         let op = &self.registers.op;
+        let mut is_usb3 = true;
+        let mut wpr_attempted = true;
         if let Some(port) = self.ports.get_mut(port_idx) {
             port.refresh(op);
+            is_usb3 = port.is_usb3;
+            wpr_attempted = port.wpr_attempted;
         }
 
-        let is_usb3 = self.ports.get(port_idx).map(|p| p.is_usb3).unwrap_or(true);
         let wpr_done = if is_usb3 && !op.portsc(port_idx).ccs() {
-            self.ports
-                .get(port_idx)
-                .map(|port| port.wpr_attempted)
-                .unwrap_or(true)
+            wpr_attempted
         } else {
             true
         };
-        if !wpr_done && let Some(port) = self.ports.get_mut(port_idx) {
-            port.wpr_attempted = true;
+        if !wpr_done {
+            if let Some(port) = self.ports.get_mut(port_idx) {
+                port.wpr_attempted = true;
+            }
         }
 
         if ensure_port_ready(op, port_idx, is_usb3, self.ports.ppc, wpr_done) {
