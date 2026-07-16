@@ -220,6 +220,16 @@ and `resources` owns slot release, deferred DMA cleanup, and teardown. These
 modules add inherent methods to the same context and do not introduce
 additional controller owners or global state.
 
+The Intel Wi-Fi driver follows the same facade pattern. `IwlWifiDevice` remains
+the single owner of MMIO, DMA rings, firmware state, and connection data, while
+the implementation under `nitrogen/src/iwlwifi/` is separated by lifecycle:
+`device` owns construction and resource lifetime; `firmware` owns image
+selection; `registers` owns PCI/MMIO and firmware constants; `tx` owns host
+commands and transmit descriptors; `rx` owns interrupt and receive processing;
+and `connection_state` owns scanning, association, DHCP/WPA transitions, and
+the incremental initialization facade. The split does not introduce another
+device owner or change the public `nitrogen::iwlwifi` API.
+
 ---
 
 ## Solvent (Runtime)

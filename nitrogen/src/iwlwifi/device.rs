@@ -3,12 +3,14 @@
 
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use bonder::dhcp::DhcpClient;
-use bonder::wifi::{self, AccessPoint};
+use bonder::wifi::{self, AccessPoint, Ssid};
 use bonder::wpa::WpaSupplicant;
+use bonder::{NetDevice, NetError};
 
 use crate::DriverContext;
 use crate::debug;
@@ -16,7 +18,7 @@ use crate::mmio::{self, DmaRegion, SafeReadResult};
 use crate::pci::{PciDevice, PciScanner};
 use crate::pci_health::PciHealth;
 
-use super::regs::*;
+use super::registers::*;
 use super::types::*;
 
 // ── IwlWifiDevice ─────────────────
@@ -734,7 +736,7 @@ impl IwlWifiDevice {
     }
 
     /// Load firmware binary into the device.
-    pub fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+    pub(super) fn load_firmware_inner(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
         self.upload_firmware_and_start_cpu(fw_data)?;
 
         debug::print("iwlwifi", "fw: wait_alive");
@@ -860,7 +862,10 @@ impl IwlWifiDevice {
     }
 
     /// Start firmware upload and CPU boot without waiting for alive.
-    pub fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+    pub(super) fn start_firmware_inner(
+        &mut self,
+        fw_data: &[u8],
+    ) -> Result<(), crate::DriverError> {
         self.health
             .recover()
             .map_err(|_| crate::DriverError::DeviceNotFound)?;
@@ -877,7 +882,10 @@ impl IwlWifiDevice {
     }
 
     /// Check if firmware has signaled alive (non-blocking poll).
-    pub fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError> {
+    pub(super) fn check_alive_nonblocking_inner(
+        &mut self,
+        start_tsc: u64,
+    ) -> Result<bool, crate::DriverError> {
         let now = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = now.wrapping_sub(start_tsc);
         const TIMEOUT_TSC: u64 = 5_000_000_000;
@@ -933,4 +941,110 @@ impl IwlWifiDevice {
 
         Ok(false)
     }
+}
+
+impl NetDevice for IwlWifiDevice {
+    fn send_frame(&mut self, frame: &[u8]) -> Result<(), NetError> {
+        if self.fw_state != FwState::Ready {
+            return Err(NetError::NotInitialized);
+        }
+        if frame.len() > MAX_FRAME_SIZE {
+            return Err(NetError::FrameTooLarge);
+        }
+        let _ = self.send_raw_80211_frame(frame);
+        Ok(())
+    }
+
+    fn poll_frame(&mut self, buf: &mut [u8]) -> Result<Option<usize>, NetError> {
+        if self.fw_state != FwState::Ready {
+            return Ok(None);
+        }
+        if let Some(rx_data) = self.rx_queue.pop_front() {
+            if rx_data.len() > buf.len() {
+                return Err(NetError::BufferTooSmall);
+            }
+            let len = rx_data.len();
+            buf[..len].copy_from_slice(&rx_data);
+            return Ok(Some(len));
+        }
+        Ok(None)
+    }
+
+    fn mac_address(&self) -> [u8; 6] {
+        self.mac
+    }
+}
+
+impl crate::wifi::WifiDriver for IwlWifiDevice {
+    fn create(
+        ctx: &'static dyn crate::DriverContext,
+        mmio_base: *mut u32,
+        hw_rev: u32,
+        device: crate::pci::PciDevice,
+    ) -> Option<Box<dyn crate::wifi::WifiDriver>> {
+        Self::init_from_mmio(ctx, mmio_base, hw_rev, device)
+            .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
+    }
+
+    fn tick(&mut self) {
+        self.tick();
+    }
+
+    fn get_status(&self) -> bonder::wifi::WifiStatus {
+        self.wifi_conn.status
+    }
+
+    fn start_scan(&mut self) -> bool {
+        self.start_scan().is_ok()
+    }
+
+    fn get_scan_results(&self) -> Vec<AccessPoint> {
+        self.scan_results.clone()
+    }
+
+    fn connect(&mut self, ssid: &Ssid, psk: Option<&str>) -> bool {
+        self.connect(ssid, psk).is_ok()
+    }
+
+    fn disconnect(&mut self) {
+        self.disconnect();
+    }
+
+    fn device_available(&self) -> bool {
+        self.fw_state == FwState::Ready
+    }
+
+    fn connected_ssid(&self) -> Option<&Ssid> {
+        self.wifi_conn.current_ssid.as_ref()
+    }
+
+    fn ip_address(&self) -> [u8; 4] {
+        self.ip_address
+    }
+
+    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+        IwlWifiDevice::load_firmware(self, fw_data)
+    }
+
+    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError> {
+        IwlWifiDevice::start_firmware(self, fw_data)
+    }
+
+    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError> {
+        IwlWifiDevice::check_alive_nonblocking(self, start_tsc)
+    }
+
+    fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
+        IwlWifiDevice::send_init_commands(self)
+    }
+}
+
+pub fn try_create_iwl(
+    ctx: &'static dyn crate::DriverContext,
+    mmio: *mut u32,
+    hw_rev: u32,
+    device: crate::pci::PciDevice,
+) -> Option<Box<dyn crate::wifi::WifiDriver>> {
+    IwlWifiDevice::init_from_mmio(ctx, mmio, hw_rev, device)
+        .map(|dev| Box::new(dev) as Box<dyn crate::wifi::WifiDriver>)
 }

@@ -1,5 +1,4 @@
-//! Global state, incremental init state machine, firmware registry,
-//! and high-level public API.
+//! Connection state, incremental device initialization, and public Wi-Fi API.
 
 use alloc::boxed::Box;
 use alloc::string::ToString;
@@ -11,10 +10,11 @@ use crate::DriverContext;
 use crate::debug;
 use crate::mmio::{self, DmaRegion};
 use crate::pci_health::PciHealth;
-use bonder::wifi::Ssid;
+use bonder::wifi::{self, AccessPoint, Ssid};
 
 use super::device::IwlWifiDevice;
-use super::regs::*;
+use super::firmware::select_firmware_list;
+use super::registers::*;
 use super::types::*;
 
 // ── Global driver context for DMA ──
@@ -126,54 +126,6 @@ fn set_init_phase(phase: WifiInitPhase) {
 fn get_init_phase() -> WifiInitPhase {
     let raw = WIFI_INIT_PHASE.load(core::sync::atomic::Ordering::Acquire);
     WifiInitPhase::from(raw)
-}
-
-// ── Firmware registry ─────────────
-
-// 7260 series (PCI 0x08B1, 0x08B2)
-const FW_7260_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7260-17.ucode");
-const FW_7260_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7260-16.ucode");
-
-// 7265 series, non-D stepping (PCI 0x095A, 0x095B)
-const FW_7265_17: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265-17.ucode");
-const FW_7265_16: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265-16.ucode");
-
-// 7265D series, D stepping (PCI 0x095A, 0x095B)
-const FW_7265D_29: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-29.ucode");
-const FW_7265D_27: &[u8] = include_bytes!("../../../bonder/iwlwifi/iwlwifi-7265D-27.ucode");
-
-fn select_firmware_list(device_id: u16) -> &'static [FirmwareBlob] {
-    match device_id {
-        0x08B1 | 0x08B2 => &[
-            FirmwareBlob {
-                data: FW_7260_17,
-                name: "iwlwifi-7260-17",
-            },
-            FirmwareBlob {
-                data: FW_7260_16,
-                name: "iwlwifi-7260-16",
-            },
-        ],
-        0x095A | 0x095B => &[
-            FirmwareBlob {
-                data: FW_7265D_29,
-                name: "iwlwifi-7265D-29",
-            },
-            FirmwareBlob {
-                data: FW_7265D_27,
-                name: "iwlwifi-7265D-27",
-            },
-            FirmwareBlob {
-                data: FW_7265_17,
-                name: "iwlwifi-7265-17",
-            },
-            FirmwareBlob {
-                data: FW_7265_16,
-                name: "iwlwifi-7265-16",
-            },
-        ],
-        _ => &[],
-    }
 }
 
 // ── Incremental init state machine ─
@@ -897,5 +849,149 @@ pub fn start_scan_if_idle() {
         {
             let _ = dev_ref.start_scan();
         }
+    }
+}
+
+impl IwlWifiDevice {
+    /// Start an active scan on the supported channel set.
+    pub fn start_scan(&mut self) -> Result<(), crate::DriverError> {
+        if self.fw_state != FwState::Ready {
+            return Err(crate::DriverError::NotReady);
+        }
+
+        self.wifi_conn.start_scan();
+        self.scan_results.clear();
+        self.scan_channel = 1;
+        self.scan_pending = true;
+        self.iwl_state = IwlState::Scanning;
+
+        let scan_cmd = ScanRequestCmd {
+            beacon_interval: 100,
+            flags: 0,
+            num_channels: 4,
+            reserved: [0u8; 3],
+            channels: [
+                ScanChannel {
+                    channel: 1,
+                    tx_power: 0,
+                    reserved: 0,
+                },
+                ScanChannel {
+                    channel: 6,
+                    tx_power: 0,
+                    reserved: 0,
+                },
+                ScanChannel {
+                    channel: 11,
+                    tx_power: 0,
+                    reserved: 0,
+                },
+                ScanChannel {
+                    channel: 36,
+                    tx_power: 0,
+                    reserved: 0,
+                },
+            ],
+        };
+        let cmd_data = unsafe {
+            core::slice::from_raw_parts(
+                &scan_cmd as *const ScanRequestCmd as *const u8,
+                core::mem::size_of::<ScanRequestCmd>(),
+            )
+        };
+        self.send_hcmd(
+            LegacyCmd::ScanRequest as u8,
+            GroupId::Legacy as u8,
+            cmd_data,
+        )?;
+
+        log::info!("iwlwifi: scan started");
+        Ok(())
+    }
+
+    pub(super) fn process_scan_result(&mut self, frame: &[u8]) {
+        if let Some(beacon) = wifi::parse_beacon(frame) {
+            let ssid = beacon.ssid.clone().unwrap_or(Ssid::new(b""));
+            if ssid.is_empty() {
+                return;
+            }
+
+            let security = wifi::security_from_beacon(beacon.capability, beacon.rsn.as_ref());
+            let ap = AccessPoint {
+                ssid,
+                bssid: beacon.header.addr2,
+                channel: beacon.ds_channel.unwrap_or(0),
+                rssi: -50,
+                security,
+                beacon_interval: beacon.beacon_interval,
+            };
+            self.wifi_conn.add_scan_result(ap.clone());
+            self.scan_results.push(ap);
+        }
+    }
+
+    pub fn connect(
+        &mut self,
+        ssid: &Ssid,
+        password: Option<&str>,
+    ) -> Result<(), crate::DriverError> {
+        if self.fw_state != FwState::Ready {
+            return Err(crate::DriverError::NotReady);
+        }
+
+        let ap = self
+            .scan_results
+            .iter()
+            .find(|ap| ap.ssid == *ssid)
+            .cloned()
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        self.wifi_conn.connect(ssid, password);
+
+        if let Some(password) = password {
+            self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
+            self.wpa.derive_ptk();
+        }
+
+        self.iwl_state = IwlState::AuthSent;
+        let auth_frame = wifi::build_auth_frame(ap.bssid, self.mac, 1);
+        let _ = self.send_raw_80211_frame(&auth_frame);
+        log::info!(
+            "iwlwifi: authenticating with {} ({:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x})",
+            ssid,
+            ap.bssid[0],
+            ap.bssid[1],
+            ap.bssid[2],
+            ap.bssid[3],
+            ap.bssid[4],
+            ap.bssid[5],
+        );
+        Ok(())
+    }
+
+    pub fn disconnect(&mut self) {
+        if let Some(bssid) = self.wifi_conn.current_bssid {
+            let deauth = wifi::build_deauth(bssid, self.mac, 3);
+            let _ = self.send_raw_80211_frame(&deauth);
+        }
+        if let Some(ref mut dhcp) = self.dhcp {
+            let release = dhcp.build_release();
+            let _ = self.send_raw_80211_frame(&release);
+        }
+        self.dhcp = None;
+        self.wifi_conn.disconnect();
+        self.iwl_state = IwlState::Disconnected;
+        log::info!("iwlwifi: disconnected");
+    }
+
+    pub fn access_points(&self) -> &[AccessPoint] {
+        &self.scan_results
+    }
+
+    pub fn wifi_status(&self) -> &bonder::wifi::WifiConnection {
+        &self.wifi_conn
+    }
+
+    pub fn is_network_ready(&self) -> bool {
+        self.wifi_conn.is_connected() && self.ip_address != [0u8; 4]
     }
 }
