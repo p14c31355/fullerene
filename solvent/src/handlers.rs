@@ -1,9 +1,9 @@
 //! Event handlers — extracted from lib.rs as part of god-module decomposition.
 //!
-//! These handlers are thin wrappers that delegate to `crate` globals.
+//! These handlers are thin wrappers over state owned by `RuntimeContext`.
 //! The heavy logic (menu dispatch, terminal I/O) lives in dedicated modules.
 
-use crate::{FB_DIMS, RUNTIME, SUPER_HELD};
+use crate::{FB_DIMS, RUNTIME_CONTEXT, SUPER_HELD};
 use lattice::shell_overlay::ShellState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
@@ -13,7 +13,7 @@ pub(crate) struct WmEventHandler;
 
 impl EventHandler for WmEventHandler {
     fn handle(&mut self, event: &Event) -> bool {
-        let mut rt = RUNTIME.lock();
+        let mut rt = RUNTIME_CONTEXT.runtime();
         let rt = match rt.as_mut() {
             Some(r) => r,
             None => return false,
@@ -42,7 +42,7 @@ impl EventHandler for WmEventHandler {
                                 "Shell" => {
                                     // Defer shell launch — cannot call
                                     // ensure_terminal_window() or launch_shell()
-                                    // while holding RUNTIME lock (deadlock).
+                                    // while holding the runtime-state lock (deadlock).
                                     rt.shell_launch_pending = true;
                                     rt.frame_due = true;
                                     return true;
@@ -301,7 +301,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
             match idx {
                 0 => {
                     // Defer shell launch — cannot call ensure_terminal_window()
-                    // or launch_shell() while holding RUNTIME lock (deadlock).
+                    // or launch_shell() while holding the runtime-state lock (deadlock).
                     rt.shell_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
@@ -309,7 +309,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                 }
                 2 => {
                     // Defer editor launch — cannot call ensure_editor_window()
-                    // while holding RUNTIME lock (deadlock).
+                    // while holding the runtime-state lock (deadlock).
                     rt.editor_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
@@ -339,7 +339,7 @@ impl EventHandler for TerminalInputHandler {
     fn handle(&mut self, event: &Event) -> bool {
         match event {
             Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
+                if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
                     rt.term_buf.scroll_back(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -347,7 +347,7 @@ impl EventHandler for TerminalInputHandler {
                 true
             }
             Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
+                if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
                     rt.term_buf.scroll_forward(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -355,7 +355,7 @@ impl EventHandler for TerminalInputHandler {
                 true
             }
             Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
+                if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
                     rt.term_buf.reset_scroll();
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -371,7 +371,7 @@ pub(crate) struct ShellEventHandler;
 
 impl EventHandler for ShellEventHandler {
     fn handle(&mut self, event: &Event) -> bool {
-        let mut rt = RUNTIME.lock();
+        let mut rt = RUNTIME_CONTEXT.runtime();
         let rt = match rt.as_mut() {
             Some(r) => r,
             None => return false,

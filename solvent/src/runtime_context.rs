@@ -1,7 +1,4 @@
-//! Runtime state, configuration, and initialization.
-//!
-//! This module preserves the current singleton ownership model. Consolidating
-//! the singletons into an owned `RuntimeContext` is tracked separately.
+//! Runtime ownership, configuration, and initialization.
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -14,8 +11,9 @@ use lattice::terminal_surface::Cell as LatticeCell;
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
 use resonance::{Dispatcher, EventQueue};
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 
+use crate::callbacks::SolventCallbacks;
 use crate::handlers;
 
 pub(crate) const DEFAULT_COLS: u32 = 80;
@@ -40,11 +38,59 @@ pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
 
 pub(crate) static BACK_BUFFER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
-pub(crate) static RUNTIME: Mutex<Option<RuntimeState>> = Mutex::new(None);
-pub(crate) static EVENT_QUEUE: Mutex<Option<EventQueue>> = Mutex::new(None);
-pub(crate) static DISPATCHER: Mutex<Option<Dispatcher>> = Mutex::new(None);
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
+
+/// Owns Solvent's mutable orchestration state.
+///
+/// The synchronization domains remain separate because event handlers may
+/// re-enter runtime operations while the dispatcher is active. Ownership is
+/// centralized without imposing a single lock across unrelated lifecycles.
+pub struct RuntimeContext {
+    callbacks: Mutex<SolventCallbacks>,
+    runtime: Mutex<Option<RuntimeState>>,
+    event_queue: Mutex<Option<EventQueue>>,
+    dispatcher: Mutex<Option<Dispatcher>>,
+}
+
+impl RuntimeContext {
+    pub const fn new() -> Self {
+        Self {
+            callbacks: Mutex::new(SolventCallbacks::none()),
+            runtime: Mutex::new(None),
+            event_queue: Mutex::new(None),
+            dispatcher: Mutex::new(None),
+        }
+    }
+
+    pub fn install_callbacks(&self, callbacks: SolventCallbacks) {
+        *self.callbacks.lock() = callbacks;
+    }
+
+    pub fn callbacks(&self) -> MutexGuard<'_, SolventCallbacks> {
+        self.callbacks.lock()
+    }
+
+    pub(crate) fn runtime(&self) -> MutexGuard<'_, Option<RuntimeState>> {
+        self.runtime.lock()
+    }
+
+    pub(crate) fn event_queue(&self) -> MutexGuard<'_, Option<EventQueue>> {
+        self.event_queue.lock()
+    }
+
+    pub(crate) fn dispatcher(&self) -> MutexGuard<'_, Option<Dispatcher>> {
+        self.dispatcher.lock()
+    }
+}
+
+impl Default for RuntimeContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+pub static RUNTIME_CONTEXT: RuntimeContext = RuntimeContext::new();
 
 /// Mutable desktop runtime state protected by the crate's runtime lock.
 pub struct RuntimeState {
@@ -101,8 +147,8 @@ pub fn init() {
     dispatcher.register(Box::new(handlers::TerminalInputHandler));
     dispatcher.register(Box::new(handlers::ShellEventHandler));
 
-    *EVENT_QUEUE.lock() = Some(EventQueue::new());
-    *DISPATCHER.lock() = Some(dispatcher);
+    *RUNTIME_CONTEXT.event_queue() = Some(EventQueue::new());
+    *RUNTIME_CONTEXT.dispatcher() = Some(dispatcher);
 
     let _ = chrono.register_with_mode(
         Deadline::new(FRAME_INTERVAL_TICKS),
@@ -112,7 +158,7 @@ pub fn init() {
         },
     );
 
-    *RUNTIME.lock() = Some(RuntimeState {
+    *RUNTIME_CONTEXT.runtime() = Some(RuntimeState {
         desktop,
         term_window: None,
         term_buf,
@@ -139,7 +185,7 @@ pub fn init() {
 }
 
 pub fn is_initialized() -> bool {
-    RUNTIME.lock().is_some()
+    RUNTIME_CONTEXT.runtime().is_some()
 }
 
 pub fn apply_settings(sensitivity: f32, brightness_x100: u32, top_panel_enabled: bool) {
@@ -158,4 +204,27 @@ pub fn set_tsc_per_ms(value: u64) {
 
 pub fn get_tsc_per_ms() -> u64 {
     TSC_PER_MS.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeContext;
+    use crate::callbacks::SolventCallbacks;
+
+    #[test]
+    fn callbacks_can_be_installed_before_runtime_initialization() {
+        let context = RuntimeContext::new();
+        assert!(context.runtime().is_none());
+        assert!(context.event_queue().is_none());
+        assert!(context.dispatcher().is_none());
+
+        let callbacks = SolventCallbacks {
+            launch_shell: Some(|| {}),
+            ..SolventCallbacks::none()
+        };
+        context.install_callbacks(callbacks);
+
+        assert!(context.callbacks().launch_shell.is_some());
+        assert!(context.runtime().is_none());
+    }
 }

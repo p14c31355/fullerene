@@ -2,8 +2,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
-
 pub type WallClockCallback = fn() -> Option<(u16, u8, u8, u8, u8, u8)>;
 pub type VfsReadDirCallback = fn(&str) -> Result<Vec<VfsEntry>, genome::FsError>;
 pub type VfsReadCallback = fn(&str) -> Result<Vec<u8>, genome::FsError>;
@@ -53,14 +51,12 @@ impl SolventCallbacks {
     }
 
     pub fn install(self) {
-        *SOLVENT_CALLBACKS.lock() = self;
+        crate::RUNTIME_CONTEXT.install_callbacks(self);
     }
 }
 
-pub static SOLVENT_CALLBACKS: Mutex<SolventCallbacks> = Mutex::new(SolventCallbacks::none());
-
 pub fn exec_shell_command(input: &str) -> String {
-    let callbacks = SOLVENT_CALLBACKS.lock();
+    let callbacks = crate::RUNTIME_CONTEXT.callbacks();
     if let Some(shell_cmd) = callbacks.shell_cmd {
         drop(callbacks);
         shell_cmd(input)
@@ -70,7 +66,7 @@ pub fn exec_shell_command(input: &str) -> String {
 }
 
 pub fn launch_shell() {
-    let callbacks = SOLVENT_CALLBACKS.lock();
+    let callbacks = crate::RUNTIME_CONTEXT.callbacks();
     if let Some(launch_shell) = callbacks.launch_shell {
         drop(callbacks);
         launch_shell();
@@ -78,7 +74,7 @@ pub fn launch_shell() {
 }
 
 pub fn get_mounted_drives() -> Vec<(String, String)> {
-    let list_drives = SOLVENT_CALLBACKS.lock().mounted_drive_list;
+    let list_drives = crate::RUNTIME_CONTEXT.callbacks().mounted_drive_list;
     list_drives
         .map(|list_drives| list_drives())
         .unwrap_or_default()

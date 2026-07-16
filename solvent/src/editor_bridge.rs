@@ -2,9 +2,7 @@
 //!
 //! Extracted from lib.rs to keep the main module focused on orchestration.
 
-use crate::{
-    DEFAULT_COLS, DEFAULT_ROWS, GLYPH_H, GLYPH_W, HEAP_EXTEND_RESERVE, RUNTIME, SOLVENT_CALLBACKS,
-};
+use crate::{DEFAULT_COLS, DEFAULT_ROWS, GLYPH_H, GLYPH_W, HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT};
 use alloc::vec;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use resonance::KeyCode;
@@ -43,7 +41,7 @@ pub(crate) fn render_editor(rt: &mut crate::RuntimeState) {
             let additional = needed
                 .saturating_sub(HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed))
                 .next_multiple_of(4096);
-            let extend_fn = SOLVENT_CALLBACKS.lock().heap_extend;
+            let extend_fn = RUNTIME_CONTEXT.callbacks().heap_extend;
             if extend_fn.is_none() || extend_fn.unwrap()(additional).is_err() {
                 return;
             }
@@ -138,7 +136,7 @@ pub(crate) fn editor_save_current(rt: &mut crate::RuntimeState) {
         None => return,
     };
     let content = rt.editor_buf.full_text();
-    let write_fn = match SOLVENT_CALLBACKS.lock().vfs_write {
+    let write_fn = match RUNTIME_CONTEXT.callbacks().vfs_write {
         Some(f) => f,
         None => return,
     };
@@ -152,7 +150,7 @@ pub(crate) fn editor_save_current(rt: &mut crate::RuntimeState) {
 /// Handle a key event for the editor.
 pub fn editor_handle_key(scancode: u8, pressed: bool) {
     let key = crate::scancode_to_resonance_keycode(scancode);
-    let mut rt = RUNTIME.lock();
+    let mut rt = RUNTIME_CONTEXT.runtime();
     let rt = match rt.as_mut() {
         Some(r) => r,
         None => return,

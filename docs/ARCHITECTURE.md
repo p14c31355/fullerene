@@ -268,7 +268,9 @@ and explicitly registers the Wi-Fi service via `solvent::register_wifi_service()
 Solvent's crate root is an API facade rather than an orchestration
 implementation. Runtime responsibilities are divided under `solvent/src/`:
 
-- `runtime_context` defines runtime state, configuration, and initialization.
+- `runtime_context` owns callback, runtime-state, event-queue, and dispatcher
+  synchronization domains together with runtime configuration and
+  initialization.
 - `input_loop` translates PS/2 mouse and keyboard state into desktop actions or
   Resonance events.
 - `event_loop` owns timer processing, service ticks, event dispatch, and frame
@@ -278,9 +280,12 @@ implementation. Runtime responsibilities are divided under `solvent/src/`:
 - `callbacks` defines the kernel-provided service contract and transfer types.
 - `services` owns runtime-managed services and their shared UI snapshots.
 
-This is a structural boundary only. The current singleton ownership remains
-unchanged until the separate context-ownership work moves callbacks, runtime
-state, the event queue, and the dispatcher into an explicit `RuntimeContext`.
+`RUNTIME_CONTEXT` is the single owner of callbacks, mutable desktop runtime
+state, the Resonance event queue, and the dispatcher. Each remains behind a
+separate lock because dispatch handlers may re-enter runtime operations.
+Callers acquire these domains through `RuntimeContext` guard methods; the
+former standalone `SOLVENT_CALLBACKS`, `RUNTIME`, `EVENT_QUEUE`, and
+`DISPATCHER` globals no longer exist.
 
 ---
 

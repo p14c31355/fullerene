@@ -35,8 +35,8 @@ mod viewers;
 mod window_api;
 
 pub use callbacks::{
-    DeviceEntry, ProcessEntry, ProcessStateKind, SOLVENT_CALLBACKS, SolventCallbacks, VfsEntry,
-    exec_shell_command, get_mounted_drives, launch_shell,
+    DeviceEntry, ProcessEntry, ProcessStateKind, SolventCallbacks, VfsEntry, exec_shell_command,
+    get_mounted_drives, launch_shell,
 };
 pub use clock::clock_string;
 pub use editor_bridge::editor_handle_key;
@@ -47,8 +47,9 @@ pub use event_loop::{
 pub use input_loop::{MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state};
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
-    DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, MOUSE_SENSITIVITY, RuntimeState, apply_settings,
-    get_tsc_per_ms, init, is_initialized, set_tsc_per_ms,
+    DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, MOUSE_SENSITIVITY, RUNTIME_CONTEXT,
+    RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms, init, is_initialized,
+    set_tsc_per_ms,
 };
 #[cfg(not(nitrogen_no_iwlwifi))]
 pub use services::register_wifi_service;
@@ -73,9 +74,8 @@ pub use lattice::wallpaper::{
 
 pub(crate) use input_loop::{scancode_to_ascii, scancode_to_resonance_keycode};
 pub(crate) use runtime_context::{
-    BACK_BUFFER, CURSOR_TIMER_ID, DEFAULT_COLS, DEFAULT_ROWS, DISPATCHER, EVENT_QUEUE, FB_DIMS,
-    FRAME_INTERVAL_MS, FRAME_TIMER_ID, GLYPH_H, GLYPH_W, PREV_MOUSE_BUTTONS, RUNTIME, TERM_WIN_H,
-    TERM_WIN_W, TSC_PER_MS,
+    BACK_BUFFER, CURSOR_TIMER_ID, DEFAULT_COLS, DEFAULT_ROWS, FB_DIMS, FRAME_INTERVAL_MS,
+    FRAME_TIMER_ID, GLYPH_H, GLYPH_W, PREV_MOUSE_BUTTONS, TERM_WIN_H, TERM_WIN_W, TSC_PER_MS,
 };
 pub(crate) use services::SERVICES;
 pub(crate) use window_api::{RENDERING_SUSPENDED, render_explorer};

@@ -3,7 +3,7 @@
 //! Each viewer reads file data via `vfs_read`, parses the format, and
 //! creates a window with the content rendered into the surface.
 
-use crate::{GLYPH_H, RuntimeState, SOLVENT_CALLBACKS};
+use crate::{GLYPH_H, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -13,8 +13,8 @@ const MAX_IMG_H: u32 = 1080;
 const GLYPH_SIZE: u32 = 8;
 
 fn read_file(path: &str) -> Result<Vec<u8>, genome::FsError> {
-    let read_fn = SOLVENT_CALLBACKS
-        .lock()
+    let read_fn = RUNTIME_CONTEXT
+        .callbacks()
         .vfs_read
         .ok_or(genome::FsError::NotSupported)?;
     read_fn(path)

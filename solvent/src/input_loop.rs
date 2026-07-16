@@ -5,7 +5,7 @@ use resonance::{Event, InputEvent, MouseButton};
 use spin::Mutex;
 
 use crate::{
-    EVENT_QUEUE, MOUSE_SENSITIVITY, PREV_MOUSE_BUTTONS, RUNTIME, RuntimeState, editor_bridge,
+    MOUSE_SENSITIVITY, PREV_MOUSE_BUTTONS, RUNTIME_CONTEXT, RuntimeState, editor_bridge,
     network_manager, settings_bridge,
 };
 
@@ -52,7 +52,7 @@ pub fn poll_mouse_state() {
     let moved = old_x != mouse.x || old_y != mouse.y;
     drop(mouse);
 
-    if moved && let Some(queue) = EVENT_QUEUE.lock().as_mut() {
+    if moved && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
         queue.push(Event::Input(InputEvent::MouseMove {
             x: cursor_x,
             y: cursor_y,
@@ -62,7 +62,7 @@ pub fn poll_mouse_state() {
     let mut previous_buttons = PREV_MOUSE_BUTTONS.lock();
     let previous = *previous_buttons;
     if buttons != previous
-        && let Some(queue) = EVENT_QUEUE.lock().as_mut()
+        && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut()
     {
         mouse_edge!(queue, buttons, previous, 0x01, Left);
         mouse_edge!(queue, buttons, previous, 0x02, Right);
@@ -77,7 +77,7 @@ pub fn poll_keyboard() {
             Some(key) => key,
             None => break,
         };
-        let mut runtime_guard = RUNTIME.lock();
+        let mut runtime_guard = RUNTIME_CONTEXT.runtime();
         if let Some(runtime) = runtime_guard.as_mut() {
             if runtime.desktop.pwd_dialog_open {
                 handle_password_dialog_key(runtime, scancode, pressed);
@@ -118,7 +118,7 @@ fn push_keyboard_event(scancode: u8, pressed: bool) {
     } else {
         Event::Input(InputEvent::KeyUp(key))
     };
-    if let Some(queue) = EVENT_QUEUE.lock().as_mut() {
+    if let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut() {
         queue.push(event);
     }
 }
