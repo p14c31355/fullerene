@@ -1297,12 +1297,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust_h264"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbedf5e104105e8783a77926f1e212ea37e78fd3b38b2c928938a283d083d6f1"
-
-[[package]]
 name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1456,7 +1450,6 @@ dependencies = [
  "petroleum",
  "pure_wav",
  "resonance",
- "rust_h264",
  "shiguredo_mp4",
  "spin 0.10.0",
  "tinybmp",

@@ -433,6 +433,26 @@ pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
 
 // ── Tar archive listing ─────────────────────────────────────
 
+fn parse_tar_octal(field: &[u8]) -> u64 {
+    let mut value = 0u64;
+    let mut saw_digit = false;
+    for byte in field {
+        match *byte {
+            b'0'..=b'7' => {
+                saw_digit = true;
+                value = value
+                    .checked_mul(8)
+                    .and_then(|value| value.checked_add(u64::from(*byte - b'0')))
+                    .unwrap_or(u64::MAX);
+            }
+            0 | b' ' if !saw_digit => continue,
+            0 | b' ' => break,
+            _ => break,
+        }
+    }
+    value
+}
+
 fn tar_entries(data: &[u8]) -> Vec<String> {
     let mut entries = Vec::new();
     let mut off = 0usize;
@@ -444,8 +464,7 @@ fn tar_entries(data: &[u8]) -> Vec<String> {
 
         let name_end = block[..100].iter().position(|&b| b == 0).unwrap_or(100);
         let entry_name = core::str::from_utf8(&block[..name_end]).unwrap_or("(invalid)");
-        let size_str = core::str::from_utf8(&block[124..136]).unwrap_or("0");
-        let size = u64::from_str_radix(size_str.trim(), 8).unwrap_or(0);
+        let size = parse_tar_octal(&block[124..136]);
         let type_flag = block[156];
         let kind = match type_flag {
             b'5' => "dir",
@@ -622,47 +641,6 @@ pub fn open_zip(rt: &mut RuntimeState, path: &str, name: &str) {
 use shiguredo_mp4::TrackKind;
 
 #[cfg(feature = "shiguredo_mp4")]
-fn yuv420_to_rgb888(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
-    let y = y as i32;
-    let u = u as i32 - 128;
-    let v = v as i32 - 128;
-    let r = (y + 359 * v / 256).clamp(0, 255) as u8;
-    let g = (y - 88 * u / 256 - 183 * v / 256).clamp(0, 255) as u8;
-    let b = (y + 454 * u / 256).clamp(0, 255) as u8;
-    (r, g, b)
-}
-
-#[cfg(feature = "shiguredo_mp4")]
-fn render_frame_to_surface(rt: &mut RuntimeState, frame: &rust_h264::decoder::Frame) {
-    let w = frame.width.min(800);
-    let h = frame.height.min(600);
-    let id = rt
-        .desktop
-        .wm
-        .create_titled_window(120, 60, w, h, 0x000000, "Movie Player");
-    if let Some(win) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        // Convert YUV420 to RGB and render
-        for y in 0..h {
-            for x in 0..w {
-                let yi = (y as usize) * (frame.width as usize) + (x as usize);
-                let ui = ((y / 2) as usize) * ((frame.width / 2) as usize) + ((x / 2) as usize);
-                let vi = ui;
-                let (r, g, b) = if yi < frame.y.len() && ui < frame.u.len() {
-                    yuv420_to_rgb888(frame.y[yi], frame.u[ui], frame.v[vi])
-                } else {
-                    (0, 0, 0)
-                };
-                win.surface
-                    .set_pixel(x, y, (r as u32) << 16 | (g as u32) << 8 | b as u32);
-            }
-        }
-        rt.desktop.invalidate_window(id);
-    }
-    rt.desktop.wm.raise_to_top(id);
-    rt.frame_due = true;
-}
-
-#[cfg(feature = "shiguredo_mp4")]
 pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
@@ -680,7 +658,7 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     };
     demuxer.handle_input(input);
 
-    // `demuxer.tracks()` borrows demuxer, extract into owned vec before sample iteration
+    // `demuxer.tracks()` borrows demuxer, so copy the summary before sample iteration.
     let tracks_with_kind: Vec<(u32, shiguredo_mp4::TrackKind, u64, u32)> = {
         let t = match demuxer.tracks() {
             Ok(t) => t,
@@ -711,7 +689,6 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
             TrackKind::Audio => {
                 audio_info.push(format!("  Audio track {}: {} s", tid, dur_sec as u32));
             }
-            _ => {}
         }
     }
 
@@ -735,9 +712,7 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
         }
     };
 
-    // Get video codec info from the first sample entry
-    // We need to scan samples to get sample_entry
-    let mut sps_pps = None;
+    // Sample entry metadata carries the encoded dimensions and codec.
     loop {
         match demuxer.next_sample() {
             Ok(Some(sample)) if sample.track.track_id == video_track_id => {
@@ -746,68 +721,12 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
                         video_width = w;
                         video_height = h;
                     }
-                    // Extract SPS/PPS from avcC
-                    if let shiguredo_mp4::boxes::SampleEntry::Avc1(avc1) = entry {
+                    if let shiguredo_mp4::boxes::SampleEntry::Avc1(_) = entry {
                         video_codec = "H.264";
-                        sps_pps = Some((
-                            avc1.avcc_box.sps_list.clone(),
-                            avc1.avcc_box.pps_list.clone(),
-                        ));
                     }
                 }
-
-                // Found video track info – now process keyframe
-                if sample.keyframe && sps_pps.is_some() {
-                    let (sps_list, pps_list) = sps_pps.as_ref().unwrap();
-
-                    // Build SPS/PPS NAL units for the decoder (Annex B format)
-                    let mut decoder = rust_h264::decoder::Decoder::new();
-
-                    // Feed SPS NALs first
-                    for sps_raw in sps_list {
-                        let annex_b = build_annex_b(sps_raw);
-                        let nals = rust_h264::nal::parse_annex_b(&annex_b);
-                        for nal in &nals {
-                            let _ = decoder.decode_nal(nal);
-                        }
-                    }
-                    // Feed PPS NALs
-                    for pps_raw in pps_list {
-                        let annex_b = build_annex_b(pps_raw);
-                        let nals = rust_h264::nal::parse_annex_b(&annex_b);
-                        for nal in &nals {
-                            let _ = decoder.decode_nal(nal);
-                        }
-                    }
-
-                    // Parse the keyframe sample data (MP4 format → Annex B for decoder)
-                    let start = sample.data_offset as usize;
-                    let end = start
-                        .checked_add(sample.data_size as usize)
-                        .unwrap_or(usize::MAX);
-                    if end <= data.len() {
-                        let sample_data = &data[start..end];
-                        // Use parse_avcc with length_size=4 (MP4 standard)
-                        let nals = rust_h264::nal::parse_avcc(sample_data, 4);
-                        for nal in &nals {
-                            if let Ok(Some(frame)) = decoder.decode_nal(nal) {
-                                if video_width == 0 {
-                                    video_width = frame.width as u16;
-                                }
-                                if video_height == 0 {
-                                    video_height = frame.height as u16;
-                                }
-                                render_frame_to_surface(rt, &frame);
-                                return;
-                            }
-                        }
-                    }
-
-                    // Flush decoder for any pending frame
-                    if let Some(frame) = decoder.flush() {
-                        render_frame_to_surface(rt, &frame);
-                        return;
-                    }
+                if video_width > 0 || video_height > 0 || video_codec != "Unknown" {
+                    break;
                 }
             }
             Ok(Some(_)) => continue,
@@ -818,7 +737,7 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
 
     // Fallback: show info
     let msg = format!(
-        "File: {}\nFormat: MP4\nVideo: {}x{} {}\n{} audio\nDuration: {:.0} s\n\nDecoding not yet available.",
+        "File: {}\nFormat: MP4\nVideo: {}x{} {}\n{} audio\nDuration: {:.0} s\n\nPlayback not yet implemented.",
         name,
         video_width,
         video_height,
@@ -831,13 +750,6 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
         total_duration_ms / 1000.0,
     );
     show_text_window(rt, "Movie Player", &msg, 50, 0x0d0d1a, 0xCCCCFF);
-}
-
-#[cfg(feature = "shiguredo_mp4")]
-fn build_annex_b(nal_data: &[u8]) -> alloc::vec::Vec<u8> {
-    let mut out = alloc::vec![0u8, 0u8, 0u8, 1u8];
-    out.extend_from_slice(nal_data);
-    out
 }
 
 #[cfg(test)]

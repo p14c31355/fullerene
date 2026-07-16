@@ -117,7 +117,12 @@ impl FileSystem for DevFs {
                     }
                 }
                 Some(DriverBox::Network(drv)) => match drv.receive(buf) {
-                    Ok(n) => (Ok(n), entry_offset + n),
+                    Ok(n) => {
+                        let new_offset = entry_offset
+                            .checked_add(n as u64)
+                            .ok_or(FsError::InvalidSeek)?;
+                        (Ok(n), new_offset)
+                    }
                     Err(_) => (Err(FsError::NotSupported), entry_offset),
                 },
                 Some(DriverBox::Audio(_))
@@ -189,11 +194,21 @@ impl FileSystem for DevFs {
                     }
                 }
                 Some(DriverBox::Network(drv)) => match drv.send(data) {
-                    Ok(_) => (Ok(data.len()), entry_offset + data.len()),
+                    Ok(_) => {
+                        let new_offset = entry_offset
+                            .checked_add(data.len() as u64)
+                            .ok_or(FsError::InvalidSeek)?;
+                        (Ok(data.len()), new_offset)
+                    }
                     Err(_) => (Err(FsError::NotSupported), entry_offset),
                 },
                 Some(DriverBox::Audio(drv)) => match drv.play(data) {
-                    Ok(_) => (Ok(data.len()), entry_offset + data.len()),
+                    Ok(_) => {
+                        let new_offset = entry_offset
+                            .checked_add(data.len() as u64)
+                            .ok_or(FsError::InvalidSeek)?;
+                        (Ok(data.len()), new_offset)
+                    }
                     Err(_) => (Err(FsError::NotSupported), entry_offset),
                 },
                 Some(DriverBox::UsbHost(_))

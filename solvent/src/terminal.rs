@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn terminal_history_is_session_local_bounded_and_deduplicated() {
         let mut first = VecDeque::new();
-        let second = VecDeque::new();
+        let second: VecDeque<String> = VecDeque::new();
         record_session_history(&mut first, "ls", 2);
         record_session_history(&mut first, "ls", 2);
         record_session_history(&mut first, "pwd", 2);
