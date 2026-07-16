@@ -416,6 +416,13 @@ released, the kernel integration layer performs FAT probing and mounts through
 Genome. This lock boundary must be preserved: recursively borrowing a
 `USBContext` from a mount callback is prohibited.
 
+The FAT-family integration is divided along I/O ownership boundaries under
+`fullerene-kernel/src/drivers/fat/`: `partition` translates media-relative
+LBAs, `cache` owns sector caching and eviction, `block_device` adapts the kernel
+contract to filesystem I/O, `fat32` and `exfat` implement their VFS backends,
+and the module root only probes and dispatches mounts. Existing callers enter
+through `drivers::fat::mount_device`.
+
 USB controller service registration is boot-safe and does not activate BAR
 MMIO. Solvent polling observes only an already-active controller and must never
 activate the Nitrogen state machine from rendering or input dispatch. Explicit

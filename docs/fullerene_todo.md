@@ -67,7 +67,7 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] `AbiVersion` / capability query syscall ([#279](https://github.com/p14c31355/fullerene/issues/279))
 
 ### P1-3. Module splitting by context boundary
-- [ ] Split `drivers/fat.rs` → `block_device`, `partition`, `cache`, `fat32`, `exfat`
+- [x] Split `drivers/fat.rs` → `block_device`, `partition`, `cache`, `fat32`, `exfat` ([#281](https://github.com/p14c31355/fullerene/issues/281))
 - [ ] Split `syscall/handlers.rs` → `dispatch`, `process`, `fs`, `memory`, etc. (mostly done — already split by function area)
 - [ ] Split `solvent/lib.rs` → `runtime_context`, `input_loop`, `event_loop`, etc.
 - [ ] Split `usb/xhci/context.rs` → controller init, command, event, transfer, resources
