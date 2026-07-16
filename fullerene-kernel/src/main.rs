@@ -39,10 +39,13 @@ mod panic_screen {
     /// | 255   | bright red    | **PANIC** (no init stage) |
     pub fn draw() {
         // ── 1. Physical FB address from the linker-section snapshot ──
-        let phys = unsafe { crate::graphics::discovery::STORED_FB_PHYS };
-        let w = unsafe { crate::graphics::discovery::STORED_FB_WIDTH };
-        let h = unsafe { crate::graphics::discovery::STORED_FB_HEIGHT };
-        let stride_raw = unsafe { crate::graphics::discovery::STORED_FB_STRIDE };
+        let Some(params) = crate::graphics::discovery::boot_framebuffer_params() else {
+            return;
+        };
+        let phys = params.phys;
+        let w = params.width;
+        let h = params.height;
+        let stride_raw = params.stride;
 
         if !(0x100_000..1 << 52).contains(&phys)
             || !(80..=16_384).contains(&w)

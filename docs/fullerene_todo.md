@@ -39,7 +39,7 @@ You may close them using the "Development" section of the PR, or create new issu
 - [x] `FramebufferGuard` / `with_framebuffer` closure API ([#267](https://github.com/p14c31355/fullerene/issues/267))
 - [x] Solvent cursor fast path: use `FramebufferGuard` instead of raw address ([#269](https://github.com/p14c31355/fullerene/issues/269))
 - [x] Trace buffer: fix for multi-CPU safety or document single-core assumption ([#271](https://github.com/p14c31355/fullerene/issues/271))
-- [ ] Boot-only globals: convert to `Once` or immutable after init
+- [x] Boot-only globals: convert to `Once` or immutable after init ([#273](https://github.com/p14c31355/fullerene/issues/273))
 
 ### P0-4. Block cache boundary checks & eviction
 - [x] Pre-I/O buffer length validation (`BufferTooSmall` error)
