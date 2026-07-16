@@ -15,7 +15,7 @@ pub fn init() {
 pub struct FileDesc {
     pub fd: u32,
     pub ino: u64,
-    pub offset: usize,
+    pub offset: u64,
     pub flags: u32,
 }
 
@@ -62,17 +62,23 @@ pub fn close_file(fd: FileDesc) -> Result<(), FsError> {
 
 pub fn read_file(fd: &mut FileDesc, buffer: &mut [u8]) -> Result<usize, FsError> {
     let n = vfs::read(fd.fd, buffer)?;
-    fd.offset += n;
+    fd.offset = fd
+        .offset
+        .checked_add(n as u64)
+        .ok_or(FsError::InvalidSeek)?;
     Ok(n)
 }
 
 pub fn write_file(fd: &mut FileDesc, data: &[u8]) -> Result<usize, FsError> {
     let written = vfs::write(fd.fd, data)?;
-    fd.offset += written;
+    fd.offset = fd
+        .offset
+        .checked_add(written as u64)
+        .ok_or(FsError::InvalidSeek)?;
     Ok(written)
 }
 
-pub fn seek_file(fd: &mut FileDesc, position: usize) -> Result<(), FsError> {
+pub fn seek_file(fd: &mut FileDesc, position: u64) -> Result<(), FsError> {
     vfs::seek(fd.fd, position).map(|_| {
         fd.offset = position;
     })

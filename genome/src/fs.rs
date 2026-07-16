@@ -56,7 +56,7 @@ impl From<crate::block::BlockError> for FsError {
 pub struct FileDesc {
     pub fd: u32,
     pub ino: u64,
-    pub offset: usize,
+    pub offset: u64,
     pub flags: u32,
 }
 

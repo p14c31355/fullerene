@@ -73,6 +73,10 @@ pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
         app_name: "Image Viewer",
     },
     FileAssociation {
+        extensions: &["jpg", "jpeg"],
+        app_name: "Image Viewer",
+    },
+    FileAssociation {
         extensions: &["wav"],
         app_name: "Music Player",
     },
@@ -81,7 +85,7 @@ pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
         app_name: "Music Player",
     },
     FileAssociation {
-        extensions: &["tar", "gz", "xz", "zip"],
+        extensions: &["tar", "tgz", "gz", "xz", "zip"],
         app_name: "Archive Manager",
     },
     FileAssociation {

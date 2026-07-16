@@ -20,4 +20,12 @@ pub trait Terminal {
     fn arm_pipe_stdout(&mut self) {}
 
     fn clear_pipe_stdin(&mut self) {}
+
+    /// Record a command in this terminal session's history.
+    fn record_history(&mut self, _line: &str) {}
+
+    /// Return this terminal session's command history, newest first.
+    fn history_snapshot(&self) -> alloc::vec::Vec<alloc::string::String> {
+        alloc::vec::Vec::new()
+    }
 }

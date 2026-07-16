@@ -166,6 +166,72 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
     rt.frame_due = true;
 }
 
+// ── JPEG viewer ──────────────────────────────────────────────
+
+#[cfg(feature = "zune-jpeg")]
+pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
+    use zune_core::bytestream::ZCursor;
+    use zune_core::colorspace::ColorSpace;
+    use zune_core::options::DecoderOptions;
+
+    let data = match read_file(path) {
+        Ok(data) => data,
+        Err(error) => {
+            show_error(rt, "JPEG Error", &format!("Cannot read:\n{}", error));
+            return;
+        }
+    };
+    let options = DecoderOptions::default()
+        .jpeg_set_out_colorspace(ColorSpace::RGB)
+        .set_max_width(MAX_IMG_W as usize)
+        .set_max_height(MAX_IMG_H as usize);
+    let mut decoder =
+        zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data.as_slice()), options);
+    let pixels = match decoder.decode() {
+        Ok(pixels) => pixels,
+        Err(error) => {
+            show_error(rt, "JPEG Error", &format!("Decode failed:\n{:?}", error));
+            return;
+        }
+    };
+    let Some(info) = decoder.info() else {
+        show_error(rt, "JPEG Error", "Missing image information");
+        return;
+    };
+    let width = u32::from(info.width);
+    let height = u32::from(info.height);
+    if width > MAX_IMG_W || height > MAX_IMG_H {
+        show_error(
+            rt,
+            "JPEG Error",
+            &format!("Image too large: {}x{}", width, height),
+        );
+        return;
+    }
+    let win_w = width.min(800).max(160);
+    let win_h = height.min(600).max(120);
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
+    if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        for y in 0..height.min(win_h) {
+            for x in 0..width.min(win_w) {
+                let offset = ((y as usize) * (width as usize) + x as usize) * 3;
+                if offset + 2 < pixels.len() {
+                    let color = (pixels[offset] as u32) << 16
+                        | (pixels[offset + 1] as u32) << 8
+                        | pixels[offset + 2] as u32;
+                    window.surface.set_pixel(x, y, color);
+                }
+            }
+        }
+        rt.desktop.invalidate_window(id);
+    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
 // ── WAV info viewer ─────────────────────────────────────────
 
 pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
@@ -253,15 +319,7 @@ pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
 
 // ── Tar archive listing ─────────────────────────────────────
 
-pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "Tar Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-
+fn tar_entries(data: &[u8]) -> Vec<String> {
     let mut entries = Vec::new();
     let mut off = 0usize;
     while off + 512 <= data.len() {
@@ -292,9 +350,12 @@ pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
             None => break,
         };
     }
+    entries
+}
 
+fn show_archive_entries(rt: &mut RuntimeState, name: &str, entries: &[String]) {
     let mut msg = format!("Archive: {}\n{} entries\n\n", name, entries.len());
-    for e in &entries {
+    for e in entries {
         if msg.len() < 2000 {
             msg.push_str(e);
             msg.push('\n');
@@ -304,6 +365,141 @@ pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
         msg.push_str("(empty archive)\n");
     }
     show_text_window(rt, "Archive Manager", &msg, 60, 0x0d1a0d, 0xCCFFCC);
+}
+
+pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
+    let data = match read_file(path) {
+        Ok(d) => d,
+        Err(e) => {
+            show_error(rt, "Tar Error", &format!("Cannot read:\n{}", e));
+            return;
+        }
+    };
+    show_archive_entries(rt, name, &tar_entries(&data));
+}
+
+// ── gzip / tgz archive support ───────────────────────────────
+
+#[cfg(feature = "gzip")]
+fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, &'static str> {
+    if data.len() < 18 || data[0..2] != [0x1f, 0x8b] || data[2] != 8 {
+        return Err("invalid gzip header");
+    }
+    let flags = data[3];
+    if flags & 0xe0 != 0 {
+        return Err("unsupported gzip flags");
+    }
+    let mut offset = 10usize;
+    if flags & 0x04 != 0 {
+        let length = data
+            .get(offset..offset + 2)
+            .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]) as usize)
+            .ok_or("truncated gzip extra field")?;
+        offset = offset
+            .checked_add(2 + length)
+            .ok_or("gzip header overflow")?;
+    }
+    for flag in [0x08, 0x10] {
+        if flags & flag != 0 {
+            let tail = data.get(offset..).ok_or("truncated gzip string")?;
+            let length = tail
+                .iter()
+                .position(|byte| *byte == 0)
+                .ok_or("unterminated gzip string")?;
+            offset = offset
+                .checked_add(length + 1)
+                .ok_or("gzip header overflow")?;
+        }
+    }
+    if flags & 0x02 != 0 {
+        offset = offset.checked_add(2).ok_or("gzip header overflow")?;
+    }
+    let compressed = data
+        .get(offset..data.len().saturating_sub(8))
+        .ok_or("truncated gzip payload")?;
+    miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, 32 * 1024 * 1024)
+        .map_err(|_| "gzip decompression failed")
+}
+
+#[cfg(feature = "gzip")]
+pub fn open_gzip(rt: &mut RuntimeState, path: &str, name: &str, tar: bool) {
+    let data = match read_file(path) {
+        Ok(data) => data,
+        Err(error) => {
+            show_error(rt, "gzip Error", &format!("Cannot read:\n{}", error));
+            return;
+        }
+    };
+    let decoded = match decompress_gzip(&data) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            show_error(rt, "gzip Error", error);
+            return;
+        }
+    };
+    if tar {
+        show_archive_entries(rt, name, &tar_entries(&decoded));
+    } else {
+        let preview = core::str::from_utf8(&decoded)
+            .map(|text| text.chars().take(1600).collect::<alloc::string::String>())
+            .unwrap_or_else(|_| alloc::string::String::from("(binary data)"));
+        let message = format!(
+            "File: {}\nUncompressed size: {} bytes\n\n{}",
+            name,
+            decoded.len(),
+            preview
+        );
+        show_text_window(rt, "gzip Viewer", &message, 60, 0x0d1a0d, 0xCCFFCC);
+    }
+}
+
+// ── ZIP central directory listing ────────────────────────────
+
+fn zip_entries(data: &[u8]) -> Vec<String> {
+    const CENTRAL_HEADER: &[u8; 4] = b"PK\x01\x02";
+    let mut entries = Vec::new();
+    let mut offset = 0usize;
+    while offset + 46 <= data.len() {
+        let Some(relative) = data[offset..]
+            .windows(4)
+            .position(|window| window == CENTRAL_HEADER)
+        else {
+            break;
+        };
+        offset += relative;
+        let header = &data[offset..offset + 46];
+        let compressed = u32::from_le_bytes(header[20..24].try_into().unwrap());
+        let uncompressed = u32::from_le_bytes(header[24..28].try_into().unwrap());
+        let name_len = u16::from_le_bytes(header[28..30].try_into().unwrap()) as usize;
+        let extra_len = u16::from_le_bytes(header[30..32].try_into().unwrap()) as usize;
+        let comment_len = u16::from_le_bytes(header[32..34].try_into().unwrap()) as usize;
+        let end = match offset
+            .checked_add(46)
+            .and_then(|value| value.checked_add(name_len + extra_len + comment_len))
+        {
+            Some(end) if end <= data.len() => end,
+            _ => break,
+        };
+        let name =
+            core::str::from_utf8(&data[offset + 46..offset + 46 + name_len]).unwrap_or("(invalid)");
+        entries.push(format!(
+            "{:>8} -> {:>8}  {}",
+            uncompressed, compressed, name
+        ));
+        offset = end;
+    }
+    entries
+}
+
+pub fn open_zip(rt: &mut RuntimeState, path: &str, name: &str) {
+    let data = match read_file(path) {
+        Ok(data) => data,
+        Err(error) => {
+            show_error(rt, "ZIP Error", &format!("Cannot read:\n{}", error));
+            return;
+        }
+    };
+    show_archive_entries(rt, name, &zip_entries(&data));
 }
 
 // ── MP4 player ───────────────────────────────────────────────
@@ -528,4 +724,39 @@ fn build_annex_b(nal_data: &[u8]) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec![0u8, 0u8, 0u8, 1u8];
     out.extend_from_slice(nal_data);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{tar_entries, zip_entries};
+    use alloc::vec;
+
+    #[test]
+    fn tar_listing_parses_a_regular_file() {
+        let mut archive = vec![0u8; 1024];
+        archive[..9].copy_from_slice(b"hello.txt");
+        archive[124..135].copy_from_slice(b"00000000005");
+        archive[156] = b'0';
+        archive[512..517].copy_from_slice(b"hello");
+
+        let entries = tar_entries(&archive);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].contains("hello.txt"));
+        assert!(entries[0].contains('5'));
+    }
+
+    #[test]
+    fn zip_listing_parses_central_directory_metadata() {
+        let name = b"notes.md";
+        let mut archive = vec![0u8; 46 + name.len()];
+        archive[..4].copy_from_slice(b"PK\x01\x02");
+        archive[20..24].copy_from_slice(&4u32.to_le_bytes());
+        archive[24..28].copy_from_slice(&8u32.to_le_bytes());
+        archive[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
+        archive[46..].copy_from_slice(name);
+
+        let entries = zip_entries(&archive);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].contains("notes.md"));
+    }
 }

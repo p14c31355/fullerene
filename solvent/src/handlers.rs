@@ -9,6 +9,19 @@ use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
 const DOUBLE_CLICK_TICKS: u64 = 500;
 
+fn apply_mouse_move(
+    desktop: &mut lattice::desktop::Desktop,
+    cursor_redraw_from: &mut Option<(i32, i32)>,
+    frame_due: &mut bool,
+    x: i32,
+    y: i32,
+) {
+    let previous = (desktop.cursor.x, desktop.cursor.y);
+    desktop.mouse_move(x, y);
+    cursor_redraw_from.get_or_insert(previous);
+    *frame_due = true;
+}
+
 pub(crate) struct WmEventHandler;
 
 impl EventHandler for WmEventHandler {
@@ -25,9 +38,13 @@ impl EventHandler for WmEventHandler {
 
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
-                let previous = (rt.desktop.cursor.x, rt.desktop.cursor.y);
-                rt.desktop.mouse_move(*x, *y);
-                rt.request_cursor_redraw(previous);
+                apply_mouse_move(
+                    &mut rt.desktop,
+                    &mut rt.cursor_redraw_from,
+                    &mut rt.frame_due,
+                    *x,
+                    *y,
+                );
                 true
             }
             Event::Input(InputEvent::MouseDown(btn)) => {
@@ -113,6 +130,32 @@ impl EventHandler for WmEventHandler {
             }
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_mouse_move;
+    use lattice::desktop::Desktop;
+
+    #[test]
+    fn mouse_input_transitions_cursor_state_and_marks_frame_dirty() {
+        let mut desktop = Desktop::new(0);
+        let previous = (desktop.cursor.x, desktop.cursor.y);
+        let mut cursor_redraw_from = None;
+        let mut frame_due = false;
+
+        apply_mouse_move(
+            &mut desktop,
+            &mut cursor_redraw_from,
+            &mut frame_due,
+            23,
+            41,
+        );
+
+        assert_eq!((desktop.cursor.x, desktop.cursor.y), (23, 41));
+        assert_eq!(cursor_redraw_from, Some(previous));
+        assert!(frame_due);
     }
 }
 

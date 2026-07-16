@@ -727,6 +727,36 @@ pub fn unblock_process(pid: ProcessId) {
 mod tests {
     use super::*;
 
+    struct FakeProcessAddressSpace {
+        bytes: Vec<u8>,
+        writable: Vec<bool>,
+    }
+
+    impl FakeProcessAddressSpace {
+        fn new(size: usize) -> Self {
+            Self {
+                bytes: alloc::vec![0; size],
+                writable: alloc::vec![false; size],
+            }
+        }
+
+        fn map_writable(&mut self, start: usize, length: usize) {
+            for writable in &mut self.writable[start..start + length] {
+                *writable = true;
+            }
+        }
+
+        fn copy_to_user(&mut self, start: usize, data: &[u8]) -> Result<(), ()> {
+            let end = start.checked_add(data.len()).ok_or(())?;
+            let destination = self.bytes.get_mut(start..end).ok_or(())?;
+            if !self.writable.get(start..end).ok_or(())?.iter().all(|v| *v) {
+                return Err(());
+            }
+            destination.copy_from_slice(data);
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_process_creation() {
         let addr = VirtAddr::new(0);
@@ -741,6 +771,40 @@ mod tests {
         init(0, 0);
         assert!(SCHEDULER.count() > 0);
         assert!(SCHEDULER.active_count() > 0);
+    }
+
+    #[test]
+    fn two_process_resource_tables_are_isolated() {
+        let first = ProcessResources::new();
+        let second = ProcessResources::new();
+
+        first.fd_table.lock().entries.insert(
+            3,
+            crate::fs::FileDesc {
+                fd: 3,
+                ino: 11,
+                offset: 7,
+                flags: 0,
+            },
+        );
+        let first_handle = first
+            .handle_table
+            .lock()
+            .alloc(KernelObject::Device(crate::syscall::DeviceState {}));
+
+        assert!(first.fd_table.lock().entries.contains_key(&3));
+        assert!(!second.fd_table.lock().entries.contains_key(&3));
+        assert!(first.handle_table.lock().get(first_handle).is_some());
+        assert!(second.handle_table.lock().get(first_handle).is_none());
+    }
+
+    #[test]
+    fn fake_process_address_space_rejects_unmapped_user_copy() {
+        let mut address_space = FakeProcessAddressSpace::new(32);
+        address_space.map_writable(8, 8);
+        assert_eq!(address_space.copy_to_user(8, b"full"), Ok(()));
+        assert_eq!(&address_space.bytes[8..12], b"full");
+        assert_eq!(address_space.copy_to_user(14, b"overflow"), Err(()));
     }
 }
 

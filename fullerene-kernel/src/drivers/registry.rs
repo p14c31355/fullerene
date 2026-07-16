@@ -271,7 +271,8 @@ unsafe impl Send for UsbBlockDevice {}
 
 #[cfg(not(nitrogen_no_usb))]
 impl BlockDevice for UsbBlockDevice {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
         with_ctx(|ctx| {
             ctx.bot_read(
                 self.ctrl_type,
@@ -290,7 +291,8 @@ impl BlockDevice for UsbBlockDevice {
         })
         .map_err(|_| BlockError::Device)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
         with_ctx(|ctx| {
             ctx.bot_write(
                 self.ctrl_type,
@@ -587,10 +589,12 @@ unsafe impl Send for SdBlockDev {}
 
 #[cfg(not(nitrogen_no_storage))]
 impl BlockDevice for SdBlockDev {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
         nitrogen::storage::rtsx::read_sectors(lba, count, buf).map_err(|_| BlockError::Device)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
         nitrogen::storage::rtsx::write_sectors(lba, count, buf).map_err(|_| BlockError::Device)
     }
     fn sector_size(&self) -> u32 {

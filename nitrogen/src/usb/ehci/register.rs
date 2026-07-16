@@ -22,6 +22,12 @@ pub const PORTSC_RESET: u32 = 1 << 8;
 
 // ══════════════════════════════════════════════════════════════
 
+/// Minimal register backend used by controller state transitions.
+pub trait RegisterBackend {
+    fn read_register(&self, offset: usize) -> u32;
+    fn write_register(&mut self, offset: usize, value: u32);
+}
+
 pub struct EhciOperationalRegisters(*mut u8);
 
 impl EhciOperationalRegisters {
@@ -75,6 +81,40 @@ impl EhciOperationalRegisters {
     }
 }
 
+impl RegisterBackend for EhciOperationalRegisters {
+    fn read_register(&self, offset: usize) -> u32 {
+        self.read(offset)
+    }
+
+    fn write_register(&mut self, offset: usize, value: u32) {
+        self.write(offset, value);
+    }
+}
+
+/// Pure state-machine façade shared by MMIO and fake register backends.
+pub struct EhciStateMachine<'a, B: RegisterBackend> {
+    backend: &'a mut B,
+}
+
+impl<'a, B: RegisterBackend> EhciStateMachine<'a, B> {
+    pub fn new(backend: &'a mut B) -> Self {
+        Self { backend }
+    }
+
+    pub fn request_reset(&mut self) {
+        let command = self.backend.read_register(OP_USBCMD);
+        self.backend
+            .write_register(OP_USBCMD, command | USBCMD_HCRESET);
+    }
+
+    pub fn start_async_schedule(&mut self, list_address: u32) {
+        self.backend.write_register(OP_ASYNCLISTADDR, list_address);
+        let command = self.backend.read_register(OP_USBCMD);
+        self.backend
+            .write_register(OP_USBCMD, command | USBCMD_RS | USBCMD_ASSE);
+    }
+}
+
 pub struct EhciRegisterContext {
     pub mmio_base: *mut u8,
     pub caplength: u8,
@@ -108,11 +148,51 @@ impl EhciRegisterContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct FakeRegisters {
+        values: BTreeMap<usize, u32>,
+    }
+
+    impl RegisterBackend for FakeRegisters {
+        fn read_register(&self, offset: usize) -> u32 {
+            self.values.get(&offset).copied().unwrap_or(0)
+        }
+
+        fn write_register(&mut self, offset: usize, value: u32) {
+            self.values.insert(offset, value);
+        }
+    }
 
     #[test]
     fn test_portsc_bits() {
         assert_eq!(PORTSC_CCS, 1);
         assert_eq!(PORTSC_PE, 4);
         assert_eq!(PORTSC_RESET, 256);
+    }
+
+    #[test]
+    fn state_machine_resets_then_starts_async_schedule() {
+        let mut registers = FakeRegisters::default();
+        {
+            let mut state = EhciStateMachine::new(&mut registers);
+            state.request_reset();
+        }
+        assert_eq!(
+            registers.read_register(OP_USBCMD) & USBCMD_HCRESET,
+            USBCMD_HCRESET
+        );
+
+        registers.write_register(OP_USBCMD, 0);
+        {
+            let mut state = EhciStateMachine::new(&mut registers);
+            state.start_async_schedule(0x2000);
+        }
+        assert_eq!(registers.read_register(OP_ASYNCLISTADDR), 0x2000);
+        assert_eq!(
+            registers.read_register(OP_USBCMD) & (USBCMD_RS | USBCMD_ASSE),
+            USBCMD_RS | USBCMD_ASSE
+        );
     }
 }

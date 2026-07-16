@@ -75,53 +75,52 @@ You may close them using the "Development" section of the PR, or create new issu
 
 ### P1-4. Context ownership for callbacks & hooks
 - [x] Move `solvent::SOLVENT_CALLBACKS`, `RUNTIME`, `EVENT_QUEUE`, `DISPATCHER` into `RuntimeContext` ([#292](https://github.com/p14c31355/fullerene/issues/292))
-- [ ] Move `nozzle::FS_HOOKS`, `SYS_HOOKS` into constructor-injected services
-- [ ] Move `carrier::SHARED_HISTORY` into terminal session
+- [x] Move `nozzle::FS_HOOKS`, `SYS_HOOKS` into constructor-injected services ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] Move `carrier::SHARED_HISTORY` into terminal session ([#294](https://github.com/p14c31355/fullerene/issues/294))
 - [x] Device registry: persistent `/dev` identity with exclusive take lease
-- [ ] Return a block-device lease when its filesystem is unmounted
+- [x] Return a block-device lease when its filesystem is unmounted ([#294](https://github.com/p14c31355/fullerene/issues/294))
 
 ### P1-5. FS capability contract
 - [x] `FileSystem` trait: uses typed `Result<..., FsError>` instead of `Option` + string errors
-- [ ] `FileSystemCapabilities`: read-only, mkdir, unlink, symlink, large-file
+- [x] `FileSystemCapabilities`: read-only, mkdir, unlink, symlink, large-file ([#294](https://github.com/p14c31355/fullerene/issues/294))
 - [x] Stub operations return `NotSupported` (not silent success) — verified in dispatch
-- [ ] Offset/size/LBA unified to `u64` with checked conversion
+- [x] Offset/size/LBA unified to `u64` with checked conversion ([#294](https://github.com/p14c31355/fullerene/issues/294))
 
 ### P1-6. Timer & trace semantics
-- [ ] Repeating timer: `FixedRate` vs `FixedDelay` distinction
-- [ ] Interval 0 rejected at registration
-- [ ] Catch-up limit and missed-tick policy
-- [ ] Binary heap for timer queue (replace sorted Vec)
-- [ ] Trace buffer: sequence-numbered snapshots
+- [x] Repeating timer: `FixedRate` vs `FixedDelay` distinction
+- [x] Interval 0 rejected at registration
+- [x] Catch-up limit and missed-tick policy
+- [x] Binary heap for timer queue (replace sorted Vec)
+- [x] Trace buffer: sequence-numbered snapshots
 
 ### P1-7. Stub syscall audit
 - [x] Linux compat: `mount`, `umount2`, `truncate`, `ftruncate`, `fsync`, `fdatasync` return `ENOSYS` (correct error, not silent success)
 - [x] Linux compat: `fchmod`, `fchmodat` changed from silent success to `ENOSYS`
 - [x] Native syscall stubs: `protect_memory` and `subscribe_event` implemented with real logic; only `device_ioctl` remains `NotSupported` (needs device dispatch infrastructure)
-- [ ] Syscall support matrix as test data
+- [x] Syscall support matrix as test data
 
 ### P1-8. Headless / fake device tests
-- [ ] `carrier`: pipeline parse, unknown command, stdin/stdout, command stop
-- [ ] `solvent`: input event → state transition, dirty rect, clock, terminal session
+- [x] `carrier`: pipeline parse, unknown command, stdin/stdout, command stop ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] `solvent`: input event → state transition, dirty rect, clock, terminal session ([#294](https://github.com/p14c31355/fullerene/issues/294))
 - [x] FAT/block cache: `FakeBlockDevice` tests (done as part of P0-4)
-- [ ] Syscall: fake process address space + 2-process resource isolation
-- [ ] `nitrogen`: register backend trait → state-machine test
-- [ ] `lattice`: deterministic scene snapshot / PPM hash
+- [x] Syscall: fake process address space + 2-process resource isolation ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] `nitrogen`: register backend trait → state-machine test ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] `lattice`: deterministic scene snapshot / PPM hash ([#294](https://github.com/p14c31355/fullerene/issues/294))
 
 ### P1-9. REAL HARDWARE ISSUE
-- [ ] filesystem: Issue where opening mounted external storage containing two or more files causes a hang.
+- [x] filesystem: Issue where opening mounted external storage containing two or more files causes a hang.
 
 ### P1-10. Extension support using external crates
-- [ ] mp4: use `shiguredo_mp4`
-- [ ] jpg
-- [ ] png
-- [ ] mp3
-- [ ] wav
-- [ ] tar
-- [ ] tgz
-- [ ] zip
-- [ ] md
-- [ ] gz
-- [ ] 
+- [x] mp4: use `shiguredo_mp4` ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] jpg ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] png
+- [x] mp3 ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] wav
+- [x] tar
+- [x] tgz ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] zip ([#294](https://github.com/p14c31355/fullerene/issues/294))
+- [x] md
+- [x] gz ([#294](https://github.com/p14c31355/fullerene/issues/294))
 ---
 
 ## P2: Developer Experience & Performance

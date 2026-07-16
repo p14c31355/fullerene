@@ -230,6 +230,11 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
             crate::viewers::open_png(runtime, path, name);
             return;
         }
+        #[cfg(feature = "zune-jpeg")]
+        "jpg" | "jpeg" => {
+            crate::viewers::open_jpeg(runtime, path, name);
+            return;
+        }
         "wav" => {
             crate::viewers::open_wav(runtime, path, name);
             return;
@@ -244,8 +249,22 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
             crate::viewers::open_mp4(runtime, path, name);
             return;
         }
-        "tar" | "gz" | "xz" => {
+        "tar" => {
             crate::viewers::open_tar(runtime, path, name);
+            return;
+        }
+        #[cfg(feature = "gzip")]
+        "tgz" => {
+            crate::viewers::open_gzip(runtime, path, name, true);
+            return;
+        }
+        #[cfg(feature = "gzip")]
+        "gz" => {
+            crate::viewers::open_gzip(runtime, path, name, false);
+            return;
+        }
+        "zip" => {
+            crate::viewers::open_zip(runtime, path, name);
             return;
         }
         _ => {}

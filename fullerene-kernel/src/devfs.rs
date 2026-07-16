@@ -1,13 +1,14 @@
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
 use genome::block::BlockDevice;
 use genome::fs::FsError;
-use genome::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
+use genome::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
 use nitrogen::driver_api::DriverBox;
 
 static DEVICE_REGISTRY: Mutex<BTreeMap<String, DriverBox>> = Mutex::new(BTreeMap::new());
@@ -38,6 +39,10 @@ impl DevFs {
 }
 
 impl FileSystem for DevFs {
+    fn capabilities(&self) -> FileSystemCapabilities {
+        FileSystemCapabilities::new(false, false, false, false, true)
+    }
+
     fn open(&mut self, path: &str, _flags: u32) -> Option<FileDescriptor> {
         let path = path.trim_start_matches('/');
         if path.is_empty() {
@@ -83,24 +88,29 @@ impl FileSystem for DevFs {
             let registry = DEVICE_REGISTRY.lock();
             match registry.get(&name) {
                 Some(DriverBox::Storage(drv)) => {
-                    let bs = drv.block_size() as usize;
+                    let bs = drv.block_size() as u64;
                     if bs == 0 || buf.is_empty() {
                         (Ok(0), entry_offset)
                     } else {
                         let block_off = entry_offset % bs;
                         let lba = entry_offset / bs;
                         let count = block_off
-                            .checked_add(buf.len())
+                            .checked_add(buf.len() as u64)
                             .map(|sum| sum.div_ceil(bs).max(1))
                             .unwrap_or(1);
-                        let actual = count.min(64);
-                        let read_bytes = actual * bs;
+                        let actual = count.min(64) as usize;
+                        let read_bytes = actual * bs as usize;
                         let mut tmp = alloc::vec![0u8; read_bytes];
-                        match drv.read_blocks(lba as u64, actual, &mut tmp) {
+                        match drv.read_blocks(lba, actual, &mut tmp) {
                             Ok(_) => {
+                                let block_off =
+                                    usize::try_from(block_off).map_err(|_| FsError::InvalidSeek)?;
                                 let n = buf.len().min(read_bytes.saturating_sub(block_off));
                                 buf[..n].copy_from_slice(&tmp[block_off..block_off + n]);
-                                (Ok(n), entry_offset + n)
+                                let new_offset = entry_offset
+                                    .checked_add(n as u64)
+                                    .ok_or(FsError::InvalidSeek)?;
+                                (Ok(n), new_offset)
                             }
                             Err(_) => (Err(FsError::NotSupported), entry_offset),
                         }
@@ -137,7 +147,7 @@ impl FileSystem for DevFs {
         };
         if name == NULL_DEVICE {
             if let Some(entry) = FD_TABLE.lock().iter_mut().find(|entry| entry.fd == fd) {
-                entry.offset = entry.offset.saturating_add(data.len());
+                entry.offset = entry.offset.saturating_add(data.len() as u64);
             }
             return Ok(data.len());
         }
@@ -145,18 +155,20 @@ impl FileSystem for DevFs {
             let registry = DEVICE_REGISTRY.lock();
             match registry.get(&name) {
                 Some(DriverBox::Storage(drv)) => {
-                    let bs = drv.block_size() as usize;
+                    let bs = drv.block_size() as u64;
                     if bs == 0 || data.is_empty() {
                         (Ok(0), entry_offset)
                     } else {
                         let block_off = entry_offset % bs;
                         let lba = entry_offset / bs;
                         let count = block_off
-                            .checked_add(data.len())
+                            .checked_add(data.len() as u64)
                             .map(|sum| sum.div_ceil(bs).max(1))
                             .unwrap_or(1);
-                        let actual = count.min(64);
-                        let write_bytes = actual * bs;
+                        let actual = count.min(64) as usize;
+                        let write_bytes = actual * bs as usize;
+                        let block_off =
+                            usize::try_from(block_off).map_err(|_| FsError::InvalidSeek)?;
                         let n = data.len().min(write_bytes.saturating_sub(block_off));
                         let mut tmp = alloc::vec![0u8; write_bytes];
                         if block_off != 0 || n != write_bytes {
@@ -165,8 +177,13 @@ impl FileSystem for DevFs {
                             }
                         }
                         tmp[block_off..block_off + n].copy_from_slice(&data[..n]);
-                        match drv.write_blocks(lba as u64, actual, &tmp) {
-                            Ok(_) => (Ok(n), entry_offset + n),
+                        match drv.write_blocks(lba, actual, &tmp) {
+                            Ok(_) => {
+                                let new_offset = entry_offset
+                                    .checked_add(n as u64)
+                                    .ok_or(FsError::InvalidSeek)?;
+                                (Ok(n), new_offset)
+                            }
                             Err(_) => (Err(FsError::NotSupported), entry_offset),
                         }
                     }
@@ -205,7 +222,7 @@ impl FileSystem for DevFs {
         }
     }
 
-    fn seek(&mut self, fd: u32, pos: usize) -> Result<(), FsError> {
+    fn seek(&mut self, fd: u32, pos: u64) -> Result<(), FsError> {
         let mut table = FD_TABLE.lock();
         let entry = table
             .iter_mut()
@@ -258,7 +275,7 @@ impl FileSystem for DevFs {
 struct FdEntry {
     name: String,
     fd: u32,
-    offset: usize,
+    offset: u64,
 }
 
 static FD_TABLE: Mutex<Vec<FdEntry>> = Mutex::new(Vec::new());
@@ -278,16 +295,58 @@ fn stable_ino(name: &str) -> u64 {
 
 // ── Block device registry ───────────────────────────────────
 //
-// Maps persistent device names (e.g. "usb0", "sd0") to an optional device
-// lease. `None` means a mounted filesystem currently owns the device, while
-// the `/dev` identity remains enumerable.
+// Maps persistent device names (e.g. "usb0", "sd0") to shared devices with
+// an explicit exclusive lease bit. Filesystems receive a proxy, so dropping a
+// mounted filesystem never destroys the registry-owned device.
 
-pub static BLOCK_DEVICE_REGISTRY: Mutex<
-    BTreeMap<alloc::string::String, Option<Box<dyn BlockDevice>>>,
-> = Mutex::new(BTreeMap::new());
+struct BlockDeviceEntry {
+    device: Arc<Mutex<Box<dyn BlockDevice>>>,
+    leased: bool,
+}
+
+struct BlockDeviceLease {
+    device: Arc<Mutex<Box<dyn BlockDevice>>>,
+}
+
+impl BlockDevice for BlockDeviceLease {
+    fn read_sectors(
+        &mut self,
+        lba: u64,
+        count: u16,
+        buf: &mut [u8],
+    ) -> Result<(), genome::block::BlockError> {
+        self.device.lock().read_sectors(lba, count, buf)
+    }
+
+    fn write_sectors(
+        &mut self,
+        lba: u64,
+        count: u16,
+        buf: &[u8],
+    ) -> Result<(), genome::block::BlockError> {
+        self.device.lock().write_sectors(lba, count, buf)
+    }
+
+    fn sector_size(&self) -> u32 {
+        self.device.lock().sector_size()
+    }
+
+    fn total_sectors(&self) -> u64 {
+        self.device.lock().total_sectors()
+    }
+}
+
+static BLOCK_DEVICE_REGISTRY: Mutex<BTreeMap<alloc::string::String, BlockDeviceEntry>> =
+    Mutex::new(BTreeMap::new());
 
 pub fn register_block_device(name: alloc::string::String, device: Box<dyn BlockDevice>) {
-    BLOCK_DEVICE_REGISTRY.lock().insert(name, Some(device));
+    BLOCK_DEVICE_REGISTRY.lock().insert(
+        name,
+        BlockDeviceEntry {
+            device: Arc::new(Mutex::new(device)),
+            leased: false,
+        },
+    );
 }
 
 pub fn unregister_block_device(name: &str) {
@@ -296,7 +355,26 @@ pub fn unregister_block_device(name: &str) {
 
 /// Lease a block device to a filesystem while preserving its `/dev` identity.
 pub fn lease_block_device(name: &str) -> Option<Box<dyn BlockDevice>> {
-    BLOCK_DEVICE_REGISTRY.lock().get_mut(name)?.take()
+    let mut registry = BLOCK_DEVICE_REGISTRY.lock();
+    let entry = registry.get_mut(name)?;
+    if entry.leased {
+        return None;
+    }
+    entry.leased = true;
+    Some(Box::new(BlockDeviceLease {
+        device: Arc::clone(&entry.device),
+    }))
+}
+
+/// Return an exclusive filesystem lease while retaining the persistent device.
+pub fn return_block_device_lease(name: &str) -> bool {
+    let mut registry = BLOCK_DEVICE_REGISTRY.lock();
+    let Some(entry) = registry.get_mut(name) else {
+        return false;
+    };
+    let was_leased = entry.leased;
+    entry.leased = false;
+    was_leased
 }
 
 pub fn list_block_device_names() -> alloc::vec::Vec<alloc::string::String> {
@@ -311,5 +389,66 @@ pub fn block_device_available(name: &str) -> bool {
     BLOCK_DEVICE_REGISTRY
         .lock()
         .get(name)
-        .is_some_and(|device| device.is_some())
+        .is_some_and(|entry| !entry.leased)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use genome::block::BlockError;
+
+    struct MemoryBlockDevice {
+        sector: [u8; 16],
+    }
+
+    impl BlockDevice for MemoryBlockDevice {
+        fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+            if lba != 0 || count != 1 || buf.len() < self.sector.len() {
+                return Err(BlockError::LbaOverflow);
+            }
+            buf[..self.sector.len()].copy_from_slice(&self.sector);
+            Ok(())
+        }
+
+        fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+            if lba != 0 || count != 1 || buf.len() < self.sector.len() {
+                return Err(BlockError::LbaOverflow);
+            }
+            self.sector.copy_from_slice(&buf[..16]);
+            Ok(())
+        }
+
+        fn sector_size(&self) -> u32 {
+            self.sector.len() as u32
+        }
+
+        fn total_sectors(&self) -> u64 {
+            1
+        }
+    }
+
+    #[test]
+    fn returned_lease_can_be_reacquired_without_losing_device_state() {
+        const NAME: &str = "test-returned-lease";
+        unregister_block_device(NAME);
+        register_block_device(
+            String::from(NAME),
+            Box::new(MemoryBlockDevice { sector: [0; 16] }),
+        );
+
+        let mut first = lease_block_device(NAME).unwrap();
+        assert!(!block_device_available(NAME));
+        assert!(lease_block_device(NAME).is_none());
+        first.write_sectors(0, 1, &[9; 16]).unwrap();
+        drop(first);
+        assert!(return_block_device_lease(NAME));
+
+        let mut second = lease_block_device(NAME).unwrap();
+        let mut data = [0; 16];
+        second.read_sectors(0, 1, &mut data).unwrap();
+        assert_eq!(data, [9; 16]);
+        drop(second);
+        return_block_device_lease(NAME);
+        unregister_block_device(NAME);
+    }
 }

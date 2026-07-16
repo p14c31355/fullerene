@@ -1460,6 +1460,7 @@ dependencies = [
  "lattice",
  "log",
  "minipng",
+ "miniz_oxide",
  "nitrogen",
  "nozzle",
  "petroleum",
@@ -1471,6 +1472,8 @@ dependencies = [
  "spin 0.10.0",
  "tinybmp",
  "x86_64 0.15.4",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

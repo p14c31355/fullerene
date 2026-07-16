@@ -80,7 +80,7 @@ impl ExFatDevice {
             }
         }
         device
-            .read_sectors(lba, count, buf)
+            .read_sectors(lba as u64, count, buf)
             .map_err(Self::block_error)?;
         if count == 1 {
             let mut cache = self.cache.lock();
@@ -105,7 +105,7 @@ impl ExFatDevice {
             .get(..expected_len)
             .ok_or_else(|| Self::error(ErrorKind::InvalidInput, "exFAT write buffer too small"))?;
         device
-            .write_sectors(lba, count, buf)
+            .write_sectors(lba as u64, count, buf)
             .map_err(Self::block_error)?;
         let mut cache = self.cache.lock();
         for (index, sector) in buf
@@ -518,6 +518,10 @@ impl Drop for ExFatFileSystem {
 }
 
 impl FileSystem for ExFatFileSystem {
+    fn capabilities(&self) -> crate::contexts::vfs::FileSystemCapabilities {
+        crate::contexts::vfs::FileSystemCapabilities::new(false, true, true, false, true)
+    }
+
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
         self.fs().open_file(path).ok()?;
         let fd = self.next_descriptor();
@@ -590,13 +594,13 @@ impl FileSystem for ExFatFileSystem {
         }
     }
 
-    fn seek(&mut self, fd: u32, new_pos: usize) -> Result<(), FsError> {
+    fn seek(&mut self, fd: u32, new_pos: u64) -> Result<(), FsError> {
         let index = self.handle_index(fd)?;
         let handle = &mut self.handles[index];
-        if handle.writer.is_some() && new_pos as u64 != handle.offset {
+        if handle.writer.is_some() && new_pos != handle.offset {
             return Err(FsError::InvalidSeek);
         }
-        handle.offset = new_pos as u64;
+        handle.offset = new_pos;
         Ok(())
     }
 
@@ -662,7 +666,7 @@ mod tests {
     impl BlockDevice for MemoryDevice {
         fn read_sectors(
             &mut self,
-            lba: u32,
+            lba: u64,
             count: u16,
             buf: &mut [u8],
         ) -> Result<(), genome::block::BlockError> {
@@ -681,7 +685,7 @@ mod tests {
 
         fn write_sectors(
             &mut self,
-            lba: u32,
+            lba: u64,
             count: u16,
             buf: &[u8],
         ) -> Result<(), genome::block::BlockError> {
@@ -714,7 +718,7 @@ mod tests {
             }
         }
 
-        fn range(lba: u32, count: u16) -> Result<(usize, usize), genome::block::BlockError> {
+        fn range(lba: u64, count: u16) -> Result<(usize, usize), genome::block::BlockError> {
             let start = lba as usize * SECTOR_SIZE;
             let len = count as usize * SECTOR_SIZE;
             if start.checked_add(len).is_none_or(|end| end > IMAGE_SIZE) {

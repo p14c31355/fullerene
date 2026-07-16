@@ -21,7 +21,9 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use genome::fs::FsError;
-pub use genome::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs};
+pub use genome::vfs::{
+    FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, MemFileSystem, VNode, Vfs,
+};
 
 // ── VfsContext ──────────────────────────────────────────────────────
 
@@ -186,9 +188,21 @@ impl VfsContext {
             removed
         };
         if removed {
-            self.mounted_devices
-                .lock()
-                .retain(|(_, path)| path != &mount_point);
+            let returned_devices: Vec<String> = {
+                let mut mounted_devices = self.mounted_devices.lock();
+                let returned = mounted_devices
+                    .iter()
+                    .filter(|(_, path)| path == &mount_point)
+                    .map(|(source, _)| source.clone())
+                    .collect();
+                mounted_devices.retain(|(_, path)| path != &mount_point);
+                returned
+            };
+            for source in returned_devices {
+                if let Some(device_name) = source.strip_prefix("/dev/") {
+                    crate::devfs::return_block_device_lease(device_name);
+                }
+            }
         }
         Ok(removed)
     }
@@ -253,7 +267,7 @@ impl VfsContext {
         vfs.close_at(handle.mount_index, handle.local_fd)
     }
 
-    pub fn seek(&self, fd: u32, pos: usize) -> Result<(), FsError> {
+    pub fn seek(&self, fd: u32, pos: u64) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
         let handle = self
             .handle_table
@@ -504,8 +518,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             match crate::drivers::fat::mount_device(bdev) {
                 Ok(fs) => {
                     if let Err(e) = vfs.mount(&mount_point, fs) {
-                        // Mount failed after device was consumed; clean up registry entry
-                        crate::devfs::unregister_block_device(device_name);
+                        crate::devfs::return_block_device_lease(device_name);
                         return Err(e);
                     }
                     vfs.record_device_mount(device, &mount_point);
@@ -517,16 +530,8 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
                     Ok(())
                 }
                 Err((e, returned_bdev)) => {
-                    if let Some(bdev) = returned_bdev {
-                        // Device wasn't consumed — return it to the registry
-                        crate::devfs::register_block_device(
-                            alloc::string::String::from(device_name),
-                            bdev,
-                        );
-                    } else {
-                        // Device was consumed but construction failed; remove stale entry
-                        crate::devfs::unregister_block_device(device_name);
-                    }
+                    drop(returned_bdev);
+                    crate::devfs::return_block_device_lease(device_name);
                     Err(e)
                 }
             }
@@ -564,7 +569,7 @@ pub fn close(fd: u32) -> Result<(), FsError> {
 }
 
 /// Backward-compatible wrapper: seek fd.
-pub fn seek(fd: u32, pos: usize) -> Result<(), FsError> {
+pub fn seek(fd: u32, pos: u64) -> Result<(), FsError> {
     with_vfs(|vfs| vfs.seek(fd, pos)).ok_or(FsError::PermissionDenied)?
 }
 

@@ -8,7 +8,7 @@ use fatfs::{self, DefaultTimeProvider, LossyOemCpConverter, Read, Seek, SeekFrom
 use genome::fs::FsError;
 
 use super::{BlockDevice, FatBlockError, FatDevice};
-use crate::contexts::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
+use crate::contexts::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
 use crate::klog_fmt;
 
 type FatType = fatfs::FileSystem<FatDevice>;
@@ -74,6 +74,10 @@ impl FatFileSystem {
 }
 
 impl FileSystem for FatFileSystem {
+    fn capabilities(&self) -> FileSystemCapabilities {
+        FileSystemCapabilities::new(false, true, true, false, false)
+    }
+
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
         let _ = self.open_file(path).ok()?;
         let fd = self.next_fd;
@@ -137,13 +141,13 @@ impl FileSystem for FatFileSystem {
         Ok(())
     }
 
-    fn seek(&mut self, fd: u32, new_pos: usize) -> Result<(), FsError> {
+    fn seek(&mut self, fd: u32, new_pos: u64) -> Result<(), FsError> {
         let handle = self
             .handles
             .iter_mut()
             .find(|handle| handle.0 == fd)
             .ok_or(FsError::InvalidFileDescriptor)?;
-        handle.2 = new_pos as u64;
+        handle.2 = new_pos;
         Ok(())
     }
 

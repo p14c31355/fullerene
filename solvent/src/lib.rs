@@ -86,8 +86,12 @@ pub(crate) fn truncate_to_chars(text: &str, length: usize) -> String {
     text.chars().take(length).collect()
 }
 
-pub fn run_shell_on(terminal: &mut dyn carrier::terminal::Terminal, prompt: &str) {
-    let mut shell = nozzle::Shell::new(terminal, nozzle::default_commands());
+pub fn run_shell_on(
+    terminal: &mut dyn carrier::terminal::Terminal,
+    prompt: &str,
+    services: nozzle::ShellServices,
+) {
+    let mut shell = nozzle::Shell::new(terminal, nozzle::default_commands(), services);
     shell.set_prompt(prompt);
     shell.run();
 }

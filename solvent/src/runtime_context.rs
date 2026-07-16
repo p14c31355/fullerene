@@ -1,6 +1,7 @@
 //! Runtime ownership, configuration, and initialization.
 
 use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use chronoline::{ChronoLine, Deadline, TimerId, TimerMode};
@@ -105,6 +106,8 @@ pub struct RuntimeState {
     pub back_len: usize,
     pub term_cells: Vec<LatticeCell>,
     pub term_dirty: bool,
+    /// Command history owned by this terminal session (newest first).
+    pub command_history: VecDeque<String>,
     pub shell_state: ShellState,
     pub shell_launch_pending: bool,
     pub clock_changed: bool,
@@ -170,6 +173,7 @@ pub fn init() {
         back_len: 0,
         term_cells: Vec::new(),
         term_dirty: true,
+        command_history: VecDeque::with_capacity(128),
         shell_state: ShellState::Desktop,
         shell_launch_pending: false,
         clock_changed: false,
@@ -228,5 +232,11 @@ mod tests {
 
         assert!(context.callback_snapshot().launch_shell.is_some());
         assert!(context.runtime().is_none());
+    }
+
+    #[test]
+    fn monotonic_clock_calibration_round_trips() {
+        super::set_tsc_per_ms(2_500_000);
+        assert_eq!(super::get_tsc_per_ms(), 2_500_000);
     }
 }

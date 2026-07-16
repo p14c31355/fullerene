@@ -11,7 +11,7 @@ pub use genome::block::{BlockDevice, BlockError};
 
 pub(super) fn read_boot_sector(
     device: &mut dyn BlockDevice,
-    lba: u32,
+    lba: u64,
 ) -> Result<[u8; 512], BlockError> {
     let sector_size = device.sector_size() as usize;
     if sector_size < 512 {
@@ -103,7 +103,7 @@ impl Read for FatDevice {
 
         while written < len {
             let current_pos = self.pos + written as u64;
-            let sector = (current_pos / self.bytes_per_sector as u64) as u32;
+            let sector = current_pos / self.bytes_per_sector as u64;
             let offset = (current_pos % self.bytes_per_sector as u64) as usize;
             self.device
                 .read_sectors(sector, 1, &mut self.scratch)
@@ -125,7 +125,7 @@ impl Write for FatDevice {
             return Ok(0);
         }
 
-        let sector = (self.pos / self.bytes_per_sector as u64) as u32;
+        let sector = self.pos / self.bytes_per_sector as u64;
         let offset = (self.pos % self.bytes_per_sector as u64) as usize;
         let remaining = (self.total_bytes - self.pos) as usize;
         let write_len = buf

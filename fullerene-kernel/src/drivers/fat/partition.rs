@@ -16,7 +16,7 @@ const PARTITION_FAT16: u8 = 0x06;
 const PARTITION_FAT16_LBA: u8 = 0x0E;
 const PARTITION_EXFAT: u8 = 0x07;
 
-pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> {
+pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u64, FsError> {
     let boot = read_boot_sector(device, 0)?;
 
     if is_exfat(&boot) {
@@ -72,7 +72,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> 
             lba,
             best_sectors
         );
-        return Ok(lba);
+        return Ok(lba as u64);
     }
 
     klog_fmt!("FAT: no FAT partition found in MBR\n");
@@ -81,20 +81,22 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<u32, FsError> 
 
 pub struct PartitionBlockDevice {
     inner: Box<dyn BlockDevice>,
-    offset: u32,
+    offset: u64,
 }
 
 impl PartitionBlockDevice {
-    pub fn new(inner: Box<dyn BlockDevice>, offset: u32) -> Self {
+    pub fn new(inner: Box<dyn BlockDevice>, offset: u64) -> Self {
         Self { inner, offset }
     }
 
-    fn absolute_lba(&self, lba: u32, count: u16) -> Result<u32, BlockError> {
+    fn absolute_lba(&self, lba: u64, count: u16) -> Result<u64, BlockError> {
         let absolute = lba
             .checked_add(self.offset)
             .ok_or(BlockError::LbaOverflow)?;
-        let end = absolute as u64 + count as u64;
-        if end > self.inner.total_sectors() || end > u32::MAX as u64 {
+        let end = absolute
+            .checked_add(count as u64)
+            .ok_or(BlockError::LbaOverflow)?;
+        if end > self.inner.total_sectors() {
             return Err(BlockError::LbaOverflow);
         }
         Ok(absolute)
@@ -102,12 +104,12 @@ impl PartitionBlockDevice {
 }
 
 impl BlockDevice for PartitionBlockDevice {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         let absolute = self.absolute_lba(lba, count)?;
         self.inner.read_sectors(absolute, count, buf)
     }
 
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let absolute = self.absolute_lba(lba, count)?;
         self.inner.write_sectors(absolute, count, buf)
     }
@@ -117,9 +119,7 @@ impl BlockDevice for PartitionBlockDevice {
     }
 
     fn total_sectors(&self) -> u64 {
-        self.inner
-            .total_sectors()
-            .saturating_sub(self.offset as u64)
+        self.inner.total_sectors().saturating_sub(self.offset)
     }
 }
 
@@ -139,7 +139,7 @@ mod tests {
     }
 
     impl BlockDevice for FourKnBlockDevice {
-        fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
             if lba != 0 || count != 1 {
                 return Err(BlockError::LbaOverflow);
             }
@@ -153,7 +153,7 @@ mod tests {
             Ok(())
         }
 
-        fn write_sectors(&mut self, _lba: u32, _count: u16, _buf: &[u8]) -> Result<(), BlockError> {
+        fn write_sectors(&mut self, _lba: u64, _count: u16, _buf: &[u8]) -> Result<(), BlockError> {
             Err(BlockError::Device)
         }
 
@@ -173,7 +173,7 @@ mod tests {
     }
 
     impl BlockDevice for MemoryBlockDevice {
-        fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
             let start = lba as usize * 512;
             let len = count as usize * 512;
             let end = start.checked_add(len).ok_or(BlockError::LbaOverflow)?;
@@ -184,7 +184,7 @@ mod tests {
             Ok(())
         }
 
-        fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
             let start = lba as usize * 512;
             let len = count as usize * 512;
             let end = start.checked_add(len).ok_or(BlockError::LbaOverflow)?;

@@ -108,7 +108,7 @@ pub fn cmd_version(ctx: &mut CommandContext) -> bool {
 /// Dispatches to the kernel-provided system control hook.
 pub fn cmd_reboot(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str("Rebooting...\n");
-    crate::sys_hooks::call_sys_control_hook("reboot");
+    crate::sys_hooks::call_sys_control_hook(ctx, "reboot");
     true
 }
 
@@ -117,7 +117,7 @@ pub fn cmd_reboot(ctx: &mut CommandContext) -> bool {
 /// Dispatches to the kernel-provided system control hook.
 pub fn cmd_shutdown(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str("Shutting down...\n");
-    crate::sys_hooks::call_sys_control_hook("shutdown");
+    crate::sys_hooks::call_sys_control_hook(ctx, "shutdown");
     true
 }
 
@@ -154,7 +154,7 @@ pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() >= 2 {
         // Route to sys control hook for actual theme change
         let cmd = alloc::format!("theme {}", ctx.args[1]);
-        crate::sys_hooks::call_sys_control_hook(&cmd);
+        crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         // Force desktop redraw via info hook
         crate::sys_hooks::call_sys_info_hook(ctx, "theme");
         return true;
@@ -167,7 +167,7 @@ pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
 pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() >= 2 {
         let cmd = alloc::format!("wallpaper {}", ctx.args[1]);
-        crate::sys_hooks::call_sys_control_hook(&cmd);
+        crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         crate::sys_hooks::call_sys_info_hook(ctx, "wallpaper");
         return true;
     }
@@ -257,12 +257,7 @@ sys_info_cmd!(cmd_sd_rescan, "sd_rescan");
 ///   mount /dev/usb0 /mnt
 ///   mount /dev/sd0 /mnt/sdcard
 pub fn cmd_mount(ctx: &mut CommandContext) -> bool {
-    let h = *crate::sys_hooks::MOUNT_HOOK.lock();
-    if let Some(f) = h {
-        f(ctx);
-    } else {
-        ctx.terminal.write_str("mount: hook not registered\n");
-    }
+    crate::sys_hooks::call_mount_hook(ctx);
     true
 }
 
@@ -324,7 +319,7 @@ pub fn cmd_whoami(ctx: &mut CommandContext) -> bool {
 
 /// `history` — show command history
 pub fn cmd_history(ctx: &mut CommandContext) -> bool {
-    let entries = crate::line_editor::get_history();
+    let entries = ctx.terminal.history_snapshot();
     if entries.is_empty() {
         ctx.terminal.write_str("(no history)\n");
     } else {
@@ -438,7 +433,7 @@ pub fn cmd_app(ctx: &mut CommandContext) -> bool {
             let desc = ctx.args[3..].join(" ");
             // Use sys_control hook: "app_install <name> <desc>"
             let cmd = alloc::format!("app_install {} {}", name, desc);
-            crate::sys_hooks::call_sys_control_hook(&cmd);
+            crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
         "install" => {
             ctx.terminal
@@ -447,7 +442,7 @@ pub fn cmd_app(ctx: &mut CommandContext) -> bool {
         "remove" if ctx.args.len() >= 3 => {
             let name = ctx.args[2];
             let cmd = alloc::format!("app_remove {}", name);
-            crate::sys_hooks::call_sys_control_hook(&cmd);
+            crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
         "remove" => {
             ctx.terminal.write_str("Usage: app remove <name>\n");
