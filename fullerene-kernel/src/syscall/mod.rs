@@ -1,8 +1,9 @@
-pub mod basic;
+pub mod abi;
 pub mod cap;
 pub mod device;
 pub mod dispatch;
 pub mod event;
+pub mod fs;
 pub mod ipc;
 pub mod memory;
 pub mod process;
@@ -31,7 +32,7 @@ mod tests {
     #[test]
     fn abi_query_preserves_the_version_only_call() {
         assert_eq!(
-            super::basic::syscall_abi_query(core::ptr::null_mut(), 0),
+            super::abi::syscall_abi_query(core::ptr::null_mut(), 0),
             Ok(fullerene_abi::AbiVersion::CURRENT.pack())
         );
     }
