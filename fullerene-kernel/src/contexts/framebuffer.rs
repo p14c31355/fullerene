@@ -207,6 +207,7 @@ impl FramebufferContext {
         }
         let info = self.info()?;
         if info.address == 0
+            || info.address % 4 != 0
             || info.width == 0
             || info.height == 0
             || info.bytes_per_pixel() != 4
