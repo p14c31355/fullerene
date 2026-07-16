@@ -25,8 +25,9 @@ use genome::fs::FsError;
 
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
-    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, is_initialized,
-    poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core, write_terminal,
+    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
+    is_initialized, poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core,
+    write_terminal,
 };
 
 /// Convert an FsError to a static string for the solvent callback boundary.
@@ -213,11 +214,20 @@ pub fn render() {
 ///    VFS → `KERNEL.lock()` without self-deadlocking.
 ///
 /// 2. **render** — framebuffer rendering under the `KERNEL` lock.
-///    Only started when `consume_frame_due()` returns `true`.
+///    Full-scene and cursor-only requests both borrow a `FramebufferGuard`.
 pub fn runtime_tick(now: u64) {
     solvent::tick_core(now);
-    if solvent::consume_frame_due() {
-        if crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_none() {
+    let full_frame = solvent::consume_frame_due();
+    let cursor_only = !full_frame && solvent::cursor_update_due();
+    if full_frame || cursor_only {
+        let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
+            if full_frame {
+                solvent::render(framebuffer);
+            } else {
+                solvent::render_cursor_fast(framebuffer);
+            }
+        });
+        if rendered.is_none() {
             crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
         }
         finish_frame();

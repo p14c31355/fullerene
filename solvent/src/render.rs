@@ -3,7 +3,9 @@
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
 use crate::{DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, RUNTIME, SOLVENT_CALLBACKS};
-use lattice::compositor::{Compositor, RenderTarget, render_cursor};
+use lattice::compositor::{Compositor, RenderTarget};
+use lattice::cursor::Cursor;
+use lattice::scene::DirtyRect;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
 use spin::Mutex;
 
@@ -86,6 +88,131 @@ fn blit_region(
     }
 }
 
+fn cursor_region(position: (i32, i32), width: u32, height: u32) -> Option<DirtyRect> {
+    let size = Cursor::SIZE as i32;
+    let left = position.0 - Cursor::HOTSPOT_X;
+    let top = position.1 - Cursor::HOTSPOT_Y;
+    let right = left.saturating_add(size);
+    let bottom = top.saturating_add(size);
+    let x0 = left.max(0).min(width as i32);
+    let y0 = top.max(0).min(height as i32);
+    let x1 = right.max(0).min(width as i32);
+    let y1 = bottom.max(0).min(height as i32);
+    (x0 < x1 && y0 < y1)
+        .then(|| DirtyRect::new(x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32))
+}
+
+fn draw_cursor_strided(
+    framebuffer: &mut [u32],
+    width: u32,
+    height: u32,
+    stride: usize,
+    cursor: &Cursor,
+) {
+    if !cursor.visible {
+        return;
+    }
+    let left = cursor.x - Cursor::HOTSPOT_X;
+    let top = cursor.y - Cursor::HOTSPOT_Y;
+    let size = Cursor::SIZE as i32;
+    for row in 0..size {
+        let y = top + row;
+        if y < 0 || y >= height as i32 {
+            continue;
+        }
+        for column in 0..size {
+            let x = left + column;
+            if x < 0 || x >= width as i32 {
+                continue;
+            }
+            let pixel = Cursor::shape()[(row * size + column) as usize];
+            if pixel == 0 {
+                continue;
+            }
+            let Some(index) = (y as usize)
+                .checked_mul(stride)
+                .and_then(|row_start| row_start.checked_add(x as usize))
+            else {
+                return;
+            };
+            if index >= framebuffer.len() {
+                return;
+            }
+            // SAFETY: `index` was checked against the guard-owned slice.
+            // Volatile stores are required for GOP MMIO.
+            unsafe { core::ptr::write_volatile(framebuffer.as_mut_ptr().add(index), pixel) };
+        }
+    }
+}
+
+fn update_cursor_pixels(
+    framebuffer: &mut petroleum::graphics::FramebufferGuard,
+    back: &[u32],
+    previous: (i32, i32),
+    cursor: &Cursor,
+) -> bool {
+    let width = framebuffer.width();
+    let height = framebuffer.height();
+    let stride = framebuffer.stride() as usize;
+    let Some(back_len) = (width as usize).checked_mul(height as usize) else {
+        return false;
+    };
+    let Some(framebuffer_len) = stride.checked_mul(height as usize) else {
+        return false;
+    };
+    if stride < width as usize
+        || back.len() < back_len
+        || framebuffer.pixels().len() < framebuffer_len
+    {
+        return false;
+    }
+
+    let pixels = framebuffer.pixels_mut();
+    if let Some(region) = cursor_region(previous, width, height) {
+        blit_region(back, width as usize, pixels, stride, region);
+    }
+    if let Some(region) = cursor_region((cursor.x, cursor.y), width, height) {
+        blit_region(back, width as usize, pixels, stride, region);
+    }
+    draw_cursor_strided(pixels, width, height, stride, cursor);
+    true
+}
+
+/// Apply a pending cursor-only update while the kernel owns the framebuffer.
+///
+/// The old and new cursor rectangles are restored from the clean RAM back
+/// buffer. No framebuffer address or mutable slice is retained after the
+/// `FramebufferGuard` borrow ends, and the GOP framebuffer is never read.
+pub fn render_cursor_fast(framebuffer: &mut petroleum::graphics::FramebufferGuard) {
+    if crate::RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    struct SuspendGuard;
+    impl Drop for SuspendGuard {
+        fn drop(&mut self) {
+            crate::RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _suspend = SuspendGuard;
+
+    let mut runtime = RUNTIME.lock();
+    let Some(runtime) = runtime.as_mut() else {
+        return;
+    };
+    let Some(previous) = runtime.cursor_redraw_from.take() else {
+        return;
+    };
+    let cursor = runtime.desktop.cursor.clone();
+    let back = crate::BACK_BUFFER.lock();
+    let updated = back
+        .as_deref()
+        .is_some_and(|back| update_cursor_pixels(framebuffer, back, previous, &cursor));
+    if !updated {
+        runtime.cursor_redraw_from = Some(previous);
+        runtime.frame_due = true;
+    }
+}
+
 // ── Main render function ─────────────────────────────────────
 
 pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
@@ -105,6 +232,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         Some(r) => r,
         None => return,
     };
+    let pending_cursor_origin = rt.cursor_redraw_from;
 
     static PREV_SHELL_STATE: Mutex<ShellState> = Mutex::new(ShellState::Desktop);
     static PREV_TRANSITION: Mutex<bool> = Mutex::new(false);
@@ -161,6 +289,14 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     let fb_pixels = fb.pixels_mut();
     let fb_pixels_len = fb_pixels.len();
     *crate::FB_DIMS.lock() = (fb_width, fb_height, fb_stride_pixels);
+
+    // A full render may supersede several queued mouse moves. Include the
+    // earliest position still visible on the scanout so it cannot ghost.
+    if let Some(previous) = pending_cursor_origin
+        && let Some(region) = cursor_region(previous, fb_width, fb_height)
+    {
+        rt.desktop.push_dirty_rect(region);
+    }
 
     let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
     if rt.clock_changed || tb_changed || debug_changed {
@@ -230,8 +366,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             };
             render_progress(b"RENDER: compositor");
             let mut scene = rt.desktop.scene();
-            // Cursor must remain the final system layer, but is composed in RAM
-            // so rendering never needs to sample the physical GOP framebuffer.
+            // Keep the RAM back buffer cursor-free. Cursor-only updates can
+            // then restore clean pixels without reading from GOP memory.
             let cursor = scene.cursor.take();
             let (bx, by, bw, bh) = Compositor::render(&scene, &mut back_target);
             render_progress(b"RENDER: compositor done");
@@ -279,16 +415,6 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                     .top_panel
                     .render(back, fb_width, fb_height, fb_width);
             }
-            if let Some(cursor) = cursor.filter(|cursor| cursor.visible) {
-                render_cursor(
-                    back,
-                    fb_width,
-                    fb_height,
-                    cursor,
-                    lattice::scene::DirtyRect::full(fb_width, fb_height),
-                );
-            }
-
             if was_transition {
                 render_progress(b"RENDER: copy to fb");
                 blit_region(
@@ -306,8 +432,12 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                     }
                 }
             }
+            if let Some(cursor) = cursor {
+                draw_cursor_strided(fb_pixels, fb_width, fb_height, fb_stride, cursor);
+            }
         }
     }
+    rt.cursor_redraw_from = None;
 }
 
 #[cfg(test)]
@@ -340,5 +470,93 @@ mod tests {
         );
 
         assert_eq!(framebuffer, [0, 2, 3, 0, 0, 5, 6, 0]);
+    }
+
+    #[test]
+    fn cursor_fast_path_restores_old_pixels_and_preserves_padding() {
+        const WIDTH: usize = 32;
+        const HEIGHT: usize = 24;
+        const STRIDE: usize = 36;
+        const PADDING: u32 = 0xdead_beef;
+        let back: alloc::vec::Vec<u32> =
+            (0..WIDTH * HEIGHT).map(|pixel| pixel as u32 + 1).collect();
+        let mut pixels = alloc::vec![PADDING; STRIDE * HEIGHT];
+        for row in 0..HEIGHT {
+            pixels[row * STRIDE..row * STRIDE + WIDTH]
+                .copy_from_slice(&back[row * WIDTH..(row + 1) * WIDTH]);
+        }
+
+        let previous = Cursor::new(3, 3);
+        draw_cursor_strided(&mut pixels, WIDTH as u32, HEIGHT as u32, STRIDE, &previous);
+        let current = Cursor::new(22, 12);
+        {
+            let mut guard = petroleum::graphics::FramebufferGuard::try_new(
+                &mut pixels,
+                WIDTH as u32,
+                HEIGHT as u32,
+                STRIDE as u32,
+            )
+            .unwrap();
+            assert!(update_cursor_pixels(
+                &mut guard,
+                &back,
+                (previous.x, previous.y),
+                &current,
+            ));
+        }
+
+        let old_origin = 2 * STRIDE + 2;
+        assert_eq!(pixels[old_origin], back[2 * WIDTH + 2]);
+        let new_origin = 11 * STRIDE + 21;
+        assert_eq!(pixels[new_origin], 0xff00_0000);
+        assert!((0..HEIGHT).all(|row| {
+            pixels[row * STRIDE + WIDTH..(row + 1) * STRIDE]
+                .iter()
+                .all(|&pixel| pixel == PADDING)
+        }));
+    }
+
+    #[test]
+    fn cursor_fast_path_clips_at_the_visible_edge() {
+        const WIDTH: usize = 8;
+        const HEIGHT: usize = 8;
+        const STRIDE: usize = 10;
+        let back = alloc::vec![0x1234_5678; WIDTH * HEIGHT];
+        let mut pixels = alloc::vec![0xa5a5_a5a5; STRIDE * HEIGHT];
+        let cursor = Cursor::new(0, 0);
+        {
+            let mut guard = petroleum::graphics::FramebufferGuard::try_new(
+                &mut pixels,
+                WIDTH as u32,
+                HEIGHT as u32,
+                STRIDE as u32,
+            )
+            .unwrap();
+            assert!(update_cursor_pixels(
+                &mut guard,
+                &back,
+                (-100, -100),
+                &cursor,
+            ));
+        }
+
+        assert_eq!(pixels[0], 0xffff_ffff);
+        assert!((0..HEIGHT).all(|row| {
+            pixels[row * STRIDE + WIDTH..(row + 1) * STRIDE]
+                .iter()
+                .all(|&pixel| pixel == 0xa5a5_a5a5)
+        }));
+    }
+
+    #[test]
+    fn cursor_fast_path_rejects_an_incomplete_back_buffer() {
+        let mut pixels = [0xfeed_face; 16];
+        let original = pixels;
+        let cursor = Cursor::new(2, 2);
+        let mut guard =
+            petroleum::graphics::FramebufferGuard::try_new(&mut pixels, 4, 4, 4).unwrap();
+
+        assert!(!update_cursor_pixels(&mut guard, &[0; 15], (1, 1), &cursor,));
+        assert_eq!(guard.pixels(), &original);
     }
 }
