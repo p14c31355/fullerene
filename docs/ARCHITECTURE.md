@@ -211,6 +211,15 @@ that changing page-table cache flags is harmless on firmware-defined PCI
 apertures. Likewise, firmware-assigned non-zero BARs are immutable inputs to
 boot resource allocation and are never size-probed destructively.
 
+The xHCI driver keeps `XhciContext` as its single state owner and API facade,
+while lifecycle operations are split under `nitrogen/src/usb/xhci/`:
+`controller` owns construction, reset/start, recovery, and root-port polling;
+`command` owns command-ring submission and slot/endpoint configuration;
+`event` owns event-ring waiting; `transfer` owns control and bulk transfers;
+and `resources` owns slot release, deferred DMA cleanup, and teardown. These
+modules add inherent methods to the same context and do not introduce
+additional controller owners or global state.
+
 ---
 
 ## Solvent (Runtime)
