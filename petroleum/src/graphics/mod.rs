@@ -11,13 +11,23 @@ pub struct FramebufferGuard<'a> {
 }
 
 impl<'a> FramebufferGuard<'a> {
-    pub fn new(pixels: &'a mut [u32], width: u32, height: u32, stride: u32) -> Self {
-        Self {
+    /// Build a guard after validating the framebuffer layout.
+    ///
+    /// `stride` is expressed in pixels and may be larger than `width` when
+    /// scan lines include padding. The backing slice must cover every scan
+    /// line described by `stride` and `height`.
+    pub fn try_new(pixels: &'a mut [u32], width: u32, height: u32, stride: u32) -> Option<Self> {
+        let required_pixels = usize::try_from(stride).ok()?.checked_mul(height as usize)?;
+        if width == 0 || height == 0 || stride < width || pixels.len() < required_pixels {
+            return None;
+        }
+
+        Some(Self {
             pixels,
             width,
             height,
             stride,
-        }
+        })
     }
 
     pub fn pixels(&self) -> &[u32] {
@@ -38,6 +48,32 @@ impl<'a> FramebufferGuard<'a> {
 
     pub fn stride(&self) -> u32 {
         self.stride
+    }
+}
+
+#[cfg(test)]
+mod framebuffer_guard_tests {
+    use super::FramebufferGuard;
+
+    #[test]
+    fn exposes_validated_metadata_and_mutable_pixels() {
+        let mut pixels = [0u32; 12];
+        let mut guard = FramebufferGuard::try_new(&mut pixels, 3, 2, 4).unwrap();
+
+        assert_eq!(guard.width(), 3);
+        assert_eq!(guard.height(), 2);
+        assert_eq!(guard.stride(), 4);
+        guard.pixels_mut()[5] = 0x00ab_cdef;
+        assert_eq!(guard.pixels()[5], 0x00ab_cdef);
+    }
+
+    #[test]
+    fn rejects_invalid_layouts() {
+        let mut pixels = [0u32; 8];
+
+        assert!(FramebufferGuard::try_new(&mut pixels, 0, 2, 4).is_none());
+        assert!(FramebufferGuard::try_new(&mut pixels, 5, 2, 4).is_none());
+        assert!(FramebufferGuard::try_new(&mut pixels, 4, 3, 4).is_none());
     }
 }
 

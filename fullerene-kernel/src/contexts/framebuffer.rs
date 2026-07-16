@@ -3,6 +3,7 @@ use alloc::boxed::Box;
 use core::fmt::Write;
 use nitrogen::virtio::gpu::VirtioGpu;
 use petroleum::common::EfiGraphicsPixelFormat;
+use petroleum::graphics::FramebufferGuard;
 use petroleum::graphics::color::FramebufferInfo;
 use petroleum::graphics::framebuffer::UefiFramebufferWriter;
 use petroleum::graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
@@ -200,22 +201,32 @@ impl FramebufferContext {
     pub fn stride(&self) -> u32 {
         self.info().map(|i| i.stride).unwrap_or(0)
     }
-    pub fn base_ptr(&self) -> *mut u32 {
-        self.info()
-            .map(|i| i.address as *mut u32)
-            .unwrap_or(core::ptr::null_mut())
-    }
-    pub fn pixels_mut(&mut self) -> Option<&mut [u32]> {
+    fn guard(&mut self) -> Option<FramebufferGuard<'_>> {
         if self.bpp != 32 {
             return None;
         }
         let info = self.info()?;
-        Some(unsafe {
-            core::slice::from_raw_parts_mut(
-                info.address as *mut u32,
-                (info.stride as usize / 4) * info.height as usize,
-            )
-        })
+        if info.address == 0
+            || info.width == 0
+            || info.height == 0
+            || info.bytes_per_pixel() != 4
+            || info.stride % 4 != 0
+        {
+            return None;
+        }
+        let stride_pixels = info.stride / 4;
+        if stride_pixels < info.width {
+            return None;
+        }
+        let len = usize::try_from(stride_pixels)
+            .ok()?
+            .checked_mul(info.height as usize)?;
+        // SAFETY: renderer construction only succeeds after this virtual
+        // address has been verified as a writable mapping. The layout checks
+        // above prove `len` covers exactly its complete 32-bpp scan lines,
+        // and `&mut self` supplies exclusive access to the renderer state.
+        let pixels = unsafe { core::slice::from_raw_parts_mut(info.address as *mut u32, len) };
+        FramebufferGuard::try_new(pixels, info.width, info.height, stride_pixels)
     }
     pub fn write_str(&mut self, s: &str) {
         if let Some(ref mut r) = self.renderer {
@@ -261,37 +272,43 @@ impl FramebufferContext {
     }
 }
 
-/// Execute a closure with safe, lifetime-limited access to the framebuffer.
+/// Execute a closure with exclusive, lifetime-limited framebuffer access.
 ///
-/// The `FramebufferGuard` prevents the `&'static mut` aliasing bug by
-/// constraining the pixel slice lifetime to the closure scope.  Access
-/// is serialized through the kernel mutex.
+/// The kernel mutex remains locked for the entire closure, so renderer state
+/// and framebuffer pixels have one ownership boundary. The higher-ranked
+/// closure prevents the mutable pixel slice from escaping as a return value.
 ///
-/// This is intentionally named differently from the `define_context!`-generated
-/// `with_framebuffer` (which provides `&FramebufferContext` directly) to avoid
-/// name collisions.
-pub fn with_framebuffer_guard<F, R>(f: F) -> Option<R>
+/// ```compile_fail
+/// let pixels = fullerene_kernel::contexts::framebuffer::with_framebuffer(
+///     |framebuffer| framebuffer.pixels_mut(),
+/// );
+/// ```
+pub fn with_framebuffer<F, R>(f: F) -> Option<R>
 where
-    F: FnOnce(&mut petroleum::graphics::FramebufferGuard) -> R,
+    F: for<'fb> FnOnce(&mut FramebufferGuard<'fb>) -> R,
 {
-    // Use the boot framebuffer's direct-map alias for the pixel slice.
-    // On some real hardware, the renderer's stored virtual address may
-    // point to a dynamic WC mapping that triggers machine checks on bulk
-    // writes.  The boot framebuffer uses the well-known higher-half direct
-    // mapping, which is verified during probe and matches the UEFI GOP
-    // scanout address exactly.
-    let bfb = crate::graphics::discovery::direct_boot_framebuffer()?;
-    let ptr = bfb.address() as *mut u32;
-    let stride_pixels = bfb.stride_pixels();
-    let len = (stride_pixels as usize) * bfb.height() as usize;
-    let pixels = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-    let mut guard = petroleum::graphics::FramebufferGuard::new(
-        pixels,
-        bfb.width(),
-        bfb.height(),
-        stride_pixels,
-    );
+    let mut kernel = super::kernel::get_kernel().lock();
+    let context = kernel.as_mut()?;
+    let mut guard = if let Some(boot_framebuffer) =
+        crate::graphics::discovery::direct_boot_framebuffer()
+    {
+        let stride = boot_framebuffer.stride_pixels();
+        let len = usize::try_from(stride)
+            .ok()?
+            .checked_mul(boot_framebuffer.height() as usize)?;
+        // SAFETY: `direct_boot_framebuffer` validates the mapping address,
+        // dimensions, 32-bpp format, stride, and total pixel count. The
+        // kernel mutex held above supplies the exclusive access guarantee.
+        let pixels =
+            unsafe { core::slice::from_raw_parts_mut(boot_framebuffer.address() as *mut u32, len) };
+        FramebufferGuard::try_new(
+            pixels,
+            boot_framebuffer.width(),
+            boot_framebuffer.height(),
+            stride,
+        )?
+    } else {
+        context.framebuffer.guard()?
+    };
     Some(f(&mut guard))
 }
-
-crate::define_context!(FramebufferContext, framebuffer, FRAMEBUFFER);
