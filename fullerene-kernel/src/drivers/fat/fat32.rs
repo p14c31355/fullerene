@@ -20,6 +20,7 @@ pub struct FatFileSystem {
     inner: FatType,
     next_fd: u32,
     handles: Vec<(u32, String, u64)>,
+    root_cache: Option<Vec<VNode>>,
 }
 
 impl FatFileSystem {
@@ -34,6 +35,7 @@ impl FatFileSystem {
             inner,
             next_fd: 1,
             handles: Vec::new(),
+            root_cache: None,
         })
     }
 
@@ -112,6 +114,7 @@ impl FileSystem for FatFileSystem {
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
+        self.root_cache = None;
         let (path, offset) = {
             let handle = self
                 .handles
@@ -152,11 +155,13 @@ impl FileSystem for FatFileSystem {
     }
 
     fn create(&mut self, path: &str, _kind: InodeType) -> Option<u64> {
+        self.root_cache = None;
         let _file = self.create_file(path).ok()?;
         Some(0)
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
+        self.root_cache = None;
         let path = path.trim_matches('/');
         if path.is_empty() {
             return Err(FsError::InvalidInput);
@@ -176,6 +181,7 @@ impl FileSystem for FatFileSystem {
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), FsError> {
+        self.root_cache = None;
         let path = path.trim_matches('/');
         if path.is_empty() {
             return Err(FsError::InvalidInput);
@@ -189,6 +195,31 @@ impl FileSystem for FatFileSystem {
     }
 
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
+        const MAX_ENTRIES: usize = 4096;
+        let trimmed = path.trim_matches('/');
+        if trimmed.is_empty() {
+            if let Some(ref cached) = self.root_cache {
+                return Ok(cached.clone());
+            }
+            let result = {
+                let directory = self.open_dir(path)?;
+                let mut entries = Vec::new();
+                for entry in directory.iter() {
+                    let entry = Self::map_err(entry)?;
+                    entries.push(VNode {
+                        name: entry.file_name(),
+                        size: entry.len(),
+                        is_dir: entry.is_dir(),
+                    });
+                    if entries.len() >= MAX_ENTRIES {
+                        break;
+                    }
+                }
+                entries
+            };
+            self.root_cache = Some(result.clone());
+            return Ok(result);
+        }
         let directory = self.open_dir(path)?;
         let mut result = Vec::new();
         for entry in directory.iter() {
@@ -198,6 +229,9 @@ impl FileSystem for FatFileSystem {
                 size: entry.len(),
                 is_dir: entry.is_dir(),
             });
+            if result.len() >= MAX_ENTRIES {
+                break;
+            }
         }
         Ok(result)
     }

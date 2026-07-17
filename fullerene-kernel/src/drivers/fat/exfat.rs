@@ -242,6 +242,7 @@ pub struct ExFatFileSystem {
     cache: Arc<Mutex<MetadataCache>>,
     device_size: u64,
     next_fd: u32,
+    root_cache: Option<Vec<VNode>>,
 }
 
 impl ExFatFileSystem {
@@ -298,6 +299,7 @@ impl ExFatFileSystem {
             cache,
             device_size: size,
             next_fd: 1,
+            root_cache: None,
         })
     }
 
@@ -561,6 +563,7 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
+        self.root_cache = None;
         let index = self.handle_index(fd)?;
         if data.is_empty() {
             return Ok(0);
@@ -605,6 +608,7 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64> {
+        self.root_cache = None;
         match kind {
             InodeType::Directory => self.create_directory(path).ok()?,
             InodeType::File => self.create_file(path).ok()?,
@@ -614,20 +618,29 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
+        self.root_cache = None;
         self.create_directory(path)
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), FsError> {
+        self.root_cache = None;
         let entry = self.fs().open_path(path).map_err(Self::map_error)?;
         self.fs().delete(&entry).map_err(Self::map_error)
     }
 
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
+        const MAX_ENTRIES: usize = 4096;
         if path.trim_matches('/').is_empty() {
-            return self.root_entries();
+            if let Some(ref cached) = self.root_cache {
+                return Ok(cached.iter().take(MAX_ENTRIES).cloned().collect());
+            }
+            let entries: Vec<_> = self.root_entries()?.into_iter().take(MAX_ENTRIES).collect();
+            self.root_cache = Some(entries.clone());
+            return Ok(entries);
         }
         self.directory(path)?
             .entries()
+            .take(MAX_ENTRIES)
             .map(|entry| {
                 entry
                     .map(|entry| VNode {
