@@ -32,6 +32,7 @@ fn bytes_until_page_end(address: usize) -> usize {
     PAGE_SIZE - (address & (PAGE_SIZE - 1))
 }
 
+#[allow(dead_code)]
 fn decode_c_string(mut bytes: Vec<u8>) -> Result<String, UserCopyError> {
     let nul = bytes
         .iter()

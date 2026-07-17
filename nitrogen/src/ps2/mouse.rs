@@ -120,7 +120,7 @@ pub fn init_mouse() -> Result<(), crate::DriverError> {
     let mut mouse = Ps2MouseInner::new();
     mouse.set_on_complete(|state: Ps2MouseState| {
         let x = state.get_x();
-        let y = -state.get_y();
+        let y = state.get_y();
         let mut s = LATEST_STATE.lock();
         s.x = s.x.saturating_add(x);
         s.y = s.y.saturating_add(y);
