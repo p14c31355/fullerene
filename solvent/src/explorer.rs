@@ -205,16 +205,7 @@ enum PendingOperation {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PendingNavigation {
-    Queued(String),
-    Ready(String),
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum NavigationStep {
-    Checkpoint(String),
-    Read(String),
-}
+struct PendingNavigation(String);
 
 const CONTEXT_MENU_ITEMS: &[&str] = &["Open", "Copy", "Paste", "Rename", "Delete", "Properties"];
 
@@ -343,18 +334,12 @@ impl ExplorerContext {
     }
 
     pub fn navigate_to(&mut self, path: &str) {
-        self.pending_navigation = Some(PendingNavigation::Queued(String::from(path)));
+        self.pending_navigation = Some(PendingNavigation(String::from(path)));
         self.status_message = Some(String::from("Loading..."));
     }
 
-    pub(crate) fn take_navigation_step(&mut self) -> Option<NavigationStep> {
-        match self.pending_navigation.take()? {
-            PendingNavigation::Queued(path) => {
-                self.pending_navigation = Some(PendingNavigation::Ready(path.clone()));
-                Some(NavigationStep::Checkpoint(path))
-            }
-            PendingNavigation::Ready(path) => Some(NavigationStep::Read(path)),
-        }
+    pub(crate) fn take_navigation_request(&mut self) -> Option<String> {
+        Some(self.pending_navigation.take()?.0)
     }
 
     pub(crate) fn finish_navigation(
@@ -1243,24 +1228,21 @@ fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExplorerContext, NavigationStep};
+    use super::ExplorerContext;
     use crate::VfsEntry;
     use alloc::string::String;
 
     #[test]
-    fn navigation_is_deferred_until_io_completes() {
+    fn navigation_completes_in_one_step() {
         let mut explorer = ExplorerContext::new();
         explorer.navigate_to("/mnt/sdcard");
 
         assert_eq!(explorer.current_dir, "/");
         assert_eq!(
-            explorer.take_navigation_step(),
-            Some(NavigationStep::Checkpoint(String::from("/mnt/sdcard")))
+            explorer.take_navigation_request().as_deref(),
+            Some("/mnt/sdcard")
         );
-        assert_eq!(
-            explorer.take_navigation_step(),
-            Some(NavigationStep::Read(String::from("/mnt/sdcard")))
-        );
+        assert_eq!(explorer.take_navigation_request(), None);
 
         explorer.finish_navigation(
             String::from("/mnt/sdcard"),
@@ -1283,12 +1265,8 @@ mod tests {
 
         assert_eq!(explorer.activate_entry(0), None);
         assert_eq!(
-            explorer.take_navigation_step(),
-            Some(NavigationStep::Checkpoint(String::from("/mnt/sdcard")))
-        );
-        assert_eq!(
-            explorer.take_navigation_step(),
-            Some(NavigationStep::Read(String::from("/mnt/sdcard")))
+            explorer.take_navigation_request().as_deref(),
+            Some("/mnt/sdcard")
         );
         assert_eq!(
             explorer.activate_entry(1).as_deref(),

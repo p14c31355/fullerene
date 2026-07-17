@@ -56,20 +56,11 @@ pub fn set_render_fn(render_fn: fn()) {
 }
 
 fn service_explorer_navigation() {
-    let step = RUNTIME_CONTEXT
+    let path = RUNTIME_CONTEXT
         .runtime()
         .as_mut()
-        .and_then(|runtime| runtime.explorer.as_mut()?.take_navigation_step());
-    let Some(step) = step else { return };
-    let path = match step {
-        crate::explorer::NavigationStep::Checkpoint(path) => {
-            // Return to the frame loop before synchronous media I/O so the
-            // taskbar keeps the last checkpoint visible if VFS stalls.
-            nitrogen::debug_status!("Explorer", "readdir {}", path);
-            return;
-        }
-        crate::explorer::NavigationStep::Read(path) => path,
-    };
+        .and_then(|runtime| runtime.explorer.as_mut()?.take_navigation_request());
+    let Some(path) = path else { return };
 
     // Filesystem and hardware I/O must run without the runtime lock. Rendering
     // takes locks in the opposite direction and synchronous removable-media I/O
