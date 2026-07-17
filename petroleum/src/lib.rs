@@ -10,10 +10,11 @@ pub mod early;
 #[macro_use]
 pub mod common;
 pub mod debug;
+pub mod error;
 pub mod filesystem;
 pub mod graphics;
-pub mod io;
 pub mod initializer;
+pub mod io;
 pub mod page_table;
 pub mod serial;
 pub mod transition;
@@ -24,6 +25,7 @@ pub use common::logging::{SystemError, SystemResult};
 pub use common::memory::*;
 pub use common::syscall::*;
 pub use common::{check_memory_initialized, set_memory_initialized};
+pub use error::MemoryError;
 pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;
@@ -63,7 +65,6 @@ use spin::{Mutex, Once};
 
 pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferConfig>>> =
     Once::new();
-
 
 #[derive(Clone, Copy)]
 pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);

@@ -1,7 +1,7 @@
 /// Syscall helper macros for user space (would be in user-space library)
 #[cfg(feature = "user_space")]
 pub mod user {
-    use super::SyscallNumber;
+    use fullerene_abi::SyscallNumber;
 
     /// Make a system call (user space wrapper)
     #[inline(always)]
@@ -14,9 +14,17 @@ pub mod user {
         arg5: u64,
         arg6: u64,
     ) -> u64 {
-        let mut result: u64;
-        result = petroleum::syscall_call!(syscall_num as u64, arg1, arg2, arg3, arg4, arg5, arg6);
-        result
+        unsafe {
+            petroleum::common::syscall::syscall(
+                syscall_num.as_u64(),
+                arg1,
+                arg2,
+                arg3,
+                arg4,
+                arg5,
+                arg6,
+            )
+        }
     }
 
     /// Exit wrapper

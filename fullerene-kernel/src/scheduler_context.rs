@@ -31,7 +31,7 @@ use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PhysFrame;
 
 use crate::context_switch::switch_context;
-use crate::process::{Process, ProcessContext, ProcessId, ProcessState, MAX_PROCESSES};
+use crate::process::{MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessState};
 use crate::vdso;
 
 /// Scheduler tick interval in nanoseconds (for future use).
@@ -112,7 +112,9 @@ impl SchedulerContext {
         if let Some(pos) = procs.iter().position(|(id, _)| *id == pid) {
             let _ = procs.swap_remove(pos);
         }
-        procs.push((pid, process)).map_err(|_| SystemError::TooManyProcesses)
+        procs
+            .push((pid, process))
+            .map_err(|_| SystemError::TooManyProcesses)
     }
 
     /// Run a closure on a process identified by PID.
@@ -121,7 +123,10 @@ impl SchedulerContext {
         F: FnOnce(&mut Process) -> R,
     {
         let mut procs = self.processes.lock();
-        procs.iter_mut().find(|(id, _)| *id == pid).map(|(_, p)| f(p))
+        procs
+            .iter_mut()
+            .find(|(id, _)| *id == pid)
+            .map(|(_, p)| f(p))
     }
 
     /// Run a closure on every process.
@@ -310,11 +315,7 @@ impl SchedulerContext {
     /// For future SMP support the `ProcessContext` must be ref‑counted
     /// (e.g. `Arc<Mutex<ProcessContext>>`) so that the data stays alive
     /// even when the owning `Process` is dropped.
-    pub unsafe fn context_switch(
-        &self,
-        old_pid: Option<ProcessId>,
-        new_pid: ProcessId,
-    ) {
+    pub unsafe fn context_switch(&self, old_pid: Option<ProcessId>, new_pid: ProcessId) {
         // Same-process no‑op
         if old_pid == Some(new_pid) {
             return;

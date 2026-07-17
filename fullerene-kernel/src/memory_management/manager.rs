@@ -86,13 +86,56 @@ impl UnifiedMemoryManager {
         Ok(())
     }
 
-    /// Legacy MMIO mapping — delegates to [`FramebufferMapper::map_framebuffer`].
+    /// Map device MMIO, preserving a verified boot direct mapping when present.
+    fn direct_mapping_covers(
+        &self,
+        physical_addr: usize,
+        virtual_addr: usize,
+        size: usize,
+    ) -> bool {
+        if size == 0 {
+            return true;
+        }
+        let offset = petroleum::common::memory::get_physical_memory_offset();
+        let Some(expected_virtual) = physical_addr.checked_add(offset) else {
+            return false;
+        };
+        let Some(last) = size.checked_sub(1) else {
+            return false;
+        };
+        let (Some(physical_end), Some(virtual_end)) = (
+            physical_addr.checked_add(last),
+            virtual_addr.checked_add(last),
+        ) else {
+            return false;
+        };
+
+        expected_virtual == virtual_addr
+            && matches!(
+                self.page_table_manager.translate_address(virtual_addr),
+                Ok(mapped) if mapped == physical_addr
+            )
+            && matches!(
+                self.page_table_manager.translate_address(virtual_end),
+                Ok(mapped) if mapped == physical_end
+            )
+    }
+
     pub fn map_mmio_region(
         &mut self,
         physical_addr: usize,
         virtual_addr: usize,
         size: usize,
     ) -> SystemResult<()> {
+        if self.direct_mapping_covers(physical_addr, virtual_addr, size) {
+            log::debug!(
+                "MMIO: preserving direct mapping {:#x} -> {:#x} ({} bytes)",
+                physical_addr,
+                virtual_addr,
+                size
+            );
+            return Ok(());
+        }
         if !self.map_framebuffer_region(
             physical_addr as u64,
             virtual_addr as u64,
@@ -413,10 +456,9 @@ impl ProcessMemoryManager for UnifiedMemoryManager {
             return Ok(());
         }
         let mut process_manager = ProcessMemoryManagerImpl::new(process_id);
-        process_manager.init_page_table(
-            &mut self.page_table_manager,
-            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() },
-        )?;
+        process_manager.init_page_table(&mut self.page_table_manager, unsafe {
+            petroleum::page_table::constants::get_frame_allocator_mut()
+        })?;
         if self.process_managers.len() >= MAX_PROCESS_MANAGERS {
             return Err(SystemError::TooManyProcesses);
         }
@@ -685,7 +727,8 @@ impl FrameAllocator for UnifiedMemoryManager {
         Ok(())
     }
     fn is_frame_available(&self, frame_addr: usize) -> bool {
-        unsafe { petroleum::page_table::constants::get_frame_allocator() }.is_frame_available(frame_addr)
+        unsafe { petroleum::page_table::constants::get_frame_allocator() }
+            .is_frame_available(frame_addr)
     }
     fn frame_size(&self) -> usize {
         unsafe { petroleum::page_table::constants::get_frame_allocator() }.frame_size()

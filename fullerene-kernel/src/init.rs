@@ -39,13 +39,44 @@ fn hex_char(v: u8) -> u8 {
 #[allow(unused_assignments)]
 fn hex_fmt(buf: &mut [u8; 72], bus: u8, dev: u8, func: u8, vid: u16, did: u16, cls: u8, scls: u8) {
     let mut i = 0;
-    macro_rules! push { ($b:expr) => { if i < buf.len() { buf[i] = $b; i += 1; } } }
-    macro_rules! hex { ($v:expr) => { push!(HEX_DIGITS[($v >> 4) as usize]); push!(HEX_DIGITS[($v & 0xF) as usize]); } }
-    macro_rules! bytes { ($s:expr) => { for &b in $s { push!(b); } } }
-    bytes!(b"[probe] "); hex!(bus); push!(':' as u8); hex!(dev); push!('.' as u8); hex!(func); push!(' ' as u8);
-    hex!((vid >> 8) as u8); hex!(vid as u8); push!(':' as u8);
-    hex!((did >> 8) as u8); hex!(did as u8);
-    bytes!(b" class="); hex!(cls); push!('/' as u8); hex!(scls); push!('\n' as u8);
+    macro_rules! push {
+        ($b:expr) => {
+            if i < buf.len() {
+                buf[i] = $b;
+                i += 1;
+            }
+        };
+    }
+    macro_rules! hex {
+        ($v:expr) => {
+            push!(HEX_DIGITS[($v >> 4) as usize]);
+            push!(HEX_DIGITS[($v & 0xF) as usize]);
+        };
+    }
+    macro_rules! bytes {
+        ($s:expr) => {
+            for &b in $s {
+                push!(b);
+            }
+        };
+    }
+    bytes!(b"[probe] ");
+    hex!(bus);
+    push!(':' as u8);
+    hex!(dev);
+    push!('.' as u8);
+    hex!(func);
+    push!(' ' as u8);
+    hex!((vid >> 8) as u8);
+    hex!(vid as u8);
+    push!(':' as u8);
+    hex!((did >> 8) as u8);
+    hex!(did as u8);
+    bytes!(b" class=");
+    hex!(cls);
+    push!('/' as u8);
+    hex!(scls);
+    push!('\n' as u8);
 }
 
 /// Common initialization function for both UEFI and BIOS boot paths
@@ -54,11 +85,12 @@ fn hex_fmt(buf: &mut [u8; 72], bus: u8, dev: u8, func: u8, vid: u16, did: u16, c
 ///
 /// * `physical_memory_offset` - The offset for higher-half kernel mapping
 pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
+    crate::metrics::mark_boot_start();
     petroleum::serial::serial_log(format_args!("Init common start\n"));
 
     crate::boot_stage!(BootStage::KernelEntry);
 
-    #[cfg(not(target_os = "uefi"))]
+    #[cfg(all(not(target_os = "uefi"), not(test)))]
     {
         use core::mem::MaybeUninit;
         let bios_init_steps = [
@@ -67,9 +99,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                     [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
                 unsafe {
                     let ptr = core::ptr::addr_of_mut!(HEAP) as *mut u8;
-                    petroleum::ALLOCATOR
-                        .lock()
-                        .init(ptr, crate::heap::HEAP_SIZE);
+                    petroleum::init_global_heap(ptr, crate::heap::HEAP_SIZE);
                     petroleum::common::memory::set_heap_range(ptr as usize, crate::heap::HEAP_SIZE);
                     crate::gdt::init(x86_64::VirtAddr::from_ptr(ptr));
                 }
@@ -131,13 +161,18 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             nitrogen::iommu::set_mem_callbacks(nitrogen::iommu::MemCallbacks {
                 alloc_frame: || {
                     let mut mgr = crate::memory_management::get_memory_manager().lock();
-                    mgr.as_mut().and_then(|m| m.allocate_frame().ok().map(|p| p as u64))
+                    mgr.as_mut()
+                        .and_then(|m| m.allocate_frame().ok().map(|p| p as u64))
                 },
                 free_frame: |phys| {
                     let mut mgr = crate::memory_management::get_memory_manager().lock();
-                    if let Some(m) = mgr.as_mut() { let _ = m.free_frame(phys as usize); }
+                    if let Some(m) = mgr.as_mut() {
+                        let _ = m.free_frame(phys as usize);
+                    }
                 },
-                phys_to_virt: |phys| (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize,
+                phys_to_virt: |phys| {
+                    (phys + petroleum::common::memory::get_physical_memory_offset() as u64) as usize
+                },
                 map_mmio: |phys, size| {
                     let off = petroleum::common::memory::get_physical_memory_offset() as u64;
                     let virt = (phys as u64 + off) as usize;
@@ -172,18 +207,37 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 Ok(()) => log::info!("IOMMU initialized (RSDP from {})", rsdp_source),
                 Err(e) => {
                     log::warn!("IOMMU not available: {e} (RSDP={rsdp:#018x} from {rsdp_source})");
-                    log::warn!("IOMMU: VT-d may be disabled in firmware, or hardware does not support it");
+                    log::warn!(
+                        "IOMMU: VT-d may be disabled in firmware, or hardware does not support it"
+                    );
                 }
             }
             // ── ECAM setup via MCFG ─────────────────────────────
             if let Some(ref mgr) = acpi_mgr {
+                if let Some(madt) = mgr.parse_madt() {
+                    log::info!(
+                        "MADT: discovered {} processor entries",
+                        madt.processors.len()
+                    );
+                    crate::smp::configure(madt);
+                } else {
+                    log::warn!("MADT: processor topology unavailable; using BSP only");
+                }
                 if let Some(mcfg) = mgr.parse_mcfg() {
                     let phys_off = petroleum::common::memory::get_physical_memory_offset() as u64;
                     log::info!(
                         "MCFG: ECAM at phys={:#018x}, segment={}, buses {}-{}",
-                        mcfg.base_address, mcfg.segment, mcfg.start_bus, mcfg.end_bus,
+                        mcfg.base_address,
+                        mcfg.segment,
+                        mcfg.start_bus,
+                        mcfg.end_bus,
                     );
-                    nitrogen::pci::set_ecam_info(mcfg.base_address, phys_off, mcfg.start_bus, mcfg.end_bus);
+                    nitrogen::pci::set_ecam_info(
+                        mcfg.base_address,
+                        phys_off,
+                        mcfg.start_bus,
+                        mcfg.end_bus,
+                    );
                 } else {
                     log::warn!("MCFG: table not found — extended PCIe config space unavailable");
                 }
@@ -196,7 +250,15 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             // This must run before Graphics init so that subsequent
             // WC page-table mappings use the correct memory type.
             let pat_ok = crate::memory_management::configure_framebuffer_pat();
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, if pat_ok { b"[init] PAT configured\n" } else { b"[init] PAT unavailable\n" });
+            petroleum::write_serial_bytes(
+                0x3F8,
+                0x3FD,
+                if pat_ok {
+                    b"[init] PAT configured\n"
+                } else {
+                    b"[init] PAT unavailable\n"
+                },
+            );
             Ok(())
         }),
         petroleum::init_step!("Graphics", || {
@@ -207,58 +269,73 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             Ok(())
         }),
         petroleum::init_step!("devfs", || {
+            crate::boot_stage::draw_boot_label(b"DEVFS");
+            crate::boot_stage::draw_step_hint(b"devfs");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs start\n");
             let _ = crate::contexts::vfs::mkdir("/dev");
-            let _ = crate::contexts::vfs::mount("", "/dev", "tmpfs");
-            petroleum::serial::serial_log(format_args!("DevFS /dev/ mounted\n"));
+            crate::contexts::vfs::mount("", "/dev", "devfs")
+                .map_err(|_| petroleum::SystemError::DeviceError)?;
+            petroleum::serial::serial_log(format_args!("DevFS mounted at /dev\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] devfs done\n");
             Ok(())
         }),
         petroleum::init_step!("device_probe", || {
+            crate::boot_stage::draw_boot_label(b"DEVICE PROBE");
+            crate::boot_stage::draw_step_hint(b"pci_scan");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step start\n");
             let registry = crate::drivers::registry::build_registry();
             let ctx = &crate::driver_context_impl::KernelDriverContext;
             let mut scanner = nitrogen::pci::PciScanner::new();
             let _ = scanner.scan_all_buses();
 
-            // Pre-process: safety gates for all devices before probing
-            let mut healthy_devices = alloc::vec::Vec::new();
+            // Keep discovery read-only.  Each Nitrogen driver owns the power,
+            // decode and link-state transition immediately before its MMIO.
+            let mut present_devices = alloc::vec::Vec::new();
             for dev in scanner.get_devices() {
                 // Log each device so we can identify where real hardware hangs.
                 {
                     let mut buf = [0u8; 72];
-                    hex_fmt(&mut buf, dev.bus, dev.device, dev.function, dev.vendor_id, dev.device_id, dev.class_code, dev.subclass);
+                    hex_fmt(
+                        &mut buf,
+                        dev.bus,
+                        dev.device,
+                        dev.function,
+                        dev.vendor_id,
+                        dev.device_id,
+                        dev.class_code,
+                        dev.subclass,
+                    );
                     petroleum::write_serial_bytes(0x3F8, 0x3FD, &buf);
                 }
-                // Skip PCI bridges — drivers only match endpoints.
-                if dev.class_code == 0x06 { continue; }
                 // Show bus:device on boot screen (serial-free debug)
                 let hint_bcd = [
-                    b'd', b'v',
-                    hex_char(dev.bus >> 4), hex_char(dev.bus & 0xF),
+                    b'd',
+                    b'v',
+                    hex_char(dev.bus >> 4),
+                    hex_char(dev.bus & 0xF),
                     b':',
-                    hex_char(dev.device >> 4), hex_char(dev.device & 0xF),
+                    hex_char(dev.device >> 4),
+                    hex_char(dev.device & 0xF),
                     b':',
-                    hex_char(dev.function >> 4), hex_char(dev.function & 0xF),
+                    hex_char(dev.function >> 4),
+                    hex_char(dev.function & 0xF),
                 ];
                 crate::boot_stage::draw_step_hint(&hint_bcd);
-                dev.disable_pcie_aspm();
-                dev.enable_memory_access();
-                dev.ensure_d0();
-                // Quick MMIO-safety check
-                crate::boot_stage::draw_step_hint(b"dv_vid");
                 let vid = nitrogen::pci::PciConfigSpace::read_config_word(
-                    dev.bus, dev.device, dev.function, 0,
+                    dev.bus,
+                    dev.device,
+                    dev.function,
+                    0,
                 );
-                if vid == 0xFFFF || vid == 0x0000 { continue; }
-
-                // Device passed safety checks, add to healthy list
-                healthy_devices.push(dev.clone());
+                if vid == 0xFFFF || vid == 0x0000 {
+                    continue;
+                }
+                present_devices.push(dev.clone());
             }
 
             // DriverManager orchestrates probe → priority → attach → registration
             let mgr = DRIVER_MGR.call_once(crate::hardware::driver_manager::DriverManager::new);
-            mgr.discover_and_attach(&registry, ctx, &healthy_devices);
+            mgr.discover_and_attach(&registry, ctx, &present_devices);
 
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
@@ -269,15 +346,23 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage::draw_step_hint(b"ps2_ctrl");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_ctrl start\n");
             let devices = nitrogen::ps2::init_ps2_controller();
-            petroleum::serial::serial_log(format_args!("PS/2 controller initialized (keyboard={}, mouse={})\n", devices & 1 != 0, devices & 2 != 0));
+            petroleum::serial::serial_log(format_args!(
+                "PS/2 controller initialized (keyboard={}, mouse={})\n",
+                devices & 1 != 0,
+                devices & 2 != 0
+            ));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_ctrl done\n");
             Ok(())
         }),
         petroleum::init_step!("PS2 Mouse", || {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_mouse start\n");
             match nitrogen::ps2::mouse::init_mouse() {
-                Ok(()) => { petroleum::serial::serial_log(format_args!("PS/2 mouse initialised\n")); }
-                Err(e) => { petroleum::serial::serial_log(format_args!("PS/2 mouse init failed: {}\n", e)); }
+                Ok(()) => {
+                    petroleum::serial::serial_log(format_args!("PS/2 mouse initialised\n"));
+                }
+                Err(e) => {
+                    petroleum::serial::serial_log(format_args!("PS/2 mouse init failed: {}\n", e));
+                }
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] ps2_mouse done\n");
             Ok(())
@@ -331,28 +416,9 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr start\n");
             crate::boot_stage::draw_boot_label(b"DEVICE MANAGER");
             crate::hardware::device_manager::init_device_manager()
-                .map_err(|_| "Failed to initialize device manager")?;
+                .map_err(|_| petroleum::SystemError::DeviceError)?;
             petroleum::serial::serial_log(format_args!("Device manager initialised\n"));
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] device_mgr done\n");
-            Ok(())
-        }),
-        petroleum::init_step!("usb_storage", || {
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] usb_storage start\n");
-            crate::boot_stage::draw_boot_label(b"USB STORAGE");
-            crate::boot_stage::draw_step_hint(b"pre_log"); // drawn BEFORE serial_log
-            petroleum::serial::serial_log(format_args!("USB storage subsystem initialised\n"));
-            crate::boot_stage::draw_step_hint(b"usb_ok ");
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] usb_storage done\n");
-            Ok(())
-        }),
-        petroleum::init_step!("sd_card", || {
-            crate::boot_stage::draw_step_hint(b"sd_strt");
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card start\n");
-            crate::boot_stage::draw_boot_label(b"SD CARD");
-            crate::drivers::registry::sd_probe_and_register();
-            petroleum::serial::serial_log(format_args!("SD card subsystem initialised\n"));
-            crate::boot_stage::draw_step_hint(b"sd_ok  ");
-            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] sd_card done\n");
             Ok(())
         }),
         #[cfg(not(nitrogen_no_iwlwifi))]
@@ -385,11 +451,11 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] task_mgr done\n");
             Ok(())
         }),
-
     ];
     InitSequence::new(&common_steps).run();
+    crate::metrics::mark_boot_ready();
 
-    // Flush boot log to /bootlog.txt so early init messages survive
+    // Flush the early log to /bootlog/Bootlog.txt for File Manager access.
     // even if the system hangs or panics shortly after boot.
     if let Err(e) = crate::klog::flush_to_vfs() {
         petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] bootlog flush failed\n");

@@ -17,14 +17,19 @@ use alloc::vec::Vec;
 /// Enumerate a newly connected device on the given port.
 ///
 /// `control_fn` is a callback that performs a control transfer:
-///   fn(dev_addr, endpoint, setup_packet, buffer) -> Result<usize, &'static str>
+///   fn(dev_addr, endpoint, setup_packet, buffer) -> Result<usize, crate::DriverError>
 /// `next_addr` is a mutable counter for assigning unique USB device addresses (1-127).
 ///
 /// Returns the fully enumerated UsbDevice, or an error.
 pub fn enumerate_device(
-    control_fn: &mut dyn FnMut(u8, u8, &UsbSetupPacket, &mut [u8]) -> Result<usize, &'static str>,
+    control_fn: &mut dyn FnMut(
+        u8,
+        u8,
+        &UsbSetupPacket,
+        &mut [u8],
+    ) -> Result<usize, crate::DriverError>,
     next_addr: &mut u8,
-) -> Result<UsbDevice, &'static str> {
+) -> Result<UsbDevice, crate::DriverError> {
     // Step 1: Get device descriptor (only first 8 bytes for max packet size)
     let mut desc_buf = [0u8; 64];
     let setup = UsbSetupPacket {
@@ -34,9 +39,9 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: 64,
     };
-    let n = control_fn(0, 0, &setup, &mut desc_buf).map_err(|_| "GET_DESCRIPTOR failed")?;
+    let n = control_fn(0, 0, &setup, &mut desc_buf)?;
     if n < 8 {
-        return Err("descriptor too short");
+        return Err(crate::DriverError::Protocol);
     }
 
     // SAFETY: UsbDeviceDescriptor is #[repr(C, packed)]. desc_buf was filled by a
@@ -62,7 +67,7 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: 0,
     };
-    control_fn(0, 0, &setup, &mut []).map_err(|_| "SET_ADDRESS failed")?;
+    control_fn(0, 0, &setup, &mut [])?;
 
     // Delay for address to take effect (USB2 spec §9.2.6.3 recommends 2ms)
     super::xhci::port::delay_ms(2);
@@ -76,8 +81,7 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: 18,
     };
-    control_fn(assigned_addr, 0, &setup, &mut dev_desc_full)
-        .map_err(|_| "GET_DESCRIPTOR full failed")?;
+    control_fn(assigned_addr, 0, &setup, &mut dev_desc_full)?;
     // SAFETY: Same layout guarantee as above; dev_desc_full is exactly 18 bytes
     // (the full USB device descriptor per USB spec §9.6.1).
     let dev_desc: &UsbDeviceDescriptor =
@@ -92,8 +96,7 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: 9,
     };
-    control_fn(assigned_addr, 0, &setup, &mut cfg_hdr_buf)
-        .map_err(|_| "GET_CONFIG_DESC hdr failed")?;
+    control_fn(assigned_addr, 0, &setup, &mut cfg_hdr_buf)?;
     // SAFETY: UsbConfigDescriptor is #[repr(C, packed)], the first 9 bytes of
     // every configuration descriptor match this layout per USB spec §9.6.3.
     let cfg_desc: &UsbConfigDescriptor =
@@ -109,8 +112,7 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: total_len as u16,
     };
-    control_fn(assigned_addr, 0, &setup, &mut cfg_buf)
-        .map_err(|_| "GET_CONFIG_DESC full failed")?;
+    control_fn(assigned_addr, 0, &setup, &mut cfg_buf)?;
 
     // Step 6: Parse endpoints from the configuration descriptor
     let mut endpoints = Vec::new();
@@ -140,7 +142,7 @@ pub fn enumerate_device(
         w_index: 0,
         w_length: 0,
     };
-    control_fn(assigned_addr, 0, &setup, &mut []).map_err(|_| "SET_CONFIGURATION failed")?;
+    control_fn(assigned_addr, 0, &setup, &mut [])?;
 
     Ok(UsbDevice {
         address: assigned_addr,

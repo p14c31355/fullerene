@@ -1,29 +1,31 @@
-use alloc::boxed::Box;
-use alloc::vec::Vec;
 use crate::DriverContext;
 use crate::pci::PciDevice;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::cmp::Reverse;
 
 /// Block-device interface for mass-storage controllers
 /// (NVMe, AHCI, SATA, IDE, SD/MMC, USB mass storage, etc.).
 pub trait StorageDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn read_blocks(&self, lba: u64, count: usize, buf: &mut [u8]) -> Result<(), &'static str>;
-    fn write_blocks(&self, lba: u64, count: usize, buf: &[u8]) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
+    fn read_blocks(&self, lba: u64, count: usize, buf: &mut [u8])
+    -> Result<(), crate::DriverError>;
+    fn write_blocks(&self, lba: u64, count: usize, buf: &[u8]) -> Result<(), crate::DriverError>;
     fn block_size(&self) -> u32;
     fn total_blocks(&self) -> u64;
 }
 
 /// Network interface controller (Ethernet, Wi-Fi, etc.).
 pub trait NetworkDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn send(&self, buf: &[u8]) -> Result<(), &'static str>;
-    fn receive(&self, buf: &mut [u8]) -> Result<usize, &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
+    fn send(&self, buf: &[u8]) -> Result<(), crate::DriverError>;
+    fn receive(&self, buf: &mut [u8]) -> Result<usize, crate::DriverError>;
     fn mac_address(&self) -> [u8; 6];
 }
 
 /// Display / GPU controller (VGA-compatible, VirtIO-GPU, etc.).
 pub trait DisplayDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
     fn framebuffer(&self) -> &[u8];
     fn resolution(&self) -> (usize, usize);
     fn stride(&self) -> usize;
@@ -32,13 +34,13 @@ pub trait DisplayDriver: Send {
 
 /// Audio controller (HDA, AC97, USB audio, etc.).
 pub trait AudioDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
-    fn play(&self, buf: &[u8]) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
+    fn play(&self, buf: &[u8]) -> Result<(), crate::DriverError>;
 }
 
 /// USB host controller (EHCI, XHCI, OHCI, UHCI).
 pub trait UsbHostDriver: Send {
-    fn init(&mut self) -> Result<(), &'static str>;
+    fn init(&mut self) -> Result<(), crate::DriverError>;
     fn poll(&self);
 }
 
@@ -61,7 +63,7 @@ impl DriverBox {
     ///
     /// This is the **attach** step in the probe → priority → attach →
     /// driver-manager pipeline.
-    pub fn attach(&mut self) -> Result<(), &'static str> {
+    pub fn attach(&mut self) -> Result<(), crate::DriverError> {
         match self {
             DriverBox::Storage(d) => d.init(),
             DriverBox::Network(d) => d.init(),
@@ -76,7 +78,7 @@ impl DriverBox {
 /// Entry point every PCI-subclass driver plugin exports.
 pub type PluginEntry = fn(device: &PciDevice) -> DriverBox;
 
-/// ── DriverDescriptor — PCI identity for matching ───────────────
+// ── DriverDescriptor — PCI identity for matching ───────────────
 
 /// Describes the hardware a driver can handle.
 ///
@@ -88,9 +90,9 @@ pub struct DriverDescriptor {
     pub vendor: u16,
     /// PCI device ID (0xFFFF = wildcard; ignored when vendor is wildcard).
     pub device: u16,
-    /// PCI class code (0xFF = wildcard).
+    /// PCI class code (`0xFF/0xFF` class/subclass pair = unspecified).
     pub class: u8,
-    /// PCI subclass (only meaningful when class is not wildcard).
+    /// PCI subclass (`0xFF/0xFF` class/subclass pair = unspecified).
     pub subclass: u8,
 }
 
@@ -127,30 +129,54 @@ impl DriverDescriptor {
 
     /// Returns `true` if this descriptor matches the given PCI device.
     pub fn matches(&self, device: &PciDevice) -> bool {
-        // Exact vendor/device match
-        if self.vendor != 0xFFFF
-            && self.device != 0xFFFF
+        let vendor = self.vendor != 0xFFFF
             && self.vendor == device.vendor_id
-            && self.device == device.device_id
-        {
-            return true;
-        }
-        // Vendor match with device wildcard (e.g., vendor-specific but any device)
-        if self.vendor != 0xFFFF
-            && self.device == 0xFFFF
-            && self.vendor == device.vendor_id
-        {
-            return true;
-        }
-        // Class/subclass match
-        if self.class != 0xFF
+            && (self.device == 0xFFFF || self.device == device.device_id);
+        // PCI class 0xff is a real vendor-specific class. Treat only the
+        // pair (class, subclass) == (0xff, 0xff) as unspecified.
+        let class = (self.class != 0xFF || self.subclass != 0xFF)
             && self.class == device.class_code
-            && self.subclass == device.subclass
-        {
-            return true;
+            && self.subclass == device.subclass;
+        let wildcard = self.vendor == 0xFFFF
+            && self.device == 0xFFFF
+            && self.class == 0xFF
+            && self.subclass == 0xFF;
+        vendor || class || wildcard
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DriverDescriptor;
+    use crate::pci::PciDevice;
+
+    fn device(class_code: u8, subclass: u8) -> PciDevice {
+        PciDevice {
+            bus: 0,
+            device: 0,
+            function: 0,
+            handle: 0,
+            vendor_id: 0x10EC,
+            device_id: 0x5249,
+            class_code,
+            subclass,
+            prog_if: 0,
+            header_type: 0,
         }
-        // Wildcard fallback (both vendor and class are wildcard)
-        self.vendor == 0xFFFF && self.device == 0xFFFF && self.class == 0xFF
+    }
+
+    #[test]
+    fn vendor_specific_class_is_not_a_wildcard() {
+        let descriptor = DriverDescriptor::from_class(0xFF, 0x00);
+        assert!(descriptor.matches(&device(0xFF, 0x00)));
+        assert!(!descriptor.matches(&device(0x03, 0x00)));
+    }
+
+    #[test]
+    fn explicit_wildcard_still_matches_every_class() {
+        let descriptor = DriverDescriptor::wildcard();
+        assert!(descriptor.matches(&device(0x03, 0x00)));
+        assert!(descriptor.matches(&device(0xFF, 0x00)));
     }
 }
 
@@ -171,21 +197,15 @@ pub trait Driver: Send {
     /// and [`pci_class`](Self::pci_class) for backward compatibility.
     fn descriptor(&self) -> DriverDescriptor {
         let (vid, did) = self.pci_id();
-        let class = self.pci_class();
-        match class {
-            Some((c, s)) => DriverDescriptor {
+        self.pci_class().map_or(
+            DriverDescriptor::from_vid_did(vid, did),
+            |(class, subclass)| DriverDescriptor {
                 vendor: vid,
                 device: did,
-                class: c,
-                subclass: s,
+                class,
+                subclass,
             },
-            None => DriverDescriptor {
-                vendor: vid,
-                device: did,
-                class: 0xFF,
-                subclass: 0xFF,
-            },
-        }
+        )
     }
 
     /// PCI vendor/device pair this driver handles.
@@ -249,30 +269,24 @@ impl DriverRegistry {
         self.drivers.push((name, driver));
     }
 
+    fn matching_drivers(&self, device: &PciDevice) -> Vec<&dyn Driver> {
+        let mut drivers: Vec<_> = self
+            .drivers
+            .iter()
+            .map(|(_, driver)| driver.as_ref())
+            .filter(|driver| driver.descriptor().matches(device))
+            .collect();
+        drivers.sort_by_key(|driver| Reverse(driver.priority()));
+        drivers
+    }
+
     /// Match a PCI device against all registered drivers.
     ///
     /// Strategy: collect all matching drivers, sort by [`priority`](Driver::priority)
     /// (highest first), and call [`probe`](Driver::probe) on each until one
     /// returns a non-`None` instance.
-    pub fn match_device(
-        &self,
-        ctx: &dyn DriverContext,
-        device: &PciDevice,
-    ) -> DriverBox {
-        // Collect matching candidates with their priority.
-        let mut candidates: Vec<(usize, i32)> = Vec::new();
-        for (i, (_name, driver)) in self.drivers.iter().enumerate() {
-            if driver.descriptor().matches(device) {
-                candidates.push((i, driver.priority()));
-            }
-        }
-
-        // Sort by priority descending.
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-        // Try each candidate's probe in priority order.
-        for (idx, _prio) in &candidates {
-            let (_name, driver) = &self.drivers[*idx];
+    pub fn match_device(&self, ctx: &dyn DriverContext, device: &PciDevice) -> DriverBox {
+        for driver in self.matching_drivers(device) {
             let result = driver.probe(ctx, device);
             if !matches!(result, DriverBox::None) {
                 return result;
@@ -287,28 +301,14 @@ impl DriverRegistry {
     /// successful probe, this returns every driver whose `probe()` returned non-`None`,
     /// sorted by priority (highest first).  The caller can then attempt `attach()` on
     /// each until one succeeds.
-    pub fn probe_candidates(
-        &self,
-        ctx: &dyn DriverContext,
-        device: &PciDevice,
-    ) -> Vec<DriverBox> {
-        let mut candidates: Vec<(usize, i32)> = Vec::new();
-        for (i, (_name, driver)) in self.drivers.iter().enumerate() {
-            if driver.descriptor().matches(device) {
-                candidates.push((i, driver.priority()));
-            }
-        }
-        candidates.sort_by(|a, b| b.1.cmp(&a.1));
-
-        let mut results = Vec::new();
-        for (idx, _prio) in &candidates {
-            let (_name, driver) = &self.drivers[*idx];
-            let result = driver.probe(ctx, device);
-            if !matches!(result, DriverBox::None) {
-                results.push(result);
-            }
-        }
-        results
+    pub fn probe_candidates(&self, ctx: &dyn DriverContext, device: &PciDevice) -> Vec<DriverBox> {
+        self.matching_drivers(device)
+            .into_iter()
+            .filter_map(|driver| match driver.probe(ctx, device) {
+                DriverBox::None => None,
+                result => Some(result),
+            })
+            .collect()
     }
 
     /// Iterate over registered driver names.

@@ -25,17 +25,19 @@ extern crate alloc;
 // `nitrogen_no_*` cfg flags emitted by build.rs.
 // Infrastructure modules are always included (no cfg gate).
 
-pub mod driver_api;
-pub mod driver_context;
-pub mod pci;
-pub mod pci_error;
-pub mod pci_health;
-pub mod mmio;
-pub mod port;
-pub mod debug;
 pub mod acpi;
 pub mod apic;
 pub mod apic_controller;
+pub mod debug;
+pub mod driver_api;
+pub mod driver_context;
+pub mod error;
+pub mod metrics;
+pub mod mmio;
+pub mod pci;
+pub mod pci_error;
+pub mod pci_health;
+pub mod port;
 
 // ── Excludable drivers (gated by .driverignore) ──────────────
 #[cfg(not(nitrogen_no_audio))]
@@ -65,6 +67,7 @@ pub mod virtio;
 pub mod wifi;
 
 pub use driver_context::{DriverContext, DriverContextError, PageFlags};
+pub use error::DriverError;
 
 #[cfg(test)]
 mod tests {
@@ -86,10 +89,7 @@ mod tests {
             Err(DriverContextError::OutOfMemory)
         }
 
-        fn allocate_contiguous_frames(
-            &self,
-            _count: usize,
-        ) -> Result<u64, DriverContextError> {
+        fn allocate_contiguous_frames(&self, _count: usize) -> Result<u64, DriverContextError> {
             Err(DriverContextError::OutOfMemory)
         }
 

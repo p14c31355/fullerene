@@ -12,22 +12,33 @@
 //!
 //! No other kernel file needs to change.
 
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use alloc::boxed::Box;
-use core::sync::atomic::{AtomicUsize, Ordering};
-#[allow(unused_imports)]
-use core::sync::atomic::AtomicBool;
+#[cfg(not(nitrogen_no_usb))]
+use core::sync::atomic::AtomicUsize;
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(nitrogen_no_usb))]
 use spin::Mutex;
 
-use genome::block::BlockDevice;
-use nitrogen::driver_api::{Driver, DriverBox, UsbHostDriver};
-use nitrogen::pci::PciDevice;
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use genome::block::{BlockDevice, BlockError};
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
 use nitrogen::DriverContext;
+#[cfg(not(nitrogen_no_usb))]
+use nitrogen::driver_api::UsbHostDriver;
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use nitrogen::driver_api::{Driver, DriverBox};
+#[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+use nitrogen::pci::PciDevice;
 
 // ────────────────────────────────────────────────────────────
 //  Re-exports (for external callers such as shell / GUI)
 // ────────────────────────────────────────────────────────────
 
 pub use nitrogen::driver_api::DriverRegistry;
+#[cfg(not(nitrogen_no_storage))]
+use nitrogen::driver_api::StorageDriver;
 
 // ── USB storage state (formerly drivers/usb_storage.rs) ────
 
@@ -46,9 +57,16 @@ pub fn with_ctx<F, R>(f: F) -> R
 where
     F: FnOnce(&mut nitrogen::usb::context::USBContext) -> R,
 {
-    let mut guard = USB_CTX.lock();
-    let ctx = guard.as_mut().expect("USB context not initialized");
-    f(ctx)
+    try_with_ctx(f).expect("USB context not initialized")
+}
+
+/// Access the USB controller context when a host driver was discovered.
+#[cfg(not(nitrogen_no_usb))]
+pub fn try_with_ctx<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut nitrogen::usb::context::USBContext) -> R,
+{
+    USB_CTX.lock().as_mut().map(f)
 }
 
 #[cfg(nitrogen_no_usb)]
@@ -57,6 +75,10 @@ pub struct DummyUsbContext;
 
 #[cfg(nitrogen_no_usb)]
 impl DummyUsbContext {
+    pub fn is_enabled(&self) -> bool {
+        false
+    }
+
     pub fn disks(&self) -> &[DummyUsbDisk] {
         &[]
     }
@@ -80,87 +102,34 @@ where
     panic!("USB support not compiled in");
 }
 
+#[cfg(nitrogen_no_usb)]
+pub fn try_with_ctx<F, R>(_f: F) -> Option<R>
+where
+    F: FnOnce(&mut DummyUsbContext) -> R,
+{
+    None
+}
+
 // ── SD card state (formerly drivers/sd_card.rs) ────────────
 
 #[cfg(not(nitrogen_no_storage))]
-pub static SD_PROBED: AtomicBool = AtomicBool::new(false);
+static SD_PROBED: AtomicBool = AtomicBool::new(false);
 
 // ────────────────────────────────────────────────────────────
 //  Driver implementations
 // ────────────────────────────────────────────────────────────
 
-// -- AHCI ----------------------------------------------------
-
-#[cfg(not(nitrogen_no_storage))]
-pub struct AhciDriver;
-
-#[cfg(not(nitrogen_no_storage))]
-impl Driver for AhciDriver {
-    fn pci_class(&self) -> Option<(u8, u8)> {
-        Some((0x01, 0x06)) // mass-storage, SATA (AHCI)
-    }
-    fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
-        DriverBox::Storage(Box::new(AhciStorageCtl))
-    }
-}
-
-#[cfg(not(nitrogen_no_storage))]
-struct AhciStorageCtl;
-
-#[cfg(not(nitrogen_no_storage))]
-impl StorageDriver for AhciStorageCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
-        nitrogen::storage::ahci::init(&crate::driver_context_impl::KernelDriverContext);
-        Ok(())
-    }
-    fn read_blocks(&self, _lba: u64, _count: usize, _buf: &mut [u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn write_blocks(&self, _lba: u64, _count: usize, _buf: &[u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn block_size(&self) -> u32 { 0 }
-    fn total_blocks(&self) -> u64 { 0 }
-}
-
-// -- NVMe ----------------------------------------------------
-
-#[cfg(not(nitrogen_no_storage))]
-pub struct NvmeDriver;
-
-#[cfg(not(nitrogen_no_storage))]
-impl Driver for NvmeDriver {
-    fn pci_class(&self) -> Option<(u8, u8)> {
-        Some((0x01, 0x08)) // mass-storage, NVM Express
-    }
-    fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
-        DriverBox::Storage(Box::new(NvmeStorageCtl))
-    }
-}
-
-#[cfg(not(nitrogen_no_storage))]
-struct NvmeStorageCtl;
-
-#[cfg(not(nitrogen_no_storage))]
-impl StorageDriver for NvmeStorageCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
-        nitrogen::storage::nvme::init(&crate::driver_context_impl::KernelDriverContext);
-        Ok(())
-    }
-    fn read_blocks(&self, _lba: u64, _count: usize, _buf: &mut [u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn write_blocks(&self, _lba: u64, _count: usize, _buf: &[u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
-    }
-    fn block_size(&self) -> u32 { 0 }
-    fn total_blocks(&self) -> u64 { 0 }
-}
-
 // -- USB storage (formerly usb_storage::init) -----------------
 
 #[cfg(not(nitrogen_no_usb))]
-pub struct UsbStorageDriver;
+pub struct UsbStorageDriver(AtomicBool);
+
+#[cfg(not(nitrogen_no_usb))]
+impl UsbStorageDriver {
+    const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+}
 
 #[cfg(not(nitrogen_no_usb))]
 impl Driver for UsbStorageDriver {
@@ -168,7 +137,15 @@ impl Driver for UsbStorageDriver {
         Some((0x0C, 0x03)) // USB host controller
     }
     fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
-        DriverBox::UsbHost(Box::new(UsbHostCtl))
+        if self
+            .0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            DriverBox::UsbHost(Box::new(UsbHostCtl))
+        } else {
+            DriverBox::None
+        }
     }
 }
 
@@ -177,20 +154,12 @@ struct UsbHostCtl;
 
 #[cfg(not(nitrogen_no_usb))]
 impl UsbHostDriver for UsbHostCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
-        crate::boot_stage::draw_boot_label(b"USB STORAGE");
+    fn init(&mut self) -> Result<(), nitrogen::DriverError> {
         nitrogen::debug::set_hint_callback(crate::boot_stage::draw_step_hint);
-
-        let mut ctx = nitrogen::usb::context::USBContext::new(
+        init_usb_ctx(nitrogen::usb::context::USBContext::new(
             &crate::driver_context_impl::KernelDriverContext,
-        );
-        if let Err(e) = ctx.enable() {
-            log::warn!("USB: enable failed: {:?}", e);
-        }
-        crate::drivers::registry::init_usb_ctx(ctx);
-        crate::boot_stage::draw_step_hint(b"usb_pol");
-        crate::drivers::registry::usb_poll_and_register();
-        crate::boot_stage::draw_step_hint(b"usb_reg");
+        ));
+        log::info!("USB: service registered; controller activation deferred");
         Ok(())
     }
     fn poll(&self) {
@@ -211,8 +180,8 @@ pub struct SdCardDriver;
 
 #[cfg(not(nitrogen_no_storage))]
 impl Driver for SdCardDriver {
-    fn pci_class(&self) -> Option<(u8, u8)> {
-        Some((0xFF, 0x00)) // vendor-specific (RTSX)
+    fn pci_id(&self) -> (u16, u16) {
+        (0x10EC, 0x5249)
     }
     fn probe(&self, _ctx: &dyn DriverContext, _device: &PciDevice) -> DriverBox {
         DriverBox::Storage(Box::new(SdCardStorageCtl))
@@ -224,7 +193,7 @@ struct SdCardStorageCtl;
 
 #[cfg(not(nitrogen_no_storage))]
 impl StorageDriver for SdCardStorageCtl {
-    fn init(&mut self) -> Result<(), &'static str> {
+    fn init(&mut self) -> Result<(), nitrogen::DriverError> {
         crate::boot_stage::draw_boot_label(b"SD CARD");
         nitrogen::storage::rtsx::init(&crate::driver_context_impl::KernelDriverContext);
         if nitrogen::storage::rtsx::is_present() {
@@ -234,14 +203,28 @@ impl StorageDriver for SdCardStorageCtl {
         }
         Ok(())
     }
-    fn read_blocks(&self, _lba: u64, _count: usize, _buf: &mut [u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
+    fn read_blocks(
+        &self,
+        _lba: u64,
+        _count: usize,
+        _buf: &mut [u8],
+    ) -> Result<(), nitrogen::DriverError> {
+        Err(nitrogen::DriverError::NotSupported)
     }
-    fn write_blocks(&self, _lba: u64, _count: usize, _buf: &[u8]) -> Result<(), &'static str> {
-        Err("not a single block device")
+    fn write_blocks(
+        &self,
+        _lba: u64,
+        _count: usize,
+        _buf: &[u8],
+    ) -> Result<(), nitrogen::DriverError> {
+        Err(nitrogen::DriverError::NotSupported)
     }
-    fn block_size(&self) -> u32 { 0 }
-    fn total_blocks(&self) -> u64 { 0 }
+    fn block_size(&self) -> u32 {
+        0
+    }
+    fn total_blocks(&self) -> u64 {
+        0
+    }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -250,15 +233,13 @@ impl StorageDriver for SdCardStorageCtl {
 
 /// Populate the `DriverRegistry` with every available driver.
 pub fn build_registry() -> DriverRegistry {
-    let mut reg = DriverRegistry::new();
+    let reg = DriverRegistry::new();
+    #[cfg(any(not(nitrogen_no_usb), not(nitrogen_no_storage)))]
+    let mut reg = reg;
     #[cfg(not(nitrogen_no_storage))]
-    {
-        reg.register("ahci", Box::new(AhciDriver));
-        reg.register("nvme", Box::new(NvmeDriver));
-        reg.register("sd_card", Box::new(SdCardDriver));
-    }
+    reg.register("sd_card", Box::new(SdCardDriver));
     #[cfg(not(nitrogen_no_usb))]
-    reg.register("usb_storage", Box::new(UsbStorageDriver));
+    reg.register("usb_storage", Box::new(UsbStorageDriver::new()));
     // Future: virtio_gpu, iwlwifi, hda, …
     reg
 }
@@ -290,30 +271,59 @@ unsafe impl Send for UsbBlockDevice {}
 
 #[cfg(not(nitrogen_no_usb))]
 impl BlockDevice for UsbBlockDevice {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
         with_ctx(|ctx| {
             ctx.bot_read(
-                self.ctrl_type, self.ctrl_idx, self.dev_addr,
-                self.ep_out, self.ep_out_mps, self.ep_in, self.ep_in_mps,
-                lba, count, self.block_size, buf, &mut self.tag,
+                self.ctrl_type,
+                self.ctrl_idx,
+                self.dev_addr,
+                self.ep_out,
+                self.ep_out_mps,
+                self.ep_in,
+                self.ep_in_mps,
+                lba,
+                count,
+                self.block_size,
+                buf,
+                &mut self.tag,
             )
         })
+        .map_err(|_| BlockError::Device)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
         with_ctx(|ctx| {
             ctx.bot_write(
-                self.ctrl_type, self.ctrl_idx, self.dev_addr,
-                self.ep_out, self.ep_out_mps, self.ep_in, self.ep_in_mps,
-                lba, count, self.block_size, buf, &mut self.tag,
+                self.ctrl_type,
+                self.ctrl_idx,
+                self.dev_addr,
+                self.ep_out,
+                self.ep_out_mps,
+                self.ep_in,
+                self.ep_in_mps,
+                lba,
+                count,
+                self.block_size,
+                buf,
+                &mut self.tag,
             )
         })
+        .map_err(|_| BlockError::Device)
     }
-    fn sector_size(&self) -> u32 { self.block_size }
-    fn total_sectors(&self) -> u64 { self.total_blocks }
+    fn sector_size(&self) -> u32 {
+        self.block_size
+    }
+    fn total_sectors(&self) -> u64 {
+        self.total_blocks
+    }
 }
 
-/// Poll USB controller once and register newly-discovered devices
-/// in the block device registry (no mount).
+/// Poll an already-active USB controller and register newly-discovered
+/// devices in the block device registry (no mount).
+///
+/// This function is safe to call from the desktop scheduler: it never turns
+/// deferred controller registration into BAR MMIO activation.
 /// Returns `true` if a new device was registered.
 #[cfg(not(nitrogen_no_usb))]
 pub fn poll_usb() -> bool {
@@ -321,6 +331,10 @@ pub fn poll_usb() -> bool {
     {
         let mut guard = with_ctx_inner();
         if let Some(ctx) = guard.as_mut() {
+            if !ctx.is_enabled() {
+                return false;
+            }
+            crate::boot_stage::draw_step_hint(b"usb_poll");
             ctx.poll();
         }
     }
@@ -337,40 +351,69 @@ pub fn poll_usb() -> bool {
     false
 }
 
+/// Explicitly activate the USB controller service.
+///
+/// A non-posted MMIO read cannot be made recoverable in software, so callers
+/// must never invoke this from boot, rendering, or input-dispatch paths.
+#[cfg(not(nitrogen_no_usb))]
+fn activate_usb() -> bool {
+    // Do not hold USB_CTX across enable(): a broken non-posted MMIO read may
+    // never return. Pollers must be able to observe None and keep the GUI
+    // responsive while explicit activation is in progress.
+    let Some(mut ctx) = ({
+        let mut guard = with_ctx_inner();
+        guard.take()
+    }) else {
+        log::warn!("USB: no host-controller service registered");
+        return false;
+    };
+
+    let result = if ctx.is_enabled() {
+        Ok(())
+    } else {
+        crate::boot_stage::draw_step_hint(b"usb_init");
+        ctx.enable()
+    };
+    *with_ctx_inner() = Some(ctx);
+
+    match result {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("USB: enable failed: {:?}", e);
+            false
+        }
+    }
+}
+
 /// Initial USB poll with retries, then register block devices.
 #[cfg(not(nitrogen_no_usb))]
 fn usb_poll_and_register() {
+    if !activate_usb() {
+        return;
+    }
     for i in 0..8 {
-        {
-            let mut guard = with_ctx_inner();
-            if let Some(ctx) = guard.as_mut() {
-                let disk_count_before = ctx.disks().len();
-                log::info!(
-                    "USB: poll #{}, disks before: {}",
-                    i + 1, disk_count_before
-                );
-                ctx.poll();
-                let disk_count_after = ctx.disks().len();
-                log::info!(
-                    "USB: poll #{}, disks after: {}",
-                    i + 1, disk_count_after
-                );
-                if !ctx.disks().is_empty() {
-                    log::info!("USB: device detected after {} retries", i + 1);
-                    break;
-                }
-            }
+        log::info!("USB: poll #{}", i + 1);
+        if poll_usb() || LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0 {
+            log::info!("USB: device detected after {} polls", i + 1);
+            break;
         }
         nitrogen::timing::delay_ms(250);
     }
-    register_pending_usb();
 }
 
 /// Full USB re-enumeration (clear + re-scan).  Does NOT mount.
 #[cfg(not(nitrogen_no_usb))]
-pub fn poll_usb_all() -> bool {
-    // Only unregister USB-owned block devices (usbN pattern)
+pub fn rescan_usb_all() -> bool {
     let names = crate::devfs::list_block_device_names();
+    if names
+        .iter()
+        .any(|name| name.starts_with("usb") && !crate::devfs::block_device_available(name))
+    {
+        log::warn!("USB: refusing re-enumeration while a USB block device is mounted");
+        return false;
+    }
+
+    // Only unregister USB-owned block devices (usbN pattern).
     for name in names {
         if name.starts_with("usb") {
             crate::devfs::unregister_block_device(&name);
@@ -378,21 +421,24 @@ pub fn poll_usb_all() -> bool {
     }
     LAST_REGISTERED_USB_COUNT.store(0, Ordering::Relaxed);
 
-    use crate::driver_context_impl::KernelDriverContext;
-    let mut ctx = nitrogen::usb::context::USBContext::new(&KernelDriverContext);
-    if let Err(e) = ctx.enable() {
-        log::warn!("USB: enable failed during re-enumeration: {:?}", e);
-    }
-    init_usb_ctx(ctx);
+    init_usb_ctx(nitrogen::usb::context::USBContext::new(
+        &crate::driver_context_impl::KernelDriverContext,
+    ));
     usb_poll_and_register();
     let registered = LAST_REGISTERED_USB_COUNT.load(Ordering::Relaxed) > 0;
     let _ = crate::klog::flush_to_vfs();
     registered
 }
 
+#[cfg(nitrogen_no_usb)]
+pub fn rescan_usb_all() -> bool {
+    false
+}
+
 /// Access the inner USB context static for poll operations.
 #[cfg(not(nitrogen_no_usb))]
-fn with_ctx_inner() -> spin::MutexGuard<'static, Option<nitrogen::usb::context::USBContext>> {
+fn with_ctx_inner()
+-> spin::MutexGuard<'static, Option<nitrogen::usb::context::USBContext>, spin::relax::Spin> {
     USB_CTX.lock()
 }
 
@@ -435,9 +481,6 @@ fn register_pending_usb() {
 
         crate::klog_fmt!("USB: registered /dev/{} (bulk-only)\n", dev_name);
         crate::devfs::register_block_device(dev_name.clone(), bdev);
-
-        let _ = crate::contexts::vfs::mkdir("/dev");
-        let _ = crate::contexts::vfs::create(&alloc::format!("/dev/{}", dev_name));
     }
     let _ = crate::klog::flush_to_vfs();
 }
@@ -449,6 +492,10 @@ fn register_pending_usb() {
 /// Probe and register an SD card as a block device (no mount).
 #[cfg(not(nitrogen_no_storage))]
 pub fn sd_probe_and_register() -> bool {
+    if crate::devfs::block_device_exists("sd0") {
+        crate::klog_fmt!("SD card: /dev/sd0 already registered\n");
+        return true;
+    }
     if SD_PROBED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -483,7 +530,9 @@ pub fn sd_probe_and_register() -> bool {
 
     crate::klog_fmt!(
         "SD card: {:?} {} sectors {} bytes/sector\n",
-        info.card_type, info.total_blocks, info.block_size
+        info.card_type,
+        info.total_blocks,
+        info.block_size
     );
 
     let bdev = Box::new(SdBlockDev {
@@ -494,15 +543,40 @@ pub fn sd_probe_and_register() -> bool {
     let dev_name = alloc::format!("sd{}", 0);
     crate::klog_fmt!("SD card: registered /dev/{}\n", dev_name);
     crate::devfs::register_block_device(dev_name.clone(), bdev);
-
-    let _ = crate::contexts::vfs::mkdir("/dev");
-    let _ = crate::contexts::vfs::create(&alloc::format!("/dev/{}", dev_name));
     true
 }
 
 #[cfg(nitrogen_no_storage)]
 pub fn sd_probe_and_register() -> bool {
     false
+}
+
+#[cfg(not(nitrogen_no_storage))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SdRescanResult {
+    Registered,
+    AlreadyRegistered,
+    Mounted,
+    Unavailable,
+}
+
+/// Reconcile the SD device node without destructively reinitializing a live card.
+#[cfg(not(nitrogen_no_storage))]
+pub fn rescan_sd() -> SdRescanResult {
+    if crate::devfs::block_device_exists("sd0") {
+        return if crate::devfs::block_device_available("sd0") {
+            SdRescanResult::AlreadyRegistered
+        } else {
+            SdRescanResult::Mounted
+        };
+    }
+
+    SD_PROBED.store(false, Ordering::Release);
+    if sd_probe_and_register() {
+        SdRescanResult::Registered
+    } else {
+        SdRescanResult::Unavailable
+    }
 }
 
 #[cfg(not(nitrogen_no_storage))]
@@ -516,27 +590,20 @@ unsafe impl Send for SdBlockDev {}
 
 #[cfg(not(nitrogen_no_storage))]
 impl BlockDevice for SdBlockDev {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
-        nitrogen::storage::rtsx::read_sectors(lba, count, buf)
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
+        nitrogen::storage::rtsx::read_sectors(lba, count, buf).map_err(|_| BlockError::Device)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
-        nitrogen::storage::rtsx::write_sectors(lba, count, buf)
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
+        let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
+        nitrogen::storage::rtsx::write_sectors(lba, count, buf).map_err(|_| BlockError::Device)
     }
-    fn sector_size(&self) -> u32 { self.block_size }
-    fn total_sectors(&self) -> u64 { self.total_blocks }
-}
-
-// ── Compatibility: sd_probe_and_mount → delegates to register ──
-#[cfg(not(nitrogen_no_storage))]
-pub fn sd_probe_and_mount() -> bool {
-    let ok = sd_probe_and_register();
-    let _ = crate::klog::flush_to_vfs();
-    ok
-}
-
-#[cfg(nitrogen_no_storage)]
-pub fn sd_probe_and_mount() -> bool {
-    false
+    fn sector_size(&self) -> u32 {
+        self.block_size
+    }
+    fn total_sectors(&self) -> u64 {
+        self.total_blocks
+    }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -548,10 +615,8 @@ pub fn sd_probe_and_mount() -> bool {
 /// Call from a background timer tick.  Returns `true` if any
 /// driver reported a state change.
 pub fn poll_all(_registry: &DriverRegistry) -> bool {
-    let mut changed = false;
     #[cfg(not(nitrogen_no_usb))]
-    {
-        changed |= poll_usb();
-    }
-    changed
+    return poll_usb();
+    #[cfg(nitrogen_no_usb)]
+    false
 }

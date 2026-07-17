@@ -21,7 +21,9 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use genome::fs::FsError;
-pub use genome::vfs::{FileDescriptor, FileSystem, InodeType, MemFileSystem, VNode, Vfs};
+pub use genome::vfs::{
+    FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, MemFileSystem, VNode, Vfs,
+};
 
 // ── VfsContext ──────────────────────────────────────────────────────
 
@@ -40,6 +42,10 @@ pub struct VfsContext {
     /// Open-handle tracking so that `read(fd)` / `close(fd)` routes a
     /// VFS-global descriptor to the owning mount and its local descriptor.
     handle_table: Mutex<HandleTable>,
+
+    /// Block-device source and its mount point. Genome remains generic while
+    /// device-facing kernel code can expose only reachable storage.
+    mounted_devices: Mutex<Vec<(String, String)>>,
 }
 
 /// Tracks which mount owns each VFS-global file descriptor.
@@ -125,6 +131,7 @@ impl VfsContext {
         Self {
             inner: Mutex::new(Vfs::new(root_fs)),
             handle_table: Mutex::new(HandleTable::new()),
+            mounted_devices: Mutex::new(Vec::new()),
         }
     }
 
@@ -143,14 +150,10 @@ impl VfsContext {
 
     pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let replaced_index = vfs.mounted_fs_index(mount_point);
-        vfs.mount(mount_point, fs)?;
-        if let Some(replaced_index) = replaced_index {
-            self.handle_table
-                .lock()
-                .entries
-                .retain(|entry| entry.mount_index != replaced_index);
+        if vfs.mounted_fs_index(mount_point).is_some() {
+            return Err(FsError::FileExists);
         }
+        vfs.mount(mount_point, fs)?;
         Ok(())
     }
 
@@ -163,24 +166,56 @@ impl VfsContext {
     /// unmounted filesystem are discarded, and indices of remaining mounts
     /// that shifted left are decremented.
     pub fn unmount(&self, mount_point: &str) -> Result<bool, FsError> {
-        let mut vfs = self.inner.lock();
-        let mut handle_table = self.handle_table.lock();
-        let target_idx = match vfs.mounted_fs_index(mount_point) {
-            Some(idx) => idx,
-            None => return Ok(false),
+        let mount_point = self.inner.lock().resolve_path(mount_point);
+        let removed = {
+            let mut vfs = self.inner.lock();
+            let mut handle_table = self.handle_table.lock();
+            let target_idx = match vfs.mounted_fs_index(&mount_point) {
+                Some(idx) => idx,
+                None => return Ok(false),
+            };
+            let removed = vfs.unmount(&mount_point)?;
+            if removed {
+                handle_table
+                    .entries
+                    .retain(|entry| entry.mount_index != target_idx);
+                for entry in &mut handle_table.entries {
+                    if entry.mount_index > target_idx {
+                        entry.mount_index -= 1;
+                    }
+                }
+            }
+            removed
         };
-        let removed = vfs.unmount(mount_point)?;
         if removed {
-            handle_table
-                .entries
-                .retain(|entry| entry.mount_index != target_idx);
-            for entry in &mut handle_table.entries {
-                if entry.mount_index > target_idx {
-                    entry.mount_index -= 1;
+            let returned_devices: Vec<String> = {
+                let mut mounted_devices = self.mounted_devices.lock();
+                let returned = mounted_devices
+                    .iter()
+                    .filter(|(_, path)| path == &mount_point)
+                    .map(|(source, _)| source.clone())
+                    .collect();
+                mounted_devices.retain(|(_, path)| path != &mount_point);
+                returned
+            };
+            for source in returned_devices {
+                if let Some(device_name) = source.strip_prefix("/dev/") {
+                    crate::devfs::return_block_device_lease(device_name);
                 }
             }
         }
         Ok(removed)
+    }
+
+    fn record_device_mount(&self, device: &str, mount_point: &str) {
+        let mut mounts = self.mounted_devices.lock();
+        mounts.retain(|(source, path)| source != device && path != mount_point);
+        mounts.push((String::from(device), String::from(mount_point)));
+    }
+
+    /// Return block devices which are currently reachable through the VFS.
+    pub fn mounted_block_devices(&self) -> Vec<(String, String)> {
+        self.mounted_devices.lock().clone()
     }
 
     // ── File operations ─────────────────────────────────────────
@@ -204,25 +239,41 @@ impl VfsContext {
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.read_at(handle.mount_index, handle.local_fd, buf)
     }
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.write_at(handle.mount_index, handle.local_fd, data)
     }
 
     pub fn close(&self, fd: u32) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().take(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .take(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.close_at(handle.mount_index, handle.local_fd)
     }
 
-    pub fn seek(&self, fd: u32, pos: usize) -> Result<(), FsError> {
+    pub fn seek(&self, fd: u32, pos: u64) -> Result<(), FsError> {
         let mut vfs = self.inner.lock();
-        let handle = self.handle_table.lock().find(fd).ok_or(FsError::InvalidFileDescriptor)?;
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.seek_at(handle.mount_index, handle.local_fd, pos)
     }
 
@@ -270,6 +321,94 @@ impl VfsContext {
         self.inner.lock().exists(path)
     }
 
+    /// Replace a regular file and persist the complete buffer, even when the
+    /// backing filesystem accepts only a partial write per call.
+    pub fn replace_file(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
+        if self.exists(path) {
+            self.unlink(path)?;
+        }
+        let descriptor = self.create(path)?;
+        let result = self.write_all(descriptor.fd, data);
+        let close_result = self.close(descriptor.fd);
+        result.and(close_result)
+    }
+
+    fn write_all(&self, fd: u32, mut data: &[u8]) -> Result<(), FsError> {
+        while !data.is_empty() {
+            let written = self.write(fd, data)?;
+            if written == 0 {
+                return Err(FsError::InvalidInput);
+            }
+            data = &data[written..];
+        }
+        Ok(())
+    }
+
+    /// Copy a file or directory tree without buffering whole files in the GUI.
+    pub fn copy_path(&self, source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+        let destination_suffix = destination.strip_prefix(source);
+        if source == destination
+            || is_dir && destination_suffix.is_some_and(|suffix| suffix.starts_with('/'))
+        {
+            return Err(FsError::InvalidPath);
+        }
+        if is_dir {
+            self.mkdir(destination)?;
+            for entry in self.readdir(source)? {
+                self.copy_path(
+                    &join_path(source, &entry.name),
+                    &join_path(destination, &entry.name),
+                    entry.is_dir,
+                )?;
+            }
+            return Ok(());
+        }
+
+        let source_fd = self.open(source, 0).ok_or(FsError::FileNotFound)?;
+        if self.exists(destination) {
+            if let Err(error) = self.unlink(destination) {
+                let _ = self.close(source_fd.fd);
+                return Err(error);
+            }
+        }
+        let destination_fd = match self.create(destination) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                let _ = self.close(source_fd.fd);
+                return Err(error);
+            }
+        };
+        let result = (|| {
+            let mut buffer = [0; 4096];
+            loop {
+                let read = self.read(source_fd.fd, &mut buffer)?;
+                if read == 0 {
+                    return Ok(());
+                }
+                self.write_all(destination_fd.fd, &buffer[..read])?;
+            }
+        })();
+        let source_close = self.close(source_fd.fd);
+        let destination_close = self.close(destination_fd.fd);
+        result.and(source_close).and(destination_close)
+    }
+
+    /// Recursively remove a path selected by the file manager.
+    pub fn remove_path(&self, path: &str, is_dir: bool) -> Result<(), FsError> {
+        if is_dir {
+            for entry in self.readdir(path)? {
+                self.remove_path(&join_path(path, &entry.name), entry.is_dir)?;
+            }
+        }
+        self.unlink(path)
+    }
+
+    /// Move within or across mounts while preserving the source until copy succeeds.
+    pub fn move_path(&self, source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+        self.copy_path(source, destination, is_dir)?;
+        self.remove_path(source, is_dir)
+    }
+
     fn register_handle(
         &self,
         mount_index: usize,
@@ -303,7 +442,7 @@ impl VfsContext {
 pub fn init_vfs() {
     // VfsContext is already created inside KernelContext::new().
     // This function exists for the bootstrap sequence and backward
-    // compatibility.  Additional per-fs init (e.g. creating /bootlogs)
+    // compatibility. Additional per-filesystem initialization
     // is handled by the caller.
     log::info!("VFS: mounted MemFileSystem at /");
 }
@@ -336,7 +475,9 @@ where
 ///
 /// Supported `fs_type` values:
 /// - `"tmpfs"` — mounts a fresh in-memory filesystem ([`MemFileSystem`]).
-/// - `"fat32"` — mounts a FAT32/exFAT filesystem backed by a block device.
+/// - `"devfs"` — mounts the kernel's dynamic device filesystem.
+/// - `"auto"` — detects and mounts a FAT12/16/32 or exFAT block device.
+/// - `"fat32"` — retained as a backward-compatible alias for `"auto"`.
 ///
 /// The `device` argument is the path to a block device that the kernel
 /// can open.  For `tmpfs`, `device` is ignored.
@@ -348,31 +489,49 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
             log::info!("VFS: mounted tmpfs from {} at {}", device, mount_point);
             Ok(())
         }
-        "fat32" => {
-            // Normalize device name: strip leading "/dev/" if present
-            let device_name = device.strip_prefix("/dev/").unwrap_or(device);
+        "devfs" => {
+            vfs.mount(mount_point, Box::new(crate::devfs::DevFs::new()))?;
+            log::info!("VFS: mounted devfs at {}", mount_point);
+            Ok(())
+        }
+        "auto" | "fat32" => {
+            let mount_point = vfs.inner.lock().resolve_path(mount_point);
+            let device_name = device
+                .strip_prefix("/dev/")
+                .filter(|name| !name.is_empty() && !name.contains('/'))
+                .ok_or(FsError::InvalidPath)?;
 
-            // Validate mount point before consuming the block device
-            if !vfs.exists(mount_point) {
-                vfs.mkdir(mount_point)?;
+            if !crate::devfs::block_device_exists(device_name) {
+                return Err(FsError::FileNotFound);
+            }
+            if vfs.inner.lock().mounted_fs_index(&mount_point).is_some() {
+                return Err(FsError::FileExists);
             }
 
-            let bdev = crate::devfs::open_block_device(device_name)
-                .ok_or(FsError::FileNotFound)?;
-            match crate::drivers::fat::FatFileSystem::from_device(bdev) {
+            // Validate mount point before consuming the block device
+            if !vfs.exists(&mount_point) {
+                vfs.mkdir(&mount_point)?;
+            }
+
+            let bdev =
+                crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
+            match crate::drivers::fat::mount_device(bdev) {
                 Ok(fs) => {
-                    vfs.mount(mount_point, Box::new(fs))?;
-                    log::info!("VFS: mounted fat32 from {} at {}", device, mount_point);
+                    if let Err(e) = vfs.mount(&mount_point, fs) {
+                        crate::devfs::return_block_device_lease(device_name);
+                        return Err(e);
+                    }
+                    vfs.record_device_mount(device, &mount_point);
+                    log::info!(
+                        "VFS: mounted removable filesystem from {} at {}",
+                        device,
+                        mount_point
+                    );
                     Ok(())
                 }
                 Err((e, returned_bdev)) => {
-                    // Re-register the device so subsequent mount attempts can reuse it
-                    if let Some(bdev) = returned_bdev {
-                        crate::devfs::register_block_device(
-                            alloc::string::String::from(device_name),
-                            bdev,
-                        );
-                    }
+                    drop(returned_bdev);
+                    crate::devfs::return_block_device_lease(device_name);
                     Err(e)
                 }
             }
@@ -410,7 +569,7 @@ pub fn close(fd: u32) -> Result<(), FsError> {
 }
 
 /// Backward-compatible wrapper: seek fd.
-pub fn seek(fd: u32, pos: usize) -> Result<(), FsError> {
+pub fn seek(fd: u32, pos: u64) -> Result<(), FsError> {
     with_vfs(|vfs| vfs.seek(fd, pos)).ok_or(FsError::PermissionDenied)?
 }
 
@@ -439,6 +598,31 @@ pub fn exists(path: &str) -> bool {
     with_vfs(|vfs| vfs.exists(path)).unwrap_or(false)
 }
 
+/// Replace a complete file through the canonical VFS context.
+pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.replace_file(path, data)).ok_or(FsError::PermissionDenied)?
+}
+
+pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
+}
+
+pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.move_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
+}
+
+pub fn remove_path(path: &str, is_dir: bool) -> Result<(), FsError> {
+    with_vfs(|vfs| vfs.remove_path(path, is_dir)).ok_or(FsError::PermissionDenied)?
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        alloc::format!("/{}", name)
+    } else {
+        alloc::format!("{}/{}", parent.trim_end_matches('/'), name)
+    }
+}
+
 /// Backward-compatible wrapper: working directory.
 pub fn working_directory() -> Result<String, FsError> {
     with_vfs(|vfs| vfs.working_directory()).ok_or(FsError::PermissionDenied)
@@ -459,9 +643,9 @@ pub fn change_directory(path: &str) -> Result<(), FsError> {
 /// `spin::Mutex` does not have poisoning semantics, so re-acquiring
 /// the same locks after dropping this guard is safe in a panic handler.
 pub struct VfsAccessGuard {
-    _kernel: spin::MutexGuard<'static, Option<super::kernel::KernelContext>>,
-    _inner: spin::MutexGuard<'static, Vfs>,
-    _handle_table: spin::MutexGuard<'static, HandleTable>,
+    _kernel: spin::MutexGuard<'static, Option<super::kernel::KernelContext>, spin::relax::Spin>,
+    _inner: spin::MutexGuard<'static, Vfs, spin::relax::Spin>,
+    _handle_table: spin::MutexGuard<'static, HandleTable, spin::relax::Spin>,
 }
 
 // SAFETY: VfsAccessGuard is !Send + !Sync by construction (it holds
@@ -485,8 +669,11 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
     // the entire program.  Transmute to 'static before accessing inner
     // fields to avoid borrow conflicts during the move into VfsAccessGuard.
     let kernel_guard = super::kernel::get_kernel().try_lock()?;
-    let kernel_guard: spin::MutexGuard<'static, Option<super::kernel::KernelContext>> =
-        unsafe { core::mem::transmute(kernel_guard) };
+    let kernel_guard: spin::MutexGuard<
+        'static,
+        Option<super::kernel::KernelContext>,
+        spin::relax::Spin,
+    > = unsafe { core::mem::transmute(kernel_guard) };
     let kernel = kernel_guard.as_ref()?;
 
     // Acquire inner and handle_table while holding the kernel guard
@@ -496,9 +683,9 @@ pub fn vfs_try_access() -> Option<VfsAccessGuard> {
 
     // SAFETY: inner_guard and handle_table_guard also borrow from global
     // statics inside KernelContext.vfs, which lives forever.
-    let inner_guard: spin::MutexGuard<'static, Vfs> =
+    let inner_guard: spin::MutexGuard<'static, Vfs, spin::relax::Spin> =
         unsafe { core::mem::transmute(inner_guard) };
-    let handle_table_guard: spin::MutexGuard<'static, HandleTable> =
+    let handle_table_guard: spin::MutexGuard<'static, HandleTable, spin::relax::Spin> =
         unsafe { core::mem::transmute(handle_table_guard) };
 
     Some(VfsAccessGuard {
@@ -557,5 +744,73 @@ mod tests {
         context.read(mounted_file.fd, &mut mounted_data).unwrap();
         assert_eq!(&root_data, b"root");
         assert_eq!(&mounted_data, b"mounted");
+    }
+
+    #[test]
+    fn unmount_removes_device_mount_metadata() {
+        let context = VfsContext::new();
+        context.mkdir("/mnt").unwrap();
+        context
+            .mount("/mnt", Box::new(MemFileSystem::new()))
+            .unwrap();
+        context.record_device_mount("/dev/sd0", "/mnt");
+
+        assert_eq!(
+            context.mounted_block_devices(),
+            vec![(String::from("/dev/sd0"), String::from("/mnt"))]
+        );
+        assert!(context.unmount("/mnt").unwrap());
+        assert!(context.mounted_block_devices().is_empty());
+    }
+
+    #[test]
+    fn copy_path_streams_complete_files_across_mounts() {
+        let context = VfsContext::new();
+        context.mkdir("/mnt").unwrap();
+        context
+            .mount("/mnt", Box::new(MemFileSystem::new()))
+            .unwrap();
+        let expected: Vec<u8> = (0..9_000).map(|index| (index % 251) as u8).collect();
+
+        context.replace_file("/source.bin", &expected).unwrap();
+        context
+            .copy_path("/source.bin", "/mnt/copied.bin", false)
+            .unwrap();
+
+        let descriptor = context.open("/mnt/copied.bin", 0).unwrap();
+        let mut actual = vec![0; expected.len()];
+        let mut offset = 0;
+        while offset < actual.len() {
+            let read = context.read(descriptor.fd, &mut actual[offset..]).unwrap();
+            if read == 0 {
+                break;
+            }
+            offset += read;
+        }
+        context.close(descriptor.fd).unwrap();
+        assert_eq!(offset, expected.len());
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn recursive_file_operations_preserve_source_until_copy_finishes() {
+        let context = VfsContext::new();
+        context.mkdir("/tree").unwrap();
+        context.mkdir("/tree/nested").unwrap();
+        context.replace_file("/tree/nested/file", b"data").unwrap();
+
+        assert_eq!(
+            context.copy_path("/tree", "/tree/child", true),
+            Err(FsError::InvalidPath)
+        );
+        context.copy_path("/tree", "/copied", true).unwrap();
+        assert!(context.exists("/tree/nested/file"));
+        assert!(context.exists("/copied/nested/file"));
+
+        context.move_path("/copied", "/moved", true).unwrap();
+        assert!(!context.exists("/copied"));
+        assert!(context.exists("/moved/nested/file"));
+        context.remove_path("/moved", true).unwrap();
+        assert!(!context.exists("/moved"));
     }
 }

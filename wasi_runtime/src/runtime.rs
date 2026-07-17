@@ -3,9 +3,9 @@ use alloc::vec::Vec;
 use wasmi::{Engine, Linker, Module, Store};
 
 use crate::wasi::{
-    args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
+    WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
     fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir, fd_seek, fd_write,
-    path_filestat_get, path_open, proc_exit, random_get, WasiCtx,
+    path_filestat_get, path_open, proc_exit, random_get,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -17,8 +17,8 @@ pub fn run(
     write_stderr: fn(&[u8]),
     read_stdin: fn() -> Option<u8>,
     yield_now: fn(),
-    read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
-    read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
+    read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+    read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     get_monotonic_ns: fn() -> u64,
 ) -> i32 {
     let engine = Engine::default();

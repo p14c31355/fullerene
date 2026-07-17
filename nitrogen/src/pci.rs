@@ -18,23 +18,25 @@ use crate::port::PortWriter;
 // These statics are populated once by the kernel after it parses the
 // MCFG ACPI table.
 
-/// NMI-safe spinlock for PCI config space (CF8/CFC) access.
-/// Protects the address/data pair from interleaving between normal
-/// and NMI recovery paths.
+/// Serializes the address/data pair used by PCI configuration mechanism #1.
 static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
 
-/// Acquire the PCI config space lock (NMI-safe spinlock).
+/// Acquire the PCI config space lock.
+///
+/// A retry limit prevents deadlock if the lock is re-entered from the same
+/// context (e.g. an NMI that interrupted a locked region).  In normal
+/// operation the lock is held for a single I/O transaction so contention
+/// is negligible.
 #[inline]
 fn pci_config_lock_acquire() {
-    let mut retries = 0;
-    while PCI_CONFIG_LOCK.compare_exchange_weak(
-        false,
-        true,
-        Ordering::Acquire,
-        Ordering::Relaxed,
-    ).is_err() {
+    let mut retries = 0u32;
+    while PCI_CONFIG_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
         retries += 1;
-        if retries > 10000 {
+        if retries > 100_000 {
+            log::warn!("PCI: config lock contention exceeded 100k spins");
             break;
         }
         core::hint::spin_loop();
@@ -44,6 +46,13 @@ fn pci_config_lock_acquire() {
 /// Release the PCI config space lock.
 #[inline]
 fn pci_config_lock_release() {
+    PCI_CONFIG_LOCK.store(false, Ordering::Release);
+}
+
+/// Abandon a configuration transaction interrupted by fatal NMI recovery.
+/// The watchdog redirects execution away from the interrupted context, so it
+/// cannot resume and release the lock itself.
+pub fn reset_config_lock_for_recovery() {
     PCI_CONFIG_LOCK.store(false, Ordering::Release);
 }
 
@@ -224,12 +233,7 @@ impl PciConfigSpace {
     }
 
     pub fn read_config_byte(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
-        let address = Self::build_config_address(bus, device, function, offset);
-        let mut addr_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
-        let mut data_reader = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
-
-        addr_writer.write_safe(address);
-        let dword: u32 = data_reader.read_safe();
+        let dword = Self::read_config_dword(bus, device, function, offset);
         (dword >> ((offset & 3) * 8)) as u8
     }
 
@@ -240,6 +244,13 @@ impl PciConfigSpace {
     }
 
     pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+        pci_config_lock_acquire();
+        let value = Self::read_config_dword_unlocked(bus, device, function, offset);
+        pci_config_lock_release();
+        value
+    }
+
+    fn read_config_dword_unlocked(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
         let address = Self::build_config_address(bus, device, function, offset);
         let mut addr_writer = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_ADDRESS);
         let mut data_reader = PortWriter::new(crate::port::HardwarePorts::PCI_CONFIG_DATA);
@@ -277,19 +288,16 @@ impl PciConfigSpace {
         data_writer.write_safe(value);
     }
 
-    /// Write a raw WORD to PCI configuration space.
+    /// Write a raw WORD to PCI configuration space (internal, unlocked).
     ///
-    /// Uses the existing dword at the aligned address, modifies only the
-    /// relevant 16-bit half, and writes it back. This avoids corrupting the
-    /// other half of the dword (e.g. the Status register when writing Command).
-    ///
-    /// NMI-safe: serializes CF8/CFC access to prevent interleaving with
-    /// MMIO NMI recovery path.
-    pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
-        pci_config_lock_acquire();
+    /// Caller must hold PCI_CONFIG_LOCK.  Uses a DWORD read-modify-write so that
+    /// the write-one-to-clear Status register in the adjacent half-word is not
+    /// corrupted.  Native 16-bit I/O writes to the CFC port are not supported by
+    /// all chipsets and may cause a system hang.
+    fn write_config_word_unlocked(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
         let aligned = offset & !3;
         let shift = if offset % 4 < 2 { 0 } else { 16 };
-        let existing = Self::read_config_dword(bus, device, function, aligned);
+        let existing = Self::read_config_dword_unlocked(bus, device, function, aligned);
         let masked = existing & !(0xFFFFu32 << shift);
         Self::write_config_dword_unlocked(
             bus,
@@ -298,6 +306,14 @@ impl PciConfigSpace {
             aligned,
             masked | ((value as u32) << shift),
         );
+    }
+
+    /// Write a raw WORD to PCI configuration space.
+    ///
+    /// Serializes CF8/CFC access with all other configuration transactions.
+    pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
+        pci_config_lock_acquire();
+        Self::write_config_word_unlocked(bus, device, function, offset, value);
         pci_config_lock_release();
     }
 
@@ -306,8 +322,7 @@ impl PciConfigSpace {
     /// This is a low-level mechanism. Use `write_config_dword` on `PciConfigSpace`
     /// when you need to update the cached header fields as well.
     ///
-    /// NMI-safe: serializes CF8/CFC access to prevent interleaving with
-    /// MMIO NMI recovery path.
+    /// Serializes CF8/CFC access with all other configuration transactions.
     pub fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
         pci_config_lock_acquire();
         Self::write_config_dword_unlocked(bus, device, function, offset, value);
@@ -326,6 +341,7 @@ pub struct PciDevice {
     pub device_id: u16,
     pub class_code: u8,
     pub subclass: u8,
+    pub prog_if: u8,
     /// Header type (bits [6:0]): 0x00 = endpoint, 0x01 = PCI-to-PCI bridge,
     /// 0x02 = CardBus bridge.  Bit 7 indicates multi-function.
     pub header_type: u8,
@@ -333,19 +349,16 @@ pub struct PciDevice {
 
 impl PciDevice {
     pub fn new(bus: u8, device: u8, function: u8) -> Option<Self> {
-        if let Some(dev) = PrivatePciDevice::new(bus, device, function) {
-            Some(dev.to_public())
-        } else {
-            None
-        }
+        PrivatePciDevice::new(bus, device, function).map(PrivatePciDevice::into_public)
     }
 
     /// Enable memory-space access and bus-mastering for this device.
     /// The caller should invoke this once after obtaining a `PciDevice`
     /// and before performing MMIO or DMA operations.
-    pub fn enable_memory_access(&self) {
+    pub fn enable_memory_access(&self) -> bool {
         let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
         PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd | 0x06);
+        PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4) & 0x06 == 0x06
     }
 
     pub fn read_bar(&self, bar_index: u8) -> Option<u64> {
@@ -371,18 +384,16 @@ impl PciDevice {
         }
     }
 
-    pub fn get_bar_info(&self, index: u8) -> Option<PciBar> {
+    /// Read the firmware-programmed BAR without issuing a size probe.
+    pub fn read_bar_info(&self, index: u8) -> Option<PciBar> {
         if index >= self.max_bars() {
             return None;
         }
         let offset = 0x10 + (index * 4);
         let value = PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-
-        let size = self.detect_bar_size(index);
-        if size == 0 {
+        if value == u32::MAX {
             return None;
         }
-
         let is_io = (value & 0x1) != 0;
         let is_64bit = !is_io && ((value & 0x6) == 0x4);
         let is_prefetchable = !is_io && ((value & 0x8) != 0);
@@ -402,23 +413,30 @@ impl PciDevice {
         Some(PciBar {
             index,
             address,
-            size,
+            size: 0,
             is_io,
             is_64bit,
             is_prefetchable,
         })
     }
 
+    /// Read BAR metadata, destructively probing only its size field.
+    pub fn get_bar_info(&self, index: u8) -> Option<PciBar> {
+        let mut bar = self.read_bar_info(index)?;
+        bar.size = self.detect_bar_size(index);
+        (bar.size != 0).then_some(bar)
+    }
+
     /// Ensure the PCI Power Management capability is set to D0.
-    pub fn ensure_d0(&self) {
+    pub fn ensure_d0(&self) -> bool {
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.device, self.function, 0x34);
         if cap_ptr == 0 {
-            return;
+            return true;
         }
         let mut off = cap_ptr;
         let mut visited = [false; 256];
         loop {
-            if off < 0x40 || off > 0xF8 {
+            if !(0x40..=0xF8).contains(&off) {
                 break;
             }
             if visited[off as usize] {
@@ -448,17 +466,15 @@ impl PciDevice {
                         off + 4,
                         pmcsr & !0x3,
                     );
-                    crate::timing::wait_timeout_us(10_000, || {
-                        let cur = PciConfigSpace::read_config_word(
-                            self.bus,
-                            self.device,
-                            self.function,
-                            off + 4,
-                        );
-                        cur & 0x3 == 0
-                    }).ok();
+                    crate::timing::delay_ms(10);
                 }
-                return;
+                return PciConfigSpace::read_config_word(
+                    self.bus,
+                    self.device,
+                    self.function,
+                    off + 4,
+                ) & 0x3
+                    == 0;
             }
             let next =
                 PciConfigSpace::read_config_byte(self.bus, self.device, self.function, off + 1);
@@ -467,6 +483,18 @@ impl PciDevice {
             }
             off = next;
         }
+        true
+    }
+
+    /// Establish the PCI configuration prerequisites for MMIO and DMA.
+    /// Power is restored before decoding is enabled, matching the PCI core
+    /// ordering used by mature operating systems.
+    pub fn prepare_mmio(&self) -> bool {
+        if !self.ensure_d0() {
+            return false;
+        }
+        self.disable_pcie_aspm();
+        self.enable_memory_access()
     }
 
     /// Disable ASPM (Active State Power Management) on the PCIe link.
@@ -489,7 +517,7 @@ impl PciDevice {
         let mut off = cap_ptr;
         let mut visited = [false; 256];
         loop {
-            if off < 0x40 || off > 0xFC {
+            if !(0x40..=0xFC).contains(&off) {
                 break;
             }
             if visited[off as usize] {
@@ -587,12 +615,12 @@ impl PciDevice {
                 if l1sub_enabled != 0 {
                     log::info!(
                         "PCI: disabling L1Sub on {:02x}:{:02x}.{} (was {:#x})",
-                        bus, device, function, l1sub_enabled,
+                        bus,
+                        device,
+                        function,
+                        l1sub_enabled,
                     );
-                    write_ext_dword(
-                        bus, device, function, off + 8,
-                        ctl1 & !0x6u32,
-                    );
+                    write_ext_dword(bus, device, function, off + 8, ctl1 & !0x6u32);
                 }
                 return;
             }
@@ -606,30 +634,51 @@ impl PciDevice {
             return 0;
         }
         let offset = 0x10 + (bar_index * 4);
-        let original_value =
-            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-
-        let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
-        PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd & !0x3);
-
-        PciConfigSpace::write_config_dword_raw(
+        pci_config_lock_acquire();
+        let original_value = PciConfigSpace::read_config_dword_unlocked(
             self.bus,
             self.device,
             self.function,
             offset,
-            0xFFFFFFFF,
         );
-        let size_mask =
-            PciConfigSpace::read_config_dword(self.bus, self.device, self.function, offset);
-
-        PciConfigSpace::write_config_dword_raw(
+        let command =
+            PciConfigSpace::read_config_dword_unlocked(self.bus, self.device, self.function, 4)
+                as u16;
+        PciConfigSpace::write_config_word_unlocked(
+            self.bus,
+            self.device,
+            self.function,
+            4,
+            command & !0x3,
+        );
+        PciConfigSpace::write_config_dword_unlocked(
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+            u32::MAX,
+        );
+        let size_mask = PciConfigSpace::read_config_dword_unlocked(
+            self.bus,
+            self.device,
+            self.function,
+            offset,
+        );
+        PciConfigSpace::write_config_dword_unlocked(
             self.bus,
             self.device,
             self.function,
             offset,
             original_value,
         );
-        PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd);
+        PciConfigSpace::write_config_word_unlocked(
+            self.bus,
+            self.device,
+            self.function,
+            4,
+            command,
+        );
+        pci_config_lock_release();
 
         if size_mask == 0 || size_mask == 0xFFFFFFFF {
             return 0;
@@ -687,7 +736,7 @@ impl PrivatePciDevice {
         })
     }
 
-    pub fn to_public(self) -> PciDevice {
+    pub fn into_public(self) -> PciDevice {
         PciDevice {
             bus: self.bus,
             device: self.device,
@@ -697,6 +746,7 @@ impl PrivatePciDevice {
             device_id: self.config.device_id,
             class_code: self.config.class_code,
             subclass: self.config.subclass,
+            prog_if: self.config.prog_if,
             header_type: self.config.header_type,
         }
     }
@@ -742,15 +792,14 @@ impl PrivatePciDevice {
     }
 }
 
+#[derive(Default)]
 pub struct PciScanner {
     devices: alloc::vec::Vec<PciDevice>,
 }
 
 impl PciScanner {
     pub fn new() -> Self {
-        Self {
-            devices: alloc::vec::Vec::new(),
-        }
+        Self::default()
     }
 
     pub fn scan_all_buses(&mut self) -> Result<(), ()> {
@@ -780,8 +829,7 @@ impl PciScanner {
             crate::debug::print("pci", "b0_dev_found");
             for function in 0..=7u8 {
                 if function > 0 {
-                    let header_type_fn0 =
-                        PciConfigSpace::read_config_byte(0, device, 0, 0x0E);
+                    let header_type_fn0 = PciConfigSpace::read_config_byte(0, device, 0, 0x0E);
                     if (header_type_fn0 & 0x80) == 0 {
                         break;
                     }
@@ -822,8 +870,7 @@ impl PciScanner {
                 }
                 for function in 0..=7u8 {
                     if function > 0 {
-                        let header_type =
-                            PciConfigSpace::read_config_byte(bus, device, 0, 0x0E);
+                        let header_type = PciConfigSpace::read_config_byte(bus, device, 0, 0x0E);
                         if (header_type & 0x80) == 0 {
                             break;
                         }

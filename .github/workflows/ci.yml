@@ -2,44 +2,94 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
-  check:
-    name: Check
+  quality:
+    name: Format, metadata, and dependency policy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
-
-      - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@master
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly
-          components: rust-src, llvm-tools-preview
-
-      - name: Add UEFI target
-        run: rustup target add x86_64-unknown-uefi
-
-      - name: Add WASI target
-        run: rustup target add wasm32-wasip1
-
+          toolchain: nightly-2026-06-01
+          components: rust-src, llvm-tools-preview, rustfmt, clippy
+          targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo run --locked --quiet -p fullerene-tools --bin check-dependency-duplicates
+      - run: cargo run --locked --quiet -p fullerene-tools --bin generate-support-matrix -- --check
+
+  host:
+    name: Host check, tests, and Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
         with:
-          workspaces: "./ -> target"
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-06-01
+          components: rust-src, llvm-tools-preview, rustfmt, clippy
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --exclude bellows --exclude fullerene-kernel
+      - run: cargo test --workspace --exclude bellows --exclude fullerene-kernel
+      - run: cargo clippy --workspace --exclude bellows --exclude fullerene-kernel --all-targets
 
-      - name: Cargo check (host packages)
-        run: cargo check --workspace --exclude bellows --exclude fullerene-kernel
+  uefi:
+    name: UEFI build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-06-01
+          components: rust-src, llvm-tools-preview
+          targets: x86_64-unknown-uefi, wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build kernel
+        run: cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
+      - name: Build bootloader
+        env:
+          KERNEL_BIN_PATH: ${{ github.workspace }}/target/x86_64-unknown-uefi/debug/fullerene-kernel.efi
+        run: cargo check -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi
 
-      - name: Build/check UEFI packages
-        run: |
-          cargo build -Z build-std=core,alloc --package fullerene-kernel --target x86_64-unknown-uefi
-          KERNEL_BIN_PATH="$GITHUB_WORKSPACE/target/x86_64-unknown-uefi/debug/fullerene-kernel.efi" \
-            cargo check -Z build-std=core,alloc --package bellows --target x86_64-unknown-uefi
+  drivers:
+    name: Driver tests (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: all
+            ignored: ""
+          - profile: no-wireless
+            ignored: "iwlwifi\nwifi"
+          - profile: no-usb-storage
+            ignored: "usb\nstorage"
+          - profile: minimal-console
+            ignored: "audio\nframebuffer\nhda\niommu\niwlwifi\nstorage\nusb\nvirtio\nwifi"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-06-01
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: Test selected driver profile
+        env:
+          NITROGEN_DRIVERIGNORE: ${{ matrix.ignored }}
+        run: cargo test -p nitrogen --lib

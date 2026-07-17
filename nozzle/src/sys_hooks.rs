@@ -4,12 +4,13 @@
 //! commands (`mem`, `tasks`, `windows`, `dmesg`) and system control
 //! commands (`reboot`, `shutdown`).
 //!
-//! Both hooks are bundled into a single [`SysHooks`] struct.
+//! Hooks are bundled into a single immutable [`SysHooks`] value and injected
+//! into each shell session.
 
 use carrier::exec::CommandContext;
-use spin::Mutex;
 
 /// Aggregated system hooks.
+#[derive(Clone, Copy)]
 pub struct SysHooks {
     pub info: Option<fn(&mut CommandContext, &str)>,
     pub ctl: Option<fn(&str)>,
@@ -22,41 +23,27 @@ impl SysHooks {
             ctl: None,
         }
     }
-
-    /// Atomically install this set of hooks into the global [`SYS_HOOKS`].
-    pub fn install(self) {
-        *SYS_HOOKS.lock() = self;
-    }
 }
 
-/// Global system‑hooks bag.
-pub static SYS_HOOKS: Mutex<SysHooks> = Mutex::new(SysHooks::none());
-
 pub fn call_sys_info_hook(ctx: &mut CommandContext, cmd: &str) {
-    let hooks = SYS_HOOKS.lock();
-    if let Some(f) = hooks.info {
-        drop(hooks);
+    if let Some(f) = crate::services(ctx).and_then(|services| services.sys.info) {
         f(ctx, cmd);
     } else {
-        drop(hooks);
         ctx.terminal
             .write_str("(not available from this context)\n");
     }
 }
 
-/// SD card mount hook — set by the kernel.
-pub static SD_MOUNT_HOOK: Mutex<Option<fn(&mut carrier::exec::CommandContext)>> = Mutex::new(None);
-
-/// Block device mount hook — set by the kernel.
-/// Called with args: ["mount", "/dev/<name>", "<mount_point>"]
-pub static MOUNT_HOOK: Mutex<Option<fn(&mut carrier::exec::CommandContext)>> = Mutex::new(None);
-
-
-
-pub fn call_sys_control_hook(cmd: &str) {
-    let hooks = SYS_HOOKS.lock();
-    if let Some(f) = hooks.ctl {
-        drop(hooks);
+pub fn call_sys_control_hook(ctx: &CommandContext, cmd: &str) {
+    if let Some(f) = crate::services(ctx).and_then(|services| services.sys.ctl) {
         f(cmd);
+    }
+}
+
+pub fn call_mount_hook(ctx: &mut CommandContext) {
+    if let Some(f) = crate::services(ctx).and_then(|services| services.mount) {
+        f(ctx);
+    } else {
+        ctx.terminal.write_str("mount: service not available\n");
     }
 }

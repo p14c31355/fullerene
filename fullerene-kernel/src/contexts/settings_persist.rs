@@ -76,8 +76,8 @@ fn parse_bool(s: &str) -> Option<bool> {
 ///
 /// Returns `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded)` so the
 /// caller can sync to solvent.
-pub fn load_settings(
-    read_fn: impl FnOnce(&str) -> Result<Vec<u8>, &'static str>,
+pub fn load_settings<E>(
+    read_fn: impl FnOnce(&str) -> Result<Vec<u8>, E>,
 ) -> (f32, u32, bool, bool) {
     let data = match read_fn("/etc/settings.toml") {
         Ok(data) => data,
@@ -132,11 +132,21 @@ pub fn load_settings(
     }
 
     let bright_x100 = (brightness.clamp(0.1, 1.0) * 100.0) as u32;
-    (sensitivity.clamp(0.25, 4.0), bright_x100, top_panel, window_corner)
+    (
+        sensitivity.clamp(0.25, 4.0),
+        bright_x100,
+        top_panel,
+        window_corner,
+    )
 }
 
 /// Build a TOML string from current settings.
-pub fn format_settings_toml(sensitivity: f32, brightness_x100: u32, top_panel: bool, corner_rounded: bool) -> String {
+pub fn format_settings_toml(
+    sensitivity: f32,
+    brightness_x100: u32,
+    top_panel: bool,
+    corner_rounded: bool,
+) -> String {
     alloc::format!(
         "# Fullerene Settings\n\
          # Auto-generated — do not edit while the system is running\n\

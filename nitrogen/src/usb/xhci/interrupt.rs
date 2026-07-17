@@ -102,26 +102,26 @@ impl InterruptContext {
 //  Event processing
 // ============================================================================
 
-/// Wait for an event on the Event Ring with a timeout.
-///
-/// Returns the flags of the received event TRB, or an error on timeout.
-/// Acknowledges event consumption by updating the ERDP register.
-pub fn wait_event(
+/// Wait for a particular event kind while acknowledging asynchronous events.
+/// Port-change events can share the ring with command completions and must not
+/// be mistaken for the command that happens to be in flight.
+pub fn wait_event_type(
     ev_ring: &mut EventRing,
     rt: &RuntimeRegisters,
     timeout_us: u32,
-) -> Result<Trb, &'static str> {
+    expected_type: u8,
+) -> Result<Trb, crate::DriverError> {
     for _ in 0..timeout_us {
         if let Some(ev) = ev_ring.pop() {
-            // Acknowledge event consumption by updating ERDP
             rt.set_erdp(ev_ring.dequeue_ptr());
-            return Ok(ev);
-        }
-        if timeout_us > 1000 {
+            if ev.trb_type() == expected_type {
+                return Ok(ev);
+            }
+        } else if timeout_us > 1000 {
             core::hint::spin_loop();
         }
     }
-    Err("event timeout")
+    Err(crate::DriverError::TimedOut)
 }
 
 /// Process all pending events on the Event Ring, calling `handler` for each.

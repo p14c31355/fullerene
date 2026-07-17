@@ -12,10 +12,9 @@ macro_rules! log_uefi {
     ($($arg:tt)*) => { crate::serial::_print(format_args!($($arg)*)) };
 }
 
-fn locate_gop(
-    system_table: &EfiSystemTable,
-) -> Result<*mut EfiGraphicsOutputProtocol, EfiStatus> {
-    let services = unsafe { system_table.boot_services.as_ref() }.ok_or(EfiStatus::InvalidParameter)?;
+fn locate_gop(system_table: &EfiSystemTable) -> Result<*mut EfiGraphicsOutputProtocol, EfiStatus> {
+    let services =
+        unsafe { system_table.boot_services.as_ref() }.ok_or(EfiStatus::InvalidParameter)?;
     let mut protocol: *mut c_void = ptr::null_mut();
     let status = EfiStatus::from((services.locate_protocol)(
         EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID.as_ptr(),

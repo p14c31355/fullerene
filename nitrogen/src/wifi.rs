@@ -20,10 +20,10 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use bonder::wifi::{Ssid, AccessPoint, WifiStatus};
+use crate::DriverContext;
 use crate::pci::PciScanner;
 use crate::pci_health::PciHealth;
-use crate::DriverContext;
+use bonder::wifi::{AccessPoint, Ssid, WifiStatus};
 
 // ── WifiDriver trait ─────────────────────────────────────────────────
 
@@ -74,19 +74,19 @@ pub trait WifiDriver: Send {
 
     /// Load firmware blob into the device.
     /// Returns `Ok(())` on success.
-    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str>;
+    fn load_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError>;
 
     /// Start firmware upload and CPU boot without waiting for alive.
     /// Used by the step-based init to avoid blocking the render loop.
-    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), &'static str>;
+    fn start_firmware(&mut self, fw_data: &[u8]) -> Result<(), crate::DriverError>;
 
     /// Non-blocking check if firmware has signaled alive.
     /// Returns Ok(true) if alive, Ok(false) if still waiting, Err on error/timeout.
-    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, &'static str>;
+    fn check_alive_nonblocking(&mut self, start_tsc: u64) -> Result<bool, crate::DriverError>;
 
     /// Send post-boot init commands (TX antenna config, RXON, queue setup).
     /// Called by the step-based init after firmware alive is confirmed.
-    fn send_init_commands(&mut self) -> Result<(), &'static str>;
+    fn send_init_commands(&mut self) -> Result<(), crate::DriverError>;
 }
 
 // ── Hardware info (from PCI config space, always safe) ───────────────
@@ -101,17 +101,22 @@ pub struct PciWifiInfo {
     pub bus: u8,
     pub device: u8,
     pub function: u8,
-    pub bar0_phys: u64,          // from PCI BAR0
-    pub bar0_size: usize,        // from PCI BAR0
-    pub subsystem_vendor: u16,   // from config offset 0x2C
-    pub subsystem_device: u16,   // from config offset 0x2E
+    pub bar0_phys: u64,        // from PCI BAR0
+    pub bar0_size: usize,      // from PCI BAR0
+    pub subsystem_vendor: u16, // from config offset 0x2C
+    pub subsystem_device: u16, // from config offset 0x2E
 }
 
 // ── Driver entry in the registry ─────────────────────────────────────
 
 /// Type-erased constructor: given the driver context, MMIO base, and HW
 /// revision, returns a boxed driver or `None` on failure.
-type DriverCtor = fn(&'static dyn DriverContext, *mut u32, u32, crate::pci::PciDevice) -> Option<Box<dyn WifiDriver>>;
+type DriverCtor = fn(
+    &'static dyn DriverContext,
+    *mut u32,
+    u32,
+    crate::pci::PciDevice,
+) -> Option<Box<dyn WifiDriver>>;
 
 /// A single entry in the WiFi driver registry.
 pub struct DriverEntry {
@@ -183,7 +188,10 @@ impl WifiRegistry {
 
                 // Read subsystem IDs
                 let subsys = crate::pci::PciConfigSpace::read_config_dword(
-                    device.bus, device.device, device.function, 0x2C,
+                    device.bus,
+                    device.device,
+                    device.function,
+                    0x2C,
                 );
                 let subsys_vendor = (subsys & 0xFFFF) as u16;
                 let subsys_device = (subsys >> 16) as u16;
@@ -196,9 +204,13 @@ impl WifiRegistry {
                 if subsys_vendor == 0x0000 || subsys_vendor == 0xFFFF {
                     log::warn!(
                         "WiFi: ignoring phantom device {:04x}:{:04x} subsys={:04x}:{:04x} at {:02x}:{:02x}.{}",
-                        device.vendor_id, device.device_id,
-                        subsys_vendor, subsys_device,
-                        device.bus, device.device, device.function,
+                        device.vendor_id,
+                        device.device_id,
+                        subsys_vendor,
+                        subsys_device,
+                        device.bus,
+                        device.device,
+                        device.function,
                     );
                     continue;
                 }
@@ -206,7 +218,8 @@ impl WifiRegistry {
                 if phys == 0 || size == 0 || size > 0x0400_0000 {
                     log::warn!(
                         "WiFi: ignoring device with invalid BAR0 phys={:#x} size={:#x}",
-                        phys, size,
+                        phys,
+                        size,
                     );
                     continue;
                 }
@@ -225,7 +238,6 @@ impl WifiRegistry {
 
         None
     }
-
 }
 
 // ── Driver table ────────────────────────────────────────────────────
@@ -286,13 +298,18 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
             bridge.class_code == 0x06
                 && bridge.subclass == 0x04
                 && crate::pci::PciConfigSpace::read_config_byte(
-                    bridge.bus, bridge.device, bridge.function, 0x19,
+                    bridge.bus,
+                    bridge.device,
+                    bridge.function,
+                    0x19,
                 ) == info.bus
         });
         if let Some(up) = upstream {
             log::info!(
                 "WiFi: found upstream bridge {:02x}:{:02x}.{}",
-                up.bus, up.device, up.function
+                up.bus,
+                up.device,
+                up.function
             );
             Some((up.bus, up.device, up.function))
         } else {
@@ -311,15 +328,17 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
 
     // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");
-    let pci_revision = crate::pci::PciConfigSpace::read_config_byte(
-        info.bus, info.device, info.function, 0x08,
-    );
+    let pci_revision =
+        crate::pci::PciConfigSpace::read_config_byte(info.bus, info.device, info.function, 0x08);
     let hw_rev: u16 = pci_revision as u16;
 
     // Map BAR0 MMIO
     crate::debug::print("wifi", "map_bar0");
     let mmio_virt = ctx.phys_to_virt(info.bar0_phys);
-    if ctx.map_mmio_region(info.bar0_phys as usize, mmio_virt, info.bar0_size).is_err() {
+    if ctx
+        .map_mmio_region(info.bar0_phys as usize, mmio_virt, info.bar0_size)
+        .is_err()
+    {
         return None;
     }
     let mmio_base = mmio_virt as *mut u32;
@@ -327,9 +346,8 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     // Sanity-check: verify the device is still present before any MMIO
     crate::debug::print("wifi", "check_device_present");
     {
-        let vendor = crate::pci::PciConfigSpace::read_config_word(
-            info.bus, info.device, info.function, 0,
-        );
+        let vendor =
+            crate::pci::PciConfigSpace::read_config_word(info.bus, info.device, info.function, 0);
         if vendor == 0xFFFF || vendor == 0x0000 || vendor != info.vendor_id {
             crate::debug::print("wifi", "ERR device_gone_before_mmio");
             return None;
@@ -354,8 +372,11 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
             log::warn!(
                 "WiFi: device {:04x}:{:04x} at {:02x}:{:02x}.{} failed PciHealth check — \
                  not in D0 or PCIe link down (phantom device?)",
-                info.vendor_id, info.device_id,
-                info.bus, info.device, info.function,
+                info.vendor_id,
+                info.device_id,
+                info.bus,
+                info.device,
+                info.function,
             );
             crate::debug::print("wifi", "ERR health_check_failed");
             return None;
@@ -368,13 +389,16 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     // (e.g. BIOS-configured stub, unpopulated M.2 slot with ASPM enabled).
     // We log the subsystem IDs so we can distinguish a real card from a
     // phantom entry on buggy firmware.
-    let subsys = crate::pci::PciConfigSpace::read_config_dword(
-        info.bus, info.device, info.function, 0x2C,
-    );
+    let subsys =
+        crate::pci::PciConfigSpace::read_config_dword(info.bus, info.device, info.function, 0x2C);
     log::info!(
         "WiFi: probe_pci_only done — vendor={:#06x} device={:#06x} subsys={:#010x} bus={:02x}:{:02x}.{}",
-        info.vendor_id, info.device_id, subsys,
-        info.bus, info.device, info.function,
+        info.vendor_id,
+        info.device_id,
+        subsys,
+        info.bus,
+        info.device,
+        info.function,
     );
     crate::debug::print("wifi", "probe_done");
     Some(RawPciProbeResult {

@@ -72,7 +72,7 @@ impl Csw {
 // ── Bulk callback type ────────────────────────────────────────
 // The caller provides a function that does a bulk transfer.
 pub type BulkXferFn =
-    dyn FnMut(u8, u8, &mut [u8], UsbDirection, u16) -> Result<usize, &'static str>;
+    dyn FnMut(u8, u8, &mut [u8], UsbDirection, u16) -> Result<usize, crate::DriverError>;
 
 // ── Mass Storage Device ───────────────────────────────────────
 
@@ -139,7 +139,7 @@ impl UsbMassStorage {
         cdb: &[u8],
         data: Option<&mut [u8]>,
         dir_in: bool,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         let data_len = data.as_ref().map(|d| d.len() as u32).unwrap_or(0);
         let tag = self.tag;
         self.tag = self.tag.wrapping_add(1);
@@ -198,16 +198,16 @@ impl UsbMassStorage {
         // transfer of exactly 13 bytes (CSW size per BOT spec).
         let csw: &Csw = unsafe { &*(csw_buf.as_ptr() as *const Csw) };
         if csw.dCSWSignature != Csw::SIGNATURE {
-            return Err("bad CSW signature");
+            return Err(crate::DriverError::Protocol);
         }
         if csw.bCSWStatus != Csw::STATUS_SUCCESS {
-            return Err("CSW reported error");
+            return Err(crate::DriverError::Protocol);
         }
         Ok(())
     }
 
     /// Read block size and total blocks via READ_CAPACITY_10.
-    pub fn read_capacity(&mut self, xfer: &mut BulkXferFn) -> Result<(), &'static str> {
+    pub fn read_capacity(&mut self, xfer: &mut BulkXferFn) -> Result<(), crate::DriverError> {
         let cdb = ScsiReadCapacity10Cdb::new();
         // SAFETY: ScsiReadCapacity10Cdb is #[repr(C, packed)]. The CDB is exactly
         // 10 bytes per the SCSI READ_CAPACITY_10 spec.
@@ -230,10 +230,10 @@ impl UsbMassStorage {
         lba: u32,
         blocks: u16,
         buf: &mut [u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         let expected = (blocks as u32) * self.block_size;
         if buf.len() < expected as usize {
-            return Err("buffer too small");
+            return Err(crate::DriverError::InvalidArgument);
         }
         let cdb = ScsiCdb10::read10(lba, blocks);
         // SAFETY: ScsiCdb10 is #[repr(C, packed)], exactly 10 bytes per SCSI READ_10 spec.
@@ -249,10 +249,10 @@ impl UsbMassStorage {
         lba: u32,
         blocks: u16,
         buf: &[u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), crate::DriverError> {
         let expected = (blocks as u32) * self.block_size;
         if buf.len() < expected as usize {
-            return Err("buffer too small");
+            return Err(crate::DriverError::InvalidArgument);
         }
         let cdb = ScsiCdb10::write10(lba, blocks);
         // SAFETY: ScsiCdb10 is #[repr(C, packed)], exactly 10 bytes per SCSI WRITE_10 spec.

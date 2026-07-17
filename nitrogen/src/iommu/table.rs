@@ -1,5 +1,5 @@
-use alloc::vec::Vec;
 use crate::iommu::MemCallbacks;
+use alloc::vec::Vec;
 
 pub const IOPTE_R: u64 = 1 << 0;
 pub const IOPTE_W: u64 = 1 << 1;
@@ -11,9 +11,9 @@ fn iopte_addr(entry: u64) -> u64 {
 }
 
 /// TT field values (bits 3:2 of ContextEntry.lo)
-pub const TT_HOST_WITH_STRUCTURES: u64 = 0 << 2;  // 00b — host translation with SL page tables
-pub const TT_PASS_THROUGH: u64 = 2 << 2;           // 10b — pass-through, no translation
-pub const TT_GUEST: u64 = 3 << 2;                  // 11b — guest translation
+pub const TT_HOST_WITH_STRUCTURES: u64 = 0 << 2; // 00b — host translation with SL page tables
+pub const TT_PASS_THROUGH: u64 = 2 << 2; // 10b — pass-through, no translation
+pub const TT_GUEST: u64 = 3 << 2; // 11b — guest translation
 
 pub const CTX_AW_3LEVEL: u64 = 2 << 8;
 pub const CTX_AW_4LEVEL: u64 = 3 << 8;
@@ -95,7 +95,9 @@ impl IommuPageTable {
     pub fn new(ctx: &MemCallbacks, domain_id: u16) -> Result<Self, ()> {
         let phys = (ctx.alloc_frame)().ok_or(())?;
         let virt = (ctx.phys_to_virt)(phys) as *mut u64;
-        unsafe { core::ptr::write_bytes(virt, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(virt, 0, 4096);
+        }
         Ok(Self {
             root_phys: phys,
             root_virt: virt,
@@ -115,7 +117,9 @@ impl IommuPageTable {
     fn alloc_sl_table(&mut self, ctx: &MemCallbacks) -> Result<(u64, *mut u64), ()> {
         let phys = (ctx.alloc_frame)().ok_or(())?;
         let virt = (ctx.phys_to_virt)(phys) as *mut u64;
-        unsafe { core::ptr::write_bytes(virt, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(virt, 0, 4096);
+        }
         self.allocated_pages.push(phys);
         Ok((phys, virt))
     }
@@ -173,7 +177,9 @@ impl IommuPageTable {
         }
         let sl0_virt = (ctx.phys_to_virt)(iopte_addr(*sl1_entry)) as *mut u64;
         let sl0_idx = ((iova >> 12) & 0x1FF) as usize;
-        unsafe { *sl0_virt.add(sl0_idx) = 0; }
+        unsafe {
+            *sl0_virt.add(sl0_idx) = 0;
+        }
     }
 
     pub fn free_allocated(&self, ctx: &MemCallbacks) {
@@ -195,7 +201,9 @@ impl IommuRootTable {
     pub fn new(ctx: &MemCallbacks) -> Result<Self, ()> {
         let phys = (ctx.alloc_frame)().ok_or(())?;
         let virt = (ctx.phys_to_virt)(phys) as *mut RootEntry;
-        unsafe { core::ptr::write_bytes(virt, 0, 4096); }
+        unsafe {
+            core::ptr::write_bytes(virt, 0, 4096);
+        }
         Ok(Self {
             root_table_phys: phys,
             root_table_virt: virt,
@@ -218,7 +226,9 @@ impl IommuRootTable {
         let ctx_table_virt: *mut ContextEntry = if !root_entry.is_present() {
             let ct_phys = (ctx.alloc_frame)().ok_or(())?;
             let ct_virt = (ctx.phys_to_virt)(ct_phys) as *mut ContextEntry;
-            unsafe { core::ptr::write_bytes(ct_virt, 0, 4096); }
+            unsafe {
+                core::ptr::write_bytes(ct_virt, 0, 4096);
+            }
             *root_entry = RootEntry::new(ct_phys);
             self.context_table_pages.push(ct_phys);
             ct_virt

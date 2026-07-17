@@ -67,7 +67,7 @@ pub fn bot_exec_command(
     cdb: &[u8],
     data: Option<BotBuffer<'_>>,
     tag: &mut u32,
-) -> Result<usize, &'static str> {
+) -> Result<usize, crate::DriverError> {
     let t = *tag;
     *tag = tag.wrapping_add(1);
 
@@ -121,20 +121,55 @@ pub fn bot_exec_command(
 
     let sig = u32::from_le_bytes([csw_raw[0], csw_raw[1], csw_raw[2], csw_raw[3]]);
     if sig != CSW_SIGNATURE {
-        return Err("bad CSW signature");
+        return Err(crate::DriverError::Protocol);
     }
     let csw_tag = u32::from_le_bytes([csw_raw[4], csw_raw[5], csw_raw[6], csw_raw[7]]);
     if csw_tag != t {
-        return Err("CSW tag mismatch");
+        return Err(crate::DriverError::Protocol);
     }
     if csw_raw[12] != 0 {
-        return Err("CSW reported error");
+        return Err(crate::DriverError::Protocol);
     }
     // Compute actual bytes transferred (BOT spec §5.2.3).
     let requested = dlen as usize;
     let residue = u32::from_le_bytes([csw_raw[8], csw_raw[9], csw_raw[10], csw_raw[11]]);
     let actual = requested.saturating_sub(residue as usize);
     Ok(actual)
+}
+
+/// Read the device's logical block geometry with SCSI READ CAPACITY(10).
+pub fn bot_read_capacity(
+    host: &mut dyn HostController,
+    dev_addr: u8,
+    ep_out: u8,
+    ep_out_mps: u16,
+    ep_in: u8,
+    ep_in_mps: u16,
+    tag: &mut u32,
+) -> Result<(u32, u64), crate::DriverError> {
+    let mut response = [0u8; 8];
+    let mut cdb = [0u8; 10];
+    cdb[0] = 0x25;
+    let actual = bot_exec_command(
+        host,
+        dev_addr,
+        ep_out,
+        ep_out_mps,
+        ep_in,
+        ep_in_mps,
+        &cdb,
+        Some(BotBuffer::In(&mut response)),
+        tag,
+    )?;
+    if actual != response.len() {
+        return Err(crate::DriverError::Protocol);
+    }
+    let last_lba = u32::from_be_bytes(response[..4].try_into().unwrap());
+    let block_size = u32::from_be_bytes(response[4..].try_into().unwrap());
+    if block_size == 0 || !block_size.is_power_of_two() || block_size > 1024 * 1024 {
+        return Err(crate::DriverError::InvalidArgument);
+    }
+    Ok((block_size, u64::from(last_lba) + 1))
 }
 
 /// Read sectors from a mass-storage device via BOT.
@@ -150,10 +185,10 @@ pub fn bot_read_sectors(
     block_size: u32,
     buf: &mut [u8],
     tag: &mut u32,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::DriverError> {
     let dlen = count as u32 * block_size;
     if buf.len() < dlen as usize {
-        return Err("buffer too small");
+        return Err(crate::DriverError::InvalidArgument);
     }
     let mut cdb = [0u8; 10];
     cdb[0] = 0x28; // READ_10
@@ -171,7 +206,7 @@ pub fn bot_read_sectors(
         tag,
     )?;
     if actual != dlen as usize {
-        return Err("short read");
+        return Err(crate::DriverError::Protocol);
     }
     Ok(())
 }
@@ -189,10 +224,10 @@ pub fn bot_write_sectors(
     block_size: u32,
     buf: &[u8],
     tag: &mut u32,
-) -> Result<(), &'static str> {
+) -> Result<(), crate::DriverError> {
     let dlen = count as u32 * block_size;
     if buf.len() < dlen as usize {
-        return Err("buffer too small");
+        return Err(crate::DriverError::InvalidArgument);
     }
     let mut cdb = [0u8; 10];
     cdb[0] = 0x2A; // WRITE_10
@@ -210,7 +245,7 @@ pub fn bot_write_sectors(
         tag,
     )?;
     if actual != dlen as usize {
-        return Err("short write");
+        return Err(crate::DriverError::Protocol);
     }
     Ok(())
 }
@@ -221,13 +256,13 @@ pub fn bot_write_sectors(
 
 /// Enumerate a mass-storage device on the given host controller.
 ///
-/// Returns `(ep_out, ep_out_mps, ep_in, ep_in_mps, block_size)` or an error.
+/// Returns both bulk endpoint addresses and their reported packet sizes.
 /// Uses the host controller's `control_transfer` and `bulk_transfer`.
 pub fn enumerate_mass_storage(
     host: &mut dyn HostController,
     dev_addr: u8,
     dev_idx: usize,
-) -> Result<(u8, u16, u8, u16, u32), &'static str> {
+) -> Result<(u8, u16, u8, u16), crate::DriverError> {
     // Step 1: Get device descriptor (64 bytes for safety)
     let mut desc_buf = [0u8; 64];
     let setup = UsbSetupPacket {
@@ -239,30 +274,15 @@ pub fn enumerate_mass_storage(
     };
     let len = host.control_transfer(dev_addr, &setup, &mut desc_buf)?;
     if len < 18 {
-        return Err("descriptor too short");
+        return Err(crate::DriverError::Protocol);
     }
 
-    let dev_class = desc_buf[4];
-    let _dev_subclass = desc_buf[5];
-    let _dev_protocol = desc_buf[6];
     let num_cfgs = desc_buf[17];
-
-    // Accept MSC at device level OR at least one configuration
-    if dev_class != 0x08 && num_cfgs == 0 {
-        return Err("not MSC");
+    if num_cfgs == 0 {
+        return Err(crate::DriverError::Protocol);
     }
 
-    // Step 2: Set configuration (value = 1)
-    let setup_cfg = UsbSetupPacket {
-        bm_request_type: 0x00,
-        b_request: REQ_SET_CONFIGURATION,
-        w_value: 1,
-        w_index: 0,
-        w_length: 0,
-    };
-    host.control_transfer(dev_addr, &setup_cfg, &mut [])?;
-
-    // Step 3: Read configuration descriptor
+    // Step 2: inspect the configuration before selecting it.
     let mut cfg_buf = [0u8; 256];
     let setup_cfg_read = UsbSetupPacket {
         bm_request_type: 0x80,
@@ -271,29 +291,32 @@ pub fn enumerate_mass_storage(
         w_index: 0,
         w_length: 256,
     };
-    let cfg_res = host.control_transfer(dev_addr, &setup_cfg_read, &mut cfg_buf);
+    let cfg_len = host.control_transfer(dev_addr, &setup_cfg_read, &mut cfg_buf)?;
+    let config = parse_mass_storage_config(&cfg_buf, cfg_len)?;
 
-    let (ep_out, ep_out_mps, ep_in, ep_in_mps) = if let Ok(cfg_len) = cfg_res {
-        if cfg_len < 9 {
-            return Err("config too short");
-        }
-        parse_endpoints(&cfg_buf, cfg_len)
-    } else {
-        if dev_class != 0x08 {
-            return Err("not MSC");
-        }
-        // Fallback: hardcoded endpoints (High-speed defaults)
-        (0x02u8, 512u16, 0x82u8, 512u16)
+    // Step 3: select the descriptor's actual configuration value.
+    let setup_cfg = UsbSetupPacket {
+        bm_request_type: 0x00,
+        b_request: REQ_SET_CONFIGURATION,
+        w_value: config.value as u16,
+        w_index: 0,
+        w_length: 0,
     };
+    host.control_transfer(dev_addr, &setup_cfg, &mut [])?;
 
     // Update device metadata
     if let Some(dev) = host.devices_mut().get_mut(dev_idx) {
-        dev.device_class = dev_class;
-        dev.device_subclass = desc_buf[5];
-        dev.device_protocol = desc_buf[6];
+        dev.device_class = 0x08;
+        dev.device_subclass = config.subclass;
+        dev.device_protocol = config.protocol;
     }
 
-    Ok((ep_out, ep_out_mps, ep_in, ep_in_mps, 512))
+    Ok((
+        config.ep_out,
+        config.ep_out_mps,
+        config.ep_in,
+        config.ep_in_mps,
+    ))
 }
 
 /// Parse bulk IN/OUT endpoints from a configuration descriptor buffer.
@@ -303,13 +326,28 @@ pub fn enumerate_mass_storage(
 /// must be 1024 bytes per USB 3.x spec §4.4.7.1. We use the value reported
 /// by the device so that the xHCI endpoint context is configured correctly;
 /// falling back to a speed-appropriate default when the descriptor is missing.
-fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u16, u8, u16) {
+struct MassStorageConfig {
+    value: u8,
+    subclass: u8,
+    protocol: u8,
+    ep_out: u8,
+    ep_out_mps: u16,
+    ep_in: u8,
+    ep_in_mps: u16,
+}
+
+fn parse_mass_storage_config(
+    cfg_buf: &[u8],
+    cfg_len: usize,
+) -> Result<MassStorageConfig, crate::DriverError> {
+    if cfg_len < 9 || cfg_buf.len() < 9 {
+        return Err(crate::DriverError::InvalidArgument);
+    }
     let total_len = u16::from_le_bytes([cfg_buf[2], cfg_buf[3]]) as usize;
     let mut offset: usize = 9;
-    let mut found_out: Option<u8> = None;
-    let mut found_out_mps: Option<u16> = None;
-    let mut found_in: Option<u8> = None;
-    let mut found_in_mps: Option<u16> = None;
+    let mut interface = None;
+    let mut ep_out = None;
+    let mut ep_in = None;
 
     let limit = total_len.min(cfg_len).min(cfg_buf.len());
     while offset + 2 <= limit {
@@ -318,34 +356,39 @@ fn parse_endpoints(cfg_buf: &[u8], cfg_len: usize) -> (u8, u16, u8, u16) {
             break;
         }
         let dtype = cfg_buf[offset + 1];
-        if dtype == 5 && dlen >= 7 {
-            // ENDPOINT descriptor
+        if dtype == 4 && dlen >= 9 {
+            interface = (cfg_buf[offset + 5] == 0x08 && cfg_buf[offset + 7] == 0x50)
+                .then_some((cfg_buf[offset + 6], cfg_buf[offset + 7]));
+            ep_out = None;
+            ep_in = None;
+        } else if dtype == 5 && dlen >= 7 && interface.is_some() {
             let ep_addr = cfg_buf[offset + 2];
             let ep_attr = cfg_buf[offset + 3];
-            // wMaxPacketSize at offset 4..5 (little-endian)
             let mps = u16::from_le_bytes([cfg_buf[offset + 4], cfg_buf[offset + 5]]);
-            if (ep_attr & 0x03) == 2 {
-                // Bulk endpoint
+            if ep_attr & 3 == 2 && mps != 0 {
                 if ep_addr & 0x80 != 0 {
-                    found_in = Some(ep_addr);
-                    found_in_mps = Some(mps);
+                    ep_in = Some((ep_addr, mps));
                 } else {
-                    found_out = Some(ep_addr);
-                    found_out_mps = Some(mps);
+                    ep_out = Some((ep_addr, mps));
                 }
             }
         }
+        if let (Some((subclass, protocol)), Some((out, out_mps)), Some((input, in_mps))) =
+            (interface, ep_out, ep_in)
+        {
+            return Ok(MassStorageConfig {
+                value: cfg_buf[5],
+                subclass,
+                protocol,
+                ep_out: out,
+                ep_out_mps: out_mps,
+                ep_in: input,
+                ep_in_mps: in_mps,
+            });
+        }
         offset += dlen;
     }
-
-    let out = found_out.unwrap_or(0x02);
-    let in_ep = found_in.unwrap_or(0x82);
-    // Default mps to 512 for High-speed / Full-speed. SuperSpeed USB
-    // descriptors report 1024 for bulk endpoints; we use whatever the
-    // descriptor says when it is present.
-    let out_mps = found_out_mps.filter(|&m| m > 0).unwrap_or(512);
-    let in_mps = found_in_mps.filter(|&m| m > 0).unwrap_or(512);
-    (out, out_mps, in_ep, in_mps)
+    Err(crate::DriverError::NotSupported)
 }
 
 // EHCI-specific enumeration is in hub.rs (enumerate_device).
@@ -394,8 +437,12 @@ impl UsbBus {
 
             let mut health = PciHealth::new(dev);
             if health.pre_mmio_access().is_err() {
-                log::info!("USB: device at {:02x}:{:02x}.{} failed health check — skipping",
-                    dev.bus, dev.device, dev.function);
+                log::info!(
+                    "USB: device at {:02x}:{:02x}.{} failed health check — skipping",
+                    dev.bus,
+                    dev.device,
+                    dev.function
+                );
                 continue;
             }
 
@@ -476,5 +523,29 @@ impl UsbBus {
         }
         pending
     }
+}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MSC_CONFIG: [u8; 32] = [
+        9, 2, 32, 0, 1, 2, 0, 0x80, 50, 9, 4, 0, 0, 2, 8, 6, 0x50, 0, 7, 5, 2, 2, 0, 2, 0, 7, 5,
+        0x81, 2, 0, 2, 0,
+    ];
+
+    #[test]
+    fn parses_bot_interface_and_reported_endpoints() {
+        let config = parse_mass_storage_config(&MSC_CONFIG, MSC_CONFIG.len()).unwrap();
+        assert_eq!(config.value, 2);
+        assert_eq!((config.ep_out, config.ep_out_mps), (2, 512));
+        assert_eq!((config.ep_in, config.ep_in_mps), (0x81, 512));
+    }
+
+    #[test]
+    fn rejects_non_mass_storage_interface() {
+        let mut config = MSC_CONFIG;
+        config[14] = 3;
+        assert!(parse_mass_storage_config(&config, config.len()).is_err());
+    }
 }

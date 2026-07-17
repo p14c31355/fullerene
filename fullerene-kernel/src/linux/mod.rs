@@ -3,13 +3,17 @@
 #[macro_export]
 macro_rules! linux_stub {
     ($name:ident, $ret:expr) => {
-        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { $ret }
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+            $ret
+        }
     };
 }
 #[macro_export]
 macro_rules! linux_stub_errno {
     ($name:ident, $err:expr) => {
-        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 { errno_code($err) }
+        pub fn $name(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+            errno_code($err)
+        }
     };
 }
 
@@ -26,4 +30,4 @@ pub mod time;
 pub mod types;
 
 pub use numbers::*;
-pub use runtime::{DispatchMode, LinuxRuntime, errno_code};
+pub use runtime::{DispatchMode, LinuxErrno, LinuxRuntime, errno_code};

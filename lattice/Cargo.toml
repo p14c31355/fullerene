@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 ab_glyph = { version = "0.2.32", default-features = false, features = ["libm"] }

@@ -23,12 +23,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "accessor"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd8b2abd55bf1f9cffbf00fd594566c51a9d31402553284920c1309ca8351086"
-
-[[package]]
 name = "addr2line"
 version = "0.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -160,7 +154,7 @@ dependencies = [
  "linked_list_allocator",
  "log",
  "petroleum",
- "spin 0.10.0",
+ "spin 0.12.0",
  "x86_64 0.15.4",
 ]
 
@@ -187,7 +181,7 @@ checksum = "6115af052c7914c0cbb97195e5c72cb61c511527250074f5c041d1048b0d8b16"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
 
 [[package]]
@@ -207,7 +201,7 @@ name = "bonder"
 version = "0.1.0"
 dependencies = [
  "log",
- "spin 0.10.0",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -221,6 +215,20 @@ name = "bytemuck"
 version = "1.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6aedf8ae72766347502cf3cb4f41cf5e9cc37d28bee90f1fdaaae15f9cf9424"
+dependencies = [
+ "bytemuck_derive",
+]
+
+[[package]]
+name = "bytemuck_derive"
+version = "1.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f65693059b6b9c588b9f62fed1cedbf0a8b805631457ea162d68f0de186f3de5"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "byteorder"
@@ -238,7 +246,7 @@ checksum = "8f1fe948ff07f4bd06c30984e69f5b4899c516a3ef74f34df92a2df2ab535495"
 name = "carrier"
 version = "0.1.0"
 dependencies = [
- "spin 0.10.0",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -305,7 +313,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
 
 [[package]]
@@ -546,6 +554,7 @@ dependencies = [
  "fullerene-abi",
  "genome",
  "goblin",
+ "hadris-fat",
  "heapless",
  "lattice",
  "linked_list_allocator",
@@ -559,12 +568,21 @@ dependencies = [
  "resonance",
  "rle_player",
  "solvent",
- "spin 0.10.0",
+ "spin 0.12.0",
  "starry-fatfs",
  "static_assertions",
  "volatile 0.6.1",
  "wasi_runtime",
  "x86_64 0.15.4",
+]
+
+[[package]]
+name = "fullerene-tools"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -643,6 +661,52 @@ dependencies = [
  "log",
  "plain",
  "scroll",
+]
+
+[[package]]
+name = "hadris-common"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69865bf6659f52a005745c4b92c556950135c0759796b58e6d34914c077e6a40"
+dependencies = [
+ "hadris-io",
+ "noalloc",
+ "zerocopy",
+]
+
+[[package]]
+name = "hadris-fat"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62c5e513feed5c62a4056022b3bd1588f6f96eb61c6583604c1d42dba31d780d"
+dependencies = [
+ "bitflags 2.11.1",
+ "bytemuck",
+ "chrono",
+ "hadris-common",
+ "hadris-io",
+ "hadris-macros",
+ "parse-size",
+ "spin 0.10.0",
+]
+
+[[package]]
+name = "hadris-io"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee996c28ddacd8bc6a9ad0fcb033fa1d50cfd37bbc101dcf711109139e750d2b"
+dependencies = [
+ "bytemuck",
+ "cfg-if",
+]
+
+[[package]]
+name = "hadris-macros"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6c8bae1a295c4f8753ae8dea0ae0b79d03f737dcc8bf4deb3c7ee876468f437"
+dependencies = [
+ "proc-macro2",
 ]
 
 [[package]]
@@ -745,6 +809,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "itoa"
+version = "1.0.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
 name = "jiff"
 version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -765,7 +835,7 @@ checksum = "e000de030ff8022ea1da3f466fbb0f3a809f5e51ed31f6dd931c35181ad8e6d7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
 
 [[package]]
@@ -904,28 +974,22 @@ dependencies = [
  "bonder",
  "log",
  "ps2-mouse",
- "spin 0.10.0",
+ "spin 0.12.0",
  "x86_64 0.15.4",
- "xhci",
 ]
+
+[[package]]
+name = "noalloc"
+version = "0.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a2537501480803dd22fbd79a39ea83318caba3ba936f7554f7139f4180faa94"
 
 [[package]]
 name = "nozzle"
 version = "0.1.0"
 dependencies = [
  "carrier",
- "spin 0.10.0",
-]
-
-[[package]]
-name = "num-derive"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "876a53fff98e03a936a674b29568b0e605f06b29372c2489ff4de23f1949743d"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
+ "spin 0.12.0",
 ]
 
 [[package]]
@@ -936,7 +1000,7 @@ checksum = "ed3955f1a9c7c0c15e092f9c887db08b1fc683305fdf6eb6684f22555355e202"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
 
 [[package]]
@@ -970,6 +1034,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "parse-size"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "487f2ccd1e17ce8c1bfab3a65c89525af41cfad4c8659021a1e9a2aacd73b89b"
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -991,6 +1061,7 @@ dependencies = [
  "conquer-util",
  "embassy-futures",
  "embedded-graphics",
+ "fullerene-abi",
  "futures-util",
  "gimli",
  "goblin",
@@ -999,7 +1070,7 @@ dependencies = [
  "log",
  "once_cell",
  "paste",
- "spin 0.10.0",
+ "spin 0.12.0",
  "static_assertions",
  "volatile 0.6.1",
  "x86_64 0.15.4",
@@ -1191,6 +1262,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 name = "resonance"
 version = "0.1.0"
 dependencies = [
+ "spin 0.12.0",
  "x86_64 0.15.4",
 ]
 
@@ -1225,16 +1297,6 @@ name = "rle_player"
 version = "0.1.0"
 
 [[package]]
-name = "rmp3"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3d9fb2c89a819645c57007782fd4db5bfa1abe290e1df5f530a441dc21ab1ad"
-dependencies = [
- "cc",
- "libc",
-]
-
-[[package]]
 name = "roxmltree"
 version = "0.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1248,12 +1310,6 @@ checksum = "f1964b10c76125c36f8afe190065a4bf9a87bf324842c05701330bba9f1cacbb"
 dependencies = [
  "memchr",
 ]
-
-[[package]]
-name = "rust_h264"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fbedf5e104105e8783a77926f1e212ea37e78fd3b38b2c928938a283d083d6f1"
 
 [[package]]
 name = "rustix"
@@ -1315,7 +1371,17 @@ checksum = "ed76efe62313ab6610570951494bdaa81568026e0318eaa55f167de70eeea67d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
+]
+
+[[package]]
+name = "serde"
+version = "1.0.228"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+dependencies = [
+ "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -1335,7 +1401,20 @@ checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.150"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
 ]
 
 [[package]]
@@ -1399,20 +1478,22 @@ dependencies = [
  "bonder",
  "carrier",
  "chronoline",
+ "genome",
  "lattice",
  "log",
  "minipng",
+ "miniz_oxide",
  "nitrogen",
  "nozzle",
  "petroleum",
  "pure_wav",
  "resonance",
- "rmp3",
- "rust_h264",
  "shiguredo_mp4",
- "spin 0.10.0",
+ "spin 0.12.0",
  "tinybmp",
  "x86_64 0.15.4",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1426,6 +1507,9 @@ name = "spin"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5fe4ccb98d9c292d56fec89a5e07da7fc4cf0dc11e156b41793132775d3e591"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "spin"
@@ -1497,17 +1581,6 @@ checksum = "695b5790b3131dafa99b3bbfd25a216edb3d216dad9ca208d4657bfb8f2abc3d"
 dependencies = [
  "kurbo",
  "siphasher",
-]
-
-[[package]]
-name = "syn"
-version = "1.0.109"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
 ]
 
 [[package]]
@@ -1589,8 +1662,18 @@ name = "toluene"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "fullerene-abi",
  "lattice",
  "petroleum",
+]
+
+[[package]]
+name = "toml"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -1728,6 +1811,7 @@ name = "wasi_runtime"
 version = "0.1.0"
 dependencies = [
  "carrier",
+ "genome",
  "wasmi",
 ]
 
@@ -1763,7 +1847,7 @@ dependencies = [
  "log",
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
  "wasm-bindgen-shared",
 ]
 
@@ -1785,7 +1869,7 @@ checksum = "9f07d2f20d4da7b26400c9f4a0511e6e0345b040694e8a75bd41d578fa4421d7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
  "wasm-bindgen-backend",
  "wasm-bindgen-shared",
 ]
@@ -1807,7 +1891,7 @@ checksum = "8c97eb5a79e7e191374c3d0919ac29e8f1bb2cb8b418a599af5e14eb5debfacf"
 dependencies = [
  "arrayvec",
  "multi-stash",
- "num-derive 0.4.2",
+ "num-derive",
  "num-traits",
  "smallvec",
  "spin 0.9.8",
@@ -1875,7 +1959,7 @@ checksum = "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
 
 [[package]]
@@ -1886,7 +1970,7 @@ checksum = "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
 
 [[package]]
@@ -2028,19 +2112,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "xhci"
-version = "0.9.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09f3f0483969259f2adb6524054400d94ac352e59fa37da6c6ca3b9b3d83ff83"
-dependencies = [
- "accessor",
- "bit_field",
- "num-derive 0.3.3",
- "num-traits",
- "paste",
-]
-
-[[package]]
 name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2063,8 +2134,14 @@ checksum = "0b631b19d36a892ab55420c92dbc83ccd79274f25be714855d3074aa71cab639"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.117",
+ "syn",
 ]
+
+[[package]]
+name = "zmij"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zune-core"

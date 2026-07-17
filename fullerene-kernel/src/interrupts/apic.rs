@@ -229,7 +229,9 @@ fn restore_watchdog_timer_impl() {
 
 /// Force-reset the APIC controller lock. Safe to call during NMI recovery.
 pub unsafe fn reset_apic_controller_lock() {
-    unsafe { reset_mutex_lock(&APIC_CONTROLLER); }
+    unsafe {
+        reset_mutex_lock(&APIC_CONTROLLER);
+    }
 }
 
 /// Register the MMIO NMI watchdog timer callbacks with the nitrogen mmio module.

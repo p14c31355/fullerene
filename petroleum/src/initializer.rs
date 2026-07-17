@@ -219,11 +219,11 @@ pub trait ProcessMemoryManager {
 }
 
 pub struct InitSequence<'a> {
-    steps: &'a [(&'static str, fn() -> Result<(), &'static str>)],
+    steps: &'a [(&'static str, fn() -> Result<(), crate::SystemError>)],
 }
 
 impl<'a> InitSequence<'a> {
-    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), &'static str>)]) -> Self {
+    pub fn new(steps: &'a [(&'static str, fn() -> Result<(), crate::SystemError>)]) -> Self {
         Self { steps }
     }
 
@@ -234,7 +234,7 @@ impl<'a> InitSequence<'a> {
 
             if let Err(e) = init_fn() {
                 crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step failed\n");
-                panic!("{}", e);
+                panic!("{:?}", e);
             }
             crate::write_serial_bytes(0x3F8, 0x3FD, b"DEBUG: [InitSequence] Step done\n");
         }

@@ -1,8 +1,12 @@
 # fullerene-kernel/Cargo.toml
 [package]
 name = "fullerene-kernel"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "fullerene-kernel"
@@ -13,8 +17,7 @@ x86_64 = { workspace = true, features = [
   "instructions",
   "abi_x86_interrupt",
 ] }
-# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
-spin = { version = "0.10.0", default-features = false, features = [
+spin = { workspace = true, features = [
   "once",
   "mutex",
   "spin_mutex",
@@ -49,8 +52,18 @@ paste = "1.0.15"
 log = { workspace = true }
 wasi_runtime = { path = "../wasi_runtime" }
 fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false, features = ["alloc", "lfn", "unicode"] }
+hadris-fat = { version = "1.2.1", default-features = false, features = [
+  "alloc",
+  "exfat",
+  "read",
+  "sync",
+  "write",
+] }
 # shell-words = "1.1"  # Cannot use in no_std kernel
 
 [features]
 default = []
 user_space = []
+
+[dev-dependencies]
+petroleum = { path = "../petroleum", features = ["std"] }

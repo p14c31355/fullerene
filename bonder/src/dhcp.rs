@@ -7,8 +7,6 @@
 
 use alloc::vec::Vec;
 
-
-
 /// DHCP magic cookie.
 pub const DHCP_MAGIC_COOKIE: [u8; 4] = [0x63, 0x82, 0x53, 0x63];
 
@@ -83,8 +81,8 @@ impl DhcpHeader {
     pub fn new(op: u8) -> Self {
         Self {
             op,
-            htype: 1,  // Ethernet
-            hlen: 6,   // MAC address length
+            htype: 1, // Ethernet
+            hlen: 6,  // MAC address length
             hops: 0,
             xid: [0u8; 4],
             secs: [0u8; 2],
@@ -102,7 +100,7 @@ impl DhcpHeader {
 }
 
 /// Parsed DHCP lease information.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DhcpLease {
     pub ip_address: [u8; 4],
     pub subnet_mask: [u8; 4],
@@ -114,14 +112,7 @@ pub struct DhcpLease {
 
 impl DhcpLease {
     pub fn new() -> Self {
-        Self {
-            ip_address: [0u8; 4],
-            subnet_mask: [0u8; 4],
-            router: [0u8; 4],
-            dns_server: [0u8; 4],
-            server_id: [0u8; 4],
-            lease_time: 0,
-        }
+        Self::default()
     }
 }
 
@@ -182,10 +173,7 @@ impl DhcpClient {
 
         let mut packet = Vec::new();
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &header as *const DhcpHeader as *const u8,
-                DhcpHeader::SIZE,
-            )
+            core::slice::from_raw_parts(&header as *const DhcpHeader as *const u8, DhcpHeader::SIZE)
         };
         packet.extend_from_slice(header_bytes);
 
@@ -219,10 +207,7 @@ impl DhcpClient {
 
         let mut packet = Vec::new();
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &header as *const DhcpHeader as *const u8,
-                DhcpHeader::SIZE,
-            )
+            core::slice::from_raw_parts(&header as *const DhcpHeader as *const u8, DhcpHeader::SIZE)
         };
         packet.extend_from_slice(header_bytes);
 
@@ -262,10 +247,7 @@ impl DhcpClient {
 
         let mut packet = Vec::new();
         let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &header as *const DhcpHeader as *const u8,
-                DhcpHeader::SIZE,
-            )
+            core::slice::from_raw_parts(&header as *const DhcpHeader as *const u8, DhcpHeader::SIZE)
         };
         packet.extend_from_slice(header_bytes);
 
@@ -283,23 +265,23 @@ impl DhcpClient {
     }
 
     /// Parse a DHCP response.
-    pub fn parse_response(&mut self, data: &[u8]) -> Result<DhcpMessageType, &'static str> {
+    pub fn parse_response(&mut self, data: &[u8]) -> Result<DhcpMessageType, crate::NetError> {
         if data.len() < DhcpHeader::SIZE + 4 {
-            return Err("Response too short");
+            return Err(crate::NetError::Protocol);
         }
 
         let header = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const DhcpHeader) };
         let magic = header.magic;
         if magic != DHCP_MAGIC_COOKIE {
-            return Err("Invalid magic cookie");
+            return Err(crate::NetError::Protocol);
         }
         let op = header.op;
         if op != 2 {
-            return Err("Not a BOOTREPLY");
+            return Err(crate::NetError::Protocol);
         }
         let xid = header.xid;
         if xid != self.xid.to_be_bytes() {
-            return Err("Transaction ID mismatch");
+            return Err(crate::NetError::Protocol);
         }
 
         let mut offset = DhcpHeader::SIZE;
@@ -350,12 +332,9 @@ impl DhcpClient {
                         self.lease.server_id.copy_from_slice(&opt_data[..4]);
                     }
                 }
-                OPTION_IP_LEASE_TIME => {
-                    if opt_len >= 4 {
-                        self.lease.lease_time = u32::from_be_bytes([
-                            opt_data[0], opt_data[1], opt_data[2], opt_data[3],
-                        ]);
-                    }
+                OPTION_IP_LEASE_TIME if opt_len >= 4 => {
+                    self.lease.lease_time =
+                        u32::from_be_bytes([opt_data[0], opt_data[1], opt_data[2], opt_data[3]]);
                 }
                 _ => {}
             }
@@ -363,7 +342,7 @@ impl DhcpClient {
             offset += 2 + opt_len;
         }
 
-        let msg_type = msg_type.ok_or("No DHCP message type option")?;
+        let msg_type = msg_type.ok_or(crate::NetError::Protocol)?;
 
         match msg_type {
             DhcpMessageType::Offer | DhcpMessageType::Ack => {

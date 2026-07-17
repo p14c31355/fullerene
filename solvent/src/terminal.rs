@@ -2,7 +2,7 @@
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
-use crate::{HEAP_EXTEND_RESERVE, SOLVENT_CALLBACKS};
+use crate::{HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT};
 use alloc::string::String;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
@@ -54,7 +54,7 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
         let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
         if needed > reserve {
             let additional = needed.saturating_sub(reserve).next_multiple_of(4096);
-            match SOLVENT_CALLBACKS.lock().heap_extend {
+            match RUNTIME_CONTEXT.callback_snapshot().heap_extend {
                 Some(f) if f(additional).is_ok() => {
                     HEAP_EXTEND_RESERVE
                         .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
@@ -150,12 +150,26 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
 
 pub struct LatticeTerminal;
 
+fn record_session_history(
+    history: &mut alloc::collections::VecDeque<String>,
+    line: &str,
+    capacity: usize,
+) {
+    if line.is_empty() || history.front().is_some_and(|entry| entry == line) {
+        return;
+    }
+    if history.len() >= capacity {
+        history.pop_back();
+    }
+    history.push_front(String::from(line));
+}
+
 impl carrier::terminal::Terminal for LatticeTerminal {
     fn write_str(&mut self, s: &str) {
         if let Some(ref mut out) = *crate::PIPE_STDOUT.lock() {
             out.push_str(s);
         } else {
-            let mut rt = crate::RUNTIME.lock();
+            let mut rt = crate::RUNTIME_CONTEXT.runtime();
             if let Some(ref mut r) = *rt {
                 r.term_buf.put_str(s);
                 r.term_dirty = true;
@@ -187,6 +201,49 @@ impl carrier::terminal::Terminal for LatticeTerminal {
     }
     fn clear_pipe_stdin(&mut self) {
         *crate::PIPE_STDIN.lock() = None;
+    }
+    fn record_history(&mut self, line: &str) {
+        if line.is_empty() {
+            return;
+        }
+        let mut runtime = crate::RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        record_session_history(&mut runtime.command_history, line, 128);
+    }
+    fn history_snapshot(&self) -> alloc::vec::Vec<String> {
+        crate::RUNTIME_CONTEXT
+            .runtime()
+            .as_ref()
+            .map(|runtime| runtime.command_history.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::record_session_history;
+    use alloc::collections::VecDeque;
+    use alloc::string::String;
+
+    #[test]
+    fn terminal_history_is_session_local_bounded_and_deduplicated() {
+        let mut first = VecDeque::new();
+        let second: VecDeque<String> = VecDeque::new();
+        record_session_history(&mut first, "ls", 2);
+        record_session_history(&mut first, "ls", 2);
+        record_session_history(&mut first, "pwd", 2);
+        record_session_history(&mut first, "uname", 2);
+
+        assert_eq!(
+            first
+                .iter()
+                .map(String::as_str)
+                .collect::<alloc::vec::Vec<_>>(),
+            ["uname", "pwd"]
+        );
+        assert!(second.is_empty());
     }
 }
 

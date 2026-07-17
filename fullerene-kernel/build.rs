@@ -13,8 +13,18 @@ fn main() {
     println!("cargo:rerun-if-changed={}", ignore_path.display());
 
     let known_drivers = &[
-        "audio", "framebuffer", "hda", "ioapic", "iommu",
-        "iwlwifi", "pic", "ps2", "storage", "usb", "virtio", "wifi",
+        "audio",
+        "framebuffer",
+        "hda",
+        "ioapic",
+        "iommu",
+        "iwlwifi",
+        "pic",
+        "ps2",
+        "storage",
+        "usb",
+        "virtio",
+        "wifi",
     ];
     for name in known_drivers {
         println!("cargo::rustc-check-cfg=cfg(nitrogen_no_{})", name);
@@ -30,7 +40,13 @@ fn main() {
             let mod_name = line.strip_suffix('/').unwrap_or(line);
             let clean: String = mod_name
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect();
             if !clean.is_empty() {
                 println!("cargo:rustc-cfg=nitrogen_no_{}", clean);
@@ -58,7 +74,11 @@ fn main() {
     }
 
     // ── Build WASI test app ──────────────────────────────────────
-    let wasm_src = manifest_dir.join("..").join("apps").join("hello_wasi.rs");
+    let wasm_src = manifest_dir
+        .join("..")
+        .join("toluene")
+        .join("apps")
+        .join("hello_wasi.rs");
     let wasm_out = out_dir.join("hello.wasm");
 
     println!("cargo:rerun-if-changed={}", wasm_src.display());

@@ -138,7 +138,11 @@ impl DmaEngine {
             .is_ok();
 
             if !srst_ok || !srst_clr_ok {
-                log::warn!("HDA: SRST handshake timed out on stream {} (tag={})", sd, stream_tag);
+                log::warn!(
+                    "HDA: SRST handshake timed out on stream {} (tag={})",
+                    sd,
+                    stream_tag
+                );
                 return;
             }
 

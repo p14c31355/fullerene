@@ -4,8 +4,11 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [dependencies]
+spin = { workspace = true, features = ["spin_mutex"] }
 x86_64 = { workspace = true, features = [
   "instructions",
 ] }

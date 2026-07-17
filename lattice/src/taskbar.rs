@@ -116,8 +116,11 @@ impl Taskbar {
 
         // Draw WiFi indicator icon (right side, before clock)
         crate::network_menu::render_wifi_icon(
-            painter.fb, fb_width, fb_height,
-            wifi_icon_x, bar_y + 6,
+            painter.fb,
+            fb_width,
+            fb_height,
+            wifi_icon_x,
+            bar_y + 6,
             self.wifi_connected,
             self.wifi_visible,
             self.wifi_signal,
@@ -159,7 +162,13 @@ impl Taskbar {
             } else {
                 &entry.title
             };
-            painter.draw_text(btn_x + 4, btn_y as i32 + 3, label, colors.taskbar_text, 13.0);
+            painter.draw_text(
+                btn_x + 4,
+                btn_y as i32 + 3,
+                label,
+                colors.taskbar_text,
+                13.0,
+            );
             btn_x += btn_w as i32 + 4;
         }
 
@@ -180,7 +189,13 @@ impl Taskbar {
         if !self.clock_text.is_empty() {
             let clock_y = (btn_y + 3) as i32;
             let clock_x = (fb_width as i32).saturating_sub(100);
-            painter.draw_text(clock_x, clock_y, &self.clock_text, colors.taskbar_text, 13.0);
+            painter.draw_text(
+                clock_x,
+                clock_y,
+                &self.clock_text,
+                colors.taskbar_text,
+                13.0,
+            );
         }
     }
 }

@@ -1,7 +1,11 @@
 [package]
 name = "petroleum"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [features]
 default = []
@@ -10,8 +14,8 @@ vga_panic = []
 debug_pf = []
 
 [dependencies]
-# Using spin 0.10 instead of workspace 0.12 — 0.12 changed MutexGuard API (added R generic)
-spin = { version = "0.10.0", default-features = false, features = [
+fullerene-abi = { path = "../fullerene-abi" }
+spin = { workspace = true, features = [
   "once",
   "mutex",
   "spin_mutex",
@@ -41,3 +45,8 @@ futures-util = { version = "0.3", default-features = false, features = ["alloc"]
 name = "petroleum"
 path = "src/lib.rs"
 crate-type = ["lib"]
+
+[[test]]
+name = "lib"
+path = "tests/lib.rs"
+required-features = ["std"]

@@ -4,11 +4,11 @@
 #![allow(static_mut_refs)]
 use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::{debug_log_no_alloc, mem_debug};
+use x86_64::VirtAddr;
 use x86_64::instructions::tables::load_tss;
 use x86_64::registers::segmentation::{CS, Segment};
 use x86_64::structures::gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
-use x86_64::VirtAddr;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const TIMER_IST_INDEX: u16 = 1;

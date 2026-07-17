@@ -12,10 +12,8 @@ use super::types::*;
 use crate::process::{self, Process, ProcessState};
 
 pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> SyscallResult {
-    let entry_point = VirtAddr::try_new(entry)
-        .map_err(|_| SyscallError::InvalidArgument)?;
-    let user_stack = VirtAddr::try_new(stack)
-        .map_err(|_| SyscallError::InvalidArgument)?;
+    let entry_point = VirtAddr::try_new(entry).map_err(|_| SyscallError::InvalidArgument)?;
+    let user_stack = VirtAddr::try_new(stack).map_err(|_| SyscallError::InvalidArgument)?;
 
     if !petroleum::is_user_address(entry_point) {
         return Err(SyscallError::InvalidArgument);
@@ -61,12 +59,10 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
     thread_process.context.rip = entry;
 
     let thread_box = Box::new(thread_process);
-    crate::process::SCHEDULER
-        .add(thread_box)
-        .map_err(|_| {
-            free_kernel_stack(kernel_stack_ptr);
-            SyscallError::OutOfMemory
-        })?;
+    crate::process::SCHEDULER.add(thread_box).map_err(|_| {
+        free_kernel_stack(kernel_stack_ptr);
+        SyscallError::OutOfMemory
+    })?;
 
     let inner = Arc::new(Mutex::new(ThreadInner {
         pid: child_pid,

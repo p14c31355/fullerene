@@ -59,11 +59,11 @@ pub struct EhciContext {
 // ============================================================================
 
 impl HostController for EhciContext {
-    fn reset(&mut self) -> Result<(), &'static str> {
+    fn reset(&mut self) -> Result<(), crate::DriverError> {
         self.reset()
     }
 
-    fn start(&mut self) -> Result<(), &'static str> {
+    fn start(&mut self) -> Result<(), crate::DriverError> {
         self.start()
     }
 
@@ -92,7 +92,7 @@ impl HostController for EhciContext {
         dev_addr: u8,
         setup: &UsbSetupPacket,
         buf: &mut [u8],
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, crate::DriverError> {
         // Control transfers always go to endpoint 0
         self.control_transfer(dev_addr, 0, setup, buf)
     }
@@ -104,7 +104,7 @@ impl HostController for EhciContext {
         buf: &mut [u8],
         dir: UsbDirection,
         mps: u16,
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, crate::DriverError> {
         self.bulk_transfer(dev_addr, endpoint, buf, dir, mps)
     }
 }
@@ -117,11 +117,17 @@ impl EhciContext {
     /// # Safety
     /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
     /// of the returned controller.
-    pub unsafe fn new(mmio_base: *mut u8, ctx: &'static dyn DriverContext, health: PciHealth) -> Option<Self> {
-        let registers = unsafe { EhciRegisterContext::new(mmio_base) };
+    pub unsafe fn new(
+        mmio_base: *mut u8,
+        ctx: &'static dyn DriverContext,
+        health: PciHealth,
+    ) -> Option<Self> {
+        // Brief delay after PCI config-space setup before first MMIO access;
+        // mirrors the same guard in the xHCI path.
+        crate::timing::delay_us(100);
+        let registers = unsafe { EhciRegisterContext::new(mmio_base) }?;
         crate::debug::hint(b"eh_csp");
-        let hcsparams = unsafe { ptr::read_volatile(mmio_base.add(4) as *const u32) };
-        let n_ports = (hcsparams & 0x0F).max(1);
+        let n_ports = registers.hcs_params & 0x0F;
 
         let transfer = TransferContext::alloc(ctx)?;
         let ports = EhciPortContext::new(n_ports);
@@ -145,10 +151,10 @@ impl EhciContext {
     // ── Initialisation ─────────────────────────────────────────
 
     /// Reset the controller (HCRESET).
-    pub fn reset(&mut self) -> Result<(), &'static str> {
+    pub fn reset(&mut self) -> Result<(), crate::DriverError> {
         if !self.health.is_device_present() {
             log::error!("EHCI: device gone before reset");
-            return Err("EHCI device gone");
+            return Err(crate::DriverError::DeviceNotFound);
         }
         let op = &self.registers.op;
         crate::debug::hint(b"eh_rst");
@@ -162,15 +168,18 @@ impl EhciContext {
                 return true;
             }
             cmd & USBCMD_HCRESET == 0
-        }).is_err() || aborted {
-            return Err("HCRESET timeout or device disconnected");
+        })
+        .is_err()
+            || aborted
+        {
+            return Err(crate::DriverError::TimedOut);
         }
         crate::debug::hint(b"eh_rdy");
         Ok(())
     }
 
     /// Start the controller and enable the async schedule.
-    pub fn start(&mut self) -> Result<(), &'static str> {
+    pub fn start(&mut self) -> Result<(), crate::DriverError> {
         let op = &self.registers.op;
         crate::debug::hint(b"eh_alt");
         op.set_async_list_addr(self.transfer.schedule.head_phys as u32);
@@ -189,8 +198,11 @@ impl EhciContext {
                 return true;
             }
             sts & USBSTS_HCH == 0
-        }).is_err() || aborted {
-            return Err("EHCI start timeout or device disconnected");
+        })
+        .is_err()
+            || aborted
+        {
+            return Err(crate::DriverError::TimedOut);
         }
 
         // Clear stale port-change status bits
@@ -243,18 +255,16 @@ impl EhciContext {
 
             // Port reset (EHCI spec §4.2.4: PR must be cleared by HC, not by driver)
             op.write_portsc(port_idx, portsc | PORTSC_RESET);
-            let pr_cleared = crate::timing::wait_timeout_us(200_000, || {
-                op.portsc(port_idx) & PORTSC_RESET == 0
-            }).is_ok();
+            let pr_cleared =
+                crate::timing::wait_timeout_us(200_000, || op.portsc(port_idx) & PORTSC_RESET == 0)
+                    .is_ok();
             if !pr_cleared {
                 self.ports.mark_processed(port_idx);
                 continue;
             }
 
             // Wait for PE
-            crate::timing::wait_timeout_us(10_000, || {
-                op.portsc(port_idx) & PORTSC_PE != 0
-            }).ok();
+            crate::timing::wait_timeout_us(10_000, || op.portsc(port_idx) & PORTSC_PE != 0).ok();
 
             // Check CCS survived
             if op.portsc(port_idx) & PORTSC_CCS == 0 {
@@ -338,7 +348,7 @@ impl EhciContext {
     /// and waiting for AAINT ensures the controller has flushed its cache
     /// and will no longer access the freed qH, qTDs, or staging buffers.
     /// Returns an error if AAINT does not arrive within the timeout.
-    fn wait_async_advance(&self, op: &EhciOperationalRegisters) -> Result<(), &'static str> {
+    fn wait_async_advance(&self, op: &EhciOperationalRegisters) -> Result<(), crate::DriverError> {
         // Clear any stale AAINT before ringing IAAD
         op.write_usbsts(USBSTS_AAINT);
         op.set_usbcmd_bits(USBCMD_IAAD);
@@ -349,8 +359,10 @@ impl EhciContext {
                 op.write_usbsts(USBSTS_AAINT);
             }
             ready
-        }).is_err() {
-            return Err("async advance timeout");
+        })
+        .is_err()
+        {
+            return Err(crate::DriverError::TimedOut);
         }
         Ok(())
     }
@@ -367,15 +379,19 @@ impl EhciContext {
         endpoint: u8,
         setup: &UsbSetupPacket,
         buf: &mut [u8],
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, crate::DriverError> {
         let is_in = (setup.bm_request_type & 0x80) != 0;
         let data_len = setup.w_length as usize;
         if data_len > 4096 {
-            return Err("control transfer data phase too large (> 4096 bytes)");
+            return Err(crate::DriverError::InvalidArgument);
         }
 
         // Allocate qH
-        let (qh, qh_phys) = self.transfer.qh_pool.allocate().ok_or("no qH")?;
+        let (qh, qh_phys) = self
+            .transfer
+            .qh_pool
+            .allocate()
+            .ok_or(crate::DriverError::OutOfMemory)?;
         let speed = self.device_speed(dev_addr);
 
         unsafe {
@@ -389,7 +405,7 @@ impl EhciContext {
             Some(val) => val,
             None => {
                 self.transfer.qh_pool.free(qh);
-                return Err("no setup qTD");
+                return Err(crate::DriverError::OutOfMemory);
             }
         };
 
@@ -400,7 +416,7 @@ impl EhciContext {
                 None => {
                     self.transfer.qtd_pool.free(qtd_setup);
                     self.transfer.qh_pool.free(qh);
-                    return Err("no data qTD");
+                    return Err(crate::DriverError::OutOfMemory);
                 }
             }
         } else {
@@ -415,7 +431,7 @@ impl EhciContext {
                     self.transfer.qtd_pool.free(d);
                 }
                 self.transfer.qh_pool.free(qh);
-                return Err("no status qTD");
+                return Err(crate::DriverError::OutOfMemory);
             }
         };
 
@@ -429,7 +445,7 @@ impl EhciContext {
                 }
                 self.transfer.qtd_pool.free(qtd_status);
                 self.transfer.qh_pool.free(qh);
-                return Err("no setup staging memory");
+                return Err(crate::DriverError::OutOfMemory);
             }
         };
         let setup_page_virt = self.driver_ctx.phys_to_virt(setup_page_phys) as *mut u8;
@@ -452,7 +468,7 @@ impl EhciContext {
                     }
                     self.transfer.qtd_pool.free(qtd_status);
                     self.transfer.qh_pool.free(qh);
-                    return Err("no data staging memory");
+                    return Err(crate::DriverError::OutOfMemory);
                 }
             }
         } else {
@@ -526,7 +542,7 @@ impl EhciContext {
 
         // Wait for completion
         let timeout = 5_000_000u32;
-        let mut result: Result<usize, &'static str> = Ok(0);
+        let mut result: Result<usize, crate::DriverError> = Ok(0);
 
         let r = self.transfer.wait_qtd(&qtd_setup, timeout);
         if r.is_err() {
@@ -589,11 +605,15 @@ impl EhciContext {
         buf: &mut [u8],
         dir: UsbDirection,
         max_packet: u16,
-    ) -> Result<usize, &'static str> {
+    ) -> Result<usize, crate::DriverError> {
         let len = buf.len().min(20480);
 
         // Allocate qH
-        let (qh, qh_phys) = self.transfer.qh_pool.allocate().ok_or("no qH")?;
+        let (qh, qh_phys) = self
+            .transfer
+            .qh_pool
+            .allocate()
+            .ok_or(crate::DriverError::OutOfMemory)?;
         let speed = self.device_speed(dev_addr);
         unsafe {
             ptr::write_volatile(
@@ -609,7 +629,7 @@ impl EhciContext {
             Some(val) => val,
             None => {
                 self.transfer.qh_pool.free(qh);
-                return Err("no qTD");
+                return Err(crate::DriverError::OutOfMemory);
             }
         };
 
@@ -620,7 +640,7 @@ impl EhciContext {
             Err(_) => {
                 self.transfer.qtd_pool.free(qtd);
                 self.transfer.qh_pool.free(qh);
-                return Err("no staging memory");
+                return Err(crate::DriverError::OutOfMemory);
             }
         };
         let staging_virt = self.driver_ctx.phys_to_virt(staging_phys) as *mut u8;
@@ -699,5 +719,4 @@ impl EhciContext {
             .free_contiguous_frames(staging_phys, staging_pages);
         Ok(len)
     }
-
 }

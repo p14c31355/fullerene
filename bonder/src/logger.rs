@@ -107,7 +107,7 @@ impl<'a> UdpLogger<'a> {
         let content = &msg[..limit];
 
         // write! into a String never fails (infallible allocator)
-        let _ = write!(msg_buf, "[{}] {}\n", level_char, content);
+        let _ = writeln!(msg_buf, "[{}] {}", level_char, content);
 
         // UDP payload
         let payload = msg_buf.as_bytes();

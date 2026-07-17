@@ -1,6 +1,7 @@
 pub mod dmar;
-pub mod mcfg;
+pub mod madt;
 pub mod manager;
+pub mod mcfg;
 
 use core::sync::atomic::AtomicU64;
 
@@ -42,7 +43,9 @@ pub fn set_phys_to_virt_offset(offset: u64) {
 
 fn phys_to_virt<T>(phys: u64) -> *const T {
     let offset = PHYS_TO_VIRT.load(core::sync::atomic::Ordering::Relaxed);
-    phys.checked_add(offset).map(|v| v as *const T).unwrap_or(core::ptr::null())
+    phys.checked_add(offset)
+        .map(|v| v as *const T)
+        .unwrap_or(core::ptr::null())
 }
 
 fn checksum(data: &[u8]) -> bool {
@@ -112,10 +115,18 @@ pub fn find_table(rsdp_phys: u64, signature: &[u8; 4]) -> Option<u64> {
     let rev = unsafe { core::ptr::read_unaligned(addr_of!((*rsdp_ptr).revision)) };
     let (sdt_phys, entry_size): (u64, usize) = if rev >= 2 {
         let xsdt = unsafe { core::ptr::read_unaligned(addr_of!((*rsdp_ptr).xsdt_address)) };
-        if xsdt != 0 { (xsdt, 8) } else { return None; }
+        if xsdt != 0 {
+            (xsdt, 8)
+        } else {
+            return None;
+        }
     } else {
         let rsdt = unsafe { core::ptr::read_unaligned(addr_of!((*rsdp_ptr).rsdt_address)) } as u64;
-        if rsdt != 0 { (rsdt, 4) } else { return None; }
+        if rsdt != 0 {
+            (rsdt, 4)
+        } else {
+            return None;
+        }
     };
 
     let sdt_ptr = phys_to_virt::<SdtHeader>(sdt_phys);

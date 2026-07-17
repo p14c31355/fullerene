@@ -35,10 +35,10 @@ pub fn create_vdso_page(
     process_pt: &mut impl PageTableHelper,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
     pid: u64,
-) -> Result<VdsoPageRef, &'static str> {
+) -> Result<VdsoPageRef, petroleum::MemoryError> {
     let frame = frame_allocator
         .allocate_frame()
-        .ok_or("VDSO: out of frames")?;
+        .ok_or(petroleum::MemoryError::FrameAllocationFailed)?;
     let phys_addr = frame.start_address();
 
     let phys_offset = petroleum::PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed) as u64;
@@ -63,7 +63,7 @@ pub fn create_vdso_page(
             if let Some(m) = mgr.as_mut() {
                 let _ = m.free_frame(frame.start_address().as_u64() as usize);
             }
-            "VDSO: map_page failed"
+            petroleum::MemoryError::MappingFailed
         })?;
 
     petroleum::debug_log_no_alloc!(

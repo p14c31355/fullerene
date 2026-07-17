@@ -114,9 +114,7 @@ impl NvmeController {
         };
 
         ctrl.w32(NVME_CC, 0);
-        crate::timing::wait_timeout_us(500_000, || {
-            (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0
-        }).ok();
+        crate::timing::wait_timeout_us(500_000, || (ctrl.r32(NVME_CSTS) & CSTS_RDY) == 0).ok();
 
         let q_phys = ctx.allocate_contiguous_frames(2).ok()?;
         ctrl.queue_phys = q_phys;
@@ -140,9 +138,9 @@ impl NvmeController {
         ctrl.w32(NVME_ACQ + 4, (ctrl.acq_phys >> 32) as u32);
 
         ctrl.w32(NVME_CC, CC_EN | CC_IOCQES | CC_IOSQES);
-        if crate::timing::wait_timeout_us(500_000, || {
-            (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0
-        }).is_err() {
+        if crate::timing::wait_timeout_us(500_000, || (ctrl.r32(NVME_CSTS) & CSTS_RDY) != 0)
+            .is_err()
+        {
             log::info!("NVMe: controller failed to become ready");
             return None;
         }
@@ -156,10 +154,7 @@ impl NvmeController {
     fn r32(&self, off: usize) -> u32 {
         let val = unsafe { ptr::read_volatile(self.mmio.add(off / 4)) };
         if val == 0xFFFF_FFFF {
-            log::warn!(
-                "NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF",
-                off
-            );
+            log::warn!("NVMe: MMIO read at offset {:#x} returned 0xFFFF_FFFF", off);
         }
         val
     }

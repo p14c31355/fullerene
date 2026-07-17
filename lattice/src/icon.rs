@@ -38,7 +38,13 @@ impl SvgIcon {
     }
 }
 
-pub static ICON_SHELL: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_shell.rgba")));
-pub static ICON_FILES: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_files.rgba")));
-pub static ICON_SETTINGS: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_settings.rgba")));
-pub static ICON_ABOUT: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_about.rgba")));
+pub static ICON_SHELL: SvgIcon =
+    SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_shell.rgba")));
+pub static ICON_FILES: SvgIcon =
+    SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_files.rgba")));
+pub static ICON_SETTINGS: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/icon_settings.rgba"
+)));
+pub static ICON_ABOUT: SvgIcon =
+    SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_about.rgba")));

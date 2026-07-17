@@ -2,8 +2,14 @@
 
 use super::*;
 
-fn with_manager<T>(f: impl FnOnce(&mut UnifiedMemoryManager) -> SystemResult<T>) -> SystemResult<T> {
-    MEMORY_MANAGER.lock().as_mut().ok_or(SystemError::InternalError).and_then(f)
+fn with_manager<T>(
+    f: impl FnOnce(&mut UnifiedMemoryManager) -> SystemResult<T>,
+) -> SystemResult<T> {
+    MEMORY_MANAGER
+        .lock()
+        .as_mut()
+        .ok_or(SystemError::InternalError)
+        .and_then(f)
 }
 
 /// Allocate kernel memory pages

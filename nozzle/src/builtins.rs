@@ -75,6 +75,8 @@ macro_rules! sys_info_cmd {
 }
 
 sys_info_cmd!(cmd_mem, "mem");
+sys_info_cmd!(cmd_metrics, "metrics");
+sys_info_cmd!(cmd_cpuinfo, "cpuinfo");
 sys_info_cmd!(cmd_tasks, "tasks");
 sys_info_cmd!(cmd_windows, "windows");
 sys_info_cmd!(cmd_dmesg, "dmesg");
@@ -108,7 +110,7 @@ pub fn cmd_version(ctx: &mut CommandContext) -> bool {
 /// Dispatches to the kernel-provided system control hook.
 pub fn cmd_reboot(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str("Rebooting...\n");
-    crate::sys_hooks::call_sys_control_hook("reboot");
+    crate::sys_hooks::call_sys_control_hook(ctx, "reboot");
     true
 }
 
@@ -117,7 +119,7 @@ pub fn cmd_reboot(ctx: &mut CommandContext) -> bool {
 /// Dispatches to the kernel-provided system control hook.
 pub fn cmd_shutdown(ctx: &mut CommandContext) -> bool {
     ctx.terminal.write_str("Shutting down...\n");
-    crate::sys_hooks::call_sys_control_hook("shutdown");
+    crate::sys_hooks::call_sys_control_hook(ctx, "shutdown");
     true
 }
 
@@ -154,7 +156,7 @@ pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() >= 2 {
         // Route to sys control hook for actual theme change
         let cmd = alloc::format!("theme {}", ctx.args[1]);
-        crate::sys_hooks::call_sys_control_hook(&cmd);
+        crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         // Force desktop redraw via info hook
         crate::sys_hooks::call_sys_info_hook(ctx, "theme");
         return true;
@@ -167,7 +169,7 @@ pub fn cmd_theme(ctx: &mut CommandContext) -> bool {
 pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() >= 2 {
         let cmd = alloc::format!("wallpaper {}", ctx.args[1]);
-        crate::sys_hooks::call_sys_control_hook(&cmd);
+        crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         crate::sys_hooks::call_sys_info_hook(ctx, "wallpaper");
         return true;
     }
@@ -177,7 +179,8 @@ pub fn cmd_wallpaper(ctx: &mut CommandContext) -> bool {
 
 /// `badapple` — play Bad Apple!! on PC speaker with framebuffer animation
 pub fn cmd_badapple(ctx: &mut CommandContext) -> bool {
-    ctx.terminal.write_str("Bad Apple!! playing... (press any key to stop)\n");
+    ctx.terminal
+        .write_str("Bad Apple!! playing... (press any key to stop)\n");
     crate::sys_hooks::call_sys_info_hook(ctx, "badapple");
     true
 }
@@ -245,6 +248,8 @@ pub fn cmd_write(ctx: &mut CommandContext) -> bool {
 }
 
 sys_info_cmd!(cmd_usb_info, "usb_info");
+sys_info_cmd!(cmd_usb_rescan, "usb_rescan");
+sys_info_cmd!(cmd_sd_rescan, "sd_rescan");
 
 /// `mount` — mount a block device to a directory
 ///
@@ -254,23 +259,7 @@ sys_info_cmd!(cmd_usb_info, "usb_info");
 ///   mount /dev/usb0 /mnt
 ///   mount /dev/sd0 /mnt/sdcard
 pub fn cmd_mount(ctx: &mut CommandContext) -> bool {
-    let h = crate::sys_hooks::MOUNT_HOOK.lock().clone();
-    if let Some(f) = h {
-        f(ctx);
-    } else {
-        ctx.terminal.write_str("mount: hook not registered\n");
-    }
-    true
-}
-
-/// `sd_mount` — probe SD card
-pub fn cmd_sd_mount(ctx: &mut CommandContext) -> bool {
-    let h = crate::sys_hooks::SD_MOUNT_HOOK.lock().clone();
-    if let Some(f) = h {
-        f(ctx);
-    } else {
-        ctx.terminal.write_str("sd_mount: hook not registered\n");
-    }
+    crate::sys_hooks::call_mount_hook(ctx);
     true
 }
 
@@ -332,7 +321,7 @@ pub fn cmd_whoami(ctx: &mut CommandContext) -> bool {
 
 /// `history` — show command history
 pub fn cmd_history(ctx: &mut CommandContext) -> bool {
-    let entries = crate::line_editor::get_history();
+    let entries = ctx.terminal.history_snapshot();
     if entries.is_empty() {
         ctx.terminal.write_str("(no history)\n");
     } else {
@@ -435,31 +424,30 @@ pub fn cmd_wc(ctx: &mut CommandContext) -> bool {
 pub fn cmd_app(ctx: &mut CommandContext) -> bool {
     if ctx.args.len() < 2 {
         ctx.terminal
-            .write_str("Usage: app <install|remove|list> [name] [description]\n");
+            .write_str("Usage: app <catalog|install|remove|list|run> ...\n");
         return true;
     }
     let sub = ctx.args[1];
     match sub {
         "list" => crate::sys_hooks::call_sys_info_hook(ctx, "app_list"),
-        "install" if ctx.args.len() >= 4 => {
-            let name = &ctx.args[2];
-            let desc = ctx.args[3..].join(" ");
-            // Use sys_control hook: "app_install <name> <desc>"
-            let cmd = alloc::format!("app_install {} {}", name, desc);
-            crate::sys_hooks::call_sys_control_hook(&cmd);
+        "catalog" => crate::sys_hooks::call_sys_info_hook(ctx, "app_catalog"),
+        "install" if ctx.args.len() == 4 => {
+            let cmd = alloc::format!("app_install {} {}", ctx.args[2], ctx.args[3]);
+            crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
-        "install" => {
-            ctx.terminal
-                .write_str("Usage: app install <name> <description>\n");
+        "install" => ctx
+            .terminal
+            .write_str("Usage: app install <catalog-name> <elf-path>\n"),
+        "remove" if ctx.args.len() == 3 => {
+            let cmd = alloc::format!("app_remove {}", ctx.args[2]);
+            crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
-        "remove" if ctx.args.len() >= 3 => {
-            let name = ctx.args[2];
-            let cmd = alloc::format!("app_remove {}", name);
-            crate::sys_hooks::call_sys_control_hook(&cmd);
+        "remove" => ctx.terminal.write_str("Usage: app remove <name>\n"),
+        "run" if ctx.args.len() == 3 => {
+            let cmd = alloc::format!("app_run {}", ctx.args[2]);
+            crate::sys_hooks::call_sys_control_hook(ctx, &cmd);
         }
-        "remove" => {
-            ctx.terminal.write_str("Usage: app remove <name>\n");
-        }
+        "run" => ctx.terminal.write_str("Usage: app run <name>\n"),
         _ => {
             let msg = alloc::format!("app: unknown subcommand '{}'\n", sub);
             ctx.terminal.write_str(&msg);

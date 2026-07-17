@@ -8,32 +8,6 @@ pub fn calculate_offset_address(base: u64, i: u64) -> u64 {
     base + (i * 4096)
 }
 
-/// Calculates the number of pages needed for a buffer.
-pub fn calculate_pages_for_buffer(buffer_size: usize) -> usize {
-    buffer_size.div_ceil(4096).max(1)
-}
-
-/// Calculates the data pointer offset from the physical address.
-pub fn calculate_map_data_ptr(phys_addr: usize) -> usize {
-    phys_addr
-}
-
-/// Calculates the offset where the configuration should be appended to the memory map.
-pub fn calculate_config_offset(map_size: usize) -> usize {
-    map_size
-}
-
-/// Checks if adding a configuration block exceeds the allocated buffer size.
-pub fn check_buffer_overflow(
-    _phys_addr: usize,
-    config_offset: usize,
-    config_size: usize,
-    buffer_size: usize,
-) -> bool {
-    let total_capacity = buffer_size;
-    (config_offset + config_size) <= total_capacity
-}
-
 /// Calculates the pointer to the i-th descriptor.
 ///
 /// # Safety
@@ -107,14 +81,6 @@ mod tests {
         assert_eq!(calculate_offset_address(0x1000, 1), 0x2000);
         assert_eq!(calculate_offset_address(0x1000, 2), 0x3000);
         assert_eq!(calculate_offset_address(0, 10), 10 * 4096);
-    }
-
-    #[test]
-    fn test_calculate_pages_for_buffer() {
-        // 128KB + 8 bytes = 131080 bytes. 131080 / 4096 = 32.0019 -> 33 pages
-        assert_eq!(calculate_pages_for_buffer(128 * 1024), 33);
-        // Very small buffer
-        assert_eq!(calculate_pages_for_buffer(0), 1);
     }
 
     #[test]

@@ -28,7 +28,11 @@ fn main() {
             let raw_name = trimmed.strip_prefix('#').unwrap_or(trimmed).trim();
             let mod_name = raw_name.strip_suffix('/').unwrap_or(raw_name);
             // Accept only simple [a-zA-Z_] identifiers to skip comment prose
-            if mod_name.is_empty() || !mod_name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+            if mod_name.is_empty()
+                || !mod_name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
                 continue;
             }
             let clean = mod_name.to_lowercase();

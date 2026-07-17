@@ -6,30 +6,30 @@
 //!
 //! ## Module structure
 //!
-//! - [`regs`] — Register, PCI, and firmware constants
+//! - [`registers`] — Register, PCI, and firmware constants
 //! - [`types`] — Shared data structures and enums
 //! - [`device`] — [`IwlWifiDevice`] struct and core implementation
-//! - [`io`] — HCMD, scanning, connection, TX/RX, and trait impls
-//! - [`state`] — Global state, incremental init, firmware registry, public API
+//! - [`firmware`] — Firmware registry, upload, and alive handling
+//! - [`tx`] — Host commands and transmit-ring handling
+//! - [`rx`] — Receive-ring and interrupt processing
+//! - [`connection_state`] — 802.11 state and high-level public API
 
-pub mod regs;
-pub mod types;
+mod connection_state;
 mod device;
-mod io;
-mod state;
+mod firmware;
+pub mod registers;
+mod rx;
+mod tx;
+pub mod types;
 
-pub use device::IwlWifiDevice;
-pub use io::try_create_iwl;
-pub use state::{
-    connect_to_ap,
-    force_init_failed,
-    init_wifi_manager,
-    set_wifi_driver_context,
-    start_scan_if_idle,
-    tick_wifi_device,
-    try_init_wifi_device,
-    try_init_wifi_device_step,
-    wifi_init_completed,
-    wifi_state_snapshot,
+// Compatibility alias for callers that imported register constants from
+// `iwlwifi::regs` before the lifecycle split.
+pub use connection_state::{
+    connect_to_ap, force_init_failed, init_wifi_manager, set_wifi_driver_context,
+    start_scan_if_idle, tick_wifi_device, try_init_wifi_device, try_init_wifi_device_step,
+    wifi_init_completed, wifi_state_snapshot,
 };
+pub use device::IwlWifiDevice;
+pub use device::try_create_iwl;
+pub use registers as regs;
 pub use types::WifiManager;

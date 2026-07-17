@@ -17,6 +17,7 @@ pub enum DesktopAction {
     TaskManager,
     DeviceManager,
     FileManager,
+    LogViewer,
     ToggleTiling,
     Refresh,
     About,
@@ -49,6 +50,7 @@ impl DesktopAction {
             "task_manager" => DesktopAction::TaskManager,
             "device_manager" => DesktopAction::DeviceManager,
             "file_manager" => DesktopAction::FileManager,
+            "log_viewer" => DesktopAction::LogViewer,
             "toggle_tiling" => DesktopAction::ToggleTiling,
             "refresh" => DesktopAction::Refresh,
             "about" => DesktopAction::About,
@@ -251,19 +253,27 @@ impl Desktop {
                 // "Connect" button area (bottom right)
                 let btn_w = 80i32;
                 let btn_h = 24i32;
-                let btn_x = (self.pwd_dialog_x + network_menu::PWD_DIALOG_W - btn_w as u32 - 20) as i32;
-                let btn_y = (self.pwd_dialog_y + network_menu::PWD_DIALOG_H - btn_h as u32 - 10) as i32;
+                let btn_x =
+                    (self.pwd_dialog_x + network_menu::PWD_DIALOG_W - btn_w as u32 - 20) as i32;
+                let btn_y =
+                    (self.pwd_dialog_y + network_menu::PWD_DIALOG_H - btn_h as u32 - 10) as i32;
                 let cancel_x = btn_x - btn_w - 10;
 
                 if cx >= btn_x && cx < btn_x + btn_w && cy >= btn_y && cy < btn_y + btn_h {
                     self.menu_action_pending = Some(DesktopAction::SubmitPassword);
-                } else if cx >= cancel_x && cx < cancel_x + btn_w && cy >= btn_y && cy < btn_y + btn_h {
+                } else if cx >= cancel_x
+                    && cx < cancel_x + btn_w
+                    && cy >= btn_y
+                    && cy < btn_y + btn_h
+                {
                     self.menu_action_pending = Some(DesktopAction::DismissPasswordDialog);
                 }
 
                 self.push_dirty_rect(crate::scene::DirtyRect::new(
-                    self.pwd_dialog_x, self.pwd_dialog_y,
-                    network_menu::PWD_DIALOG_W, network_menu::PWD_DIALOG_H,
+                    self.pwd_dialog_x,
+                    self.pwd_dialog_y,
+                    network_menu::PWD_DIALOG_W,
+                    network_menu::PWD_DIALOG_H,
                 ));
                 return;
             } else {
@@ -272,8 +282,10 @@ impl Desktop {
                 self.pwd_target_ap = None;
                 self.shift_held = false;
                 self.push_dirty_rect(crate::scene::DirtyRect::new(
-                    self.pwd_dialog_x, self.pwd_dialog_y,
-                    network_menu::PWD_DIALOG_W, network_menu::PWD_DIALOG_H,
+                    self.pwd_dialog_x,
+                    self.pwd_dialog_y,
+                    network_menu::PWD_DIALOG_W,
+                    network_menu::PWD_DIALOG_H,
                 ));
                 self.dismiss_network_menu();
                 return;
@@ -284,7 +296,11 @@ impl Desktop {
         if self.network_menu_open {
             // Check if click hits an AP entry
             if let Some(ap_idx) = network_menu::hit_ap_entry(
-                cx, cy, self.net_menu_x, self.net_menu_y, self.ap_list.len(),
+                cx,
+                cy,
+                self.net_menu_x,
+                self.net_menu_y,
+                self.ap_list.len(),
             ) {
                 if ap_idx < self.ap_list.len() {
                     let ap = &self.ap_list[ap_idx];
@@ -296,17 +312,22 @@ impl Desktop {
                         self.pwd_dialog_cursor = 0;
                         self.shift_held = false;
                         self.pwd_target_ap = Some(ap_idx);
-                        self.pwd_dialog_x = (fb_width / 2).saturating_sub(network_menu::PWD_DIALOG_W / 2);
-                        self.pwd_dialog_y = (fb_height / 2).saturating_sub(network_menu::PWD_DIALOG_H / 2);
+                        self.pwd_dialog_x =
+                            (fb_width / 2).saturating_sub(network_menu::PWD_DIALOG_W / 2);
+                        self.pwd_dialog_y =
+                            (fb_height / 2).saturating_sub(network_menu::PWD_DIALOG_H / 2);
                     } else {
                         // Open AP - connect directly
                         self.menu_action_pending = Some(DesktopAction::ConnectAp(ap_idx));
                     }
                 }
-                let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
+                let menu_h =
+                    4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
                 self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
-                    self.net_menu_x, self.net_menu_y,
-                    network_menu::NET_MENU_WIDTH, menu_h,
+                    self.net_menu_x,
+                    self.net_menu_y,
+                    network_menu::NET_MENU_WIDTH,
+                    menu_h,
                 ));
                 self.network_menu_open = false;
                 return;
@@ -350,7 +371,13 @@ impl Desktop {
 
         // Check WiFi icon click (before taskbar window check)
         let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
-        if network_menu::hit_wifi_icon(self.cursor.x, self.cursor.y, fb_width, fb_height, wifi_icon_x) {
+        if network_menu::hit_wifi_icon(
+            self.cursor.x,
+            self.cursor.y,
+            fb_width,
+            fb_height,
+            wifi_icon_x,
+        ) {
             self.menu_action_pending = Some(DesktopAction::ShowNetworkMenu);
             return;
         }
@@ -409,13 +436,6 @@ impl Desktop {
         self.wm.on_mouse_down(self.cursor.x, self.cursor.y);
     }
 
-    /// Returns `true` when any transient overlay (context menu, network
-    /// menu, password dialog) is open.  Callers can use this to decide
-    /// whether a cursor‑only update is safe.
-    pub fn has_active_overlays(&self) -> bool {
-        self.active_menu.is_some() || self.network_menu_open || self.pwd_dialog_open
-    }
-
     /// Force a full-screen redraw on the next frame.
     ///
     /// Useful when overlay modes (TaskOverview / AppGrid) need every frame
@@ -457,11 +477,15 @@ impl Desktop {
             wifi_icon_x
         };
         let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
-        self.net_menu_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT).saturating_sub(menu_h);
+        self.net_menu_y = fb_height
+            .saturating_sub(crate::taskbar::TASKBAR_HEIGHT)
+            .saturating_sub(menu_h);
 
         self.push_dirty_rect(crate::scene::DirtyRect::new(
-            self.net_menu_x, self.net_menu_y,
-            network_menu::NET_MENU_WIDTH, menu_h,
+            self.net_menu_x,
+            self.net_menu_y,
+            network_menu::NET_MENU_WIDTH,
+            menu_h,
         ));
     }
 
@@ -470,8 +494,10 @@ impl Desktop {
         if self.network_menu_open {
             let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
             self.push_dirty_rect(crate::scene::DirtyRect::new(
-                self.net_menu_x, self.net_menu_y,
-                network_menu::NET_MENU_WIDTH, menu_h,
+                self.net_menu_x,
+                self.net_menu_y,
+                network_menu::NET_MENU_WIDTH,
+                menu_h,
             ));
             self.network_menu_open = false;
         }
@@ -682,8 +708,10 @@ impl Desktop {
         if self.network_menu_open {
             let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
             self.dirty_cache.push(DirtyRect::new(
-                self.net_menu_x, self.net_menu_y,
-                network_menu::NET_MENU_WIDTH, menu_h,
+                self.net_menu_x,
+                self.net_menu_y,
+                network_menu::NET_MENU_WIDTH,
+                menu_h,
             ));
             // Also push WiFi icon area as dirty
             let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
@@ -698,8 +726,10 @@ impl Desktop {
         // Password dialog overlay
         if self.pwd_dialog_open {
             self.dirty_cache.push(DirtyRect::new(
-                self.pwd_dialog_x, self.pwd_dialog_y,
-                network_menu::PWD_DIALOG_W, network_menu::PWD_DIALOG_H,
+                self.pwd_dialog_x,
+                self.pwd_dialog_y,
+                network_menu::PWD_DIALOG_W,
+                network_menu::PWD_DIALOG_H,
             ));
         }
     }
@@ -712,13 +742,7 @@ impl Desktop {
     pub fn scene(&self) -> Scene<'_> {
         Scene {
             windows: self.wm.windows(),
-            // Cursor is drawn by solvent::render() via
-            // `draw_cursor_direct` as the final layer.
-            // Including it here would cause the compositor to
-            // render it into the back‑buffer, which then gets
-            // captured by the lightweight‑update save buffer,
-            // producing ghost cursors after overlay transitions.
-            cursor: None,
+            cursor: Some(&self.cursor),
             bg_color: self.bg_color,
             dirty_rects: &self.dirty_cache,
             taskbar: Some(&self.taskbar),
@@ -794,6 +818,12 @@ mod tests {
 
         // Top‑left corner of the window should be red.
         assert_eq!(target.pixels[0], 0xFF0000);
+    }
+
+    #[test]
+    fn scene_delegates_cursor_rendering_to_compositor() {
+        let dt = Desktop::new(0x202020);
+        assert!(dt.scene().cursor.is_some());
     }
 
     #[test]

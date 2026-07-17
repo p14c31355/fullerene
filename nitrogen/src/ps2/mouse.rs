@@ -1,210 +1,253 @@
-//! PS/2 Mouse Driver
+//! PS/2 mouse / touchpad driver backed by the external `ps2-mouse` crate.
 //!
-//! Wraps the `ps2-mouse` crate to provide an ergonomic, no_std‑friendly
-//! interface for the PS/2 mouse.  Initialization and packet processing are
-//! handled by the underlying crate; this module exposes a static `MOUSE`
-//! instance usable from an interrupt handler.
+//! The external crate handles the low-level PS/2 protocol (including hardware
+//! initialisation quirks on real laptops), while the hand-rolled packet
+//! decoder serves as a well-tested fallback.  On native hardware the crate's
+//! `init()` is tried first; if it fails we fall through to the internal init
+//! so the system remains usable even with unusual or legacy controllers.
 
 use ps2_mouse::{Mouse as Ps2MouseInner, MouseState as Ps2MouseState};
 use spin::Mutex;
+use x86_64::instructions::port::Port;
 
-/// The global PS/2 mouse instance.
-///
-/// Initialise with [`init_mouse`] before enabling interrupts, then call
-/// [`handle_mouse_data`] from the interrupt handler for each byte received
-/// on the PS/2 data port (0x60).
+/// Global PS/2 mouse instance backed by the external crate.
 pub static MOUSE: Mutex<Option<Ps2MouseInner>> = Mutex::new(None);
 
-/// Static storage for the latest completed mouse state.
-///
-/// Updated atomically from the `on_complete` callback so the rest of the
-/// kernel can poll it without holding the lock on `MOUSE`.
-static LATEST_STATE: Mutex<Ps2MouseState> = Mutex::new(Ps2MouseState::new());
+/// Relative movement accumulated since the previous poll.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MouseState {
+    x: i16,
+    y: i16,
+}
 
-/// Raw status byte from the most recent completed mouse packet.
-///
-/// Bit 0 = left button, bit 1 = right button, bit 2 = middle button.
-/// The `ps2-mouse` crate only exposes `left_button_down()` and
-/// `right_button_down()` publicly, so we capture the raw status byte
-/// here to obtain the middle button state.
+impl MouseState {
+    pub const fn new() -> Self {
+        Self { x: 0, y: 0 }
+    }
+
+    pub const fn get_x(self) -> i16 {
+        self.x
+    }
+
+    pub const fn get_y(self) -> i16 {
+        self.y
+    }
+}
+
+/// Three-byte PS/2 packet decoder (kept as a portable fallback).
+#[derive(Debug, Clone, Copy)]
+struct PacketDecoder {
+    packet: [u8; 3],
+    index: usize,
+}
+
+impl PacketDecoder {
+    const fn new() -> Self {
+        Self {
+            packet: [0; 3],
+            index: 0,
+        }
+    }
+
+    fn push(&mut self, byte: u8) -> Option<(MouseState, u8)> {
+        if self.index == 0 && byte & 0x08 == 0 {
+            return None;
+        }
+        self.packet[self.index] = byte;
+        self.index += 1;
+        if self.index != self.packet.len() {
+            return None;
+        }
+        self.index = 0;
+
+        let status = self.packet[0];
+        if status & 0xc0 != 0 {
+            return Some((MouseState::new(), status & 0x07));
+        }
+        let x = decode_axis(self.packet[1], status & 0x10 != 0);
+        let y = decode_axis(self.packet[2], status & 0x20 != 0);
+        Some((MouseState { x, y }, status & 0x07))
+    }
+}
+
+fn decode_axis(low: u8, negative: bool) -> i16 {
+    let value = i16::from(low);
+    if negative { value - 256 } else { value }
+}
+
+#[derive(Clone)]
+enum Backend {
+    External,
+    Internal,
+}
+
+static DECODER: Mutex<PacketDecoder> = Mutex::new(PacketDecoder::new());
+static LATEST_STATE: Mutex<MouseState> = Mutex::new(MouseState::new());
 static LATEST_STATUS: Mutex<u8> = Mutex::new(0);
-
-/// Manually-tracked packet byte index (0, 1, 2) so we know when a new
-/// packet starts.  The underlying ps2-mouse crate's field is private.
+static BACKEND: Mutex<Option<Backend>> = Mutex::new(None);
 static PACKET_IDX: Mutex<u8> = Mutex::new(0);
 
-/// Check if the PS/2 mouse port is present by reading the controller
-/// configuration byte.  Returns `true` if the mouse clock is enabled
-/// (bit 5 = 0 in the config byte), indicating a mouse may be attached.
 fn mouse_port_present() -> bool {
-    use x86_64::instructions::port::Port;
-
-    // Wait for the PS/2 controller to be ready for a command
-    let mut status_port: Port<u8> = Port::new(0x64);
-    let mut data_port: Port<u8> = Port::new(0x60);
-
-    // Wait for input buffer to be empty (bit 1 = 0)
-    for _ in 0..100_000 {
-        let status: u8 = unsafe { status_port.read() };
-        if status & 0x02 == 0 {
-            break;
-        }
-        core::hint::spin_loop();
-    }
-
-    // Send "Read Configuration Byte" command (0x20)
-    unsafe { status_port.write(0x20u8) };
-
-    // Wait for output buffer to be full (bit 0 = 1)
-    let mut config_byte: Option<u8> = None;
-    for _ in 0..100_000 {
-        let status: u8 = unsafe { status_port.read() };
-        if status & 0x01 != 0 {
-            config_byte = Some(unsafe { data_port.read() });
-            break;
-        }
-        core::hint::spin_loop();
-    }
-
-    // Bit 5 = 1 means mouse clock is disabled (no mouse port)
-    match config_byte {
-        Some(cfg) => {
-            let mouse_disabled = (cfg & 0x20) != 0;
-            log::info!(
-                "[nitrogen] PS/2 controller config byte: {:#04x}, mouse_clock_disabled={}",
-                cfg,
-                mouse_disabled
-            );
-            !mouse_disabled
-        }
-        None => {
-            log::warn!("[nitrogen] PS/2 controller: failed to read config byte");
-            false
-        }
-    }
+    let mut status_port: Port<u8> = Port::new(super::PS2_STATUS_PORT);
+    let mut data_port: Port<u8> = Port::new(super::PS2_DATA_PORT);
+    let mut command_port: Port<u8> = Port::new(super::PS2_COMMAND_PORT);
+    super::read_config_byte(&mut command_port, &mut data_port, &mut status_port)
+        .is_some_and(|config| config & super::CFG_SECOND_PORT_CLOCK == 0)
 }
 
-/// Initialise the PS/2 mouse.
+fn send_mouse_command(
+    command_port: &mut Port<u8>,
+    data_port: &mut Port<u8>,
+    status_port: &mut Port<u8>,
+    command: u8,
+) -> bool {
+    if !super::write_second_port(command_port, data_port, status_port, command) {
+        return false;
+    }
+    matches!(super::read_data(data_port, status_port), Some(0xfa))
+}
+
+/// Initialise the PS/2 mouse / touchpad.
 ///
-/// This sends the necessary commands to the PS/2 controller to enable the
-/// mouse in streaming mode with default settings.  Must be called **once**
-/// before any mouse interrupts are enabled.
-///
-/// On real hardware (InsydeH2O), the PS/2 mouse port may not be present.
-/// We check the controller configuration byte first and skip initialization
-/// if the mouse clock is disabled.  This prevents hangs caused by probing
-/// a non-existent device.
-///
-/// # Errors
-///
-/// Returns an error string if any PS/2 controller command fails (e.g. the
-/// mouse does not respond) or if the mouse port is not present.
-pub fn init_mouse() -> Result<(), &'static str> {
-    // Safety check: verify the mouse port exists before attempting init.
-    // On many modern laptops (including InsydeH2O-based systems), the PS/2
-    // mouse port may be absent.  Probing it anyway can hang the system.
+/// Tries the external `ps2-mouse` crate first.  If that fails we fall back to
+/// the hand-rolled init so the driver always has a path forward.
+pub fn init_mouse() -> Result<(), crate::DriverError> {
     if !mouse_port_present() {
-        log::info!("[nitrogen] PS/2 mouse port not present — skipping init");
-        return Err("Mouse port not present");
+        return Err(crate::DriverError::DeviceNotFound);
     }
 
+    // ── Attempt 1: external crate ──
     let mut mouse = Ps2MouseInner::new();
-
-    // Install the completion callback so LATEST_STATE is always up to date.
-    mouse.set_on_complete(|state| {
-        *LATEST_STATE.lock() = state;
-        *PACKET_IDX.lock() = 0;
+    mouse.set_on_complete(|state: Ps2MouseState| {
+        let x = state.get_x();
+        let y = state.get_y();
+        let mut s = LATEST_STATE.lock();
+        s.x = s.x.saturating_add(x);
+        s.y = s.y.saturating_add(y);
     });
-    log::info!("[nitrogen] PS/2 mouse: calling init()...");
     match mouse.init() {
         Ok(()) => {
-            log::info!("[nitrogen] PS/2 mouse: init() succeeded, mouse now in streaming mode");
+            log::info!("[nitrogen] PS/2 mouse: external crate init succeeded");
             *MOUSE.lock() = Some(mouse);
-            Ok(())
+            *BACKEND.lock() = Some(Backend::External);
+            return Ok(());
         }
         Err(e) => {
-            log::error!("[nitrogen] PS/2 mouse: init() FAILED: {}", e);
-            Err(e)
+            log::warn!(
+                "[nitrogen] PS/2 mouse: external crate init failed ({:?}), falling back",
+                e
+            );
         }
     }
+
+    // ── Attempt 2: hand-rolled init ──
+    let mut command_port: Port<u8> = Port::new(super::PS2_COMMAND_PORT);
+    let mut data_port: Port<u8> = Port::new(super::PS2_DATA_PORT);
+    let mut status_port: Port<u8> = Port::new(super::PS2_STATUS_PORT);
+    if !super::send_command(
+        &mut command_port,
+        &mut status_port,
+        super::CMD_ENABLE_SECOND_PORT,
+    ) || !send_mouse_command(&mut command_port, &mut data_port, &mut status_port, 0xf6)
+        || !send_mouse_command(&mut command_port, &mut data_port, &mut status_port, 0xf4)
+    {
+        return Err(crate::DriverError::DeviceFault);
+    }
+
+    *DECODER.lock() = PacketDecoder::new();
+    *LATEST_STATE.lock() = MouseState::new();
+    *LATEST_STATUS.lock() = 0;
+    *BACKEND.lock() = Some(Backend::Internal);
+    log::info!("[nitrogen] PS/2 mouse: hand-rolled fallback init succeeded");
+    Ok(())
 }
 
-/// Feed a byte from the PS/2 data port (0x60) to the mouse driver.
-///
-/// This should be called from the mouse interrupt handler for every byte
-/// received.  Once three bytes have been accumulated into a complete packet,
-/// the `on_complete` callback will fire and [`latest_state`] will return
-/// the updated state.
-///
-/// The byte is also tracked for button state: each packet starts with a
-/// status byte whose low 3 bits indicate left/right/middle button state.
+/// Feed one byte from IRQ12 into the mouse driver.
 pub fn handle_mouse_data(byte: u8) {
-    if let Some(ref mut mouse) = *MOUSE.lock() {
-        // Track the raw status byte (first byte of each 3-byte packet).
-        // We maintain our own 0→1→2→0 index because the underlying
-        // `current_packet` field on ps2-mouse::Mouse is private.
-        let mut idx = PACKET_IDX.lock();
-        if *idx == 0 {
-            // First byte of a new packet → status byte.
-            *LATEST_STATUS.lock() = byte & 0x07;
+    let backend = BACKEND.lock().clone();
+    match backend {
+        Some(Backend::External) => {
+            let mut idx = PACKET_IDX.lock();
+            if *idx == 0 {
+                *LATEST_STATUS.lock() = byte & 0x07;
+            }
+            *idx = (*idx + 1) % 3;
+            drop(idx);
+
+            if let Some(ref mut mouse) = *MOUSE.lock() {
+                mouse.process_packet(byte);
+            }
         }
-        *idx = (*idx + 1) % 3;
-        drop(idx);
-
-        mouse.process_packet(byte);
+        Some(Backend::Internal) => {
+            if let Some((delta, buttons)) = DECODER.lock().push(byte) {
+                let mut state = LATEST_STATE.lock();
+                state.x = state.x.saturating_add(delta.x);
+                state.y = state.y.saturating_add(delta.y);
+                *LATEST_STATUS.lock() = buttons;
+            }
+        }
+        None => {}
     }
 }
 
-/// Return the most recently completed mouse state.
-///
-/// The state includes button flags and the accumulated X/Y delta for the
-/// latest packet.  **Does NOT reset** the internal deltas — call
-/// [`consume_state`] instead if you need to drain the accumulator.
-pub fn latest_state() -> Ps2MouseState {
-    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
-    if interrupts_enabled {
-        x86_64::instructions::interrupts::disable();
-    }
-    let state = *LATEST_STATE.lock();
-    if interrupts_enabled {
-        x86_64::instructions::interrupts::enable();
-    }
-    state
+/// Return the current accumulated mouse state without consuming it.
+pub fn latest_state() -> MouseState {
+    x86_64::instructions::interrupts::without_interrupts(|| *LATEST_STATE.lock())
 }
 
-/// Return the most recently completed mouse state **and reset** the
-/// internal delta accumulators to zero.
-///
-/// This is the preferred function for polling loops: it prevents the
-/// same packet delta from being applied multiple times, and avoids
-/// losing deltas from intermediate packets when multiple packets are
-/// completed between polls.
-///
-/// Interrupts are disabled during the read‑modify‑write to avoid a
-/// deadlock between this function and the `on_complete` callback that
-/// the PS/2 interrupt handler invokes (both try to lock `LATEST_STATE`).
-pub fn consume_state() -> Ps2MouseState {
+/// Drain accumulated movement while retaining the latest button state.
+pub fn consume_state() -> MouseState {
     x86_64::instructions::interrupts::without_interrupts(|| {
-        let mut state = LATEST_STATE.lock();
-        let out = *state;
-        *state = Ps2MouseState::new();
-        out
+        core::mem::take(&mut *LATEST_STATE.lock())
     })
 }
 
-/// Get the current mouse button flags as a raw byte.
-///
-/// Bit 0 = left, bit 1 = right, bit 2 = middle.
-/// The value is extracted from the raw PS/2 status byte of the most
-/// recently completed packet.
+/// Return the latest button flags (bit 0 = left, bit 1 = right, bit 2 = middle).
 pub fn mouse_buttons() -> u8 {
-    let interrupts_enabled = x86_64::instructions::interrupts::are_enabled();
-    if interrupts_enabled {
-        x86_64::instructions::interrupts::disable();
+    x86_64::instructions::interrupts::without_interrupts(|| *LATEST_STATUS.lock())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MouseState, PacketDecoder};
+
+    #[test]
+    fn decodes_signed_relative_motion_and_buttons() {
+        let mut decoder = PacketDecoder::new();
+        assert_eq!(decoder.push(0x1b), None);
+        assert_eq!(decoder.push(0xfe), None);
+        assert_eq!(decoder.push(0x05), Some((MouseState { x: -2, y: 5 }, 0x03)));
     }
-    let status = *LATEST_STATUS.lock();
-    if interrupts_enabled {
-        x86_64::instructions::interrupts::enable();
+
+    #[test]
+    fn decodes_full_nine_bit_axis_range() {
+        let mut decoder = PacketDecoder::new();
+        decoder.push(0x08);
+        decoder.push(0xff);
+        assert_eq!(decoder.push(0x80), Some((MouseState { x: 255, y: 128 }, 0)));
+
+        decoder.push(0x38);
+        decoder.push(0x00);
+        assert_eq!(
+            decoder.push(0x7f),
+            Some((MouseState { x: -256, y: -129 }, 0))
+        );
     }
-    status
+
+    #[test]
+    fn resynchronises_on_the_first_byte_marker() {
+        let mut decoder = PacketDecoder::new();
+        assert_eq!(decoder.push(0x01), None);
+        assert_eq!(decoder.push(0x28), None);
+        assert_eq!(decoder.push(0x01), None);
+        assert_eq!(decoder.push(0xff), Some((MouseState { x: 1, y: -1 }, 0)));
+    }
+
+    #[test]
+    fn overflow_packet_preserves_buttons_without_motion() {
+        let mut decoder = PacketDecoder::new();
+        decoder.push(0xc9);
+        decoder.push(0x7f);
+        assert_eq!(decoder.push(0x7f), Some((MouseState::new(), 1)));
+    }
 }

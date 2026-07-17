@@ -33,8 +33,8 @@ pub unsafe extern "C" fn efi_main_stage2(
         //   0x702: incremented on each major step
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
         let diag = (0x700u64 + off) as *mut u16;
-        core::ptr::write_volatile(diag, 0x4653u16);               // "FS" magic
-        core::ptr::write_volatile(diag.add(1), 0x0001u16);        // step = 1
+        core::ptr::write_volatile(diag, 0x4653u16); // "FS" magic
+        core::ptr::write_volatile(diag.add(1), 0x0001u16); // step = 1
         core::arch::asm!(
             "mov dx, 0x3f8",
             "mov al, 0x44",

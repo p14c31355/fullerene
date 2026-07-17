@@ -5,9 +5,9 @@
 use crate::common::logging::{SystemError, SystemResult};
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{PageTable, PageTableFlags};
-use x86_64::VirtAddr;
 
 // ── RUNTIME GLOBAL STATE ──────────────────────────────────────────────
 // These statics are set once during kernel initialisation and remain valid
@@ -147,10 +147,8 @@ pub fn validate_user_range(addr: *const u8, len: usize, writable: bool) -> Resul
         .checked_add(len as u64 - 1)
         .ok_or(SystemError::InvalidArgument)?;
 
-    let start = VirtAddr::try_new(start_addr_u64)
-        .map_err(|_| SystemError::InvalidArgument)?;
-    let end = VirtAddr::try_new(end_addr_u64)
-        .map_err(|_| SystemError::InvalidArgument)?;
+    let start = VirtAddr::try_new(start_addr_u64).map_err(|_| SystemError::InvalidArgument)?;
+    let end = VirtAddr::try_new(end_addr_u64).map_err(|_| SystemError::InvalidArgument)?;
 
     // Must be in user space
     if !is_user_address(start) || !is_user_address(end) {
@@ -376,14 +374,12 @@ pub fn validate_user_buffer(ptr: usize, count: usize, allow_kernel: bool) -> Sys
     if ptr == 0 {
         return Err(SystemError::InvalidArgument);
     }
-    let start = VirtAddr::try_new(ptr as u64)
-        .map_err(|_| SystemError::InvalidArgument)?;
+    let start = VirtAddr::try_new(ptr as u64).map_err(|_| SystemError::InvalidArgument)?;
     if !allow_kernel && !is_user_address(start) {
         return Err(SystemError::InvalidArgument);
     }
     if let Some(end_ptr) = ptr.checked_add(count - 1) {
-        let end = VirtAddr::try_new(end_ptr as u64)
-            .map_err(|_| SystemError::InvalidArgument)?;
+        let end = VirtAddr::try_new(end_ptr as u64).map_err(|_| SystemError::InvalidArgument)?;
         if !allow_kernel && !is_user_address(end) {
             return Err(SystemError::InvalidArgument);
         }
@@ -434,7 +430,9 @@ pub unsafe fn write_user<T>(ptr: *mut T, val: T) -> SystemResult<()> {
 /// The caller must ensure the user pointer is valid and mapped.
 pub unsafe fn copy_from_user(ptr: *const u8, buf: &mut [u8]) -> SystemResult<usize> {
     let slice = UserSlice::new(ptr as *mut u8, buf.len(), false)?;
-    unsafe { slice.copy_from_user(buf)?; }
+    unsafe {
+        slice.copy_from_user(buf)?;
+    }
     Ok(buf.len().min(slice.len()))
 }
 

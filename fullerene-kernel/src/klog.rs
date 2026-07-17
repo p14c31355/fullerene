@@ -209,7 +209,7 @@ macro_rules! klog_fmt {
 
 // ── VFS flush / boot-log persistence ───────────────────────────────
 
-/// Flush the kernel log ring buffer into `/bootlog.txt` on the VFS
+/// Flush the kernel log ring buffer into `/bootlog/Bootlog.txt` on the VFS
 /// (tmpfs).  Also appends a `LastStage=…` line at the end.
 ///
 /// Returns `Ok(())` if the file was written successfully, or `Err(())`
@@ -231,26 +231,10 @@ pub fn flush_to_vfs() -> Result<(), ()> {
     }
     out.extend_from_slice(b"=== End boot log ===\n");
 
-    // Create /bootlogs/ if it doesn't exist
-    if crate::contexts::vfs::exists("/bootlogs") {
-        // Rotate previous bootlog if present
-        if crate::contexts::vfs::exists("/bootlog.txt") {
-            rotate_bootlog();
-        }
-    } else {
-        // Bootlogs directory doesn't exist yet — try to create it
-        // (ignore failure; we can still write /bootlog.txt)
-        let _ = crate::contexts::vfs::mkdir("/bootlogs");
+    if !crate::contexts::vfs::exists("/bootlog") {
+        crate::contexts::vfs::mkdir("/bootlog").map_err(|_| ())?;
     }
-
-    // Write to /bootlog.txt via the VFS low-level API.
-    // We go through create+write+close manually for error resilience.
-    let fd_info = crate::contexts::vfs::create("/bootlog.txt").map_err(|_| ())?;
-    crate::contexts::vfs::write(fd_info.fd, &out).map_err(|_| {
-        let _ = crate::contexts::vfs::close(fd_info.fd);
-    })?;
-    let _ = crate::contexts::vfs::close(fd_info.fd);
-    Ok(())
+    crate::contexts::vfs::replace_file("/bootlog/Bootlog.txt", &out).map_err(|_| ())
 }
 
 /// Panic-safe variant: best-effort flush, ignores all errors.
@@ -265,48 +249,5 @@ pub fn flush_to_vfs_safe() {
     // steal the locks in a single-threaded kernel).
     if crate::contexts::vfs::vfs_try_access().is_some() {
         let _ = flush_to_vfs();
-    }
-}
-
-/// Move `/bootlog.txt` → `/bootlogs/YYYY-MM-DD-XX.txt` with
-/// a simple ascending counter for the current date.
-fn rotate_bootlog() {
-    // Build date string.  We don't have a real-time clock yet,
-    // so we fall back to a counter-based scheme.
-    // Try YYYY-MM-DD from a not-yet-existing RTC; for now use
-    // a simple "boot-N.txt" style.
-    let mut idx: u32 = 1;
-    let mut path;
-    loop {
-        path = alloc::format!("/bootlogs/boot-{}.txt", idx);
-        if !crate::contexts::vfs::exists(&path) {
-            break;
-        }
-        idx += 1;
-        if idx > 9999 {
-            // Sanity guard — give up rotation.
-            return;
-        }
-    }
-    // Read old content, write to rotated path, then unlink original.
-    if let Ok(fd) = crate::contexts::vfs::open("/bootlog.txt", 0) {
-        let mut buf = [0u8; 512];
-        let mut all = alloc::vec::Vec::new();
-        loop {
-            match crate::contexts::vfs::read(fd.fd, &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => all.extend_from_slice(&buf[..n]),
-            }
-        }
-        let _ = crate::contexts::vfs::close(fd.fd);
-        // Write rotated copy
-        if let Ok(fd2) = crate::contexts::vfs::create(&path) {
-            if crate::contexts::vfs::write(fd2.fd, &all).is_ok() {
-                let _ = crate::contexts::vfs::close(fd2.fd);
-                let _ = crate::contexts::vfs::unlink("/bootlog.txt");
-            } else {
-                let _ = crate::contexts::vfs::close(fd2.fd);
-            }
-        }
     }
 }

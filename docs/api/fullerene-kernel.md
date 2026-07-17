@@ -8,41 +8,63 @@
 
 ## 1. Syscall ABI
 
-`petroleum::common::syscall::*`
+The stable contract is defined by `fullerene-abi`; Toluene exposes the
+user-space wrappers in `toluene::sys`.
 
 | Calling Convention |
 |---|
 | `syscall` instruction (x86-64) |
 | rax = syscall number, rdi/rsi/rdx/r10/r8/r9 = args |
-| Return value: rax, errors encoded in rax |
+| Return value: rax; failures are negative `SyscallErrorCode` values |
 
 ### Syscall numbers
 
-`petroleum/src/common/syscall.rs`:
+`fullerene_abi::SyscallNumber` is the authoritative typed list. Compatibility
+constants remain available from `fullerene_abi::syscall_numbers`.
 
-| # | Name | Description |
-|---|------|-------------|
-| 0 | `Uptime` | µs since system boot |
-| 1 | `GetPid` | Current process PID |
-| 2 | `ClockGetTime` | Wall clock time |
-| 3 | `Exit` | Terminate process |
-| 4 | `Write` | Write to fd |
-| 5 | `Read` | Read from fd |
-| 6 | `Open` | Open a file |
-| 7 | `Close` | Close an fd |
-| 8 | `Spawn` | Create a new process |
-| 9 | `WaitPid` | Wait for child process completion |
-| 10 | `Mmap` | Memory mapping |
-| 11 | `Munmap` | Unmap memory |
-| 12 | `SchedYield` | Explicit CPU yield |
-| 13 | `CreateThread` | Create a thread |
-| 14 | `ExitThread` | Terminate a thread |
-| 15 | `SendEvent` | Send an event |
-| 16 | `RecvEvent` | Receive an event |
+| Range | Area |
+|---|---|
+| 0 | ABI version and capability query |
+| 1–22 | process and basic I/O |
+| 30–39 | memory |
+| 40–49 | events |
+| 50–59 | threads |
+| 60–69 | windows |
+| 70–79 | devices |
+| 80–89 | IPC |
+| 90–99 | handles/capabilities |
+| 100–109 | clocks and timers |
+
+Syscall 0 is backwards compatible: with no arguments it returns
+`AbiVersion::CURRENT.pack()`. With a writable `AbiInfo` buffer and its size in
+the first two arguments it writes the ABI version, DTO size, native syscall
+count, and capability bitset, then returns the number of bytes written.
 
 ### Error Handling
 
-Negative return value = error (EINVAL, ENOENT, EACCES, ENOMEM, EAGAIN, ...).
+Negative return value = error. The positive codes are fixed by
+`fullerene_abi::SyscallErrorCode` and align with Linux errno values where
+possible.
+
+### Kernel handler boundaries
+
+Native syscall routing is centralized in `syscall/dispatch.rs`. Handler
+implementations are grouped by the resource or lifecycle they own:
+
+| Module | Responsibility |
+|---|---|
+| `abi` | ABI version and capability discovery |
+| `process` | process lifecycle, waiting, identity, and per-process resource access |
+| `fs` | native file descriptors and terminal I/O |
+| `memory` | user address-space mapping and protection |
+| `event`, `thread`, `window` | event, thread, and window lifecycles |
+| `device`, `ipc`, `cap`, `time` | device access, IPC, handles, clocks, and timers |
+| `interface`, `types` | shared errors, user-copy helpers, and kernel object types |
+
+The former mixed-responsibility `handlers.rs` / `basic.rs` path is not part of
+the kernel interface. Adding a syscall requires adding its typed ABI number,
+placing its implementation in the owning domain module, and wiring only the
+central dispatch match.
 
 ---
 

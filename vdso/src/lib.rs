@@ -23,7 +23,10 @@ pub enum BuildError {
 pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<usize, BuildError> {
     let count = entries.len();
     let phnum = 1 + count;
-    let names_total = entries.iter().try_fold(0usize, |acc, e| acc.checked_add(e.name.len() + 1)).ok_or(BuildError::TooLarge)?;
+    let names_total = entries
+        .iter()
+        .try_fold(0usize, |acc, e| acc.checked_add(e.name.len() + 1))
+        .ok_or(BuildError::TooLarge)?;
 
     let phoff: u64 = 64;
     let ph_entry_size: u64 = 56;

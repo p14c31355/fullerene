@@ -4,7 +4,8 @@ use crate::window::Window;
 
 /// Global window corner radius (0 = square, 8 = rounded).
 /// Set by the settings UI; read by the compositor.
-pub static WINDOW_CORNER_RADIUS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8);
+pub static WINDOW_CORNER_RADIUS: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(8);
 
 pub trait RenderTarget {
     fn buffer(&mut self) -> &mut [u32];
@@ -181,16 +182,14 @@ fn blit_button(fb: &mut [u32], fbw: u32, cache: &[u32; 14 * 14], bx: i32, by: i3
     }
 }
 
-fn draw_cursor_impl(
-    fb: &mut [u32],
-    fbw: u32,
-    fbh: u32,
-    cur: &Cursor,
-    cx: u32,
-    cy: u32,
-    cw: u32,
-    ch: u32,
-) {
+/// Blend the cursor into a RAM-backed render target within `clip`.
+pub fn render_cursor(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor, clip: DirtyRect) {
+    let DirtyRect {
+        x: cx,
+        y: cy,
+        width: cw,
+        height: ch,
+    } = clip;
     let pixels = Cursor::shape();
     let sz = Cursor::SIZE as i32;
     let dst_x = cur.x - Cursor::HOTSPOT_X;
@@ -396,8 +395,11 @@ impl Compositor {
         // ── Network menu overlay ───────────────────────
         if scene.network_menu_open {
             crate::network_menu::render_network_menu(
-                framebuffer, fb_width, fb_height,
-                scene.net_menu_x, scene.net_menu_y,
+                framebuffer,
+                fb_width,
+                fb_height,
+                scene.net_menu_x,
+                scene.net_menu_y,
                 scene.net_aps,
                 scene.net_status,
                 None,
@@ -408,8 +410,11 @@ impl Compositor {
         // ── Password dialog overlay ────────────────────
         if scene.pwd_dialog_open {
             crate::network_menu::render_password_dialog(
-                framebuffer, fb_width, fb_height,
-                scene.pwd_dialog_x, scene.pwd_dialog_y,
+                framebuffer,
+                fb_width,
+                fb_height,
+                scene.pwd_dialog_x,
+                scene.pwd_dialog_y,
                 scene.pwd_ssid,
                 scene.pwd_password,
                 scene.pwd_cursor,
@@ -434,11 +439,17 @@ impl Compositor {
         // new cursor positions is already pushed by prepare_frame(), so
         // the compositor redraws both the restored old area and the new
         // cursor position in a single pass.
-        if let Some(c) = scene.cursor {
-            if c.visible {
-                Self::draw_cursor_clipped(framebuffer, fb_width, fb_height, c, dx, dy, dw, dh);
-                inc_draw_calls();
-            }
+        if let Some(c) = scene.cursor
+            && c.visible
+        {
+            render_cursor(
+                framebuffer,
+                fb_width,
+                fb_height,
+                c,
+                DirtyRect::new(dx, dy, dw, dh),
+            );
+            inc_draw_calls();
         }
 
         // Debug overlay (FPS + draw calls)
@@ -482,11 +493,7 @@ impl Compositor {
                 }
                 // Border (1px)
                 let is_border = row == 0 || row == oh - 1 || col == 0 || col == ow - 1;
-                let color = if is_border {
-                    border_active
-                } else {
-                    ov.color
-                };
+                let color = if is_border { border_active } else { ov.color };
                 let idx = (da as usize) * (fbw as usize) + dxa as usize;
                 fb[idx] = color;
             }
@@ -515,24 +522,6 @@ impl Compositor {
         let mut p = crate::painter::Painter::new(fb, fbw, fbh);
         let x = (fbw.saturating_sub(150)) as i32;
         p.draw_text(x, 4, text_str, accent, 13.0);
-    }
-
-    // ── Cursor ────────────────────────────────────────────
-
-    pub fn draw_cursor_direct(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor) {
-        draw_cursor_impl(fb, fbw, fbh, cur, 0, 0, fbw, fbh);
-    }
-    fn draw_cursor_clipped(
-        fb: &mut [u32],
-        fbw: u32,
-        fbh: u32,
-        cur: &Cursor,
-        cx: u32,
-        cy: u32,
-        cw: u32,
-        ch: u32,
-    ) {
-        draw_cursor_impl(fb, fbw, fbh, cur, cx, cy, cw, ch);
     }
 
     // ── Window drawing ────────────────────────────────────
@@ -633,9 +622,7 @@ impl Compositor {
         let cey = (cy + ch) as i32;
         let ww_u = ww as u32;
         let wh_u = wh as u32;
-        if wx + ww as i32 <= cx as i32 || wy + wh as i32 <= cy as i32
-            || wx >= cex || wy >= cey
-        {
+        if wx + ww as i32 <= cx as i32 || wy + wh as i32 <= cy as i32 || wx >= cex || wy >= cey {
             return;
         }
 
@@ -652,11 +639,25 @@ impl Compositor {
         p.fill_rect(wx, wy, radius, radius, bg);
         p.fill_rect(wx + ww as i32 - r32, wy, radius, radius, bg);
         p.fill_rect(wx, wy + wh as i32 - r32, radius, radius, bg);
-        p.fill_rect(wx + ww as i32 - r32, wy + wh as i32 - r32, radius, radius, bg);
+        p.fill_rect(
+            wx + ww as i32 - r32,
+            wy + wh as i32 - r32,
+            radius,
+            radius,
+            bg,
+        );
 
         // Window body with rounded rect — 4 corners rounded
-        let border_col = if win.focused { colors.border_active } else { colors.border_inactive };
-        let title_col = if win.focused { colors.title_active } else { colors.title_inactive };
+        let border_col = if win.focused {
+            colors.border_active
+        } else {
+            colors.border_inactive
+        };
+        let title_col = if win.focused {
+            colors.title_active
+        } else {
+            colors.title_inactive
+        };
         p.rounded_rect(wx, wy, ww_u, wh_u, radius, border_col);
 
         // Title bar background — plain rect (no extra rounding; top corners
@@ -665,13 +666,37 @@ impl Compositor {
 
         // Separator line below title
         let sep_y = win.y + TITLE_BAR_HEIGHT as i32;
-        p.fill_rect(win.x + r32, sep_y, win.width.saturating_sub(radius * 2), 1, border_col);
+        p.fill_rect(
+            win.x + r32,
+            sep_y,
+            win.width.saturating_sub(radius * 2),
+            1,
+            border_col,
+        );
 
         // ── Title bar buttons (slightly smaller, right-aligned) ──
         let btn_y = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
-        blit_button(p.fb, p.width, &CLOSE_BUTTON_CACHE, win.x + win.width as i32 - 22, btn_y);
-        blit_button(p.fb, p.width, &MAXIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 42, btn_y);
-        blit_button(p.fb, p.width, &MINIMIZE_BUTTON_CACHE, win.x + win.width as i32 - 62, btn_y);
+        blit_button(
+            p.fb,
+            p.width,
+            &CLOSE_BUTTON_CACHE,
+            win.x + win.width as i32 - 22,
+            btn_y,
+        );
+        blit_button(
+            p.fb,
+            p.width,
+            &MAXIMIZE_BUTTON_CACHE,
+            win.x + win.width as i32 - 42,
+            btn_y,
+        );
+        blit_button(
+            p.fb,
+            p.width,
+            &MINIMIZE_BUTTON_CACHE,
+            win.x + win.width as i32 - 62,
+            btn_y,
+        );
 
         // Title text — centered vertically, left-aligned with padding
         let tx = win.x + 12;

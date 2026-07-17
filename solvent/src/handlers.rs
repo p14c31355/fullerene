@@ -1,17 +1,32 @@
 //! Event handlers — extracted from lib.rs as part of god-module decomposition.
 //!
-//! These handlers are thin wrappers that delegate to `crate` globals.
+//! These handlers are thin wrappers over state owned by `RuntimeContext`.
 //! The heavy logic (menu dispatch, terminal I/O) lives in dedicated modules.
 
-use crate::{FB_DIMS, RUNTIME, SUPER_HELD};
+use crate::{FB_DIMS, RUNTIME_CONTEXT, SUPER_HELD};
 use lattice::shell_overlay::ShellState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
+
+const DOUBLE_CLICK_TICKS: u64 = 500;
+
+fn apply_mouse_move(
+    desktop: &mut lattice::desktop::Desktop,
+    cursor_redraw_from: &mut Option<(i32, i32)>,
+    frame_due: &mut bool,
+    x: i32,
+    y: i32,
+) {
+    let previous = (desktop.cursor.x, desktop.cursor.y);
+    desktop.mouse_move(x, y);
+    cursor_redraw_from.get_or_insert(previous);
+    *frame_due = true;
+}
 
 pub(crate) struct WmEventHandler;
 
 impl EventHandler for WmEventHandler {
     fn handle(&mut self, event: &Event) -> bool {
-        let mut rt = RUNTIME.lock();
+        let mut rt = RUNTIME_CONTEXT.runtime();
         let rt = match rt.as_mut() {
             Some(r) => r,
             None => return false,
@@ -23,19 +38,16 @@ impl EventHandler for WmEventHandler {
 
         match event {
             Event::Input(InputEvent::MouseMove { x, y }) => {
-                rt.desktop.mouse_move(*x, *y);
-                rt.frame_due = true;
-                // When only the cursor moves (no menus or dialogs open),
-                // skip the full compositor redraw and just update the cursor.
-                if !rt.desktop.has_active_overlays() {
-                    rt.cursor_only_update = true;
-                }
+                apply_mouse_move(
+                    &mut rt.desktop,
+                    &mut rt.cursor_redraw_from,
+                    &mut rt.frame_due,
+                    *x,
+                    *y,
+                );
                 true
             }
             Event::Input(InputEvent::MouseDown(btn)) => {
-                // Clear cursor-only mode since mouse down is a scene-mutating event
-                rt.cursor_only_update = false;
-
                 let cx = rt.desktop.cursor.x;
                 let cy = rt.desktop.cursor.y;
 
@@ -47,7 +59,7 @@ impl EventHandler for WmEventHandler {
                                 "Shell" => {
                                     // Defer shell launch — cannot call
                                     // ensure_terminal_window() or launch_shell()
-                                    // while holding RUNTIME lock (deadlock).
+                                    // while holding the runtime-state lock (deadlock).
                                     rt.shell_launch_pending = true;
                                     rt.frame_due = true;
                                     return true;
@@ -121,6 +133,32 @@ impl EventHandler for WmEventHandler {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::apply_mouse_move;
+    use lattice::desktop::Desktop;
+
+    #[test]
+    fn mouse_input_transitions_cursor_state_and_marks_frame_dirty() {
+        let mut desktop = Desktop::new(0);
+        let previous = (desktop.cursor.x, desktop.cursor.y);
+        let mut cursor_redraw_from = None;
+        let mut frame_due = false;
+
+        apply_mouse_move(
+            &mut desktop,
+            &mut cursor_redraw_from,
+            &mut frame_due,
+            23,
+            41,
+        );
+
+        assert_eq!((desktop.cursor.x, desktop.cursor.y), (23, 41));
+        assert_eq!(cursor_redraw_from, Some(previous));
+        assert!(frame_due);
+    }
+}
+
 // ── Explorer event handling ──────────────────────────────────
 
 fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32, cy: i32) {
@@ -145,9 +183,13 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
 
     // If context menu is open, handle clicks on it first
     if explorer.context_menu.open {
-        crate::explorer::handle_context_menu_click(explorer, rel_x, rel_y);
+        let launch_path = crate::explorer::handle_context_menu_click(explorer, rel_x, rel_y)
+            .and_then(|action| explorer.dispatch_context_action(action));
         rt.explorer_dirty = true;
         rt.frame_due = true;
+        if let Some(path) = launch_path {
+            crate::launch_file(rt, &path);
+        }
         return;
     }
 
@@ -188,20 +230,17 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                 let now = crate::GLOBAL_TICK.load(core::sync::atomic::Ordering::Relaxed);
                 let is_double = explorer.selected_index == Some(idx)
                     && explorer.last_click_entry == Some(idx)
-                    && now.wrapping_sub(explorer.last_click_tick) < 60;
+                    && now.wrapping_sub(explorer.last_click_tick) <= DOUBLE_CLICK_TICKS;
 
                 explorer.selected_index = Some(idx);
 
                 if is_double {
-                    if idx < explorer.raw_is_dir.len() && explorer.raw_is_dir[idx] {
-                        explorer.open_selected(idx);
-                        explorer.last_click_entry = None;
-                    } else if let Some(path) = explorer.get_file_path(idx) {
+                    let launch_path = explorer.activate_entry(idx);
+                    explorer.last_click_entry = None;
+                    if let Some(path) = launch_path {
                         // Save path, drop explorer borrow, then launch
-                        explorer.last_click_entry = None;
-                        let file_path = path;
                         let _ = explorer;
-                        crate::launch_file(rt, &file_path);
+                        crate::launch_file(rt, &path);
                         return;
                     }
                 } else {
@@ -216,17 +255,15 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
         MouseButton::Right => {
             let win_w = window.width;
             let win_h = window.height;
-            // Only show context menu for file list hits
-            if crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y).is_some() {
+            // The empty portion of a directory must expose Paste as well.
+            if crate::explorer::hit_file_area(win_w, win_h, rel_x, rel_y) {
+                let hit = crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y);
                 explorer.context_menu.open = true;
-                explorer.context_menu.x = rel_x as u32;
-                explorer.context_menu.y = rel_y as u32;
-                // Also select the item under cursor
-                if let Some(idx) =
-                    crate::explorer::hit_file_list(explorer, win_w, win_h, rel_x, rel_y)
-                {
-                    explorer.selected_index = Some(idx);
-                }
+                explorer.context_menu.x = (rel_x.max(0) as u32)
+                    .min(win_w.saturating_sub(crate::explorer::CONTEXT_MENU_W));
+                explorer.context_menu.y = (rel_y.max(0) as u32)
+                    .min(win_h.saturating_sub(6 * crate::explorer::ROW_HEIGHT));
+                explorer.selected_index = hit;
                 rt.explorer_dirty = true;
                 rt.frame_due = true;
             }
@@ -238,27 +275,20 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
 fn handle_overlay_event(rt: &mut crate::RuntimeState, event: &Event) -> bool {
     match event {
         Event::Input(InputEvent::MouseMove { x, y }) => {
+            let previous = (rt.desktop.cursor.x, rt.desktop.cursor.y);
             rt.desktop.mouse_move(*x, *y);
-            rt.frame_due = true;
-            // During overlay mode, mark cursor-only so the render pass
-            // skips the full compositor/overlay re-render.
-            if rt.shell_state != lattice::shell_overlay::ShellState::Desktop {
-                rt.cursor_only_update = true;
-            }
+            rt.request_cursor_redraw(previous);
             true
         }
         Event::Input(InputEvent::MouseDown(_))
             if rt.shell_state == ShellState::TimeZoneSelector =>
         {
-            rt.cursor_only_update = false;
             handle_timezone_click(rt)
         }
         Event::Input(InputEvent::MouseDown(_)) if rt.shell_state == ShellState::AppGrid => {
-            rt.cursor_only_update = false;
             handle_appgrid_click(rt)
         }
         Event::Input(InputEvent::MouseDown(_)) => {
-            rt.cursor_only_update = false;
             rt.shell_state = ShellState::Desktop;
             rt.frame_due = true;
             true
@@ -282,7 +312,8 @@ fn handle_timezone_click(rt: &mut crate::RuntimeState) -> bool {
     for (i, offset) in timezones.iter().enumerate() {
         let ey = start_y + (i as i32) * (entry_h + pad);
         if cy >= ey && cy < ey + entry_h && cx >= ex && cx < ex + entry_w {
-            crate::clock::TIMEZONE_OFFSET_HOURS.store(*offset, core::sync::atomic::Ordering::Relaxed);
+            crate::clock::TIMEZONE_OFFSET_HOURS
+                .store(*offset, core::sync::atomic::Ordering::Relaxed);
             rt.shell_state = ShellState::Desktop;
             rt.frame_due = true;
             return true;
@@ -313,7 +344,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
             match idx {
                 0 => {
                     // Defer shell launch — cannot call ensure_terminal_window()
-                    // or launch_shell() while holding RUNTIME lock (deadlock).
+                    // or launch_shell() while holding the runtime-state lock (deadlock).
                     rt.shell_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
@@ -321,7 +352,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                 }
                 2 => {
                     // Defer editor launch — cannot call ensure_editor_window()
-                    // while holding RUNTIME lock (deadlock).
+                    // while holding the runtime-state lock (deadlock).
                     rt.editor_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
@@ -351,7 +382,7 @@ impl EventHandler for TerminalInputHandler {
     fn handle(&mut self, event: &Event) -> bool {
         match event {
             Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
+                if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
                     rt.term_buf.scroll_back(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -359,7 +390,7 @@ impl EventHandler for TerminalInputHandler {
                 true
             }
             Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
+                if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
                     rt.term_buf.scroll_forward(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -367,7 +398,7 @@ impl EventHandler for TerminalInputHandler {
                 true
             }
             Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
-                if let Some(ref mut rt) = *RUNTIME.lock() {
+                if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
                     rt.term_buf.reset_scroll();
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -383,7 +414,7 @@ pub(crate) struct ShellEventHandler;
 
 impl EventHandler for ShellEventHandler {
     fn handle(&mut self, event: &Event) -> bool {
-        let mut rt = RUNTIME.lock();
+        let mut rt = RUNTIME_CONTEXT.runtime();
         let rt = match rt.as_mut() {
             Some(r) => r,
             None => return false,

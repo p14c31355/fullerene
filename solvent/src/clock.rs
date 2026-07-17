@@ -2,20 +2,12 @@
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
-use crate::SOLVENT_CALLBACKS;
+use crate::RUNTIME_CONTEXT;
 use alloc::string::String;
-use spin::Mutex;
 
 /// Timezone offset in hours (positive = east of UTC).
 pub(crate) static TIMEZONE_OFFSET_HOURS: core::sync::atomic::AtomicI8 =
     core::sync::atomic::AtomicI8::new(9);
-
-/// Cached wall-clock string (read by the desktop taskbar / top panel).
-static CLOCK_STRING: Mutex<String> = Mutex::new(String::new());
-
-pub fn clock_string() -> String {
-    CLOCK_STRING.lock().clone()
-}
 
 // ── Days per month (non‑leap) ─────────────────────────────────
 
@@ -37,7 +29,7 @@ fn days_in_month(month: i16, year: i16) -> i16 {
 /// dirty rect for the taskbar / top panel).
 pub fn update_clock() -> bool {
     let offset = TIMEZONE_OFFSET_HOURS.load(core::sync::atomic::Ordering::Relaxed);
-    let time_str = if let Some(get_time) = SOLVENT_CALLBACKS.lock().wall_clock {
+    let time_str = if let Some(get_time) = RUNTIME_CONTEXT.callback_snapshot().wall_clock {
         if let Some((year, month, day, hour, minute, _second)) = get_time() {
             let mut local_hour = hour as i16 + offset as i16;
             let mut local_day = day as i16;
@@ -68,7 +60,11 @@ pub fn update_clock() -> bool {
             }
             alloc::format!(
                 "{} {:02}{:02} {:02}{:02}",
-                local_year as u16, local_month as u8, local_day as u8, local_hour as u8, minute
+                local_year as u16,
+                local_month as u8,
+                local_day as u8,
+                local_hour as u8,
+                minute
             )
         } else {
             String::from("---- ---- ----")
@@ -77,16 +73,15 @@ pub fn update_clock() -> bool {
         String::from("---- ---- ----")
     };
 
-    let mut rt = crate::RUNTIME.lock();
+    let mut rt = crate::RUNTIME_CONTEXT.runtime();
     let mut changed = false;
     if let Some(ref mut r) = *rt {
         if r.desktop.clock_text != time_str {
             r.clock_changed = true;
-            r.desktop.clock_text = time_str.clone();
-            r.desktop.top_panel.clock_text = time_str.clone();
+            r.desktop.clock_text.clone_from(&time_str);
+            r.desktop.top_panel.clock_text.clone_from(&time_str);
             changed = true;
         }
     }
-    *CLOCK_STRING.lock() = time_str;
     changed
 }

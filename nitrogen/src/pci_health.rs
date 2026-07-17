@@ -15,13 +15,9 @@ use crate::pci::{PciConfigSpace, PciDevice};
 /// Error type for PCI health operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PciHealthError {
-    DeviceGone,       // vendor=0xFFFF
-    NotD0,            // power state is D1-D3hot
-    LinkDown,         // PCIe link status shows speed=0
-    CapCycle,         // capability list has a cycle
-    NoPmCap,          // Power Management capability not found
-    NoPcieCap,        // PCI Express capability not found
-    MmioHangRisk,     // cannot safely issue non-posted MMIO read
+    DeviceGone, // vendor=0xFFFF
+    NotD0,      // power state is D1-D3hot
+    LinkDown,   // PCIe link status shows speed=0
 }
 
 impl core::fmt::Display for PciHealthError {
@@ -30,10 +26,6 @@ impl core::fmt::Display for PciHealthError {
             PciHealthError::DeviceGone => write!(f, "device not on PCI bus"),
             PciHealthError::NotD0 => write!(f, "device not in D0"),
             PciHealthError::LinkDown => write!(f, "PCIe link down"),
-            PciHealthError::CapCycle => write!(f, "capability list cycle detected"),
-            PciHealthError::NoPmCap => write!(f, "Power Management cap not found"),
-            PciHealthError::NoPcieCap => write!(f, "PCI Express cap not found"),
-            PciHealthError::MmioHangRisk => write!(f, "MMIO read would likely hang"),
         }
     }
 }
@@ -52,15 +44,8 @@ pub struct PciHealth {
     dev: u8,
     func: u8,
     vendor_id: u16,
-    #[allow(dead_code)]
-    device_id: u16,
     /// Upstream bridge coordinates for ASPM control.
     upstream_bridge: Option<(u8, u8, u8)>,
-    // ── Health cache ──
-    #[allow(dead_code)]
-    aspm_disabled: bool,
-    /// Timestamp (TSC ticks) of last successful health check.
-    last_check_ok: u64,
 }
 
 impl PciHealth {
@@ -73,10 +58,7 @@ impl PciHealth {
             dev: device.device,
             func: device.function,
             vendor_id: device.vendor_id,
-            device_id: device.device_id,
             upstream_bridge: None,
-            aspm_disabled: false,
-            last_check_ok: 0,
         }
     }
 
@@ -107,16 +89,14 @@ impl PciHealth {
         // 2. Walk capabilities to find PM (0x01) and PCIe (0x10)
         let cap_ptr = PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, 0x34);
         if cap_ptr == 0 {
-            return Err(PciHealthError::NoPmCap);
+            return Ok(());
         }
 
         let mut off = cap_ptr;
-        let mut found_pm = false;
-        let mut found_pcie = false;
         let mut visited = [false; 256];
 
         for _ in 0..48 {
-            if off < 0x40 || off > 0xED {
+            if !(0x40..=0xED).contains(&off) {
                 break;
             }
             if visited[off as usize] {
@@ -129,7 +109,6 @@ impl PciHealth {
 
             match PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, off) {
                 0x01 => {
-                    found_pm = true;
                     let pmcsr =
                         PciConfigSpace::read_config_word(self.bus, self.dev, self.func, off + 4);
                     let pstate = pmcsr & 0x3;
@@ -138,20 +117,14 @@ impl PciHealth {
                     }
                 }
                 0x10 => {
-                    found_pcie = true;
-                    let lnk_sts = PciConfigSpace::read_config_word(
-                        self.bus, self.dev, self.func, off + 0x12,
-                    );
+                    let lnk_sts =
+                        PciConfigSpace::read_config_word(self.bus, self.dev, self.func, off + 0x12);
                     let speed = lnk_sts & 0xF;
                     if speed == 0 {
                         return Err(PciHealthError::LinkDown);
                     }
                 }
                 _ => {}
-            }
-
-            if found_pm && found_pcie {
-                break;
             }
 
             let next = PciConfigSpace::read_config_byte(self.bus, self.dev, self.func, off + 1);
@@ -161,14 +134,6 @@ impl PciHealth {
             off = next;
         }
 
-        if !found_pm {
-            return Err(PciHealthError::NoPmCap);
-        }
-        if !found_pcie {
-            return Err(PciHealthError::NoPcieCap);
-        }
-
-        self.last_check_ok = 0; // Would use RDTSC in practice
         Ok(())
     }
 
@@ -203,20 +168,20 @@ impl PciHealth {
     pub fn recover(&mut self) -> Result<(), PciHealthError> {
         // Step 1: Re-assert D0 on the device and bridge (port I/O, safe)
         self.ensure_d0();
-        if let Some((b, d, f)) = self.upstream_bridge {
-            if let Some(bridge) = PciDevice::new(b, d, f) {
-                bridge.ensure_d0();
-            }
+        if let Some((b, d, f)) = self.upstream_bridge
+            && let Some(bridge) = PciDevice::new(b, d, f)
+        {
+            bridge.ensure_d0();
         }
 
         // Step 2: Retrain the upstream link (port I/O, safe)
         self.retrain_upstream_link();
 
         // Step 3: Disable standard ASPM on the bridge (port I/O, safe)
-        if let Some((b, d, f)) = self.upstream_bridge {
-            if let Some(bridge) = PciDevice::new(b, d, f) {
-                bridge.disable_pcie_aspm();
-            }
+        if let Some((b, d, f)) = self.upstream_bridge
+            && let Some(bridge) = PciDevice::new(b, d, f)
+        {
+            bridge.disable_pcie_aspm();
         }
 
         // Step 4: Disable standard ASPM on the endpoint (port I/O, safe).
@@ -243,14 +208,19 @@ impl PciHealth {
             .and_then(|off| off.checked_add(0x10))
             .filter(|&off| off <= 0xFC);
         if let Some(lnk_off) = lnk_ctl {
-            let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off as u8);
+            let ctl = PciConfigSpace::read_config_word(b, d, f, lnk_off);
             PciConfigSpace::write_config_word_raw(
-                b, d, f, lnk_off as u8,
+                b,
+                d,
+                f,
+                lnk_off,
                 ctl | (1 << 5), // Set Link Retrain
             );
             log::info!(
                 "PciHealth: link retrain on bridge {:02x}:{:02x}.{}",
-                b, d, f,
+                b,
+                d,
+                f,
             );
             crate::timing::delay_us(10_000);
             true

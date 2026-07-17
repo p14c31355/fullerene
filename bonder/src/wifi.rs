@@ -239,8 +239,9 @@ pub struct AssocResponse {
 }
 
 /// Connection status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum WifiStatus {
+    #[default]
     Disconnected,
     Scanning,
     Authenticating,
@@ -251,7 +252,7 @@ pub enum WifiStatus {
 }
 
 /// WiFi connection state machine.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct WifiConnection {
     pub status: WifiStatus,
     pub current_ssid: Option<Ssid>,
@@ -264,15 +265,7 @@ pub struct WifiConnection {
 
 impl WifiConnection {
     pub fn new() -> Self {
-        Self {
-            status: WifiStatus::Disconnected,
-            current_ssid: None,
-            current_bssid: None,
-            password: None,
-            scan_results: Vec::new(),
-            auth_seq: 0,
-            error_msg: None,
-        }
+        Self::default()
     }
 
     pub fn is_connected(&self) -> bool {
@@ -300,7 +293,7 @@ impl WifiConnection {
 
     pub fn connect(&mut self, ssid: &Ssid, password: Option<&str>) {
         self.current_ssid = Some(ssid.clone());
-        self.password = password.map(|p| String::from(p));
+        self.password = password.map(String::from);
         self.status = WifiStatus::Authenticating;
         self.auth_seq = 0;
         self.error_msg = None;
@@ -332,8 +325,14 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
 
     // Fixed parameters (12 bytes for beacon/probe response)
     let timestamp = u64::from_le_bytes([
-        frame[offset], frame[offset + 1], frame[offset + 2], frame[offset + 3],
-        frame[offset + 4], frame[offset + 5], frame[offset + 6], frame[offset + 7],
+        frame[offset],
+        frame[offset + 1],
+        frame[offset + 2],
+        frame[offset + 3],
+        frame[offset + 4],
+        frame[offset + 5],
+        frame[offset + 6],
+        frame[offset + 7],
     ]);
     offset += 8;
 
@@ -375,65 +374,67 @@ pub fn parse_beacon(frame: &[u8]) -> Option<BeaconFrame> {
                     ds_channel = Some(frame[offset]);
                 }
             }
-            48 => {
+            48 if tag_len >= 2 => {
                 // RSN Information Element
-                if tag_len >= 2 {
-                    let version = u16::from_le_bytes([frame[offset], frame[offset + 1]]);
-                    let mut pos = offset + 2;
-                    let tag_end = offset + tag_len;
+                let version = u16::from_le_bytes([frame[offset], frame[offset + 1]]);
+                let mut pos = offset + 2;
+                let tag_end = offset + tag_len;
 
-                    let group_cipher = if pos + 4 <= tag_end {
-                        u32::from_le_bytes([
-                            frame[pos], frame[pos + 1], frame[pos + 2], frame[pos + 3],
-                        ])
-                    } else {
-                        0
-                    };
-                    pos += 4;
+                let group_cipher = if pos + 4 <= tag_end {
+                    u32::from_le_bytes([frame[pos], frame[pos + 1], frame[pos + 2], frame[pos + 3]])
+                } else {
+                    0
+                };
+                pos += 4;
 
-                    let pair_cipher_count = if pos + 2 <= tag_end {
-                        u16::from_le_bytes([frame[pos], frame[pos + 1]])
-                    } else {
-                        0
-                    };
-                    pos += 2;
+                let pair_cipher_count = if pos + 2 <= tag_end {
+                    u16::from_le_bytes([frame[pos], frame[pos + 1]])
+                } else {
+                    0
+                };
+                pos += 2;
 
-                    let mut pair_ciphers = Vec::new();
-                    for _ in 0..pair_cipher_count {
-                        if pos + 4 <= tag_end {
-                            pair_ciphers.push(u32::from_le_bytes([
-                                frame[pos], frame[pos + 1], frame[pos + 2], frame[pos + 3],
-                            ]));
-                            pos += 4;
-                        }
+                let mut pair_ciphers = Vec::new();
+                for _ in 0..pair_cipher_count {
+                    if pos + 4 <= tag_end {
+                        pair_ciphers.push(u32::from_le_bytes([
+                            frame[pos],
+                            frame[pos + 1],
+                            frame[pos + 2],
+                            frame[pos + 3],
+                        ]));
+                        pos += 4;
                     }
-
-                    let akm_count = if pos + 2 <= tag_end {
-                        u16::from_le_bytes([frame[pos], frame[pos + 1]])
-                    } else {
-                        0
-                    };
-                    pos += 2;
-
-                    let mut akms = Vec::new();
-                    for _ in 0..akm_count {
-                        if pos + 4 <= tag_end {
-                            akms.push(u32::from_le_bytes([
-                                frame[pos], frame[pos + 1], frame[pos + 2], frame[pos + 3],
-                            ]));
-                            pos += 4;
-                        }
-                    }
-
-                    rsn = Some(RsnInfo {
-                        version,
-                        group_cipher,
-                        pair_cipher_count,
-                        pair_ciphers,
-                        akm_count,
-                        akms,
-                    });
                 }
+
+                let akm_count = if pos + 2 <= tag_end {
+                    u16::from_le_bytes([frame[pos], frame[pos + 1]])
+                } else {
+                    0
+                };
+                pos += 2;
+
+                let mut akms = Vec::new();
+                for _ in 0..akm_count {
+                    if pos + 4 <= tag_end {
+                        akms.push(u32::from_le_bytes([
+                            frame[pos],
+                            frame[pos + 1],
+                            frame[pos + 2],
+                            frame[pos + 3],
+                        ]));
+                        pos += 4;
+                    }
+                }
+
+                rsn = Some(RsnInfo {
+                    version,
+                    group_cipher,
+                    pair_cipher_count,
+                    pair_ciphers,
+                    akm_count,
+                    akms,
+                });
             }
             _ => {}
         }

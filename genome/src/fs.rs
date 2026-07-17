@@ -16,6 +16,7 @@ pub enum FsError {
     InvalidPath,
     NotSupported,
     InvalidInput,
+    Io,
 }
 
 impl core::fmt::Display for FsError {
@@ -33,25 +34,18 @@ impl core::fmt::Display for FsError {
             FsError::InvalidPath => write!(f, "invalid path"),
             FsError::NotSupported => write!(f, "operation not supported"),
             FsError::InvalidInput => write!(f, "invalid input"),
+            FsError::Io => write!(f, "filesystem I/O error"),
         }
     }
 }
 
-impl From<&'static str> for FsError {
-    fn from(e: &'static str) -> Self {
-        match e {
-            "not found" | "mount point not found" => FsError::FileNotFound,
-            "not a directory" | "mount point not a directory" => FsError::NotADirectory,
-            "not a file" | "mount point is a file" => FsError::IsADirectory,
-            "bad fd" => FsError::InvalidFileDescriptor,
-            "inode not found" => FsError::FileNotFound,
-            "directory not empty" => FsError::DirectoryNotEmpty,
-            "invalid path" => FsError::InvalidPath,
-            "no free clusters" => FsError::DiskFull,
-            "create failed" | "open failed after create" => FsError::FileExists,
-            "mkdir failed" => FsError::PermissionDenied,
-            "vfs not init" | "only tmpfs is supported" => FsError::PermissionDenied,
-            _ => FsError::InvalidInput,
+impl From<crate::block::BlockError> for FsError {
+    fn from(error: crate::block::BlockError) -> Self {
+        match error {
+            crate::block::BlockError::BufferTooSmall { .. }
+            | crate::block::BlockError::LbaOverflow => Self::InvalidInput,
+            crate::block::BlockError::SectorNotFound => Self::FileNotFound,
+            crate::block::BlockError::Device => Self::Io,
         }
     }
 }
@@ -62,7 +56,7 @@ impl From<&'static str> for FsError {
 pub struct FileDesc {
     pub fd: u32,
     pub ino: u64,
-    pub offset: usize,
+    pub offset: u64,
     pub flags: u32,
 }
 
@@ -83,12 +77,14 @@ pub struct PackageEntry {
     pub version: String,
     pub description: String,
     pub binary: String,
+    pub runtime: String,
 }
 
 pub fn parse_manifest(name: &str, text: &str) -> Option<PackageEntry> {
     let mut version = String::from("0.1.0");
     let mut description = String::new();
     let mut binary = String::from("app.bin");
+    let mut runtime = String::from("native");
 
     for line in text.lines() {
         let line = line.trim();
@@ -99,6 +95,7 @@ pub fn parse_manifest(name: &str, text: &str) -> Option<PackageEntry> {
                 "version" => version = String::from(value),
                 "description" => description = String::from(value),
                 "binary" => binary = String::from(value),
+                "runtime" => runtime = String::from(value),
                 _ => {}
             }
         }
@@ -109,5 +106,6 @@ pub fn parse_manifest(name: &str, text: &str) -> Option<PackageEntry> {
         version,
         description,
         binary,
+        runtime,
     })
 }

@@ -171,7 +171,11 @@ pub fn current_colors() -> ThemeColors {
 /// Toggle between Classic and Modern style.
 pub fn toggle_style() -> ThemeStyle {
     let was_modern = STYLE_SEL.fetch_xor(true, Ordering::SeqCst);
-    if was_modern { ThemeStyle::Classic } else { ThemeStyle::Modern }
+    if was_modern {
+        ThemeStyle::Classic
+    } else {
+        ThemeStyle::Modern
+    }
 }
 
 /// Set the style explicitly.
@@ -182,7 +186,11 @@ pub fn set_style(style: ThemeStyle) {
 /// Toggle between dark and light variant.
 pub fn toggle_theme() -> ThemeVariant {
     let was_light = VARIANT_SEL.fetch_xor(true, Ordering::SeqCst);
-    if was_light { ThemeVariant::Dark } else { ThemeVariant::Light }
+    if was_light {
+        ThemeVariant::Dark
+    } else {
+        ThemeVariant::Light
+    }
 }
 
 /// Set the variant explicitly.
@@ -219,9 +227,21 @@ pub fn get_color(name: &str) -> Option<u32> {
 /// List all available colour names.
 pub fn color_names() -> &'static [&'static str] {
     &[
-        "bg", "surface", "primary", "active", "text", "muted",
-        "border_active", "border_inactive", "title_active", "title_inactive",
-        "accent", "danger",
-        "taskbar_bg", "taskbar_text", "taskbar_active_bg", "taskbar_inactive_bg",
+        "bg",
+        "surface",
+        "primary",
+        "active",
+        "text",
+        "muted",
+        "border_active",
+        "border_inactive",
+        "title_active",
+        "title_inactive",
+        "accent",
+        "danger",
+        "taskbar_bg",
+        "taskbar_text",
+        "taskbar_active_bg",
+        "taskbar_inactive_bg",
     ]
 }

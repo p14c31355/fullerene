@@ -19,8 +19,8 @@ use super::register::{
     OperationalRegisters, PORTSC_CCS, PORTSC_PED, PORTSC_PLC, PORTSC_PLS_MASK, PORTSC_PP,
     PORTSC_PR, PORTSC_PRC, PORTSC_RW1C_MASK, PORTSC_WPR, PORTSC_WRC, PortSc,
 };
-use crate::usb::UsbSpeed;
 pub use crate::timing::{delay_ms, delay_us};
+use crate::usb::UsbSpeed;
 
 /// Maximum consecutive port detection failures before marking the port as done.
 pub const MAX_PORT_RETRIES: u32 = 8;
@@ -185,19 +185,17 @@ impl PortContext {
 ///
 /// If CCS becomes 1 during or after PR (device connected), we also
 /// wait for PED.  The full wait is bounded to ~20 s per phase.
-pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static str> {
+pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), crate::DriverError> {
     let ps_raw = op.portsc(port).0;
     if ps_raw & PORTSC_CCS == 0 {
-        return Err("disconnected");
+        return Err(crate::DriverError::DeviceNotFound);
     }
 
     op.write_portsc(port, (ps_raw & !PORTSC_RW1C_MASK) | PORTSC_PR);
 
     // USB2 reset completes within 50 ms; allow 100 ms for slow hardware.
-    if crate::timing::wait_timeout_us(100_000, || {
-        op.portsc(port).0 & PORTSC_PR == 0
-    }).is_err() {
-        return Err("port reset timeout");
+    if crate::timing::wait_timeout_us(100_000, || op.portsc(port).0 & PORTSC_PR == 0).is_err() {
+        return Err(crate::DriverError::TimedOut);
     }
 
     match crate::timing::poll_timeout_us(100_000, || {
@@ -211,7 +209,7 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
         }
     }) {
         Some(true) => Ok(()),
-        Some(false) | None => Err("port enable timeout"),
+        Some(false) | None => Err(crate::DriverError::TimedOut),
     }
 }
 
@@ -221,27 +219,23 @@ pub fn port_reset(op: &OperationalRegisters, port: u32) -> Result<(), &'static s
 /// performs link training.  This function waits for the link to stabilise
 /// before returning; if training stalls, a single explicit RxDetect kick
 /// is attempted as a fallback.  Returns the final PORTSC value on success.
-pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &'static str> {
+pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, crate::DriverError> {
     let ps_raw = op.portsc(port).0;
     if ps_raw & PORTSC_CCS == 0 {
-        return Err("disconnected");
+        return Err(crate::DriverError::DeviceNotFound);
     }
     let v = ps_raw & !PORTSC_RW1C_MASK;
     op.write_portsc(port, v | PORTSC_WPR);
 
     // Poll for WPR completion (WPR bit cleared by hardware)
-    if crate::timing::wait_timeout_us(100_000, || {
-        op.portsc(port).0 & PORTSC_WPR == 0
-    }).is_err() {
-        return Err("warm port reset timeout: WPR not cleared");
+    if crate::timing::wait_timeout_us(100_000, || op.portsc(port).0 & PORTSC_WPR == 0).is_err() {
+        return Err(crate::DriverError::TimedOut);
     }
 
     // Wait for PR (Port Reset) to clear — the xHC signals reset
     // completion by clearing both WPR and PR (xHCI 1.2 §5.4.8).
-    if crate::timing::wait_timeout_us(100_000, || {
-        op.portsc(port).0 & PORTSC_PR == 0
-    }).is_err() {
-        return Err("warm port reset timeout: PR not cleared");
+    if crate::timing::wait_timeout_us(100_000, || op.portsc(port).0 & PORTSC_PR == 0).is_err() {
+        return Err(crate::DriverError::TimedOut);
     }
 
     // Clear RW1C change bits (WRC, PRC, PLC) that the hardware set
@@ -266,7 +260,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     if let Some(result) = crate::timing::poll_timeout_us(1_200_000, || {
         let ps = op.portsc(port);
         if !ps.ccs() {
-            Some(Err("disconnected"))
+            Some(Err(crate::DriverError::DeviceNotFound))
         } else if ps.ped() {
             Some(Ok(ps))
         } else {
@@ -275,7 +269,7 @@ pub fn warm_port_reset(op: &OperationalRegisters, port: u32) -> Result<PortSc, &
     }) {
         result
     } else {
-        Err("warm port reset: enable timeout")
+        Err(crate::DriverError::TimedOut)
     }
 }
 
@@ -301,12 +295,9 @@ pub fn ensure_port_ready(
 
     status = crate::timing::poll_timeout_us(100_000, || {
         let s = op.portsc(port_idx);
-        if s.ccs() || !ppc {
-            Some(s)
-        } else {
-            None
-        }
-    }).unwrap_or_else(|| op.portsc(port_idx));
+        if s.ccs() || !ppc { Some(s) } else { None }
+    })
+    .unwrap_or_else(|| op.portsc(port_idx));
     if !status.ccs() {
         return false;
     }

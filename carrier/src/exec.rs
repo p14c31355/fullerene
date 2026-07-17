@@ -1,32 +1,18 @@
 use crate::pipeline::Pipeline;
 use crate::terminal::Terminal;
-use alloc::collections::VecDeque;
-use spin::Mutex;
-
-static SHARED_HISTORY: Mutex<VecDeque<alloc::string::String>> = Mutex::new(VecDeque::new());
-
-pub fn get_history_snapshot() -> alloc::vec::Vec<alloc::string::String> {
-    let guard = SHARED_HISTORY.lock();
-    guard.iter().cloned().collect()
-}
-
-pub fn push_history(line: &str) {
-    if line.is_empty() {
-        return;
-    }
-    let mut guard = SHARED_HISTORY.lock();
-    if guard.front().map_or(false, |h| h == line) {
-        return;
-    }
-    if guard.len() >= 128 {
-        guard.pop_back();
-    }
-    guard.push_front(alloc::string::String::from(line));
-}
+use core::any::Any;
 
 pub struct CommandContext<'a> {
     pub terminal: &'a mut dyn Terminal,
     pub args: &'a [&'a str],
+    services: Option<&'a dyn Any>,
+}
+
+impl CommandContext<'_> {
+    /// Retrieve constructor-injected command services by their concrete type.
+    pub fn services<T: Any + Copy>(&self) -> Option<T> {
+        self.services?.downcast_ref().copied()
+    }
 }
 
 pub trait Command {
@@ -80,6 +66,25 @@ macro_rules! define_commands {
 /// buffering a potentially large result (e.g. `dmesg`) in a String only
 /// to flush it in one shot.
 pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool {
+    dispatch_inner(commands, terminal, line, None)
+}
+
+/// Dispatch a command line with immutable, constructor-injected services.
+pub fn dispatch_with_services(
+    commands: &[&dyn Command],
+    terminal: &mut dyn Terminal,
+    line: &str,
+    services: &dyn Any,
+) -> bool {
+    dispatch_inner(commands, terminal, line, Some(services))
+}
+
+fn dispatch_inner(
+    commands: &[&dyn Command],
+    terminal: &mut dyn Terminal,
+    line: &str,
+    services: Option<&dyn Any>,
+) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return true;
@@ -124,6 +129,7 @@ pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &s
                 let mut ctx = CommandContext {
                     terminal,
                     args: &args,
+                    services,
                 };
                 let continue_shell = matched.execute(&mut ctx);
 
@@ -185,4 +191,160 @@ pub fn get_completions_for(
         }
     }
     matches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+
+    #[derive(Default)]
+    struct FakeTerminal {
+        output: String,
+        pipe_stdout: Option<String>,
+        pipe_stdin: Option<String>,
+        capture: bool,
+    }
+
+    impl Terminal for FakeTerminal {
+        fn write_str(&mut self, value: &str) {
+            if self.capture {
+                self.pipe_stdout
+                    .get_or_insert_with(String::new)
+                    .push_str(value);
+            } else {
+                self.output.push_str(value);
+            }
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            None
+        }
+
+        fn set_stdin(&mut self, data: String) {
+            self.pipe_stdin = Some(data);
+        }
+
+        fn take_stdout(&mut self) -> Option<String> {
+            self.capture = false;
+            self.pipe_stdout.take()
+        }
+
+        fn take_stdin(&mut self) -> Option<String> {
+            self.pipe_stdin.take()
+        }
+
+        fn arm_pipe_stdout(&mut self) {
+            self.capture = true;
+            self.pipe_stdout = Some(String::new());
+        }
+
+        fn clear_pipe_stdin(&mut self) {
+            self.pipe_stdin = None;
+        }
+    }
+
+    fn emit(ctx: &mut CommandContext) -> bool {
+        ctx.terminal.write_str("pipeline data");
+        true
+    }
+
+    fn consume(ctx: &mut CommandContext) -> bool {
+        let input = ctx.terminal.take_stdin().unwrap_or_default();
+        ctx.terminal.write_str(&input);
+        true
+    }
+
+    fn stop(_ctx: &mut CommandContext) -> bool {
+        false
+    }
+
+    static EMIT: NamedCommand = NamedCommand {
+        name: "emit",
+        description: "emit",
+        func: emit,
+    };
+    static CONSUME: NamedCommand = NamedCommand {
+        name: "consume",
+        description: "consume",
+        func: consume,
+    };
+    static STOP: NamedCommand = NamedCommand {
+        name: "stop",
+        description: "stop",
+        func: stop,
+    };
+
+    #[test]
+    fn unknown_command_reports_error() {
+        let mut terminal = FakeTerminal::default();
+        assert!(dispatch(&[], &mut terminal, "missing"));
+        assert!(terminal.output.contains("Unknown command: missing"));
+    }
+
+    #[test]
+    fn pipeline_routes_stdout_to_next_stdin() {
+        let commands: &[&dyn Command] = &[&EMIT, &CONSUME];
+        let mut terminal = FakeTerminal::default();
+        assert!(dispatch(commands, &mut terminal, "emit | consume"));
+        assert_eq!(terminal.output, "pipeline data");
+        assert!(terminal.pipe_stdin.is_none());
+    }
+
+    #[test]
+    fn command_can_stop_dispatch() {
+        let commands: &[&dyn Command] = &[&STOP];
+        let mut terminal = FakeTerminal::default();
+        assert!(!dispatch(commands, &mut terminal, "stop"));
+    }
+
+    #[test]
+    fn dispatch_with_services_injects_service() {
+        #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+        struct MyService(u32);
+
+        fn check_service(ctx: &mut CommandContext) -> bool {
+            let value = ctx.services::<MyService>().map(|s| s.0).unwrap_or(0);
+            ctx.terminal.write_str(&alloc::format!("service={}", value));
+            true
+        }
+
+        static CHECK: NamedCommand = NamedCommand {
+            name: "check",
+            description: "check",
+            func: check_service,
+        };
+
+        let service = MyService(42);
+        let mut terminal = FakeTerminal::default();
+        let commands: &[&dyn Command] = &[&CHECK];
+        assert!(dispatch_with_services(
+            &commands,
+            &mut terminal,
+            "check",
+            &service
+        ));
+        assert!(terminal.output.contains("service=42"));
+    }
+
+    #[test]
+    fn dispatch_without_services_returns_none() {
+        fn check_service(ctx: &mut CommandContext) -> bool {
+            let has = ctx.services::<u32>().is_some();
+            ctx.terminal
+                .write_str(&alloc::format!("has_service={}", has));
+            true
+        }
+
+        static CHECK: NamedCommand = NamedCommand {
+            name: "check",
+            description: "check",
+            func: check_service,
+        };
+
+        let mut terminal = FakeTerminal::default();
+        let commands: &[&dyn Command] = &[&CHECK];
+        assert!(dispatch(commands, &mut terminal, "check"));
+        assert!(terminal.output.contains("has_service=false"));
+    }
 }

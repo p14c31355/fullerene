@@ -21,31 +21,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::Renderer;
 use solvent;
 
-use genome::fs::FsError;
-
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
-    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, is_initialized,
-    poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core, write_terminal,
+    LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
+    is_initialized, poll_mouse_state, process_events, push_key_event, set_render_fn, tick_core,
+    write_terminal,
 };
-
-/// Convert an FsError to a static string for the solvent callback boundary.
-fn fs_err_str(e: FsError) -> &'static str {
-    match e {
-        FsError::FileNotFound => "file not found",
-        FsError::FileExists => "file exists",
-        FsError::PermissionDenied => "permission denied",
-        FsError::InvalidFileDescriptor => "bad fd",
-        FsError::InvalidSeek => "invalid seek",
-        FsError::DiskFull => "disk full",
-        FsError::NotADirectory => "not a directory",
-        FsError::DirectoryNotEmpty => "directory not empty",
-        FsError::IsADirectory => "is a directory",
-        FsError::InvalidPath => "invalid path",
-        FsError::NotSupported => "not supported",
-        FsError::InvalidInput => "invalid input",
-    }
-}
 
 /// Initialise the GUI subsystem via Solvent runtime.
 pub fn init() {
@@ -54,7 +35,7 @@ pub fn init() {
         heap_extend: Some(|additional| unsafe { crate::heap::extend_kernel_heap(additional) }),
         wall_clock: Some(read_cmos_time),
         vfs_readdir: Some(|path| {
-            let entries = crate::contexts::vfs::readdir(path).map_err(fs_err_str)?;
+            let entries = crate::contexts::vfs::readdir(path)?;
             let mut result = alloc::vec::Vec::new();
             for vn in entries {
                 result.push(solvent::VfsEntry {
@@ -66,7 +47,7 @@ pub fn init() {
             Ok(result)
         }),
         vfs_read: Some(|path| {
-            let fd = crate::contexts::vfs::open(path, 0).map_err(fs_err_str)?;
+            let fd = crate::contexts::vfs::open(path, 0)?;
             let mut buf = alloc::vec::Vec::new();
             let mut tmp = [0u8; 4096];
             loop {
@@ -75,34 +56,21 @@ pub fn init() {
                     Ok(n) => buf.extend_from_slice(&tmp[..n]),
                     Err(e) => {
                         let _ = crate::contexts::vfs::close(fd.fd);
-                        return Err(fs_err_str(e));
+                        return Err(e);
                     }
                 }
             }
             let _ = crate::contexts::vfs::close(fd.fd);
             Ok(buf)
         }),
-        vfs_write: Some(|path, data| {
-            // Open existing file, write, close
-            let fd = crate::contexts::vfs::open(path, 0).map_err(fs_err_str)?;
-            match crate::contexts::vfs::write(fd.fd, data) {
-                Ok(_) => {
-                    let _ = crate::contexts::vfs::close(fd.fd);
-                    Ok(())
-                }
-                Err(e) => {
-                    let _ = crate::contexts::vfs::close(fd.fd);
-                    Err(fs_err_str(e))
-                }
-            }
+        vfs_write: Some(|path, data| crate::contexts::vfs::replace_file(path, data)),
+        vfs_copy: Some(|source, destination, is_dir| {
+            crate::contexts::vfs::copy_path(source, destination, is_dir)
         }),
-        vfs_create: Some(|path| {
-            let fd = crate::contexts::vfs::create(path).map_err(fs_err_str)?;
-            let _ = crate::contexts::vfs::close(fd.fd);
-            Ok(())
+        vfs_move: Some(|source, destination, is_dir| {
+            crate::contexts::vfs::move_path(source, destination, is_dir)
         }),
-        vfs_mkdir: Some(|path| crate::contexts::vfs::mkdir(path).map_err(fs_err_str)),
-        vfs_unlink: Some(|path| crate::contexts::vfs::unlink(path).map_err(fs_err_str)),
+        vfs_remove: Some(|path, is_dir| crate::contexts::vfs::remove_path(path, is_dir)),
         process_list: Some(|| {
             let mut result = alloc::vec::Vec::new();
             crate::process::SCHEDULER.with_list(|list| {
@@ -140,11 +108,8 @@ pub fn init() {
             }
             result
         }),
-        usb_drive_list: Some(|| {
-            let names = crate::devfs::list_block_device_names();
-            names.iter().map(|n| {
-                (alloc::format!("/dev/{}", n), alloc::format!("(not mounted — use mount command)"))
-            }).collect()
+        mounted_drive_list: Some(|| {
+            crate::contexts::vfs::with_vfs(|vfs| vfs.mounted_block_devices()).unwrap_or_default()
         }),
         usb_poll: Some(|| crate::drivers::registry::poll_usb()),
         shell_cmd: None,
@@ -152,6 +117,10 @@ pub fn init() {
             crate::scheduler::request_shell_launch();
         }),
         settings_save: None,
+        kernel_log: Some(|| {
+            alloc::string::String::from_utf8_lossy(&crate::klog::snapshot()).into_owned()
+        }),
+        metrics: Some(crate::metrics::format_snapshot),
     }
     .install();
 
@@ -185,20 +154,6 @@ pub fn init() {
 /// over the desktop on every frame.
 static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
 
-/// Fallback: render directly to the boot framebuffer when KernelContext renderer is unavailable.
-fn render_fallback(label: &[u8]) {
-    crate::boot_stage::draw_boot_label(label);
-    if let Some(bfb) = crate::graphics::discovery::direct_boot_framebuffer() {
-        if bfb.address() != 0 {
-            let len = (bfb.stride_pixels() as usize).checked_mul(bfb.height() as usize).unwrap_or(0);
-            let pixels = unsafe { core::slice::from_raw_parts_mut(bfb.address() as *mut u32, len) };
-            solvent::render(&mut petroleum::graphics::FramebufferGuard::new(
-                pixels, bfb.width(), bfb.height(), bfb.stride_pixels(),
-            ));
-        }
-    }
-}
-
 /// Signal present and flush GPU after rendering.
 fn finish_frame() {
     crate::contexts::kernel::with_kernel_mut(|k| {
@@ -210,6 +165,7 @@ fn finish_frame() {
 }
 
 pub fn render() {
+    let frame_start = unsafe { core::arch::x86_64::_rdtsc() };
     // Draw progress labels before acquiring the FramebufferGuard,
     // to avoid mutable aliasing of the framebuffer slice.
     if !BOOT_PROGRESS_DONE.load(Ordering::Relaxed) {
@@ -220,12 +176,15 @@ pub fn render() {
         solvent::set_render_progress_fn(|_| {});
     }
 
-    if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none() {
-        render_fallback(b"RENDER: guard failed, fallback");
+    if crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_none() {
+        crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
     }
 
     BOOT_PROGRESS_DONE.store(true, Ordering::Release);
     finish_frame();
+    crate::metrics::record_frame_ticks(
+        unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
+    );
 }
 
 /// Perform one tick of the runtime loop with kernel framebuffer access.
@@ -239,14 +198,27 @@ pub fn render() {
 ///    VFS → `KERNEL.lock()` without self-deadlocking.
 ///
 /// 2. **render** — framebuffer rendering under the `KERNEL` lock.
-///    Only started when `consume_frame_due()` returns `true`.
+///    Full-scene and cursor-only requests both borrow a `FramebufferGuard`.
 pub fn runtime_tick(now: u64) {
     solvent::tick_core(now);
-    if solvent::consume_frame_due() {
-        if crate::contexts::framebuffer::with_framebuffer_guard(|fb| solvent::render(fb)).is_none() {
-            render_fallback(b"RENDER: guard failed, fallback");
+    let full_frame = solvent::consume_frame_due();
+    let cursor_only = !full_frame && solvent::cursor_update_due();
+    if full_frame || cursor_only {
+        let frame_start = unsafe { core::arch::x86_64::_rdtsc() };
+        let rendered = crate::contexts::framebuffer::with_framebuffer(|framebuffer| {
+            if full_frame {
+                solvent::render(framebuffer);
+            } else {
+                solvent::render_cursor_fast(framebuffer);
+            }
+        });
+        if rendered.is_none() {
+            crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
         }
         finish_frame();
+        crate::metrics::record_frame_ticks(
+            unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(frame_start),
+        );
     }
 }
 

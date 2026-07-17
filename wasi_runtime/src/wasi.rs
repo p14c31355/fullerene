@@ -52,8 +52,8 @@ pub struct WasiCtx {
     pub write_stderr: fn(&[u8]),
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
-    pub read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
-    pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
+    pub read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+    pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
 }
 
@@ -64,8 +64,8 @@ impl WasiCtx {
         write_stderr: fn(&[u8]),
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
-        read_entire_file: fn(&str) -> Result<Vec<u8>, &'static str>,
-        read_directory: fn(&str) -> Result<Vec<(String, u8)>, &'static str>,
+        read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+        read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         get_monotonic_ns: fn() -> u64,
     ) -> Self {
         let args_vec: Vec<Vec<u8>> = args
@@ -80,7 +80,12 @@ impl WasiCtx {
         fds.insert(0, WasiFd::Stdin);
         fds.insert(1, WasiFd::Stdout);
         fds.insert(2, WasiFd::Stderr);
-        fds.insert(3, WasiFd::PreopenedDir { path: String::from("/") });
+        fds.insert(
+            3,
+            WasiFd::PreopenedDir {
+                path: String::from("/"),
+            },
+        );
         Self {
             exit_code: None,
             args: args_vec,
@@ -115,21 +120,36 @@ fn read_u32(memory: &Memory, ctx: impl AsContext, addr: u32) -> Result<u32, Erro
     Ok(u32::from_le_bytes(buf))
 }
 
-fn write_u32(memory: &Memory, ctx: impl wasmi::AsContextMut, addr: u32, val: u32) -> Result<(), Error> {
+fn write_u32(
+    memory: &Memory,
+    ctx: impl wasmi::AsContextMut,
+    addr: u32,
+    val: u32,
+) -> Result<(), Error> {
     let buf = val.to_le_bytes();
     memory
         .write(ctx, addr as usize, &buf)
         .map_err(|_| Error::new("memory write failed"))
 }
 
-fn write_u64(memory: &Memory, ctx: impl wasmi::AsContextMut, addr: u32, val: u64) -> Result<(), Error> {
+fn write_u64(
+    memory: &Memory,
+    ctx: impl wasmi::AsContextMut,
+    addr: u32,
+    val: u64,
+) -> Result<(), Error> {
     let buf = val.to_le_bytes();
     memory
         .write(ctx, addr as usize, &buf)
         .map_err(|_| Error::new("memory write failed"))
 }
 
-fn write_u8(memory: &Memory, ctx: impl wasmi::AsContextMut, addr: u32, val: u8) -> Result<(), Error> {
+fn write_u8(
+    memory: &Memory,
+    ctx: impl wasmi::AsContextMut,
+    addr: u32,
+    val: u8,
+) -> Result<(), Error> {
     let buf = [val];
     memory
         .write(ctx, addr as usize, &buf)
@@ -148,10 +168,11 @@ pub fn fd_write(
     let memory = get_memory(&caller)?;
     let mut total: u32 = 0;
     for i in 0..iovs_len {
-        let base = match iovs_ptr.checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?) {
-            Some(b) => b,
-            None => return Ok(EINVAL),
-        };
+        let base =
+            match iovs_ptr.checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?) {
+                Some(b) => b,
+                None => return Ok(EINVAL),
+            };
         let buf_ptr = read_u32(&memory, &caller, base)?;
         let len_addr = match base.checked_add(4) {
             Some(a) => a,
@@ -163,7 +184,11 @@ pub fn fd_write(
         while offset < buf_len {
             let chunk_len = (buf_len - offset).min(4096) as usize;
             memory
-                .read(&caller, buf_ptr as usize + offset as usize, &mut temp_buf[..chunk_len])
+                .read(
+                    &caller,
+                    buf_ptr as usize + offset as usize,
+                    &mut temp_buf[..chunk_len],
+                )
                 .map_err(|_| Error::new("fd_write: read iov failed"))?;
             let ctx = caller.data();
             match fd {
@@ -196,7 +221,9 @@ pub fn fd_read(
             let mut temp_buf = [0u8; 4096];
             let mut first_byte_opt: Option<u8> = None;
             for i in 0..iovs_len {
-                let base = match iovs_ptr.checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?) {
+                let base = match iovs_ptr
+                    .checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?)
+                {
                     Some(b) => b,
                     None => return Ok(EINVAL),
                 };
@@ -243,7 +270,11 @@ pub fn fd_read(
                         break;
                     }
                     memory
-                        .write(&mut caller, buf_ptr as usize + iov_written as usize, &temp_buf[..chunk_read])
+                        .write(
+                            &mut caller,
+                            buf_ptr as usize + iov_written as usize,
+                            &temp_buf[..chunk_read],
+                        )
                         .map_err(|_| Error::new("fd_read: write failed"))?;
                     iov_written += chunk_read as u32;
                     total_read += chunk_read as u32;
@@ -260,7 +291,9 @@ pub fn fd_read(
         }
         _ => {
             for i in 0..iovs_len {
-                let base = match iovs_ptr.checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?) {
+                let base = match iovs_ptr
+                    .checked_add(i.checked_mul(8).ok_or_else(|| Error::new("overflow"))?)
+                {
                     Some(b) => b,
                     None => return Ok(EINVAL),
                 };
@@ -366,11 +399,7 @@ pub fn fd_seek(
     Ok(ESUCCESS)
 }
 
-pub fn fd_prestat_get(
-    mut caller: Caller<'_, WasiCtx>,
-    fd: u32,
-    buf: u32,
-) -> Result<u32, Error> {
+pub fn fd_prestat_get(mut caller: Caller<'_, WasiCtx>, fd: u32, buf: u32) -> Result<u32, Error> {
     if fd != 3 {
         return Ok(EBADF);
     }
@@ -406,7 +435,11 @@ pub fn fd_prestat_dir_name(
     let memory = get_memory(&caller)?;
     let len = (path.len() as u32).min(path_len);
     memory
-        .write(&mut caller, path_ptr as usize, &path.as_bytes()[..len as usize])
+        .write(
+            &mut caller,
+            path_ptr as usize,
+            &path.as_bytes()[..len as usize],
+        )
         .map_err(|_| Error::new("fd_prestat_dir_name: write failed"))?;
     Ok(ESUCCESS)
 }
@@ -439,7 +472,11 @@ pub fn path_open(
         Err(_) => return Ok(EINVAL),
     };
     let clean = path_str.trim_matches('\0').trim_start_matches('/');
-    let full_path = if clean.is_empty() { String::from("/") } else { alloc::format!("/{}", clean) };
+    let full_path = if clean.is_empty() {
+        String::from("/")
+    } else {
+        alloc::format!("/{}", clean)
+    };
     let data = {
         let bc = caller.data();
         (bc.read_entire_file)(&full_path)
@@ -450,7 +487,13 @@ pub fn path_open(
                 let bc = caller.data_mut();
                 let fd = bc.next_fd;
                 bc.next_fd += 1;
-                bc.fds.insert(fd, WasiFd::File { data: bytes, offset: 0 });
+                bc.fds.insert(
+                    fd,
+                    WasiFd::File {
+                        data: bytes,
+                        offset: 0,
+                    },
+                );
                 fd
             };
             write_u32(&memory, &mut caller, result_fd_ptr, new_fd)?;
@@ -481,7 +524,11 @@ pub fn path_filestat_get(
         Err(_) => return Ok(EINVAL),
     };
     let clean = path_str.trim_matches('\0').trim_start_matches('/');
-    let full_path = if clean.is_empty() { String::from("/") } else { alloc::format!("/{}", clean) };
+    let full_path = if clean.is_empty() {
+        String::from("/")
+    } else {
+        alloc::format!("/{}", clean)
+    };
     let size = {
         let bc = caller.data();
         match (bc.read_entire_file)(&full_path) {
@@ -536,9 +583,7 @@ pub fn fd_readdir(
     let entries = {
         let bc = caller.data();
         match bc.fds.get(&fd) {
-            Some(WasiFd::PreopenedDir { path }) => {
-                (bc.read_directory)(path).unwrap_or_default()
-            }
+            Some(WasiFd::PreopenedDir { path }) => (bc.read_directory)(path).unwrap_or_default(),
             _ => return Ok(EBADF),
         }
     };
@@ -597,7 +642,10 @@ pub fn environ_sizes_get(
     let memory = get_memory(&caller)?;
     let (count, buf_size) = {
         let bc = caller.data();
-        (bc.env.len() as u32, bc.env.iter().map(|e| e.len() as u32).sum::<u32>())
+        (
+            bc.env.len() as u32,
+            bc.env.iter().map(|e| e.len() as u32).sum::<u32>(),
+        )
     };
     write_u32(&memory, &mut caller, count_ptr, count)?;
     write_u32(&memory, &mut caller, buf_size_ptr, buf_size)?;
@@ -616,7 +664,11 @@ pub fn environ_get(
     let memory = get_memory(&caller)?;
     let mut buf_offset = environ_buf_ptr;
     for (i, entry) in env.iter().enumerate() {
-        let addr = match environ_ptr.checked_add((i as u32).checked_mul(4).ok_or_else(|| Error::new("overflow"))?) {
+        let addr = match environ_ptr.checked_add(
+            (i as u32)
+                .checked_mul(4)
+                .ok_or_else(|| Error::new("overflow"))?,
+        ) {
             Some(a) => a,
             None => return Ok(EINVAL),
         };
@@ -637,7 +689,10 @@ pub fn args_sizes_get(
     let memory = get_memory(&caller)?;
     let (count, buf_size) = {
         let bc = caller.data();
-        (bc.args.len() as u32, bc.args.iter().map(|a| a.len() as u32).sum::<u32>())
+        (
+            bc.args.len() as u32,
+            bc.args.iter().map(|a| a.len() as u32).sum::<u32>(),
+        )
     };
     write_u32(&memory, &mut caller, count_ptr, count)?;
     write_u32(&memory, &mut caller, buf_size_ptr, buf_size)?;
@@ -656,7 +711,11 @@ pub fn args_get(
     let memory = get_memory(&caller)?;
     let mut buf_offset = argv_buf_ptr;
     for (i, arg) in args.iter().enumerate() {
-        let addr = match argv_ptr.checked_add((i as u32).checked_mul(4).ok_or_else(|| Error::new("overflow"))?) {
+        let addr = match argv_ptr.checked_add(
+            (i as u32)
+                .checked_mul(4)
+                .ok_or_else(|| Error::new("overflow"))?,
+        ) {
             Some(a) => a,
             None => return Ok(EINVAL),
         };
@@ -733,7 +792,11 @@ pub fn random_get(
                 i = end;
             }
             memory
-                .write(&mut caller, (buf_ptr as usize) + (offset as usize), &temp_buf[..chunk_len])
+                .write(
+                    &mut caller,
+                    (buf_ptr as usize) + (offset as usize),
+                    &temp_buf[..chunk_len],
+                )
                 .map_err(|_| Error::new("random_get: write failed"))?;
             offset += chunk_len as u32;
         }

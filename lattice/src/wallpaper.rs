@@ -168,13 +168,17 @@ pub fn render_wallpaper(
                     let pixels = preset.pixels;
                     for row_offset in 0..ch {
                         let y = cy + row_offset;
-                        if y >= fb_height { continue; }
+                        if y >= fb_height {
+                            continue;
+                        }
                         let src_y = (y % preset.height) as usize;
                         let rs = (y as usize) * fb_w;
                         let src_row_start = src_y * pw;
                         for col_offset in 0..cw {
                             let x = cx + col_offset;
-                            if x >= fb_width { continue; }
+                            if x >= fb_width {
+                                continue;
+                            }
                             let src_x = (x % preset.width) as usize;
                             fb[rs + x as usize] = pixels[src_row_start + src_x];
                         }
@@ -192,7 +196,9 @@ pub fn render_wallpaper(
                             let oy = (ph * fw - fh * pw) / (2 * pw);
                             for row_offset in 0..ch {
                                 let y = cy + row_offset;
-                                if y >= fb_height { continue; }
+                                if y >= fb_height {
+                                    continue;
+                                }
                                 let src_y_fp = (y as u64 + oy) * pw * precision / fw;
                                 let src_y_i = (src_y_fp / precision) as usize;
                                 let fy = (src_y_fp % precision) as u8;
@@ -201,7 +207,9 @@ pub fn render_wallpaper(
                                 let rs = (y as usize) * fb_w;
                                 for col_offset in 0..cw {
                                     let x = cx + col_offset;
-                                    if x >= fb_width { continue; }
+                                    if x >= fb_width {
+                                        continue;
+                                    }
                                     let src_x_fp = (x as u64) * pw * precision / fw;
                                     let src_x_i = (src_x_fp / precision) as usize;
                                     let fx = (src_x_fp % precision) as u8;
@@ -220,7 +228,9 @@ pub fn render_wallpaper(
                             let ox = (pw * fh - fw * ph) / (2 * ph);
                             for row_offset in 0..ch {
                                 let y = cy + row_offset;
-                                if y >= fb_height { continue; }
+                                if y >= fb_height {
+                                    continue;
+                                }
                                 let src_y_fp = (y as u64) * ph * precision / fh;
                                 let src_y_i = (src_y_fp / precision) as usize;
                                 let fy = (src_y_fp % precision) as u8;
@@ -229,7 +239,9 @@ pub fn render_wallpaper(
                                 let rs = (y as usize) * fb_w;
                                 for col_offset in 0..cw {
                                     let x = cx + col_offset;
-                                    if x >= fb_width { continue; }
+                                    if x >= fb_width {
+                                        continue;
+                                    }
                                     let src_x_fp = (x as u64 + ox) * ph * precision / fh;
                                     let src_x_i = (src_x_fp / precision) as usize;
                                     let fx = (src_x_fp % precision) as u8;
@@ -250,14 +262,20 @@ pub fn render_wallpaper(
                             let oy = (ph * fw - fh * pw) / (2 * pw);
                             for row_offset in 0..ch {
                                 let y = cy + row_offset;
-                                if y >= fb_height { continue; }
-                                let src_y = (((y as u64 + oy) * pw / fw) as usize).min(ph as usize - 1);
+                                if y >= fb_height {
+                                    continue;
+                                }
+                                let src_y =
+                                    (((y as u64 + oy) * pw / fw) as usize).min(ph as usize - 1);
                                 let rs = (y as usize) * fb_w;
                                 let src_row_start = src_y * (pw as usize);
                                 for col_offset in 0..cw {
                                     let x = cx + col_offset;
-                                    if x >= fb_width { continue; }
-                                    let src_x = ((x as u64 * pw / fw) as usize).min(pw as usize - 1);
+                                    if x >= fb_width {
+                                        continue;
+                                    }
+                                    let src_x =
+                                        ((x as u64 * pw / fw) as usize).min(pw as usize - 1);
                                     fb[rs + x as usize] = pixels[src_row_start + src_x];
                                 }
                             }
@@ -265,14 +283,19 @@ pub fn render_wallpaper(
                             let ox = (pw * fh - fw * ph) / (2 * ph);
                             for row_offset in 0..ch {
                                 let y = cy + row_offset;
-                                if y >= fb_height { continue; }
+                                if y >= fb_height {
+                                    continue;
+                                }
                                 let src_y = ((y as u64 * ph / fh) as usize).min(ph as usize - 1);
                                 let rs = (y as usize) * fb_w;
                                 let src_row_start = src_y * (pw as usize);
                                 for col_offset in 0..cw {
                                     let x = cx + col_offset;
-                                    if x >= fb_width { continue; }
-                                    let src_x = (((x as u64 + ox) * ph / fh) as usize).min(pw as usize - 1);
+                                    if x >= fb_width {
+                                        continue;
+                                    }
+                                    let src_x =
+                                        (((x as u64 + ox) * ph / fh) as usize).min(pw as usize - 1);
                                     fb[rs + x as usize] = pixels[src_row_start + src_x];
                                 }
                             }
@@ -291,7 +314,9 @@ pub fn render_wallpaper(
         WallpaperMode::SolidColor => {
             for row in cy..cy + ch {
                 let y = row;
-                if y >= fb_height { continue; }
+                if y >= fb_height {
+                    continue;
+                }
                 let rs = (y as usize) * fb_w;
                 let start = rs + cx as usize;
                 let end = (rs + (cx + cw) as usize).min(fb.len());
@@ -304,7 +329,9 @@ pub fn render_wallpaper(
             let grid_color = blend_over(colors.bg, colors.surface, 30);
             for row in cy..cy + ch {
                 let y = row;
-                if y >= fb_height { continue; }
+                if y >= fb_height {
+                    continue;
+                }
                 let on_grid_y = (y % grid_spacing) < grid_thickness;
                 let rs = (y as usize) * fb_w;
                 if on_grid_y {
@@ -332,7 +359,9 @@ pub fn render_wallpaper(
             let to = colors.surface;
             for row in cy..cy + ch {
                 let y = row;
-                if y >= fb_height { continue; }
+                if y >= fb_height {
+                    continue;
+                }
                 let t = (y as u64 * 256 / fb_height as u64).min(255) as u32;
                 let color = blend(from, to, t as u8);
                 let rs = (y as usize) * fb_w;

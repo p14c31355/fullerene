@@ -2,7 +2,7 @@ use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockError {
-    Device(&'static str),
+    Device,
     BufferTooSmall { required: usize, provided: usize },
     LbaOverflow,
     SectorNotFound,
@@ -11,7 +11,7 @@ pub enum BlockError {
 impl fmt::Display for BlockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BlockError::Device(msg) => write!(f, "device error: {}", msg),
+            BlockError::Device => write!(f, "block device error"),
             BlockError::BufferTooSmall { required, provided } => {
                 write!(f, "buffer too small: need {} got {}", required, provided)
             }
@@ -21,24 +21,18 @@ impl fmt::Display for BlockError {
     }
 }
 
-impl From<&'static str> for BlockError {
-    fn from(e: &'static str) -> Self {
-        BlockError::Device(e)
-    }
-}
-
 pub trait BlockDevice: Send {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str>;
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str>;
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError>;
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError>;
     fn sector_size(&self) -> u32;
     fn total_sectors(&self) -> u64;
 }
 
 impl BlockDevice for alloc::boxed::Box<dyn BlockDevice> {
-    fn read_sectors(&mut self, lba: u32, count: u16, buf: &mut [u8]) -> Result<(), &'static str> {
+    fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         (**self).read_sectors(lba, count, buf)
     }
-    fn write_sectors(&mut self, lba: u32, count: u16, buf: &[u8]) -> Result<(), &'static str> {
+    fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         (**self).write_sectors(lba, count, buf)
     }
     fn sector_size(&self) -> u32 {

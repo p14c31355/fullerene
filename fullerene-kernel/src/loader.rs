@@ -62,7 +62,9 @@ fn load_program_inner(
         process::SCHEDULER.with_process(pid, |p| {
             let initial_break = 0x60000000u64;
             let rt = crate::linux::LinuxRuntime::new(p.id.0, initial_break);
-            p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(rt)));
+            p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(
+                rt,
+            )));
         });
     }
 
@@ -87,7 +89,8 @@ fn load_program_inner(
                 let vaddr = ph.p_vaddr as u64;
 
                 // Check file range with overflow protection
-                let file_end = file_offset.checked_add(file_size)
+                let file_end = file_offset
+                    .checked_add(file_size)
                     .ok_or(LoadError::InvalidFormat)?;
                 if file_end > image_data.len() {
                     return Err(LoadError::InvalidFormat);
@@ -96,7 +99,8 @@ fn load_program_inner(
                     return Err(LoadError::InvalidFormat);
                 }
                 // Check virtual address range with overflow protection
-                let vaddr_end = vaddr.checked_add(mem_size as u64)
+                let vaddr_end = vaddr
+                    .checked_add(mem_size as u64)
                     .ok_or(LoadError::InvalidFormat)?;
                 if mem_size == 0 {
                     return Err(LoadError::InvalidFormat);
@@ -197,6 +201,7 @@ pub enum LoadError {
     UnsupportedArchitecture,
     MappingFailed,
     AddressAlreadyMapped,
+    FileNotFound,
 }
 
 impl From<LoadError> for petroleum::common::logging::SystemError {
@@ -207,6 +212,7 @@ impl From<LoadError> for petroleum::common::logging::SystemError {
             LoadError::AddressAlreadyMapped => {
                 petroleum::common::logging::SystemError::MappingFailed
             }
+            LoadError::FileNotFound => petroleum::common::logging::SystemError::FileNotFound,
             LoadError::MappingFailed => petroleum::common::logging::SystemError::MappingFailed,
             LoadError::NotExecutable | LoadError::UnsupportedArchitecture => {
                 petroleum::common::logging::SystemError::LoadFailed

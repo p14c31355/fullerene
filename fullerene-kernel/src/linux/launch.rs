@@ -1,8 +1,8 @@
 // Linux binary launcher
-use alloc::boxed::Box;
-use alloc::string::ToString;
 use crate::loader::LoadError;
 use crate::process::ProcessId;
+use alloc::boxed::Box;
+use alloc::string::ToString;
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
@@ -11,13 +11,19 @@ pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
 
 /// Launch a Linux ELF binary from the VFS at `path`.
 pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
+    // General-purpose callers can provide arbitrary paths, so retain a stable
+    // process label for the process table.
+    let static_name: &'static str = Box::leak(path.to_string().into_boxed_str());
+    launch_linux_binary_named(path, static_name)
+}
+
+/// Launch a Linux ELF binary from the VFS with a caller-owned static label.
+pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<ProcessId, LoadError> {
     let data = match crate::fs::read_entire_file(path) {
         Ok(d) => d,
         Err(_) => return Err(LoadError::InvalidFormat),
     };
-    // Leak path string to create &'static str for process name
-    let static_name: &'static str = Box::leak(path.to_string().into_boxed_str());
-    launch_linux_from_data(&data, static_name)
+    launch_linux_from_data(&data, name)
 }
 
 /// Launch a Linux ELF binary from raw bytes.
@@ -26,7 +32,7 @@ pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<Process
 }
 
 /// Launch BusyBox shell from embedded initramfs data.
-pub fn launch_busybox() -> Result<ProcessId, &'static str> {
+pub fn launch_busybox() -> Result<ProcessId, LoadError> {
     // Look for busybox in standard locations
     let locations = [
         "/bin/busybox",
@@ -40,11 +46,11 @@ pub fn launch_busybox() -> Result<ProcessId, &'static str> {
     for path in &locations {
         if crate::contexts::vfs::exists(path) {
             log::info!("Found BusyBox at {}", path);
-            return launch_linux_binary(path).map_err(|_| "Failed to load BusyBox");
+            return launch_linux_binary(path);
         }
     }
 
-    Err("BusyBox not found in filesystem")
+    Err(LoadError::FileNotFound)
 }
 
 /// Initialize the initramfs: creates basic Linux filesystem structure
@@ -77,8 +83,7 @@ pub fn init_initramfs() {
         let _ = crate::contexts::vfs::mkdir(dir);
     }
 
-    // Create /dev/null
-    let _ = crate::contexts::vfs::create("/dev/null");
+    // /dev/null is provided by the dynamic DevFs mount.
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");

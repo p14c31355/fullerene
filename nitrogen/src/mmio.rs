@@ -44,7 +44,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 /// writes — use `mfence` after the last `clflush` when ordering matters.
 #[inline]
 pub fn cache_flush(addr: *const u8) {
-    unsafe { core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags));
+    }
 }
 
 /// Flush a range of cache lines and issue a memory fence afterwards.
@@ -74,30 +76,27 @@ pub fn cache_flush_range(base: *const u8, len: usize) {
 /// when WC memory type is involved.
 #[inline]
 pub fn write_barrier() {
-    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("mfence", options(nostack, preserves_flags));
+    }
 }
 
 /// Ensure all prior loads are complete before subsequent loads.
 #[inline]
 pub fn read_barrier() {
-    unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)); }
-}
-
-/// Full memory barrier (store + load ordering).
-#[inline]
-pub fn full_barrier() {
-    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
+    unsafe {
+        core::arch::asm!("lfence", options(nostack, preserves_flags));
+    }
 }
 
 // ============================================================================
-//  Safe volatile read helpers — PCIe MMIO hang prevention
+//  Checked volatile read helpers
 // ============================================================================
 
 /// Result of a safety-checked MMIO read.
 ///
-/// Unlike a plain `read_volatile` which can hang the CPU forever when
-/// the PCIe endpoint does not respond (D3hot, ASPM L1, hot-remove),
-/// these results distinguish the error cases so the caller can react.
+/// These results distinguish failures that complete normally. They do not turn
+/// the CPU load itself into a cancellable operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafeReadResult<T> {
     /// Read succeeded with a valid value.
@@ -107,15 +106,6 @@ pub enum SafeReadResult<T> {
     /// Read returned 0xFFFF_FFFF indicating a PCI master abort
     /// (device unresponsive or in a low-power state).
     MasterAbort,
-}
-
-impl<T> SafeReadResult<T> {
-    pub fn into_option(self) -> Option<T> {
-        match self {
-            SafeReadResult::Value(v) => Some(v),
-            _ => None,
-        }
-    }
 }
 
 /// Perform a volatile read from a PCIe MMIO register with hang-safety checks.
@@ -135,13 +125,22 @@ impl<T> SafeReadResult<T> {
 /// A non-posted MMIO read can still hang if the device becomes unresponsive
 /// *after* the config-space check.  True hang prevention requires platform
 /// mechanisms (e.g. PCIe AER, SMI watchdog, or an external timeout).
-/// These checks catch ~99% of real-world cases encountered during development.
+/// No Rust read primitive can impose a timeout on the underlying PCIe
+/// transaction; an armed platform watchdog is required to recover a stalled
+/// load.
+///
+/// # Safety
+///
+/// `addr` must be aligned, mapped, and valid for a volatile `u32` load.
 #[inline(never)]
-pub fn checked_read_u32(addr: *const u32, health: Option<&PciHealth>) -> SafeReadResult<u32> {
-    if let Some(h) = health {
-        if !h.is_device_present() {
-            return SafeReadResult::DeviceGone;
-        }
+pub unsafe fn checked_read_u32(
+    addr: *const u32,
+    health: Option<&PciHealth>,
+) -> SafeReadResult<u32> {
+    if let Some(h) = health
+        && !h.is_device_present()
+    {
+        return SafeReadResult::DeviceGone;
     }
 
     // If watchdog is armed but not yet active, activate it for this read.
@@ -167,43 +166,35 @@ pub fn checked_read_u32(addr: *const u32, health: Option<&PciHealth>) -> SafeRea
     SafeReadResult::Value(val)
 }
 
-/// Perform a volatile read with master-abort detection only (no health pre-check).
-///
-/// This is useful for drivers that do not have a `PciHealth` instance but still
-/// want to detect an unresponsive device via the `0xFFFF_FFFF` PCI master abort
-/// pattern.  Returns `None` on master abort.
-///
-/// Note: without a pre-read health check, the volatile read can still hang if
-/// the device is in D3hot or ASPM L1.  Prefer `checked_read_u32` when a health
-/// monitor is available.
-#[inline]
-pub fn detect_abort_read_u32(addr: *const u32) -> Option<u32> {
-    let val = unsafe { core::ptr::read_volatile(addr) };
-    if val == 0xFFFF_FFFF {
-        None
-    } else {
-        Some(val)
-    }
-}
-
 /// Convenience wrapper: read two consecutive u32 registers with safety checks.
+///
+/// # Safety
+///
+/// `addr` must be aligned, mapped, and valid for two volatile `u32` loads.
 #[inline]
-pub fn checked_read_u64(addr: *const u32, health: Option<&PciHealth>) -> SafeReadResult<u64> {
-    let lo = match checked_read_u32(addr, health) {
+pub unsafe fn checked_read_u64(
+    addr: *const u32,
+    health: Option<&PciHealth>,
+) -> SafeReadResult<u64> {
+    let lo = match unsafe { checked_read_u32(addr, health) } {
         SafeReadResult::Value(v) => v,
-        e => return match e {
-            SafeReadResult::Value(_) => unreachable!(),
-            SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
-            SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
-        },
+        e => {
+            return match e {
+                SafeReadResult::Value(_) => unreachable!(),
+                SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
+                SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
+            };
+        }
     };
-    let hi = match checked_read_u32(unsafe { addr.add(1) }, health) {
+    let hi = match unsafe { checked_read_u32(addr.add(1), health) } {
         SafeReadResult::Value(v) => v,
-        e => return match e {
-            SafeReadResult::Value(_) => unreachable!(),
-            SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
-            SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
-        },
+        e => {
+            return match e {
+                SafeReadResult::Value(_) => unreachable!(),
+                SafeReadResult::DeviceGone => SafeReadResult::DeviceGone,
+                SafeReadResult::MasterAbort => SafeReadResult::MasterAbort,
+            };
+        }
     };
     SafeReadResult::Value((lo as u64) | ((hi as u64) << 32))
 }
@@ -274,7 +265,7 @@ impl MemRegion {
     /// See [`checked_read_u32`] for the safety mechanism.
     #[inline]
     pub fn checked_read32(&self, offset: usize, health: Option<&PciHealth>) -> SafeReadResult<u32> {
-        checked_read_u32(self.reg_ptr::<u32>(offset) as *const u32, health)
+        unsafe { checked_read_u32(self.reg_ptr::<u32>(offset) as *const u32, health) }
     }
 
     /// Read a u64 from an offset with PCIe hang-safety checks.
@@ -340,7 +331,10 @@ unsafe impl MmioSafe for u32 {}
 unsafe impl MmioSafe for u64 {}
 
 /// Operations required for MMIO register read-modify-write.
-pub trait MmioOps: BitAnd<Output = Self> + BitOr<Output = Self> + Not<Output = Self> + Sized {}
+pub trait MmioOps:
+    BitAnd<Output = Self> + BitOr<Output = Self> + Not<Output = Self> + Sized
+{
+}
 impl MmioOps for u8 {}
 impl MmioOps for u16 {}
 impl MmioOps for u32 {}
@@ -479,8 +473,11 @@ impl DmaRegion {
         let alloc_len = pages.checked_mul(4096)?;
         let phys = ctx.allocate_contiguous_frames(pages).ok()?;
         let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe { core::ptr::write_bytes(virt, 0, alloc_len); }
+        unsafe {
+            core::ptr::write_bytes(virt, 0, alloc_len);
+        }
         cache_flush_range(virt, alloc_len);
+        crate::metrics::dma_allocated(alloc_len);
         Some(Self {
             virt,
             phys,
@@ -551,10 +548,14 @@ impl DmaRegion {
     }
 
     /// Map this buffer for DMA via IOMMU.
-    pub fn dma_map(&mut self, ctx: &dyn DriverContext, device_id: u16) -> Result<u64, &'static str> {
+    pub fn dma_map(
+        &mut self,
+        ctx: &dyn DriverContext,
+        device_id: u16,
+    ) -> Result<u64, crate::DriverError> {
         let iova = ctx
             .dma_map(device_id, self.phys, self.len)
-            .map_err(|_| "dma_map failed")?;
+            .map_err(|_| crate::DriverError::DmaMappingFailed)?;
         self.dma_iova = iova;
         self.mapped = true;
         Ok(iova)
@@ -579,7 +580,9 @@ impl DmaRegion {
             self.mapped = false;
         }
         let pages = (self.len + 4095) / 4096;
+        let alloc_len = pages * 4096;
         ctx.free_contiguous_frames(self.phys, pages);
+        crate::metrics::dma_released(alloc_len);
         self.virt = core::ptr::null_mut();
         self.phys = 0;
         self.len = 0;
@@ -722,21 +725,20 @@ pub fn clear_watchdog_recovery_trigger() {
 /// 2. trigger link retrain
 /// 3. set recovery trigger flag
 pub fn mmio_watchdog_nmi_recovery() {
+    crate::pci::reset_config_lock_for_recovery();
     let bdf = MMIO_WATCHDOG_PCI_BDF.load(Ordering::Acquire);
     let (bus, dev, func) = (bdf as u8, (bdf >> 8) as u8, (bdf >> 16) as u8);
 
     let cmd = crate::pci::PciConfigSpace::read_config_word(bus, dev, func, 4);
-    crate::pci::PciConfigSpace::write_config_word_raw(
-        bus,
-        dev,
-        func,
-        4,
-        cmd & !(0x02 | 0x04),
-    );
+    crate::pci::PciConfigSpace::write_config_word_raw(bus, dev, func, 4, cmd & !(0x02 | 0x04));
 
     let bridge_bdf = MMIO_WATCHDOG_BRIDGE_BDF.load(Ordering::Acquire);
     if bridge_bdf != 0 {
-        let (b, d, f) = (bridge_bdf as u8, (bridge_bdf >> 8) as u8, (bridge_bdf >> 16) as u8);
+        let (b, d, f) = (
+            bridge_bdf as u8,
+            (bridge_bdf >> 8) as u8,
+            (bridge_bdf >> 16) as u8,
+        );
         if let Some(lnk_off) = crate::pci_error::find_pcie_cap(b, d, f)
             .and_then(|off| off.checked_add(0x10))
             .filter(|&off| off <= 0xFC)

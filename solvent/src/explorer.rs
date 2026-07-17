@@ -22,7 +22,7 @@
 //! +-----------------------------------------------------------+
 //! ```
 
-use crate::SOLVENT_CALLBACKS;
+use crate::{RUNTIME_CONTEXT, VfsEntry};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -73,6 +73,10 @@ pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
         app_name: "Image Viewer",
     },
     FileAssociation {
+        extensions: &["jpg", "jpeg"],
+        app_name: "Image Viewer",
+    },
+    FileAssociation {
         extensions: &["wav"],
         app_name: "Music Player",
     },
@@ -81,7 +85,7 @@ pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
         app_name: "Music Player",
     },
     FileAssociation {
-        extensions: &["tar", "gz", "xz", "zip"],
+        extensions: &["tar", "tgz", "gz", "xz", "zip"],
         app_name: "Archive Manager",
     },
     FileAssociation {
@@ -180,6 +184,29 @@ pub enum ExplorerAction {
     None,
 }
 
+#[derive(Debug, Clone)]
+struct ClipboardEntry {
+    path: String,
+    name: String,
+    is_dir: bool,
+}
+
+#[derive(Debug, Clone)]
+enum PendingOperation {
+    Rename {
+        source: String,
+        is_dir: bool,
+        input: String,
+    },
+    Delete {
+        path: String,
+        is_dir: bool,
+    },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PendingNavigation(String);
+
 const CONTEXT_MENU_ITEMS: &[&str] = &["Open", "Copy", "Paste", "Rename", "Delete", "Properties"];
 
 fn context_menu_action(idx: usize) -> ExplorerAction {
@@ -215,6 +242,11 @@ pub struct ExplorerContext {
     // double-click tracking
     pub last_click_entry: Option<usize>,
     pub last_click_tick: u64,
+    clipboard: Option<ClipboardEntry>,
+    pending_operation: Option<PendingOperation>,
+    status_message: Option<String>,
+    rename_shift_held: bool,
+    pending_navigation: Option<PendingNavigation>,
 }
 
 #[derive(Debug, Clone)]
@@ -256,6 +288,11 @@ impl ExplorerContext {
             context_menu: ContextMenuState::closed(),
             last_click_entry: None,
             last_click_tick: 0,
+            clipboard: None,
+            pending_operation: None,
+            status_message: None,
+            rename_shift_held: false,
+            pending_navigation: None,
         }
     }
 
@@ -297,49 +334,56 @@ impl ExplorerContext {
     }
 
     pub fn navigate_to(&mut self, path: &str) {
-        let path_str = String::from(path);
-        let readdir = match SOLVENT_CALLBACKS.lock().vfs_readdir {
-            Some(f) => f,
-            None => return,
-        };
-        match readdir(&path_str) {
-            Ok(entries) => {
-                self.current_dir = path_str.clone();
-                self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
-                self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries
-                    .iter()
-                    .map(|e| {
-                        let size_str = if e.is_dir {
-                            String::from("<DIR>")
-                        } else {
-                            format_size(e.size)
-                        };
-                        FileEntryDisplay {
-                            name: e.name.clone(),
-                            size_str,
-                            is_dir: e.is_dir,
-                        }
-                    })
-                    .collect();
-                self.sort_entries();
-                self.selected_index = None;
-                self.scroll_offset = 0;
-                if self.history_pos >= self.history.len()
-                    || self.history[self.history_pos] != path_str
-                {
-                    self.history.truncate(self.history_pos + 1);
-                    self.history.push(path_str);
-                    self.history_pos = self.history.len() - 1;
-                }
+        self.pending_navigation = Some(PendingNavigation(String::from(path)));
+        self.status_message = Some(String::from("Loading..."));
+    }
+
+    pub(crate) fn take_navigation_request(&mut self) -> Option<String> {
+        Some(self.pending_navigation.take()?.0)
+    }
+
+    pub(crate) fn finish_navigation(
+        &mut self,
+        path: String,
+        result: Result<Vec<VfsEntry>, genome::FsError>,
+    ) {
+        let entries = match result {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.status_message = Some(format!("Open failed: {}", error));
+                return;
             }
-            Err(_) => {}
+        };
+        self.current_dir = path.clone();
+        self.raw_names = entries.iter().map(|entry| entry.name.clone()).collect();
+        self.raw_is_dir = entries.iter().map(|entry| entry.is_dir).collect();
+        self.entries = entries
+            .into_iter()
+            .map(|entry| FileEntryDisplay {
+                size_str: if entry.is_dir {
+                    String::from("<DIR>")
+                } else {
+                    format_size(entry.size)
+                },
+                name: entry.name,
+                is_dir: entry.is_dir,
+            })
+            .collect();
+        self.sort_entries();
+        self.selected_index = None;
+        self.scroll_offset = 0;
+        self.status_message = None;
+        if self.history_pos >= self.history.len() || self.history[self.history_pos] != path {
+            self.history.truncate(self.history_pos + 1);
+            self.history.push(path);
+            self.history_pos = self.history.len() - 1;
         }
     }
 
     pub fn refresh(&mut self) {
         let dir = self.current_dir.clone();
         self.navigate_to(&dir);
+        self.refresh_sidebar();
     }
 
     /// Refresh sidebar items (re-detect USB drives etc.).
@@ -376,7 +420,7 @@ impl ExplorerContext {
                 is_usb: false,
             },
         ];
-        for (name, mount_path) in crate::get_usb_drives() {
+        for (name, mount_path) in crate::get_mounted_drives() {
             items.push(SidebarItem {
                 label: name,
                 path: mount_path,
@@ -421,33 +465,7 @@ impl ExplorerContext {
         if self.history_pos > 0 {
             self.history_pos -= 1;
             let path = self.history[self.history_pos].clone();
-            let readdir = match SOLVENT_CALLBACKS.lock().vfs_readdir {
-                Some(f) => f,
-                None => return,
-            };
-            if let Ok(entries) = readdir(&path) {
-                self.current_dir = path;
-                self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
-                self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries
-                    .iter()
-                    .map(|e| {
-                        let size_str = if e.is_dir {
-                            String::from("<DIR>")
-                        } else {
-                            format_size(e.size)
-                        };
-                        FileEntryDisplay {
-                            name: e.name.clone(),
-                            size_str,
-                            is_dir: e.is_dir,
-                        }
-                    })
-                    .collect();
-                self.sort_entries();
-                self.selected_index = None;
-                self.scroll_offset = 0;
-            }
+            self.navigate_to(&path);
         }
     }
 
@@ -455,33 +473,7 @@ impl ExplorerContext {
         if self.history_pos + 1 < self.history.len() {
             self.history_pos += 1;
             let path = self.history[self.history_pos].clone();
-            let readdir = match SOLVENT_CALLBACKS.lock().vfs_readdir {
-                Some(f) => f,
-                None => return,
-            };
-            if let Ok(entries) = readdir(&path) {
-                self.current_dir = path;
-                self.raw_names = entries.iter().map(|e| e.name.clone()).collect();
-                self.raw_is_dir = entries.iter().map(|e| e.is_dir).collect();
-                self.entries = entries
-                    .iter()
-                    .map(|e| {
-                        let size_str = if e.is_dir {
-                            String::from("<DIR>")
-                        } else {
-                            format_size(e.size)
-                        };
-                        FileEntryDisplay {
-                            name: e.name.clone(),
-                            size_str,
-                            is_dir: e.is_dir,
-                        }
-                    })
-                    .collect();
-                self.sort_entries();
-                self.selected_index = None;
-                self.scroll_offset = 0;
-            }
+            self.navigate_to(&path);
         }
     }
 
@@ -490,21 +482,196 @@ impl ExplorerContext {
         self.navigate_to(&parent);
     }
 
-    pub fn open_selected(&mut self, idx: usize) {
-        if idx < self.raw_is_dir.len() && self.raw_is_dir[idx] {
-            let name = &self.raw_names[idx];
-            let new_path = join_path(&self.current_dir, name);
-            self.navigate_to(&new_path);
+    /// Queue a directory navigation or return a file path for launching.
+    pub fn activate_entry(&mut self, idx: usize) -> Option<String> {
+        let path = join_path(&self.current_dir, self.raw_names.get(idx)?);
+        if *self.raw_is_dir.get(idx)? {
+            self.navigate_to(&path);
+            None
+        } else {
+            Some(path)
         }
     }
 
-    /// Get the full path of a file entry (for launching).
-    pub fn get_file_path(&self, idx: usize) -> Option<String> {
-        if idx < self.raw_names.len() {
-            Some(join_path(&self.current_dir, &self.raw_names[idx]))
-        } else {
-            None
+    fn selected_entry(&self) -> Option<(String, String, bool)> {
+        let index = self.selected_index?;
+        let name = self.raw_names.get(index)?.clone();
+        Some((
+            join_path(&self.current_dir, &name),
+            name,
+            *self.raw_is_dir.get(index)?,
+        ))
+    }
+
+    /// Execute an Explorer context-menu command. A returned path is a file
+    /// that the runtime should launch after releasing the Explorer borrow.
+    pub fn dispatch_context_action(&mut self, action: ExplorerAction) -> Option<String> {
+        self.status_message = None;
+        match action {
+            ExplorerAction::Open => {
+                let (path, _, is_dir) = self.selected_entry()?;
+                if is_dir {
+                    self.navigate_to(&path);
+                    None
+                } else {
+                    Some(path)
+                }
+            }
+            ExplorerAction::Copy => {
+                if let Some((path, name, is_dir)) = self.selected_entry() {
+                    self.clipboard = Some(ClipboardEntry {
+                        path,
+                        name: name.clone(),
+                        is_dir,
+                    });
+                    self.status_message = Some(format!("Copied {}", name));
+                } else {
+                    self.status_message = Some(String::from("Copy: select a file or folder"));
+                }
+                None
+            }
+            ExplorerAction::Paste => {
+                let Some(source) = self.clipboard.clone() else {
+                    self.status_message = Some(String::from("Paste: clipboard is empty"));
+                    return None;
+                };
+                let destination = unique_destination(&self.current_dir, &source.name);
+                self.status_message = Some(
+                    match copy_entry(&source.path, &destination, source.is_dir) {
+                        Ok(()) => {
+                            self.refresh();
+                            format!("Pasted {}", basename(&destination))
+                        }
+                        Err(error) => format!("Paste failed: {}", error),
+                    },
+                );
+                None
+            }
+            ExplorerAction::Rename => {
+                if let Some((source, name, is_dir)) = self.selected_entry() {
+                    self.pending_operation = Some(PendingOperation::Rename {
+                        source,
+                        is_dir,
+                        input: name,
+                    });
+                } else {
+                    self.status_message = Some(String::from("Rename: select a file or folder"));
+                }
+                None
+            }
+            ExplorerAction::Delete => {
+                if let Some((path, _, is_dir)) = self.selected_entry() {
+                    self.pending_operation = Some(PendingOperation::Delete { path, is_dir });
+                } else {
+                    self.status_message = Some(String::from("Delete: select a file or folder"));
+                }
+                None
+            }
+            ExplorerAction::Properties => {
+                if let Some((path, name, is_dir)) = self.selected_entry() {
+                    let size = self
+                        .selected_index
+                        .and_then(|index| self.entries.get(index))
+                        .map(|entry| entry.size_str.as_str())
+                        .unwrap_or("unknown");
+                    self.status_message = Some(format!(
+                        "{} | {} | {} | {}",
+                        name,
+                        if is_dir { "folder" } else { "file" },
+                        size,
+                        path
+                    ));
+                } else {
+                    self.status_message = Some(format!("Folder | {}", self.current_dir));
+                }
+                None
+            }
+            ExplorerAction::None => None,
         }
+    }
+
+    /// Handle rename/delete modal keys before normal Explorer navigation.
+    pub fn handle_operation_key(&mut self, scancode: u8, pressed: bool) -> bool {
+        if self.pending_operation.is_none() {
+            return false;
+        }
+        if matches!(scancode, 0x2A | 0x36) {
+            self.rename_shift_held = pressed;
+            return true;
+        }
+        if !pressed {
+            return true;
+        }
+        match scancode {
+            0x01 => {
+                self.pending_operation = None;
+                self.status_message = Some(String::from("Operation cancelled"));
+            }
+            0x1C => self.commit_pending_operation(),
+            0x0E => {
+                if let Some(PendingOperation::Rename { input, .. }) =
+                    self.pending_operation.as_mut()
+                {
+                    input.pop();
+                }
+            }
+            _ => {
+                let mut byte = crate::scancode_to_ascii(scancode);
+                if self.rename_shift_held {
+                    byte = shifted_ascii(byte);
+                }
+                if byte != 0
+                    && byte != b'/'
+                    && byte != b'\\'
+                    && let Some(PendingOperation::Rename { input, .. }) =
+                        self.pending_operation.as_mut()
+                    && input.len() < 255
+                {
+                    input.push(byte as char);
+                }
+            }
+        }
+        true
+    }
+
+    fn commit_pending_operation(&mut self) {
+        let Some(operation) = self.pending_operation.take() else {
+            return;
+        };
+        self.status_message = Some(match operation {
+            PendingOperation::Delete { path, is_dir } => match delete_entry(&path, is_dir) {
+                Ok(()) => {
+                    self.refresh();
+                    format!("Deleted {}", basename(&path))
+                }
+                Err(error) => format!("Delete failed: {}", error),
+            },
+            PendingOperation::Rename {
+                source,
+                is_dir,
+                input,
+            } => {
+                let name = input.trim();
+                if name.is_empty() || matches!(name, "." | "..") {
+                    String::from("Rename failed: invalid name")
+                } else {
+                    let destination = join_path(&parent_path(&source), name);
+                    if destination == source {
+                        String::from("Rename: name unchanged")
+                    } else if path_exists(&destination) {
+                        String::from("Rename failed: destination already exists")
+                    } else {
+                        match move_entry(&source, &destination, is_dir) {
+                            Ok(()) => {
+                                self.refresh();
+                                format!("Renamed to {}", name)
+                            }
+                            Err(error) => format!("Rename failed: {}", error),
+                        }
+                    }
+                }
+            }
+        });
     }
 }
 
@@ -531,6 +698,97 @@ fn join_path(base: &str, name: &str) -> String {
         format!("/{}", name)
     } else {
         format!("{}/{}", base.trim_end_matches('/'), name)
+    }
+}
+
+fn basename(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(path)
+}
+
+fn path_exists(path: &str) -> bool {
+    let parent = parent_path(path);
+    let name = basename(path);
+    let Some(readdir) = RUNTIME_CONTEXT.callback_snapshot().vfs_readdir else {
+        return false;
+    };
+    readdir(&parent).ok().is_some_and(|entries| {
+        entries
+            .iter()
+            .any(|entry| entry.name.eq_ignore_ascii_case(name))
+    })
+}
+
+fn unique_destination(directory: &str, name: &str) -> String {
+    let original = join_path(directory, name);
+    if !path_exists(&original) {
+        return original;
+    }
+    let (stem, extension) = name
+        .rfind('.')
+        .filter(|&index| index > 0)
+        .map_or((name, ""), |index| (&name[..index], &name[index..]));
+    (1..10_000)
+        .map(|index| {
+            join_path(
+                directory,
+                &format!("{} - Copy {}{}", stem, index, extension),
+            )
+        })
+        .find(|candidate| !path_exists(candidate))
+        .unwrap_or_else(|| join_path(directory, &format!("{} - Copy{}", stem, extension)))
+}
+
+fn copy_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {
+    let copy = RUNTIME_CONTEXT
+        .callback_snapshot()
+        .vfs_copy
+        .ok_or(genome::FsError::NotSupported)?;
+    copy(source, destination, is_dir)
+}
+
+fn move_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {
+    let move_path = RUNTIME_CONTEXT
+        .callback_snapshot()
+        .vfs_move
+        .ok_or(genome::FsError::NotSupported)?;
+    move_path(source, destination, is_dir)
+}
+
+fn delete_entry(path: &str, is_dir: bool) -> Result<(), genome::FsError> {
+    let remove = RUNTIME_CONTEXT
+        .callback_snapshot()
+        .vfs_remove
+        .ok_or(genome::FsError::NotSupported)?;
+    remove(path, is_dir)
+}
+
+fn shifted_ascii(byte: u8) -> u8 {
+    match byte {
+        b'a'..=b'z' => byte.to_ascii_uppercase(),
+        b'1' => b'!',
+        b'2' => b'@',
+        b'3' => b'#',
+        b'4' => b'$',
+        b'5' => b'%',
+        b'6' => b'^',
+        b'7' => b'&',
+        b'8' => b'*',
+        b'9' => b'(',
+        b'0' => b')',
+        b'-' => b'_',
+        b'=' => b'+',
+        b'[' => b'{',
+        b']' => b'}',
+        b';' => b':',
+        b'\'' => b'"',
+        b',' => b'<',
+        b'.' => b'>',
+        b'/' => b'?',
+        b'`' => b'~',
+        other => other,
     }
 }
 
@@ -597,6 +855,13 @@ pub fn hit_file_list(
     }
 }
 
+pub fn hit_file_area(win_w: u32, win_h: u32, rx: i32, ry: i32) -> bool {
+    rx >= SIDEBAR_WIDTH as i32
+        && rx < win_w as i32
+        && ry >= (TOOLBAR_HEIGHT + ROW_HEIGHT) as i32
+        && ry < win_h.saturating_sub(STATUSBAR_HEIGHT) as i32
+}
+
 pub fn hit_sidebar(ctx: &ExplorerContext, rx: i32, ry: i32) -> Option<usize> {
     if rx < 0 || rx >= SIDEBAR_WIDTH as i32 || ry < TOOLBAR_HEIGHT as i32 {
         return None;
@@ -635,10 +900,14 @@ pub fn hit_toolbar_button(rx: i32, ry: i32) -> Option<u8> {
     }
 }
 
-/// Returns true if the click hit the context menu (was consumed).
-pub fn handle_context_menu_click(ctx: &mut ExplorerContext, rx: i32, ry: i32) -> bool {
+/// Return the selected action, or `None` when the menu was dismissed.
+pub fn handle_context_menu_click(
+    ctx: &mut ExplorerContext,
+    rx: i32,
+    ry: i32,
+) -> Option<ExplorerAction> {
     if !ctx.context_menu.open {
-        return false;
+        return None;
     }
     let mx = ctx.context_menu.x as i32;
     let my = ctx.context_menu.y as i32;
@@ -649,31 +918,12 @@ pub fn handle_context_menu_click(ctx: &mut ExplorerContext, rx: i32, ry: i32) ->
             let action = context_menu_action(idx as usize);
             ctx.context_menu.open = false;
             ctx.context_menu.hovered_item = None;
-            dispatch_context_action(ctx, action);
-            return true;
+            return Some(action);
         }
     }
     ctx.context_menu.open = false;
     ctx.context_menu.hovered_item = None;
-    true
-}
-
-fn dispatch_context_action(ctx: &mut ExplorerContext, action: ExplorerAction) {
-    match action {
-        ExplorerAction::Open => {
-            if let Some(idx) = ctx.selected_index {
-                ctx.open_selected(idx);
-            }
-        }
-        ExplorerAction::Copy => {
-            // For now, clipboard is not yet implemented
-        }
-        ExplorerAction::Paste => {}
-        ExplorerAction::Rename => {}
-        ExplorerAction::Delete => {}
-        ExplorerAction::Properties => {}
-        ExplorerAction::None => {}
-    }
+    None
 }
 
 // ── Rendering ─────────────────────────────────────────────────
@@ -866,16 +1116,19 @@ fn draw_file_list(ctx: &ExplorerContext, surface: &mut Surface, win_w: u32, win_
 
 fn draw_statusbar(ctx: &ExplorerContext, surface: &mut Surface, _win_w: u32, win_h: u32) {
     let sy = win_h - STATUSBAR_HEIGHT;
-    let is_usb_path = ctx.current_dir.contains("/mnt");
-    let items_text = if ctx.entries.is_empty() && is_usb_path {
-        "USB storage not yet available"
+    let text = if let Some(operation) = &ctx.pending_operation {
+        match operation {
+            PendingOperation::Rename { input, .. } => {
+                format!("Rename: {}_  |  Enter: apply  Esc: cancel", input)
+            }
+            PendingOperation::Delete { path, .. } => {
+                format!("Delete {}?  |  Enter: yes  Esc: no", basename(path))
+            }
+        }
+    } else if let Some(message) = &ctx.status_message {
+        message.clone()
     } else if ctx.entries.is_empty() {
-        "(empty directory)"
-    } else {
-        ""
-    };
-    let text = if !items_text.is_empty() {
-        format!("{}  |  {}", items_text, ctx.current_dir)
+        format!("(empty directory)  |  {}", ctx.current_dir)
     } else {
         format!("{} items  |  {}", ctx.entries.len(), ctx.current_dir)
     };
@@ -970,5 +1223,54 @@ fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
                 pixels[row_base + dx + gx] = fg;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExplorerContext;
+    use crate::VfsEntry;
+    use alloc::string::String;
+
+    #[test]
+    fn navigation_completes_in_one_step() {
+        let mut explorer = ExplorerContext::new();
+        explorer.navigate_to("/mnt/sdcard");
+
+        assert_eq!(explorer.current_dir, "/");
+        assert_eq!(
+            explorer.take_navigation_request().as_deref(),
+            Some("/mnt/sdcard")
+        );
+        assert_eq!(explorer.take_navigation_request(), None);
+
+        explorer.finish_navigation(
+            String::from("/mnt/sdcard"),
+            Ok(alloc::vec![VfsEntry {
+                name: String::from("Bootlog.txt"),
+                size: 512,
+                is_dir: false,
+            }]),
+        );
+        assert_eq!(explorer.current_dir, "/mnt/sdcard");
+        assert_eq!(explorer.entries[0].name, "Bootlog.txt");
+    }
+
+    #[test]
+    fn activating_entries_uses_one_path_for_keyboard_and_mouse() {
+        let mut explorer = ExplorerContext::new();
+        explorer.current_dir = String::from("/mnt");
+        explorer.raw_names = alloc::vec![String::from("sdcard"), String::from("Bootlog.txt")];
+        explorer.raw_is_dir = alloc::vec![true, false];
+
+        assert_eq!(explorer.activate_entry(0), None);
+        assert_eq!(
+            explorer.take_navigation_request().as_deref(),
+            Some("/mnt/sdcard")
+        );
+        assert_eq!(
+            explorer.activate_entry(1).as_deref(),
+            Some("/mnt/Bootlog.txt")
+        );
     }
 }

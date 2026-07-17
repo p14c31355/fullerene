@@ -3,16 +3,7 @@
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::string::ToString;
-use alloc::vec::Vec;
 use carrier::terminal::Terminal;
-
-/// Retrieve a snapshot of the shared command history.
-///
-/// This returns the most recent entries (newest first) so that
-/// commands like `history` can display them.
-pub fn get_history() -> Vec<String> {
-    carrier::exec::get_history_snapshot()
-}
 
 const HISTORY_MAX: usize = 128;
 
@@ -83,7 +74,7 @@ impl LineEditor {
             }
         }
         let line = String::from_utf8_lossy(&self.buffer).to_string();
-        self.add_to_history(&line);
+        self.add_to_history(&line, term);
         Some(line)
     }
 
@@ -278,7 +269,7 @@ impl LineEditor {
         }
     }
 
-    fn add_to_history(&mut self, line: &str) {
+    fn add_to_history(&mut self, line: &str, term: &mut dyn Terminal) {
         if line.is_empty() {
             return;
         }
@@ -289,8 +280,7 @@ impl LineEditor {
             self.history.pop_back();
         }
         self.history.push_front(line.into());
-        // Also push to the shared history for the `history` command.
-        carrier::exec::push_history(line);
+        term.record_history(line);
     }
 
     // ── escape sequences ────────────────────────────────────────────

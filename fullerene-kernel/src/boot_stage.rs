@@ -2,7 +2,7 @@
 //!
 //! Tracks the furthest boot stage reached.  The current stage can be
 //! queried at any time and is included as a `LastStage=…` line in
-//! `/bootlog.txt` on panic or clean shutdown.
+//! `/bootlog/Bootlog.txt` on panic or clean shutdown.
 //!
 //! # Usage
 //!
@@ -183,7 +183,9 @@ pub fn draw_step_hint(hint: &[u8]) {
     let panel_y = (fbh - panel_h) / 2;
     let y = panel_y + panel_h - 16;
     let x = panel_x + 24;
-    unsafe { fb.draw_text(x, y, hint, 1, 0x8c8c96); }
+    unsafe {
+        fb.draw_text(x, y, hint, 1, 0x8c8c96);
+    }
 }
 
 /// Get the last boot stage reached.
@@ -192,7 +194,7 @@ pub fn last_stage() -> Option<BootStage> {
     BootStage::from_u8(raw)
 }
 
-/// Format a `LastStage=…` line for inclusion in `/bootlog.txt`.
+/// Format a `LastStage=…` line for inclusion in `/bootlog/Bootlog.txt`.
 pub fn last_stage_line() -> alloc::string::String {
     match last_stage() {
         Some(s) => alloc::format!("LastStage={}\n", s.label()),

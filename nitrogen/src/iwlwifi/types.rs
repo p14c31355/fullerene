@@ -4,11 +4,11 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use bonder::wifi::{AccessPoint, WifiStatus};
 
+use crate::DriverContext;
 use crate::mmio::DmaRegion;
 use crate::pci::PciDevice;
 use crate::pci_health::PciHealth;
 use crate::wifi;
-use crate::DriverContext;
 
 // ── Firmware states ────────────────
 

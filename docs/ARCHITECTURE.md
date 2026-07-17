@@ -63,14 +63,18 @@ Carrier (I/O abstraction) ──── Lattice / Nozzle
 Shared across kernel and userspace:
 
 ```text
-petroleum (no_std library)
+fullerene-abi (no_std leaf crate, no dependencies)
+    └── syscall numbers, error codes, repr(C) DTOs, ABI capabilities
+
+petroleum (no_std support library)
     ├── page_table, memory, graphics
-    ├── syscall numbers + raw syscall instruction
+    ├── raw syscall instruction (numbers come from fullerene-abi)
     ├── VDSO layout (read-only metadata page)
     └── serial, early boot helpers
 ```
 
 New in this revision:
+- **Fullerene ABI** is the dependency-free contract shared directly by the kernel and Toluene SDK. Petroleum re-exports its typed syscall numbers for compatibility but does not own them.
 - **Genome** provides the filesystem framework (`FileSystem` trait, `Vfs` dispatcher, `MemFileSystem`) as a standalone leaf crate. The kernel re-exports Genome types and adds the singleton `VfsContext`.
 - **Carrier** provides the I/O abstraction (`Terminal` trait, pipeline, streaming `dispatch()`) as another leaf crate. Nozzle and Solvent depend on Carrier for terminal I/O and command dispatch.
 
@@ -200,6 +204,32 @@ higher layers decide policy
 
 Nitrogen should prefer safe abstractions over leaking raw hardware interfaces upward.
 
+The kernel owns PCI resource and page-table policy. Driver MMIO requests use a
+kernel capability that validates and preserves an existing physical direct map
+before creating a new mapping; drivers must not split boot huge pages or assume
+that changing page-table cache flags is harmless on firmware-defined PCI
+apertures. Likewise, firmware-assigned non-zero BARs are immutable inputs to
+boot resource allocation and are never size-probed destructively.
+
+The xHCI driver keeps `XhciContext` as its single state owner and API facade,
+while lifecycle operations are split under `nitrogen/src/usb/xhci/`:
+`controller` owns construction, reset/start, recovery, and root-port polling;
+`command` owns command-ring submission and slot/endpoint configuration;
+`event` owns event-ring waiting; `transfer` owns control and bulk transfers;
+and `resources` owns slot release, deferred DMA cleanup, and teardown. These
+modules add inherent methods to the same context and do not introduce
+additional controller owners or global state.
+
+The Intel Wi-Fi driver follows the same facade pattern. `IwlWifiDevice` remains
+the single owner of MMIO, DMA rings, firmware state, and connection data, while
+the implementation under `nitrogen/src/iwlwifi/` is separated by lifecycle:
+`device` owns construction and resource lifetime; `firmware` owns image
+selection; `registers` owns PCI/MMIO and firmware constants; `tx` owns host
+commands and transmit descriptors; `rx` owns interrupt and receive processing;
+and `connection_state` owns scanning, association, DHCP/WPA transitions, and
+the incremental initialization facade. The split does not introduce another
+device owner or change the public `nitrogen::iwlwifi` API.
+
 ---
 
 ## Solvent (Runtime)
@@ -234,6 +264,28 @@ incremental initialization state machine, while Solvent owns `WifiService`, its
 timeout, scan cadence, action consumption, and immutable desktop snapshot. The
 kernel installs the `DriverContext` capability, starts Solvent via `solvent::init()`,
 and explicitly registers the Wi-Fi service via `solvent::register_wifi_service()`.
+
+Solvent's crate root is an API facade rather than an orchestration
+implementation. Runtime responsibilities are divided under `solvent/src/`:
+
+- `runtime_context` owns callback, runtime-state, event-queue, and dispatcher
+  synchronization domains together with runtime configuration and
+  initialization.
+- `input_loop` translates PS/2 mouse and keyboard state into desktop actions or
+  Resonance events.
+- `event_loop` owns timer processing, service ticks, event dispatch, and frame
+  pacing.
+- `window_api` owns window lifecycle, redraw control, and file-launch
+  integration.
+- `callbacks` defines the kernel-provided service contract and transfer types.
+- `services` owns runtime-managed services and their shared UI snapshots.
+
+`RUNTIME_CONTEXT` is the single owner of callbacks, mutable desktop runtime
+state, the Resonance event queue, and the dispatcher. Each remains behind a
+separate lock because dispatch handlers may re-enter runtime operations.
+Callers acquire these domains through `RuntimeContext` guard methods; the
+former standalone `SOLVENT_CALLBACKS`, `RUNTIME`, `EVENT_QUEUE`, and
+`DISPATCHER` globals no longer exist.
 
 ---
 
@@ -404,6 +456,45 @@ device candidates without invoking VFS callbacks. After the controller lock is
 released, the kernel integration layer performs FAT probing and mounts through
 Genome. This lock boundary must be preserved: recursively borrowing a
 `USBContext` from a mount callback is prohibited.
+
+The FAT-family integration is divided along I/O ownership boundaries under
+`fullerene-kernel/src/drivers/fat/`: `partition` translates media-relative
+LBAs, `cache` owns sector caching and eviction, `block_device` adapts the kernel
+contract to filesystem I/O, `fat32` and `exfat` implement their VFS backends,
+and the module root only probes and dispatches mounts. Existing callers enter
+through `drivers::fat::mount_device`.
+
+USB controller service registration is boot-safe and does not activate BAR
+MMIO. Solvent polling observes only an already-active controller and must never
+activate the Nitrogen state machine from rendering or input dispatch. Explicit
+`usb_rescan` is the activation boundary; device discovery and `/dev`
+registration remain separate from filesystem mount policy.
+
+PCI storage follows the same lifecycle rule. Boot may discover an RTSX
+controller and prepare its service, but card-register MMIO begins only at the
+explicit `sd_rescan` boundary. AHCI and NVMe drivers must not be registered in
+the boot attach pipeline until they expose real block-device ownership; a
+controller reset performed by a placeholder wrapper is not service
+registration.
+
+The kernel device registry preserves `/dev/<name>` identity while transferring
+exclusive block-device ownership to a mounted filesystem. An available entry
+contains a device lease; a present entry without a lease means mounted or in
+use. Controller re-enumeration must not invalidate an outstanding lease.
+
+Native syscall handling is split by context under
+`fullerene-kernel/src/syscall/`. `dispatch` is the only syscall-number router;
+`abi`, `process`, `fs`, `memory`, `event`, `thread`, `window`, `device`, `ipc`,
+`cap`, and `time` own their domain handlers. `interface` owns the shared error
+and user-copy contract, while `types` owns handle-backed kernel object types.
+Domain modules must not perform secondary syscall-number dispatch.
+
+`/dev` is a `DevFs` mount backed directly by that registry, not a tmpfs with
+manually-created placeholder files. Consequently registration and removal are
+visible immediately and `/dev/null` is supplied by DevFs itself. Seeing only
+`/dev/null` before an explicit media rescan is expected. Media discovery remains
+distinct from mounting: `sd_rescan` may retry an inserted SD card, while
+`mount /dev/sd0 <path>` only acquires and mounts its existing lease.
 
 The kernel crate re-exports Genome types and adds the singleton `VfsContext` (wrapping `Vfs` with `spin::Mutex` + handle table) through the kernel's `vfs` and `fs` modules, keeping the core logic framework-agnostic.
 
@@ -679,5 +770,3 @@ The goal is to reduce cognitive load, improve maintainability, and provide a sta
 Rule of thumb:
 
 > If multiple functions share the same conceptual state, create a Context structure and move the state into it.
-
-

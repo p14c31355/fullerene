@@ -21,22 +21,54 @@ pub use prompt::Prompt;
 
 pub const DEFAULT_PROMPT: &str = "nozzle> ";
 
+/// Immutable services required by Nozzle built-ins.
+#[derive(Clone, Copy)]
+pub struct ShellServices {
+    pub fs: fs_hooks::FsHooks,
+    pub sys: sys_hooks::SysHooks,
+    pub mount: Option<fn(&mut CommandContext)>,
+}
+
+impl ShellServices {
+    pub const fn new(
+        fs: fs_hooks::FsHooks,
+        sys: sys_hooks::SysHooks,
+        mount: Option<fn(&mut CommandContext)>,
+    ) -> Self {
+        Self { fs, sys, mount }
+    }
+
+    pub const fn none() -> Self {
+        Self::new(fs_hooks::FsHooks::none(), sys_hooks::SysHooks::none(), None)
+    }
+}
+
+pub(crate) fn services(ctx: &CommandContext) -> Option<ShellServices> {
+    ctx.services::<ShellServices>()
+}
+
 pub struct Shell<'a> {
     terminal: &'a mut dyn Terminal,
     commands: &'a [&'a dyn Command],
     editor: LineEditor,
     prompt: Prompt,
     welcome_shown: bool,
+    services: ShellServices,
 }
 
 impl<'a> Shell<'a> {
-    pub fn new(terminal: &'a mut dyn Terminal, commands: &'a [&'a dyn Command]) -> Self {
+    pub fn new(
+        terminal: &'a mut dyn Terminal,
+        commands: &'a [&'a dyn Command],
+        services: ShellServices,
+    ) -> Self {
         Self {
             terminal,
             commands,
             editor: LineEditor::new(),
             prompt: Prompt::new(DEFAULT_PROMPT),
             welcome_shown: false,
+            services,
         }
     }
 
@@ -62,8 +94,12 @@ impl<'a> Shell<'a> {
                 continue;
             }
 
-            let should_continue =
-                carrier::exec::dispatch(self.commands, &mut *self.terminal, trimmed);
+            let should_continue = carrier::exec::dispatch_with_services(
+                self.commands,
+                &mut *self.terminal,
+                trimmed,
+                &self.services,
+            );
             if !should_continue {
                 break;
             }
@@ -94,6 +130,16 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ("cat", "Print file contents", builtins::cmd_cat),
         ("pwd", "Print working directory", builtins::cmd_pwd),
         ("mem", "Show memory information", builtins::cmd_mem),
+        (
+            "metrics",
+            "Show boot/frame/heap/DMA metrics",
+            builtins::cmd_metrics
+        ),
+        (
+            "cpuinfo",
+            "Show discovered processor topology",
+            builtins::cmd_cpuinfo
+        ),
         ("tasks", "List processes", builtins::cmd_tasks),
         ("windows", "List windows", builtins::cmd_windows),
         ("dmesg", "Show kernel messages", builtins::cmd_dmesg),
@@ -155,9 +201,14 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ),
         ("usb_info", "Show USB device status", builtins::cmd_usb_info),
         (
-            "sd_mount",
-            "Probe and mount SD card",
-            builtins::cmd_sd_mount
+            "usb_rescan",
+            "Explicitly activate and rescan USB",
+            builtins::cmd_usb_rescan
+        ),
+        (
+            "sd_rescan",
+            "Rescan the SD card reader without mounting",
+            builtins::cmd_sd_rescan
         ),
         (
             "hello_linux",
@@ -174,11 +225,7 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             "Launch BusyBox shell from the filesystem",
             builtins::cmd_run_busybox
         ),
-        (
-            "wasm",
-            "Run a WASM/WASI binary",
-            builtins::cmd_wasm
-        ),
+        ("wasm", "Run a WASM/WASI binary", builtins::cmd_wasm),
     )
 }
 

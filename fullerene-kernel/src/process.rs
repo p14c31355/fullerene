@@ -6,7 +6,6 @@
 //! `SCHEDULER`.
 
 use alloc::boxed::Box;
-use alloc::collections::btree_map::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use petroleum::mem_debug;
@@ -14,7 +13,7 @@ use petroleum::page_table::PageTableHelper as _;
 use x86_64::{PhysAddr, VirtAddr};
 
 use crate::linux::runtime::DispatchMode;
-use crate::vdso::{create_vdso_page, VdsoPageRef};
+use crate::vdso::{VdsoPageRef, create_vdso_page};
 
 use crate::syscall::{Handle, HandlePerms, KernelObject};
 
@@ -70,12 +69,8 @@ impl Default for ProcessContext {
             rip: 0,
             segments: [
                 // Use fallback segment selectors if GDT not ready
-                crate::gdt::code()
-                    .as_ref()
-                    .map_or(1, |s| s.0 as u64), // cs
-                crate::gdt::kernel_data()
-                    .as_ref()
-                    .map_or(2, |s| s.0 as u64), // ss
+                crate::gdt::code().as_ref().map_or(1, |s| s.0 as u64), // cs
+                crate::gdt::kernel_data().as_ref().map_or(2, |s| s.0 as u64), // ss
                 0,
                 0,
                 0,
@@ -88,17 +83,71 @@ impl Default for ProcessContext {
 }
 
 /// Per-process file descriptor table.
+pub struct FdSlotMap {
+    slots: Vec<Option<crate::fs::FileDesc>>,
+}
+
+impl FdSlotMap {
+    fn new() -> Self {
+        let mut slots = Vec::new();
+        slots.resize_with(3, || None);
+        Self { slots }
+    }
+
+    pub fn insert(&mut self, fd: u32, value: crate::fs::FileDesc) -> Option<crate::fs::FileDesc> {
+        let index = fd as usize;
+        if self.slots.len() <= index {
+            self.slots.resize_with(index + 1, || None);
+        }
+        self.slots[index].replace(value)
+    }
+
+    pub fn get_mut(&mut self, fd: &u32) -> Option<&mut crate::fs::FileDesc> {
+        self.slots.get_mut(*fd as usize)?.as_mut()
+    }
+
+    pub fn remove(&mut self, fd: &u32) -> Option<crate::fs::FileDesc> {
+        self.slots.get_mut(*fd as usize)?.take()
+    }
+
+    pub fn contains_key(&self, fd: &u32) -> bool {
+        self.slots.get(*fd as usize).is_some_and(Option::is_some)
+    }
+
+    pub fn clear(&mut self) {
+        for slot in self.slots.iter_mut().skip(3) {
+            *slot = None;
+        }
+    }
+
+    fn first_free_from(&self, start: u32) -> Option<u32> {
+        self.slots
+            .iter()
+            .enumerate()
+            .skip(start as usize)
+            .find_map(|(index, slot)| slot.is_none().then_some(index as u32))
+    }
+}
+
 pub struct FdTable {
-    pub entries: BTreeMap<u32, crate::fs::FileDesc>,
-    pub next_fd: u32,
+    pub entries: FdSlotMap,
 }
 
 impl FdTable {
     pub fn new() -> Self {
         Self {
-            entries: BTreeMap::new(),
-            next_fd: 3,
+            entries: FdSlotMap::new(),
         }
+    }
+
+    pub fn alloc(&mut self, file_desc: crate::fs::FileDesc) -> Result<u32, ()> {
+        let fd = self
+            .entries
+            .first_free_from(3)
+            .map(Ok)
+            .unwrap_or_else(|| u32::try_from(self.entries.slots.len()).map_err(|_| ()))?;
+        self.entries.insert(fd, file_desc);
+        Ok(fd)
     }
 }
 
@@ -163,7 +212,10 @@ impl HandleTable {
             }
         }
         let idx = self.slots.len() as u16;
-        self.slots.push(HandleSlot { generation: 0, entry: None });
+        self.slots.push(HandleSlot {
+            generation: 0,
+            entry: None,
+        });
         idx
     }
 
@@ -176,7 +228,8 @@ impl HandleTable {
         }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        self.slots.get_mut(slot)
+        self.slots
+            .get_mut(slot)
             .and_then(|s| s.entry.as_mut())
             .filter(|e| e.generation == gen_val)
             .map(|e| &mut e.object)
@@ -189,7 +242,8 @@ impl HandleTable {
         }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        self.slots.get(slot)
+        self.slots
+            .get(slot)
             .and_then(|s| s.entry.as_ref())
             .filter(|e| e.generation == gen_val)
             .map(|e| &e.object)
@@ -218,25 +272,24 @@ impl HandleTable {
         }
         let slot = handle.slot() as usize;
         let gen_val = handle.generation();
-        self.slots.get(slot)
+        self.slots
+            .get(slot)
             .and_then(|s| s.entry.as_ref())
             .filter(|e| e.generation == gen_val)
-            .map_or(false, |e| (e.permissions & required.bits()) == required.bits())
+            .map_or(false, |e| {
+                (e.permissions & required.bits()) == required.bits()
+            })
     }
 
     /// Iterate over all handle objects mutably (for cleanup / thread exit).
-    pub fn iter_objects_mut(
-        &mut self,
-    ) -> impl Iterator<Item = &mut KernelObject> {
+    pub fn iter_objects_mut(&mut self) -> impl Iterator<Item = &mut KernelObject> {
         self.slots
             .iter_mut()
             .filter_map(|slot| slot.entry.as_mut().map(|e| &mut e.object))
     }
 
     /// Get all handles with their objects.
-    pub fn entries(
-        &self,
-    ) -> impl Iterator<Item = (Handle, &KernelObject)> {
+    pub fn entries(&self) -> impl Iterator<Item = (Handle, &KernelObject)> {
         self.slots.iter().enumerate().filter_map(|(i, slot)| {
             slot.entry.as_ref().map(|e| {
                 let h = Handle::new(i as u8, e.generation, e.permissions);
@@ -246,9 +299,7 @@ impl HandleTable {
     }
 
     /// Get all handles with mutable object references.
-    pub fn entries_mut(
-        &mut self,
-    ) -> impl Iterator<Item = (Handle, &mut KernelObject)> {
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = (Handle, &mut KernelObject)> {
         self.slots.iter_mut().enumerate().filter_map(|(i, slot)| {
             slot.entry.as_mut().map(|e| {
                 let h = Handle::new(i as u8, e.generation, e.permissions);
@@ -302,7 +353,12 @@ impl ProcessResources {
                     KernelObject::Window(w) => {
                         // Notify compositor that window is gone
                         crate::contexts::kernel::with_kernel_mut(|k| {
-                            if let Some(win) = k.window.windows.iter_mut().find(|win| win.id == w.window_id) {
+                            if let Some(win) = k
+                                .window
+                                .windows
+                                .iter_mut()
+                                .find(|win| win.id == w.window_id)
+                            {
                                 win.visible = false;
                             }
                         });
@@ -392,19 +448,12 @@ impl Process {
         if self.is_user {
             // For user processes, the context RSP should be the user stack
             self.context.regs[7] = self.user_stack.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::user_code()
-                .as_ref()
-                .map_or(1, |s| s.0 as u64); // cs
-            self.context.segments[1] = crate::gdt::user_data()
-                .as_ref()
-                .map_or(2, |s| s.0 as u64); // ss
+            self.context.segments[0] = crate::gdt::user_code().as_ref().map_or(1, |s| s.0 as u64); // cs
+            self.context.segments[1] = crate::gdt::user_data().as_ref().map_or(2, |s| s.0 as u64); // ss
         } else {
             // For kernel processes, the context RSP is the kernel stack
             self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::code()
-                .as_ref()
-                .map(|s| s.0 as u64)
-                .unwrap_or(1); // cs
+            self.context.segments[0] = crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1); // cs
             self.context.segments[1] = crate::gdt::kernel_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
@@ -459,8 +508,14 @@ pub fn init(heap_start: usize, heap_end: usize) {
         rip: idle_addr.as_u64(),
         segments: [
             crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1),
-            crate::gdt::kernel_data().as_ref().map(|s| s.0 as u64).unwrap_or(2),
-            0, 0, 0, 0,
+            crate::gdt::kernel_data()
+                .as_ref()
+                .map(|s| s.0 as u64)
+                .unwrap_or(2),
+            0,
+            0,
+            0,
+            0,
         ],
         tss: 0,
         is_user: false,
@@ -485,9 +540,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
         resources: ProcessResources::new(),
     });
 
-    SCHEDULER
-        .add(idle)
-        .expect("Failed to add idle process");
+    SCHEDULER.add(idle).expect("Failed to add idle process");
 
     IDLE_INIT.store(true, core::sync::atomic::Ordering::Release);
     SCHEDULER.set_current_pid(pid.0 as usize);
@@ -611,34 +664,49 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
-    let to_unblock = SCHEDULER.with_process(pid, |process| {
-        process.state = ProcessState::Terminated;
-        process.exit_code = Some(exit_code);
-
-        // Clean up per-process resources (fd table, handle table)
-        // Collects waiters to unblock outside the process-manager lock.
-        let waiters = process.resources.cleanup();
-
-        // Free resources
-        let kernel_stack_base =
-            process.kernel_stack.as_u64() - crate::heap::KERNEL_STACK_SIZE as u64;
-        let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-        unsafe {
-            petroleum::common::memory::deallocate_layout(kernel_stack_base as *mut u8, layout)
-        };
-
-        // Properly free page table frames recursively
-        if let Some(page_table) = process.page_table.take() {
-            if let Some(pml4_frame) = page_table.pml4_frame() {
-                drop(page_table);
-                crate::memory_management::deallocate_process_page_table(pml4_frame);
+    let to_unblock = SCHEDULER
+        .with_process(pid, |process| {
+            // The idle task owns neither an allocated stack nor a replacement task.
+            // It is a scheduler invariant, not a terminable user process.
+            if process.name == "idle" {
+                return Vec::new();
             }
-        }
+            process.state = ProcessState::Terminated;
+            process.exit_code = Some(exit_code);
 
-        process.page_table = None;
+            // Clean up per-process resources (fd table, handle table)
+            // Collects waiters to unblock outside the process-manager lock.
+            let waiters = process.resources.cleanup();
 
-        waiters
-    }).unwrap_or_default();
+            // Free resources
+            if let Some(kernel_stack_base) = process
+                .kernel_stack
+                .as_u64()
+                .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+                .filter(|&base| base != 0)
+            {
+                let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(
+                        kernel_stack_base as *mut u8,
+                        layout,
+                    )
+                };
+            }
+
+            // Properly free page table frames recursively
+            if let Some(page_table) = process.page_table.take() {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    drop(page_table);
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
+
+            process.page_table = None;
+
+            waiters
+        })
+        .unwrap_or_default();
 
     // Unblock waiters (handles, parent) outside the process-manager lock.
     for waiter in to_unblock {
@@ -712,6 +780,36 @@ pub fn unblock_process(pid: ProcessId) {
 mod tests {
     use super::*;
 
+    struct FakeProcessAddressSpace {
+        bytes: Vec<u8>,
+        writable: Vec<bool>,
+    }
+
+    impl FakeProcessAddressSpace {
+        fn new(size: usize) -> Self {
+            Self {
+                bytes: alloc::vec![0; size],
+                writable: alloc::vec![false; size],
+            }
+        }
+
+        fn map_writable(&mut self, start: usize, length: usize) {
+            for writable in &mut self.writable[start..start + length] {
+                *writable = true;
+            }
+        }
+
+        fn copy_to_user(&mut self, start: usize, data: &[u8]) -> Result<(), ()> {
+            let end = start.checked_add(data.len()).ok_or(())?;
+            let destination = self.bytes.get_mut(start..end).ok_or(())?;
+            if !self.writable.get(start..end).ok_or(())?.iter().all(|v| *v) {
+                return Err(());
+            }
+            destination.copy_from_slice(data);
+            Ok(())
+        }
+    }
+
     #[test]
     fn test_process_creation() {
         let addr = VirtAddr::new(0);
@@ -726,6 +824,60 @@ mod tests {
         init(0, 0);
         assert!(SCHEDULER.count() > 0);
         assert!(SCHEDULER.active_count() > 0);
+    }
+
+    #[test]
+    fn two_process_resource_tables_are_isolated() {
+        let first = ProcessResources::new();
+        let second = ProcessResources::new();
+
+        first.fd_table.lock().entries.insert(
+            3,
+            crate::fs::FileDesc {
+                fd: 3,
+                ino: 11,
+                offset: 7,
+                flags: 0,
+            },
+        );
+        let first_handle = first
+            .handle_table
+            .lock()
+            .alloc(KernelObject::Device(crate::syscall::DeviceState {}));
+
+        assert!(first.fd_table.lock().entries.contains_key(&3));
+        assert!(!second.fd_table.lock().entries.contains_key(&3));
+        assert!(first.handle_table.lock().get(first_handle).is_some());
+        assert!(second.handle_table.lock().get(first_handle).is_none());
+    }
+
+    #[test]
+    fn fd_slots_reuse_holes_without_overwriting_later_entries() {
+        fn file_desc(ino: u64) -> crate::fs::FileDesc {
+            crate::fs::FileDesc {
+                fd: 0,
+                ino,
+                offset: 0,
+                flags: 0,
+            }
+        }
+
+        let mut table = FdTable::new();
+        assert_eq!(table.alloc(file_desc(30)), Ok(3));
+        assert_eq!(table.alloc(file_desc(40)), Ok(4));
+        assert_eq!(table.entries.remove(&3).map(|entry| entry.ino), Some(30));
+        assert_eq!(table.alloc(file_desc(31)), Ok(3));
+        assert_eq!(table.alloc(file_desc(50)), Ok(5));
+        assert_eq!(table.entries.get_mut(&4).map(|entry| entry.ino), Some(40));
+    }
+
+    #[test]
+    fn fake_process_address_space_rejects_unmapped_user_copy() {
+        let mut address_space = FakeProcessAddressSpace::new(32);
+        address_space.map_writable(8, 8);
+        assert_eq!(address_space.copy_to_user(8, b"full"), Ok(()));
+        assert_eq!(&address_space.bytes[8..12], b"full");
+        assert_eq!(address_space.copy_to_user(14, b"overflow"), Err(()));
     }
 }
 

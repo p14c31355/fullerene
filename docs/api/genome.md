@@ -130,7 +130,8 @@ impl Vfs {
 | Implementation | Description |
 |---|---|
 | `MemFileSystem` | B-tree based in-memory tmpfs. Bundled with Genome. |
-| `FatFileSystem` | FAT32 backend. Located in kernel `drivers/fat.rs`. |
+| `FatFileSystem` | FAT12/16/32 backend. Located in kernel `drivers/fat/fat32.rs`. |
+| `ExFatFileSystem` | Read/write exFAT backend. Located in kernel `drivers/fat/exfat.rs`. |
 
 ---
 

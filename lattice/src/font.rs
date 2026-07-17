@@ -26,11 +26,11 @@ pub const GLYPH_HEIGHT: u32 = 13;
 pub const GLYPH_BYTES: usize = 13;
 pub const GLYPH_COUNT: usize = 95;
 
-use embedded_graphics::mono_font::ascii::{FONT_8X13, FONT_9X15, FONT_6X12, FONT_10X20};
+use embedded_graphics::mono_font::ascii::{FONT_6X12, FONT_8X13, FONT_9X15, FONT_10X20};
 
+use embedded_graphics::Pixel;
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
-use embedded_graphics::Pixel;
 
 /// Simple draw target that renders BinaryColor pixels onto a `&mut [u32]` framebuffer.
 struct FbDrawTarget<'a> {
@@ -111,25 +111,46 @@ struct PsfFont {
     height: u32,
 }
 
+/// Failures encountered while validating a PSF2 font.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontError {
+    HeaderTooShort,
+    InvalidMagic,
+    UnsupportedDimensions,
+    SizeOverflow,
+    TruncatedBitmap,
+}
+
+impl core::fmt::Display for FontError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::HeaderTooShort => "PSF2 header is truncated",
+            Self::InvalidMagic => "invalid PSF2 magic",
+            Self::UnsupportedDimensions => "PSF2 glyphs must be 8x16",
+            Self::SizeOverflow => "PSF2 bitmap size overflow",
+            Self::TruncatedBitmap => "PSF2 bitmap is truncated",
+        })
+    }
+}
+
 /// Try to load a PSF2 font from raw bytes.
 ///
 /// Returns `Ok(())` on success — subsequent calls to [`glyph()`] will
-/// use the PSF glyphs.  Returns `Err(&str)` with a human‑readable
-/// error if the data is not valid PSF2 or the glyph dimensions don't
-/// match 8×16.
+/// use the PSF glyphs. Returns a [`FontError`] if the data is malformed
+/// or the glyph dimensions do not match 8×16.
 ///
 /// # Safety
 ///
 /// The caller must ensure `data` remains valid for the lifetime of the
 /// kernel (it is stored as `&'static [u8]`).
-pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
+pub fn load_psf2(data: &'static [u8]) -> Result<(), FontError> {
     if data.len() < PSF2_HEADER_SIZE as usize {
-        return Err("PSF2 data too short for header");
+        return Err(FontError::HeaderTooShort);
     }
 
     let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
     if magic != PSF2_MAGIC {
-        return Err("not a PSF2 font (bad magic)");
+        return Err(FontError::InvalidMagic);
     }
 
     let _header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
@@ -141,16 +162,20 @@ pub fn load_psf2(data: &'static [u8]) -> Result<(), &'static str> {
 
     // We require 8×16 for compatibility with the embedded font.
     if width != 8 || height != 16 {
-        return Err("PSF2 font must be 8×16");
+        return Err(FontError::UnsupportedDimensions);
     }
 
     let header_size = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let bitmap_size = (glyph_count as usize).saturating_mul(glyph_bytes as usize);
+    let bitmap_size = (glyph_count as usize)
+        .checked_mul(glyph_bytes as usize)
+        .ok_or(FontError::SizeOverflow)?;
     let bitmap_start = header_size as usize;
-    let bitmap_end = bitmap_start.saturating_add(bitmap_size);
+    let bitmap_end = bitmap_start
+        .checked_add(bitmap_size)
+        .ok_or(FontError::SizeOverflow)?;
 
     if data.len() < bitmap_end {
-        return Err("PSF2 data truncated (bitmap exceeds data)");
+        return Err(FontError::TruncatedBitmap);
     }
 
     let bitmap: &'static [u8] = &data[bitmap_start..bitmap_end];
@@ -315,14 +340,16 @@ fn embedded_glyph(ch: u8) -> Glyph<'static> {
     let rows = embedded_glyph_data();
     let start = idx * GLYPH_BYTES;
     let end = (start + GLYPH_BYTES).min(rows.len());
-    Glyph { rows: &rows[start..end] }
+    Glyph {
+        rows: &rows[start..end],
+    }
 }
 
 /// Lazily rasterise all 95 ASCII glyphs into a flat byte array via
 /// `embedded-graphics` and cache the result.
 fn embedded_glyph_data() -> &'static [u8] {
     use embedded_graphics::mono_font::MonoTextStyle;
-    use embedded_graphics::text::{Text, Baseline};
+    use embedded_graphics::text::{Baseline, Text};
     static CACHE: spin::once::Once<[u8; 1235]> = spin::once::Once::new();
     CACHE.call_once(|| {
         let mut out = [0u8; 1235];
@@ -401,21 +428,34 @@ pub fn glyph_fast(ch: u8) -> Glyph<'static> {
 /// is 8 columns wide.  Characters outside the printable ASCII range
 /// (32..=126) are silently skipped.
 pub fn render_text(
-    fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
-    x: u32, y: u32, text: &[u8], color: u32, glyph_height: u32,
+    fb: &mut [u32],
+    fb_width: u32,
+    fb_height: u32,
+    fb_stride: u32,
+    x: u32,
+    y: u32,
+    text: &[u8],
+    color: u32,
+    glyph_height: u32,
 ) {
     // Use PSF2 font if loaded, otherwise embedded-graphics mono font.
     if psf_loaded() {
         for (i, &ch) in text.iter().enumerate() {
-            if ch < 32 || ch > 126 { continue; }
+            if ch < 32 || ch > 126 {
+                continue;
+            }
             let gl = glyph_fast(ch);
             let gx = x + (i as u32) * 8;
             for row in 0..glyph_height {
                 let py = y + row;
-                if py >= fb_height { continue; }
+                if py >= fb_height {
+                    continue;
+                }
                 for col in 0..8 {
                     let px = gx + col;
-                    if px >= fb_width { continue; }
+                    if px >= fb_width {
+                        continue;
+                    }
                     if gl.pixel(row, col) {
                         fb[(py * fb_stride + px) as usize] = color;
                     }
@@ -444,26 +484,50 @@ pub fn render_text(
     let style = embedded_graphics::mono_font::MonoTextStyle::new(font, BinaryColor::On);
     let text_str = core::str::from_utf8(text).unwrap_or("");
     let _ = embedded_graphics::text::Text::with_baseline(
-        text_str, Point::new(x as i32, y as i32), style, EgBaseline::Top,
+        text_str,
+        Point::new(x as i32, y as i32),
+        style,
+        EgBaseline::Top,
     )
     .draw(&mut target);
 }
 
 /// Convenience wrapper: bitmap text at (x, y) with 12px glyph height.
 pub fn render_text_bitmap(
-    fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
-    x: i32, y: i32, text: &str, color: u32,
+    fb: &mut [u32],
+    fb_width: u32,
+    fb_height: u32,
+    fb_stride: u32,
+    x: i32,
+    y: i32,
+    text: &str,
+    color: u32,
 ) {
-    let h = PSF_FONT.lock().as_ref().map_or(GLYPH_HEIGHT, |psf| psf.height);
-    if y < 0 || y as u32 + h >= fb_height { return; }
-    render_text(fb, fb_width, fb_height, fb_stride, x.max(0) as u32, y as u32, text.as_bytes(), color, h);
+    let h = PSF_FONT
+        .lock()
+        .as_ref()
+        .map_or(GLYPH_HEIGHT, |psf| psf.height);
+    if y < 0 || y as u32 + h >= fb_height {
+        return;
+    }
+    render_text(
+        fb,
+        fb_width,
+        fb_height,
+        fb_stride,
+        x.max(0) as u32,
+        y as u32,
+        text.as_bytes(),
+        color,
+        h,
+    );
 }
 
 // ── TrueType font support (ab_glyph) ──────────────────────────
 
-use ab_glyph::{FontArc, PxScale, point};
 use ab_glyph::Font as _;
 use ab_glyph::ScaleFont as _;
+use ab_glyph::{FontArc, PxScale, point};
 use spin::once::Once;
 
 static TTF_DATA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/LiberationSans-Regular.ttf"));
@@ -478,8 +542,15 @@ pub fn get_ttf_font() -> Option<&'static FontArc> {
 
 /// Render text using the TTF font with grayscale antialiasing.
 pub fn render_text_ttf(
-    fb: &mut [u32], fb_width: u32, fb_height: u32, fb_stride: u32,
-    x: i32, y: i32, text: &str, color: u32, size: f32,
+    fb: &mut [u32],
+    fb_width: u32,
+    fb_height: u32,
+    fb_stride: u32,
+    x: i32,
+    y: i32,
+    text: &str,
+    color: u32,
+    size: f32,
     font: &FontArc,
 ) -> Result<(), ()> {
     let scale = PxScale { x: size, y: size };
@@ -487,7 +558,10 @@ pub fn render_text_ttf(
     let mut px = x as f32;
     let base_y = y as f32 + size * 0.85;
     for ch in text.chars() {
-        if ch == ' ' { px += size * 0.35; continue; }
+        if ch == ' ' {
+            px += size * 0.35;
+            continue;
+        }
         let gid = sf.glyph_id(ch);
         let glyph = gid.with_scale_and_position(scale, point(px, base_y));
         if let Some(outline) = sf.outline_glyph(glyph) {
@@ -497,11 +571,18 @@ pub fn render_text_ttf(
             outline.draw(|dx, dy, coverage| {
                 let bx = ox + dx as i32;
                 let by = oy + dy as i32;
-                if bx < 0 || by < 0 || bx as u32 >= fb_width || by as u32 >= fb_height { return; }
+                if bx < 0 || by < 0 || bx as u32 >= fb_width || by as u32 >= fb_height {
+                    return;
+                }
                 let ca = (coverage * 255.0) as u32;
-                if ca == 0 { return; }
+                if ca == 0 {
+                    return;
+                }
                 let idx = (by as usize) * (fb_stride as usize) + (bx as usize);
-                if ca >= 255 { fb[idx] = color; return; }
+                if ca >= 255 {
+                    fb[idx] = color;
+                    return;
+                }
                 let bg = fb[idx];
                 let ia = 255 - ca;
                 let r = (((color >> 16) & 0xFF) * ca + ((bg >> 16) & 0xFF) * ia) / 255;
@@ -515,4 +596,18 @@ pub fn render_text_ttf(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn psf2_validation_preserves_failure_categories() {
+        static SHORT: [u8; 4] = [0; 4];
+        static BAD_MAGIC: [u8; PSF2_HEADER_SIZE as usize] = [0; PSF2_HEADER_SIZE as usize];
+
+        assert_eq!(load_psf2(&SHORT), Err(FontError::HeaderTooShort));
+        assert_eq!(load_psf2(&BAD_MAGIC), Err(FontError::InvalidMagic));
+    }
 }

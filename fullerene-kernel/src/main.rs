@@ -39,10 +39,13 @@ mod panic_screen {
     /// | 255   | bright red    | **PANIC** (no init stage) |
     pub fn draw() {
         // ── 1. Physical FB address from the linker-section snapshot ──
-        let phys = unsafe { crate::graphics::discovery::STORED_FB_PHYS };
-        let w    = unsafe { crate::graphics::discovery::STORED_FB_WIDTH };
-        let h    = unsafe { crate::graphics::discovery::STORED_FB_HEIGHT };
-        let stride_raw = unsafe { crate::graphics::discovery::STORED_FB_STRIDE };
+        let Some(params) = crate::graphics::discovery::boot_framebuffer_params() else {
+            return;
+        };
+        let phys = params.phys;
+        let w = params.width;
+        let h = params.height;
+        let stride_raw = params.stride;
 
         if !(0x100_000..1 << 52).contains(&phys)
             || !(80..=16_384).contains(&w)
@@ -55,10 +58,14 @@ mod panic_screen {
         let stride = usize::try_from(stride_raw).unwrap_or(w as usize * 4);
 
         let off = petroleum::common::memory::get_physical_memory_offset() as u64;
-        let Some(fb_va) = phys.checked_add(off) else { return };
+        let Some(fb_va) = phys.checked_add(off) else {
+            return;
+        };
 
         // ── 2. Choose colour based on last boot stage ──
-        let stage = crate::boot_stage::last_stage().map(|s| s as u8).unwrap_or(0);
+        let stage = crate::boot_stage::last_stage()
+            .map(|s| s as u8)
+            .unwrap_or(0);
         let color: u32 = stage_color(stage);
 
         // ── 3. Fill visible area ──
@@ -83,7 +90,9 @@ mod panic_screen {
             }
         }
         // Dark band over the stage's column
-        let stage_col = (stage as usize).saturating_mul(8).min(cols.saturating_sub(1));
+        let stage_col = (stage as usize)
+            .saturating_mul(8)
+            .min(cols.saturating_sub(1));
         for row in 0..8.min(h as usize) {
             let idx = row * (stride / 4) + stage_col;
             if idx < total_pixels {
@@ -99,23 +108,23 @@ mod panic_screen {
     fn stage_color(stage: u8) -> u32 {
         // BGR encoding: 0x00BBGGRR
         match stage {
-            0   => 0x00_00_00_FF, // bright red      – crash before any stage
-            1   => 0x00_00_00_44, // dark blue
-            2   => 0x00_00_00_88, // blue
-            3   => 0x00_88_88_00, // cyan
-            4   => 0x00_00_44_00, // dark green
-            5   => 0x00_00_88_00, // green
-            6   => 0x00_00_88_44, // yellow-green
-            7   => 0x00_00_88_88, // yellow
-            8   => 0x00_00_44_88, // orange
-            9   => 0x00_00_00_88, // dark orange
-            10  => 0x00_00_00_AA, // red
-            11  => 0x00_00_00_55, // dark red
-            12  => 0x00_88_00_88, // magenta
-            13  => 0x00_44_00_88, // pink
-            14  => 0x00_44_00_44, // purple
-            15  => 0x00_55_55_55, // gray
-            _   => 0x00_FF_00_FF, // bright magenta  – unknown stage
+            0 => 0x00_00_00_FF,  // bright red      – crash before any stage
+            1 => 0x00_00_00_44,  // dark blue
+            2 => 0x00_00_00_88,  // blue
+            3 => 0x00_88_88_00,  // cyan
+            4 => 0x00_00_44_00,  // dark green
+            5 => 0x00_00_88_00,  // green
+            6 => 0x00_00_88_44,  // yellow-green
+            7 => 0x00_00_88_88,  // yellow
+            8 => 0x00_00_44_88,  // orange
+            9 => 0x00_00_00_88,  // dark orange
+            10 => 0x00_00_00_AA, // red
+            11 => 0x00_00_00_55, // dark red
+            12 => 0x00_88_00_88, // magenta
+            13 => 0x00_44_00_88, // pink
+            14 => 0x00_44_00_44, // purple
+            15 => 0x00_55_55_55, // gray
+            _ => 0x00_FF_00_FF,  // bright magenta  – unknown stage
         }
     }
 }
@@ -179,16 +188,20 @@ pub mod init;
 pub mod initramfs;
 pub mod interrupts;
 pub mod klog;
+pub mod linux;
 pub mod loader;
 pub mod memory_management;
+pub mod metrics;
+pub mod ports;
 pub mod process;
 pub mod scheduler;
 pub mod scheduler_context;
 pub mod shell;
 pub mod slab;
+pub mod smp;
 pub mod syscall;
 pub mod task;
-pub mod linux;
+mod user_memory;
 pub mod vdso;
 
 // ── Host-target main (enables `cargo check` on Linux) ──

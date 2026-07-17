@@ -15,7 +15,7 @@ pub fn init() {
 pub struct FileDesc {
     pub fd: u32,
     pub ino: u64,
-    pub offset: usize,
+    pub offset: u64,
     pub flags: u32,
 }
 
@@ -62,17 +62,23 @@ pub fn close_file(fd: FileDesc) -> Result<(), FsError> {
 
 pub fn read_file(fd: &mut FileDesc, buffer: &mut [u8]) -> Result<usize, FsError> {
     let n = vfs::read(fd.fd, buffer)?;
-    fd.offset += n;
+    fd.offset = fd
+        .offset
+        .checked_add(n as u64)
+        .ok_or(FsError::InvalidSeek)?;
     Ok(n)
 }
 
 pub fn write_file(fd: &mut FileDesc, data: &[u8]) -> Result<usize, FsError> {
     let written = vfs::write(fd.fd, data)?;
-    fd.offset += written;
+    fd.offset = fd
+        .offset
+        .checked_add(written as u64)
+        .ok_or(FsError::InvalidSeek)?;
     Ok(written)
 }
 
-pub fn seek_file(fd: &mut FileDesc, position: usize) -> Result<(), FsError> {
+pub fn seek_file(fd: &mut FileDesc, position: u64) -> Result<(), FsError> {
     vfs::seek(fd.fd, position).map(|_| {
         fd.offset = position;
     })
@@ -93,10 +99,6 @@ pub fn list_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
 
 pub fn exists(path: &str) -> bool {
     vfs::exists(path)
-}
-
-pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsError> {
-    vfs::mount(device, mount_point, fs_type)
 }
 
 pub fn working_directory() -> Result<String, FsError> {
@@ -128,8 +130,7 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
         };
         result.push(full.clone());
         if entry.is_dir {
-            let children = walk_dir(&full)?;
-            result.extend(children);
+            result.extend(walk_dir(&full)?);
         }
     }
     Ok(result)
@@ -200,17 +201,14 @@ pub fn list_packages() -> Result<Vec<PackageEntry>, FsError> {
     }
     let entries = list_dir("/packages")?;
     for entry in &entries {
-        if entry.is_dir {
-            let manifest_path = alloc::format!("/packages/{}/manifest.txt", entry.name);
-            if exists(&manifest_path) {
-                if let Ok(data) = read_entire_file(&manifest_path) {
-                    if let Ok(text) = core::str::from_utf8(&data) {
-                        if let Some(pkg) = parse_manifest(&entry.name, text) {
-                            packages.push(pkg);
-                        }
-                    }
-                }
-            }
+        let manifest_path = alloc::format!("/packages/{}/manifest.txt", entry.name);
+        if entry.is_dir
+            && exists(&manifest_path)
+            && let Ok(data) = read_entire_file(&manifest_path)
+            && let Ok(text) = core::str::from_utf8(&data)
+            && let Some(pkg) = parse_manifest(&entry.name, text)
+        {
+            packages.push(pkg);
         }
     }
     Ok(packages)
@@ -222,6 +220,24 @@ pub fn install_package(
     description: &str,
     binary: &[u8],
 ) -> Result<(), FsError> {
+    install_package_with_runtime(name, version, description, "native", binary)
+}
+
+pub fn install_package_with_runtime(
+    name: &str,
+    version: &str,
+    description: &str,
+    runtime: &str,
+    binary: &[u8],
+) -> Result<(), FsError> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        || !matches!(runtime, "native" | "linux")
+    {
+        return Err(FsError::InvalidInput);
+    }
     let pkg_dir = alloc::format!("/packages/{}", name);
     if exists(&pkg_dir) {
         return Err(FsError::FileExists);
@@ -229,10 +245,11 @@ pub fn install_package(
     create_dir(&pkg_dir)?;
 
     let manifest = alloc::format!(
-        "name = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\nbinary = \"app.bin\"\n",
+        "name = \"{}\"\nversion = \"{}\"\ndescription = \"{}\"\nbinary = \"app.bin\"\nruntime = \"{}\"\n",
         name,
         version,
-        description
+        description,
+        runtime
     );
     let manifest_path = alloc::format!("/packages/{}/manifest.txt", name);
     write_entire_file(&manifest_path, manifest.as_bytes())?;
@@ -248,8 +265,7 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
     if !exists(&pkg_dir) {
         return Err(FsError::FileNotFound);
     }
-    let entries = walk_dir(&pkg_dir)?;
-    let mut sorted_entries = entries;
+    let mut sorted_entries = walk_dir(&pkg_dir)?;
     sorted_entries.sort_by(|a, b| b.len().cmp(&a.len()));
 
     for entry in sorted_entries {
@@ -258,5 +274,3 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
 
     remove(&pkg_dir)
 }
-
-

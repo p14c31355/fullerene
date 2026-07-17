@@ -1,7 +1,11 @@
 [package]
 name = "toluene"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "toluene"
@@ -11,6 +15,8 @@ crate-type = ["rlib"]
 [[bin]]
 name = "toluene"
 path = "src/main.rs"
+test = false
+bench = false
 
 [features]
 default = ["vfs", "kernel-syscall"]
@@ -21,9 +27,15 @@ kernel-syscall = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+fullerene-abi = { path = "../fullerene-abi" }
 lattice = { path = "../lattice" }
 petroleum = { path = "../petroleum" }
+
+[dev-dependencies]
+petroleum = { path = "../petroleum", features = ["std"] }
 
 [[bin]]
 name = "soxhlet"
 path = "src/soxhlet/main.rs"
+test = false
+bench = false

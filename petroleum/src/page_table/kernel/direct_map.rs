@@ -14,10 +14,10 @@ use x86_64::{
 pub fn init_direct_physical_mapping(
     memory_map: &[MemoryMapDescriptor],
     allocator: &mut impl FrameAllocator<Size4KiB>,
-) -> Result<OffsetPageTable<'static>, &'static str> {
+) -> Result<OffsetPageTable<'static>, crate::MemoryError> {
     let pml4_frame = allocator
         .allocate_frame()
-        .ok_or("Failed to allocate PML4 frame")?;
+        .ok_or(crate::MemoryError::FrameAllocationFailed)?;
 
     let pml4_virt = HIGHER_HALF_OFFSET + pml4_frame.start_address().as_u64();
     unsafe {
@@ -59,7 +59,7 @@ pub fn init_direct_physical_mapping(
                                     | PageTableFlags::HUGE_PAGE,
                                 allocator,
                             )
-                            .map_err(|_| "Failed to map huge page")?
+                            .map_err(|_| crate::MemoryError::MappingFailed)?
                             .flush();
                     }
                     current_phys += 2 * 1024 * 1024;
@@ -76,7 +76,7 @@ pub fn init_direct_physical_mapping(
                                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE,
                                 allocator,
                             )
-                            .map_err(|_| "Failed to map 4KiB page")?
+                            .map_err(|_| crate::MemoryError::MappingFailed)?
                             .flush();
                     }
                     current_phys += 4096;

@@ -571,7 +571,6 @@ impl PageTable {
     pub fn is_empty(&self) -> bool {
         self.entries.iter().all(|e| e.is_unused())
     }
-
 }
 
 impl Default for PageTable {
