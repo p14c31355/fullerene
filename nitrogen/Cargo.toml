@@ -16,6 +16,7 @@ spin = { workspace = true, features = [
   "spin_mutex",
 ] }
 log = { workspace = true }
+ps2-mouse = "0.1.4"
 bonder = { path = "../bonder" }
 
 [lib]

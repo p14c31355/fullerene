@@ -125,8 +125,6 @@ pub struct RuntimeState {
     /// Earliest cursor position still drawn on the framebuffer while a redraw
     /// is pending. The full and lightweight render paths both consume it.
     pub(crate) cursor_redraw_from: Option<(i32, i32)>,
-    /// Startup opacity percentage. The first desktop frames ramp to 100.
-    pub(crate) startup_fade_x100: u32,
 }
 
 impl RuntimeState {
@@ -191,7 +189,6 @@ pub fn init() {
         settings_window: None,
         settings_dirty: false,
         cursor_redraw_from: None,
-        startup_fade_x100: 0,
     });
 }
 
