@@ -632,9 +632,9 @@ impl FileSystem for ExFatFileSystem {
         const MAX_ENTRIES: usize = 4096;
         if path.trim_matches('/').is_empty() {
             if let Some(ref cached) = self.root_cache {
-                return Ok(cached.clone());
+                return Ok(cached.iter().take(MAX_ENTRIES).cloned().collect());
             }
-            let entries = self.root_entries()?;
+            let entries: Vec<_> = self.root_entries()?.into_iter().take(MAX_ENTRIES).collect();
             self.root_cache = Some(entries.clone());
             return Ok(entries);
         }
