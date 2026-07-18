@@ -144,7 +144,7 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
 
     // Helper: set dir_path on the Linux fd and return it.
     let alloc_ret =
-        |rt: &mut LinuxRuntime, vfs_fd: genome::FileDescriptor, path: &str, flags: i32| -> u64 {
+        |rt: &mut LinuxRuntime, vfs_fd: crate::contexts::vfs::FileDescriptor, path: &str, flags: i32| -> u64 {
             let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
             if let Some(desc) = rt.fd_table.get_mut(fd) {
                 let trimmed = path.trim_end_matches('/');
@@ -738,6 +738,7 @@ pub fn sys_dup2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         mount_index: desc.mount_index,
         flags: desc.flags,
         offset: desc.offset,
+        dir_path: desc.dir_path.clone(),
     };
     rt.fd_table.entries.insert(newfd, linux_fd);
     newfd as u64

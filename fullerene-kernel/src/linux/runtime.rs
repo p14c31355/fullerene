@@ -10,7 +10,6 @@ use super::time as linux_time;
 use super::types::*;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 use petroleum::common::logging::SystemError;
 
