@@ -360,16 +360,19 @@ fn fetch_chocolate_doom(cache: &Path) -> Result<Vec<u8>, &'static str> {
     let tmp = cache.with_extension("tar.gz");
 
     // Expected SHA256 digest for verification
-    const EXPECTED_DIGEST: &str = "e5b2f82b35e78e39ed7a4b9f3b1ce6e0aed60f3b74f2e5a3f8e0c4d0e1b2f3a4";
+    const EXPECTED_DIGEST: &str =
+        "e5b2f82b35e78e39ed7a4b9f3b1ce6e0aed60f3b74f2e5a3f8e0c4d0e1b2f3a4";
 
     // Download with timeouts and --fail flag
     let status = Command::new("curl")
         .args([
             "--fail",
-            "--connect-timeout", "30",
-            "--max-time", "300",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            "300",
             "-sSL",
-            "-o"
+            "-o",
         ])
         .arg(&tmp)
         .arg(url)
@@ -563,19 +566,19 @@ fn write_cpio_file(buf: &mut Vec<u8>, archive_path: &str, is_dir: bool, body: &[
 fn write_cpio_trailer(buf: &mut Vec<u8>) {
     write!(buf, "070701").unwrap();
     // Write 13 header fields (inode, mode, uid, gid, nlink, mtime, filesize, devmajor, devminor, rdevmajor, rdevminor, namesize, check)
-    write_hex(buf, 0, 8);  // inode
-    write_hex(buf, 0, 8);  // mode
-    write_hex(buf, 0, 8);  // uid
-    write_hex(buf, 0, 8);  // gid
-    write_hex(buf, 0, 8);  // nlink
-    write_hex(buf, 0, 8);  // mtime
-    write_hex(buf, 0, 8);  // filesize
-    write_hex(buf, 0, 8);  // devmajor
-    write_hex(buf, 0, 8);  // devminor
-    write_hex(buf, 0, 8);  // rdevmajor
-    write_hex(buf, 0, 8);  // rdevminor
+    write_hex(buf, 0, 8); // inode
+    write_hex(buf, 0, 8); // mode
+    write_hex(buf, 0, 8); // uid
+    write_hex(buf, 0, 8); // gid
+    write_hex(buf, 0, 8); // nlink
+    write_hex(buf, 0, 8); // mtime
+    write_hex(buf, 0, 8); // filesize
+    write_hex(buf, 0, 8); // devmajor
+    write_hex(buf, 0, 8); // devminor
+    write_hex(buf, 0, 8); // rdevmajor
+    write_hex(buf, 0, 8); // rdevminor
     write_hex(buf, 11, 8); // namesize (length of "TRAILER!!!" + null)
-    write_hex(buf, 0, 8);  // check
+    write_hex(buf, 0, 8); // check
 
     buf.extend_from_slice(b"TRAILER!!!\0");
 
