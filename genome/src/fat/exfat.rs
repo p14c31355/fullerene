@@ -664,12 +664,7 @@ mod tests {
     }
 
     impl BlockDevice for MemoryDevice {
-        fn read_sectors(
-            &mut self,
-            lba: u64,
-            count: u16,
-            buf: &mut [u8],
-        ) -> Result<(), BlockError> {
+        fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
             let (start, len) = Self::range(lba, count)?;
             if buf.len() < len {
                 return Err(BlockError::BufferTooSmall {
@@ -683,12 +678,7 @@ mod tests {
             Ok(())
         }
 
-        fn write_sectors(
-            &mut self,
-            lba: u64,
-            count: u16,
-            buf: &[u8],
-        ) -> Result<(), BlockError> {
+        fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
             let (start, len) = Self::range(lba, count)?;
             if buf.len() < len {
                 return Err(BlockError::BufferTooSmall {
