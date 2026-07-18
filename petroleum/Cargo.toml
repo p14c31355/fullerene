@@ -14,7 +14,7 @@ vga_panic = []
 debug_pf = []
 
 [dependencies]
-fullerene-abi = { path = "../fullerene-abi" }
+fullerene-abi = { path = "../fullerene-kernel/abi" }
 spin = { workspace = true, features = [
   "once",
   "mutex",

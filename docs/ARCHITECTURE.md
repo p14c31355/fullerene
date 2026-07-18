@@ -160,6 +160,24 @@ Offset │ Contents
   has been removed — all non-trivial syscalls go through the `syscall`
   instruction and trap to Ring-0.
 
+#### Kernel File API Fixes (2026-07-04)
+
+- `write_file` now advances the wrapper-side `FileDesc.offset` on success, matching the symmetric behavior already present in the read path.
+- `exists` no longer temporarily opens and closes a file; it delegates directly to the VFS existence-check API, avoiding fd consumption and unnecessary state transitions.
+
+#### UEFI Boot Code Cleanup (2026-07-04)
+
+- Removed unnecessary `.clone()` calls on memory-map references.
+- `MEMORY_MAP` lock scope narrowed with explicit blocks.
+- Function addresses are cast through `*const ()` instead of direct integer-to-pointer conversions.
+- Test configuration no longer enables the unused `alloc_error_handler` feature.
+- Removed unused imports in syscall test modules.
+
+#### Cargo Manifest Fixes (2026-07-04)
+
+- `toluene/Cargo.toml` — removed stale `tests/unit_tests.rs` reference that pointed to a nonexistent file.
+- `bonder/Cargo.toml` — removed `[profile.release]` override (already inherited from workspace root).
+
 Preferred direction:
 
 ```text
@@ -497,6 +515,43 @@ distinct from mounting: `sd_rescan` may retry an inserted SD card, while
 `mount /dev/sd0 <path>` only acquires and mounts its existing lease.
 
 The kernel crate re-exports Genome types and adds the singleton `VfsContext` (wrapping `Vfs` with `spin::Mutex` + handle table) through the kernel's `vfs` and `fs` modules, keeping the core logic framework-agnostic.
+
+### VFS Refactoring (2026-07-04)
+
+The following improvements address fd collision across mount points, mount numbering stability, safety, and MemFS validation.
+
+#### File Descriptor Collision Across Mount Points
+
+Each filesystem allocates local file descriptors starting from 0. When multiple filesystems are mounted, the root FS and a mounted FS can return identical local fd values. The previous handle table used only the raw fd as the lookup key, so read/write/seek operations could be misrouted to the wrong filesystem.
+
+Resolution:
+- VFS-wide unique public fd allocation.
+- A mapping from public fd to (mount number, FS-local fd).
+- `read`, `write`, `seek`, `close` translate to local fd before dispatching to the target FS.
+- Used fd numbers are never reused, even when allocation wraps.
+- Replacing a mount invalidates all handles belonging to the previous FS.
+
+#### Stabilized Mount Table Numbering
+
+Previously the mount vector was sorted by mount-point path length on every addition. This reordering could change mount numbers for already-open handles, silently redirecting I/O to a different filesystem.
+
+Resolution:
+- New mounts are appended; existing numbers never change.
+- Replacing the same mount point updates the same entry in-place.
+- Path dispatch selects the longest-matching mount (stable across mounts).
+- Unmount uses exact match rather than parent-path search.
+
+#### Removed Unsafe from Genome VFS
+
+`find_fs` used raw pointer casts (`*const` / `*mut`) to return mutable references into a `Vec`. Refactored to use safe Rust borrowing by separating mount selection from mutable reference acquisition.
+
+#### Strengthened Mount Target and MemFS Read Validation
+
+- Only directories are accepted as mount targets (regular files were previously allowed).
+- Reading a directory fd from MemFS now returns `NotAFile` instead of silently returning EOF.
+- Duplicate child-inode lookup consolidated into existing `lookup_child`.
+- Removed unused inode-number parameter from `Inode::new`.
+- Implemented `Default` for `MemFileSystem`.
 
 ---
 

@@ -176,7 +176,7 @@ fn join_versions(versions: &BTreeSet<String>) -> String {
 }
 
 pub fn generate_support_matrix(root: &Path, check: bool) -> ToolResult {
-    let source_path = root.join("support").join("matrix.toml");
+    let source_path = root.join("flasks").join("support").join("matrix.toml");
     let output_path = root.join("docs").join("SUPPORT_MATRIX.md");
     let matrix: SupportMatrix =
         toml::from_str(&fs::read_to_string(&source_path)?).map_err(|error| {

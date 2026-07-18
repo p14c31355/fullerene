@@ -33,3 +33,36 @@ Use serial output and QEMU logging. For GDB debugging, enable QEMU GDB
 stub with `-s -S`.  On real hardware (InsydeH2O), a framebuffer panic
 screen replaces serial: the boot stage is encoded as a coloured screen
 at the top of the display even before the GUI initialises.
+
+## Verification (2026-07-04 Refactoring)
+
+The following commands were used to verify the VFS/mount refactoring:
+
+```text
+cargo test -p genome --locked
+  6 passed; 0 failed
+
+cargo check --workspace --exclude bellows --exclude fullerene-kernel --locked
+  OK
+
+cargo build -Z build-std=core,alloc \
+  --package fullerene-kernel \
+  --target x86_64-unknown-uefi \
+  --locked
+  OK (no compiler warnings)
+
+cargo check --package fullerene-kernel \
+  --target x86_64-unknown-uefi \
+  --tests \
+  --locked
+  OK (no warnings including added kernel tests)
+
+cargo clippy --tests -- -D warnings
+  OK (isolated Genome workspace)
+
+rustfmt --check <modified Rust files>
+  OK
+
+git diff --check
+  OK
+```

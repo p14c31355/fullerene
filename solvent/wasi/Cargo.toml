@@ -9,8 +9,8 @@ rust-version.workspace = true
 
 [dependencies]
 wasmi = { version = "0.33", default-features = false }
-carrier = { path = "../carrier" }
-genome = { path = "../genome" }
+carrier = { path = "../../carrier" }
+genome = { path = "../../genome" }
 
 [lib]
 name = "wasi_runtime"
