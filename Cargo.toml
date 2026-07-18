@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "fullerene-abi", "fullerene-kernel", "genome", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene", "toluene/rle_player", "tools", "vdso", "wasi_runtime"]
-default-members = ["bonder", "chronoline", "flasks", "fullerene-abi", "fullerene-kernel", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene", "toluene/rle_player"]
+members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "flasks/tools", "fullerene-kernel", "fullerene-kernel/abi", "fullerene-kernel/vdso", "genome", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "solvent/wasi", "toluene", "toluene/rle_player"]
+default-members = ["bonder", "chronoline", "flasks", "fullerene-kernel", "fullerene-kernel/abi", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene", "toluene/rle_player"]
 
 [profile.dev]
 panic = "abort"
@@ -30,3 +30,5 @@ bitflags = { version = "2", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
 pc-keyboard = { version = "0.8", default-features = false }
 goblin = { version = "0.10", default-features = false }
+fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false }
+hadris-fat = { version = "1.2.1", default-features = false }

@@ -1,13 +1,8 @@
-//! FAT-family filesystem mount dispatcher.
-//!
-//! The implementation is split by responsibility: block-device adapters,
-//! partition discovery, caching, FAT12/16/32, and exFAT.
-
 use alloc::boxed::Box;
 
-use crate::contexts::vfs::FileSystem;
-use crate::klog_fmt;
-use genome::fs::FsError;
+use crate::block::BlockDevice;
+use crate::fs::FsError;
+use crate::vfs::FileSystem;
 
 mod block_device;
 mod cache;
@@ -15,14 +10,13 @@ pub mod exfat;
 mod fat32;
 mod partition;
 
-pub use block_device::{BlockDevice, BlockError, FatBlockError, FatDevice};
+pub use block_device::{FatBlockError, FatDevice};
 pub use cache::BlockCache;
 pub use fat32::FatFileSystem;
 pub use partition::{PartitionBlockDevice, find_fat_partition};
 
 use block_device::read_boot_sector;
 
-/// Detect the volume format and construct the matching VFS implementation.
 pub fn mount_device(
     mut device: Box<dyn BlockDevice>,
 ) -> Result<Box<dyn FileSystem>, (FsError, Option<Box<dyn BlockDevice>>)> {
@@ -34,8 +28,8 @@ pub fn mount_device(
     let boot = match read_boot_sector(&mut *device, info.start_lba) {
         Ok(boot) => boot,
         Err(error) => {
-            klog_fmt!(
-                "filesystem probe failed at LBA {}: {}\n",
+            log::info!(
+                "filesystem probe failed at LBA {}: {:?}",
                 info.start_lba,
                 error
             );

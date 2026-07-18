@@ -36,8 +36,8 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
     let strtab_off = symtab_off + (1 + count) * 24;
     // Section headers go AFTER the string table
     let shoff = strtab_off + names_total;
-    let shnum = 2;
-    let total_size = shoff + shnum * 56;
+    let shnum = 3;
+    let total_size = shoff + shnum * 64;
 
     if total_size > VDSO_BUFFER_SIZE {
         return Err(BuildError::TooLarge);
@@ -86,7 +86,7 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
         put_u16(buf, 56, phnum as u16);
         put_u16(buf, 58, 64);
         put_u16(buf, 60, shnum as u16);
-        put_u16(buf, 62, 1);
+        put_u16(buf, 62, 0);
 
         let mut ph_off = phoff as usize;
 
@@ -129,6 +129,7 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
         }
 
         let mut sym_off = symtab_off;
+        // Null symbol at index 0
         put_u32(buf, sym_off, 0);
         put_u8(buf, sym_off + 4, 0);
         put_u8(buf, sym_off + 5, 0);
@@ -137,13 +138,15 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
         put_u64(buf, sym_off + 16, 0);
         sym_off += 24;
 
-        let mut str_off = strtab_off;
+        // Reserved null byte at strtab offset 0
+        buf[strtab_off] = 0;
+        let mut str_off = strtab_off + 1;
         for (i, entry) in entries.iter().enumerate() {
             let name_off = (str_off - strtab_off) as u32;
             put_u32(buf, sym_off, name_off);
             put_u8(buf, sym_off + 4, 0x12);
             put_u8(buf, sym_off + 5, 0);
-            put_u16(buf, sym_off + 6, 0);
+            put_u16(buf, sym_off + 6, 0xFFF1);
             put_u64(buf, sym_off + 8, slot_vaddr(i));
             put_u64(buf, sym_off + 16, 0);
             sym_off += 24;
@@ -156,6 +159,18 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
         }
 
         let mut sh_off = shoff;
+        // Section 0: NULL (zeroed)
+        put_u64(buf, sh_off, 0);
+        put_u64(buf, sh_off + 8, 0);
+        put_u64(buf, sh_off + 16, 0);
+        put_u64(buf, sh_off + 24, 0);
+        put_u64(buf, sh_off + 32, 0);
+        put_u64(buf, sh_off + 40, 0);
+        put_u64(buf, sh_off + 48, 0);
+        put_u64(buf, sh_off + 56, 0);
+        sh_off += 64;
+
+        // Section 1: SYMTAB
         put_u32(buf, sh_off, str_off as u32 - strtab_off as u32 + 1);
         put_u32(buf, sh_off + 4, 2);
         put_u64(buf, sh_off + 8, 0);
@@ -164,9 +179,11 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
         put_u64(buf, sh_off + 32, (1 + count) as u64 * 24);
         put_u32(buf, sh_off + 40, 2);
         put_u32(buf, sh_off + 44, 1);
-        put_u64(buf, sh_off + 48, 24);
-        sh_off += 56;
+        put_u64(buf, sh_off + 48, 8);
+        put_u64(buf, sh_off + 56, 24);
+        sh_off += 64;
 
+        // Section 2: STRTAB
         put_u32(buf, sh_off, 0);
         put_u32(buf, sh_off + 4, 3);
         put_u64(buf, sh_off + 8, 0);
@@ -174,7 +191,8 @@ pub fn build(buf: &mut [u8; VDSO_BUFFER_SIZE], entries: &[VdsoEntry]) -> Result<
         put_u64(buf, sh_off + 24, strtab_off as u64);
         put_u64(buf, sh_off + 32, (str_off - strtab_off) as u64);
         put_u64(buf, sh_off + 40, 0);
-        put_u64(buf, sh_off + 48, 0);
+        put_u64(buf, sh_off + 48, 1);
+        put_u64(buf, sh_off + 56, 0);
     }
 
     Ok(total_size)

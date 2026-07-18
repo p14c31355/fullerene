@@ -1,12 +1,28 @@
 # Fullerene TODO
 
-This TODO is aligned with the project architecture (`docs/ARCHITECTURE.md`)
-and the improvement roadmap (`docs/IMPROVEMENT_PROPOSALS_20260704.md`).
+This TODO is aligned with the project architecture (`docs/ARCHITECTURE.md`).
 
 Priority convention:
 - **P0** = memory safety / process isolation — do first
 - **P1** = structural improvement (ownership, types, tests)
 - **P2** = developer experience, performance
+
+## Decision Criteria (future improvements)
+
+Future work should prioritize in this order:
+
+```text
+memory safety / process isolation
+    → explicit ownership and lifecycle
+    → typed contracts
+    → deterministic tests
+    → module size reduction
+    → performance tuning
+```
+
+Mere file splitting, moving globals to another file, or wrapping unsafe in a safe wrapper does not count as improvement. An improvement is complete only when the owner, synchronization scope, rollback on failure, and testable boundary are clearly defined.
+
+---
 
 Please refer to the issues for other TODO items.  
 You may close them using the "Development" section of the PR, or create new issues based on this Markdown.  

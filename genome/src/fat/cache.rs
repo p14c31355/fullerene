@@ -1,9 +1,7 @@
-//! Fixed-capacity sector cache for filesystem block devices.
-
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::{BlockDevice, BlockError};
+use crate::block::{BlockDevice, BlockError};
 
 pub struct BlockCache<D: BlockDevice> {
     inner: D,

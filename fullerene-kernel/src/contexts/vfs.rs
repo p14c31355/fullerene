@@ -515,7 +515,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
 
             let bdev =
                 crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
-            match crate::drivers::fat::mount_device(bdev) {
+            match genome::fat::mount_device(bdev) {
                 Ok(fs) => {
                     if let Err(e) = vfs.mount(&mount_point, fs) {
                         crate::devfs::return_block_device_lease(device_name);
