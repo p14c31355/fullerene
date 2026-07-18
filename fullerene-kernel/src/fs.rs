@@ -166,7 +166,7 @@ pub fn file_size(path: &str) -> Result<u64, FsError> {
     if trimmed.is_empty() {
         return Ok(0);
     }
-    let (parent, name) = trimmed.rsplit_once('/').unwrap_or(("/", trimmed));
+    let (parent, name) = trimmed.rsplit_once('/').unwrap_or((".", trimmed));
     let parent = if parent.is_empty() { "/" } else { parent };
     let entries = list_dir(parent)?;
     entries

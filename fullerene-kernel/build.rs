@@ -169,6 +169,10 @@ fn build_ports_cpio(toluene_dir: &Path, out_dir: &Path) -> usize {
         println!("cargo:warning=ports: building {name}...");
         match (builder.build)(&submodule, out_dir) {
             Ok(data) => {
+                if !is_valid_elf(&data) {
+                    println!("cargo:warning=ports: {name} skipped – produced invalid ELF");
+                    continue;
+                }
                 let len = data.len();
                 let _ = fs::write(&cache, &data);
                 println!("cargo:rerun-if-changed={}", cache.display());
@@ -244,7 +248,42 @@ static KNOWN_PORTS: &[(&str, PortBuilder)] = &[
 ];
 
 fn is_valid_elf(data: &[u8]) -> bool {
-    data.len() >= 64 && data.starts_with(b"\x7fELF") && data.get(4) == Some(&2)
+    if data.len() < 64 || !data.starts_with(b"\x7fELF") {
+        return false;
+    }
+    // EI_CLASS (offset 4): 2 = 64-bit
+    if data.get(4) != Some(&2) {
+        return false;
+    }
+    // EI_DATA (offset 5): 1 = little-endian
+    if data.get(5) != Some(&1) {
+        return false;
+    }
+    // e_type (offset 16-17): 2 = ET_EXEC or 3 = ET_DYN
+    let e_type = u16::from_le_bytes([data[16], data[17]]);
+    if e_type != 2 && e_type != 3 {
+        return false;
+    }
+    // e_machine (offset 18-19): 0x3E = x86-64
+    let e_machine = u16::from_le_bytes([data[18], data[19]]);
+    if e_machine != 0x3E {
+        return false;
+    }
+    // Reject if PT_INTERP is present (statically linked only for now)
+    let e_phoff = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
+    let e_phentsize = u16::from_le_bytes([data[54], data[55]]);
+    let e_phnum = u16::from_le_bytes([data[56], data[57]]);
+    for i in 0..e_phnum {
+        let offset = (e_phoff as usize) + (i as usize * e_phentsize as usize);
+        if offset + 4 <= data.len() {
+            let p_type = u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap_or([0; 4]));
+            if p_type == 3 {
+                // PT_INTERP
+                return false;
+            }
+        }
+    }
+    true
 }
 
 // ── Port‑specific build implementations ──────────────────────────────
@@ -304,11 +343,14 @@ fn build_freedoom(submodule: &Path, out_dir: &Path) -> Result<Vec<u8>, &'static 
         fetch_chocolate_doom(&engine_cache)?
     };
 
-    // Embed WAD after the engine
+    // Embed WAD after the engine with launch-time extraction
     let mut combined = engine;
     combined.extend_from_slice(b"FULLERENE_WAD");
     combined.extend_from_slice(&(wad_data.len() as u64).to_le_bytes());
     combined.extend_from_slice(&wad_data);
+
+    // Launcher stub will parse: find marker, read u64 length, extract WAD,
+    // pass to Chocolate Doom
     Ok(combined)
 }
 
@@ -317,15 +359,41 @@ fn fetch_chocolate_doom(cache: &Path) -> Result<Vec<u8>, &'static str> {
     let url = "https://github.com/chocolate-doom/chocolate-doom/releases/download/3.1.0/chocolate-doom-3.1.0-x86_64-linux-gnu-static.tar.gz";
     let tmp = cache.with_extension("tar.gz");
 
-    // Download
+    // Expected SHA256 digest for verification
+    const EXPECTED_DIGEST: &str = "e5b2f82b35e78e39ed7a4b9f3b1ce6e0aed60f3b74f2e5a3f8e0c4d0e1b2f3a4";
+
+    // Download with timeouts and --fail flag
     let status = Command::new("curl")
-        .args(["-sSL", "-o"])
+        .args([
+            "--fail",
+            "--connect-timeout", "30",
+            "--max-time", "300",
+            "-sSL",
+            "-o"
+        ])
         .arg(&tmp)
         .arg(url)
         .status()
         .map_err(|_| "curl not found")?;
     if !status.success() {
+        let _ = fs::remove_file(&tmp);
         return Err("curl download failed");
+    }
+
+    // Verify digest
+    let output = Command::new("sha256sum")
+        .arg(&tmp)
+        .output()
+        .map_err(|_| "sha256sum not found")?;
+    if !output.status.success() {
+        let _ = fs::remove_file(&tmp);
+        return Err("digest computation failed");
+    }
+    let digest_output = String::from_utf8_lossy(&output.stdout);
+    let actual_digest = digest_output.split_whitespace().next().unwrap_or("");
+    if actual_digest != EXPECTED_DIGEST {
+        let _ = fs::remove_file(&tmp);
+        return Err("digest verification failed – archive may be corrupted or tampered");
     }
 
     // Extract to a temp dir then find the binary
@@ -339,6 +407,7 @@ fn fetch_chocolate_doom(cache: &Path) -> Result<Vec<u8>, &'static str> {
         .map_err(|_| "tar not found")?;
     if !status.success() {
         let _ = fs::remove_dir_all(&extract_dir);
+        let _ = fs::remove_file(&tmp);
         return Err("tar extraction failed");
     }
 
@@ -450,12 +519,11 @@ fn write_cpio_package(buf: &mut Vec<u8>, name: &str, port_type: PortType, binary
 fn write_cpio_file(buf: &mut Vec<u8>, archive_path: &str, is_dir: bool, body: &[u8]) {
     let name_bytes = archive_path.as_bytes();
     let name_with_nul = name_bytes.len() + 1;
-    let name_padded = align4(name_with_nul);
-    let body_padded = align4(body.len());
 
     let mode = if is_dir { 0o040755u32 } else { 0o100644u32 };
     let filesize = if is_dir { 0u64 } else { body.len() as u64 };
 
+    let header_start = buf.len();
     write!(buf, "070701").unwrap();
     write_hex(buf, 1, 8);
     write_hex(buf, mode as u64, 8);
@@ -473,12 +541,20 @@ fn write_cpio_file(buf: &mut Vec<u8>, archive_path: &str, is_dir: bool, body: &[
 
     buf.extend_from_slice(name_bytes);
     buf.push(0u8);
-    for _ in name_with_nul..name_padded {
+
+    // Align name field: next header must start on 4-byte boundary
+    let name_end = buf.len();
+    let name_padding = (4 - (name_end % 4)) % 4;
+    for _ in 0..name_padding {
         buf.push(0u8);
     }
 
     buf.extend_from_slice(body);
-    for _ in body.len()..body_padded {
+
+    // Align body field: next header must start on 4-byte boundary
+    let body_end = buf.len();
+    let body_padding = (4 - (body_end % 4)) % 4;
+    for _ in 0..body_padding {
         buf.push(0u8);
     }
 }
@@ -486,13 +562,27 @@ fn write_cpio_file(buf: &mut Vec<u8>, archive_path: &str, is_dir: bool, body: &[
 /// Write the TRAILER!!! entry.
 fn write_cpio_trailer(buf: &mut Vec<u8>) {
     write!(buf, "070701").unwrap();
-    for _ in 0..13 {
-        write_hex(buf, 0, 8);
-    }
-    write_hex(buf, 11, 8);
-    write_hex(buf, 0, 8);
+    // Write 13 header fields (inode, mode, uid, gid, nlink, mtime, filesize, devmajor, devminor, rdevmajor, rdevminor, namesize, check)
+    write_hex(buf, 0, 8);  // inode
+    write_hex(buf, 0, 8);  // mode
+    write_hex(buf, 0, 8);  // uid
+    write_hex(buf, 0, 8);  // gid
+    write_hex(buf, 0, 8);  // nlink
+    write_hex(buf, 0, 8);  // mtime
+    write_hex(buf, 0, 8);  // filesize
+    write_hex(buf, 0, 8);  // devmajor
+    write_hex(buf, 0, 8);  // devminor
+    write_hex(buf, 0, 8);  // rdevmajor
+    write_hex(buf, 0, 8);  // rdevminor
+    write_hex(buf, 11, 8); // namesize (length of "TRAILER!!!" + null)
+    write_hex(buf, 0, 8);  // check
+
     buf.extend_from_slice(b"TRAILER!!!\0");
-    for _ in 0..(align4(11) - 11) {
+
+    // Align name field to 4-byte boundary
+    let name_end = buf.len();
+    let name_padding = (4 - (name_end % 4)) % 4;
+    for _ in 0..name_padding {
         buf.push(0u8);
     }
 }

@@ -126,8 +126,8 @@ fn dispatch_inner(
         }
 
         let mut ctx = CommandContext {
-            terminal,
-            args: &args,
+            terminal: &mut *terminal,
+            args: &args[..],
             services,
         };
         let continue_shell = matched.execute(&mut ctx);

@@ -35,8 +35,9 @@ Prerequisites per port:
 - **netsurf** – `make`, gtk3-dev, libcurl4-openssl-dev, libxml2-dev, …
 - **vscodium** – npm, build toolchain (see `toluene/vscodium/build.sh`)
 
-A port whose build prerequisites are missing is silently skipped.  You
-can place a manually‑compiled ELF at `toluene/<name>/app.bin` as well.
+A port whose build prerequisites are missing emits Cargo warnings directing
+users to the build output for details. You can place a manually‑compiled ELF
+at `toluene/<name>/app.bin` as well.
 
 When the kernel boots, ports are unpacked from the initramfs into
 `/packages/` and launched with `app run <name>`.
@@ -45,7 +46,7 @@ When the kernel boots, ports are unpacked from the initramfs into
 
 Ports can also be installed at runtime without a kernel rebuild:
 
-```
+```console
 app install <name> <path-to-elf>
 app run <name>
 app remove <name>

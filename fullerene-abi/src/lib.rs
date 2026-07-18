@@ -83,7 +83,7 @@ impl SyscallNumber {
 impl TryFrom<u64> for SyscallNumber {
     type Error = ();
     fn try_from(value: u64) -> Result<Self, Self::Error> {
-        macro_rules! match_num { ($($n:ident),* $(,)?) => { match value { $(syscall_numbers::$n => Ok(Self::$v),)* _ => Err(()) } }; ($($n:ident => $v:ident),* $(,)?) => { match value { $(syscall_numbers::$n => Ok(Self::$v),)* _ => Err(()) } }; }
+        macro_rules! match_num { ($($n:ident => $v:ident),* $(,)?) => { match value { $(syscall_numbers::$n => Ok(Self::$v),)* _ => Err(()) } }; }
         match_num! {
             ABI_QUERY => AbiQuery, EXIT => Exit, FORK => Fork, READ => Read, WRITE => Write,
             OPEN => Open, CLOSE => Close, WAIT => Wait, GETPID => GetPid, GET_PROCESS_NAME => GetProcessName,
