@@ -589,7 +589,7 @@ fn write_cpio_file(buf: &mut Vec<u8>, archive_path: &str, is_dir: bool, body: &[
     let mode = if is_dir { 0o040755u32 } else { 0o100644u32 };
     let filesize = if is_dir { 0u64 } else { body.len() as u64 };
 
-    let header_start = buf.len();
+    let _header_start = buf.len();
     write!(buf, "070701").unwrap();
     write_hex(buf, 1, 8);
     write_hex(buf, mode as u64, 8);
@@ -658,6 +658,6 @@ fn write_hex(buf: &mut Vec<u8>, value: u64, digits: usize) {
     buf.extend_from_slice(s.as_bytes());
 }
 
-fn align4(n: usize) -> usize {
+fn _align4(n: usize) -> usize {
     (n + 3) & !3
 }
