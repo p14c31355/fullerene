@@ -8,32 +8,42 @@
 
 ## Application Ports
 
-The repository includes third‑party application port definitions that can be
-embedded into the kernel via a CPIO initramfs archive.  Currently defined
-ports:
+The repository includes third‑party application port definitions that are
+automatically built from submodule sources and embedded into the kernel
+via a CPIO initramfs archive.
 
-| Port | Submodule path | Runtime |
-|------|----------------|---------|
-| FREEDOOM | `toluene/freedoom` | Linux ELF |
-| NetSurf | `toluene/netsurf` | Linux ELF |
-| VSCodium | `toluene/vscodium` | Linux ELF |
-| Cargo | `toluene/cargo` | Linux ELF |
+| Port | Submodule | Runtime | Build method |
+|------|-----------|---------|--------------|
+| Cargo | `toluene/cargo` | Linux ELF | `cargo build --release` (cold ~2 min, cached) |
+| FREEDOOM | `toluene/freedoom` | Linux ELF | `make` + Chocolate Doom download |
+| NetSurf | `toluene/netsurf` | Linux ELF | `make` (requires gtk3, libcurl, …) |
+| VSCodium | `toluene/vscodium` | Linux ELF | Manual overlay (needs Microsoft/vscode) |
 
-To embed a port binary, place a Linux‑compatible ELF64 binary at
-`toluene/<name>/app.bin`.  The kernel's `build.rs` automatically detects
-it and generates a CPIO archive:
+The kernel's `build.rs` runs each port's build step during compilation.
+Built binaries are cached at `toluene/<name>/app.bin` and reused on
+subsequent builds.  To force a rebuild, delete the cached binary:
 
 ```bash
-# After placing toluene/<name>/app.bin, rebuild the kernel:
+rm toluene/<name>/app.bin
 cargo build -p fullerene-kernel --target x86_64-unknown-uefi
 ```
 
-When the kernel boots, ports are automatically unpacked from the initramfs
-into `/packages/` and can be launched with `app run <name>`.
+Prerequisites per port:
 
-### Manual port installation
+- **cargo** – Rust toolchain (`cargo` + `rustc`)
+- **freedoom** – `make`, `python3`, `deutex`, `curl` (engine download)
+- **netsurf** – `make`, gtk3-dev, libcurl4-openssl-dev, libxml2-dev, …
+- **vscodium** – npm, build toolchain (see `toluene/vscodium/build.sh`)
 
-Ports can also be installed at runtime from a pre‑built ELF binary:
+A port whose build prerequisites are missing is silently skipped.  You
+can place a manually‑compiled ELF at `toluene/<name>/app.bin` as well.
+
+When the kernel boots, ports are unpacked from the initramfs into
+`/packages/` and launched with `app run <name>`.
+
+### Manual runtime installation
+
+Ports can also be installed at runtime without a kernel rebuild:
 
 ```
 app install <name> <path-to-elf>
