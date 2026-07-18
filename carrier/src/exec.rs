@@ -106,50 +106,39 @@ fn dispatch_inner(
         let cmd_name = cmd.name.as_str();
         let is_last = i == pipeline.commands.len() - 1;
 
-        let found = commands.iter().find(|c| c.name() == cmd_name);
+        let Some(&matched) = commands.iter().find(|c| c.name() == cmd_name) else {
+            terminal.write_str("Unknown command: ");
+            terminal.write_str(cmd_name);
+            terminal.write_str("\nType 'help' for available commands.\n");
+            return true;
+        };
 
-        match found {
-            Some(&matched) => {
-                let mut args: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
-                args.push(cmd_name);
-                for a in &cmd.args {
-                    args.push(a.as_str());
-                }
+        let args: alloc::vec::Vec<&str> = core::iter::once(cmd_name)
+            .chain(cmd.args.iter().map(|a| a.as_str()))
+            .collect();
 
-                if let Some(input) = pipe_buffer.take() {
-                    terminal.set_stdin(input);
-                }
+        if let Some(input) = pipe_buffer.take() {
+            terminal.set_stdin(input);
+        }
 
-                // Only buffer stdout for non-last stages.
-                // The last stage streams directly to the terminal.
-                if !is_last {
-                    terminal.arm_pipe_stdout();
-                }
+        if !is_last {
+            terminal.arm_pipe_stdout();
+        }
 
-                let mut ctx = CommandContext {
-                    terminal,
-                    args: &args,
-                    services,
-                };
-                let continue_shell = matched.execute(&mut ctx);
+        let mut ctx = CommandContext {
+            terminal,
+            args: &args,
+            services,
+        };
+        let continue_shell = matched.execute(&mut ctx);
 
-                if !is_last {
-                    pipe_buffer = terminal.take_stdout();
-                }
-                // Always clear pipe stdin after each stage to prevent
-                // stale data leaking into the next command line.
-                terminal.clear_pipe_stdin();
+        if !is_last {
+            pipe_buffer = terminal.take_stdout();
+        }
+        terminal.clear_pipe_stdin();
 
-                if !continue_shell {
-                    return false;
-                }
-            }
-            None => {
-                terminal.write_str("Unknown command: ");
-                terminal.write_str(cmd_name);
-                terminal.write_str("\nType 'help' for available commands.\n");
-                return true;
-            }
+        if !continue_shell {
+            return false;
         }
     }
 

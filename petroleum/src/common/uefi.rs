@@ -453,11 +453,3 @@ pub fn efi_print(system_table: &EfiSystemTable, text: &[u8]) {
         }
     }
 }
-/// Helper function to write a string to VGA buffer at specified row
-pub fn write_vga_string(vga_buffer: &mut [[u16; 80]; 25], row: usize, text: &[u8], color: u16) {
-    for (i, &byte) in text.iter().enumerate() {
-        if i < 80 {
-            vga_buffer[row][i] = color | (byte as u16);
-        }
-    }
-}

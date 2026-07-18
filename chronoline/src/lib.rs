@@ -249,12 +249,7 @@ mod tests {
         now: Cell<u64>,
     }
 
-    impl FakeClock {
-        #[allow(dead_code)]
-        pub fn advance(&self, delta: u64) {
-            self.now.set(self.now.get() + delta);
-        }
-    }
+    impl FakeClock {}
 
     impl ClockSource for FakeClock {
         fn now_ticks(&self) -> u64 {

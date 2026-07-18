@@ -32,16 +32,6 @@ fn bytes_until_page_end(address: usize) -> usize {
     PAGE_SIZE - (address & (PAGE_SIZE - 1))
 }
 
-#[allow(dead_code)]
-fn decode_c_string(mut bytes: Vec<u8>) -> Result<String, UserCopyError> {
-    let nul = bytes
-        .iter()
-        .position(|byte| *byte == 0)
-        .ok_or(UserCopyError::MissingNul)?;
-    bytes.truncate(nul);
-    String::from_utf8(bytes).map_err(|_| UserCopyError::InvalidUtf8)
-}
-
 /// Copy a bounded NUL-terminated UTF-8 string from user memory.
 ///
 /// Validation is performed one page at a time.  Consequently, a string whose
