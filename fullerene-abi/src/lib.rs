@@ -7,6 +7,9 @@
 
 use core::convert::TryFrom;
 
+macro_rules! all_syscall { ($($v:ident),* $(,)?) => { pub const ALL: &'static [Self] = &[$(Self::$v),*]; }; }
+macro_rules! all_error { ($($v:ident),* $(,)?) => { pub const ALL: &'static [Self] = &[$(Self::$v),*]; }; }
+
 /// A Fullerene native syscall number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u64)]
@@ -58,51 +61,18 @@ pub enum SyscallNumber {
 }
 
 impl SyscallNumber {
-    pub const ALL: &'static [Self] = &[
-        Self::AbiQuery,
-        Self::Exit,
-        Self::Fork,
-        Self::Read,
-        Self::Write,
-        Self::Open,
-        Self::Close,
-        Self::Wait,
-        Self::GetPid,
-        Self::GetProcessName,
-        Self::Yield,
-        Self::Spawn,
-        Self::MapMemory,
-        Self::UnmapMemory,
-        Self::ProtectMemory,
-        Self::QueryMemory,
-        Self::CreateEvent,
-        Self::WaitEvent,
-        Self::SignalEvent,
-        Self::SubscribeEvent,
-        Self::CreateThread,
-        Self::JoinThread,
-        Self::DetachThread,
-        Self::ExitThread,
-        Self::CreateWindow,
-        Self::DestroyWindow,
-        Self::ResizeWindow,
-        Self::PresentWindow,
-        Self::GetWindowEvent,
-        Self::EnumerateDevices,
-        Self::OpenDevice,
-        Self::DeviceIoctl,
-        Self::ChannelCreate,
-        Self::ChannelSend,
-        Self::ChannelRecv,
-        Self::PipeCreate,
-        Self::HandleTransfer,
-        Self::HandleDuplicate,
-        Self::HandleRevoke,
-        Self::ClockGetTime,
-        Self::TimerCreate,
-        Self::Sleep,
-        Self::Uptime,
-    ];
+    all_syscall! {
+        AbiQuery, Exit, Fork, Read, Write, Open, Close, Wait,
+        GetPid, GetProcessName, Yield, Spawn,
+        MapMemory, UnmapMemory, ProtectMemory, QueryMemory,
+        CreateEvent, WaitEvent, SignalEvent, SubscribeEvent,
+        CreateThread, JoinThread, DetachThread, ExitThread,
+        CreateWindow, DestroyWindow, ResizeWindow, PresentWindow, GetWindowEvent,
+        EnumerateDevices, OpenDevice, DeviceIoctl,
+        ChannelCreate, ChannelSend, ChannelRecv, PipeCreate,
+        HandleTransfer, HandleDuplicate, HandleRevoke,
+        ClockGetTime, TimerCreate, Sleep, Uptime,
+    }
 
     #[inline]
     pub const fn as_u64(self) -> u64 {
@@ -112,105 +82,42 @@ impl SyscallNumber {
 
 impl TryFrom<u64> for SyscallNumber {
     type Error = ();
-
     fn try_from(value: u64) -> Result<Self, Self::Error> {
-        match value {
-            syscall_numbers::ABI_QUERY => Ok(Self::AbiQuery),
-            syscall_numbers::EXIT => Ok(Self::Exit),
-            syscall_numbers::FORK => Ok(Self::Fork),
-            syscall_numbers::READ => Ok(Self::Read),
-            syscall_numbers::WRITE => Ok(Self::Write),
-            syscall_numbers::OPEN => Ok(Self::Open),
-            syscall_numbers::CLOSE => Ok(Self::Close),
-            syscall_numbers::WAIT => Ok(Self::Wait),
-            syscall_numbers::GETPID => Ok(Self::GetPid),
-            syscall_numbers::GET_PROCESS_NAME => Ok(Self::GetProcessName),
-            syscall_numbers::YIELD => Ok(Self::Yield),
-            syscall_numbers::SPAWN => Ok(Self::Spawn),
-            syscall_numbers::MAP_MEMORY => Ok(Self::MapMemory),
-            syscall_numbers::UNMAP_MEMORY => Ok(Self::UnmapMemory),
-            syscall_numbers::PROTECT_MEMORY => Ok(Self::ProtectMemory),
-            syscall_numbers::QUERY_MEMORY => Ok(Self::QueryMemory),
-            syscall_numbers::CREATE_EVENT => Ok(Self::CreateEvent),
-            syscall_numbers::WAIT_EVENT => Ok(Self::WaitEvent),
-            syscall_numbers::SIGNAL_EVENT => Ok(Self::SignalEvent),
-            syscall_numbers::SUBSCRIBE_EVENT => Ok(Self::SubscribeEvent),
-            syscall_numbers::CREATE_THREAD => Ok(Self::CreateThread),
-            syscall_numbers::JOIN_THREAD => Ok(Self::JoinThread),
-            syscall_numbers::DETACH_THREAD => Ok(Self::DetachThread),
-            syscall_numbers::EXIT_THREAD => Ok(Self::ExitThread),
-            syscall_numbers::CREATE_WINDOW => Ok(Self::CreateWindow),
-            syscall_numbers::DESTROY_WINDOW => Ok(Self::DestroyWindow),
-            syscall_numbers::RESIZE_WINDOW => Ok(Self::ResizeWindow),
-            syscall_numbers::PRESENT_WINDOW => Ok(Self::PresentWindow),
-            syscall_numbers::GET_WINDOW_EVENT => Ok(Self::GetWindowEvent),
-            syscall_numbers::ENUMERATE_DEVICES => Ok(Self::EnumerateDevices),
-            syscall_numbers::OPEN_DEVICE => Ok(Self::OpenDevice),
-            syscall_numbers::DEVICE_IOCTL => Ok(Self::DeviceIoctl),
-            syscall_numbers::CHANNEL_CREATE => Ok(Self::ChannelCreate),
-            syscall_numbers::CHANNEL_SEND => Ok(Self::ChannelSend),
-            syscall_numbers::CHANNEL_RECV => Ok(Self::ChannelRecv),
-            syscall_numbers::PIPE_CREATE => Ok(Self::PipeCreate),
-            syscall_numbers::HANDLE_TRANSFER => Ok(Self::HandleTransfer),
-            syscall_numbers::HANDLE_DUPLICATE => Ok(Self::HandleDuplicate),
-            syscall_numbers::HANDLE_REVOKE => Ok(Self::HandleRevoke),
-            syscall_numbers::CLOCK_GETTIME => Ok(Self::ClockGetTime),
-            syscall_numbers::TIMER_CREATE => Ok(Self::TimerCreate),
-            syscall_numbers::SLEEP => Ok(Self::Sleep),
-            syscall_numbers::UPTIME => Ok(Self::Uptime),
-            _ => Err(()),
+        macro_rules! match_num { ($($n:ident => $v:ident),* $(,)?) => { match value { $(syscall_numbers::$n => Ok(Self::$v),)* _ => Err(()) } }; }
+        match_num! {
+            ABI_QUERY => AbiQuery, EXIT => Exit, FORK => Fork, READ => Read, WRITE => Write,
+            OPEN => Open, CLOSE => Close, WAIT => Wait, GETPID => GetPid, GET_PROCESS_NAME => GetProcessName,
+            YIELD => Yield, SPAWN => Spawn, MAP_MEMORY => MapMemory, UNMAP_MEMORY => UnmapMemory,
+            PROTECT_MEMORY => ProtectMemory, QUERY_MEMORY => QueryMemory,
+            CREATE_EVENT => CreateEvent, WAIT_EVENT => WaitEvent, SIGNAL_EVENT => SignalEvent, SUBSCRIBE_EVENT => SubscribeEvent,
+            CREATE_THREAD => CreateThread, JOIN_THREAD => JoinThread, DETACH_THREAD => DetachThread, EXIT_THREAD => ExitThread,
+            CREATE_WINDOW => CreateWindow, DESTROY_WINDOW => DestroyWindow, RESIZE_WINDOW => ResizeWindow,
+            PRESENT_WINDOW => PresentWindow, GET_WINDOW_EVENT => GetWindowEvent,
+            ENUMERATE_DEVICES => EnumerateDevices, OPEN_DEVICE => OpenDevice, DEVICE_IOCTL => DeviceIoctl,
+            CHANNEL_CREATE => ChannelCreate, CHANNEL_SEND => ChannelSend, CHANNEL_RECV => ChannelRecv, PIPE_CREATE => PipeCreate,
+            HANDLE_TRANSFER => HandleTransfer, HANDLE_DUPLICATE => HandleDuplicate, HANDLE_REVOKE => HandleRevoke,
+            CLOCK_GETTIME => ClockGetTime, TIMER_CREATE => TimerCreate, SLEEP => Sleep, UPTIME => Uptime,
         }
     }
 }
 
 /// Compatibility constants for code that matches on raw syscall numbers.
 pub mod syscall_numbers {
-    use super::SyscallNumber;
-
-    pub const ABI_QUERY: u64 = SyscallNumber::AbiQuery.as_u64();
-    pub const ABI_VERSION: u64 = ABI_QUERY;
-    pub const EXIT: u64 = SyscallNumber::Exit.as_u64();
-    pub const FORK: u64 = SyscallNumber::Fork.as_u64();
-    pub const READ: u64 = SyscallNumber::Read.as_u64();
-    pub const WRITE: u64 = SyscallNumber::Write.as_u64();
-    pub const OPEN: u64 = SyscallNumber::Open.as_u64();
-    pub const CLOSE: u64 = SyscallNumber::Close.as_u64();
-    pub const WAIT: u64 = SyscallNumber::Wait.as_u64();
-    pub const GETPID: u64 = SyscallNumber::GetPid.as_u64();
-    pub const GET_PROCESS_NAME: u64 = SyscallNumber::GetProcessName.as_u64();
-    pub const YIELD: u64 = SyscallNumber::Yield.as_u64();
-    pub const SPAWN: u64 = SyscallNumber::Spawn.as_u64();
-    pub const MAP_MEMORY: u64 = SyscallNumber::MapMemory.as_u64();
-    pub const UNMAP_MEMORY: u64 = SyscallNumber::UnmapMemory.as_u64();
-    pub const PROTECT_MEMORY: u64 = SyscallNumber::ProtectMemory.as_u64();
-    pub const QUERY_MEMORY: u64 = SyscallNumber::QueryMemory.as_u64();
-    pub const CREATE_EVENT: u64 = SyscallNumber::CreateEvent.as_u64();
-    pub const WAIT_EVENT: u64 = SyscallNumber::WaitEvent.as_u64();
-    pub const SIGNAL_EVENT: u64 = SyscallNumber::SignalEvent.as_u64();
-    pub const SUBSCRIBE_EVENT: u64 = SyscallNumber::SubscribeEvent.as_u64();
-    pub const CREATE_THREAD: u64 = SyscallNumber::CreateThread.as_u64();
-    pub const JOIN_THREAD: u64 = SyscallNumber::JoinThread.as_u64();
-    pub const DETACH_THREAD: u64 = SyscallNumber::DetachThread.as_u64();
-    pub const EXIT_THREAD: u64 = SyscallNumber::ExitThread.as_u64();
-    pub const CREATE_WINDOW: u64 = SyscallNumber::CreateWindow.as_u64();
-    pub const DESTROY_WINDOW: u64 = SyscallNumber::DestroyWindow.as_u64();
-    pub const RESIZE_WINDOW: u64 = SyscallNumber::ResizeWindow.as_u64();
-    pub const PRESENT_WINDOW: u64 = SyscallNumber::PresentWindow.as_u64();
-    pub const GET_WINDOW_EVENT: u64 = SyscallNumber::GetWindowEvent.as_u64();
-    pub const ENUMERATE_DEVICES: u64 = SyscallNumber::EnumerateDevices.as_u64();
-    pub const OPEN_DEVICE: u64 = SyscallNumber::OpenDevice.as_u64();
-    pub const DEVICE_IOCTL: u64 = SyscallNumber::DeviceIoctl.as_u64();
-    pub const CHANNEL_CREATE: u64 = SyscallNumber::ChannelCreate.as_u64();
-    pub const CHANNEL_SEND: u64 = SyscallNumber::ChannelSend.as_u64();
-    pub const CHANNEL_RECV: u64 = SyscallNumber::ChannelRecv.as_u64();
-    pub const PIPE_CREATE: u64 = SyscallNumber::PipeCreate.as_u64();
-    pub const HANDLE_TRANSFER: u64 = SyscallNumber::HandleTransfer.as_u64();
-    pub const HANDLE_DUPLICATE: u64 = SyscallNumber::HandleDuplicate.as_u64();
-    pub const HANDLE_REVOKE: u64 = SyscallNumber::HandleRevoke.as_u64();
-    pub const CLOCK_GETTIME: u64 = SyscallNumber::ClockGetTime.as_u64();
-    pub const TIMER_CREATE: u64 = SyscallNumber::TimerCreate.as_u64();
-    pub const SLEEP: u64 = SyscallNumber::Sleep.as_u64();
-    pub const UPTIME: u64 = SyscallNumber::Uptime.as_u64();
+    macro_rules! sc { ($($name:ident = $variant:ident),* $(,)?) => { $(pub const $name: u64 = super::SyscallNumber::$variant.as_u64();)* }; }
+    sc! {
+        ABI_QUERY = AbiQuery, ABI_VERSION = AbiQuery,
+        EXIT = Exit, FORK = Fork, READ = Read, WRITE = Write, OPEN = Open, CLOSE = Close, WAIT = Wait,
+        GETPID = GetPid, GET_PROCESS_NAME = GetProcessName, YIELD = Yield, SPAWN = Spawn,
+        MAP_MEMORY = MapMemory, UNMAP_MEMORY = UnmapMemory, PROTECT_MEMORY = ProtectMemory, QUERY_MEMORY = QueryMemory,
+        CREATE_EVENT = CreateEvent, WAIT_EVENT = WaitEvent, SIGNAL_EVENT = SignalEvent, SUBSCRIBE_EVENT = SubscribeEvent,
+        CREATE_THREAD = CreateThread, JOIN_THREAD = JoinThread, DETACH_THREAD = DetachThread, EXIT_THREAD = ExitThread,
+        CREATE_WINDOW = CreateWindow, DESTROY_WINDOW = DestroyWindow, RESIZE_WINDOW = ResizeWindow,
+        PRESENT_WINDOW = PresentWindow, GET_WINDOW_EVENT = GetWindowEvent,
+        ENUMERATE_DEVICES = EnumerateDevices, OPEN_DEVICE = OpenDevice, DEVICE_IOCTL = DeviceIoctl,
+        CHANNEL_CREATE = ChannelCreate, CHANNEL_SEND = ChannelSend, CHANNEL_RECV = ChannelRecv, PIPE_CREATE = PipeCreate,
+        HANDLE_TRANSFER = HandleTransfer, HANDLE_DUPLICATE = HandleDuplicate, HANDLE_REVOKE = HandleRevoke,
+        CLOCK_GETTIME = ClockGetTime, TIMER_CREATE = TimerCreate, SLEEP = Sleep, UPTIME = Uptime,
+    }
 }
 
 /// A positive error code returned as its negated value from a syscall.
@@ -243,30 +150,12 @@ pub enum SyscallErrorCode {
 }
 
 impl SyscallErrorCode {
-    pub const ALL: &'static [Self] = &[
-        Self::InvalidSyscall,
-        Self::FileNotFound,
-        Self::NoSuchProcess,
-        Self::Io,
-        Self::BadFileDescriptor,
-        Self::Again,
-        Self::OutOfMemory,
-        Self::PermissionDenied,
-        Self::AddressFault,
-        Self::Busy,
-        Self::AlreadyExists,
-        Self::NoSuchDevice,
-        Self::NotADirectory,
-        Self::IsADirectory,
-        Self::InvalidArgument,
-        Self::NoSpace,
-        Self::DirectoryNotEmpty,
-        Self::Overflow,
-        Self::NotSupported,
-        Self::BadHandle,
-        Self::TimedOut,
-        Self::WouldBlock,
-    ];
+    all_error! {
+        InvalidSyscall, FileNotFound, NoSuchProcess, Io, BadFileDescriptor, Again, OutOfMemory,
+        PermissionDenied, AddressFault, Busy, AlreadyExists, NoSuchDevice,
+        NotADirectory, IsADirectory, InvalidArgument, NoSpace, DirectoryNotEmpty,
+        Overflow, NotSupported, BadHandle, TimedOut, WouldBlock,
+    }
 
     #[inline]
     pub const fn as_i64(self) -> i64 {
@@ -276,62 +165,29 @@ impl SyscallErrorCode {
 
 impl TryFrom<i64> for SyscallErrorCode {
     type Error = ();
-
     fn try_from(value: i64) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(Self::InvalidSyscall),
-            2 => Ok(Self::FileNotFound),
-            3 => Ok(Self::NoSuchProcess),
-            5 => Ok(Self::Io),
-            9 => Ok(Self::BadFileDescriptor),
-            11 => Ok(Self::Again),
-            12 => Ok(Self::OutOfMemory),
-            13 => Ok(Self::PermissionDenied),
-            14 => Ok(Self::AddressFault),
-            16 => Ok(Self::Busy),
-            17 => Ok(Self::AlreadyExists),
-            19 => Ok(Self::NoSuchDevice),
-            20 => Ok(Self::NotADirectory),
-            21 => Ok(Self::IsADirectory),
-            22 => Ok(Self::InvalidArgument),
-            28 => Ok(Self::NoSpace),
-            39 => Ok(Self::DirectoryNotEmpty),
-            75 => Ok(Self::Overflow),
-            95 => Ok(Self::NotSupported),
-            104 => Ok(Self::BadHandle),
-            110 => Ok(Self::TimedOut),
-            140 => Ok(Self::WouldBlock),
-            _ => Err(()),
+        macro_rules! match_err { ($($n:literal => $v:ident),* $(,)?) => { match value { $( $n => Ok(Self::$v),)* _ => Err(()) } }; }
+        match_err! {
+            1 => InvalidSyscall, 2 => FileNotFound, 3 => NoSuchProcess, 5 => Io, 9 => BadFileDescriptor,
+            11 => Again, 12 => OutOfMemory, 13 => PermissionDenied, 14 => AddressFault, 16 => Busy,
+            17 => AlreadyExists, 19 => NoSuchDevice, 20 => NotADirectory, 21 => IsADirectory, 22 => InvalidArgument,
+            28 => NoSpace, 39 => DirectoryNotEmpty, 75 => Overflow, 95 => NotSupported, 104 => BadHandle,
+            110 => TimedOut, 140 => WouldBlock,
         }
     }
 }
 
 /// Compatibility constants for raw error-code users.
 pub mod syscall_errors {
-    use super::SyscallErrorCode;
-
-    pub const INVALID_SYSCALL: i64 = SyscallErrorCode::InvalidSyscall.as_i64();
-    pub const FILE_NOT_FOUND: i64 = SyscallErrorCode::FileNotFound.as_i64();
-    pub const NO_SUCH_PROCESS: i64 = SyscallErrorCode::NoSuchProcess.as_i64();
-    pub const IO_ERROR: i64 = SyscallErrorCode::Io.as_i64();
-    pub const BAD_FILE_DESCRIPTOR: i64 = SyscallErrorCode::BadFileDescriptor.as_i64();
-    pub const AGAIN: i64 = SyscallErrorCode::Again.as_i64();
-    pub const OUT_OF_MEMORY: i64 = SyscallErrorCode::OutOfMemory.as_i64();
-    pub const PERMISSION_DENIED: i64 = SyscallErrorCode::PermissionDenied.as_i64();
-    pub const ADDRESS_FAULT: i64 = SyscallErrorCode::AddressFault.as_i64();
-    pub const BUSY: i64 = SyscallErrorCode::Busy.as_i64();
-    pub const ALREADY_EXISTS: i64 = SyscallErrorCode::AlreadyExists.as_i64();
-    pub const NO_SUCH_DEVICE: i64 = SyscallErrorCode::NoSuchDevice.as_i64();
-    pub const NOT_A_DIRECTORY: i64 = SyscallErrorCode::NotADirectory.as_i64();
-    pub const IS_A_DIRECTORY: i64 = SyscallErrorCode::IsADirectory.as_i64();
-    pub const INVALID_ARGUMENT: i64 = SyscallErrorCode::InvalidArgument.as_i64();
-    pub const NO_SPACE: i64 = SyscallErrorCode::NoSpace.as_i64();
-    pub const DIRECTORY_NOT_EMPTY: i64 = SyscallErrorCode::DirectoryNotEmpty.as_i64();
-    pub const OVERFLOW: i64 = SyscallErrorCode::Overflow.as_i64();
-    pub const NOT_SUPPORTED: i64 = SyscallErrorCode::NotSupported.as_i64();
-    pub const BAD_HANDLE: i64 = SyscallErrorCode::BadHandle.as_i64();
-    pub const TIMED_OUT: i64 = SyscallErrorCode::TimedOut.as_i64();
-    pub const WOULD_BLOCK: i64 = SyscallErrorCode::WouldBlock.as_i64();
+    macro_rules! se { ($($name:ident = $variant:ident),* $(,)?) => { $(pub const $name: i64 = super::SyscallErrorCode::$variant.as_i64();)* }; }
+    se! {
+        INVALID_SYSCALL = InvalidSyscall, FILE_NOT_FOUND = FileNotFound, NO_SUCH_PROCESS = NoSuchProcess,
+        IO_ERROR = Io, BAD_FILE_DESCRIPTOR = BadFileDescriptor, AGAIN = Again, OUT_OF_MEMORY = OutOfMemory,
+        PERMISSION_DENIED = PermissionDenied, ADDRESS_FAULT = AddressFault, BUSY = Busy, ALREADY_EXISTS = AlreadyExists,
+        NO_SUCH_DEVICE = NoSuchDevice, NOT_A_DIRECTORY = NotADirectory, IS_A_DIRECTORY = IsADirectory,
+        INVALID_ARGUMENT = InvalidArgument, NO_SPACE = NoSpace, DIRECTORY_NOT_EMPTY = DirectoryNotEmpty,
+        OVERFLOW = Overflow, NOT_SUPPORTED = NotSupported, BAD_HANDLE = BadHandle, TIMED_OUT = TimedOut, WOULD_BLOCK = WouldBlock,
+    }
 }
 
 /// Semantic version of the native syscall ABI.

@@ -6,6 +6,52 @@
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, run with `--clone-ovmf` to copy from system installation or download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
 
+## Application Ports
+
+The repository includes third‑party application port definitions that are
+automatically built from submodule sources and embedded into the kernel
+via a CPIO initramfs archive.
+
+| Port | Submodule | Runtime | Build method |
+|------|-----------|---------|--------------|
+| Cargo | `toluene/cargo` | Linux ELF | `cargo build --release` (cold ~2 min, cached) |
+| FREEDOOM | `toluene/freedoom` | Linux ELF | `make` + Chocolate Doom download |
+| NetSurf | `toluene/netsurf` | Linux ELF | `make` (requires gtk3, libcurl, …) |
+| VSCodium | `toluene/vscodium` | Linux ELF | Manual overlay (needs Microsoft/vscode) |
+
+The kernel's `build.rs` runs each port's build step during compilation.
+Built binaries are cached at `toluene/<name>/app.bin` and reused on
+subsequent builds.  To force a rebuild, delete the cached binary:
+
+```bash
+rm toluene/<name>/app.bin
+cargo build -p fullerene-kernel --target x86_64-unknown-uefi
+```
+
+Prerequisites per port:
+
+- **cargo** – Rust toolchain (`cargo` + `rustc`)
+- **freedoom** – `make`, `python3`, `deutex`, `curl` (engine download)
+- **netsurf** – `make`, gtk3-dev, libcurl4-openssl-dev, libxml2-dev, …
+- **vscodium** – npm, build toolchain (see `toluene/vscodium/build.sh`)
+
+A port whose build prerequisites are missing emits Cargo warnings directing
+users to the build output for details. You can place a manually‑compiled ELF
+at `toluene/<name>/app.bin` as well.
+
+When the kernel boots, ports are unpacked from the initramfs into
+`/packages/` and launched with `app run <name>`.
+
+### Manual runtime installation
+
+Ports can also be installed at runtime without a kernel rebuild:
+
+```console
+app install <name> <path-to-elf>
+app run <name>
+app remove <name>
+```
+
 ## Build and Run
 
 Run the task runner, which handles building, ISO creation, and QEMU emulation:

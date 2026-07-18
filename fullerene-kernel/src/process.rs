@@ -169,18 +169,12 @@ struct HandleSlot {
 /// and cryptographically signed handles.
 pub struct HandleTable {
     slots: alloc::vec::Vec<HandleSlot>,
-    #[allow(dead_code)]
-    free_head: Option<u16>,
-    #[allow(dead_code)]
-    capacity: u16,
 }
 
 impl HandleTable {
     pub fn new() -> Self {
         Self {
             slots: alloc::vec::Vec::new(),
-            free_head: None,
-            capacity: 1024,
         }
     }
 

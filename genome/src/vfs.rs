@@ -129,20 +129,14 @@ impl MemFileSystem {
     }
 
     fn lookup_from(&self, path: &str, start_ino: u64, depth: u32) -> Option<u64> {
-        if depth > MAX_SYMLINK_DEPTH {
-            return None;
-        }
-        if path.is_empty() {
-            return Some(start_ino);
+        if depth > MAX_SYMLINK_DEPTH || path.is_empty() {
+            return (depth <= MAX_SYMLINK_DEPTH).then_some(start_ino);
         }
         let (effective_start, trimmed) = if path.starts_with('/') {
             (1u64, path.trim_start_matches('/'))
         } else {
             (start_ino, path)
         };
-        if trimmed.is_empty() {
-            return Some(effective_start);
-        }
         let components: Vec<&str> = trimmed.split('/').filter(|c| !c.is_empty()).collect();
         if components.is_empty() {
             return Some(effective_start);
@@ -150,13 +144,13 @@ impl MemFileSystem {
         let mut current = effective_start;
         for (idx, comp) in components.iter().enumerate() {
             let parent_ino = current;
-            if *comp == "." {
-                // current stays the same
-            } else if *comp == ".." {
-                let ino = self.inodes.get(&current)?;
-                current = if ino.parent == 0 { 1 } else { ino.parent };
-            } else {
-                current = self.lookup_child(current, comp)?;
+            match *comp {
+                "." => {}
+                ".." => {
+                    let ino = self.inodes.get(&current)?;
+                    current = if ino.parent == 0 { 1 } else { ino.parent };
+                }
+                _ => current = self.lookup_child(current, comp)?,
             }
             if let Some(ref target) = self.inodes.get(&current)?.target {
                 let mut new_path = target.clone();
@@ -401,20 +395,22 @@ impl Vfs {
         let mp = normalize_path(mount_point);
         if mp != "/" {
             let (target_fs, remaining) = self.find_fs(&mp).ok_or(FsError::FileNotFound)?;
-            match target_fs.readdir(&remaining) {
-                Ok(_) => {}
-                Err(FsError::NotADirectory) => return Err(FsError::NotADirectory),
-                Err(_) => return Err(FsError::FileNotFound),
-            }
+            target_fs.readdir(&remaining).map_err(|e| {
+                if e == FsError::NotADirectory {
+                    FsError::NotADirectory
+                } else {
+                    FsError::FileNotFound
+                }
+            })?;
         }
         if let Some(entry) = self.mounts.iter_mut().find(|m| m.mount_point == mp) {
             entry.fs = fs;
-            return Ok(());
+        } else {
+            self.mounts.push(MountEntry {
+                mount_point: mp,
+                fs,
+            });
         }
-        self.mounts.push(MountEntry {
-            mount_point: mp,
-            fs,
-        });
         Ok(())
     }
 
@@ -480,10 +476,30 @@ impl Vfs {
             .map(|(index, _)| index)
     }
 
+    fn resolve_and_find(&mut self, path: &str) -> Option<(&mut Box<dyn FileSystem>, String)> {
+        self.find_fs(&self.resolve_path(path))
+    }
+
+    fn with_fs<T>(
+        &mut self,
+        path: &str,
+        f: impl FnOnce(&mut Box<dyn FileSystem>, &str) -> Option<T>,
+    ) -> Option<T> {
+        let (fs, p) = self.resolve_and_find(path)?;
+        f(fs, &p)
+    }
+
+    fn with_fs_result<T>(
+        &mut self,
+        path: &str,
+        f: impl FnOnce(&mut Box<dyn FileSystem>, &str) -> Result<T, FsError>,
+    ) -> Result<T, FsError> {
+        let (fs, p) = self.resolve_and_find(path).ok_or(FsError::FileNotFound)?;
+        f(fs, &p)
+    }
+
     pub fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
-        let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved)?;
-        fs.open(&remaining, flags)
+        self.with_fs(path, |fs, p| fs.open(p, flags))
     }
 
     pub fn read_at(&mut self, mount_idx: usize, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
@@ -519,35 +535,24 @@ impl Vfs {
     }
 
     pub fn create(&mut self, path: &str) -> Option<u64> {
-        let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved)?;
-        fs.create(&remaining, InodeType::File)
+        self.with_fs(path, |fs, p| fs.create(p, InodeType::File))
     }
 
     pub fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
-        let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
-        fs.mkdir(&remaining)
+        self.with_fs_result(path, |fs, p| fs.mkdir(p))
     }
 
     pub fn unlink(&mut self, path: &str) -> Result<(), FsError> {
-        let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
-        fs.unlink(&remaining)
+        self.with_fs_result(path, |fs, p| fs.unlink(p))
     }
 
     pub fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
-        let resolved = self.resolve_path(path);
-        let (fs, remaining) = self.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
-        fs.readdir(&remaining)
+        self.with_fs_result(path, |fs, p| fs.readdir(p))
     }
 
     pub fn exists(&mut self, path: &str) -> bool {
-        let resolved = self.resolve_path(path);
-        match self.find_fs(&resolved) {
-            Some((fs, remaining)) => fs.exists(&remaining),
-            None => false,
-        }
+        self.resolve_and_find(path)
+            .is_some_and(|(fs, p)| fs.exists(&p))
     }
 }
 

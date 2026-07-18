@@ -122,12 +122,13 @@ pub fn move_file(src: &str, dst: &str) -> Result<(), FsError> {
 pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
     let mut result = Vec::new();
     let entries = list_dir(path)?;
+    let prefix = if path.ends_with('/') {
+        alloc::format!("{}{}", path, "")
+    } else {
+        alloc::format!("{}/", path)
+    };
     for entry in &entries {
-        let full = if path.ends_with('/') {
-            alloc::format!("{}{}", path, entry.name)
-        } else {
-            alloc::format!("{}/{}", path, entry.name)
-        };
+        let full = alloc::format!("{}{}", prefix, entry.name);
         result.push(full.clone());
         if entry.is_dir {
             result.extend(walk_dir(&full)?);
@@ -137,24 +138,16 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
 }
 
 pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
-    const MAX_FILE_SIZE: usize = 16 * 1024 * 1024; // 16 MiB limit
+    const MAX_FILE_SIZE: usize = 16 * 1024 * 1024;
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 512];
     let result = loop {
         match read_file(&mut fd, &mut chunk) {
-            Ok(n) => {
-                if n == 0 {
-                    break Ok(buf);
-                }
-                if buf.len() + n > MAX_FILE_SIZE {
-                    break Err(FsError::DiskFull);
-                }
-                buf.extend_from_slice(&chunk[..n]);
-            }
-            Err(e) => {
-                break Err(e);
-            }
+            Ok(0) => break Ok(buf),
+            Ok(n) if buf.len() + n <= MAX_FILE_SIZE => buf.extend_from_slice(&chunk[..n]),
+            Ok(_) => break Err(FsError::DiskFull),
+            Err(e) => break Err(e),
         }
     };
     let _ = close_file(fd);
@@ -173,20 +166,12 @@ pub fn file_size(path: &str) -> Result<u64, FsError> {
     if trimmed.is_empty() {
         return Ok(0);
     }
-    let (parent_path, filename) = if let Some(pos) = trimmed.rfind('/') {
-        if pos == 0 {
-            ("/", &trimmed[1..])
-        } else {
-            (&trimmed[..pos], &trimmed[pos + 1..])
-        }
-    } else {
-        ("/", trimmed)
-    };
-
-    let entries = list_dir(parent_path)?;
+    let (parent, name) = trimmed.rsplit_once('/').unwrap_or((".", trimmed));
+    let parent = if parent.is_empty() { "/" } else { parent };
+    let entries = list_dir(parent)?;
     entries
         .iter()
-        .find(|e| e.name == filename)
+        .find(|e| e.name == name)
         .map(|e| e.size)
         .ok_or(FsError::FileNotFound)
 }
@@ -265,12 +250,8 @@ pub fn remove_package(name: &str) -> Result<(), FsError> {
     if !exists(&pkg_dir) {
         return Err(FsError::FileNotFound);
     }
-    let mut sorted_entries = walk_dir(&pkg_dir)?;
-    sorted_entries.sort_by(|a, b| b.len().cmp(&a.len()));
-
-    for entry in sorted_entries {
-        remove(&entry)?;
-    }
-
+    let mut sorted = walk_dir(&pkg_dir)?;
+    sorted.sort_by(|a, b| b.len().cmp(&a.len()));
+    sorted.iter().try_for_each(|e| remove(e))?;
     remove(&pkg_dir)
 }

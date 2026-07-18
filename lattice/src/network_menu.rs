@@ -17,8 +17,6 @@ pub const NET_ICON_HEIGHT: u32 = 28;
 const WIFI_ACTIVE: u32 = 0x4A90D9;
 const WIFI_INACTIVE: u32 = 0x666666;
 const WIFI_CONNECTED: u32 = 0x33CC33;
-#[allow(dead_code)]
-const WIFI_ERROR: u32 = 0xCC3333;
 
 /// Menu dimensions for network AP list.
 pub const NET_MENU_WIDTH: u32 = 220;

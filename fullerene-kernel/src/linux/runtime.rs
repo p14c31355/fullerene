@@ -208,6 +208,9 @@ pub struct LinuxFileDesc {
     pub mount_index: usize,
     pub flags: i32,
     pub offset: u64,
+    /// For directory fds: the path passed to `open`/`openat`,
+    /// used by `getdents64` to read the correct directory.
+    pub dir_path: Option<alloc::string::String>,
 }
 
 impl LinuxFdTable {
@@ -229,6 +232,7 @@ impl LinuxFdTable {
                 mount_index,
                 flags,
                 offset: 0,
+                dir_path: None,
             },
         );
         fd

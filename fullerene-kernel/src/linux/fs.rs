@@ -142,13 +142,26 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
     let truncate = (flags & O_TRUNC) != 0;
     let append = (flags & O_APPEND) != 0;
 
+    // Helper: set dir_path on the Linux fd and return it.
+    let alloc_ret = |rt: &mut LinuxRuntime,
+                     vfs_fd: crate::contexts::vfs::FileDescriptor,
+                     path: &str,
+                     flags: i32|
+     -> u64 {
+        let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
+        if let Some(desc) = rt.fd_table.get_mut(fd) {
+            let trimmed = path.trim_end_matches('/');
+            desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+        }
+        fd as u64
+    };
+
     // Handle creation or opening for writing
     if create || truncate || write_only || read_write || append {
         if create {
             match crate::contexts::vfs::create(path) {
                 Ok(vfs_fd) => {
-                    let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
-                    return fd as u64;
+                    return alloc_ret(rt, vfs_fd, path, flags);
                 }
                 Err(e) => {
                     // File may already exist; try opening with truncation
@@ -156,24 +169,21 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
                         let _ = crate::contexts::vfs::unlink(path);
                         match crate::contexts::vfs::create(path) {
                             Ok(vfs_fd) => {
-                                let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
-                                return fd as u64;
+                                return alloc_ret(rt, vfs_fd, path, flags);
                             }
                             Err(e2) => return fs_errno_result(&e2),
                         }
                     }
                     // Try opening for read-write if it exists
                     if let Ok(vfs_fd) = crate::contexts::vfs::open(path, 0) {
-                        let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
-                        return fd as u64;
+                        return alloc_ret(rt, vfs_fd, path, flags);
                     }
                     return fs_errno_result(&e);
                 }
             }
         }
         if let Ok(vfs_fd) = crate::contexts::vfs::open(path, 0) {
-            let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
-            return fd as u64;
+            return alloc_ret(rt, vfs_fd, path, flags);
         }
         return errno_code(ENOENT);
     }
@@ -183,6 +193,11 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
         match crate::contexts::vfs::open(path, 0) {
             Ok(vfs_fd) => {
                 let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
+                if let Some(desc) = rt.fd_table.get_mut(fd) {
+                    // Normalize trailing slash so directory lookup works.
+                    let trimmed = path.trim_end_matches('/');
+                    desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+                }
                 fd as u64
             }
             Err(e) => fs_errno_result(&e),
@@ -531,27 +546,35 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if LinuxRuntime::is_std_fd(fd) {
         return errno_code(ENOTDIR);
     }
-    if rt.fd_table.get(fd).is_none() {
-        return errno_code(EBADF);
-    }
-    // TODO: Track directory paths per fd for proper getdents64 support.
-    // For now, always read the root directory.
-    let entries = match crate::contexts::vfs::readdir("/") {
+
+    // Retrieve the directory path stored at open time.
+    let (dir_path, start_idx) = match rt.fd_table.get(fd) {
+        Some(d) => match d.dir_path.clone() {
+            Some(p) => (p, d.offset as usize),
+            None => return errno_code(ENOTDIR),
+        },
+        None => return errno_code(EBADF),
+    };
+
+    let entries = match crate::contexts::vfs::readdir(&dir_path) {
         Ok(e) => e,
         Err(_) => return errno_code(ENOTDIR),
     };
+
     let mut written = 0u32;
     let base = buf;
-    for entry in &entries {
-        let name_bytes = entry.name.as_bytes();
-        let name_len = name_bytes.len().min(255);
-        let reclen = core::mem::size_of::<LinuxDirent64>() as u16;
+    let reclen = core::mem::size_of::<LinuxDirent64>() as u16;
+    let mut next_idx = start_idx;
+
+    for (i, entry) in entries.iter().enumerate().skip(start_idx) {
         if written + reclen as u32 > count {
             break;
         }
+        let name_bytes = entry.name.as_bytes();
+        let name_len = name_bytes.len().min(255);
         let d = LinuxDirent64 {
             d_ino: 1,
-            d_off: 1,
+            d_off: (i + 1) as i64, // offset of next entry
             d_reclen: reclen,
             d_type: if entry.is_dir { DT_DIR } else { DT_REG },
             d_name: {
@@ -565,7 +588,20 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             return errno_code(EFAULT);
         }
         written += reclen as u32;
+        next_idx = i + 1;
     }
+
+    // Update the directory entry index so the next call continues where we left off.
+    if let Some(d) = rt.fd_table.get_mut(fd) {
+        d.offset = next_idx as u64;
+    }
+
+    // If no entries were written and there are still entries to read,
+    // the buffer is too small - return EINVAL instead of 0 (EOF).
+    if written == 0 && start_idx < entries.len() {
+        return errno_code(EINVAL);
+    }
+
     written as u64
 }
 
@@ -711,6 +747,7 @@ pub fn sys_dup2(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         mount_index: desc.mount_index,
         flags: desc.flags,
         offset: desc.offset,
+        dir_path: desc.dir_path.clone(),
     };
     rt.fd_table.entries.insert(newfd, linux_fd);
     newfd as u64

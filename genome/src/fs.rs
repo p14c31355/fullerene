@@ -21,21 +21,21 @@ pub enum FsError {
 
 impl core::fmt::Display for FsError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            FsError::FileNotFound => write!(f, "file not found"),
-            FsError::FileExists => write!(f, "file already exists"),
-            FsError::PermissionDenied => write!(f, "permission denied"),
-            FsError::InvalidFileDescriptor => write!(f, "invalid file descriptor"),
-            FsError::InvalidSeek => write!(f, "invalid seek"),
-            FsError::DiskFull => write!(f, "disk full"),
-            FsError::NotADirectory => write!(f, "not a directory"),
-            FsError::DirectoryNotEmpty => write!(f, "directory not empty"),
-            FsError::IsADirectory => write!(f, "is a directory"),
-            FsError::InvalidPath => write!(f, "invalid path"),
-            FsError::NotSupported => write!(f, "operation not supported"),
-            FsError::InvalidInput => write!(f, "invalid input"),
-            FsError::Io => write!(f, "filesystem I/O error"),
-        }
+        f.pad(match self {
+            FsError::FileNotFound => "file not found",
+            FsError::FileExists => "file already exists",
+            FsError::PermissionDenied => "permission denied",
+            FsError::InvalidFileDescriptor => "invalid file descriptor",
+            FsError::InvalidSeek => "invalid seek",
+            FsError::DiskFull => "disk full",
+            FsError::NotADirectory => "not a directory",
+            FsError::DirectoryNotEmpty => "directory not empty",
+            FsError::IsADirectory => "is a directory",
+            FsError::InvalidPath => "invalid path",
+            FsError::NotSupported => "operation not supported",
+            FsError::InvalidInput => "invalid input",
+            FsError::Io => "filesystem I/O error",
+        })
     }
 }
 

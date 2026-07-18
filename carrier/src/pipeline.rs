@@ -59,11 +59,8 @@ impl ParsedCommand {
 
 impl fmt::Display for ParsedCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name)?;
-        for arg in &self.args {
-            write!(f, " {}", arg)?;
-        }
-        Ok(())
+        f.write_str(&self.name)?;
+        self.args.iter().try_for_each(|a| write!(f, " {a}"))
     }
 }
 

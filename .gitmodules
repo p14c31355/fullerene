@@ -1,3 +1,15 @@
 [submodule "bonder/iwlwifi"]
 	path = bonder/iwlwifi
 	url = https://github.com/Slimbook-Team/iwlwifi.git
+[submodule "toluene/freedoom"]
+	path = toluene/freedoom
+	url = https://github.com/freedoom/freedoom.git
+[submodule "toluene/netsurf"]
+	path = toluene/netsurf
+	url = https://github.com/netsurf-browser/netsurf.git
+[submodule "toluene/vscodium"]
+	path = toluene/vscodium
+	url = https://github.com/VSCodium/vscodium.git
+[submodule "toluene/cargo"]
+	path = toluene/cargo
+	url = https://github.com/rust-lang/cargo.git

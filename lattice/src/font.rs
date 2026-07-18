@@ -190,11 +190,6 @@ pub fn load_psf2(data: &'static [u8]) -> Result<(), FontError> {
     Ok(())
 }
 
-/// Unload any PSF font and revert to the embedded compile‑time font.
-pub fn unload_psf() {
-    *PSF_FONT.lock() = None;
-}
-
 /// Returns `true` when a PSF2 font has been loaded.
 pub fn psf_loaded() -> bool {
     PSF_FONT.lock().is_some()
@@ -396,16 +391,6 @@ fn psf_glyph(psf: &PsfFont, ch: u8) -> Glyph<'static> {
     let rows: &'static [u8] = &psf.bitmap[start..end];
 
     Glyph { rows }
-}
-
-/// Single glyph pixel lookup with per-call font selection.
-///
-/// For repeated pixel queries on the same character (e.g. rendering a glyph
-/// row-by-row), prefer [`glyph_fast`] to lock the font mutex once instead
-/// of on every pixel access.
-#[inline]
-pub fn get_glyph_pixel(ch: u8, row: u32, col: u32) -> bool {
-    glyph(ch).pixel(row, col)
 }
 
 /// Return a `Glyph` for ASCII without Mutex contention per pixel.
