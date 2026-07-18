@@ -30,3 +30,5 @@ bitflags = { version = "2", default-features = false }
 embedded-graphics = { version = "0.8", default-features = false }
 pc-keyboard = { version = "0.8", default-features = false }
 goblin = { version = "0.10", default-features = false }
+fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false }
+hadris-fat = { version = "1.2.1", default-features = false }

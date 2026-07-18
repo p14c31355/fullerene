@@ -227,6 +227,8 @@ struct Handle {
     writer: Option<Writer>,
 }
 
+// Handles must be finalized before inner is dropped because writers
+// contain a stable reference to the pinned filesystem allocation.
 pub struct ExFatFileSystem {
     handles: Vec<Handle>,
     inner: Pin<Box<ExFatInner>>,
@@ -421,6 +423,8 @@ impl ExFatFileSystem {
             entry.no_fat_chain = true;
         }
         let writer = self.fs().write_file(&entry).map_err(Self::map_error)?;
+        // SAFETY: inner is pinned in a Box and is therefore never moved. Every
+        // writer is removed/finalized before inner is dropped (see Drop).
         Ok(unsafe { mem::transmute::<ExFatFileWriter<'_, ExFatDevice>, Writer>(writer) })
     }
 

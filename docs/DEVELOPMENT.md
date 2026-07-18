@@ -57,10 +57,10 @@ cargo check --package fullerene-kernel \
   --locked
   OK (no warnings including added kernel tests)
 
-cargo clippy --tests -- -D warnings
+cargo clippy --tests -p genome -- -D warnings
   OK (isolated Genome workspace)
 
-rustfmt --check <modified Rust files>
+git diff --name-only --diff-filter=AM -- '*.rs' | xargs rustfmt --check
   OK
 
 git diff --check

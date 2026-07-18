@@ -8,9 +8,16 @@ use wasmi::{AsContext, Caller, Error, Memory};
 // ── WASI errno ─────────────────────────────────────────────────────
 
 pub const ESUCCESS: u32 = 0;
+pub const EACCES: u32 = 2;
 pub const EBADF: u32 = 8;
+pub const EEXIST: u32 = 20;
 pub const EINVAL: u32 = 28;
+pub const EIO: u32 = 29;
+pub const EISDIR: u32 = 31;
 pub const ENOENT: u32 = 44;
+pub const ENOSPC: u32 = 52;
+pub const ENOTDIR: u32 = 54;
+pub const ENOTEMPTY: u32 = 55;
 pub const ENOTSUP: u32 = 58;
 
 // ── WASI file types ───────────────────────────────────────────────
@@ -42,12 +49,16 @@ pub enum WasiFd {
 
 // ── WASI context ─────────────────────────────────────────────────
 
+const MAX_OPEN_FDS: usize = 128;
+const MAX_OPEN_BYTES: u64 = 64 * 1024 * 1024;
+
 pub struct WasiCtx {
     pub exit_code: Option<u32>,
     pub args: Vec<Vec<u8>>,
     pub env: Vec<Vec<u8>>,
     pub fds: BTreeMap<u32, WasiFd>,
     pub next_fd: u32,
+    pub open_bytes: u64,
     pub write_stdout: fn(&[u8]),
     pub write_stderr: fn(&[u8]),
     pub read_stdin: fn() -> Option<u8>,
@@ -92,6 +103,7 @@ impl WasiCtx {
             env: Vec::new(),
             fds,
             next_fd: 4,
+            open_bytes: 0,
             write_stdout,
             write_stderr,
             read_stdin,
@@ -156,6 +168,25 @@ fn write_u8(
         .map_err(|_| Error::new("memory write failed"))
 }
 
+fn map_fs_error(err: &genome::FsError) -> u32 {
+    use genome::FsError;
+    match err {
+        FsError::FileNotFound => ENOENT,
+        FsError::FileExists => EEXIST,
+        FsError::PermissionDenied => EACCES,
+        FsError::InvalidFileDescriptor => EBADF,
+        FsError::InvalidSeek => EINVAL,
+        FsError::DiskFull => ENOSPC,
+        FsError::NotADirectory => ENOTDIR,
+        FsError::DirectoryNotEmpty => ENOTEMPTY,
+        FsError::IsADirectory => EISDIR,
+        FsError::InvalidPath => EINVAL,
+        FsError::NotSupported => ENOTSUP,
+        FsError::InvalidInput => EINVAL,
+        FsError::Io => EIO,
+    }
+}
+
 // ── Host function implementations ─────────────────────────────────
 
 pub fn fd_write(
@@ -212,6 +243,8 @@ pub fn fd_read(
     nread_ptr: u32,
 ) -> Result<u32, Error> {
     if iovs_len == 0 {
+        let memory = get_memory(&caller)?;
+        write_u32(&memory, &mut caller, nread_ptr, 0)?;
         return Ok(ESUCCESS);
     }
     let memory = get_memory(&caller)?;
@@ -347,7 +380,10 @@ pub fn fd_close(mut caller: Caller<'_, WasiCtx>, fd: u32) -> Result<u32, Error> 
         return Ok(ENOTSUP);
     }
     let ctx = caller.data_mut();
-    if ctx.fds.remove(&fd).is_some() {
+    if let Some(entry) = ctx.fds.remove(&fd) {
+        if let WasiFd::File { ref data, .. } = entry {
+            ctx.open_bytes = ctx.open_bytes.saturating_sub(data.len() as u64);
+        }
         Ok(ESUCCESS)
     } else {
         Ok(EBADF)
@@ -387,7 +423,7 @@ pub fn fd_seek(
     if new_offset < 0 {
         return Ok(EINVAL);
     }
-    let new_offset = (new_offset as usize).min(file_len);
+    let new_offset = new_offset as usize;
     {
         let bc = caller.data_mut();
         if let Some(WasiFd::File { offset: o, .. }) = bc.fds.get_mut(&fd) {
@@ -411,8 +447,9 @@ pub fn fd_prestat_get(mut caller: Caller<'_, WasiCtx>, fd: u32, buf: u32) -> Res
             _ => return Ok(EBADF),
         }
     };
+    let off = buf.checked_add(4).ok_or_else(|| Error::new("overflow"))?;
     write_u8(&memory, &mut caller, buf, 0)?;
-    write_u32(&memory, &mut caller, buf + 4, name_len)?;
+    write_u32(&memory, &mut caller, off, name_len)?;
     Ok(ESUCCESS)
 }
 
@@ -483,10 +520,19 @@ pub fn path_open(
     };
     match data {
         Ok(bytes) => {
+            let (fd_count, open_bytes) = {
+                let bc = caller.data();
+                (bc.fds.len(), bc.open_bytes)
+            };
+            let new_bytes = open_bytes + bytes.len() as u64;
+            if fd_count >= MAX_OPEN_FDS || new_bytes > MAX_OPEN_BYTES {
+                return Ok(ENOSPC);
+            }
             let new_fd = {
                 let bc = caller.data_mut();
                 let fd = bc.next_fd;
                 bc.next_fd += 1;
+                bc.open_bytes = new_bytes;
                 bc.fds.insert(
                     fd,
                     WasiFd::File {
@@ -499,7 +545,7 @@ pub fn path_open(
             write_u32(&memory, &mut caller, result_fd_ptr, new_fd)?;
             Ok(ESUCCESS)
         }
-        Err(_) => Ok(ENOENT),
+        Err(e) => Ok(map_fs_error(&e)),
     }
 }
 
@@ -536,14 +582,21 @@ pub fn path_filestat_get(
             Err(_) => return Ok(ENOENT),
         }
     };
+    let off_dev = buf_ptr.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
+    let off_type = buf_ptr.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
+    let off_nlink = buf_ptr.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
+    let off_size = buf_ptr.checked_add(32).ok_or_else(|| Error::new("overflow"))?;
+    let off_atim = buf_ptr.checked_add(40).ok_or_else(|| Error::new("overflow"))?;
+    let off_mtim = buf_ptr.checked_add(48).ok_or_else(|| Error::new("overflow"))?;
+    let off_ctim = buf_ptr.checked_add(56).ok_or_else(|| Error::new("overflow"))?;
     write_u64(&memory, &mut caller, buf_ptr, 0)?;
-    write_u64(&memory, &mut caller, buf_ptr + 8, 1)?;
-    write_u8(&memory, &mut caller, buf_ptr + 16, FILETYPE_REGULAR_FILE)?;
-    write_u64(&memory, &mut caller, buf_ptr + 24, 1)?;
-    write_u64(&memory, &mut caller, buf_ptr + 32, size)?;
-    write_u64(&memory, &mut caller, buf_ptr + 40, 0)?;
-    write_u64(&memory, &mut caller, buf_ptr + 48, 0)?;
-    write_u64(&memory, &mut caller, buf_ptr + 56, 0)?;
+    write_u64(&memory, &mut caller, off_dev, 1)?;
+    write_u8(&memory, &mut caller, off_type, FILETYPE_REGULAR_FILE)?;
+    write_u64(&memory, &mut caller, off_nlink, 1)?;
+    write_u64(&memory, &mut caller, off_size, size)?;
+    write_u64(&memory, &mut caller, off_atim, 0)?;
+    write_u64(&memory, &mut caller, off_mtim, 0)?;
+    write_u64(&memory, &mut caller, off_ctim, 0)?;
     Ok(ESUCCESS)
 }
 
@@ -561,14 +614,21 @@ pub fn fd_filestat_get(
         }
     };
     let memory = get_memory(&caller)?;
+    let off_dev = buf_ptr.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
+    let off_type = buf_ptr.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
+    let off_nlink = buf_ptr.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
+    let off_size = buf_ptr.checked_add(32).ok_or_else(|| Error::new("overflow"))?;
+    let off_atim = buf_ptr.checked_add(40).ok_or_else(|| Error::new("overflow"))?;
+    let off_mtim = buf_ptr.checked_add(48).ok_or_else(|| Error::new("overflow"))?;
+    let off_ctim = buf_ptr.checked_add(56).ok_or_else(|| Error::new("overflow"))?;
     write_u64(&memory, &mut caller, buf_ptr, 0)?;
-    write_u64(&memory, &mut caller, buf_ptr + 8, fd as u64)?;
-    write_u8(&memory, &mut caller, buf_ptr + 16, filetype)?;
-    write_u64(&memory, &mut caller, buf_ptr + 24, 1)?;
-    write_u64(&memory, &mut caller, buf_ptr + 32, size)?;
-    write_u64(&memory, &mut caller, buf_ptr + 40, 0)?;
-    write_u64(&memory, &mut caller, buf_ptr + 48, 0)?;
-    write_u64(&memory, &mut caller, buf_ptr + 56, 0)?;
+    write_u64(&memory, &mut caller, off_dev, fd as u64)?;
+    write_u8(&memory, &mut caller, off_type, filetype)?;
+    write_u64(&memory, &mut caller, off_nlink, 1)?;
+    write_u64(&memory, &mut caller, off_size, size)?;
+    write_u64(&memory, &mut caller, off_atim, 0)?;
+    write_u64(&memory, &mut caller, off_mtim, 0)?;
+    write_u64(&memory, &mut caller, off_ctim, 0)?;
     Ok(ESUCCESS)
 }
 
@@ -583,7 +643,10 @@ pub fn fd_readdir(
     let entries = {
         let bc = caller.data();
         match bc.fds.get(&fd) {
-            Some(WasiFd::PreopenedDir { path }) => (bc.read_directory)(path).unwrap_or_default(),
+            Some(WasiFd::PreopenedDir { path }) => match (bc.read_directory)(path) {
+                Ok(entries) => entries,
+                Err(e) => return Ok(map_fs_error(&e)),
+            },
             _ => return Ok(EBADF),
         }
     };
@@ -594,12 +657,16 @@ pub fn fd_readdir(
         let name = b".";
         let entry_size = 24 + name.len() as u32;
         if entry_size <= buf_len {
+            let off_next = buf_ptr.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
+            let off_namelen = buf_ptr.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
+            let off_type = buf_ptr.checked_add(20).ok_or_else(|| Error::new("overflow"))?;
+            let off_name = buf_ptr.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
             write_u64(&memory, &mut caller, buf_ptr, 1)?;
-            write_u64(&memory, &mut caller, buf_ptr + 8, 0)?;
-            write_u32(&memory, &mut caller, buf_ptr + 16, name.len() as u32)?;
-            write_u8(&memory, &mut caller, buf_ptr + 20, FILETYPE_DIRECTORY)?;
+            write_u64(&memory, &mut caller, off_next, 0)?;
+            write_u32(&memory, &mut caller, off_namelen, name.len() as u32)?;
+            write_u8(&memory, &mut caller, off_type, FILETYPE_DIRECTORY)?;
             memory
-                .write(&mut caller, (buf_ptr + 24) as usize, name)
+                .write(&mut caller, off_name as usize, name)
                 .map_err(|_| Error::new("fd_readdir: write name failed"))?;
             used += entry_size;
         }
@@ -614,14 +681,18 @@ pub fn fd_readdir(
         if used + entry_size > buf_len {
             break;
         }
-        let off = buf_ptr + used;
+        let off = buf_ptr.checked_add(used).ok_or_else(|| Error::new("overflow"))?;
+        let off_next = off.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
+        let off_namelen = off.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
+        let off_type = off.checked_add(20).ok_or_else(|| Error::new("overflow"))?;
+        let off_name = off.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
         let next_cookie = entry_idx + 2;
         write_u64(&memory, &mut caller, off, next_cookie as u64)?;
-        write_u64(&memory, &mut caller, off + 8, entry_idx as u64)?;
-        write_u32(&memory, &mut caller, off + 16, name_bytes.len() as u32)?;
-        write_u8(&memory, &mut caller, off + 20, filetype)?;
+        write_u64(&memory, &mut caller, off_next, entry_idx as u64)?;
+        write_u32(&memory, &mut caller, off_namelen, name_bytes.len() as u32)?;
+        write_u8(&memory, &mut caller, off_type, filetype)?;
         memory
-            .write(&mut caller, (off + 24) as usize, name_bytes)
+            .write(&mut caller, off_name as usize, name_bytes)
             .map_err(|_| Error::new("fd_readdir: write name failed"))?;
         used += entry_size;
     }
@@ -676,7 +747,7 @@ pub fn environ_get(
         memory
             .write(&mut caller, buf_offset as usize, entry)
             .map_err(|_| Error::new("environ_get: write failed"))?;
-        buf_offset += entry.len() as u32;
+        buf_offset = buf_offset.checked_add(entry.len() as u32).ok_or_else(|| Error::new("overflow"))?;
     }
     Ok(ESUCCESS)
 }
@@ -723,7 +794,7 @@ pub fn args_get(
         memory
             .write(&mut caller, buf_offset as usize, arg)
             .map_err(|_| Error::new("args_get: write failed"))?;
-        buf_offset += arg.len() as u32;
+        buf_offset = buf_offset.checked_add(arg.len() as u32).ok_or_else(|| Error::new("overflow"))?;
     }
     Ok(ESUCCESS)
 }

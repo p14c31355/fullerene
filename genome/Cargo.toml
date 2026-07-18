@@ -13,8 +13,8 @@ spin = { workspace = true, features = [
   "spin_mutex",
 ] }
 log = { workspace = true }
-fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false, features = ["alloc", "lfn", "unicode"] }
-hadris-fat = { version = "1.2.1", default-features = false, features = [
+fatfs = { workspace = true, features = ["alloc", "lfn", "unicode"] }
+hadris-fat = { workspace = true, features = [
   "alloc",
   "exfat",
   "read",

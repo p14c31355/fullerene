@@ -7,7 +7,7 @@ Priority convention:
 - **P1** = structural improvement (ownership, types, tests)
 - **P2** = developer experience, performance
 
-### Decision Criteria (future improvements)
+## Decision Criteria (future improvements)
 
 Future work should prioritize in this order:
 

@@ -658,6 +658,6 @@ fn write_hex(buf: &mut Vec<u8>, value: u64, digits: usize) {
     buf.extend_from_slice(s.as_bytes());
 }
 
-fn _align4(n: usize) -> usize {
+fn align4(n: usize) -> usize {
     (n + 3) & !3
 }
