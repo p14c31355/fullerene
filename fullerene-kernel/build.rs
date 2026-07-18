@@ -195,7 +195,11 @@ fn build_ports_cpio(toluene_dir: &Path, out_dir: &Path) -> usize {
     fs::write(&out, &buf).unwrap_or_else(|e| {
         panic!("Failed to write CPIO archive to {}: {}", out.display(), e);
     });
-    println!("cargo:warning=Embedded {} port(s) via CPIO ({} bytes)", prepared.len(), buf.len());
+    println!(
+        "cargo:warning=Embedded {} port(s) via CPIO ({} bytes)",
+        prepared.len(),
+        buf.len()
+    );
     prepared.len()
 }
 
@@ -209,10 +213,34 @@ struct PortBuilder {
 }
 
 static KNOWN_PORTS: &[(&str, PortBuilder)] = &[
-    ("cargo",    PortBuilder { runtime: PortType::Linux, build: build_cargo }),
-    ("freedoom", PortBuilder { runtime: PortType::Linux, build: build_freedoom }),
-    ("netsurf",  PortBuilder { runtime: PortType::Linux, build: build_netsurf }),
-    ("vscodium", PortBuilder { runtime: PortType::Linux, build: build_vscodium }),
+    (
+        "cargo",
+        PortBuilder {
+            runtime: PortType::Linux,
+            build: build_cargo,
+        },
+    ),
+    (
+        "freedoom",
+        PortBuilder {
+            runtime: PortType::Linux,
+            build: build_freedoom,
+        },
+    ),
+    (
+        "netsurf",
+        PortBuilder {
+            runtime: PortType::Linux,
+            build: build_netsurf,
+        },
+    ),
+    (
+        "vscodium",
+        PortBuilder {
+            runtime: PortType::Linux,
+            build: build_vscodium,
+        },
+    ),
 ];
 
 fn is_valid_elf(data: &[u8]) -> bool {
@@ -371,7 +399,9 @@ fn build_vscodium(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static
         return Err("submodule not cloned");
     }
     println!("cargo:warning=ports:   VSCodium is a build overlay – see toluene/vscodium/build.sh");
-    println!("cargo:warning=ports:   Full build requires: git clone Microsoft/vscode + npm + electron");
+    println!(
+        "cargo:warning=ports:   Full build requires: git clone Microsoft/vscode + npm + electron"
+    );
     println!("cargo:warning=ports:   Place the resulting binary at toluene/vscodium/app.bin");
     // Try to find a pre‑placed binary
     let bin = submodule.join("app.bin");
@@ -407,7 +437,12 @@ fn write_cpio_package(buf: &mut Vec<u8>, name: &str, port_type: PortType, binary
     );
 
     write_cpio_file(buf, &format!("packages/{name}"), true, &[]);
-    write_cpio_file(buf, &format!("packages/{name}/manifest.txt"), false, manifest.as_bytes());
+    write_cpio_file(
+        buf,
+        &format!("packages/{name}/manifest.txt"),
+        false,
+        manifest.as_bytes(),
+    );
     write_cpio_file(buf, &format!("packages/{name}/app.bin"), false, binary);
 }
 
@@ -424,31 +459,42 @@ fn write_cpio_file(buf: &mut Vec<u8>, archive_path: &str, is_dir: bool, body: &[
     write!(buf, "070701").unwrap();
     write_hex(buf, 1, 8);
     write_hex(buf, mode as u64, 8);
-    write_hex(buf, 0, 8);  write_hex(buf, 0, 8);
+    write_hex(buf, 0, 8);
+    write_hex(buf, 0, 8);
     write_hex(buf, if is_dir { 2 } else { 1 }, 8);
     write_hex(buf, 0, 8);
     write_hex(buf, filesize, 8);
-    write_hex(buf, 0, 8);  write_hex(buf, 0, 8);
-    write_hex(buf, 0, 8);  write_hex(buf, 0, 8);
+    write_hex(buf, 0, 8);
+    write_hex(buf, 0, 8);
+    write_hex(buf, 0, 8);
+    write_hex(buf, 0, 8);
     write_hex(buf, name_with_nul as u64, 8);
     write_hex(buf, 0, 8);
 
     buf.extend_from_slice(name_bytes);
     buf.push(0u8);
-    for _ in name_with_nul..name_padded { buf.push(0u8); }
+    for _ in name_with_nul..name_padded {
+        buf.push(0u8);
+    }
 
     buf.extend_from_slice(body);
-    for _ in body.len()..body_padded { buf.push(0u8); }
+    for _ in body.len()..body_padded {
+        buf.push(0u8);
+    }
 }
 
 /// Write the TRAILER!!! entry.
 fn write_cpio_trailer(buf: &mut Vec<u8>) {
     write!(buf, "070701").unwrap();
-    for _ in 0..13 { write_hex(buf, 0, 8); }
+    for _ in 0..13 {
+        write_hex(buf, 0, 8);
+    }
     write_hex(buf, 11, 8);
     write_hex(buf, 0, 8);
     buf.extend_from_slice(b"TRAILER!!!\0");
-    for _ in 0..(align4(11) - 11) { buf.push(0u8); }
+    for _ in 0..(align4(11) - 11) {
+        buf.push(0u8);
+    }
 }
 
 fn write_hex(buf: &mut Vec<u8>, value: u64, digits: usize) {
@@ -456,4 +502,6 @@ fn write_hex(buf: &mut Vec<u8>, value: u64, digits: usize) {
     buf.extend_from_slice(s.as_bytes());
 }
 
-fn align4(n: usize) -> usize { (n + 3) & !3 }
+fn align4(n: usize) -> usize {
+    (n + 3) & !3
+}
