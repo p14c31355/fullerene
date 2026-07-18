@@ -1,5 +1,3 @@
-//! Adapts the kernel block-device contract to the `fatfs` I/O traits.
-
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -7,7 +5,7 @@ use core::fmt;
 
 use fatfs::{IoBase, IoError as FatIoError, Read, Seek, SeekFrom, Write};
 
-pub use genome::block::{BlockDevice, BlockError};
+use crate::block::{BlockDevice, BlockError};
 
 pub(super) fn read_boot_sector(
     device: &mut dyn BlockDevice,

@@ -8,6 +8,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+spin = { workspace = true, features = [
+  "mutex",
+  "spin_mutex",
+] }
+log = { workspace = true }
+fatfs = { package = "starry-fatfs", version = "0.4.1-preview.2", default-features = false, features = ["alloc", "lfn", "unicode"] }
+hadris-fat = { version = "1.2.1", default-features = false, features = [
+  "alloc",
+  "exfat",
+  "read",
+  "sync",
+  "write",
+] }
 
 [lib]
 name = "genome"

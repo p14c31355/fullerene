@@ -1,13 +1,10 @@
-//! FAT-family partition discovery and partition-relative block access.
-
 use alloc::boxed::Box;
 
-use genome::fs::FsError;
+use crate::block::{BlockDevice, BlockError};
+use crate::fs::FsError;
 
 use super::block_device::read_boot_sector;
 use super::exfat::is_exfat;
-use super::{BlockDevice, BlockError};
-use crate::klog_fmt;
 
 const MBR_SIGNATURE: u16 = 0xAA55;
 const PARTITION_FAT32: u8 = 0x0B;
@@ -25,7 +22,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
     let boot = read_boot_sector(device, 0)?;
 
     if is_exfat(&boot) {
-        klog_fmt!("FAT: raw exFAT at LBA 0\n");
+        log::info!("FAT: raw exFAT at LBA 0");
         return Ok(PartitionInfo {
             start_lba: 0,
             total_sectors: device.total_sectors(),
@@ -33,7 +30,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
     }
     let bytes_per_sector = u16::from_le_bytes([boot[11], boot[12]]);
     if matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096) {
-        klog_fmt!("FAT: raw FAT32 at LBA 0 (bps={})\n", bytes_per_sector);
+        log::info!("FAT: raw FAT32 at LBA 0 (bps={})", bytes_per_sector);
         return Ok(PartitionInfo {
             start_lba: 0,
             total_sectors: device.total_sectors(),
@@ -42,7 +39,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
 
     let signature = u16::from_le_bytes([boot[0x1FE], boot[0x1FF]]);
     if signature != MBR_SIGNATURE {
-        klog_fmt!("FAT: no MBR signature at LBA 0 (0x{:04X})\n", signature);
+        log::info!("FAT: no MBR signature at LBA 0 (0x{:04X})", signature);
         return Ok(PartitionInfo {
             start_lba: 0,
             total_sectors: device.total_sectors(),
@@ -86,15 +83,15 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
     }
 
     if let Some(info) = best {
-        klog_fmt!(
-            "FAT: selected partition at LBA {} ({} sectors)\n",
+        log::info!(
+            "FAT: selected partition at LBA {} ({} sectors)",
             info.start_lba,
             info.total_sectors,
         );
         return Ok(info);
     }
 
-    klog_fmt!("FAT: no FAT partition found in MBR\n");
+    log::info!("FAT: no FAT partition found in MBR");
     Err(FsError::FileNotFound)
 }
 
@@ -278,19 +275,15 @@ mod tests {
         let device = MemoryBlockDevice {
             data: vec![0; 8 * 512],
         };
-        // partition at LBA 2 with 2 sectors
         let mut partition = PartitionBlockDevice::new(Box::new(device), 2, 2);
         let mut buf = [0; 512];
 
-        // read within partition
         assert!(partition.read_sectors(0, 1, &mut buf).is_ok());
         assert!(partition.read_sectors(1, 1, &mut buf).is_ok());
-        // read past partition end
         assert_eq!(
             partition.read_sectors(2, 1, &mut buf),
             Err(BlockError::LbaOverflow)
         );
-        // read past media end (offset + lba + count > media)
         assert_eq!(
             partition.read_sectors(5, 1, &mut buf),
             Err(BlockError::LbaOverflow)

@@ -1,15 +1,14 @@
-//! FAT12/16/32 VFS implementation backed by `fatfs`.
-
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use fatfs::{self, DefaultTimeProvider, LossyOemCpConverter, Read, Seek, SeekFrom, Write};
-use genome::fs::FsError;
 
-use super::{BlockDevice, FatBlockError, FatDevice};
-use crate::contexts::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
-use crate::klog_fmt;
+use crate::block::BlockDevice;
+use crate::fs::FsError;
+use crate::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
+
+use super::{FatBlockError, FatDevice};
 
 type FatType = fatfs::FileSystem<FatDevice>;
 type FatDir<'a> = fatfs::Dir<'a, FatDevice, DefaultTimeProvider, LossyOemCpConverter>;
@@ -28,7 +27,7 @@ impl FatFileSystem {
         let fat_device = FatDevice::new(device);
         let options = fatfs::FsOptions::new();
         let inner = FatType::new(fat_device, options).map_err(|error| {
-            klog_fmt!("FAT: fatfs init error: {:?}\n", error);
+            log::info!("FAT: fatfs init error: {:?}", error);
             FsError::InvalidInput
         })?;
         Ok(Self {

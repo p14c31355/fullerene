@@ -1,5 +1,3 @@
-//! exFAT filesystem adapter for the kernel VFS.
-
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
@@ -8,7 +6,6 @@ use alloc::vec::Vec;
 use core::mem;
 use core::pin::Pin;
 
-use genome::fs::FsError;
 use hadris_fat::FatError;
 use hadris_fat::exfat::{
     ExFatBootSector, ExFatDir, ExFatFileWriter, ExFatFs, ExFatInfo, ExFatTable,
@@ -16,9 +13,9 @@ use hadris_fat::exfat::{
 use hadris_fat::sync::{Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
 use spin::Mutex;
 
-use crate::contexts::vfs::{FileDescriptor, FileSystem, InodeType, VNode};
-use crate::drivers::fat::BlockDevice;
-use crate::klog_fmt;
+use crate::block::{BlockDevice, BlockError};
+use crate::fs::FsError;
+use crate::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, VNode};
 
 const SECTOR_SIZE: usize = 512;
 const ROOT_SCAN_SECTORS: usize = 256;
@@ -42,18 +39,15 @@ impl ExFatDevice {
         IoError::new_static(kind, message)
     }
 
-    fn block_error(error: genome::block::BlockError) -> IoError {
+    fn block_error(error: BlockError) -> IoError {
         match error {
-            genome::block::BlockError::BufferTooSmall { .. }
-            | genome::block::BlockError::LbaOverflow => {
+            BlockError::BufferTooSmall { .. } | BlockError::LbaOverflow => {
                 Self::error(ErrorKind::InvalidInput, "invalid block I/O request")
             }
-            genome::block::BlockError::SectorNotFound => {
+            BlockError::SectorNotFound => {
                 Self::error(ErrorKind::NotFound, "block sector not found")
             }
-            genome::block::BlockError::Device => {
-                Self::error(ErrorKind::Other, "block device I/O failed")
-            }
+            BlockError::Device => Self::error(ErrorKind::Other, "block device I/O failed"),
         }
     }
 
@@ -234,8 +228,6 @@ struct Handle {
 }
 
 pub struct ExFatFileSystem {
-    // Handles must be finalized before `inner` is dropped because writers
-    // contain a stable reference to the pinned filesystem allocation.
     handles: Vec<Handle>,
     inner: Pin<Box<ExFatInner>>,
     device: Arc<Mutex<Box<dyn BlockDevice>>>,
@@ -273,7 +265,7 @@ impl ExFatFileSystem {
                 })
             });
         if let Err(error) = prefetch {
-            klog_fmt!("exFAT: root prefetch error: {:?}\n", error);
+            log::info!("exFAT: root prefetch error: {:?}", error);
             drop(adapter);
             let device = Arc::try_unwrap(shared).ok().map(Mutex::into_inner);
             return Err((error, device));
@@ -281,14 +273,14 @@ impl ExFatFileSystem {
         let inner = match ExFatInner::open(adapter) {
             Ok(inner) => inner,
             Err(error) => {
-                klog_fmt!("exFAT: mount error: {:?}\n", error);
+                log::info!("exFAT: mount error: {:?}", error);
                 let device = Arc::try_unwrap(shared).ok().map(Mutex::into_inner);
                 return Err((Self::map_error(error), device));
             }
         };
         let info = inner.info();
-        klog_fmt!(
-            "exFAT: volume mounted ({} bytes/sector, {} sectors/cluster)\n",
+        log::info!(
+            "exFAT: volume mounted ({} bytes/sector, {} sectors/cluster)",
             info.bytes_per_sector,
             info.sectors_per_cluster
         );
@@ -425,15 +417,10 @@ impl ExFatFileSystem {
 
     fn open_writer(&self, path: &str) -> Result<Writer, FsError> {
         let mut entry = self.fs().open_path(path).map_err(Self::map_error)?;
-        // Empty exFAT streams have no allocation flags on disk. The writer
-        // still has to start in contiguous mode so a second cluster remains
-        // addressable without a FAT chain.
         if entry.first_cluster == 0 && entry.data_length == 0 {
             entry.no_fat_chain = true;
         }
         let writer = self.fs().write_file(&entry).map_err(Self::map_error)?;
-        // SAFETY: `inner` is pinned in a Box and is therefore never moved. Every
-        // writer is removed/finalized before `inner` is dropped (see `Drop`).
         Ok(unsafe { mem::transmute::<ExFatFileWriter<'_, ExFatDevice>, Writer>(writer) })
     }
 
@@ -520,8 +507,8 @@ impl Drop for ExFatFileSystem {
 }
 
 impl FileSystem for ExFatFileSystem {
-    fn capabilities(&self) -> crate::contexts::vfs::FileSystemCapabilities {
-        crate::contexts::vfs::FileSystemCapabilities::new(false, true, true, false, true)
+    fn capabilities(&self) -> FileSystemCapabilities {
+        FileSystemCapabilities::new(false, true, true, false, true)
     }
 
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
@@ -682,10 +669,10 @@ mod tests {
             lba: u64,
             count: u16,
             buf: &mut [u8],
-        ) -> Result<(), genome::block::BlockError> {
+        ) -> Result<(), BlockError> {
             let (start, len) = Self::range(lba, count)?;
             if buf.len() < len {
-                return Err(genome::block::BlockError::BufferTooSmall {
+                return Err(BlockError::BufferTooSmall {
                     required: len,
                     provided: buf.len(),
                 });
@@ -701,10 +688,10 @@ mod tests {
             lba: u64,
             count: u16,
             buf: &[u8],
-        ) -> Result<(), genome::block::BlockError> {
+        ) -> Result<(), BlockError> {
             let (start, len) = Self::range(lba, count)?;
             if buf.len() < len {
-                return Err(genome::block::BlockError::BufferTooSmall {
+                return Err(BlockError::BufferTooSmall {
                     required: len,
                     provided: buf.len(),
                 });
@@ -731,11 +718,11 @@ mod tests {
             }
         }
 
-        fn range(lba: u64, count: u16) -> Result<(usize, usize), genome::block::BlockError> {
+        fn range(lba: u64, count: u16) -> Result<(usize, usize), BlockError> {
             let start = lba as usize * SECTOR_SIZE;
             let len = count as usize * SECTOR_SIZE;
             if start.checked_add(len).is_none_or(|end| end > IMAGE_SIZE) {
-                return Err(genome::block::BlockError::LbaOverflow);
+                return Err(BlockError::LbaOverflow);
             }
             Ok((start, len))
         }
@@ -785,11 +772,9 @@ mod tests {
             .with_sectors_per_cluster(256);
         drop(format_exfat(adapter, IMAGE_SIZE as u64, &options).unwrap());
 
-        // A shift of 8 (256 sectors) overflowed the old u8 implementation and
-        // triggered the magenta panic screen during `mount`.
         assert_eq!(image.lock()[109], 8);
 
-        let mut fs = match crate::drivers::fat::mount_device(Box::new(block_device.clone())) {
+        let mut fs = match crate::fat::mount_device(Box::new(block_device.clone())) {
             Ok(filesystem) => filesystem,
             Err((error, _)) => panic!("mount failed: {error}"),
         };
@@ -834,7 +819,7 @@ mod tests {
             assert_eq!(fs.create(&path, InodeType::File), Some(0));
         }
         drop(fs);
-        let mut fs = match crate::drivers::fat::mount_device(Box::new(block_device.clone())) {
+        let mut fs = match crate::fat::mount_device(Box::new(block_device.clone())) {
             Ok(filesystem) => filesystem,
             Err((error, _)) => panic!("large-root remount failed: {error}"),
         };
@@ -847,7 +832,7 @@ mod tests {
 
         drop(fs);
         remove_root_end_marker(&mut image.lock());
-        let mut fs = match crate::drivers::fat::mount_device(Box::new(block_device.clone())) {
+        let mut fs = match crate::fat::mount_device(Box::new(block_device.clone())) {
             Ok(filesystem) => filesystem,
             Err((error, _)) => panic!("remount failed: {error}"),
         };
