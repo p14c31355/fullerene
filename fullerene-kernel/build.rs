@@ -59,8 +59,10 @@ fn main() {
     }
 
     // ── Build application ports from submodule sources ──────────
-    let toluene_dir = manifest_dir.parent().unwrap().join("toluene");
-    let count = build_ports_cpio(&toluene_dir, &out_dir);
+    let workspace_root = manifest_dir.parent().unwrap();
+    let toluene_dir = workspace_root.join("toluene");
+    let ports_dir = workspace_root.join("target").join("ports");
+    let count = build_ports_cpio(&toluene_dir, &ports_dir, &out_dir);
     if count > 0 {
         println!("cargo:rustc-cfg=have_ports_cpio");
     }
@@ -142,17 +144,19 @@ fn main() {
 /// 1. Locates its submodule under `toluene/<name>/`
 /// 2. If the submodule has source, attempts to build it (or download a
 ///    pre‑built release) to produce a Linux ELF binary
-/// 3. Caches the binary at `toluene/<name>/app.bin` so subsequent builds
+/// 3. Caches the binary at `target/ports/<name>/app.bin` so subsequent builds
 ///    skip the expensive source build
 /// 4. Packages every successfully‑built port into a single CPIO archive
 ///
 /// Returns the number of ports successfully packaged.
-fn build_ports_cpio(toluene_dir: &Path, out_dir: &Path) -> usize {
+fn build_ports_cpio(toluene_dir: &Path, ports_dir: &Path, out_dir: &Path) -> usize {
     let mut prepared: Vec<(&str, PortType, Vec<u8>)> = Vec::new();
 
     for (name, builder) in KNOWN_PORTS.iter() {
         let submodule = toluene_dir.join(name);
-        let cache = submodule.join("app.bin");
+        let port_dir = ports_dir.join(name);
+        let cache = port_dir.join("app.bin");
+        let build_dir = port_dir.join("build");
 
         // Try: cached binary already exists
         if cache.exists() {
@@ -167,13 +171,15 @@ fn build_ports_cpio(toluene_dir: &Path, out_dir: &Path) -> usize {
 
         // Try: build from source
         println!("cargo:warning=ports: building {name}...");
-        match (builder.build)(&submodule, out_dir) {
+        let _ = fs::create_dir_all(&build_dir);
+        match (builder.build)(&submodule, &build_dir, out_dir) {
             Ok(data) => {
                 if !is_valid_elf(&data) {
                     println!("cargo:warning=ports: {name} skipped – produced invalid ELF");
                     continue;
                 }
                 let len = data.len();
+                let _ = fs::create_dir_all(&port_dir);
                 let _ = fs::write(&cache, &data);
                 println!("cargo:rerun-if-changed={}", cache.display());
                 prepared.push((name, builder.runtime, data));
@@ -212,8 +218,10 @@ fn build_ports_cpio(toluene_dir: &Path, out_dir: &Path) -> usize {
 struct PortBuilder {
     runtime: PortType,
     /// Build the port from its submodule directory.
+    /// `build_dir` is `target/ports/<name>/build/` — a writable workspace
+    /// for out‑of‑tree build artifacts.
     /// Returns the binary bytes on success, or an error message on failure.
-    build: fn(&Path, &Path) -> Result<Vec<u8>, &'static str>,
+    build: fn(&Path, &Path, &Path) -> Result<Vec<u8>, &'static str>,
 }
 
 static KNOWN_PORTS: &[(&str, PortBuilder)] = &[
@@ -291,12 +299,12 @@ fn is_valid_elf(data: &[u8]) -> bool {
 /// Build cargo from submodule source via `cargo build --release`.
 ///
 /// First build is slow (~1–2 min); subsequent builds are cached at
-/// `toluene/cargo/app.bin` and reused instantly.
-fn build_cargo(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+/// `target/ports/cargo/app.bin` and reused instantly.
+fn build_cargo(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("Cargo.toml").exists() {
         return Err("submodule not cloned – run git submodule update --init");
     }
-    let target_dir = submodule.join("target_ful");
+    let target_dir = build_dir.join("cargo-target");
     let status = Command::new("cargo")
         .args(["build", "--release", "--target-dir"])
         .arg(&target_dir)
@@ -314,14 +322,21 @@ fn build_cargo(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static st
 
 /// Build freedoom – produce WAD game data via `make`, then download a
 /// statically‑linked Chocolate Doom engine, and bundle the WAD with it.
-fn build_freedoom(submodule: &Path, out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+///
+/// The source is copied to `build_dir` first so the submodule tree stays
+/// pristine.
+fn build_freedoom(submodule: &Path, build_dir: &Path, out_dir: &Path) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("Makefile").exists() {
         return Err("submodule not cloned");
     }
 
+    // Copy source into build_dir so the submodule is never written to
+    let _ = fs::remove_dir_all(build_dir);
+    copy_dir(submodule, build_dir)?;
+
     // Build the WAD
     let status = Command::new("make")
-        .current_dir(submodule)
+        .current_dir(build_dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -329,7 +344,7 @@ fn build_freedoom(submodule: &Path, out_dir: &Path) -> Result<Vec<u8>, &'static 
     if !status.success() {
         return Err("make failed – need deutex, python3, etc.");
     }
-    let wad_path = submodule.join("wads").join("freedoom1.wad");
+    let wad_path = build_dir.join("wads").join("freedoom1.wad");
     if !wad_path.exists() {
         return Err("freedoom1.wad not produced");
     }
@@ -349,8 +364,6 @@ fn build_freedoom(submodule: &Path, out_dir: &Path) -> Result<Vec<u8>, &'static 
     combined.extend_from_slice(&(wad_data.len() as u64).to_le_bytes());
     combined.extend_from_slice(&wad_data);
 
-    // Launcher stub will parse: find marker, read u64 length, extract WAD,
-    // pass to Chocolate Doom
     Ok(combined)
 }
 
@@ -424,6 +437,31 @@ fn fetch_chocolate_doom(cache: &Path) -> Result<Vec<u8>, &'static str> {
     Ok(data)
 }
 
+/// Recursively copy a directory tree, skipping `.git` entries.
+fn copy_dir(src: &Path, dst: &Path) -> Result<(), &'static str> {
+    fs::create_dir_all(dst).map_err(|_| "cannot create destination directory")?;
+    let entries = fs::read_dir(src).map_err(|_| "cannot read source directory")?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if name == ".git" {
+            continue;
+        }
+        let src_path = entry.path();
+        let dst_path = dst.join(&name);
+        let ty = entry.file_type().map_err(|_| "cannot determine file type")?;
+        if ty.is_dir() {
+            copy_dir(&src_path, &dst_path)?;
+        } else if ty.is_symlink() {
+            let target = fs::read_link(&src_path).map_err(|_| "cannot read symlink")?;
+            std::os::unix::fs::symlink(&target, &dst_path)
+                .map_err(|_| "cannot create symlink")?;
+        } else {
+            fs::copy(&src_path, &dst_path).map_err(|_| "cannot copy file")?;
+        }
+    }
+    Ok(())
+}
+
 fn find_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(dir).ok()?;
     for e in entries.flatten() {
@@ -440,13 +478,21 @@ fn find_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// Build NetSurf – attempt `make`.
-fn build_netsurf(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+///
+/// Since NetSurf's build system is complex and large, we build it
+/// out‑of‑tree by copying sources to `build_dir` so the submodule stays
+/// clean.
+fn build_netsurf(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("Makefile").exists() {
         return Err("submodule not cloned");
     }
     println!("cargo:warning=ports:   NetSurf requires gtk3, libcurl, openssl, libxml2-dev, etc.");
+
+    let _ = fs::remove_dir_all(build_dir);
+    copy_dir(submodule, build_dir)?;
+
     let status = Command::new("make")
-        .current_dir(submodule)
+        .current_dir(build_dir)
         .status()
         .map_err(|_| "make not found")?;
     if !status.success() {
@@ -454,7 +500,7 @@ fn build_netsurf(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static 
     }
     let candidates = ["netsurf", "nsbrowser", "build/release/netsurf"];
     for name in &candidates {
-        let bin = submodule.join(name);
+        let bin = build_dir.join(name);
         if bin.exists() {
             return fs::read(&bin).map_err(|_| "cannot read binary");
         }
@@ -466,7 +512,7 @@ fn build_netsurf(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static 
 /// proper; it doesn't contain the full Electron app source.  Building
 /// requires cloning Microsoft/vscode into the expected subdirectory
 /// and running the shell‑based pipeline.
-fn build_vscodium(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+fn build_vscodium(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("build.sh").exists() {
         return Err("submodule not cloned");
     }
@@ -474,9 +520,9 @@ fn build_vscodium(submodule: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static
     println!(
         "cargo:warning=ports:   Full build requires: git clone Microsoft/vscode + npm + electron"
     );
-    println!("cargo:warning=ports:   Place the resulting binary at toluene/vscodium/app.bin");
-    // Try to find a pre‑placed binary
-    let bin = submodule.join("app.bin");
+    println!("cargo:warning=ports:   Place the resulting binary at target/ports/vscodium/app.bin");
+    // Try to find a pre‑placed binary at the canonical cache location
+    let bin = build_dir.parent().unwrap().join("app.bin");
     if bin.exists() {
         return fs::read(&bin).map_err(|_| "cannot read app.bin");
     }
