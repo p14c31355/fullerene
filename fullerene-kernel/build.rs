@@ -300,7 +300,11 @@ fn is_valid_elf(data: &[u8]) -> bool {
 ///
 /// First build is slow (~1–2 min); subsequent builds are cached at
 /// `target/ports/cargo/app.bin` and reused instantly.
-fn build_cargo(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+fn build_cargo(
+    submodule: &Path,
+    build_dir: &Path,
+    _out_dir: &Path,
+) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("Cargo.toml").exists() {
         return Err("submodule not cloned – run git submodule update --init");
     }
@@ -325,7 +329,11 @@ fn build_cargo(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<Ve
 ///
 /// The source is copied to `build_dir` first so the submodule tree stays
 /// pristine.
-fn build_freedoom(submodule: &Path, build_dir: &Path, out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+fn build_freedoom(
+    submodule: &Path,
+    build_dir: &Path,
+    out_dir: &Path,
+) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("Makefile").exists() {
         return Err("submodule not cloned");
     }
@@ -448,13 +456,14 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<(), &'static str> {
         }
         let src_path = entry.path();
         let dst_path = dst.join(&name);
-        let ty = entry.file_type().map_err(|_| "cannot determine file type")?;
+        let ty = entry
+            .file_type()
+            .map_err(|_| "cannot determine file type")?;
         if ty.is_dir() {
             copy_dir(&src_path, &dst_path)?;
         } else if ty.is_symlink() {
             let target = fs::read_link(&src_path).map_err(|_| "cannot read symlink")?;
-            std::os::unix::fs::symlink(&target, &dst_path)
-                .map_err(|_| "cannot create symlink")?;
+            std::os::unix::fs::symlink(&target, &dst_path).map_err(|_| "cannot create symlink")?;
         } else {
             fs::copy(&src_path, &dst_path).map_err(|_| "cannot copy file")?;
         }
@@ -482,7 +491,11 @@ fn find_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
 /// Since NetSurf's build system is complex and large, we build it
 /// out‑of‑tree by copying sources to `build_dir` so the submodule stays
 /// clean.
-fn build_netsurf(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+fn build_netsurf(
+    submodule: &Path,
+    build_dir: &Path,
+    _out_dir: &Path,
+) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("Makefile").exists() {
         return Err("submodule not cloned");
     }
@@ -512,7 +525,11 @@ fn build_netsurf(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<
 /// proper; it doesn't contain the full Electron app source.  Building
 /// requires cloning Microsoft/vscode into the expected subdirectory
 /// and running the shell‑based pipeline.
-fn build_vscodium(submodule: &Path, build_dir: &Path, _out_dir: &Path) -> Result<Vec<u8>, &'static str> {
+fn build_vscodium(
+    submodule: &Path,
+    build_dir: &Path,
+    _out_dir: &Path,
+) -> Result<Vec<u8>, &'static str> {
     if !submodule.join("build.sh").exists() {
         return Err("submodule not cloned");
     }
