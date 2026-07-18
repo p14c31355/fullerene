@@ -143,15 +143,18 @@ fn open_common(rt: &mut LinuxRuntime, path: &str, flags: i32) -> u64 {
     let append = (flags & O_APPEND) != 0;
 
     // Helper: set dir_path on the Linux fd and return it.
-    let alloc_ret =
-        |rt: &mut LinuxRuntime, vfs_fd: crate::contexts::vfs::FileDescriptor, path: &str, flags: i32| -> u64 {
-            let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
-            if let Some(desc) = rt.fd_table.get_mut(fd) {
-                let trimmed = path.trim_end_matches('/');
-                desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
-            }
-            fd as u64
-        };
+    let alloc_ret = |rt: &mut LinuxRuntime,
+                     vfs_fd: crate::contexts::vfs::FileDescriptor,
+                     path: &str,
+                     flags: i32|
+     -> u64 {
+        let fd = rt.fd_table.alloc(vfs_fd.fd, 0, flags);
+        if let Some(desc) = rt.fd_table.get_mut(fd) {
+            let trimmed = path.trim_end_matches('/');
+            desc.dir_path = Some(if trimmed.is_empty() { "/" } else { trimmed }.into());
+        }
+        fd as u64
+    };
 
     // Handle creation or opening for writing
     if create || truncate || write_only || read_write || append {
