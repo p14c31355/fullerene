@@ -118,9 +118,17 @@ pub fn init_initramfs() {
 
 /// Return the embedded CPIO archive, if one was compiled into the kernel.
 ///
-/// This is a hook for future build-time integration.  When the build
-/// system embeds a CPIO archive via `include_bytes!`, this function
-/// returns `Some(&[u8])`.  For now, it returns `None`.
+/// Port packages are built from `toluene/<port>/app.bin` by `build.rs` at
+/// compile time.  When a port binary is found, `build.rs` generates a CPIO
+/// archive in `OUT_DIR` and sets `cfg(have_ports_cpio)`, which causes this
+/// function to include it via `include_bytes!`.  The archive is unpacked
+/// into the VFS during the initramfs boot step.
+#[cfg(have_ports_cpio)]
+fn embedded_initramfs() -> Option<&'static [u8]> {
+    Some(include_bytes!(concat!(env!("OUT_DIR"), "/ports.cpio")))
+}
+
+#[cfg(not(have_ports_cpio))]
 fn embedded_initramfs() -> Option<&'static [u8]> {
     None
 }

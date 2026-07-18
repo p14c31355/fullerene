@@ -6,6 +6,41 @@
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, run with `--clone-ovmf` to copy from system installation or download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
 
+## Application Ports
+
+The repository includes third‑party application port definitions that can be
+embedded into the kernel via a CPIO initramfs archive.  Currently defined
+ports:
+
+| Port | Submodule path | Runtime |
+|------|----------------|---------|
+| FREEDOOM | `toluene/freedoom` | Linux ELF |
+| NetSurf | `toluene/netsurf` | Linux ELF |
+| VSCodium | `toluene/vscodium` | Linux ELF |
+| Cargo | `toluene/cargo` | Linux ELF |
+
+To embed a port binary, place a Linux‑compatible ELF64 binary at
+`toluene/<name>/app.bin`.  The kernel's `build.rs` automatically detects
+it and generates a CPIO archive:
+
+```bash
+# After placing toluene/<name>/app.bin, rebuild the kernel:
+cargo build -p fullerene-kernel --target x86_64-unknown-uefi
+```
+
+When the kernel boots, ports are automatically unpacked from the initramfs
+into `/packages/` and can be launched with `app run <name>`.
+
+### Manual port installation
+
+Ports can also be installed at runtime from a pre‑built ELF binary:
+
+```
+app install <name> <path-to-elf>
+app run <name>
+app remove <name>
+```
+
 ## Build and Run
 
 Run the task runner, which handles building, ISO creation, and QEMU emulation:

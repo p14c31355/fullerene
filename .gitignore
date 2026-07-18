@@ -19,3 +19,6 @@ bellows/src/kernel.bin
 
 # WASM binaries — built at compile time via build.rs
 *.wasm
+
+# Port application binaries — built from toluene/<port> submodules
+toluene/*/app.bin
