@@ -596,6 +596,12 @@ pub fn sys_getdents64(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         d.offset = next_idx as u64;
     }
 
+    // If no entries were written and there are still entries to read,
+    // the buffer is too small - return EINVAL instead of 0 (EOF).
+    if written == 0 && start_idx < entries.len() {
+        return errno_code(EINVAL);
+    }
+
     written as u64
 }
 
