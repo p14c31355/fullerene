@@ -48,7 +48,9 @@ pub fn run(
     );
 
     let mut store = Store::new(&engine, ctx);
-    store.set_fuel(1_000_000).expect("fuel metering should be enabled");
+    store
+        .set_fuel(1_000_000)
+        .expect("fuel metering should be enabled");
 
     let linker = match create_linker(&engine) {
         Ok(l) => l,

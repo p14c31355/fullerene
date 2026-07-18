@@ -582,13 +582,27 @@ pub fn path_filestat_get(
             Err(_) => return Ok(ENOENT),
         }
     };
-    let off_dev = buf_ptr.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
-    let off_type = buf_ptr.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
-    let off_nlink = buf_ptr.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
-    let off_size = buf_ptr.checked_add(32).ok_or_else(|| Error::new("overflow"))?;
-    let off_atim = buf_ptr.checked_add(40).ok_or_else(|| Error::new("overflow"))?;
-    let off_mtim = buf_ptr.checked_add(48).ok_or_else(|| Error::new("overflow"))?;
-    let off_ctim = buf_ptr.checked_add(56).ok_or_else(|| Error::new("overflow"))?;
+    let off_dev = buf_ptr
+        .checked_add(8)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_type = buf_ptr
+        .checked_add(16)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_nlink = buf_ptr
+        .checked_add(24)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_size = buf_ptr
+        .checked_add(32)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_atim = buf_ptr
+        .checked_add(40)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_mtim = buf_ptr
+        .checked_add(48)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_ctim = buf_ptr
+        .checked_add(56)
+        .ok_or_else(|| Error::new("overflow"))?;
     write_u64(&memory, &mut caller, buf_ptr, 0)?;
     write_u64(&memory, &mut caller, off_dev, 1)?;
     write_u8(&memory, &mut caller, off_type, FILETYPE_REGULAR_FILE)?;
@@ -614,13 +628,27 @@ pub fn fd_filestat_get(
         }
     };
     let memory = get_memory(&caller)?;
-    let off_dev = buf_ptr.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
-    let off_type = buf_ptr.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
-    let off_nlink = buf_ptr.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
-    let off_size = buf_ptr.checked_add(32).ok_or_else(|| Error::new("overflow"))?;
-    let off_atim = buf_ptr.checked_add(40).ok_or_else(|| Error::new("overflow"))?;
-    let off_mtim = buf_ptr.checked_add(48).ok_or_else(|| Error::new("overflow"))?;
-    let off_ctim = buf_ptr.checked_add(56).ok_or_else(|| Error::new("overflow"))?;
+    let off_dev = buf_ptr
+        .checked_add(8)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_type = buf_ptr
+        .checked_add(16)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_nlink = buf_ptr
+        .checked_add(24)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_size = buf_ptr
+        .checked_add(32)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_atim = buf_ptr
+        .checked_add(40)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_mtim = buf_ptr
+        .checked_add(48)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_ctim = buf_ptr
+        .checked_add(56)
+        .ok_or_else(|| Error::new("overflow"))?;
     write_u64(&memory, &mut caller, buf_ptr, 0)?;
     write_u64(&memory, &mut caller, off_dev, fd as u64)?;
     write_u8(&memory, &mut caller, off_type, filetype)?;
@@ -657,10 +685,18 @@ pub fn fd_readdir(
         let name = b".";
         let entry_size = 24 + name.len() as u32;
         if entry_size <= buf_len {
-            let off_next = buf_ptr.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
-            let off_namelen = buf_ptr.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
-            let off_type = buf_ptr.checked_add(20).ok_or_else(|| Error::new("overflow"))?;
-            let off_name = buf_ptr.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
+            let off_next = buf_ptr
+                .checked_add(8)
+                .ok_or_else(|| Error::new("overflow"))?;
+            let off_namelen = buf_ptr
+                .checked_add(16)
+                .ok_or_else(|| Error::new("overflow"))?;
+            let off_type = buf_ptr
+                .checked_add(20)
+                .ok_or_else(|| Error::new("overflow"))?;
+            let off_name = buf_ptr
+                .checked_add(24)
+                .ok_or_else(|| Error::new("overflow"))?;
             write_u64(&memory, &mut caller, buf_ptr, 1)?;
             write_u64(&memory, &mut caller, off_next, 0)?;
             write_u32(&memory, &mut caller, off_namelen, name.len() as u32)?;
@@ -681,7 +717,9 @@ pub fn fd_readdir(
         if used + entry_size > buf_len {
             break;
         }
-        let off = buf_ptr.checked_add(used).ok_or_else(|| Error::new("overflow"))?;
+        let off = buf_ptr
+            .checked_add(used)
+            .ok_or_else(|| Error::new("overflow"))?;
         let off_next = off.checked_add(8).ok_or_else(|| Error::new("overflow"))?;
         let off_namelen = off.checked_add(16).ok_or_else(|| Error::new("overflow"))?;
         let off_type = off.checked_add(20).ok_or_else(|| Error::new("overflow"))?;
@@ -747,7 +785,9 @@ pub fn environ_get(
         memory
             .write(&mut caller, buf_offset as usize, entry)
             .map_err(|_| Error::new("environ_get: write failed"))?;
-        buf_offset = buf_offset.checked_add(entry.len() as u32).ok_or_else(|| Error::new("overflow"))?;
+        buf_offset = buf_offset
+            .checked_add(entry.len() as u32)
+            .ok_or_else(|| Error::new("overflow"))?;
     }
     Ok(ESUCCESS)
 }
@@ -794,7 +834,9 @@ pub fn args_get(
         memory
             .write(&mut caller, buf_offset as usize, arg)
             .map_err(|_| Error::new("args_get: write failed"))?;
-        buf_offset = buf_offset.checked_add(arg.len() as u32).ok_or_else(|| Error::new("overflow"))?;
+        buf_offset = buf_offset
+            .checked_add(arg.len() as u32)
+            .ok_or_else(|| Error::new("overflow"))?;
     }
     Ok(ESUCCESS)
 }
