@@ -1,4 +1,5 @@
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -20,6 +21,7 @@ pub struct FatFileSystem {
     next_fd: u32,
     handles: Vec<(u32, String, u64)>,
     root_cache: Option<Vec<VNode>>,
+    dir_cache: BTreeMap<String, Vec<VNode>>,
 }
 
 impl FatFileSystem {
@@ -35,7 +37,13 @@ impl FatFileSystem {
             next_fd: 1,
             handles: Vec::new(),
             root_cache: None,
+            dir_cache: BTreeMap::new(),
         })
+    }
+
+    fn invalidate_dir_cache(&mut self) {
+        self.root_cache = None;
+        self.dir_cache.clear();
     }
 
     fn map_err<T>(result: Result<T, FatError>) -> Result<T, FsError> {
@@ -113,7 +121,7 @@ impl FileSystem for FatFileSystem {
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         let (path, offset) = {
             let handle = self
                 .handles
@@ -154,13 +162,13 @@ impl FileSystem for FatFileSystem {
     }
 
     fn create(&mut self, path: &str, _kind: InodeType) -> Option<u64> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         let _file = self.create_file(path).ok()?;
         Some(0)
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         let path = path.trim_matches('/');
         if path.is_empty() {
             return Err(FsError::InvalidInput);
@@ -180,7 +188,7 @@ impl FileSystem for FatFileSystem {
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), FsError> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         let path = path.trim_matches('/');
         if path.is_empty() {
             return Err(FsError::InvalidInput);
@@ -197,40 +205,33 @@ impl FileSystem for FatFileSystem {
         const MAX_ENTRIES: usize = 4096;
         let trimmed = path.trim_matches('/');
         if trimmed.is_empty() {
-            if let Some(ref cached) = self.root_cache {
+            if let Some(cached) = self.root_cache.as_ref() {
                 return Ok(cached.clone());
             }
-            let result = {
-                let directory = self.open_dir(path)?;
-                let mut entries = Vec::new();
-                for entry in directory.iter() {
-                    let entry = Self::map_err(entry)?;
-                    entries.push(VNode {
-                        name: entry.file_name(),
-                        size: entry.len(),
-                        is_dir: entry.is_dir(),
-                    });
-                    if entries.len() >= MAX_ENTRIES {
-                        break;
-                    }
-                }
-                entries
-            };
-            self.root_cache = Some(result.clone());
-            return Ok(result);
+        } else if let Some(cached) = self.dir_cache.get(trimmed) {
+            return Ok(cached.clone());
         }
-        let directory = self.open_dir(path)?;
-        let mut result = Vec::new();
-        for entry in directory.iter() {
-            let entry = Self::map_err(entry)?;
-            result.push(VNode {
-                name: entry.file_name(),
-                size: entry.len(),
-                is_dir: entry.is_dir(),
-            });
-            if result.len() >= MAX_ENTRIES {
-                break;
+        let result = {
+            let directory = self.open_dir(path)?;
+            let mut entries = Vec::new();
+            for entry in directory.iter() {
+                let entry = Self::map_err(entry)?;
+                entries.push(VNode {
+                    name: entry.file_name(),
+                    size: entry.len(),
+                    is_dir: entry.is_dir(),
+                });
+                if entries.len() >= MAX_ENTRIES {
+                    break;
+                }
             }
+            entries
+        };
+        if trimmed.is_empty() {
+            self.root_cache = Some(result.clone());
+        } else {
+            self.dir_cache
+                .insert(String::from(trimmed), result.clone());
         }
         Ok(result)
     }
