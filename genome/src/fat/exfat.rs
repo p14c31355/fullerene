@@ -632,12 +632,13 @@ impl FileSystem for ExFatFileSystem {
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
         const MAX_ENTRIES: usize = 4096;
         let trimmed = path.trim_matches('/');
+        let cache_key = trimmed.to_lowercase();
         if trimmed.is_empty() {
             if let Some(cached) = self.root_cache.as_ref() {
-                return Ok(cached.iter().take(MAX_ENTRIES).cloned().collect());
+                return Ok(cached.clone());
             }
-        } else if let Some(cached) = self.dir_cache.get(trimmed) {
-            return Ok(cached.iter().take(MAX_ENTRIES).cloned().collect());
+        } else if let Some(cached) = self.dir_cache.get(&cache_key) {
+            return Ok(cached.clone());
         }
         if trimmed.is_empty() {
             let entries: Vec<_> = self.root_entries()?.into_iter().take(MAX_ENTRIES).collect();
@@ -649,12 +650,13 @@ impl FileSystem for ExFatFileSystem {
             .entries()
             .take(MAX_ENTRIES)
             .map(|entry| {
-                entry.map(|entry| VNode {
-                    size: entry.size(),
-                    is_dir: entry.is_directory(),
-                    name: entry.name,
-                })
-                .map_err(Self::map_error)
+                entry
+                    .map(|entry| VNode {
+                        size: entry.size(),
+                        is_dir: entry.is_directory(),
+                        name: entry.name,
+                    })
+                    .map_err(Self::map_error)
             })
             .collect();
         let entries = entries?;
@@ -662,8 +664,7 @@ impl FileSystem for ExFatFileSystem {
         if self.dir_cache.len() >= MAX_DIR_CACHE_ENTRIES {
             self.dir_cache.clear();
         }
-        self.dir_cache
-            .insert(String::from(trimmed), entries.clone());
+        self.dir_cache.insert(cache_key, entries.clone());
         Ok(entries)
     }
 

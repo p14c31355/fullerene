@@ -204,11 +204,12 @@ impl FileSystem for FatFileSystem {
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
         const MAX_ENTRIES: usize = 4096;
         let trimmed = path.trim_matches('/');
+        let cache_key = trimmed.to_lowercase();
         if trimmed.is_empty() {
             if let Some(cached) = self.root_cache.as_ref() {
                 return Ok(cached.clone());
             }
-        } else if let Some(cached) = self.dir_cache.get(trimmed) {
+        } else if let Some(cached) = self.dir_cache.get(&cache_key) {
             return Ok(cached.clone());
         }
         let result = {
@@ -234,8 +235,7 @@ impl FileSystem for FatFileSystem {
             if self.dir_cache.len() >= MAX_DIR_CACHE_ENTRIES {
                 self.dir_cache.clear();
             }
-            self.dir_cache
-                .insert(String::from(trimmed), result.clone());
+            self.dir_cache.insert(cache_key, result.clone());
         }
         Ok(result)
     }
