@@ -590,7 +590,10 @@ impl FileSystem for ExFatFileSystem {
         let index = self.handle_index(fd)?;
         let mut handle = self.handles.remove(index);
         match handle.writer.take() {
-            Some(writer) => writer.finish().map_err(Self::map_error),
+            Some(writer) => {
+                self.invalidate_dir_cache();
+                writer.finish().map_err(Self::map_error)
+            }
             None => Ok(()),
         }
     }
@@ -655,6 +658,10 @@ impl FileSystem for ExFatFileSystem {
             })
             .collect();
         let entries = entries?;
+        const MAX_DIR_CACHE_ENTRIES: usize = 256;
+        if self.dir_cache.len() >= MAX_DIR_CACHE_ENTRIES {
+            self.dir_cache.clear();
+        }
         self.dir_cache
             .insert(String::from(trimmed), entries.clone());
         Ok(entries)

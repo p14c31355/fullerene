@@ -230,6 +230,10 @@ impl FileSystem for FatFileSystem {
         if trimmed.is_empty() {
             self.root_cache = Some(result.clone());
         } else {
+            const MAX_DIR_CACHE_ENTRIES: usize = 256;
+            if self.dir_cache.len() >= MAX_DIR_CACHE_ENTRIES {
+                self.dir_cache.clear();
+            }
             self.dir_cache
                 .insert(String::from(trimmed), result.clone());
         }
