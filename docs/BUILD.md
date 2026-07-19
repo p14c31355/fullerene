@@ -20,12 +20,22 @@ via a CPIO initramfs archive.
 | VSCodium | `toluene/vscodium` | Linux ELF | Manual overlay (needs Microsoft/vscode) |
 
 The kernel's `build.rs` runs each port's build step during compilation.
-Built binaries are cached at `toluene/<name>/app.bin` and reused on
-subsequent builds.  To force a rebuild, delete the cached binary:
+Built binaries are cached at `target/ports/<name>/app.bin` and reused on
+subsequent builds.
+
+**Source builds are opt-in.**  By default, `cargo build` only uses cached
+binaries.  To build ports from their submodule sources, set:
 
 ```bash
-rm toluene/<name>/app.bin
-cargo build -p fullerene-kernel --target x86_64-unknown-uefi
+FULLERENE_BUILD_PORTS=1 cargo build -p fullerene-kernel --target x86_64-unknown-uefi
+```
+
+To force a rebuild from source, delete a cached binary and rebuild with
+the env var:
+
+```bash
+rm target/ports/<name>/app.bin
+FULLERENE_BUILD_PORTS=1 cargo build -p fullerene-kernel --target x86_64-unknown-uefi
 ```
 
 Prerequisites per port:
@@ -37,7 +47,7 @@ Prerequisites per port:
 
 A port whose build prerequisites are missing emits Cargo warnings directing
 users to the build output for details. You can place a manually‑compiled ELF
-at `toluene/<name>/app.bin` as well.
+at `target/ports/<name>/app.bin` as well.
 
 When the kernel boots, ports are unpacked from the initramfs into
 `/packages/` and launched with `app run <name>`.

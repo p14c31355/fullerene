@@ -237,6 +237,7 @@ pub struct ExFatFileSystem {
     device_size: u64,
     next_fd: u32,
     root_cache: Option<Vec<VNode>>,
+    dir_cache: BTreeMap<String, Vec<VNode>>,
 }
 
 impl ExFatFileSystem {
@@ -294,6 +295,7 @@ impl ExFatFileSystem {
             device_size: size,
             next_fd: 1,
             root_cache: None,
+            dir_cache: BTreeMap::new(),
         })
     }
 
@@ -428,6 +430,11 @@ impl ExFatFileSystem {
         Ok(unsafe { mem::transmute::<ExFatFileWriter<'_, ExFatDevice>, Writer>(writer) })
     }
 
+    fn invalidate_dir_cache(&mut self) {
+        self.root_cache = None;
+        self.dir_cache.clear();
+    }
+
     fn root_entries(&self) -> Result<Vec<VNode>, FsError> {
         let info = self.fs().info();
         let mut device = ExFatDevice {
@@ -554,7 +561,7 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         let index = self.handle_index(fd)?;
         if data.is_empty() {
             return Ok(0);
@@ -583,7 +590,10 @@ impl FileSystem for ExFatFileSystem {
         let index = self.handle_index(fd)?;
         let mut handle = self.handles.remove(index);
         match handle.writer.take() {
-            Some(writer) => writer.finish().map_err(Self::map_error),
+            Some(writer) => {
+                self.invalidate_dir_cache();
+                writer.finish().map_err(Self::map_error)
+            }
             None => Ok(()),
         }
     }
@@ -599,7 +609,7 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         match kind {
             InodeType::Directory => self.create_directory(path).ok()?,
             InodeType::File => self.create_file(path).ok()?,
@@ -609,27 +619,34 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         self.create_directory(path)
     }
 
     fn unlink(&mut self, path: &str) -> Result<(), FsError> {
-        self.root_cache = None;
+        self.invalidate_dir_cache();
         let entry = self.fs().open_path(path).map_err(Self::map_error)?;
         self.fs().delete(&entry).map_err(Self::map_error)
     }
 
     fn readdir(&mut self, path: &str) -> Result<Vec<VNode>, FsError> {
         const MAX_ENTRIES: usize = 4096;
-        if path.trim_matches('/').is_empty() {
-            if let Some(ref cached) = self.root_cache {
-                return Ok(cached.iter().take(MAX_ENTRIES).cloned().collect());
+        let trimmed = path.trim_matches('/');
+        let cache_key = trimmed.to_lowercase();
+        if trimmed.is_empty() {
+            if let Some(cached) = self.root_cache.as_ref() {
+                return Ok(cached.clone());
             }
+        } else if let Some(cached) = self.dir_cache.get(&cache_key) {
+            return Ok(cached.clone());
+        }
+        if trimmed.is_empty() {
             let entries: Vec<_> = self.root_entries()?.into_iter().take(MAX_ENTRIES).collect();
             self.root_cache = Some(entries.clone());
             return Ok(entries);
         }
-        self.directory(path)?
+        let entries: Result<Vec<_>, _> = self
+            .directory(path)?
             .entries()
             .take(MAX_ENTRIES)
             .map(|entry| {
@@ -641,7 +658,14 @@ impl FileSystem for ExFatFileSystem {
                     })
                     .map_err(Self::map_error)
             })
-            .collect()
+            .collect();
+        let entries = entries?;
+        const MAX_DIR_CACHE_ENTRIES: usize = 256;
+        if self.dir_cache.len() >= MAX_DIR_CACHE_ENTRIES {
+            self.dir_cache.clear();
+        }
+        self.dir_cache.insert(cache_key, entries.clone());
+        Ok(entries)
     }
 
     fn exists(&mut self, path: &str) -> bool {

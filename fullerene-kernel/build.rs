@@ -10,6 +10,7 @@ fn main() {
 
     // ── Declare expected cfg flags ────────────────────────────────
     println!("cargo::rustc-check-cfg=cfg(have_ports_cpio)");
+    println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────
     let nitrogen_dir = manifest_dir.parent().unwrap().join("nitrogen");
@@ -142,15 +143,20 @@ fn main() {
 ///
 /// For each known port, this function:
 /// 1. Locates its submodule under `toluene/<name>/`
-/// 2. If the submodule has source, attempts to build it (or download a
-///    pre‑built release) to produce a Linux ELF binary
-/// 3. Caches the binary at `target/ports/<name>/app.bin` so subsequent builds
-///    skip the expensive source build
-/// 4. Packages every successfully‑built port into a single CPIO archive
+/// 2. If a cached ELF exists at `target/ports/<name>/app.bin`, uses it
+/// 3. Otherwise, if `FULLERENE_BUILD_PORTS=1` is set, builds from source
+///    (or downloads a pre‑built release) to produce a Linux ELF binary
+/// 4. Caches any freshly-built binary at `target/ports/<name>/app.bin`
+/// 5. Packages every successfully‑built port into a single CPIO archive
 ///
 /// Returns the number of ports successfully packaged.
 fn build_ports_cpio(toluene_dir: &Path, ports_dir: &Path, out_dir: &Path) -> usize {
     let mut prepared: Vec<(&str, PortType, Vec<u8>)> = Vec::new();
+
+    // Source builds are opt-in.  Set FULLERENE_BUILD_PORTS=1 to build from
+    // source when no cached binary exists.  Without it, only pre-cached
+    // binaries (or manually-placed app.bin files) are used.
+    let allow_source_build = env::var_os("FULLERENE_BUILD_PORTS").is_some_and(|v| v != "0");
 
     for (name, builder) in KNOWN_PORTS.iter() {
         let submodule = toluene_dir.join(name);
@@ -167,6 +173,16 @@ fn build_ports_cpio(toluene_dir: &Path, ports_dir: &Path, out_dir: &Path) -> usi
                     continue;
                 }
             }
+        }
+
+        if !allow_source_build {
+            println!(
+                "cargo:warning=ports: {name} has no cached binary – \
+                 skipping (set FULLERENE_BUILD_PORTS=1 to build from source, \
+                 or place a pre-built ELF at {})",
+                cache.display()
+            );
+            continue;
         }
 
         // Try: build from source
