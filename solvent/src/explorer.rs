@@ -204,6 +204,12 @@ enum PendingOperation {
     },
 }
 
+pub(crate) struct PendingCopy {
+    pub(crate) source: String,
+    pub(crate) destination: String,
+    pub(crate) is_dir: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct PendingNavigation(String);
 
@@ -244,6 +250,7 @@ pub struct ExplorerContext {
     pub last_click_tick: u64,
     clipboard: Option<ClipboardEntry>,
     pending_operation: Option<PendingOperation>,
+    pending_copy: Option<PendingCopy>,
     status_message: Option<String>,
     rename_shift_held: bool,
     pending_navigation: Option<PendingNavigation>,
@@ -290,6 +297,7 @@ impl ExplorerContext {
             last_click_tick: 0,
             clipboard: None,
             pending_operation: None,
+            pending_copy: None,
             status_message: None,
             rename_shift_held: false,
             pending_navigation: None,
@@ -340,6 +348,20 @@ impl ExplorerContext {
 
     pub(crate) fn take_navigation_request(&mut self) -> Option<String> {
         Some(self.pending_navigation.take()?.0)
+    }
+
+    pub(crate) fn take_pending_copy(&mut self) -> Option<PendingCopy> {
+        self.pending_copy.take()
+    }
+
+    pub(crate) fn finish_paste(&mut self, destination: &str, result: Result<(), genome::FsError>) {
+        self.status_message = Some(match result {
+            Ok(()) => {
+                self.refresh();
+                format!("Pasted {}", basename(destination))
+            }
+            Err(error) => format!("Paste failed: {}", error),
+        });
     }
 
     pub(crate) fn finish_navigation(
@@ -536,15 +558,12 @@ impl ExplorerContext {
                     return None;
                 };
                 let destination = unique_destination(&self.current_dir, &source.name);
-                self.status_message = Some(
-                    match copy_entry(&source.path, &destination, source.is_dir) {
-                        Ok(()) => {
-                            self.refresh();
-                            format!("Pasted {}", basename(&destination))
-                        }
-                        Err(error) => format!("Paste failed: {}", error),
-                    },
-                );
+                self.pending_copy = Some(PendingCopy {
+                    source: source.path,
+                    destination,
+                    is_dir: source.is_dir,
+                });
+                self.status_message = Some(String::from("Pasting..."));
                 None
             }
             ExplorerAction::Rename => {
@@ -739,14 +758,6 @@ fn unique_destination(directory: &str, name: &str) -> String {
         })
         .find(|candidate| !path_exists(candidate))
         .unwrap_or_else(|| join_path(directory, &format!("{} - Copy{}", stem, extension)))
-}
-
-fn copy_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {
-    let copy = RUNTIME_CONTEXT
-        .callback_snapshot()
-        .vfs_copy
-        .ok_or(genome::FsError::NotSupported)?;
-    copy(source, destination, is_dir)
 }
 
 fn move_entry(source: &str, destination: &str, is_dir: bool) -> Result<(), genome::FsError> {

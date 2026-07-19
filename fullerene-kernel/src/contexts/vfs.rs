@@ -623,7 +623,62 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
+    // Prevent copying into self
+    let destination_suffix = destination.strip_prefix(source);
+    if source == destination || is_dir && destination_suffix.is_some_and(|s| s.starts_with('/')) {
+        return Err(FsError::InvalidPath);
+    }
+
+    if is_dir {
+        mkdir(destination)?;
+        for entry in readdir(source)? {
+            copy_path(
+                &join_path(source, &entry.name),
+                &join_path(destination, &entry.name),
+                entry.is_dir,
+            )?;
+        }
+        return Ok(());
+    }
+
+    // Each free function acquires/releases the kernel lock individually,
+    // so the system can render and process events between I/O operations.
+    let source_fd = open(source, 0)?.fd;
+    if exists(destination) {
+        if let Err(error) = unlink(destination) {
+            let _ = close(source_fd);
+            return Err(error);
+        }
+    }
+    let destination_fd = match create(destination) {
+        Ok(descriptor) => descriptor.fd,
+        Err(error) => {
+            let _ = close(source_fd);
+            return Err(error);
+        }
+    };
+    let result = (|| {
+        let mut buffer = [0; 4096];
+        loop {
+            match read(source_fd, &mut buffer) {
+                Ok(0) => return Ok(()),
+                Ok(n) => {
+                    let mut data = &buffer[..n];
+                    while !data.is_empty() {
+                        let written = write(destination_fd, data)?;
+                        if written == 0 {
+                            return Err(FsError::InvalidInput);
+                        }
+                        data = &data[written..];
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    })();
+    let source_close = close(source_fd);
+    let destination_close = close(destination_fd);
+    result.and(source_close).and(destination_close)
 }
 
 pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
