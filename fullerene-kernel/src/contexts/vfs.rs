@@ -25,6 +25,15 @@ pub use genome::vfs::{
     FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, MemFileSystem, VNode, Vfs,
 };
 
+/// Emit a debug-status message to the lock-free ring buffer (visible in the
+/// taskbar).  Safe to call while holding any VFS lock because the ring buffer
+/// uses only atomic operations.
+macro_rules! trace {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {
+        nitrogen::debug_status!("VFS", $fmt $(, $arg)*)
+    };
+}
+
 // ── VfsContext ──────────────────────────────────────────────────────
 
 /// Virtual File System context bundling mount table, cwd, and a handle
@@ -143,12 +152,14 @@ impl VfsContext {
     }
 
     pub fn change_directory(&self, path: &str) -> Result<(), FsError> {
+        trace!("cd {}", path);
         self.inner.lock().change_directory(path)
     }
 
     // ── Mount management ────────────────────────────────────────
 
     pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), FsError> {
+        trace!("mount {}", mount_point);
         let mut vfs = self.inner.lock();
         if vfs.mounted_fs_index(mount_point).is_some() {
             return Err(FsError::FileExists);
@@ -225,6 +236,7 @@ impl VfsContext {
     // multi-context callers that may interleave operations.
 
     pub fn open(&self, path: &str, flags: u32) -> Option<FileDescriptor> {
+        trace!("open {}", path);
         // Acquire inner first, do all FS work, drop inner…
         let (mount_index, fd) = {
             let mut vfs = self.inner.lock();
@@ -237,6 +249,7 @@ impl VfsContext {
     }
 
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+        trace!("read fd={}", fd);
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
         let handle = self
@@ -248,6 +261,7 @@ impl VfsContext {
     }
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
+        trace!("write fd={}", fd);
         let mut vfs = self.inner.lock();
         let handle = self
             .handle_table
@@ -278,6 +292,7 @@ impl VfsContext {
     }
 
     pub fn create(&self, path: &str) -> Result<FileDescriptor, FsError> {
+        trace!("create {}", path);
         // Acquire inner first, do all FS work, drop inner…
         let (mount_index, fd) = {
             let mut vfs = self.inner.lock();
@@ -300,6 +315,7 @@ impl VfsContext {
     }
 
     pub fn mkdir(&self, path: &str) -> Result<(), FsError> {
+        trace!("mkdir {}", path);
         let mut vfs = self.inner.lock();
         let resolved = vfs.resolve_path(path);
         let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
@@ -314,10 +330,12 @@ impl VfsContext {
     }
 
     pub fn readdir(&self, path: &str) -> Result<Vec<VNode>, FsError> {
+        trace!("readdir {}", path);
         self.inner.lock().readdir(path)
     }
 
     pub fn exists(&self, path: &str) -> bool {
+        trace!("exists {}", path);
         self.inner.lock().exists(path)
     }
 
@@ -515,6 +533,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
 
             let bdev =
                 crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
+            trace!("mount_device({})", device_name);
             match genome::fat::mount_device(bdev) {
                 Ok(fs) => {
                     if let Err(e) = vfs.mount(&mount_point, fs) {

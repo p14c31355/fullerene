@@ -72,6 +72,19 @@ pub fn poll_mouse_state() {
 }
 
 pub fn poll_keyboard() {
+    // Gate terminal input: only deliver ASCII keystrokes to shell/stdin when
+    // the terminal window is the focused (topmost) window.
+    {
+        use nitrogen::ps2::keyboard::set_terminal_input_allowed;
+        let runtime_guard = crate::RUNTIME_CONTEXT.runtime();
+        let allowed = runtime_guard.as_ref().map_or(true, |rt| {
+            let top = rt.desktop.wm.windows().last().map(|w| w.id);
+            top == rt.term_window
+        });
+        drop(runtime_guard);
+        set_terminal_input_allowed(allowed);
+    }
+
     while nitrogen::ps2::keyboard::raw_key_available() {
         let (scancode, pressed) = match nitrogen::ps2::keyboard::pop_raw_key() {
             Some(key) => key,

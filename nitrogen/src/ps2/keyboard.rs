@@ -5,10 +5,20 @@
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 static INPUT_BUFFER: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
 static INPUT_STRING_BUFFER: Mutex<String> = Mutex::new(String::new());
+
+/// When `false`, `read_char()` / `drain_line_buffer()` return no data so that
+/// background terminal processes do not steal keystrokes from GUI windows.
+/// Set by the GUI layer (`solvent::input_loop::poll_keyboard`) on focus change.
+pub static TERMINAL_INPUT_ALLOWED: AtomicBool = AtomicBool::new(true);
+
+pub fn set_terminal_input_allowed(allowed: bool) {
+    TERMINAL_INPUT_ALLOWED.store(allowed, Ordering::Release);
+}
 
 /// Raw key event buffer for non-ASCII key events (e.g. Super, arrows).
 /// Each entry is a (scancode, pressed) tuple.
@@ -283,6 +293,9 @@ fn clear_repeat(scancode: u8) {
 }
 
 pub fn read_char() -> Option<u8> {
+    if !TERMINAL_INPUT_ALLOWED.load(Ordering::Acquire) {
+        return None;
+    }
     interrupt_free(|| INPUT_BUFFER.lock().pop_front())
 }
 
@@ -292,6 +305,9 @@ pub fn pop_raw_key() -> Option<(u8, bool)> {
 }
 
 pub fn input_available() -> bool {
+    if !TERMINAL_INPUT_ALLOWED.load(Ordering::Acquire) {
+        return false;
+    }
     interrupt_free(|| !INPUT_BUFFER.lock().is_empty())
 }
 
@@ -329,6 +345,9 @@ pub fn get_keyboard_status() -> KeyboardModifiers {
 }
 
 pub fn drain_line_buffer(buffer: &mut [u8]) -> usize {
+    if !TERMINAL_INPUT_ALLOWED.load(Ordering::Acquire) {
+        return 0;
+    }
     let mut sb = INPUT_STRING_BUFFER.lock();
     let n = sb.len().min(buffer.len());
     if n > 0 {
