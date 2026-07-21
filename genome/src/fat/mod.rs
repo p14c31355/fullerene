@@ -10,7 +10,6 @@ pub mod exfat;
 mod fat32;
 mod partition;
 
-
 pub use block_device::{FatBlockError, FatDevice};
 pub use cache::BlockCache;
 pub use fat32::FatFileSystem;

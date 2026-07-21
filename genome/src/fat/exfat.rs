@@ -887,7 +887,10 @@ mod tests {
     // ── I/O benchmark helpers ─────────────────────────────────
 
     /// Kernel's vfs_read pattern: open → read(4 KiB) → grow Vec → … → close.
-    fn read_vfs(fs: &mut dyn crate::vfs::FileSystem, path: &str) -> Result<Vec<u8>, crate::FsError> {
+    fn read_vfs(
+        fs: &mut dyn crate::vfs::FileSystem,
+        path: &str,
+    ) -> Result<Vec<u8>, crate::FsError> {
         let fd = fs.open(path, 0).ok_or(crate::FsError::FileNotFound)?;
         let mut buf = Vec::new();
         let mut tmp = [0u8; 4096];
@@ -906,7 +909,11 @@ mod tests {
     }
 
     /// Open-per-chunk pattern: open → seek → read(4 KiB) → close × N.
-    fn read_per_chunk(fs: &mut dyn crate::vfs::FileSystem, path: &str, total: usize) -> Result<Vec<u8>, crate::FsError> {
+    fn read_per_chunk(
+        fs: &mut dyn crate::vfs::FileSystem,
+        path: &str,
+        total: usize,
+    ) -> Result<Vec<u8>, crate::FsError> {
         let mut buf = Vec::with_capacity(total);
         let mut off = 0u64;
         while off < total as u64 {
@@ -920,7 +927,9 @@ mod tests {
             let read_result = fs.read(fd.fd, &mut tmp);
             let _ = fs.close(fd.fd);
             let n = read_result?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             buf.extend_from_slice(&tmp[..n]);
             off += n as u64;
         }
@@ -977,7 +986,9 @@ mod tests {
             if written < nbytes {
                 std::eprintln!(
                     "BENCH {:>4}K: write incomplete ({} / {} bytes), skipping",
-                    kb, written, nbytes,
+                    kb,
+                    written,
+                    nbytes,
                 );
                 continue;
             }
@@ -1006,7 +1017,14 @@ mod tests {
             std::eprintln!(
                 "BENCH {:>4}K | VFS: {:>8?} (sec={:>5}, call={:>4}) | \
                  reopen: {:>8?} (sec={:>5}, call={:>4}) | reopen/VFS = {:.1}x",
-                kb, d1, s1, c1, d2, s2, c2, ratio,
+                kb,
+                d1,
+                s1,
+                c1,
+                d2,
+                s2,
+                c2,
+                ratio,
             );
 
             // Cleanup
