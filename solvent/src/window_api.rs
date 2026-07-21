@@ -231,31 +231,39 @@ pub fn launch_file(path: &str) {
         return;
     }
 
-    // For media/viewer files, acquire the runtime lock and dispatch.
-    // The viewer functions handle VFS I/O themselves (the lock is
-    // released before any I/O call).
+    // For media/viewer files, read the file data BEFORE acquiring the
+    // runtime lock to avoid deadlock. Filesystem I/O must run without
+    // holding the runtime lock (see event_loop.rs:65-67).
     if matches!(
         extension_lower.as_str(),
         "bmp" | "png" | "jpg" | "jpeg" | "wav" | "mp3" | "mp4" | "tar" | "tgz" | "gz" | "zip"
     ) {
+        let read_file = RUNTIME_CONTEXT.callback_snapshot().vfs_read;
+        let file_data = match read_file {
+            Some(read) => match read(path) {
+                Ok(data) => data,
+                Err(_) => return,
+            },
+            None => return,
+        };
         let mut runtime = RUNTIME_CONTEXT.runtime();
         let Some(runtime) = runtime.as_mut() else { return };
         match extension_lower.as_str() {
-            "bmp" => crate::viewers::open_bmp(runtime, path, name),
+            "bmp" => crate::viewers::open_bmp_data(runtime, &file_data, name),
             #[cfg(feature = "minipng")]
-            "png" => crate::viewers::open_png(runtime, path, name),
+            "png" => crate::viewers::open_png_data(runtime, &file_data, name),
             #[cfg(feature = "zune-jpeg")]
-            "jpg" | "jpeg" => crate::viewers::open_jpeg(runtime, path, name),
-            "wav" => crate::viewers::open_wav(runtime, path, name),
-            "mp3" => crate::viewers::open_mp3(runtime, path, name),
+            "jpg" | "jpeg" => crate::viewers::open_jpeg_data(runtime, &file_data, name),
+            "wav" => crate::viewers::open_wav_data(runtime, &file_data, name),
+            "mp3" => crate::viewers::open_mp3_data(runtime, &file_data, name),
             #[cfg(feature = "shiguredo_mp4")]
-            "mp4" => crate::viewers::open_mp4(runtime, path, name),
-            "tar" => crate::viewers::open_tar(runtime, path, name),
+            "mp4" => crate::viewers::open_mp4_data(runtime, &file_data, name),
+            "tar" => crate::viewers::open_tar_data(runtime, &file_data, name),
             #[cfg(feature = "gzip")]
-            "tgz" => crate::viewers::open_gzip(runtime, path, name, true),
+            "tgz" => crate::viewers::open_gzip_data(runtime, &file_data, name, true),
             #[cfg(feature = "gzip")]
-            "gz" => crate::viewers::open_gzip(runtime, path, name, false),
-            "zip" => crate::viewers::open_zip(runtime, path, name),
+            "gz" => crate::viewers::open_gzip_data(runtime, &file_data, name, false),
+            "zip" => crate::viewers::open_zip_data(runtime, &file_data, name),
             _ => {}
         }
     } else {

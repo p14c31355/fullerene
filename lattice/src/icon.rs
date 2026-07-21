@@ -66,7 +66,7 @@ impl SvgIcon {
     }
 }
 
-/// Convert 4 premultiplied RGBA bytes to a u32 in 0xRRGGBBAA format.
+/// Convert 4 premultiplied RGBA bytes to a u32 in 0xAARRGGBB format.
 #[inline]
 fn rgba_premul_to_u32(chunk: &[u8]) -> u32 {
     let r_pre = chunk[0] as u32;
