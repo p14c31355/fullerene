@@ -13,15 +13,20 @@ const MAX_IMG_W: u32 = 1920;
 const MAX_IMG_H: u32 = 1080;
 const GLYPH_SIZE: u32 = 8;
 
-/// Log heap statistics at key points, only in kernel mode.
-macro_rules! log_heap {
-    ($label:expr) => {{
+/// Log a status message to the taskbar debug area + serial.
+macro_rules! log_status {
+    ($label:expr $(, $arg:expr)*) => {{
         #[cfg(not(test))]
         {
+            let msg = alloc::format!($label $(, $arg)*);
             let s = petroleum::heap_stats();
+            nitrogen::debug::print(
+                "viewers",
+                &alloc::format!("{} free={}K", msg, s.free / 1024),
+            );
             petroleum::serial::serial_log(format_args!(
-                "[viewers] {}: heap_free={} used={} total={}\n",
-                $label, s.free, s.used, s.total,
+                "[viewers] {}  heap_free={} used={} total={}\n",
+                msg, s.free, s.used, s.total,
             ));
         }
     }};
@@ -63,7 +68,7 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
             return;
         }
     };
-    log_heap!("BMP before decode");
+    log_status!("BMP before decode");
     let bmp = match tinybmp::RawBmp::from_slice(&data) {
         Ok(b) => b,
         Err(_) => {
@@ -71,7 +76,7 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
             return;
         }
     };
-    log_heap!("BMP after parse");
+    log_status!("BMP after parse");
     if !matches!(
         bmp.header().bpp,
         tinybmp::Bpp::Bits24 | tinybmp::Bpp::Bits32
@@ -148,7 +153,7 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
         return;
     }
 
-    log_heap!("PNG before decode");
+    log_status!("PNG before decode");
 
     // Full decode into page-backed buffer (bypasses kernel heap)
     let buf_len = (w as usize) * (h as usize) * 4;
@@ -168,7 +173,7 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
     };
 
     drop(data); // free file data Vec<u8>
-    log_heap!("PNG after decode (pixels on PageBuf)");
+    log_status!("PNG after decode (pixels on PageBuf)");
 
     let win_w = w.min(800).max(160);
     let win_h = h.min(600).max(120);
@@ -210,7 +215,7 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
             return;
         }
     };
-    log_heap!("JPEG before decode");
+    log_status!("JPEG file read ({} B)", data.len());
 
     let options = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGB)
@@ -218,6 +223,7 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
         .set_max_height(MAX_IMG_H as usize);
     let mut decoder =
         zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data.as_slice()), options);
+    log_status!("JPEG decoder created, calling decode()");
     let pixels = match decoder.decode() {
         Ok(pixels) => pixels,
         Err(error) => {
@@ -229,6 +235,7 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
         show_error(rt, "JPEG Error", "Missing image information");
         return;
     };
+    log_status!("JPEG decode done ({}x{} pixels={}B)", info.width, info.height, pixels.len());
     let width = u32::from(info.width);
     let height = u32::from(info.height);
     if width > MAX_IMG_W || height > MAX_IMG_H {
@@ -252,7 +259,7 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
     page_pixels.as_mut_slice().copy_from_slice(&pixels);
     drop(pixels); // free kernel heap Vec<u8>
     drop(data);   // free file data Vec<u8>
-    log_heap!("JPEG after decode (pixels on PageBuf)");
+    log_status!("JPEG after decode (pixels on PageBuf)");
 
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);

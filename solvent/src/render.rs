@@ -343,10 +343,13 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
             render_progress(b"RENDER: alloc backbuf");
             let mut back_opt = crate::BACK_BUFFER.lock();
             if back_opt.as_ref().map_or(true, |b| b.len() < back_len) {
-                *back_opt = Some(
-                    unsafe { PageBuf::<u32>::alloc_zeroed_for_len(back_len) }
-                        .expect("BACK_BUFFER: OOM allocating physical pages"),
-                );
+                *back_opt = match unsafe { PageBuf::<u32>::alloc_zeroed_for_len(back_len) } {
+                    Some(buf) => Some(buf),
+                    None => {
+                        render_progress(b"RENDER: OOM for back buffer");
+                        return;
+                    }
+                };
             }
             let back = back_opt.as_mut().unwrap();
             let mut back_target = FramebufferTarget {

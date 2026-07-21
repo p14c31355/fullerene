@@ -139,6 +139,12 @@ pub fn tick_core(now: u64) {
     }
 
     process_events();
+    // File launch may have been queued by event handlers that ran inside
+    // the runtime lock.  Process it now, outside the lock, so that VFS I/O
+    // (called inside launch_file) cannot deadlock with the compositor.
+    if let Some(path) = crate::window_api::PENDING_LAUNCH.lock().take() {
+        crate::launch_file(&path);
+    }
     service_explorer_navigation();
     service_explorer_copy();
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {

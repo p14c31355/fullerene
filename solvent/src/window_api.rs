@@ -12,6 +12,12 @@ use crate::{
 pub(crate) static RENDERING_SUSPENDED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+/// Path to launch, set by event handlers that hold the runtime lock.
+/// The event loop picks this up after dropping the lock and calls
+/// `launch_file` outside the locked section to avoid VFS deadlocks.
+pub(crate) static PENDING_LAUNCH: spin::Mutex<Option<alloc::string::String>> =
+    spin::Mutex::new(None);
+
 pub fn write_terminal(text: &str) {
     if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
         runtime.term_buf.put_str(text);
@@ -151,7 +157,7 @@ pub(crate) fn render_explorer(runtime: &mut RuntimeState) {
     runtime.explorer_dirty = false;
 }
 
-pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
+pub fn launch_file(path: &str) {
     let name = path.rsplit('/').next().unwrap_or(path);
     let extension = crate::explorer::extension_of(name);
     let app = crate::explorer::lookup_association(extension);
@@ -180,6 +186,9 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
             | "lock"
     );
 
+    // VFS I/O must happen without the runtime lock to avoid deadlock
+    // when filesystem or hardware callbacks interact with the compositor.
+    // See event_loop.rs:65-67.
     if is_text {
         let read_file = RUNTIME_CONTEXT.callback_snapshot().vfs_read;
         let file_content = match read_file {
@@ -192,6 +201,8 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
             },
             None => return,
         };
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else { return };
         let id = runtime.desktop.wm.create_titled_window(
             100,
             80,
@@ -220,85 +231,67 @@ pub fn launch_file(runtime: &mut RuntimeState, path: &str) {
         return;
     }
 
-    match extension_lower.as_str() {
-        "bmp" => {
-            crate::viewers::open_bmp(runtime, path, name);
-            return;
+    // For media/viewer files, acquire the runtime lock and dispatch.
+    // The viewer functions handle VFS I/O themselves (the lock is
+    // released before any I/O call).
+    if matches!(
+        extension_lower.as_str(),
+        "bmp" | "png" | "jpg" | "jpeg" | "wav" | "mp3" | "mp4" | "tar" | "tgz" | "gz" | "zip"
+    ) {
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else { return };
+        match extension_lower.as_str() {
+            "bmp" => crate::viewers::open_bmp(runtime, path, name),
+            #[cfg(feature = "minipng")]
+            "png" => crate::viewers::open_png(runtime, path, name),
+            #[cfg(feature = "zune-jpeg")]
+            "jpg" | "jpeg" => crate::viewers::open_jpeg(runtime, path, name),
+            "wav" => crate::viewers::open_wav(runtime, path, name),
+            "mp3" => crate::viewers::open_mp3(runtime, path, name),
+            #[cfg(feature = "shiguredo_mp4")]
+            "mp4" => crate::viewers::open_mp4(runtime, path, name),
+            "tar" => crate::viewers::open_tar(runtime, path, name),
+            #[cfg(feature = "gzip")]
+            "tgz" => crate::viewers::open_gzip(runtime, path, name, true),
+            #[cfg(feature = "gzip")]
+            "gz" => crate::viewers::open_gzip(runtime, path, name, false),
+            "zip" => crate::viewers::open_zip(runtime, path, name),
+            _ => {}
         }
-        #[cfg(feature = "minipng")]
-        "png" => {
-            crate::viewers::open_png(runtime, path, name);
-            return;
+    } else {
+            let app_name = app.unwrap_or("Unknown");
+            let message = format!(
+                "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
+                name, extension, app_name, app_name
+            );
+            let mut runtime = RUNTIME_CONTEXT.runtime();
+            let Some(runtime) = runtime.as_mut() else { return };
+            let columns = 50;
+            let rows = (message.lines().count() as u32) + 3;
+            let id = runtime.desktop.wm.create_titled_window(
+                200,
+                160,
+                columns * GLYPH_W,
+                rows * GLYPH_H,
+                0x1a1a0d,
+                "Open File",
+            );
+            if let Some(window) = runtime
+                .desktop
+                .wm
+                .windows_mut()
+                .iter_mut()
+                .find(|window| window.id == id)
+            {
+                let _ = crate::menu_actions::render_text_into_surface(
+                    &mut window.surface,
+                    &message,
+                    columns,
+                    0xFFFFCC,
+                    0x1a1a0d,
+                );
+            }
+            runtime.desktop.wm.raise_to_top(id);
+            runtime.frame_due = true;
         }
-        #[cfg(feature = "zune-jpeg")]
-        "jpg" | "jpeg" => {
-            crate::viewers::open_jpeg(runtime, path, name);
-            return;
-        }
-        "wav" => {
-            crate::viewers::open_wav(runtime, path, name);
-            return;
-        }
-        "mp3" => {
-            crate::viewers::open_mp3(runtime, path, name);
-            return;
-        }
-        #[cfg(feature = "shiguredo_mp4")]
-        "mp4" => {
-            crate::viewers::open_mp4(runtime, path, name);
-            return;
-        }
-        "tar" => {
-            crate::viewers::open_tar(runtime, path, name);
-            return;
-        }
-        #[cfg(feature = "gzip")]
-        "tgz" => {
-            crate::viewers::open_gzip(runtime, path, name, true);
-            return;
-        }
-        #[cfg(feature = "gzip")]
-        "gz" => {
-            crate::viewers::open_gzip(runtime, path, name, false);
-            return;
-        }
-        "zip" => {
-            crate::viewers::open_zip(runtime, path, name);
-            return;
-        }
-        _ => {}
     }
-
-    let app_name = app.unwrap_or("Unknown");
-    let message = format!(
-        "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
-        name, extension, app_name, app_name
-    );
-    let columns = 50;
-    let rows = (message.lines().count() as u32) + 3;
-    let id = runtime.desktop.wm.create_titled_window(
-        200,
-        160,
-        columns * GLYPH_W,
-        rows * GLYPH_H,
-        0x1a1a0d,
-        "Open File",
-    );
-    if let Some(window) = runtime
-        .desktop
-        .wm
-        .windows_mut()
-        .iter_mut()
-        .find(|window| window.id == id)
-    {
-        let _ = crate::menu_actions::render_text_into_surface(
-            &mut window.surface,
-            &message,
-            columns,
-            0xFFFFCC,
-            0x1a1a0d,
-        );
-    }
-    runtime.desktop.wm.raise_to_top(id);
-    runtime.frame_due = true;
-}

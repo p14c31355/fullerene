@@ -3,7 +3,7 @@
 //! These handlers are thin wrappers over state owned by `RuntimeContext`.
 //! The heavy logic (menu dispatch, terminal I/O) lives in dedicated modules.
 
-use crate::{FB_DIMS, RUNTIME_CONTEXT, SUPER_HELD};
+use crate::{FB_DIMS, RUNTIME_CONTEXT, SUPER_HELD, window_api::PENDING_LAUNCH};
 use lattice::shell_overlay::ShellState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
@@ -188,7 +188,7 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
         rt.explorer_dirty = true;
         rt.frame_due = true;
         if let Some(path) = launch_path {
-            crate::launch_file(rt, &path);
+            *PENDING_LAUNCH.lock() = Some(path);
         }
         return;
     }
@@ -238,9 +238,9 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                     let launch_path = explorer.activate_entry(idx);
                     explorer.last_click_entry = None;
                     if let Some(path) = launch_path {
-                        // Save path, drop explorer borrow, then launch
-                        let _ = explorer;
-                        crate::launch_file(rt, &path);
+                        // Save path to be launched later, outside the
+                        // runtime lock, to avoid VFS deadlock.
+                        *PENDING_LAUNCH.lock() = Some(path);
                         return;
                     }
                 } else {
