@@ -80,7 +80,6 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
             let (ww, wh) = rt.desktop.work_area(fw, fh);
             rt.desktop.wm.toggle_tiling();
             rt.desktop.wm.retile(ww, wh);
-            rt.desktop.force_full_redraw();
             rt.frame_due = true;
         }
         OpenEditor => {

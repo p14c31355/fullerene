@@ -363,6 +363,16 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                     rt.frame_due = true;
                     return true;
                 }
+                5 => {
+                    // File Manager — open directly (no VFS I/O in the constructor).
+                    crate::menu_actions::open_info_window(
+                        rt,
+                        crate::menu_actions::InfoWindow::FileManager,
+                    );
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
                 _ => {
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
@@ -457,7 +467,6 @@ impl EventHandler for ShellEventHandler {
                 let (ww, wh) = rt.desktop.work_area(fw, fh);
                 rt.desktop.wm.toggle_tiling();
                 rt.desktop.wm.retile(ww, wh);
-                rt.desktop.force_full_redraw();
                 rt.frame_due = true;
                 true
             }
