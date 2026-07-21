@@ -18,6 +18,18 @@ pub static TERMINAL_INPUT_ALLOWED: AtomicBool = AtomicBool::new(true);
 
 pub fn set_terminal_input_allowed(allowed: bool) {
     TERMINAL_INPUT_ALLOWED.store(allowed, Ordering::Release);
+    if !allowed {
+        interrupt_free(|| {
+            let mut ib = INPUT_BUFFER.lock();
+            if !ib.is_empty() {
+                ib.clear();
+            }
+            let mut isb = INPUT_STRING_BUFFER.lock();
+            if !isb.is_empty() {
+                isb.clear();
+            }
+        });
+    }
 }
 
 /// Raw key event buffer for non-ASCII key events (e.g. Super, arrows).

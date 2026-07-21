@@ -623,23 +623,38 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-    // Prevent copying into self (handle trailing slashes and root "/")
-    let src = source.trim_end_matches('/');
-    let dst = destination.trim_end_matches('/');
-    if src == dst
-        || is_dir && dst.starts_with(src)
-            && dst.len() > src.len()
-            && dst.as_bytes()[src.len()] == b'/'
+    // Resolve paths to get canonical forms (handles ".", "..", trailing slashes).
+    let (source, destination) = with_vfs(|vfs| {
+        let inner = vfs.inner.lock();
+        (inner.resolve_path(source), inner.resolve_path(destination))
+    })
+    .ok_or(FsError::PermissionDenied)?;
+
+    // Prevent copying into self
+    if source == destination
+        || is_dir
+            && destination.starts_with(&source)
+            && source.len() > 1
+            && destination.len() > source.len()
+            && destination.as_bytes()[source.len()] == b'/'
     {
         return Err(FsError::InvalidPath);
     }
 
+    // Validate file types match caller's intent.
+    if !is_dir && readdir(&source).is_ok() {
+        return Err(FsError::IsADirectory);
+    }
+    if !is_dir && readdir(&destination).is_ok() {
+        return Err(FsError::IsADirectory);
+    }
+
     if is_dir {
-        mkdir(destination)?;
-        for entry in readdir(source)? {
+        mkdir(&destination)?;
+        for entry in readdir(&source)? {
             copy_path(
-                &join_path(source, &entry.name),
-                &join_path(destination, &entry.name),
+                &join_path(&source, &entry.name),
+                &join_path(&destination, &entry.name),
                 entry.is_dir,
             )?;
         }
@@ -648,14 +663,14 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
 
     // Each free function acquires/releases the kernel lock individually,
     // so the system can render and process events between I/O operations.
-    let source_fd = open(source, 0)?.fd;
-    if exists(destination) {
-        if let Err(error) = unlink(destination) {
+    let source_fd = open(&source, 0)?.fd;
+    if exists(&destination) {
+        if let Err(error) = unlink(&destination) {
             let _ = close(source_fd);
             return Err(error);
         }
     }
-    let destination_fd = match create(destination) {
+    let destination_fd = match create(&destination) {
         Ok(descriptor) => descriptor.fd,
         Err(error) => {
             let _ = close(source_fd);
