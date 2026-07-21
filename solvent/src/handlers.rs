@@ -342,32 +342,52 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
         let ay = start_y + row * (icon_size + label_h + pad);
         if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
             match idx {
-                0 => {
-                    // Defer shell launch — cannot call ensure_terminal_window()
-                    // or launch_shell() while holding the runtime-state lock (deadlock).
+                0 | 1 => {
+                    // Shell (0) / Terminal (1) — both launch a shell.
                     rt.shell_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
                 2 => {
-                    // Defer editor launch — cannot call ensure_editor_window()
-                    // while holding the runtime-state lock (deadlock).
+                    // Editor
                     rt.editor_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
+                3 => {
+                    // Clock — show system info
+                    crate::menu_actions::open_info_window(
+                        rt,
+                        crate::menu_actions::InfoWindow::SystemInfo,
+                    );
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
                 4 => {
-                    rt.shell_state = ShellState::TimeZoneSelector;
+                    // Settings
+                    crate::menu_actions::open_settings_window(rt);
+                    rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
                 5 => {
-                    // File Manager — open directly (no VFS I/O in the constructor).
+                    // File Manager
                     crate::menu_actions::open_info_window(
                         rt,
                         crate::menu_actions::InfoWindow::FileManager,
+                    );
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                6 => {
+                    // About
+                    crate::menu_actions::open_info_window(
+                        rt,
+                        crate::menu_actions::InfoWindow::About,
                     );
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;

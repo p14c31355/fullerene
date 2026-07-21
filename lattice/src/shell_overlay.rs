@@ -142,41 +142,19 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     dim_backdrop(fb, fbw, fbh, stride);
 
     // ── App launcher grid ─────────────────────────────────
-    #[derive(Clone, Copy)]
     struct AppEntry {
         label: &'static str,
-        color: u32,
+        icon: &'static crate::icon::SvgIcon,
     }
 
     let apps: &[AppEntry] = &[
-        AppEntry {
-            label: "Shell",
-            color: 0x1a3a1a,
-        },
-        AppEntry {
-            label: "Terminal",
-            color: 0x333344,
-        },
-        AppEntry {
-            label: "Editor",
-            color: 0x1a1a3a,
-        },
-        AppEntry {
-            label: "Clock",
-            color: 0x333344,
-        },
-        AppEntry {
-            label: "Settings",
-            color: 0x333344,
-        },
-        AppEntry {
-            label: "File Mgr",
-            color: 0x333344,
-        },
-        AppEntry {
-            label: "About",
-            color: 0x333344,
-        },
+        AppEntry { label: "Shell",     icon: &crate::icon::ICON_SHELL },
+        AppEntry { label: "Terminal",  icon: &crate::icon::ICON_TERMINAL },
+        AppEntry { label: "Editor",    icon: &crate::icon::ICON_EDITOR },
+        AppEntry { label: "Clock",     icon: &crate::icon::ICON_CLOCK },
+        AppEntry { label: "Settings",  icon: &crate::icon::ICON_SETTINGS },
+        AppEntry { label: "File Mgr",  icon: &crate::icon::ICON_FILES },
+        AppEntry { label: "About",     icon: &crate::icon::ICON_ABOUT },
     ];
 
     let icon_size = 64u32;
@@ -188,26 +166,15 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     for (i, app) in apps.iter().enumerate() {
         let col = (i as u32) % columns;
         let row = (i as u32) / columns;
-        let ax = pad + col * (icon_size + pad);
-        let ay = start_y + row * (icon_size + label_h + pad);
+        let ax = (pad + col * (icon_size + pad)) as i32;
+        let ay = (start_y + row * (icon_size + label_h + pad)) as i32;
 
-        if ax + icon_size > fbw || ay + icon_size + label_h > fbh {
+        if ax + icon_size as i32 > fbw as i32 || ay + (icon_size + label_h) as i32 > fbh as i32 {
             continue;
         }
 
-        // App icon (coloured square)
-        for dy in 0..icon_size {
-            let py = ay + dy;
-            for dx in 0..icon_size {
-                let px = ax + dx;
-                let is_border = dy == 0 || dy == icon_size - 1 || dx == 0 || dx == icon_size - 1;
-                let color = if is_border { COLOR_PRIMARY } else { app.color };
-                let idx = (py as usize) * stride + px as usize;
-                if idx < fb.len() {
-                    fb[idx] = color;
-                }
-            }
-        }
+        // SVG icon (direct framebuffer blit, no heap allocation)
+        app.icon.blit_into(fb, fbw, stride, ax, ay);
 
         // App label below icon
         render_text(
@@ -216,8 +183,8 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
             fbh,
             stride,
             app.label,
-            ax + 2,
-            ay + icon_size + 2,
+            (ax + 2) as u32,
+            (ay + icon_size as i32 + 2) as u32,
             COLOR_TEXT,
         );
     }

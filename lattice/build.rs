@@ -24,7 +24,10 @@ fn render_svg_icons(out_dir: &Path) {
     let icons_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("assets")
         .join("icons");
-    let svgs = ["shell.svg", "files.svg", "settings.svg", "about.svg"];
+    let svgs = [
+        "shell.svg", "terminal.svg", "editor.svg", "clock.svg", "files.svg", "settings.svg",
+        "about.svg",
+    ];
     for svg_name in &svgs {
         let svg_path = icons_dir.join(svg_name);
         let svg_data = match fs::read(&svg_path) {
