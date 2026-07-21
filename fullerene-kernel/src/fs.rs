@@ -143,13 +143,7 @@ pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
 }
 
 pub fn move_file(src: &str, dst: &str) -> Result<(), FsError> {
-    let dst = if is_dir(dst) {
-        let name = basename(src);
-        alloc::format!("{}/{}", dst.trim_end_matches('/'), name)
-    } else {
-        dst.to_string()
-    };
-    copy_file(src, &dst)?;
+    copy_file(src, dst)?;
     remove(src)
 }
 

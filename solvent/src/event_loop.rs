@@ -91,20 +91,19 @@ fn service_explorer_copy() {
     let Some(pending) = pending else { return };
 
     // I/O must run without the runtime lock (same as service_explorer_navigation).
-    let destination = pending.destination.clone();
     let callback = RUNTIME_CONTEXT.callback_snapshot().vfs_copy;
     let result = callback
         .ok_or(genome::FsError::NotSupported)
         .and_then(|copy| copy(&pending.source, &pending.destination, pending.is_dir));
     match &result {
-        Ok(()) => nitrogen::debug_status!("Explorer", "pasted {}", destination),
+        Ok(()) => nitrogen::debug_status!("Explorer", "pasted {}", pending.destination),
         Err(error) => nitrogen::debug_status!("Explorer", "paste failed: {}", error),
     }
 
     if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
         && let Some(explorer) = runtime.explorer.as_mut()
     {
-        explorer.finish_paste(&destination, result);
+        explorer.finish_paste(&pending.destination, result);
         runtime.explorer_dirty = true;
         runtime.frame_due = true;
     }
