@@ -294,6 +294,7 @@ fn clear_repeat(scancode: u8) {
 
 pub fn read_char() -> Option<u8> {
     if !TERMINAL_INPUT_ALLOWED.load(Ordering::Acquire) {
+        interrupt_free(|| INPUT_BUFFER.lock().clear());
         return None;
     }
     interrupt_free(|| INPUT_BUFFER.lock().pop_front())
@@ -306,6 +307,7 @@ pub fn pop_raw_key() -> Option<(u8, bool)> {
 
 pub fn input_available() -> bool {
     if !TERMINAL_INPUT_ALLOWED.load(Ordering::Acquire) {
+        interrupt_free(|| INPUT_BUFFER.lock().clear());
         return false;
     }
     interrupt_free(|| !INPUT_BUFFER.lock().is_empty())
@@ -346,6 +348,8 @@ pub fn get_keyboard_status() -> KeyboardModifiers {
 
 pub fn drain_line_buffer(buffer: &mut [u8]) -> usize {
     if !TERMINAL_INPUT_ALLOWED.load(Ordering::Acquire) {
+        let mut sb = INPUT_STRING_BUFFER.lock();
+        sb.clear();
         return 0;
     }
     let mut sb = INPUT_STRING_BUFFER.lock();

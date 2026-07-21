@@ -729,12 +729,12 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     // Limit iterations to avoid hanging on files with unrecognized codecs.
     let mut remaining = 200u32;
     loop {
-        if remaining == 0 {
-            break;
-        }
-        remaining -= 1;
         match demuxer.next_sample() {
             Ok(Some(sample)) if sample.track.track_id == video_track_id => {
+                if remaining == 0 {
+                    break;
+                }
+                remaining -= 1;
                 if let Some(entry) = sample.sample_entry {
                     if let Some((w, h)) = entry.video_resolution() {
                         video_width = w;

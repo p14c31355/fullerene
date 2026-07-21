@@ -79,7 +79,7 @@ pub fn poll_keyboard() {
         let runtime_guard = crate::RUNTIME_CONTEXT.runtime();
         let allowed = runtime_guard.as_ref().map_or(true, |rt| {
             let top = rt.desktop.wm.windows().last().map(|w| w.id);
-            top == rt.term_window
+            top == rt.term_window && !rt.desktop.pwd_dialog_open
         });
         drop(runtime_guard);
         set_terminal_input_allowed(allowed);

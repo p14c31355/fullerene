@@ -394,7 +394,9 @@ impl ExplorerContext {
         self.sort_entries();
         self.selected_index = None;
         self.scroll_offset = 0;
-        self.status_message = None;
+        if self.status_message.as_deref() == Some("Loading...") {
+            self.status_message = None;
+        }
         if self.history_pos >= self.history.len() || self.history[self.history_pos] != path {
             self.history.truncate(self.history_pos + 1);
             self.history.push(path);

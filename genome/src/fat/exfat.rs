@@ -911,10 +911,15 @@ mod tests {
         let mut off = 0u64;
         while off < total as u64 {
             let fd = fs.open(path, 0).ok_or(crate::FsError::FileNotFound)?;
-            fs.seek(fd.fd, off)?;
+            let seek_result = fs.seek(fd.fd, off);
+            if let Err(e) = seek_result {
+                let _ = fs.close(fd.fd);
+                return Err(e);
+            }
             let mut tmp = [0u8; 4096];
-            let n = fs.read(fd.fd, &mut tmp)?;
+            let read_result = fs.read(fd.fd, &mut tmp);
             let _ = fs.close(fd.fd);
+            let n = read_result?;
             if n == 0 { break; }
             buf.extend_from_slice(&tmp[..n]);
             off += n as u64;
@@ -943,7 +948,7 @@ mod tests {
         let opts = hadris_fat::exfat::ExFatFormatOptions::new()
             .with_label("BENCH")
             .with_sectors_per_cluster(256);
-        drop(hadris_fat::exfat::format_exfat(adapter, IMG as u64, &opts));
+        hadris_fat::exfat::format_exfat(adapter, IMG as u64, &opts).expect("format should succeed");
 
         let mut fs = match crate::fat::mount_device(Box::new(block_device.clone())) {
             Ok(fs) => fs,

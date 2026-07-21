@@ -625,7 +625,7 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
     // Prevent copying into self
     let destination_suffix = destination.strip_prefix(source);
-    if source == destination || is_dir && destination_suffix.is_some_and(|s| s.starts_with('/')) {
+    if source == destination || is_dir && destination_suffix.is_some_and(|s| s.is_empty() || s.starts_with('/')) {
         return Err(FsError::InvalidPath);
     }
 
