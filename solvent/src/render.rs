@@ -3,11 +3,11 @@
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
 use crate::RUNTIME_CONTEXT;
-use petroleum::PageBuf;
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::cursor::Cursor;
 use lattice::scene::DirtyRect;
 use lattice::shell_overlay::{ShellState, render_app_grid, render_task_overview};
+use petroleum::PageBuf;
 use spin::Mutex;
 
 const MAX_FB_PIXELS: usize = 3840 * 2160; // upper bound for overflow checks

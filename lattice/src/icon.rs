@@ -84,10 +84,14 @@ fn rgba_premul_to_u32(chunk: &[u8]) -> u32 {
 
 pub static ICON_SHELL: SvgIcon =
     SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_shell.rgba")));
-pub static ICON_TERMINAL: SvgIcon =
-    SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_terminal.rgba")));
-pub static ICON_EDITOR: SvgIcon =
-    SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_editor.rgba")));
+pub static ICON_TERMINAL: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/icon_terminal.rgba"
+)));
+pub static ICON_EDITOR: SvgIcon = SvgIcon::from_rgba(include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/icon_editor.rgba"
+)));
 pub static ICON_CLOCK: SvgIcon =
     SvgIcon::from_rgba(include_bytes!(concat!(env!("OUT_DIR"), "/icon_clock.rgba")));
 pub static ICON_FILES: SvgIcon =

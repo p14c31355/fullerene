@@ -161,9 +161,7 @@ pub fn tick_core(now: u64) {
     // or the debug menu to export logs manually.
     // Deferred settings persistence (VFS write must happen outside the
     // runtime lock to avoid deadlocks with filesystem I/O).
-    if crate::settings_bridge::PERSIST_PENDING
-        .swap(false, core::sync::atomic::Ordering::Relaxed)
-    {
+    if crate::settings_bridge::PERSIST_PENDING.swap(false, core::sync::atomic::Ordering::Relaxed) {
         if let Some(save) = crate::RUNTIME_CONTEXT.callback_snapshot().settings_save {
             save();
         }

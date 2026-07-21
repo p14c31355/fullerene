@@ -405,7 +405,15 @@ pub fn render_klog_live(rt: &mut RuntimeState) {
     let total = (cols * rows) as usize;
 
     // Take only the last 29 lines (leave 1 line for "--- KLog Live ---\n")
-    let truncated: String = log.lines().rev().take(29).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+    let truncated: String = log
+        .lines()
+        .rev()
+        .take(29)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
 
     let text = alloc::format!("--- KLog Live (auto-refresh) ---\n{}", truncated);
 

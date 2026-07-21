@@ -148,13 +148,34 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     }
 
     let apps: &[AppEntry] = &[
-        AppEntry { label: "Shell",     icon: &crate::icon::ICON_SHELL },
-        AppEntry { label: "Terminal",  icon: &crate::icon::ICON_TERMINAL },
-        AppEntry { label: "Editor",    icon: &crate::icon::ICON_EDITOR },
-        AppEntry { label: "Clock",     icon: &crate::icon::ICON_CLOCK },
-        AppEntry { label: "Settings",  icon: &crate::icon::ICON_SETTINGS },
-        AppEntry { label: "File Mgr",  icon: &crate::icon::ICON_FILES },
-        AppEntry { label: "About",     icon: &crate::icon::ICON_ABOUT },
+        AppEntry {
+            label: "Shell",
+            icon: &crate::icon::ICON_SHELL,
+        },
+        AppEntry {
+            label: "Terminal",
+            icon: &crate::icon::ICON_TERMINAL,
+        },
+        AppEntry {
+            label: "Editor",
+            icon: &crate::icon::ICON_EDITOR,
+        },
+        AppEntry {
+            label: "Clock",
+            icon: &crate::icon::ICON_CLOCK,
+        },
+        AppEntry {
+            label: "Settings",
+            icon: &crate::icon::ICON_SETTINGS,
+        },
+        AppEntry {
+            label: "File Mgr",
+            icon: &crate::icon::ICON_FILES,
+        },
+        AppEntry {
+            label: "About",
+            icon: &crate::icon::ICON_ABOUT,
+        },
     ];
 
     let icon_size = 64u32;

@@ -175,8 +175,9 @@ impl RtsxController {
     fn checked_read32(&self, reg: usize) -> Option<u32> {
         match self.mmio.checked_read32(reg, Some(&self.health)) {
             crate::mmio::SafeReadResult::Value(v) => Some(v),
-            crate::mmio::SafeReadResult::DeviceGone
-            | crate::mmio::SafeReadResult::MasterAbort => None,
+            crate::mmio::SafeReadResult::DeviceGone | crate::mmio::SafeReadResult::MasterAbort => {
+                None
+            }
         }
     }
 

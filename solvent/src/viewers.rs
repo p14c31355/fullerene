@@ -238,8 +238,7 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
         .jpeg_set_out_colorspace(ColorSpace::RGB)
         .set_max_width(MAX_IMG_W as usize)
         .set_max_height(MAX_IMG_H as usize);
-    let mut decoder =
-        zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
     log_status!("JPEG decoder created, calling decode()");
     let pixels = match decoder.decode() {
         Ok(pixels) => pixels,
@@ -252,7 +251,12 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
         show_error(rt, "JPEG Error", "Missing image information");
         return;
     };
-    log_status!("JPEG decode done ({}x{} pixels={}B)", info.width, info.height, pixels.len());
+    log_status!(
+        "JPEG decode done ({}x{} pixels={}B)",
+        info.width,
+        info.height,
+        pixels.len()
+    );
     let width = u32::from(info.width);
     let height = u32::from(info.height);
     if width > MAX_IMG_W || height > MAX_IMG_H {
@@ -757,10 +761,7 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
 pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     // Demux MP4
     let mut demuxer = shiguredo_mp4::demux::Mp4FileDemuxer::new();
-    let input = shiguredo_mp4::demux::Input {
-        position: 0,
-        data,
-    };
+    let input = shiguredo_mp4::demux::Input { position: 0, data };
     demuxer.handle_input(input);
 
     // `demuxer.tracks()` borrows demuxer, so copy the summary before sample iteration.

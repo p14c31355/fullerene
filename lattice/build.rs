@@ -25,7 +25,12 @@ fn render_svg_icons(out_dir: &Path) {
         .join("assets")
         .join("icons");
     let svgs = [
-        "shell.svg", "terminal.svg", "editor.svg", "clock.svg", "files.svg", "settings.svg",
+        "shell.svg",
+        "terminal.svg",
+        "editor.svg",
+        "clock.svg",
+        "files.svg",
+        "settings.svg",
         "about.svg",
     ];
     for svg_name in &svgs {

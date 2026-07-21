@@ -202,7 +202,9 @@ pub fn launch_file(path: &str) {
             None => return,
         };
         let mut runtime = RUNTIME_CONTEXT.runtime();
-        let Some(runtime) = runtime.as_mut() else { return };
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
         let id = runtime.desktop.wm.create_titled_window(
             100,
             80,
@@ -247,7 +249,9 @@ pub fn launch_file(path: &str) {
             None => return,
         };
         let mut runtime = RUNTIME_CONTEXT.runtime();
-        let Some(runtime) = runtime.as_mut() else { return };
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
         match extension_lower.as_str() {
             "bmp" => crate::viewers::open_bmp_data(runtime, &file_data, name),
             #[cfg(feature = "minipng")]
@@ -267,39 +271,41 @@ pub fn launch_file(path: &str) {
             _ => {}
         }
     } else {
-            let app_name = app.unwrap_or("Unknown");
-            let message = format!(
-                "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
-                name, extension, app_name, app_name
-            );
-            let mut runtime = RUNTIME_CONTEXT.runtime();
-            let Some(runtime) = runtime.as_mut() else { return };
-            let columns = 50;
-            let rows = (message.lines().count() as u32) + 3;
-            let id = runtime.desktop.wm.create_titled_window(
-                200,
-                160,
-                columns * GLYPH_W,
-                rows * GLYPH_H,
+        let app_name = app.unwrap_or("Unknown");
+        let message = format!(
+            "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
+            name, extension, app_name, app_name
+        );
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        let columns = 50;
+        let rows = (message.lines().count() as u32) + 3;
+        let id = runtime.desktop.wm.create_titled_window(
+            200,
+            160,
+            columns * GLYPH_W,
+            rows * GLYPH_H,
+            0x1a1a0d,
+            "Open File",
+        );
+        if let Some(window) = runtime
+            .desktop
+            .wm
+            .windows_mut()
+            .iter_mut()
+            .find(|window| window.id == id)
+        {
+            let _ = crate::menu_actions::render_text_into_surface(
+                &mut window.surface,
+                &message,
+                columns,
+                0xFFFFCC,
                 0x1a1a0d,
-                "Open File",
             );
-            if let Some(window) = runtime
-                .desktop
-                .wm
-                .windows_mut()
-                .iter_mut()
-                .find(|window| window.id == id)
-            {
-                let _ = crate::menu_actions::render_text_into_surface(
-                    &mut window.surface,
-                    &message,
-                    columns,
-                    0xFFFFCC,
-                    0x1a1a0d,
-                );
-            }
-            runtime.desktop.wm.raise_to_top(id);
-            runtime.frame_due = true;
         }
+        runtime.desktop.wm.raise_to_top(id);
+        runtime.frame_due = true;
     }
+}

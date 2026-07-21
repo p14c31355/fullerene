@@ -2,7 +2,9 @@
 //!
 //! Extracted from lib.rs to keep the main module focused on orchestration.
 
-use crate::{DISPLAY_BRIGHTNESS_X100, FB_DIMS, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY, RUNTIME_CONTEXT};
+use crate::{
+    DISPLAY_BRIGHTNESS_X100, FB_DIMS, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY, RUNTIME_CONTEXT,
+};
 use alloc::vec;
 use lattice::compositor::WINDOW_CORNER_RADIUS;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
