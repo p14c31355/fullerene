@@ -4,6 +4,7 @@ pub mod allocator;
 pub mod constants;
 pub mod heap;
 pub mod kernel;
+pub mod page_buf;
 pub mod memory_map;
 pub mod pat;
 pub mod pe;

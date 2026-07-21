@@ -38,7 +38,7 @@ pub static HEAP_EXTEND_RESERVE: core::sync::atomic::AtomicUsize =
 pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
 
-pub(crate) static BACK_BUFFER: Mutex<Option<Vec<u32>>> = Mutex::new(None);
+pub(crate) static BACK_BUFFER: Mutex<Option<petroleum::PageBuf<u32>>> = Mutex::new(None);
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
 

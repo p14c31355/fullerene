@@ -2,7 +2,8 @@
 //!
 //! Extracted from `lib.rs` to reduce the size of the god-module.
 
-use crate::{HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT};
+use crate::RUNTIME_CONTEXT;
+use petroleum::PageBuf;
 use lattice::compositor::{Compositor, RenderTarget};
 use lattice::cursor::Cursor;
 use lattice::scene::DirtyRect;
@@ -203,9 +204,10 @@ pub fn render_cursor_fast(framebuffer: &mut petroleum::graphics::FramebufferGuar
         return;
     };
     let cursor = runtime.desktop.cursor.clone();
-    let back = crate::BACK_BUFFER.lock();
-    let updated = back
-        .as_deref()
+    let back_guard = crate::BACK_BUFFER.lock();
+    let updated = back_guard
+        .as_ref()
+        .map(|b| b.as_slice())
         .is_some_and(|back| update_cursor_pixels(framebuffer, back, previous, &cursor));
     if !updated {
         runtime.cursor_redraw_from = Some(previous);
@@ -332,21 +334,6 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     let has_dirty = rt.desktop.has_pending_dirty_rects();
     if has_dirty {
         render_progress(b"RENDER: has dirty");
-        {
-            let back_needed = back_len.saturating_mul(4);
-            let reserve = HEAP_EXTEND_RESERVE.load(core::sync::atomic::Ordering::Relaxed);
-            if back_needed > reserve {
-                let additional = back_needed.saturating_sub(reserve).next_multiple_of(4096);
-                match RUNTIME_CONTEXT.callback_snapshot().heap_extend {
-                    Some(f) if f(additional).is_ok() => {
-                        HEAP_EXTEND_RESERVE
-                            .fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
-                    }
-                    _ => return,
-                }
-            }
-        }
-        render_progress(b"RENDER: heap ok");
 
         let was_transition = {
             let mut prev = PREV_TRANSITION.lock();
@@ -355,12 +342,15 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         {
             render_progress(b"RENDER: alloc backbuf");
             let mut back_opt = crate::BACK_BUFFER.lock();
-            let back = back_opt.get_or_insert_with(|| alloc::vec![0u32; back_len]);
-            if back.len() < back_len {
-                back.resize(back_len, 0);
+            if back_opt.as_ref().map_or(true, |b| b.len() < back_len) {
+                *back_opt = Some(
+                    unsafe { PageBuf::<u32>::alloc_zeroed_for_len(back_len) }
+                        .expect("BACK_BUFFER: OOM allocating physical pages"),
+                );
             }
+            let back = back_opt.as_mut().unwrap();
             let mut back_target = FramebufferTarget {
-                pixels: &mut back[..back_len],
+                pixels: back.as_mut_slice(),
                 width: fb_width,
                 height: fb_height,
             };

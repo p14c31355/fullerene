@@ -58,6 +58,7 @@ pub use page_table::heap::extend_global_heap;
 pub use page_table::heap::heap_stats;
 pub use page_table::heap::heap_top;
 pub use page_table::heap::init_global_heap;
+pub use page_table::page_buf::PageBuf;
 
 use crate::common::EfiSystemTable;
 use crate::common::uefi::FullereneFramebufferConfig;
