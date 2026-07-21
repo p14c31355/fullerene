@@ -26,6 +26,8 @@ pub(crate) enum InfoWindow {
     DeviceManager,
     FileManager,
     LogViewer,
+    /// Live-updating kernel log viewer (auto-refresh every ~1s).
+    KLogLive,
     SystemInfo,
     About,
 }
@@ -37,6 +39,7 @@ impl InfoWindow {
             Self::DeviceManager => ("Device Manager", 140, 100, 46, 2, 0x0d1a0d, 0xCCFFCC),
             Self::FileManager => ("File Manager", 160, 120, 50, 3, 0x1a1a0d, 0xFFFFCC),
             Self::LogViewer => ("Log Viewer", 80, 50, 88, 2, 0x101014, 0xD8D8E8),
+            Self::KLogLive => ("KLog Live", 60, 40, 100, 2, 0x0d0d14, 0xAADDFF),
             Self::SystemInfo => ("System Info", 140, 90, 52, 2, 0x101820, 0xCCEEFF),
             Self::About => ("About Fullerene", 180, 140, 32, 0, 0x1a0d1a, 0xFFCCFF),
         }
@@ -66,6 +69,7 @@ pub(crate) fn dispatch_menu_action(rt: &mut RuntimeState, action: &DesktopAction
         DeviceManager => open_info_window(rt, InfoWindow::DeviceManager),
         FileManager => open_info_window(rt, InfoWindow::FileManager),
         LogViewer => open_info_window(rt, InfoWindow::LogViewer),
+        KLogLive => open_klog_live_window(rt),
         Refresh => {
             rt.desktop.force_full_redraw();
             rt.frame_due = true;
@@ -192,6 +196,7 @@ pub(crate) fn open_info_window(rt: &mut RuntimeState, kind: InfoWindow) {
             s
         }
         InfoWindow::FileManager => String::new(),
+        InfoWindow::KLogLive => String::new(), // handled via open_klog_live_window
         InfoWindow::LogViewer => RUNTIME_CONTEXT
             .callback_snapshot()
             .kernel_log
@@ -355,4 +360,88 @@ pub(crate) fn render_text_into_surface(
     });
 
     lines_count
+}
+
+/// Open a live-updating kernel log viewer window.
+/// The window content is automatically refreshed by the event loop.
+pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
+    const COLS: u32 = 100;
+    const ROWS: u32 = 30;
+    let id = rt.desktop.wm.create_titled_window(
+        60,
+        40,
+        COLS * GLYPH_W,
+        ROWS * GLYPH_H,
+        0x0d0d14,
+        "KLog Live",
+    );
+    rt.klog_live_window = Some(id);
+    rt.klog_live_dirty = true;
+    rt.frame_due = true;
+    rt.desktop.wm.raise_to_top(id);
+}
+
+/// Render the kernel log into the live viewer window.
+pub fn render_klog_live(rt: &mut RuntimeState) {
+    let id = match rt.klog_live_window {
+        Some(id) => id,
+        None => return,
+    };
+    let window = match rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        Some(w) => w,
+        None => {
+            rt.klog_live_window = None;
+            return;
+        }
+    };
+
+    let log = RUNTIME_CONTEXT
+        .callback_snapshot()
+        .kernel_log
+        .map(|snap| snap())
+        .unwrap_or_else(|| String::from("(kernel log unavailable)\n"));
+
+    let cols = 100u32;
+    let rows = 30u32;
+    let total = (cols * rows) as usize;
+
+    // Take only the last 29 lines (leave 1 line for "--- KLog Live ---\n")
+    let truncated: String = log.lines().rev().take(29).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+
+    let text = alloc::format!("--- KLog Live (auto-refresh) ---\n{}", truncated);
+
+    let mut cells = alloc::vec![
+        LatticeCell {
+            ch: b' ',
+            fg: 0xAADDFF,
+            bg: 0x0d0d14
+        };
+        total
+    ];
+
+    for (row, line) in text.lines().enumerate() {
+        for (col, ch) in line.bytes().enumerate() {
+            if col < cols as usize && row < rows as usize {
+                let idx = row * (cols as usize) + col;
+                if idx < total {
+                    cells[idx] = LatticeCell {
+                        ch,
+                        fg: 0xAADDFF,
+                        bg: 0x0d0d14,
+                    };
+                }
+            }
+        }
+    }
+
+    terminal_surface::render(terminal_surface::RenderParams {
+        surface: &mut window.surface,
+        cells: &cells,
+        cols,
+        cursor_col: None,
+        cursor_row: None,
+        cursor_visible: false,
+    });
+    rt.desktop.invalidate_window(id);
+    rt.klog_live_dirty = false;
 }

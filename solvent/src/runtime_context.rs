@@ -39,6 +39,10 @@ pub(crate) static TSC_PER_MS: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(3_000_000);
 
 pub(crate) static BACK_BUFFER: Mutex<Option<petroleum::PageBuf<u32>>> = Mutex::new(None);
+
+/// When enabled, the kernel log ring buffer is periodically written to `/mnt/klog.txt`.
+pub static KLOG_SAVE_ENABLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
 
@@ -122,6 +126,8 @@ pub struct RuntimeState {
     pub explorer_dirty: bool,
     pub settings_window: Option<WindowId>,
     pub settings_dirty: bool,
+    pub klog_live_window: Option<WindowId>,
+    pub klog_live_dirty: bool,
     /// Earliest cursor position still drawn on the framebuffer while a redraw
     /// is pending. The full and lightweight render paths both consume it.
     pub(crate) cursor_redraw_from: Option<(i32, i32)>,
@@ -188,6 +194,8 @@ pub fn init() {
         explorer_dirty: false,
         settings_window: None,
         settings_dirty: false,
+        klog_live_window: None,
+        klog_live_dirty: false,
         cursor_redraw_from: None,
     });
 }

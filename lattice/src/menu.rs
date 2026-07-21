@@ -153,6 +153,10 @@ pub fn system_menu_items() -> alloc::vec::Vec<MenuItem> {
             action: alloc::string::String::from("log_viewer")
         },
         MenuItem {
+            label: alloc::string::String::from("KLog Live"),
+            action: alloc::string::String::from("klog_live")
+        },
+        MenuItem {
             label: alloc::string::String::from("Shutdown"),
             action: alloc::string::String::from("shutdown")
         },
@@ -193,6 +197,10 @@ pub fn desktop_context_menu() -> alloc::vec::Vec<MenuItem> {
         MenuItem {
             label: alloc::string::String::from("Log Viewer"),
             action: alloc::string::String::from("log_viewer")
+        },
+        MenuItem {
+            label: alloc::string::String::from("KLog Live"),
+            action: alloc::string::String::from("klog_live")
         },
         MenuItem {
             label: alloc::string::String::from("Toggle Tiling"),

@@ -46,9 +46,9 @@ pub use event_loop::{
 pub use input_loop::{MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state};
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
-    DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, MOUSE_SENSITIVITY, RUNTIME_CONTEXT,
-    RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms, init, is_initialized,
-    set_tsc_per_ms,
+    DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY,
+    RUNTIME_CONTEXT, RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms, init,
+    is_initialized, set_tsc_per_ms,
 };
 #[cfg(not(nitrogen_no_iwlwifi))]
 pub use services::register_wifi_service;

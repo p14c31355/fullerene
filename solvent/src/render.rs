@@ -274,6 +274,9 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     if rt.settings_dirty {
         crate::settings_bridge::render_settings(rt);
     }
+    if rt.klog_live_dirty {
+        crate::menu_actions::render_klog_live(rt);
+    }
 
     let debug_msgs = nitrogen::debug::drain();
     let debug_changed = if !debug_msgs.is_empty() {
