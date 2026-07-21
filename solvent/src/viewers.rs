@@ -641,6 +641,19 @@ pub fn open_zip(rt: &mut RuntimeState, path: &str, name: &str) {
 use shiguredo_mp4::TrackKind;
 
 #[cfg(feature = "shiguredo_mp4")]
+fn codec_name(entry: &shiguredo_mp4::boxes::SampleEntry) -> &'static str {
+    use shiguredo_mp4::boxes::SampleEntry;
+    match entry {
+        SampleEntry::Avc1(_) => "H.264",
+        SampleEntry::Hev1(_) | SampleEntry::Hvc1(_) => "H.265",
+        SampleEntry::Vp08(_) => "VP8",
+        SampleEntry::Vp09(_) => "VP9",
+        SampleEntry::Av01(_) => "AV1",
+        _ => "Unknown",
+    }
+}
+
+#[cfg(feature = "shiguredo_mp4")]
 pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
@@ -713,7 +726,13 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
     };
 
     // Sample entry metadata carries the encoded dimensions and codec.
+    // Limit iterations to avoid hanging on files with unrecognized codecs.
+    let mut remaining = 200u32;
     loop {
+        if remaining == 0 {
+            break;
+        }
+        remaining -= 1;
         match demuxer.next_sample() {
             Ok(Some(sample)) if sample.track.track_id == video_track_id => {
                 if let Some(entry) = sample.sample_entry {
@@ -721,8 +740,8 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
                         video_width = w;
                         video_height = h;
                     }
-                    if let shiguredo_mp4::boxes::SampleEntry::Avc1(_) = entry {
-                        video_codec = "H.264";
+                    if video_codec == "Unknown" {
+                        video_codec = codec_name(entry);
                     }
                 }
                 if video_width > 0 || video_height > 0 || video_codec != "Unknown" {

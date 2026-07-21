@@ -1,8 +1,20 @@
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::contexts::vfs;
 pub use genome::fs::{DirEntry, FsError, PackageEntry, parse_manifest};
+
+fn basename(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(path)
+}
+
+fn is_dir(path: &str) -> bool {
+    vfs::readdir(path).is_ok()
+}
 
 pub fn init() {
     vfs::init_vfs();
@@ -35,10 +47,20 @@ impl From<genome::vfs::FileDescriptor> for FileDesc {
 pub fn create_file(path: &str, data: &[u8]) -> Result<(), FsError> {
     let fd_info = vfs::create(path)?;
     if !data.is_empty() {
-        vfs::write(fd_info.fd, data).map_err(|e| {
-            let _ = vfs::close(fd_info.fd);
-            e
-        })?;
+        let mut remaining = data;
+        while !remaining.is_empty() {
+            match vfs::write(fd_info.fd, remaining) {
+                Ok(0) => {
+                    let _ = vfs::close(fd_info.fd);
+                    return Err(FsError::InvalidInput);
+                }
+                Ok(n) => remaining = &remaining[n..],
+                Err(e) => {
+                    let _ = vfs::close(fd_info.fd);
+                    return Err(e);
+                }
+            }
+        }
     }
     let _ = vfs::close(fd_info.fd);
     Ok(())
@@ -110,8 +132,14 @@ pub fn change_directory(path: &str) -> Result<(), FsError> {
 }
 
 pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
+    let dst = if is_dir(dst) {
+        let name = basename(src);
+        alloc::format!("{}/{}", dst.trim_end_matches('/'), name)
+    } else {
+        dst.to_string()
+    };
     let data = read_entire_file(src)?;
-    write_entire_file(dst, &data)
+    write_entire_file(&dst, &data)
 }
 
 pub fn move_file(src: &str, dst: &str) -> Result<(), FsError> {
@@ -155,6 +183,9 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
 }
 
 pub fn write_entire_file(path: &str, data: &[u8]) -> Result<(), FsError> {
+    if is_dir(path) {
+        return Err(FsError::IsADirectory);
+    }
     if exists(path) {
         let _ = remove(path);
     }

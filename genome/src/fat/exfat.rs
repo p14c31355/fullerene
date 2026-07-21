@@ -883,4 +883,153 @@ mod tests {
             }
         }
     }
+
+    // ── I/O benchmark helpers ─────────────────────────────────
+
+    /// Kernel's vfs_read pattern: open → read(4 KiB) → grow Vec → … → close.
+    fn read_vfs(
+        fs: &mut dyn crate::vfs::FileSystem,
+        path: &str,
+    ) -> Result<Vec<u8>, crate::FsError> {
+        let fd = fs.open(path, 0).ok_or(crate::FsError::FileNotFound)?;
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 4096];
+        loop {
+            match fs.read(fd.fd, &mut tmp) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&tmp[..n]),
+                Err(e) => {
+                    let _ = fs.close(fd.fd);
+                    return Err(e);
+                }
+            }
+        }
+        let _ = fs.close(fd.fd);
+        Ok(buf)
+    }
+
+    /// Open-per-chunk pattern: open → seek → read(4 KiB) → close × N.
+    fn read_per_chunk(
+        fs: &mut dyn crate::vfs::FileSystem,
+        path: &str,
+        total: usize,
+    ) -> Result<Vec<u8>, crate::FsError> {
+        let mut buf = Vec::with_capacity(total);
+        let mut off = 0u64;
+        while off < total as u64 {
+            let fd = fs.open(path, 0).ok_or(crate::FsError::FileNotFound)?;
+            let seek_result = fs.seek(fd.fd, off);
+            if let Err(e) = seek_result {
+                let _ = fs.close(fd.fd);
+                return Err(e);
+            }
+            let mut tmp = [0u8; 4096];
+            let read_result = fs.read(fd.fd, &mut tmp);
+            let _ = fs.close(fd.fd);
+            let n = read_result?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&tmp[..n]);
+            off += n as u64;
+        }
+        Ok(buf)
+    }
+
+    #[test]
+    #[ignore = "manual I/O throughput benchmark (use --include-ignored)"]
+    fn bench_file_read_throughput() {
+        extern crate std;
+
+        const IMG: usize = 64 * 1024 * 1024; // 64 MiB image
+        let image = Arc::new(spin::Mutex::new(vec![0u8; IMG]));
+        let block_device = MemoryDevice::new(Arc::clone(&image));
+
+        // Format
+        let shared: Arc<Mutex<Box<dyn BlockDevice>>> =
+            Arc::new(Mutex::new(Box::new(block_device.clone())));
+        let adapter = ExFatDevice {
+            inner: shared,
+            cache: Arc::new(Mutex::new(MetadataCache::new())),
+            position: 0,
+            size: IMG as u64,
+        };
+        let opts = hadris_fat::exfat::ExFatFormatOptions::new()
+            .with_label("BENCH")
+            .with_sectors_per_cluster(256);
+        hadris_fat::exfat::format_exfat(adapter, IMG as u64, &opts).expect("format should succeed");
+
+        let mut fs = match crate::fat::mount_device(Box::new(block_device.clone())) {
+            Ok(fs) => fs,
+            Err((e, _)) => {
+                std::eprintln!("BENCH mount failed: {:?}", e);
+                return;
+            }
+        };
+
+        let sizes: &[usize] = &[100, 1024, 5 * 1024, 8 * 1024];
+
+        for &kb in sizes {
+            let nbytes = kb * 1024;
+            let path = alloc::format!("/f-{}.dat", kb);
+            let data: Vec<u8> = (0..nbytes).map(|i| (i % 251) as u8).collect();
+
+            // Write
+            let _ = fs.create(&path, crate::vfs::InodeType::File);
+            let fd = fs.open(&path, 0).expect("open");
+            let mut written = 0usize;
+            for chunk in data.chunks(65536) {
+                let n = fs.write(fd.fd, chunk).unwrap_or(0);
+                written += n;
+            }
+            fs.close(fd.fd).unwrap();
+            if written < nbytes {
+                std::eprintln!(
+                    "BENCH {:>4}K: write incomplete ({} / {} bytes), skipping",
+                    kb,
+                    written,
+                    nbytes,
+                );
+                continue;
+            }
+
+            // VFS-style read
+            block_device.reads.store(0, Ordering::Relaxed);
+            block_device.read_calls.store(0, Ordering::Relaxed);
+            let t0 = std::time::Instant::now();
+            let r1 = read_vfs(&mut *fs, &path).expect("vfs");
+            let d1 = t0.elapsed();
+            let s1 = block_device.reads.load(Ordering::Relaxed);
+            let c1 = block_device.read_calls.load(Ordering::Relaxed);
+
+            // Per-chunk read
+            block_device.reads.store(0, Ordering::Relaxed);
+            block_device.read_calls.store(0, Ordering::Relaxed);
+            let t0 = std::time::Instant::now();
+            let r2 = read_per_chunk(&mut *fs, &path, r1.len()).expect("chunk");
+            let d2 = t0.elapsed();
+            let s2 = block_device.reads.load(Ordering::Relaxed);
+            let c2 = block_device.read_calls.load(Ordering::Relaxed);
+
+            assert_eq!(r1.len(), r2.len(), "VFS and per-chunk read sizes differ");
+
+            let ratio = d2.as_secs_f64() / d1.as_secs_f64().max(1e-9);
+            std::eprintln!(
+                "BENCH {:>4}K | VFS: {:>8?} (sec={:>5}, call={:>4}) | \
+                 reopen: {:>8?} (sec={:>5}, call={:>4}) | reopen/VFS = {:.1}x",
+                kb,
+                d1,
+                s1,
+                c1,
+                d2,
+                s2,
+                c2,
+                ratio,
+            );
+
+            // Cleanup
+            let fd = fs.open(&path, 0).unwrap().fd;
+            fs.close(fd).unwrap();
+        }
+    }
 }

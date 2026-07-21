@@ -25,6 +25,15 @@ pub use genome::vfs::{
     FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, MemFileSystem, VNode, Vfs,
 };
 
+/// Emit a debug-status message to the lock-free ring buffer (visible in the
+/// taskbar).  Safe to call while holding any VFS lock because the ring buffer
+/// uses only atomic operations.
+macro_rules! trace {
+    ($fmt:literal $(, $arg:expr)* $(,)?) => {
+        nitrogen::debug_status!("VFS", $fmt $(, $arg)*)
+    };
+}
+
 // ── VfsContext ──────────────────────────────────────────────────────
 
 /// Virtual File System context bundling mount table, cwd, and a handle
@@ -143,12 +152,14 @@ impl VfsContext {
     }
 
     pub fn change_directory(&self, path: &str) -> Result<(), FsError> {
+        trace!("cd {}", path);
         self.inner.lock().change_directory(path)
     }
 
     // ── Mount management ────────────────────────────────────────
 
     pub fn mount(&self, mount_point: &str, fs: Box<dyn FileSystem>) -> Result<(), FsError> {
+        trace!("mount {}", mount_point);
         let mut vfs = self.inner.lock();
         if vfs.mounted_fs_index(mount_point).is_some() {
             return Err(FsError::FileExists);
@@ -225,6 +236,7 @@ impl VfsContext {
     // multi-context callers that may interleave operations.
 
     pub fn open(&self, path: &str, flags: u32) -> Option<FileDescriptor> {
+        trace!("open {}", path);
         // Acquire inner first, do all FS work, drop inner…
         let (mount_index, fd) = {
             let mut vfs = self.inner.lock();
@@ -237,6 +249,7 @@ impl VfsContext {
     }
 
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+        trace!("read fd={}", fd);
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
         let handle = self
@@ -248,6 +261,7 @@ impl VfsContext {
     }
 
     pub fn write(&self, fd: u32, data: &[u8]) -> Result<usize, FsError> {
+        trace!("write fd={}", fd);
         let mut vfs = self.inner.lock();
         let handle = self
             .handle_table
@@ -278,6 +292,7 @@ impl VfsContext {
     }
 
     pub fn create(&self, path: &str) -> Result<FileDescriptor, FsError> {
+        trace!("create {}", path);
         // Acquire inner first, do all FS work, drop inner…
         let (mount_index, fd) = {
             let mut vfs = self.inner.lock();
@@ -300,6 +315,7 @@ impl VfsContext {
     }
 
     pub fn mkdir(&self, path: &str) -> Result<(), FsError> {
+        trace!("mkdir {}", path);
         let mut vfs = self.inner.lock();
         let resolved = vfs.resolve_path(path);
         let (fs, remaining) = vfs.find_fs(&resolved).ok_or(FsError::FileNotFound)?;
@@ -314,10 +330,12 @@ impl VfsContext {
     }
 
     pub fn readdir(&self, path: &str) -> Result<Vec<VNode>, FsError> {
+        trace!("readdir {}", path);
         self.inner.lock().readdir(path)
     }
 
     pub fn exists(&self, path: &str) -> bool {
+        trace!("exists {}", path);
         self.inner.lock().exists(path)
     }
 
@@ -515,6 +533,7 @@ pub fn mount(device: &str, mount_point: &str, fs_type: &str) -> Result<(), FsErr
 
             let bdev =
                 crate::devfs::lease_block_device(device_name).ok_or(FsError::PermissionDenied)?;
+            trace!("mount_device({})", device_name);
             match genome::fat::mount_device(bdev) {
                 Ok(fs) => {
                     if let Err(e) = vfs.mount(&mount_point, fs) {
@@ -604,7 +623,82 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
+    // Resolve paths to get canonical forms (handles ".", "..", trailing slashes).
+    let (source, destination) = with_vfs(|vfs| {
+        let inner = vfs.inner.lock();
+        (inner.resolve_path(source), inner.resolve_path(destination))
+    })
+    .ok_or(FsError::PermissionDenied)?;
+
+    // Prevent copying into self
+    if source == destination
+        || is_dir
+            && destination.starts_with(&source)
+            && source.len() > 1
+            && destination.len() > source.len()
+            && destination.as_bytes()[source.len()] == b'/'
+    {
+        return Err(FsError::InvalidPath);
+    }
+
+    // Validate file types match caller's intent.
+    if !is_dir && readdir(&source).is_ok() {
+        return Err(FsError::IsADirectory);
+    }
+    if !is_dir && readdir(&destination).is_ok() {
+        return Err(FsError::IsADirectory);
+    }
+
+    if is_dir {
+        mkdir(&destination)?;
+        for entry in readdir(&source)? {
+            copy_path(
+                &join_path(&source, &entry.name),
+                &join_path(&destination, &entry.name),
+                entry.is_dir,
+            )?;
+        }
+        return Ok(());
+    }
+
+    // Each free function acquires/releases the kernel lock individually,
+    // so the system can render and process events between I/O operations.
+    let source_fd = open(&source, 0)?.fd;
+    if exists(&destination) {
+        if let Err(error) = unlink(&destination) {
+            let _ = close(source_fd);
+            return Err(error);
+        }
+    }
+    let destination_fd = match create(&destination) {
+        Ok(descriptor) => descriptor.fd,
+        Err(error) => {
+            let _ = close(source_fd);
+            return Err(error);
+        }
+    };
+    let result = (|| {
+        let mut buffer = [0; 4096];
+        loop {
+            match read(source_fd, &mut buffer) {
+                Ok(0) => return Ok(()),
+                Ok(n) => {
+                    let mut data = &buffer[..n];
+                    while !data.is_empty() {
+                        let written = write(destination_fd, data)?;
+                        if written == 0 {
+                            return Err(FsError::InvalidInput);
+                        }
+                        data = &data[written..];
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    })();
+    let source_close = close(source_fd);
+    let destination_close = close(destination_fd);
+    result.and(source_close).and(destination_close)
 }
 
 pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {

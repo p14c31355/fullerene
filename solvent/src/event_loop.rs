@@ -83,6 +83,32 @@ fn service_explorer_navigation() {
     }
 }
 
+fn service_explorer_copy() {
+    let pending = RUNTIME_CONTEXT
+        .runtime()
+        .as_mut()
+        .and_then(|runtime| runtime.explorer.as_mut()?.take_pending_copy());
+    let Some(pending) = pending else { return };
+
+    // I/O must run without the runtime lock (same as service_explorer_navigation).
+    let callback = RUNTIME_CONTEXT.callback_snapshot().vfs_copy;
+    let result = callback
+        .ok_or(genome::FsError::NotSupported)
+        .and_then(|copy| copy(&pending.source, &pending.destination, pending.is_dir));
+    match &result {
+        Ok(()) => nitrogen::debug_status!("Explorer", "pasted {}", pending.destination),
+        Err(error) => nitrogen::debug_status!("Explorer", "paste failed: {}", error),
+    }
+
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
+        && let Some(explorer) = runtime.explorer.as_mut()
+    {
+        explorer.finish_paste(&pending.destination, result);
+        runtime.explorer_dirty = true;
+        runtime.frame_due = true;
+    }
+}
+
 pub fn tick_core(now: u64) {
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
@@ -114,6 +140,7 @@ pub fn tick_core(now: u64) {
 
     process_events();
     service_explorer_navigation();
+    service_explorer_copy();
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {
         let pending = runtime.shell_launch_pending;
         runtime.shell_launch_pending = false;
