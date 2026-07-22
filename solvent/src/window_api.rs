@@ -158,7 +158,7 @@ pub(crate) fn render_explorer(runtime: &mut RuntimeState) {
     runtime.explorer_dirty = false;
 }
 
-const MAX_READ_SIZE: u64 = 50 * 1024 * 1024;
+const MAX_READ_SIZE: u64 = 16 * 1024 * 1024;
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "md", "log", "toml", "rs", "c", "h", "py", "js", "json", "xml", "yml", "yaml", "ini",
     "cfg", "conf", "sh", "bat", "env", "gitignore", "lock",
@@ -261,12 +261,20 @@ pub fn launch_file(path: &str) {
         return;
     }
 
+    #[cfg(not(feature = "zune-jpeg"))]
+    if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
+        show_open_error("JPEG support not compiled in (zune-jpeg feature disabled)");
+        return;
+    }
+
     let mut runtime = RUNTIME_CONTEXT.runtime();
     let Some(runtime) = runtime.as_mut() else { return; };
     match ext_lower.as_str() {
         "bmp" => crate::viewers::open_bmp_data(runtime, &file_data, name),
         #[cfg(feature = "minipng")]
         "png" => crate::viewers::open_png_data(runtime, &file_data, name),
+        #[cfg(not(feature = "minipng"))]
+        "png" => crate::viewers::show_error(runtime, "PNG Error", "PNG support not compiled in (minipng feature disabled)"),
         "wav" => crate::viewers::open_wav_data(runtime, &file_data, name),
         "mp3" => crate::viewers::open_mp3_data(runtime, &file_data, name),
         #[cfg(feature = "shiguredo_mp4")]

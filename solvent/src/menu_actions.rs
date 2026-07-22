@@ -385,6 +385,8 @@ pub fn render_klog_live(rt: &mut RuntimeState) {
         Some(w) => w,
         None => { rt.klog_live_window = None; return; }
     };
+    // Clear the entire surface to prevent stale rows
+    window.surface.clear(0x0d0d14);
     let log = RUNTIME_CONTEXT.callback_snapshot().kernel_log
         .map(|snap| snap())
         .unwrap_or_else(|| String::from("(kernel log unavailable)\n"));

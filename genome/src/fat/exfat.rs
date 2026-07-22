@@ -569,7 +569,13 @@ impl FileSystem for ExFatFileSystem {
             if self.handles[index].offset != 0 {
                 return Err(FsError::InvalidSeek);
             }
-            let writer = self.open_writer_from_entry(&self.handles[index].entry)?;
+            // Refresh the entry to pick up any concurrent writes
+            let refreshed_entry = self.handles[index].reader.as_ref()
+                .ok_or(FsError::InvalidFileDescriptor)?
+                .entry()
+                .clone();
+            self.handles[index].entry = refreshed_entry.clone();
+            let writer = self.open_writer_from_entry(&refreshed_entry)?;
             self.handles[index].writer = Some(writer);
         }
         let written = self.handles[index]
@@ -936,6 +942,57 @@ mod tests {
             off += n as u64;
         }
         Ok(buf)
+    }
+
+    #[test]
+    fn concurrent_write_regression() {
+        let image = Arc::new(Mutex::new(vec![0; IMAGE_SIZE]));
+        let block_device = MemoryDevice::new(Arc::clone(&image));
+        let shared: Arc<Mutex<Box<dyn BlockDevice>>> =
+            Arc::new(Mutex::new(Box::new(block_device.clone())));
+        let adapter = ExFatDevice {
+            inner: shared,
+            cache: Arc::new(Mutex::new(MetadataCache::new())),
+            position: 0,
+            size: IMAGE_SIZE as u64,
+        };
+        let options = ExFatFormatOptions::new()
+            .with_label("CONCUR")
+            .with_sectors_per_cluster(256);
+        drop(format_exfat(adapter, IMAGE_SIZE as u64, &options).unwrap());
+
+        let mut fs = match crate::fat::mount_device(Box::new(block_device.clone())) {
+            Ok(filesystem) => filesystem,
+            Err((error, _)) => panic!("mount failed: {error}"),
+        };
+
+        // Create a file and write initial data
+        assert_eq!(fs.create("/test.dat", InodeType::File), Some(0));
+        let fd_a = fs.open("/test.dat", 0).unwrap().fd;
+        let data_a = b"first write from A";
+        assert_eq!(fs.write(fd_a, data_a).unwrap(), data_a.len());
+        fs.close(fd_a).unwrap();
+
+        // Open two handles
+        let fd_a = fs.open("/test.dat", 0).unwrap().fd;
+        let fd_b = fs.open("/test.dat", 0).unwrap().fd;
+
+        // A writes and closes
+        let data_a2 = b"second write from A";
+        assert_eq!(fs.write(fd_a, data_a2).unwrap(), data_a2.len());
+        fs.close(fd_a).unwrap();
+
+        // B writes and closes (should see A's updated length/clusters)
+        let data_b = b"write from B after A";
+        assert_eq!(fs.write(fd_b, data_b).unwrap(), data_b.len());
+        fs.close(fd_b).unwrap();
+
+        // Verify final content matches B's write
+        let fd = fs.open("/test.dat", 0).unwrap().fd;
+        let mut buf = vec![0; data_b.len()];
+        assert_eq!(fs.read(fd, &mut buf).unwrap(), data_b.len());
+        assert_eq!(&buf[..], data_b);
+        fs.close(fd).unwrap();
     }
 
     #[test]
