@@ -570,11 +570,7 @@ impl FileSystem for ExFatFileSystem {
                 return Err(FsError::InvalidSeek);
             }
             // Refresh the entry to pick up any concurrent writes
-            let refreshed_entry = self.handles[index].reader.as_ref()
-                .ok_or(FsError::InvalidFileDescriptor)?
-                .entry()
-                .clone();
-            self.handles[index].entry = refreshed_entry.clone();
+            let refreshed_entry = self.handles[index].entry.clone();
             let writer = self.open_writer_from_entry(&refreshed_entry)?;
             self.handles[index].writer = Some(writer);
         }
