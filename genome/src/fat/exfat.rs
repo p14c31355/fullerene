@@ -553,7 +553,10 @@ impl FileSystem for ExFatFileSystem {
             return Err(FsError::PermissionDenied);
         }
         let handle = &mut self.handles[index];
-        let reader = handle.reader.as_mut().ok_or(FsError::InvalidFileDescriptor)?;
+        let reader = handle
+            .reader
+            .as_mut()
+            .ok_or(FsError::InvalidFileDescriptor)?;
         let read = reader.read(buf).map_err(Self::map_io_error)?;
         handle.offset += read as u64;
         Ok(read)
@@ -606,7 +609,9 @@ impl FileSystem for ExFatFileSystem {
             return Err(FsError::InvalidSeek);
         }
         if let Some(reader) = handle.reader.as_mut() {
-            reader.seek(SeekFrom::Start(new_pos)).map_err(Self::map_io_error)?;
+            reader
+                .seek(SeekFrom::Start(new_pos))
+                .map_err(Self::map_io_error)?;
         }
         handle.offset = new_pos;
         Ok(())

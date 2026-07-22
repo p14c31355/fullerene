@@ -185,7 +185,9 @@ pub struct SimpleFramebufferConfig {
 static SIMPLE_FRAMEBUFFER_CONFIG: Once<SimpleFramebufferConfig> = Once::new();
 
 pub fn get_simple_framebuffer() -> Option<SimpleFramebuffer> {
-    SIMPLE_FRAMEBUFFER_CONFIG.get().map(|cfg| SimpleFramebuffer::new(*cfg))
+    SIMPLE_FRAMEBUFFER_CONFIG
+        .get()
+        .map(|cfg| SimpleFramebuffer::new(*cfg))
 }
 
 pub fn init_simple_framebuffer_config(config: SimpleFramebufferConfig) {

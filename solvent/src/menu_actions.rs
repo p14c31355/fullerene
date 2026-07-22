@@ -380,18 +380,28 @@ pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
 }
 
 pub fn render_klog_live(rt: &mut RuntimeState) {
-    let Some(id) = rt.klog_live_window else { return };
+    let Some(id) = rt.klog_live_window else {
+        return;
+    };
     let window = match rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         Some(w) => w,
-        None => { rt.klog_live_window = None; return; }
+        None => {
+            rt.klog_live_window = None;
+            return;
+        }
     };
     // Clear the entire surface to prevent stale rows
     window.surface.pixels_mut().fill(0x0d0d14);
-    let log = RUNTIME_CONTEXT.callback_snapshot().kernel_log
+    let log = RUNTIME_CONTEXT
+        .callback_snapshot()
+        .kernel_log
         .map(|snap| snap())
         .unwrap_or_else(|| String::from("(kernel log unavailable)\n"));
     let lines: Vec<&str> = log.lines().rev().take(29).collect();
-    let text = alloc::format!("--- KLog Live (auto-refresh) ---\n{}", lines.into_iter().rev().collect::<Vec<_>>().join("\n"));
+    let text = alloc::format!(
+        "--- KLog Live (auto-refresh) ---\n{}",
+        lines.into_iter().rev().collect::<Vec<_>>().join("\n")
+    );
     let _ = render_text_into_surface(&mut window.surface, &text, 100, 0xAADDFF, 0x0d0d14);
     rt.desktop.invalidate_window(id);
     rt.klog_live_dirty = false;

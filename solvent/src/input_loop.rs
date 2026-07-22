@@ -186,7 +186,9 @@ fn handle_password_dialog_key(runtime: &mut RuntimeState, scancode: u8, pressed:
                 return;
             }
             let mut character = scancode_to_ascii(scancode);
-            if character == 0 { return; }
+            if character == 0 {
+                return;
+            }
             if runtime.desktop.shift_held {
                 character = crate::explorer::shifted_ascii(character);
             }

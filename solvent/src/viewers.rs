@@ -202,10 +202,14 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
 
     // Step 1: Parse headers only (no pixel buffer allocation yet).
-    decoder.decode_headers().map_err(|e| format!("JPEG header error: {:?}", e))?;
+    decoder
+        .decode_headers()
+        .map_err(|e| format!("JPEG header error: {:?}", e))?;
 
     // Step 2: Get image dimensions and calculate pixel buffer size.
-    let info = decoder.info().ok_or_else(|| String::from("Missing JPEG image information"))?;
+    let info = decoder
+        .info()
+        .ok_or_else(|| String::from("Missing JPEG image information"))?;
     let width = u32::from(info.width);
     let height = u32::from(info.height);
     if width > MAX_IMG_W || height > MAX_IMG_H {
@@ -233,7 +237,8 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
             _ => {
                 return Err(format!(
                     "Cannot allocate {} bytes for JPEG decode (heap free: {})",
-                    total_needed, heap_free));
+                    total_needed, heap_free
+                ));
             }
         }
     }
@@ -250,8 +255,15 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
 
     // Step 5: Decode pixel data (heap should now have space).
     log_status!("JPEG calling decode()");
-    let pixels = decoder.decode().map_err(|e| format!("JPEG decode error: {:?}", e))?;
-    log_status!("JPEG decode done ({}x{} pixels={}B)", info.width, info.height, pixels.len());
+    let pixels = decoder
+        .decode()
+        .map_err(|e| format!("JPEG decode error: {:?}", e))?;
+    log_status!(
+        "JPEG decode done ({}x{} pixels={}B)",
+        info.width,
+        info.height,
+        pixels.len()
+    );
     Ok(DecodedJpeg {
         width: info.width,
         height: info.height,
@@ -887,15 +899,20 @@ mod tests {
         let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(jpeg), options);
 
         // decode_headers should parse the header without allocating pixel data.
-        decoder.decode_headers().expect("JPEG header decode should succeed");
+        decoder
+            .decode_headers()
+            .expect("JPEG header decode should succeed");
 
         // info() should be available after decode_headers().
-        let info = decoder.info().expect("JPEG info should be available after header decode");
+        let info = decoder
+            .info()
+            .expect("JPEG info should be available after header decode");
         assert_eq!(info.width, 1, "JPEG width should be 1");
         assert_eq!(info.height, 1, "JPEG height should be 1");
 
         // output_buffer_size() should return the expected pixel buffer size.
-        let buf_size = decoder.output_buffer_size()
+        let buf_size = decoder
+            .output_buffer_size()
             .expect("output_buffer_size should return some value");
         assert_eq!(buf_size, 3, "1x1 RGB pixel buffer should be 3 bytes");
 

@@ -317,11 +317,14 @@ impl ExplorerContext {
     }
 
     fn entries_from_static(entries: &[(&str, &str)]) -> Vec<SidebarItem> {
-        entries.iter().map(|&(label, path)| SidebarItem {
-            label: String::from(label),
-            path: String::from(path),
-            is_usb: false,
-        }).collect()
+        entries
+            .iter()
+            .map(|&(label, path)| SidebarItem {
+                label: String::from(label),
+                path: String::from(path),
+                is_usb: false,
+            })
+            .collect()
     }
 
     fn default_sidebar() -> Vec<SidebarItem> {
@@ -401,7 +404,11 @@ impl ExplorerContext {
     pub fn refresh_sidebar(&mut self) {
         let mut items = Self::entries_from_static(Self::default_sidebar_entries());
         for (name, mount_path) in crate::get_mounted_drives() {
-            items.push(SidebarItem { label: name, path: mount_path, is_usb: true });
+            items.push(SidebarItem {
+                label: name,
+                path: mount_path,
+                is_usb: true,
+            });
         }
         self.sidebar_items = items;
     }
@@ -733,10 +740,26 @@ fn delete_entry(path: &str, is_dir: bool) -> Result<(), genome::FsError> {
 pub(crate) fn shifted_ascii(byte: u8) -> u8 {
     match byte {
         b'a'..=b'z' => byte.to_ascii_uppercase(),
-        b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$', b'5' => b'%',
-        b'6' => b'^', b'7' => b'&', b'8' => b'*', b'9' => b'(', b'0' => b')',
-        b'-' => b'_', b'=' => b'+', b'[' => b'{', b']' => b'}', b';' => b':',
-        b'\'' => b'"', b',' => b'<', b'.' => b'>', b'/' => b'?', b'`' => b'~',
+        b'1' => b'!',
+        b'2' => b'@',
+        b'3' => b'#',
+        b'4' => b'$',
+        b'5' => b'%',
+        b'6' => b'^',
+        b'7' => b'&',
+        b'8' => b'*',
+        b'9' => b'(',
+        b'0' => b')',
+        b'-' => b'_',
+        b'=' => b'+',
+        b'[' => b'{',
+        b']' => b'}',
+        b';' => b':',
+        b'\'' => b'"',
+        b',' => b'<',
+        b'.' => b'>',
+        b'/' => b'?',
+        b'`' => b'~',
         other => other,
     }
 }
@@ -1118,7 +1141,9 @@ fn draw_context_menu(ctx: &ExplorerContext, surface: &mut Surface) {
 fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
     let (sw, sh) = (surface.width() as usize, surface.height() as usize);
     let (dx, dy) = (x as usize, y as usize);
-    if dx + GLYPH_W as usize > sw || dy + GLYPH_H as usize > sh { return; }
+    if dx + GLYPH_W as usize > sw || dy + GLYPH_H as usize > sh {
+        return;
+    }
     let pixels = surface.pixels_mut();
     for gy in 0..GLYPH_H as usize {
         pixels[dy + gy..][..sw][dx..dx + GLYPH_W as usize].fill(bg);
@@ -1128,13 +1153,19 @@ fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
         let row = (dy + gy) * sw;
         let byte = gl.row_byte(gy as u32);
         for gx in 0..GLYPH_W as usize {
-            if byte & (0x80 >> gx) != 0 { pixels[row + dx + gx] = fg; }
+            if byte & (0x80 >> gx) != 0 {
+                pixels[row + dx + gx] = fg;
+            }
         }
     }
 }
 
 fn draw_text(surface: &mut Surface, text: &str, x: u32, y: u32, fg: u32, bg: u32) {
-    for (ci, ch) in text.bytes().enumerate().filter(|(_, c)| (32..=126).contains(c)) {
+    for (ci, ch) in text
+        .bytes()
+        .enumerate()
+        .filter(|(_, c)| (32..=126).contains(c))
+    {
         draw_glyph(surface, ch, x + ci as u32 * GLYPH_W, y, fg, bg);
     }
 }
