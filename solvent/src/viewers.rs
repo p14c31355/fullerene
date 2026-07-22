@@ -32,14 +32,6 @@ macro_rules! log_status {
     }};
 }
 
-fn read_file(path: &str) -> Result<Vec<u8>, genome::FsError> {
-    let read_fn = RUNTIME_CONTEXT
-        .callback_snapshot()
-        .vfs_read
-        .ok_or(genome::FsError::NotSupported)?;
-    read_fn(path)
-}
-
 fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg: u32, fg: u32) {
     let rows = (msg.lines().count() as u32).min(40) + 3;
     let id =
@@ -58,18 +50,6 @@ pub(crate) fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
 }
 
 // ── BMP viewer (tinybmp) ─────────────────────────────────────
-
-#[cfg(feature = "tinybmp")]
-pub fn open_bmp(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "BMP Error", &format!("Cannot read: {}", e));
-            return;
-        }
-    };
-    open_bmp_data(rt, &data, name);
-}
 
 #[cfg(feature = "tinybmp")]
 pub fn open_bmp_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
@@ -120,11 +100,6 @@ pub fn open_bmp_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
 }
 
 #[cfg(not(feature = "tinybmp"))]
-pub fn open_bmp(rt: &mut RuntimeState, _path: &str, name: &str) {
-    open_bmp_data(rt, &[], name);
-}
-
-#[cfg(not(feature = "tinybmp"))]
 pub fn open_bmp_data(rt: &mut RuntimeState, _data: &[u8], name: &str) {
     show_error(
         rt,
@@ -137,18 +112,6 @@ pub fn open_bmp_data(rt: &mut RuntimeState, _data: &[u8], name: &str) {
 }
 
 // ── PNG viewer ───────────────────────────────────────────────
-
-#[cfg(feature = "minipng")]
-pub fn open_png(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "PNG Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_png_data(rt, &data, name);
-}
 
 #[cfg(feature = "minipng")]
 pub fn open_png_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
@@ -331,38 +294,7 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
     rt.frame_due = true;
 }
 
-#[cfg(feature = "zune-jpeg")]
-pub fn open_jpeg(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(data) => data,
-        Err(error) => {
-            show_error(rt, "JPEG Error", &format!("Cannot read:\n{}", error));
-            return;
-        }
-    };
-    open_jpeg_data(rt, &data, name);
-}
-
-#[cfg(feature = "zune-jpeg")]
-pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
-    match decode_jpeg(data) {
-        Ok(decoded) => render_jpeg_window(rt, decoded, name),
-        Err(e) => show_error(rt, "JPEG Error", &e),
-    }
-}
-
 // ── WAV info viewer ─────────────────────────────────────────
-
-pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "WAV Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_wav_data(rt, &data, name);
-}
 
 pub fn open_wav_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     // Manual WAV parsing (pure_wav crate API is streaming-oriented)
@@ -532,17 +464,6 @@ fn parse_mp3(data: &[u8]) -> Option<Mp3Info> {
     })
 }
 
-pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "MP3 Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_mp3_data(rt, &data, name);
-}
-
 pub fn open_mp3_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     let Some(info) = parse_mp3(data) else {
         show_error(rt, "MP3 Error", "No valid MP3 audio frames found.");
@@ -624,17 +545,6 @@ fn show_archive_entries(rt: &mut RuntimeState, name: &str, entries: &[String]) {
     show_text_window(rt, "Archive Manager", &msg, 60, 0x0d1a0d, 0xCCFFCC);
 }
 
-pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "Tar Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_tar_data(rt, &data, name);
-}
-
 pub fn open_tar_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     show_archive_entries(rt, name, &tar_entries(data));
 }
@@ -680,18 +590,6 @@ fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, &'static str> {
         .ok_or("truncated gzip payload")?;
     miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, 32 * 1024 * 1024)
         .map_err(|_| "gzip decompression failed")
-}
-
-#[cfg(feature = "gzip")]
-pub fn open_gzip(rt: &mut RuntimeState, path: &str, name: &str, tar: bool) {
-    let data = match read_file(path) {
-        Ok(data) => data,
-        Err(error) => {
-            show_error(rt, "gzip Error", &format!("Cannot read:\n{}", error));
-            return;
-        }
-    };
-    open_gzip_data(rt, &data, name, tar);
 }
 
 #[cfg(feature = "gzip")]
@@ -757,17 +655,6 @@ fn zip_entries(data: &[u8]) -> Vec<String> {
     entries
 }
 
-pub fn open_zip(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(data) => data,
-        Err(error) => {
-            show_error(rt, "ZIP Error", &format!("Cannot read:\n{}", error));
-            return;
-        }
-    };
-    open_zip_data(rt, &data, name);
-}
-
 pub fn open_zip_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     show_archive_entries(rt, name, &zip_entries(data));
 }
@@ -788,18 +675,6 @@ fn codec_name(entry: &shiguredo_mp4::boxes::SampleEntry) -> &'static str {
         SampleEntry::Av01(_) => "AV1",
         _ => "Unknown",
     }
-}
-
-#[cfg(feature = "shiguredo_mp4")]
-pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "MP4 Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_mp4_data(rt, &data, name);
 }
 
 #[cfg(feature = "shiguredo_mp4")]

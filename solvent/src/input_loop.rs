@@ -136,7 +136,7 @@ pub fn poll_keyboard() {
         }
         // VFS-backed file launch must happen outside the runtime lock.
         if let Some(path) = launch_path {
-            crate::launch_file(&path);
+            *crate::window_api::PENDING_LAUNCH.lock() = Some(path);
         }
     }
 }
@@ -186,35 +186,9 @@ fn handle_password_dialog_key(runtime: &mut RuntimeState, scancode: u8, pressed:
                 return;
             }
             let mut character = scancode_to_ascii(scancode);
-            if character == 0 {
-                return;
-            }
+            if character == 0 { return; }
             if runtime.desktop.shift_held {
-                character = match character {
-                    b'1' => b'!',
-                    b'2' => b'@',
-                    b'3' => b'#',
-                    b'4' => b'$',
-                    b'5' => b'%',
-                    b'6' => b'^',
-                    b'7' => b'&',
-                    b'8' => b'*',
-                    b'9' => b'(',
-                    b'0' => b')',
-                    b'-' => b'_',
-                    b'=' => b'+',
-                    b'[' => b'{',
-                    b']' => b'}',
-                    b'\\' => b'|',
-                    b';' => b':',
-                    b'\'' => b'"',
-                    b'`' => b'~',
-                    b',' => b'<',
-                    b'.' => b'>',
-                    b'/' => b'?',
-                    _ if character.is_ascii_lowercase() => character.to_ascii_uppercase(),
-                    _ => character,
-                };
+                character = crate::explorer::shifted_ascii(character);
             }
             DesktopAction::PasswordChar(character)
         }

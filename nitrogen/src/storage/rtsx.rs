@@ -794,7 +794,7 @@ impl RtsxController {
             .is_ok_and(|response| response & 0xFFF == 0x1AA);
         check_timeout!();
         let argument = 0x00FF_8000 | if v2_card { 1 << 30 } else { 0 };
-        let ocr = crate::timing::poll_timeout_us(2_000_000, || {
+        let ocr = crate::timing::poll_timeout_us(5_000_000, || {
             match self.app_command(0, ACMD41_SEND_OP_COND, argument, SD_RSP_R3) {
                 Ok(response) if response & (1 << 31) != 0 => Some(response),
                 _ => None,

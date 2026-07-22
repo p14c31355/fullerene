@@ -304,41 +304,28 @@ impl ExplorerContext {
         }
     }
 
-    /// Build sidebar items without querying USB drives (fast path for construction).
-    /// USB drives are added later by `refresh_sidebar()` when the window opens.
-    fn default_sidebar() -> Vec<SidebarItem> {
-        vec![
-            SidebarItem {
-                label: String::from("Home"),
-                path: String::from("/"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Desktop"),
-                path: String::from("/Desktop"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Downloads"),
-                path: String::from("/Downloads"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Documents"),
-                path: String::from("/Documents"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Music"),
-                path: String::from("/Music"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Pictures"),
-                path: String::from("/Pictures"),
-                is_usb: false,
-            },
+    /// Standard sidebar entries (Home, Desktop, etc.)
+    const fn default_sidebar_entries() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("Home", "/"),
+            ("Desktop", "/Desktop"),
+            ("Downloads", "/Downloads"),
+            ("Documents", "/Documents"),
+            ("Music", "/Music"),
+            ("Pictures", "/Pictures"),
         ]
+    }
+
+    fn entries_from_static(entries: &[(&str, &str)]) -> Vec<SidebarItem> {
+        entries.iter().map(|&(label, path)| SidebarItem {
+            label: String::from(label),
+            path: String::from(path),
+            is_usb: false,
+        }).collect()
+    }
+
+    fn default_sidebar() -> Vec<SidebarItem> {
+        Self::entries_from_static(Self::default_sidebar_entries())
     }
 
     pub fn navigate_to(&mut self, path: &str) {
@@ -412,44 +399,9 @@ impl ExplorerContext {
 
     /// Refresh sidebar items (re-detect USB drives etc.).
     pub fn refresh_sidebar(&mut self) {
-        let mut items = vec![
-            SidebarItem {
-                label: String::from("Home"),
-                path: String::from("/"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Desktop"),
-                path: String::from("/Desktop"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Downloads"),
-                path: String::from("/Downloads"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Documents"),
-                path: String::from("/Documents"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Music"),
-                path: String::from("/Music"),
-                is_usb: false,
-            },
-            SidebarItem {
-                label: String::from("Pictures"),
-                path: String::from("/Pictures"),
-                is_usb: false,
-            },
-        ];
+        let mut items = Self::entries_from_static(Self::default_sidebar_entries());
         for (name, mount_path) in crate::get_mounted_drives() {
-            items.push(SidebarItem {
-                label: name,
-                path: mount_path,
-                is_usb: true,
-            });
+            items.push(SidebarItem { label: name, path: mount_path, is_usb: true });
         }
         self.sidebar_items = items;
     }
@@ -778,29 +730,13 @@ fn delete_entry(path: &str, is_dir: bool) -> Result<(), genome::FsError> {
     remove(path, is_dir)
 }
 
-fn shifted_ascii(byte: u8) -> u8 {
+pub(crate) fn shifted_ascii(byte: u8) -> u8 {
     match byte {
         b'a'..=b'z' => byte.to_ascii_uppercase(),
-        b'1' => b'!',
-        b'2' => b'@',
-        b'3' => b'#',
-        b'4' => b'$',
-        b'5' => b'%',
-        b'6' => b'^',
-        b'7' => b'&',
-        b'8' => b'*',
-        b'9' => b'(',
-        b'0' => b')',
-        b'-' => b'_',
-        b'=' => b'+',
-        b'[' => b'{',
-        b']' => b'}',
-        b';' => b':',
-        b'\'' => b'"',
-        b',' => b'<',
-        b'.' => b'>',
-        b'/' => b'?',
-        b'`' => b'~',
+        b'1' => b'!', b'2' => b'@', b'3' => b'#', b'4' => b'$', b'5' => b'%',
+        b'6' => b'^', b'7' => b'&', b'8' => b'*', b'9' => b'(', b'0' => b')',
+        b'-' => b'_', b'=' => b'+', b'[' => b'{', b']' => b'}', b';' => b':',
+        b'\'' => b'"', b',' => b'<', b'.' => b'>', b'/' => b'?', b'`' => b'~',
         other => other,
     }
 }
@@ -1179,63 +1115,27 @@ fn draw_context_menu(ctx: &ExplorerContext, surface: &mut Surface) {
 
 // ── Text/glyph drawing helpers ────────────────────────────────
 
-fn draw_text(surface: &mut Surface, text: &str, x: u32, y: u32, fg: u32, bg: u32) {
-    let surf_w = surface.width() as usize;
-    let surf_h = surface.height() as usize;
+fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
+    let (sw, sh) = (surface.width() as usize, surface.height() as usize);
+    let (dx, dy) = (x as usize, y as usize);
+    if dx + GLYPH_W as usize > sw || dy + GLYPH_H as usize > sh { return; }
     let pixels = surface.pixels_mut();
-
-    for (ci, ch) in text.bytes().enumerate() {
-        if ch < 32 || ch > 126 {
-            continue;
-        }
-        let dx = (x + ci as u32 * GLYPH_W) as usize;
-        let dy = y as usize;
-        if dx + GLYPH_W as usize > surf_w || dy + GLYPH_H as usize > surf_h {
-            continue;
-        }
-
-        for gy in 0..GLYPH_H as usize {
-            let row_base = (dy + gy) * surf_w;
-            let row_slice = &mut pixels[row_base + dx..row_base + dx + GLYPH_W as usize];
-            row_slice.fill(bg);
-        }
-        let gl = lattice::font::glyph_fast(ch);
-        for gy in 0..GLYPH_H as usize {
-            let row_base = (dy + gy) * surf_w;
-            let byte = gl.row_byte(gy as u32);
-            for gx in 0..GLYPH_W as usize {
-                if byte & (0x80 >> gx) != 0 {
-                    pixels[row_base + dx + gx] = fg;
-                }
-            }
+    for gy in 0..GLYPH_H as usize {
+        pixels[dy + gy..][..sw][dx..dx + GLYPH_W as usize].fill(bg);
+    }
+    let gl = lattice::font::glyph_fast(ch);
+    for gy in 0..GLYPH_H as usize {
+        let row = (dy + gy) * sw;
+        let byte = gl.row_byte(gy as u32);
+        for gx in 0..GLYPH_W as usize {
+            if byte & (0x80 >> gx) != 0 { pixels[row + dx + gx] = fg; }
         }
     }
 }
 
-fn draw_glyph(surface: &mut Surface, ch: u8, x: u32, y: u32, fg: u32, bg: u32) {
-    let surf_w = surface.width() as usize;
-    let surf_h = surface.height() as usize;
-    let pixels = surface.pixels_mut();
-    let dx = x as usize;
-    let dy = y as usize;
-    if dx + GLYPH_W as usize > surf_w || dy + GLYPH_H as usize > surf_h {
-        return;
-    }
-
-    for gy in 0..GLYPH_H as usize {
-        let row_base = (dy + gy) * surf_w;
-        let row_slice = &mut pixels[row_base + dx..row_base + dx + GLYPH_W as usize];
-        row_slice.fill(bg);
-    }
-    let gl = lattice::font::glyph_fast(ch);
-    for gy in 0..GLYPH_H as usize {
-        let row_base = (dy + gy) * surf_w;
-        let byte = gl.row_byte(gy as u32);
-        for gx in 0..GLYPH_W as usize {
-            if byte & (0x80 >> gx) != 0 {
-                pixels[row_base + dx + gx] = fg;
-            }
-        }
+fn draw_text(surface: &mut Surface, text: &str, x: u32, y: u32, fg: u32, bg: u32) {
+    for (ci, ch) in text.bytes().enumerate().filter(|(_, c)| (32..=126).contains(c)) {
+        draw_glyph(surface, ch, x + ci as u32 * GLYPH_W, y, fg, bg);
     }
 }
 

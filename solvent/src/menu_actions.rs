@@ -19,14 +19,13 @@ const DEFAULT_ROWS: u32 = 25;
 const TERM_WIN_W: u32 = DEFAULT_COLS * GLYPH_W;
 const TERM_WIN_H: u32 = DEFAULT_ROWS * GLYPH_H;
 
-/// Kind of system information window.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(crate) enum InfoWindow {
     TaskManager,
     DeviceManager,
     FileManager,
     LogViewer,
-    /// Live-updating kernel log viewer (auto-refresh every ~1s).
     KLogLive,
     SystemInfo,
     About,
@@ -380,75 +379,18 @@ pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
     rt.desktop.wm.raise_to_top(id);
 }
 
-/// Render the kernel log into the live viewer window.
 pub fn render_klog_live(rt: &mut RuntimeState) {
-    let id = match rt.klog_live_window {
-        Some(id) => id,
-        None => return,
-    };
+    let Some(id) = rt.klog_live_window else { return };
     let window = match rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         Some(w) => w,
-        None => {
-            rt.klog_live_window = None;
-            return;
-        }
+        None => { rt.klog_live_window = None; return; }
     };
-
-    let log = RUNTIME_CONTEXT
-        .callback_snapshot()
-        .kernel_log
+    let log = RUNTIME_CONTEXT.callback_snapshot().kernel_log
         .map(|snap| snap())
         .unwrap_or_else(|| String::from("(kernel log unavailable)\n"));
-
-    let cols = 100u32;
-    let rows = 30u32;
-    let total = (cols * rows) as usize;
-
-    // Take only the last 29 lines (leave 1 line for "--- KLog Live ---\n")
-    let truncated: String = log
-        .lines()
-        .rev()
-        .take(29)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let text = alloc::format!("--- KLog Live (auto-refresh) ---\n{}", truncated);
-
-    let mut cells = alloc::vec![
-        LatticeCell {
-            ch: b' ',
-            fg: 0xAADDFF,
-            bg: 0x0d0d14
-        };
-        total
-    ];
-
-    for (row, line) in text.lines().enumerate() {
-        for (col, ch) in line.bytes().enumerate() {
-            if col < cols as usize && row < rows as usize {
-                let idx = row * (cols as usize) + col;
-                if idx < total {
-                    cells[idx] = LatticeCell {
-                        ch,
-                        fg: 0xAADDFF,
-                        bg: 0x0d0d14,
-                    };
-                }
-            }
-        }
-    }
-
-    terminal_surface::render(terminal_surface::RenderParams {
-        surface: &mut window.surface,
-        cells: &cells,
-        cols,
-        cursor_col: None,
-        cursor_row: None,
-        cursor_visible: false,
-    });
+    let lines: Vec<&str> = log.lines().rev().take(29).collect();
+    let text = alloc::format!("--- KLog Live (auto-refresh) ---\n{}", lines.into_iter().rev().collect::<Vec<_>>().join("\n"));
+    let _ = render_text_into_surface(&mut window.surface, &text, 100, 0xAADDFF, 0x0d0d14);
     rt.desktop.invalidate_window(id);
     rt.klog_live_dirty = false;
 }

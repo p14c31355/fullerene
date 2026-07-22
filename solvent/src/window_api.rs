@@ -2,6 +2,7 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use lattice::window::WindowId;
 
 use crate::{
@@ -157,192 +158,123 @@ pub(crate) fn render_explorer(runtime: &mut RuntimeState) {
     runtime.explorer_dirty = false;
 }
 
+const MAX_READ_SIZE: u64 = 50 * 1024 * 1024;
+const TEXT_EXTENSIONS: &[&str] = &[
+    "txt", "md", "log", "toml", "rs", "c", "h", "py", "js", "json", "xml", "yml", "yaml", "ini",
+    "cfg", "conf", "sh", "bat", "env", "gitignore", "lock",
+];
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "bmp", "png", "jpg", "jpeg", "wav", "mp3", "mp4", "tar", "tgz", "gz", "zip",
+];
+
+fn is_text_ext(ext: &str) -> bool {
+    TEXT_EXTENSIONS.contains(&ext)
+}
+fn is_media_ext(ext: &str) -> bool {
+    MEDIA_EXTENSIONS.contains(&ext)
+}
+
+fn read_file_with_limit(path: &str) -> Result<Vec<u8>, &'static str> {
+    let read = RUNTIME_CONTEXT.callback_snapshot().vfs_read.ok_or("VFS read callback not available")?;
+    let data = read(path).map_err(|_| "Failed to read file")?;
+    if data.len() as u64 > MAX_READ_SIZE {
+        return Err("File too large for in-memory viewer");
+    }
+    Ok(data)
+}
+
+fn show_open_error(msg: &str) {
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    if let Some(runtime) = runtime.as_mut() {
+        crate::viewers::show_error(runtime, "Cannot open file", msg);
+        runtime.frame_due = true;
+    }
+}
+
 pub fn launch_file(path: &str) {
     let name = path.rsplit('/').next().unwrap_or(path);
-    let extension = crate::explorer::extension_of(name);
-    let app = crate::explorer::lookup_association(extension);
-    let extension_lower = extension.to_lowercase();
-    let is_text = matches!(
-        extension_lower.as_str(),
-        "txt"
-            | "md"
-            | "log"
-            | "toml"
-            | "rs"
-            | "c"
-            | "h"
-            | "py"
-            | "js"
-            | "json"
-            | "xml"
-            | "yml"
-            | "yaml"
-            | "ini"
-            | "cfg"
-            | "sh"
-            | "bat"
-            | "env"
-            | "gitignore"
-            | "lock"
-    );
+    let ext = crate::explorer::extension_of(name);
+    let ext_lower = ext.to_lowercase();
 
-    // VFS I/O must happen without the runtime lock to avoid deadlock
-    // when filesystem or hardware callbacks interact with the compositor.
-    // See event_loop.rs:65-67.
-    if is_text {
-        let read_file = RUNTIME_CONTEXT.callback_snapshot().vfs_read;
-        let read_result = match read_file {
-            Some(read) => match read(path) {
-                Ok(data) => match core::str::from_utf8(&data) {
-                    Ok(text) => Ok(text.to_string()),
-                    Err(_) => Err("File is not valid UTF-8 text"),
-                },
-                Err(_) => Err("Failed to read file"),
-            },
-            None => Err("VFS read callback not available"),
+    if is_text_ext(&ext_lower) {
+        let data = match read_file_with_limit(path) {
+            Ok(d) => d,
+            Err(e) => { show_open_error(e); return; }
         };
-        match read_result {
-            Ok(file_content) => {
-                let mut runtime = RUNTIME_CONTEXT.runtime();
-                let Some(runtime) = runtime.as_mut() else {
-                    return;
-                };
-                let id = runtime.desktop.wm.create_titled_window(
-                    100,
-                    80,
-                    DEFAULT_COLS * GLYPH_W,
-                    DEFAULT_ROWS * GLYPH_H,
-                    0x0a0a1e,
-                    "Text Editor",
-                );
-                if let Some(old_id) = runtime.editor_window
-                    && runtime
-                        .desktop
-                        .wm
-                        .windows()
-                        .iter()
-                        .any(|window| window.id == old_id)
-                {
-                    runtime.desktop.wm.close_window(old_id);
-                }
-                runtime.editor_window = Some(id);
-                runtime.editor_buf = lattice::editor::EditorBuffer::from_text(&file_content);
-                runtime.editor_file_path = Some(path.to_string());
-                runtime.editor_dirty = true;
-                runtime.desktop.force_full_redraw();
-                runtime.frame_due = true;
-                runtime.explorer_dirty = true;
-            }
-            Err(msg) => {
-                let mut runtime = RUNTIME_CONTEXT.runtime();
-                if let Some(runtime) = runtime.as_mut() {
-                    crate::viewers::show_error(runtime, "Cannot open file", msg);
-                    runtime.frame_due = true;
-                }
-            }
+        let text = match core::str::from_utf8(&data) {
+            Ok(t) => t,
+            Err(_) => { show_open_error("File is not valid UTF-8 text"); return; }
+        };
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else { return; };
+        let id = runtime.desktop.wm.create_titled_window(
+            100, 80, DEFAULT_COLS * GLYPH_W, DEFAULT_ROWS * GLYPH_H, 0x0a0a1e, "Text Editor",
+        );
+        if let Some(old_id) = runtime.editor_window
+            && runtime.desktop.wm.windows().iter().any(|w| w.id == old_id)
+        {
+            runtime.desktop.wm.close_window(old_id);
+        }
+        runtime.editor_window = Some(id);
+        runtime.editor_buf = lattice::editor::EditorBuffer::from_text(text);
+        runtime.editor_file_path = Some(path.to_string());
+        runtime.editor_dirty = true;
+        runtime.desktop.force_full_redraw();
+        runtime.frame_due = true;
+        runtime.explorer_dirty = true;
+        return;
+    }
+
+    if !is_media_ext(&ext_lower) {
+        let app = crate::explorer::lookup_association(&ext).unwrap_or("Unknown");
+        let msg = format!("File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.", name, ext, app, app);
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else { return; };
+        let cols = 50u32;
+        let id = runtime.desktop.wm.create_titled_window(
+            200, 160, cols * GLYPH_W, (msg.lines().count() as u32 + 3) * GLYPH_H, 0x1a1a0d, "Open File",
+        );
+        if let Some(w) = runtime.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+            let _ = crate::menu_actions::render_text_into_surface(&mut w.surface, &msg, cols, 0xFFFFCC, 0x1a1a0d);
+        }
+        runtime.desktop.wm.raise_to_top(id);
+        runtime.frame_due = true;
+        return;
+    }
+
+    // Media files: read data (may be slow on SDXC but VFS runs without runtime lock)
+    let file_data = match read_file_with_limit(path) {
+        Ok(d) => d,
+        Err(e) => { show_open_error(e); return; }
+    };
+
+    // JPEG: decode outside runtime lock
+    #[cfg(feature = "zune-jpeg")]
+    if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
+        let decoded = crate::viewers::decode_jpeg(&file_data);
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else { return; };
+        match decoded {
+            Ok(d) => crate::viewers::render_jpeg_window(runtime, d, name),
+            Err(e) => crate::viewers::show_error(runtime, "JPEG Error", &e),
         }
         return;
     }
 
-    // For media/viewer files, read the file data BEFORE acquiring the
-    // runtime lock to avoid deadlock. Filesystem I/O must run without
-    // holding the runtime lock (see event_loop.rs:65-67).
-    if matches!(
-        extension_lower.as_str(),
-        "bmp" | "png" | "jpg" | "jpeg" | "wav" | "mp3" | "mp4" | "tar" | "tgz" | "gz" | "zip"
-    ) {
-        let read_file = RUNTIME_CONTEXT.callback_snapshot().vfs_read;
-        let file_data = match read_file {
-            Some(read) => match read(path) {
-                Ok(data) => data,
-                Err(_) => {
-                    let mut runtime = RUNTIME_CONTEXT.runtime();
-                    if let Some(runtime) = runtime.as_mut() {
-                        crate::viewers::show_error(
-                            runtime,
-                            "Cannot open file",
-                            "Failed to read file. It may be too large or the device is unresponsive.",
-                        );
-                        runtime.frame_due = true;
-                    }
-                    return;
-                }
-            },
-            None => return,
-        };
-
-        // JPEG decoding is CPU-intensive; run it without the runtime lock
-        // so the UI does not freeze during decode of large images.
-        #[cfg(feature = "zune-jpeg")]
-        if matches!(extension_lower.as_str(), "jpg" | "jpeg") {
-            let decoded = crate::viewers::decode_jpeg(&file_data);
-            let mut runtime = RUNTIME_CONTEXT.runtime();
-            let Some(runtime) = runtime.as_mut() else {
-                return;
-            };
-            match decoded {
-                Ok(d) => crate::viewers::render_jpeg_window(runtime, d, name),
-                Err(e) => crate::viewers::show_error(runtime, "JPEG Error", &e),
-            }
-            return;
-        }
-
-        let mut runtime = RUNTIME_CONTEXT.runtime();
-        let Some(runtime) = runtime.as_mut() else {
-            return;
-        };
-        match extension_lower.as_str() {
-            "bmp" => crate::viewers::open_bmp_data(runtime, &file_data, name),
-            #[cfg(feature = "minipng")]
-            "png" => crate::viewers::open_png_data(runtime, &file_data, name),
-            "wav" => crate::viewers::open_wav_data(runtime, &file_data, name),
-            "mp3" => crate::viewers::open_mp3_data(runtime, &file_data, name),
-            #[cfg(feature = "shiguredo_mp4")]
-            "mp4" => crate::viewers::open_mp4_data(runtime, &file_data, name),
-            "tar" => crate::viewers::open_tar_data(runtime, &file_data, name),
-            #[cfg(feature = "gzip")]
-            "tgz" => crate::viewers::open_gzip_data(runtime, &file_data, name, true),
-            #[cfg(feature = "gzip")]
-            "gz" => crate::viewers::open_gzip_data(runtime, &file_data, name, false),
-            "zip" => crate::viewers::open_zip_data(runtime, &file_data, name),
-            _ => {}
-        }
-    } else {
-        let app_name = app.unwrap_or("Unknown");
-        let message = format!(
-            "File: {}\nType: .{}\nApp: {}\n\nOpening {} is not yet implemented.",
-            name, extension, app_name, app_name
-        );
-        let mut runtime = RUNTIME_CONTEXT.runtime();
-        let Some(runtime) = runtime.as_mut() else {
-            return;
-        };
-        let columns = 50;
-        let rows = (message.lines().count() as u32) + 3;
-        let id = runtime.desktop.wm.create_titled_window(
-            200,
-            160,
-            columns * GLYPH_W,
-            rows * GLYPH_H,
-            0x1a1a0d,
-            "Open File",
-        );
-        if let Some(window) = runtime
-            .desktop
-            .wm
-            .windows_mut()
-            .iter_mut()
-            .find(|window| window.id == id)
-        {
-            let _ = crate::menu_actions::render_text_into_surface(
-                &mut window.surface,
-                &message,
-                columns,
-                0xFFFFCC,
-                0x1a1a0d,
-            );
-        }
-        runtime.desktop.wm.raise_to_top(id);
-        runtime.frame_due = true;
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = runtime.as_mut() else { return; };
+    match ext_lower.as_str() {
+        "bmp" => crate::viewers::open_bmp_data(runtime, &file_data, name),
+        #[cfg(feature = "minipng")]
+        "png" => crate::viewers::open_png_data(runtime, &file_data, name),
+        "wav" => crate::viewers::open_wav_data(runtime, &file_data, name),
+        "mp3" => crate::viewers::open_mp3_data(runtime, &file_data, name),
+        #[cfg(feature = "shiguredo_mp4")]
+        "mp4" => crate::viewers::open_mp4_data(runtime, &file_data, name),
+        "tar" => crate::viewers::open_tar_data(runtime, &file_data, name),
+        #[cfg(feature = "gzip")]
+        "tgz" | "gz" => crate::viewers::open_gzip_data(runtime, &file_data, name, ext_lower == "tgz"),
+        "zip" => crate::viewers::open_zip_data(runtime, &file_data, name),
+        _ => {}
     }
 }
