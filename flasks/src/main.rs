@@ -19,6 +19,10 @@ struct Args {
     #[arg(long)]
     timeout: Option<u64>,
 
+    /// Build fullerene.iso and exit without launching QEMU
+    #[arg(long)]
+    iso_only: bool,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -43,6 +47,12 @@ fn main() -> io::Result<()> {
 
     if args.clone_ovmf {
         setup_ovmf(&workspace_root)?;
+        return Ok(());
+    }
+
+    if args.iso_only {
+        let iso_path = create_iso(&workspace_root)?;
+        println!("ISO rebuilt at {}", iso_path.display());
         return Ok(());
     }
 
@@ -134,9 +144,7 @@ menuentry "Fullerene OS" {
     .to_string()
 }
 
-fn create_iso_and_setup(
-    workspace_root: &PathBuf,
-) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
+fn create_iso(workspace_root: &PathBuf) -> io::Result<PathBuf> {
     // --- 1. Build fullerene-kernel (no_std) ---
     build_uefi_package(workspace_root, "fullerene-kernel", None)?;
 
@@ -207,6 +215,14 @@ fn create_iso_and_setup(
     };
     let (_iso_output_path, _temp_fat_holder, _iso_file, _logical_fat_size) =
         build_iso(&iso_path, &image, true)?; // Set to true for isohybrid UEFI boot
+
+    Ok(iso_path)
+}
+
+fn create_iso_and_setup(
+    workspace_root: &PathBuf,
+) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
+    let iso_path = create_iso(workspace_root)?;
 
     let ovmf_fd_path = workspace_root
         .join("flasks")
