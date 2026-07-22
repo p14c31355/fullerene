@@ -21,24 +21,12 @@ use crate::port::PortWriter;
 /// Serializes the address/data pair used by PCI configuration mechanism #1.
 static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
 
-/// Acquire the PCI config space lock.
-///
-/// A retry limit prevents deadlock if the lock is re-entered from the same
-/// context (e.g. an NMI that interrupted a locked region).  In normal
-/// operation the lock is held for a single I/O transaction so contention
-/// is negligible.
 #[inline]
 fn pci_config_lock_acquire() {
-    let mut retries = 0u32;
     while PCI_CONFIG_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        retries += 1;
-        if retries > 100_000 {
-            log::warn!("PCI: config lock contention exceeded 100k spins");
-            break;
-        }
         core::hint::spin_loop();
     }
 }

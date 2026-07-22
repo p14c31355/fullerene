@@ -167,10 +167,21 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
 
 pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     const MAX_FILE_SIZE: usize = 16 * 1024 * 1024;
+    const TIMEOUT_MS: u64 = 15_000;
+    let tsc_per_ms = solvent::get_tsc_per_ms();
+    let deadline = if tsc_per_ms > 0 {
+        (unsafe { core::arch::x86_64::_rdtsc() })
+            .wrapping_add(tsc_per_ms.saturating_mul(TIMEOUT_MS))
+    } else {
+        0
+    };
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
-    let mut chunk = [0u8; 512];
+    let mut chunk = [0u8; 65536];
     let result = loop {
+        if deadline > 0 && (unsafe { core::arch::x86_64::_rdtsc() }) >= deadline {
+            break Err(FsError::Io);
+        }
         match read_file(&mut fd, &mut chunk) {
             Ok(0) => break Ok(buf),
             Ok(n) if buf.len() + n <= MAX_FILE_SIZE => buf.extend_from_slice(&chunk[..n]),

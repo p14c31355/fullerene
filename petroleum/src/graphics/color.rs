@@ -7,7 +7,7 @@ use core::ptr::{read_volatile, write_volatile};
 #[cfg(target_os = "uefi")]
 use crate::common::uefi::FullereneFramebufferConfig;
 use crate::common::{EfiGraphicsPixelFormat, VgaFramebufferConfig};
-use spin::{Mutex, Once};
+use spin::Once;
 
 // --- FramebufferInfo ---
 #[derive(Clone, Copy)]
@@ -172,32 +172,26 @@ pub fn vga_color_index(r: u8, g: u8, b: u8) -> u32 {
 }
 
 // --- SimpleFramebuffer ---
-/// Global simple framebuffer config (Redox vesad-style)
-pub static SIMPLE_FRAMEBUFFER_CONFIG: Once<spin::Mutex<Option<SimpleFramebufferConfig>>> =
-    Once::new();
-
-/// Simple framebuffer config for recreation
 #[derive(Clone, Copy)]
 pub struct SimpleFramebufferConfig {
     pub base_addr: usize,
     pub width: usize,
     pub height: usize,
-    pub stride: usize, // bytes per row
+    pub stride: usize,
     pub bytes_per_pixel: usize,
     pub pixel_format: Option<crate::common::EfiGraphicsPixelFormat>,
 }
 
-/// Get the simple framebuffer instance (creates it from config if needed)
+static SIMPLE_FRAMEBUFFER_CONFIG: Once<SimpleFramebufferConfig> = Once::new();
+
 pub fn get_simple_framebuffer() -> Option<SimpleFramebuffer> {
-    SIMPLE_FRAMEBUFFER_CONFIG.get().and_then(|config_mutex| {
-        let config = config_mutex.lock();
-        config.as_ref().map(|cfg| SimpleFramebuffer::new(*cfg))
-    })
+    SIMPLE_FRAMEBUFFER_CONFIG
+        .get()
+        .map(|cfg| SimpleFramebuffer::new(*cfg))
 }
 
-/// Initialize the simple framebuffer config
 pub fn init_simple_framebuffer_config(config: SimpleFramebufferConfig) {
-    SIMPLE_FRAMEBUFFER_CONFIG.call_once(|| Mutex::new(Some(config)));
+    SIMPLE_FRAMEBUFFER_CONFIG.call_once(|| config);
 }
 
 /// Simple Framebuffer struct for direct MMIO pixel manipulation (Redox vesad-style)

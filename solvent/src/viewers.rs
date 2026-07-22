@@ -3,7 +3,7 @@
 //! Each viewer reads file data via `vfs_read`, parses the format, and
 //! creates a window with the content rendered into the surface.
 
-use crate::{GLYPH_H, RUNTIME_CONTEXT, RuntimeState};
+use crate::{GLYPH_H, HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -32,14 +32,6 @@ macro_rules! log_status {
     }};
 }
 
-fn read_file(path: &str) -> Result<Vec<u8>, genome::FsError> {
-    let read_fn = RUNTIME_CONTEXT
-        .callback_snapshot()
-        .vfs_read
-        .ok_or(genome::FsError::NotSupported)?;
-    read_fn(path)
-}
-
 fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg: u32, fg: u32) {
     let rows = (msg.lines().count() as u32).min(40) + 3;
     let id =
@@ -53,23 +45,11 @@ fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg
     rt.frame_due = true;
 }
 
-fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
+pub(crate) fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
     show_text_window(rt, title, msg, 50, 0x1a1a0d, 0xFFCCCC);
 }
 
 // ── BMP viewer (tinybmp) ─────────────────────────────────────
-
-#[cfg(feature = "tinybmp")]
-pub fn open_bmp(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "BMP Error", &format!("Cannot read: {}", e));
-            return;
-        }
-    };
-    open_bmp_data(rt, &data, name);
-}
 
 #[cfg(feature = "tinybmp")]
 pub fn open_bmp_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
@@ -120,11 +100,6 @@ pub fn open_bmp_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
 }
 
 #[cfg(not(feature = "tinybmp"))]
-pub fn open_bmp(rt: &mut RuntimeState, _path: &str, name: &str) {
-    open_bmp_data(rt, &[], name);
-}
-
-#[cfg(not(feature = "tinybmp"))]
 pub fn open_bmp_data(rt: &mut RuntimeState, _data: &[u8], name: &str) {
     show_error(
         rt,
@@ -137,18 +112,6 @@ pub fn open_bmp_data(rt: &mut RuntimeState, _data: &[u8], name: &str) {
 }
 
 // ── PNG viewer ───────────────────────────────────────────────
-
-#[cfg(feature = "minipng")]
-pub fn open_png(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "PNG Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_png_data(rt, &data, name);
-}
 
 #[cfg(feature = "minipng")]
 pub fn open_png_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
@@ -214,20 +177,18 @@ pub fn open_png_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
 
 // ── JPEG viewer ──────────────────────────────────────────────
 
+/// Decoded JPEG image, produced without holding the runtime lock.
 #[cfg(feature = "zune-jpeg")]
-pub fn open_jpeg(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(data) => data,
-        Err(error) => {
-            show_error(rt, "JPEG Error", &format!("Cannot read:\n{}", error));
-            return;
-        }
-    };
-    open_jpeg_data(rt, &data, name);
+pub struct DecodedJpeg {
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<u8>,
 }
 
+/// Decode JPEG data without any runtime lock held.
+/// Call this before acquiring the runtime lock to avoid UI freezes.
 #[cfg(feature = "zune-jpeg")]
-pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
+pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
     use zune_core::bytestream::ZCursor;
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
@@ -239,37 +200,86 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
         .set_max_width(MAX_IMG_W as usize)
         .set_max_height(MAX_IMG_H as usize);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
-    log_status!("JPEG decoder created, calling decode()");
-    let pixels = match decoder.decode() {
-        Ok(pixels) => pixels,
-        Err(error) => {
-            show_error(rt, "JPEG Error", &format!("Decode failed:\n{:?}", error));
-            return;
+
+    // Step 1: Parse headers only (no pixel buffer allocation yet).
+    decoder
+        .decode_headers()
+        .map_err(|e| format!("JPEG header error: {:?}", e))?;
+
+    // Step 2: Get image dimensions and calculate pixel buffer size.
+    let info = decoder
+        .info()
+        .ok_or_else(|| String::from("Missing JPEG image information"))?;
+    let width = u32::from(info.width);
+    let height = u32::from(info.height);
+    if width > MAX_IMG_W || height > MAX_IMG_H {
+        return Err(format!("Image too large: {}x{}", width, height));
+    }
+    let buffer_size = decoder
+        .output_buffer_size()
+        .ok_or_else(|| String::from("JPEG output buffer size overflow"))?;
+    // Add extra overhead for decoder's internal working buffers (rough estimate).
+    let total_needed = buffer_size.saturating_add(256 * 1024);
+
+    log_status!("JPEG {}x{} buffer={}B", width, height, total_needed);
+
+    // Step 3: Ensure heap has enough room for the decoded pixels.
+    let heap_free = petroleum::heap_stats().free;
+    if heap_free < total_needed {
+        let additional = total_needed
+            .saturating_sub(heap_free)
+            .next_multiple_of(4096);
+        let extend_fn = RUNTIME_CONTEXT.callback_snapshot().heap_extend;
+        match extend_fn {
+            Some(f) if f(additional).is_ok() => {
+                HEAP_EXTEND_RESERVE.fetch_add(additional, core::sync::atomic::Ordering::Relaxed);
+            }
+            _ => {
+                return Err(format!(
+                    "Cannot allocate {} bytes for JPEG decode (heap free: {})",
+                    total_needed, heap_free
+                ));
+            }
         }
-    };
-    let Some(info) = decoder.info() else {
-        show_error(rt, "JPEG Error", "Missing image information");
-        return;
-    };
+    }
+
+    // Step 4: Pre-flight sanity check; reject images whose pixel buffer would
+    // require an unreasonable number of MCU rows (more than 4× the height limit)
+    // as a heuristic guard against decoder hangs on invalid scan data.
+    if buffer_size > (MAX_IMG_W * MAX_IMG_H * 4) as usize {
+        return Err(format!(
+            "JPEG buffer size {} exceeds maximum ({}x{}x4)",
+            buffer_size, MAX_IMG_W, MAX_IMG_H,
+        ));
+    }
+
+    // Step 5: Decode pixel data (heap should now have space).
+    log_status!("JPEG calling decode()");
+    let pixels = decoder
+        .decode()
+        .map_err(|e| format!("JPEG decode error: {:?}", e))?;
     log_status!(
         "JPEG decode done ({}x{} pixels={}B)",
         info.width,
         info.height,
         pixels.len()
     );
-    let width = u32::from(info.width);
-    let height = u32::from(info.height);
-    if width > MAX_IMG_W || height > MAX_IMG_H {
-        show_error(
-            rt,
-            "JPEG Error",
-            &format!("Image too large: {}x{}", width, height),
-        );
-        return;
-    }
+    Ok(DecodedJpeg {
+        width: info.width,
+        height: info.height,
+        pixels,
+    })
+}
+
+/// Render a decoded JPEG into a new window.
+/// Must be called with the runtime lock held.
+#[cfg(feature = "zune-jpeg")]
+pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &str) {
+    let width = u32::from(decoded.width);
+    let height = u32::from(decoded.height);
 
     // Move decoded pixels out of kernel heap into page-backed memory.
-    let pixel_len = pixels.len();
+    let pixel_len = decoded.pixels.len();
     let mut page_pixels = match unsafe { PageBuf::<u8>::alloc_zeroed_for_len(pixel_len) } {
         Some(buf) => buf,
         None => {
@@ -277,8 +287,8 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
             return;
         }
     };
-    page_pixels.as_mut_slice().copy_from_slice(&pixels);
-    drop(pixels); // free kernel heap Vec<u8>
+    page_pixels.as_mut_slice().copy_from_slice(&decoded.pixels);
+    drop(decoded.pixels);
     log_status!("JPEG after decode (pixels on PageBuf)");
 
     let win_w = width.min(800).max(160);
@@ -307,17 +317,6 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
 }
 
 // ── WAV info viewer ─────────────────────────────────────────
-
-pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "WAV Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_wav_data(rt, &data, name);
-}
 
 pub fn open_wav_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     // Manual WAV parsing (pure_wav crate API is streaming-oriented)
@@ -487,17 +486,6 @@ fn parse_mp3(data: &[u8]) -> Option<Mp3Info> {
     })
 }
 
-pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "MP3 Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_mp3_data(rt, &data, name);
-}
-
 pub fn open_mp3_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     let Some(info) = parse_mp3(data) else {
         show_error(rt, "MP3 Error", "No valid MP3 audio frames found.");
@@ -579,17 +567,6 @@ fn show_archive_entries(rt: &mut RuntimeState, name: &str, entries: &[String]) {
     show_text_window(rt, "Archive Manager", &msg, 60, 0x0d1a0d, 0xCCFFCC);
 }
 
-pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "Tar Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_tar_data(rt, &data, name);
-}
-
 pub fn open_tar_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     show_archive_entries(rt, name, &tar_entries(data));
 }
@@ -635,18 +612,6 @@ fn decompress_gzip(data: &[u8]) -> Result<Vec<u8>, &'static str> {
         .ok_or("truncated gzip payload")?;
     miniz_oxide::inflate::decompress_to_vec_with_limit(compressed, 32 * 1024 * 1024)
         .map_err(|_| "gzip decompression failed")
-}
-
-#[cfg(feature = "gzip")]
-pub fn open_gzip(rt: &mut RuntimeState, path: &str, name: &str, tar: bool) {
-    let data = match read_file(path) {
-        Ok(data) => data,
-        Err(error) => {
-            show_error(rt, "gzip Error", &format!("Cannot read:\n{}", error));
-            return;
-        }
-    };
-    open_gzip_data(rt, &data, name, tar);
 }
 
 #[cfg(feature = "gzip")]
@@ -712,17 +677,6 @@ fn zip_entries(data: &[u8]) -> Vec<String> {
     entries
 }
 
-pub fn open_zip(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(data) => data,
-        Err(error) => {
-            show_error(rt, "ZIP Error", &format!("Cannot read:\n{}", error));
-            return;
-        }
-    };
-    open_zip_data(rt, &data, name);
-}
-
 pub fn open_zip_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     show_archive_entries(rt, name, &zip_entries(data));
 }
@@ -743,18 +697,6 @@ fn codec_name(entry: &shiguredo_mp4::boxes::SampleEntry) -> &'static str {
         SampleEntry::Av01(_) => "AV1",
         _ => "Unknown",
     }
-}
-
-#[cfg(feature = "shiguredo_mp4")]
-pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_error(rt, "MP4 Error", &format!("Cannot read:\n{}", e));
-            return;
-        }
-    };
-    open_mp4_data(rt, &data, name);
 }
 
 #[cfg(feature = "shiguredo_mp4")]
@@ -912,5 +854,72 @@ mod tests {
         assert_eq!(info.sample_rate, 44_100);
         assert_eq!(info.channels, 2);
         assert!((info.duration_seconds - 2_304.0 / 44_100.0).abs() < 0.000_001);
+    }
+
+    #[cfg(feature = "zune-jpeg")]
+    #[test]
+    fn jpeg_decode_headers_and_buffer_size() {
+        // Minimal 1x1 grey JPEG (contains SOI, APP0/JFIF, DQT, SOF0, DHT, SOS, EOI).
+        let jpeg: &[u8] = &[
+            0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00,
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xdb, 0x00, 0x43, 0x00, 0x08, 0x06, 0x06,
+            0x07, 0x06, 0x05, 0x08, 0x07, 0x07, 0x07, 0x09, 0x09, 0x08, 0x0a, 0x0c, 0x14, 0x0d,
+            0x0c, 0x0b, 0x0b, 0x0c, 0x19, 0x12, 0x13, 0x0f, 0x14, 0x1d, 0x1a, 0x1f, 0x1e, 0x1d,
+            0x1a, 0x1c, 0x1c, 0x20, 0x24, 0x2e, 0x27, 0x20, 0x22, 0x2c, 0x23, 0x1c, 0x1c, 0x28,
+            0x37, 0x29, 0x2c, 0x30, 0x31, 0x34, 0x34, 0x34, 0x1f, 0x27, 0x39, 0x3d, 0x38, 0x32,
+            0x3c, 0x2e, 0x33, 0x34, 0x32, 0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01,
+            0x01, 0x01, 0x11, 0x00, 0xff, 0xc4, 0x00, 0x1f, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02,
+            0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0xff, 0xc4, 0x00, 0xb5, 0x10,
+            0x00, 0x02, 0x01, 0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00,
+            0x01, 0x7d, 0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06,
+            0x13, 0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42,
+            0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a, 0x16,
+            0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35, 0x36, 0x37,
+            0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x53, 0x54, 0x55,
+            0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x73,
+            0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89,
+            0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5,
+            0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba,
+            0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6,
+            0xd7, 0xd8, 0xd9, 0xda, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea,
+            0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xff, 0xda, 0x00, 0x08,
+            0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x7b, 0x40, 0x00, 0xff, 0xd9,
+        ];
+
+        // Verify the direct zune_jpeg decoder works (independent of kernel heap).
+        use zune_core::bytestream::ZCursor;
+        use zune_core::colorspace::ColorSpace;
+        use zune_core::options::DecoderOptions;
+
+        let options = DecoderOptions::default()
+            .jpeg_set_out_colorspace(ColorSpace::RGB)
+            .set_max_width(1920)
+            .set_max_height(1080);
+        let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(jpeg), options);
+
+        // decode_headers should parse the header without allocating pixel data.
+        decoder
+            .decode_headers()
+            .expect("JPEG header decode should succeed");
+
+        // info() should be available after decode_headers().
+        let info = decoder
+            .info()
+            .expect("JPEG info should be available after header decode");
+        assert_eq!(info.width, 1, "JPEG width should be 1");
+        assert_eq!(info.height, 1, "JPEG height should be 1");
+
+        // output_buffer_size() should return the expected pixel buffer size.
+        let buf_size = decoder
+            .output_buffer_size()
+            .expect("output_buffer_size should return some value");
+        assert_eq!(buf_size, 3, "1x1 RGB pixel buffer should be 3 bytes");
+
+        // decode should succeed and produce the expected pixel data.
+        let pixels = decoder.decode().expect("JPEG pixel decode should succeed");
+        assert_eq!(pixels.len(), 3, "Decoded pixel buffer should be 3 bytes");
+        // 1x1 grey JPEG decodes to a single RGB pixel (values may be near-zero for dark grey).
+        assert_eq!(pixels.len(), 3, "All 3 pixel bytes must be present");
     }
 }

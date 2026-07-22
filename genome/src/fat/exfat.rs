@@ -8,7 +8,8 @@ use core::pin::Pin;
 
 use hadris_fat::FatError;
 use hadris_fat::exfat::{
-    ExFatBootSector, ExFatDir, ExFatFileWriter, ExFatFs, ExFatInfo, ExFatTable,
+    ExFatBootSector, ExFatDir, ExFatFileEntry, ExFatFileReader, ExFatFileWriter, ExFatFs,
+    ExFatInfo, ExFatTable,
 };
 use hadris_fat::sync::{Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
 use spin::Mutex;
@@ -219,10 +220,12 @@ impl Seek for ExFatDevice {
 
 type ExFatInner = ExFatFs<ExFatDevice>;
 type Writer = ExFatFileWriter<'static, ExFatDevice>;
+type Reader = ExFatFileReader<'static, ExFatDevice>;
 
 struct Handle {
     fd: u32,
-    path: String,
+    entry: ExFatFileEntry,
+    reader: Option<Reader>,
     offset: u64,
     writer: Option<Writer>,
 }
@@ -419,8 +422,8 @@ impl ExFatFileSystem {
             .ok_or(FsError::InvalidFileDescriptor)
     }
 
-    fn open_writer(&self, path: &str) -> Result<Writer, FsError> {
-        let mut entry = self.fs().open_path(path).map_err(Self::map_error)?;
+    fn open_writer_from_entry(&self, entry: &ExFatFileEntry) -> Result<Writer, FsError> {
+        let mut entry = entry.clone();
         if entry.first_cluster == 0 && entry.data_length == 0 {
             entry.no_fat_chain = true;
         }
@@ -523,11 +526,16 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
-        self.fs().open_file(path).ok()?;
+        let entry = self.fs().open_path(path).ok()?;
+        let reader = ExFatFileReader::new(self.fs(), &entry).ok()?;
+        // SAFETY: inner is pinned in a Box and is therefore never moved. Every
+        // reader is removed/dropped before inner is dropped (see Drop).
+        let reader: Reader = unsafe { mem::transmute(reader) };
         let fd = self.next_descriptor();
         self.handles.push(Handle {
             fd,
-            path: String::from(path),
+            entry,
+            reader: Some(reader),
             offset: 0,
             writer: None,
         });
@@ -544,19 +552,13 @@ impl FileSystem for ExFatFileSystem {
         if self.handles[index].writer.is_some() {
             return Err(FsError::PermissionDenied);
         }
-        let offset = self.handles[index].offset;
-        let read = {
-            let mut file = self
-                .fs()
-                .open_file(&self.handles[index].path)
-                .map_err(Self::map_error)?;
-            if offset != 0 {
-                file.seek(SeekFrom::Start(offset))
-                    .map_err(Self::map_io_error)?;
-            }
-            file.read(buf).map_err(Self::map_io_error)?
-        };
-        self.handles[index].offset += read as u64;
+        let handle = &mut self.handles[index];
+        let reader = handle
+            .reader
+            .as_mut()
+            .ok_or(FsError::InvalidFileDescriptor)?;
+        let read = reader.read(buf).map_err(Self::map_io_error)?;
+        handle.offset += read as u64;
         Ok(read)
     }
 
@@ -570,7 +572,9 @@ impl FileSystem for ExFatFileSystem {
             if self.handles[index].offset != 0 {
                 return Err(FsError::InvalidSeek);
             }
-            let writer = self.open_writer(&self.handles[index].path)?;
+            // Refresh the entry to pick up any concurrent writes
+            let refreshed_entry = self.handles[index].entry.clone();
+            let writer = self.open_writer_from_entry(&refreshed_entry)?;
             self.handles[index].writer = Some(writer);
         }
         let written = self.handles[index]
@@ -603,6 +607,11 @@ impl FileSystem for ExFatFileSystem {
         let handle = &mut self.handles[index];
         if handle.writer.is_some() && new_pos != handle.offset {
             return Err(FsError::InvalidSeek);
+        }
+        if let Some(reader) = handle.reader.as_mut() {
+            reader
+                .seek(SeekFrom::Start(new_pos))
+                .map_err(Self::map_io_error)?;
         }
         handle.offset = new_pos;
         Ok(())
@@ -934,6 +943,57 @@ mod tests {
             off += n as u64;
         }
         Ok(buf)
+    }
+
+    #[test]
+    fn concurrent_write_regression() {
+        let image = Arc::new(Mutex::new(vec![0; IMAGE_SIZE]));
+        let block_device = MemoryDevice::new(Arc::clone(&image));
+        let shared: Arc<Mutex<Box<dyn BlockDevice>>> =
+            Arc::new(Mutex::new(Box::new(block_device.clone())));
+        let adapter = ExFatDevice {
+            inner: shared,
+            cache: Arc::new(Mutex::new(MetadataCache::new())),
+            position: 0,
+            size: IMAGE_SIZE as u64,
+        };
+        let options = ExFatFormatOptions::new()
+            .with_label("CONCUR")
+            .with_sectors_per_cluster(256);
+        drop(format_exfat(adapter, IMAGE_SIZE as u64, &options).unwrap());
+
+        let mut fs = match crate::fat::mount_device(Box::new(block_device.clone())) {
+            Ok(filesystem) => filesystem,
+            Err((error, _)) => panic!("mount failed: {error}"),
+        };
+
+        // Create a file and write initial data
+        assert_eq!(fs.create("/test.dat", InodeType::File), Some(0));
+        let fd_a = fs.open("/test.dat", 0).unwrap().fd;
+        let data_a = b"first write from A";
+        assert_eq!(fs.write(fd_a, data_a).unwrap(), data_a.len());
+        fs.close(fd_a).unwrap();
+
+        // Open two handles
+        let fd_a = fs.open("/test.dat", 0).unwrap().fd;
+        let fd_b = fs.open("/test.dat", 0).unwrap().fd;
+
+        // A writes and closes
+        let data_a2 = b"second write from A";
+        assert_eq!(fs.write(fd_a, data_a2).unwrap(), data_a2.len());
+        fs.close(fd_a).unwrap();
+
+        // B writes and closes (should see A's updated length/clusters)
+        let data_b = b"write from B after A";
+        assert_eq!(fs.write(fd_b, data_b).unwrap(), data_b.len());
+        fs.close(fd_b).unwrap();
+
+        // Verify final content matches B's write
+        let fd = fs.open("/test.dat", 0).unwrap().fd;
+        let mut buf = vec![0; data_b.len()];
+        assert_eq!(fs.read(fd, &mut buf).unwrap(), data_b.len());
+        assert_eq!(&buf[..], data_b);
+        fs.close(fd).unwrap();
     }
 
     #[test]
