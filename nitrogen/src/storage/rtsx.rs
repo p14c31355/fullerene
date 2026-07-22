@@ -165,6 +165,14 @@ pub struct RtsxController {
 unsafe impl Send for RtsxController {}
 
 impl RtsxController {
+    fn data_path_for_card(card_type: SdCardType, preferred: DataPath) -> DataPath {
+        if card_type == SdCardType::Sdxc && preferred == DataPath::Sdma {
+            DataPath::HostPpbuf
+        } else {
+            preferred
+        }
+    }
+
     fn host_command(kind: HostCommandKind, address: u16, mask: u8, value: u8) -> u32 {
         ((kind as u32) << 30)
             | (u32::from(address & 0x3FFF) << 16)
@@ -844,6 +852,11 @@ impl RtsxController {
         } else {
             SdCardType::Sdhc
         };
+        let selected_path = Self::data_path_for_card(card_type, self.data_path);
+        if selected_path != self.data_path {
+            self.data_path = selected_path;
+            log::warn!("RTSX: SDXC detected; using PPBUF data path instead of SDMA");
+        }
         self.sd_card = Some(SdCardInfo {
             card_type,
             rca,
@@ -1181,7 +1194,7 @@ mod tests {
     use super::{
         CMD17_READ_SINGLE, DataPath, HostCommandKind, RtsxController, SD_CFG2, SD_CMD_START,
         SD_CMD0, SD_CMD1, SD_NO_CHECK_WAIT_CRC_TO, SD_RSP_R1, SD_TM_AUTO_READ_2, SD_TRANSFER,
-        SD_TRANSFER_END, SD_TRANSFER_START,
+        SD_TRANSFER_END, SD_TRANSFER_START, SdCardType,
     };
 
     #[test]
@@ -1247,5 +1260,21 @@ mod tests {
         assert_eq!(DataPath::preferred(true, true), DataPath::Sdma);
         assert_eq!(DataPath::preferred(true, false), DataPath::HostPpbuf);
         assert_eq!(DataPath::preferred(false, false), DataPath::Pio);
+    }
+
+    #[test]
+    fn sdxc_avoids_sdma_data_path() {
+        assert_eq!(
+            RtsxController::data_path_for_card(SdCardType::Sdxc, DataPath::Sdma),
+            DataPath::HostPpbuf
+        );
+        assert_eq!(
+            RtsxController::data_path_for_card(SdCardType::Sdhc, DataPath::Sdma),
+            DataPath::Sdma
+        );
+        assert_eq!(
+            RtsxController::data_path_for_card(SdCardType::Sdxc, DataPath::Pio),
+            DataPath::Pio
+        );
     }
 }
