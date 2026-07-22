@@ -177,7 +177,7 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     };
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
-    let mut chunk = [0u8; 512];
+    let mut chunk = [0u8; 65536];
     let result = loop {
         if deadline > 0 && (unsafe { core::arch::x86_64::_rdtsc() }) >= deadline {
             break Err(FsError::Io);

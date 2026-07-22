@@ -8,7 +8,8 @@ use core::pin::Pin;
 
 use hadris_fat::FatError;
 use hadris_fat::exfat::{
-    ExFatBootSector, ExFatDir, ExFatFileWriter, ExFatFs, ExFatInfo, ExFatTable,
+    ExFatBootSector, ExFatDir, ExFatFileEntry, ExFatFileReader, ExFatFileWriter, ExFatFs,
+    ExFatInfo, ExFatTable,
 };
 use hadris_fat::sync::{Error as IoError, ErrorKind, Read, Seek, SeekFrom, Write};
 use spin::Mutex;
@@ -222,7 +223,7 @@ type Writer = ExFatFileWriter<'static, ExFatDevice>;
 
 struct Handle {
     fd: u32,
-    path: String,
+    entry: ExFatFileEntry,
     offset: u64,
     writer: Option<Writer>,
 }
@@ -419,8 +420,8 @@ impl ExFatFileSystem {
             .ok_or(FsError::InvalidFileDescriptor)
     }
 
-    fn open_writer(&self, path: &str) -> Result<Writer, FsError> {
-        let mut entry = self.fs().open_path(path).map_err(Self::map_error)?;
+    fn open_writer_from_entry(&self, entry: &ExFatFileEntry) -> Result<Writer, FsError> {
+        let mut entry = entry.clone();
         if entry.first_cluster == 0 && entry.data_length == 0 {
             entry.no_fat_chain = true;
         }
@@ -523,11 +524,11 @@ impl FileSystem for ExFatFileSystem {
     }
 
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
-        self.fs().open_file(path).ok()?;
+        let entry = self.fs().open_path(path).ok()?;
         let fd = self.next_descriptor();
         self.handles.push(Handle {
             fd,
-            path: String::from(path),
+            entry,
             offset: 0,
             writer: None,
         });
@@ -545,10 +546,9 @@ impl FileSystem for ExFatFileSystem {
             return Err(FsError::PermissionDenied);
         }
         let offset = self.handles[index].offset;
+        let entry = &self.handles[index].entry;
         let read = {
-            let mut file = self
-                .fs()
-                .open_file(&self.handles[index].path)
+            let mut file = ExFatFileReader::new(self.fs(), entry)
                 .map_err(Self::map_error)?;
             if offset != 0 {
                 file.seek(SeekFrom::Start(offset))
@@ -570,7 +570,7 @@ impl FileSystem for ExFatFileSystem {
             if self.handles[index].offset != 0 {
                 return Err(FsError::InvalidSeek);
             }
-            let writer = self.open_writer(&self.handles[index].path)?;
+            let writer = self.open_writer_from_entry(&self.handles[index].entry)?;
             self.handles[index].writer = Some(writer);
         }
         let written = self.handles[index]
