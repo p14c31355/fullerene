@@ -1,6 +1,6 @@
 // fullerene/flasks/src/main.rs
 use clap::Parser;
-use isobemak::{BootInfo, IsoImage, UefiBootInfo, build_iso};
+use isobemak::{BootInfo, IsoImage, IsoImageFile, UefiBootInfo, build_iso};
 use std::{env, io, path::PathBuf, process::Command};
 
 use env_logger;
@@ -191,10 +191,14 @@ fn create_iso(workspace_root: &PathBuf) -> io::Result<PathBuf> {
 
     let image = IsoImage {
         volume_id: None,
-        // `build_iso` places BOOTX64.EFI and KERNEL.EFI in the UEFI ESP from
-        // `UefiBootInfo`.  Do not add them to the ISO9660 filesystem as well:
-        // doing so stores both large EFI images twice.
-        files: Vec::new(),
+        // `build_iso` places both EFI files in the UEFI ESP from
+        // `UefiBootInfo`.  Keep a single ISO9660 copy of the bootloader too:
+        // some ISO consumers look for /EFI/BOOT/BOOTX64.EFI directly instead
+        // of inspecting the embedded ESP.  KERNEL.EFI remains ESP-only.
+        files: vec![IsoImageFile {
+            source: bellows_path.clone(),
+            destination: "EFI/BOOT/BOOTX64.EFI".to_string(),
+        }],
         boot_info: BootInfo {
             bios_boot: None,
             uefi_boot: Some(UefiBootInfo {

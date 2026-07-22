@@ -197,13 +197,24 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
 }
 
 pub fn read_file_prefix(path: &str, limit: usize) -> Result<Vec<u8>, FsError> {
+    const TIMEOUT_MS: u64 = 15_000;
     if limit == 0 {
         return Ok(Vec::new());
     }
+    let tsc_per_ms = solvent::get_tsc_per_ms();
+    let deadline = if tsc_per_ms > 0 {
+        (unsafe { core::arch::x86_64::_rdtsc() })
+            .wrapping_add(tsc_per_ms.saturating_mul(TIMEOUT_MS))
+    } else {
+        0
+    };
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let result = loop {
+        if deadline > 0 && (unsafe { core::arch::x86_64::_rdtsc() }) >= deadline {
+            break Err(FsError::Io);
+        }
         if buf.len() == limit {
             break Ok(buf);
         }
