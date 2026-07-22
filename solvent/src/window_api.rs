@@ -248,6 +248,23 @@ pub fn launch_file(path: &str) {
             },
             None => return,
         };
+
+        // JPEG decoding is CPU-intensive; run it without the runtime lock
+        // so the UI does not freeze during decode of large images.
+        #[cfg(feature = "zune-jpeg")]
+        if matches!(extension_lower.as_str(), "jpg" | "jpeg") {
+            let decoded = crate::viewers::decode_jpeg(&file_data);
+            let mut runtime = RUNTIME_CONTEXT.runtime();
+            let Some(runtime) = runtime.as_mut() else {
+                return;
+            };
+            match decoded {
+                Ok(d) => crate::viewers::render_jpeg_window(runtime, d, name),
+                Err(e) => crate::viewers::show_error(runtime, "JPEG Error", &e),
+            }
+            return;
+        }
+
         let mut runtime = RUNTIME_CONTEXT.runtime();
         let Some(runtime) = runtime.as_mut() else {
             return;
@@ -256,8 +273,6 @@ pub fn launch_file(path: &str) {
             "bmp" => crate::viewers::open_bmp_data(runtime, &file_data, name),
             #[cfg(feature = "minipng")]
             "png" => crate::viewers::open_png_data(runtime, &file_data, name),
-            #[cfg(feature = "zune-jpeg")]
-            "jpg" | "jpeg" => crate::viewers::open_jpeg_data(runtime, &file_data, name),
             "wav" => crate::viewers::open_wav_data(runtime, &file_data, name),
             "mp3" => crate::viewers::open_mp3_data(runtime, &file_data, name),
             #[cfg(feature = "shiguredo_mp4")]

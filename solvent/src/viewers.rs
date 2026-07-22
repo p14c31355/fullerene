@@ -53,7 +53,7 @@ fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg
     rt.frame_due = true;
 }
 
-fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
+pub(crate) fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
     show_text_window(rt, title, msg, 50, 0x1a1a0d, 0xFFCCCC);
 }
 
@@ -214,20 +214,18 @@ pub fn open_png_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
 
 // ── JPEG viewer ──────────────────────────────────────────────
 
+/// Decoded JPEG image, produced without holding the runtime lock.
 #[cfg(feature = "zune-jpeg")]
-pub fn open_jpeg(rt: &mut RuntimeState, path: &str, name: &str) {
-    let data = match read_file(path) {
-        Ok(data) => data,
-        Err(error) => {
-            show_error(rt, "JPEG Error", &format!("Cannot read:\n{}", error));
-            return;
-        }
-    };
-    open_jpeg_data(rt, &data, name);
+pub struct DecodedJpeg {
+    pub width: u16,
+    pub height: u16,
+    pub pixels: Vec<u8>,
 }
 
+/// Decode JPEG data without any runtime lock held.
+/// Call this before acquiring the runtime lock to avoid UI freezes.
 #[cfg(feature = "zune-jpeg")]
-pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
+pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
     use zune_core::bytestream::ZCursor;
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
@@ -240,17 +238,8 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
         .set_max_height(MAX_IMG_H as usize);
     let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
     log_status!("JPEG decoder created, calling decode()");
-    let pixels = match decoder.decode() {
-        Ok(pixels) => pixels,
-        Err(error) => {
-            show_error(rt, "JPEG Error", &format!("Decode failed:\n{:?}", error));
-            return;
-        }
-    };
-    let Some(info) = decoder.info() else {
-        show_error(rt, "JPEG Error", "Missing image information");
-        return;
-    };
+    let pixels = decoder.decode().map_err(|e| format!("{:?}", e))?;
+    let info = decoder.info().ok_or_else(|| String::from("Missing image information"))?;
     log_status!(
         "JPEG decode done ({}x{} pixels={}B)",
         info.width,
@@ -260,16 +249,24 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
     let width = u32::from(info.width);
     let height = u32::from(info.height);
     if width > MAX_IMG_W || height > MAX_IMG_H {
-        show_error(
-            rt,
-            "JPEG Error",
-            &format!("Image too large: {}x{}", width, height),
-        );
-        return;
+        return Err(format!("Image too large: {}x{}", width, height));
     }
+    Ok(DecodedJpeg {
+        width: info.width,
+        height: info.height,
+        pixels,
+    })
+}
+
+/// Render a decoded JPEG into a new window.
+/// Must be called with the runtime lock held.
+#[cfg(feature = "zune-jpeg")]
+pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &str) {
+    let width = u32::from(decoded.width);
+    let height = u32::from(decoded.height);
 
     // Move decoded pixels out of kernel heap into page-backed memory.
-    let pixel_len = pixels.len();
+    let pixel_len = decoded.pixels.len();
     let mut page_pixels = match unsafe { PageBuf::<u8>::alloc_zeroed_for_len(pixel_len) } {
         Some(buf) => buf,
         None => {
@@ -277,8 +274,8 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
             return;
         }
     };
-    page_pixels.as_mut_slice().copy_from_slice(&pixels);
-    drop(pixels); // free kernel heap Vec<u8>
+    page_pixels.as_mut_slice().copy_from_slice(&decoded.pixels);
+    drop(decoded.pixels);
     log_status!("JPEG after decode (pixels on PageBuf)");
 
     let win_w = width.min(800).max(160);
@@ -304,6 +301,26 @@ pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
     }
     rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
+}
+
+#[cfg(feature = "zune-jpeg")]
+pub fn open_jpeg(rt: &mut RuntimeState, path: &str, name: &str) {
+    let data = match read_file(path) {
+        Ok(data) => data,
+        Err(error) => {
+            show_error(rt, "JPEG Error", &format!("Cannot read:\n{}", error));
+            return;
+        }
+    };
+    open_jpeg_data(rt, &data, name);
+}
+
+#[cfg(feature = "zune-jpeg")]
+pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
+    match decode_jpeg(data) {
+        Ok(decoded) => render_jpeg_window(rt, decoded, name),
+        Err(e) => show_error(rt, "JPEG Error", &e),
+    }
 }
 
 // ── WAV info viewer ─────────────────────────────────────────
