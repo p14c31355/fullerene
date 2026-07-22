@@ -9,12 +9,12 @@ pub const HEAP_SIZE: usize = 12 * 1024 * 1024; // 12MB heap (allows ~4MB back bu
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
 /// Maximum additional heap that can be requested via `extend_kernel_heap`.
-/// 32 MiB is sufficient for terminal surfaces even at 4K resolution
-/// (the framebuffer itself lives in GPU memory, not kernel heap).
-const HEAP_EXTEND_MAX: usize = 32 * 1024 * 1024; // 32 MiB
+/// Increased to 80 MiB to accommodate large image decode buffers (e.g.
+/// 1920x1080x4 = ~8 MiB) plus decoder working memory and terminal/editor surfaces.
+const HEAP_EXTEND_MAX: usize = 80 * 1024 * 1024; // 80 MiB
 
-/// Total heap size: initial 4 MiB + extendable 32 MiB.
-pub const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX; // 36 MiB
+/// Total heap size: initial 12 MiB + extendable 80 MiB.
+pub const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX; // 92 MiB
 
 use petroleum::page_table::MemoryDescriptorValidator;
 use petroleum::page_table::memory_map::MemoryMapDescriptor;
