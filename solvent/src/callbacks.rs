@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 pub type WallClockCallback = fn() -> Option<(u16, u8, u8, u8, u8, u8)>;
 pub type VfsReadDirCallback = fn(&str) -> Result<Vec<VfsEntry>, genome::FsError>;
 pub type VfsReadCallback = fn(&str) -> Result<Vec<u8>, genome::FsError>;
+pub type VfsReadPrefixCallback = fn(&str, usize) -> Result<Vec<u8>, genome::FsError>;
 pub type VfsWriteCallback = fn(&str, &[u8]) -> Result<(), genome::FsError>;
 pub type VfsTransferCallback = fn(&str, &str, bool) -> Result<(), genome::FsError>;
 pub type VfsRemoveCallback = fn(&str, bool) -> Result<(), genome::FsError>;
@@ -19,6 +20,7 @@ pub struct SolventCallbacks {
     pub wall_clock: Option<WallClockCallback>,
     pub vfs_readdir: Option<VfsReadDirCallback>,
     pub vfs_read: Option<VfsReadCallback>,
+    pub vfs_read_prefix: Option<VfsReadPrefixCallback>,
     pub vfs_write: Option<VfsWriteCallback>,
     pub vfs_copy: Option<VfsTransferCallback>,
     pub vfs_move: Option<VfsTransferCallback>,
@@ -41,6 +43,7 @@ impl SolventCallbacks {
             wall_clock: None,
             vfs_readdir: None,
             vfs_read: None,
+            vfs_read_prefix: None,
             vfs_write: None,
             vfs_copy: None,
             vfs_move: None,

@@ -185,6 +185,81 @@ pub struct DecodedJpeg {
     pub pixels: Vec<u8>,
 }
 
+#[cfg(feature = "zune-jpeg")]
+fn is_jpeg_sof_marker(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD | 0xCE | 0xCF
+    )
+}
+
+/// Inspect a JPEG prefix and return dimensions once the SOF marker is present.
+#[cfg(feature = "zune-jpeg")]
+pub fn preflight_jpeg_header(data: &[u8]) -> Result<Option<(u16, u16)>, String> {
+    if data.len() < 2 {
+        return Ok(None);
+    }
+    if data.get(..2) != Some(&[0xFF, 0xD8]) {
+        return Err(String::from("Not a JPEG file"));
+    }
+
+    let mut pos = 2;
+    while pos < data.len() {
+        while pos < data.len() && data[pos] != 0xFF {
+            pos += 1;
+        }
+        if pos + 1 >= data.len() {
+            return Ok(None);
+        }
+        while pos < data.len() && data[pos] == 0xFF {
+            pos += 1;
+        }
+        if pos >= data.len() {
+            return Ok(None);
+        }
+        let marker = data[pos];
+        pos += 1;
+
+        if matches!(marker, 0x01 | 0xD0..=0xD9) {
+            if marker == 0xD9 {
+                return Err(String::from("JPEG ended before image dimensions"));
+            }
+            continue;
+        }
+        if pos + 2 > data.len() {
+            return Ok(None);
+        }
+        let segment_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        if segment_len < 2 {
+            return Err(String::from("Invalid JPEG segment length"));
+        }
+        let segment_start = pos + 2;
+        let segment_end = pos + segment_len;
+        if segment_end > data.len() {
+            return Ok(None);
+        }
+
+        if is_jpeg_sof_marker(marker) {
+            if segment_len < 7 {
+                return Err(String::from("Invalid JPEG SOF segment"));
+            }
+            let height = u16::from_be_bytes([data[segment_start + 1], data[segment_start + 2]]);
+            let width = u16::from_be_bytes([data[segment_start + 3], data[segment_start + 4]]);
+            if u32::from(width) > MAX_IMG_W || u32::from(height) > MAX_IMG_H {
+                return Err(format!("Image too large: {}x{}", width, height));
+            }
+            return Ok(Some((width, height)));
+        }
+
+        if marker == 0xDA {
+            return Err(String::from("JPEG scan started before image dimensions"));
+        }
+        pos = segment_end;
+    }
+
+    Ok(None)
+}
+
 /// Decode JPEG data without any runtime lock held.
 /// Call this before acquiring the runtime lock to avoid UI freezes.
 #[cfg(feature = "zune-jpeg")]
@@ -808,6 +883,8 @@ pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "zune-jpeg")]
+    use super::preflight_jpeg_header;
     use super::{parse_mp3, tar_entries, zip_entries};
     use alloc::vec;
 
@@ -854,6 +931,27 @@ mod tests {
         assert_eq!(info.sample_rate, 44_100);
         assert_eq!(info.channels, 2);
         assert!((info.duration_seconds - 2_304.0 / 44_100.0).abs() < 0.000_001);
+    }
+
+    #[cfg(feature = "zune-jpeg")]
+    #[test]
+    fn jpeg_preflight_reads_dimensions_from_prefix() {
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x12, 0x34, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00,
+            0x01, 0x00, 0x02, 0x01, 0x01, 0x11, 0x00,
+        ];
+
+        assert_eq!(preflight_jpeg_header(&jpeg).unwrap(), Some((2, 1)));
+
+        let mut oversized = jpeg;
+        oversized[13..15].copy_from_slice(&1081u16.to_be_bytes());
+        assert!(
+            preflight_jpeg_header(&oversized)
+                .unwrap_err()
+                .contains("Image too large")
+        );
+
+        assert_eq!(preflight_jpeg_header(&jpeg[..8]).unwrap(), None);
     }
 
     #[cfg(feature = "zune-jpeg")]

@@ -159,6 +159,7 @@ pub(crate) fn render_explorer(runtime: &mut RuntimeState) {
 }
 
 const MAX_READ_SIZE: u64 = 16 * 1024 * 1024;
+const JPEG_HEADER_PREFIX_LIMIT: usize = 256 * 1024;
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt",
     "md",
@@ -203,6 +204,14 @@ fn read_file_with_limit(path: &str) -> Result<Vec<u8>, &'static str> {
         return Err("File too large for in-memory viewer");
     }
     Ok(data)
+}
+
+fn read_file_prefix(path: &str, limit: usize) -> Result<Vec<u8>, &'static str> {
+    let read_prefix = RUNTIME_CONTEXT
+        .callback_snapshot()
+        .vfs_read_prefix
+        .ok_or("VFS prefix-read callback not available")?;
+    read_prefix(path, limit).map_err(|_| "Failed to read file header")
 }
 
 fn show_open_error(msg: &str) {
@@ -297,6 +306,28 @@ pub fn launch_file(path: &str) {
         runtime.desktop.wm.raise_to_top(id);
         runtime.frame_due = true;
         return;
+    }
+
+    #[cfg(feature = "zune-jpeg")]
+    if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
+        let prefix = match read_file_prefix(path, JPEG_HEADER_PREFIX_LIMIT) {
+            Ok(prefix) => prefix,
+            Err(e) => {
+                show_open_error(e);
+                return;
+            }
+        };
+        match crate::viewers::preflight_jpeg_header(&prefix) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                show_open_error("JPEG header not found in the first 256 KiB");
+                return;
+            }
+            Err(e) => {
+                show_open_error(&e);
+                return;
+            }
+        }
     }
 
     // Media files: read data (may be slow on SDXC but VFS runs without runtime lock)
