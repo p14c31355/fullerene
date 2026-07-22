@@ -220,10 +220,12 @@ impl Seek for ExFatDevice {
 
 type ExFatInner = ExFatFs<ExFatDevice>;
 type Writer = ExFatFileWriter<'static, ExFatDevice>;
+type Reader = ExFatFileReader<'static, ExFatDevice>;
 
 struct Handle {
     fd: u32,
     entry: ExFatFileEntry,
+    reader: Option<Reader>,
     offset: u64,
     writer: Option<Writer>,
 }
@@ -525,10 +527,15 @@ impl FileSystem for ExFatFileSystem {
 
     fn open(&mut self, path: &str, flags: u32) -> Option<FileDescriptor> {
         let entry = self.fs().open_path(path).ok()?;
+        let reader = ExFatFileReader::new(self.fs(), &entry).ok()?;
+        // SAFETY: inner is pinned in a Box and is therefore never moved. Every
+        // reader is removed/dropped before inner is dropped (see Drop).
+        let reader: Reader = unsafe { mem::transmute(reader) };
         let fd = self.next_descriptor();
         self.handles.push(Handle {
             fd,
             entry,
+            reader: Some(reader),
             offset: 0,
             writer: None,
         });
@@ -545,18 +552,10 @@ impl FileSystem for ExFatFileSystem {
         if self.handles[index].writer.is_some() {
             return Err(FsError::PermissionDenied);
         }
-        let offset = self.handles[index].offset;
-        let entry = &self.handles[index].entry;
-        let read = {
-            let mut file = ExFatFileReader::new(self.fs(), entry)
-                .map_err(Self::map_error)?;
-            if offset != 0 {
-                file.seek(SeekFrom::Start(offset))
-                    .map_err(Self::map_io_error)?;
-            }
-            file.read(buf).map_err(Self::map_io_error)?
-        };
-        self.handles[index].offset += read as u64;
+        let handle = &mut self.handles[index];
+        let reader = handle.reader.as_mut().ok_or(FsError::InvalidFileDescriptor)?;
+        let read = reader.read(buf).map_err(Self::map_io_error)?;
+        handle.offset += read as u64;
         Ok(read)
     }
 
@@ -603,6 +602,9 @@ impl FileSystem for ExFatFileSystem {
         let handle = &mut self.handles[index];
         if handle.writer.is_some() && new_pos != handle.offset {
             return Err(FsError::InvalidSeek);
+        }
+        if let Some(reader) = handle.reader.as_mut() {
+            reader.seek(SeekFrom::Start(new_pos)).map_err(Self::map_io_error)?;
         }
         handle.offset = new_pos;
         Ok(())

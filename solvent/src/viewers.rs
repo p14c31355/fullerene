@@ -238,7 +238,17 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
         }
     }
 
-    // Step 4: Decode pixel data (heap should now have space).
+    // Step 4: Pre-flight sanity check; reject images whose pixel buffer would
+    // require an unreasonable number of MCU rows (more than 4× the height limit)
+    // as a heuristic guard against decoder hangs on invalid scan data.
+    if buffer_size > (MAX_IMG_W * MAX_IMG_H * 4) as usize {
+        return Err(format!(
+            "JPEG buffer size {} exceeds maximum ({}x{}x4)",
+            buffer_size, MAX_IMG_W, MAX_IMG_H,
+        ));
+    }
+
+    // Step 5: Decode pixel data (heap should now have space).
     log_status!("JPEG calling decode()");
     let pixels = decoder.decode().map_err(|e| format!("JPEG decode error: {:?}", e))?;
     log_status!("JPEG decode done ({}x{} pixels={}B)", info.width, info.height, pixels.len());
