@@ -1251,8 +1251,82 @@ fn parse_mvhd_duration(payload: &[u8]) -> Option<u64> {
 }
 
 #[cfg(feature = "shiguredo_mp4")]
-pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
-    let summary = parse_mp4_summary(data);
+fn mp4_sample_entry_desc(entry: &shiguredo_mp4::boxes::SampleEntry) -> String {
+    let codec = match entry {
+        shiguredo_mp4::boxes::SampleEntry::Avc1(_) => "H.264/AVC (avc1)",
+        shiguredo_mp4::boxes::SampleEntry::Hev1(_) => "HEVC (hev1)",
+        shiguredo_mp4::boxes::SampleEntry::Hvc1(_) => "HEVC (hvc1)",
+        shiguredo_mp4::boxes::SampleEntry::Vp08(_) => "VP8 (vp08)",
+        shiguredo_mp4::boxes::SampleEntry::Vp09(_) => "VP9 (vp09)",
+        shiguredo_mp4::boxes::SampleEntry::Av01(_) => "AV1 (av01)",
+        shiguredo_mp4::boxes::SampleEntry::Opus(_) => "Opus",
+        shiguredo_mp4::boxes::SampleEntry::Mp4a(_) => "AAC/MP4A",
+        shiguredo_mp4::boxes::SampleEntry::Flac(_) => "FLAC",
+        shiguredo_mp4::boxes::SampleEntry::Unknown(_) => "unknown",
+    };
+    let mut desc = String::from(codec);
+    if let Some((width, height)) = entry.video_resolution() {
+        desc.push_str(&format!(" {}x{}", width, height));
+    }
+    if let Some(channels) = entry.audio_channel_count() {
+        desc.push_str(&format!(" {}ch", channels));
+    }
+    if let Some(rate) = entry.audio_sample_rate() {
+        desc.push_str(&format!(" {}Hz", rate));
+    }
+    desc
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn mp4_track_lines(data: &[u8]) -> Result<Vec<String>, String> {
+    let mut demuxer = shiguredo_mp4::demux::Mp4FileDemuxer::new();
+    demuxer.handle_input(shiguredo_mp4::demux::Input { position: 0, data });
+    let tracks = demuxer
+        .tracks()
+        .map_err(|error| format!("Track parse failed: {:?}", error))?;
+    let mut lines = Vec::new();
+    let mut seen_entries = Vec::new();
+    for track in tracks {
+        let kind = match track.kind {
+            shiguredo_mp4::TrackKind::Video => "video",
+            shiguredo_mp4::TrackKind::Audio => "audio",
+        };
+        let duration = if track.duration == 0 {
+            String::from("unknown")
+        } else {
+            format!("{}s", track.duration / u64::from(track.timescale.get()))
+        };
+        lines.push(format!(
+            "Track {}: {} duration {}",
+            track.track_id, kind, duration
+        ));
+    }
+
+    for _ in 0..256 {
+        let sample = demuxer
+            .next_sample()
+            .map_err(|error| format!("Sample parse failed: {:?}", error))?;
+        let Some(sample) = sample else {
+            break;
+        };
+        if seen_entries.contains(&sample.track.track_id) {
+            continue;
+        }
+        if let Some(entry) = sample.sample_entry {
+            lines.push(format!(
+                "Codec {}: {}",
+                sample.track.track_id,
+                mp4_sample_entry_desc(entry)
+            ));
+            seen_entries.push(sample.track.track_id);
+        }
+    }
+    Ok(lines)
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+pub fn open_mp4_data(rt: &mut RuntimeState, data: Vec<u8>, name: &str) {
+    let summary = parse_mp4_summary(&data);
     let mut brands = String::new();
     for (index, brand) in summary.compatible_brands.iter().enumerate() {
         if index > 0 {
@@ -1267,8 +1341,13 @@ pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
         .duration_seconds
         .map(|seconds| format!("{} s", seconds))
         .unwrap_or_else(|| String::from("(not found in prefix)"));
+    let track_details = match mp4_track_lines(&data) {
+        Ok(lines) if !lines.is_empty() => lines.join("\n"),
+        Ok(_) => String::from("(no audio/video tracks found)"),
+        Err(error) => format!("({})", error),
+    };
     let msg = format!(
-        "File: {}\nFormat: MP4\nMajor brand: {}\nCompatible: {}\nMovie box: {}\nDuration: {}\n\nPlayback not yet implemented.",
+        "File: {}\nFormat: MP4\nMajor brand: {}\nCompatible: {}\nMovie box: {}\nDuration: {}\n{}\n\nH.264 playback requires a no_std decoder; no patched decoder is bundled.",
         name,
         summary.major_brand,
         brands,
@@ -1278,6 +1357,7 @@ pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
             "not in prefix"
         },
         duration,
+        track_details,
     );
     show_text_window(rt, "Movie Player", &msg, 50, 0x0d0d1a, 0xCCCCFF);
 }

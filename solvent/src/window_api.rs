@@ -160,7 +160,6 @@ pub(crate) fn render_explorer(runtime: &mut RuntimeState) {
 
 const MAX_READ_SIZE: u64 = 16 * 1024 * 1024;
 const JPEG_HEADER_PREFIX_LIMIT: usize = 256 * 1024;
-const MP4_HEADER_PREFIX_LIMIT: usize = 256 * 1024;
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt",
     "md",
@@ -333,8 +332,8 @@ pub fn launch_file(path: &str) {
 
     #[cfg(feature = "shiguredo_mp4")]
     if ext_lower == "mp4" {
-        let prefix = match read_file_prefix(path, MP4_HEADER_PREFIX_LIMIT) {
-            Ok(prefix) => prefix,
+        let data = match read_file_with_limit(path) {
+            Ok(data) => data,
             Err(e) => {
                 show_open_error(e);
                 return;
@@ -344,7 +343,7 @@ pub fn launch_file(path: &str) {
         let Some(runtime) = runtime.as_mut() else {
             return;
         };
-        crate::viewers::open_mp4_data(runtime, &prefix, name);
+        crate::viewers::open_mp4_data(runtime, data, name);
         return;
     }
 
