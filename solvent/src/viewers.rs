@@ -383,6 +383,7 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
 
 const RLE_FRAME_INTERVAL_MS: u64 = 33;
 const RLE_MAX_PIXELS: usize = 1920 * 1080;
+const RLE_MAX_FRAMES: u32 = 10_000;
 const RLE_MAGIC: &[u8; 4] = b"BARL";
 const RLE_HDR_SIZE: usize = 16;
 
@@ -419,6 +420,9 @@ impl RleFile {
         let frame_count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
         if frame_count == 0 {
             return Err(RleError::ZeroFrames);
+        }
+        if frame_count > RLE_MAX_FRAMES {
+            return Err(RleError::Truncated);
         }
         let frame_width = u16::from_le_bytes([data[12], data[13]]);
         let frame_height = u16::from_le_bytes([data[14], data[15]]);

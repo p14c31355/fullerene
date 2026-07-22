@@ -316,6 +316,12 @@ pub fn launch_file(path: &str) {
         return;
     }
 
+    #[cfg(not(feature = "shiguredo_mp4"))]
+    if ext_lower == "mp4" {
+        show_open_error("MP4 support not compiled in (shiguredo_mp4 feature disabled)");
+        return;
+    }
+
     // Media files: read data (may be slow on SDXC but VFS runs without runtime lock)
     let file_data = match read_file_with_limit(path) {
         Ok(d) => d,

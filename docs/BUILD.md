@@ -106,7 +106,7 @@ Flasks supports dynamic VGA/display configuration via CLI arguments:
 Examples:
 ```bash
 # Rebuild only fullerene.iso without opening QEMU
-cargo run --bin flasks -- --iso-only
+cargo run -p flasks --bin flasks -- --iso-only
 
 # std-vga (Bochs VBE) for framebuffer debugging
 cargo run --bin flasks -- --vga std
