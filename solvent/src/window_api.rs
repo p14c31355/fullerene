@@ -160,6 +160,7 @@ pub(crate) fn render_explorer(runtime: &mut RuntimeState) {
 
 const MAX_READ_SIZE: u64 = 16 * 1024 * 1024;
 const JPEG_HEADER_PREFIX_LIMIT: usize = 256 * 1024;
+const MP4_HEADER_PREFIX_LIMIT: usize = 256 * 1024;
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt",
     "md",
@@ -330,6 +331,23 @@ pub fn launch_file(path: &str) {
         }
     }
 
+    #[cfg(feature = "shiguredo_mp4")]
+    if ext_lower == "mp4" {
+        let prefix = match read_file_prefix(path, MP4_HEADER_PREFIX_LIMIT) {
+            Ok(prefix) => prefix,
+            Err(e) => {
+                show_open_error(e);
+                return;
+            }
+        };
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        crate::viewers::open_mp4_data(runtime, &prefix, name);
+        return;
+    }
+
     // Media files: read data (may be slow on SDXC but VFS runs without runtime lock)
     let file_data = match read_file_with_limit(path) {
         Ok(d) => d,
@@ -376,8 +394,6 @@ pub fn launch_file(path: &str) {
         ),
         "wav" => crate::viewers::open_wav_data(runtime, &file_data, name),
         "mp3" => crate::viewers::open_mp3_data(runtime, &file_data, name),
-        #[cfg(feature = "shiguredo_mp4")]
-        "mp4" => crate::viewers::open_mp4_data(runtime, &file_data, name),
         "tar" => crate::viewers::open_tar_data(runtime, &file_data, name),
         #[cfg(feature = "gzip")]
         "tgz" | "gz" => {

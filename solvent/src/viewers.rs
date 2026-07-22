@@ -353,19 +353,6 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
     let width = u32::from(decoded.width);
     let height = u32::from(decoded.height);
 
-    // Move decoded pixels out of kernel heap into page-backed memory.
-    let pixel_len = decoded.pixels.len();
-    let mut page_pixels = match unsafe { PageBuf::<u8>::alloc_zeroed_for_len(pixel_len) } {
-        Some(buf) => buf,
-        None => {
-            show_error(rt, "JPEG Error", "Out of memory for pixel buffer");
-            return;
-        }
-    };
-    page_pixels.as_mut_slice().copy_from_slice(&decoded.pixels);
-    drop(decoded.pixels);
-    log_status!("JPEG after decode (pixels on PageBuf)");
-
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);
     let id = rt
@@ -373,7 +360,7 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
         .wm
         .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
     if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        let px = page_pixels.as_slice();
+        let px = decoded.pixels.as_slice();
         for y in 0..height.min(win_h) {
             for x in 0..width.min(win_w) {
                 let offset = ((y as usize) * (width as usize) + x as usize) * 3;
@@ -756,137 +743,173 @@ pub fn open_zip_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     show_archive_entries(rt, name, &zip_entries(data));
 }
 
-// ── MP4 player ───────────────────────────────────────────────
+// ── MP4 info viewer ──────────────────────────────────────────
 
 #[cfg(feature = "shiguredo_mp4")]
-use shiguredo_mp4::TrackKind;
+struct Mp4Summary {
+    major_brand: String,
+    compatible_brands: Vec<String>,
+    has_moov: bool,
+    duration_seconds: Option<u64>,
+}
 
 #[cfg(feature = "shiguredo_mp4")]
-fn codec_name(entry: &shiguredo_mp4::boxes::SampleEntry) -> &'static str {
-    use shiguredo_mp4::boxes::SampleEntry;
-    match entry {
-        SampleEntry::Avc1(_) => "H.264",
-        SampleEntry::Hev1(_) | SampleEntry::Hvc1(_) => "H.265",
-        SampleEntry::Vp08(_) => "VP8",
-        SampleEntry::Vp09(_) => "VP9",
-        SampleEntry::Av01(_) => "AV1",
-        _ => "Unknown",
+fn mp4_brand(bytes: &[u8]) -> String {
+    use alloc::string::ToString;
+
+    core::str::from_utf8(bytes)
+        .map(|brand| brand.trim_matches(char::from(0)).to_string())
+        .unwrap_or_else(|_| String::from("????"))
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn mp4_box_size(data: &[u8], offset: usize) -> Option<(usize, [u8; 4], usize)> {
+    if offset.checked_add(8)? > data.len() {
+        return None;
+    }
+    let size32 = u32::from_be_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+    let kind: [u8; 4] = data[offset + 4..offset + 8].try_into().ok()?;
+    match size32 {
+        0 => Some((data.len().saturating_sub(offset), kind, 8)),
+        1 => {
+            if offset.checked_add(16)? > data.len() {
+                return None;
+            }
+            let size64 = u64::from_be_bytes(data[offset + 8..offset + 16].try_into().ok()?);
+            let size = usize::try_from(size64).ok()?;
+            Some((size, kind, 16))
+        }
+        size => Some((size, kind, 8)),
+    }
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn parse_mp4_summary(data: &[u8]) -> Mp4Summary {
+    let mut summary = Mp4Summary {
+        major_brand: String::from("unknown"),
+        compatible_brands: Vec::new(),
+        has_moov: false,
+        duration_seconds: None,
+    };
+
+    let mut offset = 0usize;
+    let mut boxes_seen = 0usize;
+    while offset + 8 <= data.len() && boxes_seen < 128 {
+        boxes_seen += 1;
+        let Some((size, kind, header)) = mp4_box_size(data, offset) else {
+            break;
+        };
+        if size < header {
+            break;
+        }
+        let end = match offset.checked_add(size) {
+            Some(end) if end <= data.len() => end,
+            _ => break,
+        };
+        let payload = &data[offset + header..end];
+        match &kind {
+            b"ftyp" if payload.len() >= 8 => {
+                summary.major_brand = mp4_brand(&payload[..4]);
+                summary.compatible_brands.clear();
+                for brand in payload[8..].chunks_exact(4).take(8) {
+                    summary.compatible_brands.push(mp4_brand(brand));
+                }
+            }
+            b"moov" => {
+                summary.has_moov = true;
+                parse_moov_summary(payload, &mut summary);
+            }
+            _ => {}
+        }
+        offset = end;
+    }
+
+    summary
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn parse_moov_summary(data: &[u8], summary: &mut Mp4Summary) {
+    let mut offset = 0usize;
+    let mut boxes_seen = 0usize;
+    while offset + 8 <= data.len() && boxes_seen < 128 {
+        boxes_seen += 1;
+        let Some((size, kind, header)) = mp4_box_size(data, offset) else {
+            break;
+        };
+        if size < header {
+            break;
+        }
+        let end = match offset.checked_add(size) {
+            Some(end) if end <= data.len() => end,
+            _ => break,
+        };
+        let payload = &data[offset + header..end];
+        if &kind == b"mvhd" {
+            summary.duration_seconds = parse_mvhd_duration(payload);
+        }
+        offset = end;
+    }
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn parse_mvhd_duration(payload: &[u8]) -> Option<u64> {
+    let version = *payload.first()?;
+    match version {
+        0 if payload.len() >= 20 => {
+            let timescale = u32::from_be_bytes(payload[12..16].try_into().ok()?);
+            let duration = u32::from_be_bytes(payload[16..20].try_into().ok()?);
+            (timescale != 0).then_some(u64::from(duration / timescale))
+        }
+        1 if payload.len() >= 32 => {
+            let timescale = u32::from_be_bytes(payload[20..24].try_into().ok()?);
+            let duration = u64::from_be_bytes(payload[24..32].try_into().ok()?);
+            (timescale != 0).then_some(duration / u64::from(timescale))
+        }
+        _ => None,
     }
 }
 
 #[cfg(feature = "shiguredo_mp4")]
 pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
-    // Demux MP4
-    let mut demuxer = shiguredo_mp4::demux::Mp4FileDemuxer::new();
-    let input = shiguredo_mp4::demux::Input { position: 0, data };
-    demuxer.handle_input(input);
-
-    // `demuxer.tracks()` borrows demuxer, so copy the summary before sample iteration.
-    let tracks_with_kind: Vec<(u32, shiguredo_mp4::TrackKind, u64, u32)> = {
-        let t = match demuxer.tracks() {
-            Ok(t) => t,
-            Err(e) => {
-                show_error(rt, "MP4 Error", &format!("No tracks: {:?}", e));
-                return;
-            }
-        };
-        t.iter()
-            .map(|tr| (tr.track_id, tr.kind, tr.duration, tr.timescale.get()))
-            .collect()
-    };
-
-    let mut video_track_id = None;
-    let mut video_width = 0u16;
-    let mut video_height = 0u16;
-    let mut video_codec = "Unknown";
-    let mut audio_info = Vec::new();
-    let mut total_duration_ms = 0f64;
-
-    for &(tid, kind, dur, ts) in &tracks_with_kind {
-        let dur_sec = dur as f64 / ts as f64;
-        total_duration_ms = total_duration_ms.max(dur_sec * 1000.0);
-        match kind {
-            TrackKind::Video => {
-                video_track_id = Some(tid);
-            }
-            TrackKind::Audio => {
-                audio_info.push(format!("  Audio track {}: {} s", tid, dur_sec as u32));
-            }
+    let summary = parse_mp4_summary(data);
+    let mut brands = String::new();
+    for (index, brand) in summary.compatible_brands.iter().enumerate() {
+        if index > 0 {
+            brands.push_str(", ");
         }
+        brands.push_str(brand);
     }
-
-    let video_track_id = match video_track_id {
-        Some(id) => id,
-        None => {
-            show_text_window(
-                rt,
-                "Movie Player",
-                &format!(
-                    "File: {}\nFormat: MP4\n{} audio track(s)\nDuration: {:.0} s\n\nNo video track found.",
-                    name,
-                    audio_info.len(),
-                    total_duration_ms / 1000.0,
-                ),
-                50,
-                0x0d0d1a,
-                0xCCCCFF,
-            );
-            return;
-        }
-    };
-
-    // Sample entry metadata carries the encoded dimensions and codec.
-    // Limit iterations to avoid hanging on files with unrecognized codecs.
-    let mut remaining = 200u32;
-    loop {
-        if remaining == 0 {
-            break;
-        }
-        remaining -= 1;
-        match demuxer.next_sample() {
-            Ok(Some(sample)) if sample.track.track_id == video_track_id => {
-                if let Some(entry) = sample.sample_entry {
-                    if let Some((w, h)) = entry.video_resolution() {
-                        video_width = w;
-                        video_height = h;
-                    }
-                    if video_codec == "Unknown" {
-                        video_codec = codec_name(entry);
-                    }
-                }
-                if video_width > 0 || video_height > 0 || video_codec != "Unknown" {
-                    break;
-                }
-            }
-            Ok(Some(_)) => continue,
-            Ok(None) => break,
-            Err(_) => break,
-        }
+    if brands.is_empty() {
+        brands.push_str("(none found in prefix)");
     }
-
-    // Fallback: show info
+    let duration = summary
+        .duration_seconds
+        .map(|seconds| format!("{} s", seconds))
+        .unwrap_or_else(|| String::from("(not found in prefix)"));
     let msg = format!(
-        "File: {}\nFormat: MP4\nVideo: {}x{} {}\n{} audio\nDuration: {:.0} s\n\nPlayback not yet implemented.",
+        "File: {}\nFormat: MP4\nMajor brand: {}\nCompatible: {}\nMovie box: {}\nDuration: {}\n\nPlayback not yet implemented.",
         name,
-        video_width,
-        video_height,
-        video_codec,
-        if audio_info.is_empty() {
-            "No audio".into()
+        summary.major_brand,
+        brands,
+        if summary.has_moov {
+            "found"
         } else {
-            format!("{} track(s)", audio_info.len())
+            "not in prefix"
         },
-        total_duration_ms / 1000.0,
+        duration,
     );
     show_text_window(rt, "Movie Player", &msg, 50, 0x0d0d1a, 0xCCCCFF);
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "shiguredo_mp4")]
+    use super::parse_mp4_summary;
     #[cfg(feature = "zune-jpeg")]
     use super::preflight_jpeg_header;
     use super::{parse_mp3, tar_entries, zip_entries};
     use alloc::vec;
+    use alloc::vec::Vec;
 
     #[test]
     fn tar_listing_parses_a_regular_file() {
@@ -931,6 +954,40 @@ mod tests {
         assert_eq!(info.sample_rate, 44_100);
         assert_eq!(info.channels, 2);
         assert!((info.duration_seconds - 2_304.0 / 44_100.0).abs() < 0.000_001);
+    }
+
+    #[cfg(feature = "shiguredo_mp4")]
+    #[test]
+    fn mp4_summary_reads_brand_and_movie_duration_from_prefix() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&24u32.to_be_bytes());
+        data.extend_from_slice(b"ftyp");
+        data.extend_from_slice(b"isom");
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(b"isom");
+        data.extend_from_slice(b"mp42");
+
+        let mut mvhd_payload = vec![0u8; 20];
+        mvhd_payload[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        mvhd_payload[16..20].copy_from_slice(&12_000u32.to_be_bytes());
+        let mvhd_size = (8 + mvhd_payload.len()) as u32;
+        let moov_size = 8 + mvhd_size;
+        data.extend_from_slice(&(moov_size as u32).to_be_bytes());
+        data.extend_from_slice(b"moov");
+        data.extend_from_slice(&mvhd_size.to_be_bytes());
+        data.extend_from_slice(b"mvhd");
+        data.extend_from_slice(&mvhd_payload);
+
+        let summary = parse_mp4_summary(&data);
+        assert_eq!(summary.major_brand, "isom");
+        assert!(summary.has_moov);
+        assert_eq!(summary.duration_seconds, Some(12));
+        assert!(
+            summary
+                .compatible_brands
+                .iter()
+                .any(|brand| brand == "mp42")
+        );
     }
 
     #[cfg(feature = "zune-jpeg")]
