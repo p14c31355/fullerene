@@ -128,6 +128,7 @@ pub struct RuntimeState {
     pub settings_dirty: bool,
     pub klog_live_window: Option<WindowId>,
     pub klog_live_dirty: bool,
+    pub(crate) rle_playback: Option<crate::viewers::RlePlayback>,
     /// Earliest cursor position still drawn on the framebuffer while a redraw
     /// is pending. The full and lightweight render paths both consume it.
     pub(crate) cursor_redraw_from: Option<(i32, i32)>,
@@ -196,6 +197,7 @@ pub fn init() {
         settings_dirty: false,
         klog_live_window: None,
         klog_live_dirty: false,
+        rle_playback: None,
         cursor_redraw_from: None,
     });
 }

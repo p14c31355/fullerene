@@ -185,7 +185,7 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "lock",
 ];
 const MEDIA_EXTENSIONS: &[&str] = &[
-    "bmp", "png", "jpg", "jpeg", "wav", "mp3", "mp4", "tar", "tgz", "gz", "zip",
+    "bmp", "png", "jpg", "jpeg", "wav", "mp3", "mp4", "rle", "tar", "tgz", "gz", "zip",
 ];
 
 fn is_text_ext(ext: &str) -> bool {
@@ -375,6 +375,15 @@ pub fn launch_file(path: &str) {
     #[cfg(not(feature = "zune-jpeg"))]
     if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
         show_open_error("JPEG support not compiled in (zune-jpeg feature disabled)");
+        return;
+    }
+
+    if ext_lower == "rle" {
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        crate::viewers::open_rle_data(runtime, file_data, name);
         return;
     }
 

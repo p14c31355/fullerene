@@ -7,6 +7,7 @@ use crate::{GLYPH_H, HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use lattice::window::WindowId;
 use petroleum::PageBuf;
 
 const MAX_IMG_W: u32 = 1920;
@@ -376,6 +377,386 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
     }
     rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
+}
+
+// ── RLE animation viewer ─────────────────────────────────────
+
+const RLE_FRAME_INTERVAL_MS: u64 = 33;
+const RLE_MAX_PIXELS: usize = 1920 * 1080;
+const RLE_MAGIC: &[u8; 4] = b"BARL";
+const RLE_HDR_SIZE: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RleError {
+    TooShort,
+    BadMagic,
+    BadVersion(u32),
+    ZeroFrames,
+    Truncated,
+    FrameOutOfRange,
+}
+
+struct RleFile {
+    frame_count: u32,
+    frame_width: u16,
+    frame_height: u16,
+    frame_offsets: Vec<u64>,
+    total_pixels: usize,
+}
+
+impl RleFile {
+    fn parse(data: &[u8]) -> Result<Self, RleError> {
+        if data.len() < RLE_HDR_SIZE {
+            return Err(RleError::TooShort);
+        }
+        if &data[..4] != RLE_MAGIC {
+            return Err(RleError::BadMagic);
+        }
+        let version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        if version != 1 {
+            return Err(RleError::BadVersion(version));
+        }
+        let frame_count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+        if frame_count == 0 {
+            return Err(RleError::ZeroFrames);
+        }
+        let frame_width = u16::from_le_bytes([data[12], data[13]]);
+        let frame_height = u16::from_le_bytes([data[14], data[15]]);
+        let count = frame_count as usize;
+        let data_start = count
+            .checked_mul(2)
+            .and_then(|value| RLE_HDR_SIZE.checked_add(value))
+            .ok_or(RleError::Truncated)?;
+        if data_start >= data.len() {
+            return Err(RleError::Truncated);
+        }
+
+        let mut frame_offsets = Vec::with_capacity(count);
+        let mut offset = data_start as u64;
+        for index in 0..count {
+            let size_offset = RLE_HDR_SIZE + index * 2;
+            let chunk_size = u16::from_le_bytes([data[size_offset], data[size_offset + 1]]) as u64;
+            frame_offsets.push(offset);
+            offset = offset.saturating_add(chunk_size);
+        }
+
+        Ok(Self {
+            frame_count,
+            frame_width,
+            frame_height,
+            frame_offsets,
+            total_pixels: frame_width as usize * frame_height as usize,
+        })
+    }
+
+    fn total_pixels(&self) -> usize {
+        self.total_pixels
+    }
+
+    fn decode_frame(
+        &self,
+        data: &[u8],
+        frame_index: usize,
+        buffer: &mut [u8],
+    ) -> Result<bool, RleError> {
+        if buffer.len() < self.total_pixels {
+            return Err(RleError::TooShort);
+        }
+        if frame_index >= self.frame_offsets.len() {
+            return Err(RleError::FrameOutOfRange);
+        }
+
+        let start = self.frame_offsets[frame_index] as usize;
+        let end = if frame_index + 1 < self.frame_offsets.len() {
+            self.frame_offsets[frame_index + 1] as usize
+        } else {
+            data.len()
+        };
+        if start >= data.len() || end > data.len() || start > end {
+            return Ok(false);
+        }
+        decode_rle_inner(&data[start..end], buffer, self.total_pixels);
+        Ok(true)
+    }
+}
+
+fn decode_rle_inner(data: &[u8], buffer: &mut [u8], total: usize) {
+    let mut pixel = 0usize;
+    let mut cursor = 0usize;
+    while cursor + 3 <= data.len() && pixel < total {
+        let fill = data[cursor];
+        let run_len = u16::from_le_bytes([data[cursor + 1], data[cursor + 2]]) as usize;
+        cursor += 3;
+        let end = pixel.saturating_add(run_len).min(total);
+        buffer[pixel..end].fill(fill);
+        pixel = end;
+    }
+}
+
+fn compute_rle_letterbox(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32, u32, u32) {
+    if src_h == 0 || dst_h == 0 || src_w == 0 || dst_w == 0 {
+        return (0, 0, 0, 0);
+    }
+
+    let sw = src_w as u64;
+    let sh = src_h as u64;
+    let dw = dst_w as u64;
+    let dh = dst_h as u64;
+
+    if dw * sh > sw * dh {
+        let width = (dh * sw / sh).max(1);
+        (
+            width as u32,
+            dst_h,
+            ((dst_w as u64).saturating_sub(width) / 2) as u32,
+            0,
+        )
+    } else {
+        let height = (dw * sh / sw).max(1);
+        (
+            dst_w,
+            height as u32,
+            0,
+            ((dst_h as u64).saturating_sub(height) / 2) as u32,
+        )
+    }
+}
+
+fn draw_decoded_rle_frame(
+    pixels: &mut [u32],
+    stride: u32,
+    src_w: u32,
+    src_h: u32,
+    decoded: &[u8],
+    off_x: u32,
+    off_y: u32,
+    draw_w: u32,
+    draw_h: u32,
+) {
+    let stride = stride as usize;
+    let src_w = src_w as usize;
+    let src_h = src_h as usize;
+    let draw_w = draw_w as usize;
+    let draw_h = draw_h as usize;
+    let off_x = off_x as usize;
+    let off_y = off_y as usize;
+
+    if decoded.len() < src_w.saturating_mul(src_h) || draw_w == 0 || draw_h == 0 {
+        return;
+    }
+
+    for y in 0..draw_h {
+        let src_y = y * src_h / draw_h;
+        if src_y >= src_h {
+            continue;
+        }
+        let Some(row_offset) = off_y
+            .checked_add(y)
+            .and_then(|row| row.checked_mul(stride))
+            .and_then(|value| value.checked_add(off_x))
+        else {
+            continue;
+        };
+        let Some(row_end) = row_offset.checked_add(draw_w) else {
+            continue;
+        };
+        if row_end > pixels.len() {
+            continue;
+        }
+        for x in 0..draw_w {
+            let src_x = x * src_w / draw_w;
+            let shade = if decoded[src_y * src_w + src_x] >= 128 {
+                255u32
+            } else {
+                0u32
+            };
+            pixels[row_offset + x] = 0xFF00_0000 | (shade << 16) | (shade << 8) | shade;
+        }
+    }
+}
+
+pub(crate) struct RlePlayback {
+    window_id: WindowId,
+    file: RleFile,
+    data: Vec<u8>,
+    frame_buf: Vec<u8>,
+    frame_index: usize,
+    last_frame_tsc: u64,
+}
+
+fn rdtsc_now() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+fn rle_window_size(src_w: u32, src_h: u32) -> (u32, u32) {
+    const MAX_W: u32 = 800;
+    const MAX_H: u32 = 600;
+
+    if src_w == 0 || src_h == 0 {
+        return (160, 120);
+    }
+    if src_w <= MAX_W && src_h <= MAX_H {
+        let scale = (MAX_W / src_w).min(MAX_H / src_h).clamp(1, 4);
+        return (src_w * scale, src_h * scale);
+    }
+
+    let (draw_w, draw_h, _, _) = compute_rle_letterbox(src_w, src_h, MAX_W, MAX_H);
+    (draw_w.max(160), draw_h.max(120))
+}
+
+fn render_rle_frame(rt: &mut RuntimeState, playback: &mut RlePlayback) -> bool {
+    let frame_count = playback.file.frame_count as usize;
+    if frame_count == 0 {
+        show_error(rt, "RLE Error", "RLE file has no frames");
+        return false;
+    }
+
+    match playback.file.decode_frame(
+        &playback.data,
+        playback.frame_index % frame_count,
+        &mut playback.frame_buf,
+    ) {
+        Ok(true) => {}
+        Ok(false) => return true,
+        Err(error) => {
+            show_error(
+                rt,
+                "RLE Error",
+                &format!("Frame decode failed: {:?}", error),
+            );
+            return false;
+        }
+    }
+
+    let Some(window) = rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|window| window.id == playback.window_id)
+    else {
+        return false;
+    };
+
+    let dst_w = window.surface.width();
+    let dst_h = window.surface.height();
+    let src_w = u32::from(playback.file.frame_width);
+    let src_h = u32::from(playback.file.frame_height);
+    let (draw_w, draw_h, off_x, off_y) = compute_rle_letterbox(src_w, src_h, dst_w, dst_h);
+    window.surface.fill_rect(0, 0, dst_w, dst_h, 0x000000);
+    draw_decoded_rle_frame(
+        window.surface.pixels_mut(),
+        dst_w,
+        src_w,
+        src_h,
+        &playback.frame_buf,
+        off_x,
+        off_y,
+        draw_w,
+        draw_h,
+    );
+    rt.desktop.invalidate_window(playback.window_id);
+    rt.frame_due = true;
+    true
+}
+
+pub(crate) fn open_rle_data(rt: &mut RuntimeState, data: Vec<u8>, name: &str) {
+    let file = match RleFile::parse(&data) {
+        Ok(file) => file,
+        Err(error) => {
+            show_error(rt, "RLE Error", &format!("Parse failed: {:?}", error));
+            return;
+        }
+    };
+    if file.total_pixels() == 0 || file.total_pixels() > RLE_MAX_PIXELS {
+        show_error(
+            rt,
+            "RLE Error",
+            &format!(
+                "Unsupported frame size: {}x{}",
+                file.frame_width, file.frame_height
+            ),
+        );
+        return;
+    }
+
+    if let Some(previous) = rt.rle_playback.take()
+        && rt
+            .desktop
+            .wm
+            .windows()
+            .iter()
+            .any(|window| window.id == previous.window_id)
+    {
+        rt.desktop.wm.close_window(previous.window_id);
+    }
+
+    let src_w = u32::from(file.frame_width);
+    let src_h = u32::from(file.frame_height);
+    let (win_w, win_h) = rle_window_size(src_w, src_h);
+    let title = format!("File Viewer - {}", name);
+    let window_id = rt
+        .desktop
+        .wm
+        .create_titled_window(120, 80, win_w, win_h, 0x000000, title);
+
+    let mut frame_buf = Vec::new();
+    frame_buf.resize(file.total_pixels(), 0);
+    let mut playback = RlePlayback {
+        window_id,
+        file,
+        data,
+        frame_buf,
+        frame_index: 0,
+        last_frame_tsc: rdtsc_now(),
+    };
+
+    if render_rle_frame(rt, &mut playback) {
+        playback.frame_index = 1 % playback.file.frame_count as usize;
+        rt.desktop.wm.raise_to_top(window_id);
+        rt.rle_playback = Some(playback);
+    } else {
+        rt.desktop.wm.close_window(window_id);
+    }
+}
+
+pub(crate) fn tick_rle_playback() {
+    let now_tsc = rdtsc_now();
+    let interval = crate::TSC_PER_MS
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .saturating_mul(RLE_FRAME_INTERVAL_MS)
+        .max(1);
+
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(rt) = runtime.as_mut() else {
+        return;
+    };
+    let Some(mut playback) = rt.rle_playback.take() else {
+        return;
+    };
+
+    let window_exists = rt
+        .desktop
+        .wm
+        .windows()
+        .iter()
+        .any(|window| window.id == playback.window_id);
+    if !window_exists {
+        return;
+    }
+
+    if now_tsc.wrapping_sub(playback.last_frame_tsc) < interval {
+        rt.rle_playback = Some(playback);
+        return;
+    }
+
+    playback.last_frame_tsc = now_tsc;
+    let keep_playing = render_rle_frame(rt, &mut playback);
+    if keep_playing {
+        let frame_count = playback.file.frame_count as usize;
+        playback.frame_index = (playback.frame_index + 1) % frame_count;
+        rt.rle_playback = Some(playback);
+    }
 }
 
 // ── WAV info viewer ─────────────────────────────────────────
@@ -907,7 +1288,7 @@ mod tests {
     use super::parse_mp4_summary;
     #[cfg(feature = "zune-jpeg")]
     use super::preflight_jpeg_header;
-    use super::{parse_mp3, tar_entries, zip_entries};
+    use super::{RleError, RleFile, compute_rle_letterbox, parse_mp3, tar_entries, zip_entries};
     use alloc::vec;
     use alloc::vec::Vec;
 
@@ -954,6 +1335,58 @@ mod tests {
         assert_eq!(info.sample_rate, 44_100);
         assert_eq!(info.channels, 2);
         assert!((info.duration_seconds - 2_304.0 / 44_100.0).abs() < 0.000_001);
+    }
+
+    fn sample_rle() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"BARL");
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&2u32.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&6u16.to_le_bytes());
+        data.extend_from_slice(&6u16.to_le_bytes());
+        data.push(0);
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.push(255);
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.push(255);
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.push(0);
+        data.extend_from_slice(&3u16.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn rle_parser_decodes_file_viewer_data() {
+        let data = sample_rle();
+        let file = RleFile::parse(&data).expect("valid RLE");
+        assert_eq!(file.frame_count, 2);
+        assert_eq!(file.frame_width, 2);
+        assert_eq!(file.frame_height, 2);
+        assert_eq!(file.total_pixels(), 4);
+
+        let mut frame = vec![0u8; file.total_pixels()];
+        assert!(file.decode_frame(&data, 0, &mut frame).unwrap());
+        assert_eq!(frame, [0, 0, 255, 255]);
+        assert!(file.decode_frame(&data, 1, &mut frame).unwrap());
+        assert_eq!(frame, [255, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rle_parser_rejects_bad_magic() {
+        let mut data = sample_rle();
+        data[0] = b'X';
+        assert!(matches!(RleFile::parse(&data), Err(RleError::BadMagic)));
+    }
+
+    #[test]
+    fn rle_letterbox_preserves_source_aspect_ratio() {
+        assert_eq!(compute_rle_letterbox(160, 120, 800, 600), (800, 600, 0, 0));
+        assert_eq!(
+            compute_rle_letterbox(160, 120, 800, 400),
+            (533, 400, 133, 0)
+        );
     }
 
     #[cfg(feature = "shiguredo_mp4")]
