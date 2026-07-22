@@ -74,19 +74,21 @@ fn parse_bool(s: &str) -> Option<bool> {
 
 /// Load settings from `/etc/settings.toml` via VFS and apply them.
 ///
-/// Returns `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded)` so the
-/// caller can sync to solvent.
+/// Returns
+/// `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded, klog_save)`
+/// so the caller can sync to solvent.
+#[allow(unused)]
 pub fn load_settings<E>(
     read_fn: impl FnOnce(&str) -> Result<Vec<u8>, E>,
-) -> (f32, u32, bool, bool) {
+) -> (f32, u32, bool, bool, bool) {
     let data = match read_fn("/etc/settings.toml") {
         Ok(data) => data,
-        Err(_) => return (1.0, 100, true, true),
+        Err(_) => return (1.0, 100, true, true, false),
     };
 
     let text = match core::str::from_utf8(&data) {
         Ok(s) => s,
-        Err(_) => return (1.0, 100, true, true),
+        Err(_) => return (1.0, 100, true, true, false),
     };
 
     let mut section: Option<&str> = None;
@@ -94,6 +96,7 @@ pub fn load_settings<E>(
     let mut brightness: f32 = 1.0;
     let mut top_panel: bool = true;
     let mut window_corner: bool = true; // rounded by default
+    let mut klog_save: bool = false;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -126,6 +129,11 @@ pub fn load_settings<E>(
                         window_corner = v;
                     }
                 }
+                (Some("debug"), "klog_save") => {
+                    if let Some(v) = parse_bool(value) {
+                        klog_save = v;
+                    }
+                }
                 _ => {}
             }
         }
@@ -137,6 +145,7 @@ pub fn load_settings<E>(
         bright_x100,
         top_panel,
         window_corner,
+        klog_save,
     )
 }
 
@@ -146,6 +155,7 @@ pub fn format_settings_toml(
     brightness_x100: u32,
     top_panel: bool,
     corner_rounded: bool,
+    klog_save: bool,
 ) -> String {
     alloc::format!(
         "# Fullerene Settings\n\
@@ -158,10 +168,14 @@ pub fn format_settings_toml(
          [display]\n\
          brightness = {:.2}\n\
          top_panel_enabled = {}\n\
-         window_corner = {}\n",
+         window_corner = {}\n\
+         \n\
+         [debug]\n\
+         klog_save = {}\n",
         sensitivity,
         brightness_x100 as f32 / 100.0,
         top_panel,
         corner_rounded,
+        klog_save,
     )
 }

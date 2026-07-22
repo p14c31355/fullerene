@@ -139,6 +139,33 @@ pub fn tick_core(now: u64) {
     }
 
     process_events();
+    // File launch may have been queued by event handlers that ran inside
+    // the runtime lock.  Process it now, outside the lock, so that VFS I/O
+    // (called inside launch_file) cannot deadlock with the compositor.
+    if let Some(path) = crate::window_api::PENDING_LAUNCH.lock().take() {
+        crate::launch_file(&path);
+    }
+    // Auto-refresh the live kernel log viewer if open, every ~0.8s (50 ticks).
+    if now % 50 == 0 {
+        if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
+            if runtime.klog_live_window.is_some() {
+                runtime.klog_live_dirty = true;
+                runtime.frame_due = true;
+            }
+        }
+    }
+
+    // NOTE: periodic kernel log write to SD card is DISABLED because the
+    // SD card SPI driver can hang on writes, which defeats the purpose of
+    // saving a crash log.  Use the shell command `klog > /mnt/klog.txt`
+    // or the debug menu to export logs manually.
+    // Deferred settings persistence (VFS write must happen outside the
+    // runtime lock to avoid deadlocks with filesystem I/O).
+    if crate::settings_bridge::PERSIST_PENDING.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        if let Some(save) = crate::RUNTIME_CONTEXT.callback_snapshot().settings_save {
+            save();
+        }
+    }
     service_explorer_navigation();
     service_explorer_copy();
     if RUNTIME_CONTEXT.runtime().as_mut().is_some_and(|runtime| {

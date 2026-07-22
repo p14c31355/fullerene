@@ -6,12 +6,31 @@
 use crate::{GLYPH_H, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
+use petroleum::PageBuf;
 
 const MAX_IMG_W: u32 = 1920;
 const MAX_IMG_H: u32 = 1080;
 const GLYPH_SIZE: u32 = 8;
+
+/// Log a status message to the taskbar debug area + serial.
+macro_rules! log_status {
+    ($label:expr $(, $arg:expr)*) => {{
+        #[cfg(not(test))]
+        {
+            let msg = alloc::format!($label $(, $arg)*);
+            let s = petroleum::heap_stats();
+            nitrogen::debug::print(
+                "viewers",
+                &alloc::format!("{} free={}K", msg, s.free / 1024),
+            );
+            petroleum::serial::serial_log(format_args!(
+                "[viewers] {}  heap_free={} used={} total={}\n",
+                msg, s.free, s.used, s.total,
+            ));
+        }
+    }};
+}
 
 fn read_file(path: &str) -> Result<Vec<u8>, genome::FsError> {
     let read_fn = RUNTIME_CONTEXT
@@ -41,7 +60,7 @@ fn show_error(rt: &mut RuntimeState, title: &str, msg: &str) {
 // ── BMP viewer (tinybmp) ─────────────────────────────────────
 
 #[cfg(feature = "tinybmp")]
-pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
+pub fn open_bmp(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
         Err(e) => {
@@ -49,13 +68,20 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
             return;
         }
     };
-    let bmp = match tinybmp::RawBmp::from_slice(&data) {
+    open_bmp_data(rt, &data, name);
+}
+
+#[cfg(feature = "tinybmp")]
+pub fn open_bmp_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
+    log_status!("BMP before decode");
+    let bmp = match tinybmp::RawBmp::from_slice(data) {
         Ok(b) => b,
         Err(_) => {
             show_error(rt, "BMP Error", "Parse failed");
             return;
         }
     };
+    log_status!("BMP after parse");
     if !matches!(
         bmp.header().bpp,
         tinybmp::Bpp::Bits24 | tinybmp::Bpp::Bits32
@@ -95,6 +121,11 @@ pub fn open_bmp(rt: &mut RuntimeState, path: &str, _name: &str) {
 
 #[cfg(not(feature = "tinybmp"))]
 pub fn open_bmp(rt: &mut RuntimeState, _path: &str, name: &str) {
+    open_bmp_data(rt, &[], name);
+}
+
+#[cfg(not(feature = "tinybmp"))]
+pub fn open_bmp_data(rt: &mut RuntimeState, _data: &[u8], name: &str) {
     show_error(
         rt,
         "BMP Error",
@@ -108,7 +139,7 @@ pub fn open_bmp(rt: &mut RuntimeState, _path: &str, name: &str) {
 // ── PNG viewer ───────────────────────────────────────────────
 
 #[cfg(feature = "minipng")]
-pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
+pub fn open_png(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(d) => d,
         Err(e) => {
@@ -116,9 +147,13 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
             return;
         }
     };
+    open_png_data(rt, &data, name);
+}
 
+#[cfg(feature = "minipng")]
+pub fn open_png_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
     // Use minipng: decode PNG header to get dimensions
-    let header = match minipng::decode_png_header(&data) {
+    let header = match minipng::decode_png_header(data) {
         Ok(h) => h,
         Err(e) => {
             show_error(rt, "PNG Error", &format!("Bad header:\n{:?}", e));
@@ -132,15 +167,25 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
         return;
     }
 
-    // Full decode
-    let mut buf = vec![0u8; (w as usize) * (h as usize) * 4];
-    let img = match minipng::decode_png(&data, &mut buf) {
+    log_status!("PNG before decode");
+
+    // Full decode into page-backed buffer (bypasses kernel heap)
+    let buf_len = (w as usize) * (h as usize) * 4;
+    let mut page_buf = match unsafe { PageBuf::<u8>::alloc_zeroed_for_len(buf_len) } {
+        Some(buf) => buf,
+        None => {
+            show_error(rt, "PNG Error", "Out of memory for pixel buffer");
+            return;
+        }
+    };
+    let img = match minipng::decode_png(data, page_buf.as_mut_slice()) {
         Ok(img) => img,
         Err(e) => {
             show_error(rt, "PNG Error", &format!("Decode failed:\n{:?}", e));
             return;
         }
     };
+    log_status!("PNG after decode (pixels on PageBuf)");
 
     let win_w = w.min(800).max(160);
     let win_h = h.min(600).max(120);
@@ -170,11 +215,7 @@ pub fn open_png(rt: &mut RuntimeState, path: &str, _name: &str) {
 // ── JPEG viewer ──────────────────────────────────────────────
 
 #[cfg(feature = "zune-jpeg")]
-pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
-    use zune_core::bytestream::ZCursor;
-    use zune_core::colorspace::ColorSpace;
-    use zune_core::options::DecoderOptions;
-
+pub fn open_jpeg(rt: &mut RuntimeState, path: &str, name: &str) {
     let data = match read_file(path) {
         Ok(data) => data,
         Err(error) => {
@@ -182,12 +223,23 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
             return;
         }
     };
+    open_jpeg_data(rt, &data, name);
+}
+
+#[cfg(feature = "zune-jpeg")]
+pub fn open_jpeg_data(rt: &mut RuntimeState, data: &[u8], _name: &str) {
+    use zune_core::bytestream::ZCursor;
+    use zune_core::colorspace::ColorSpace;
+    use zune_core::options::DecoderOptions;
+
+    log_status!("JPEG file read ({} B)", data.len());
+
     let options = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGB)
         .set_max_width(MAX_IMG_W as usize)
         .set_max_height(MAX_IMG_H as usize);
-    let mut decoder =
-        zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data.as_slice()), options);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    log_status!("JPEG decoder created, calling decode()");
     let pixels = match decoder.decode() {
         Ok(pixels) => pixels,
         Err(error) => {
@@ -199,6 +251,12 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
         show_error(rt, "JPEG Error", "Missing image information");
         return;
     };
+    log_status!(
+        "JPEG decode done ({}x{} pixels={}B)",
+        info.width,
+        info.height,
+        pixels.len()
+    );
     let width = u32::from(info.width);
     let height = u32::from(info.height);
     if width > MAX_IMG_W || height > MAX_IMG_H {
@@ -209,6 +267,20 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
         );
         return;
     }
+
+    // Move decoded pixels out of kernel heap into page-backed memory.
+    let pixel_len = pixels.len();
+    let mut page_pixels = match unsafe { PageBuf::<u8>::alloc_zeroed_for_len(pixel_len) } {
+        Some(buf) => buf,
+        None => {
+            show_error(rt, "JPEG Error", "Out of memory for pixel buffer");
+            return;
+        }
+    };
+    page_pixels.as_mut_slice().copy_from_slice(&pixels);
+    drop(pixels); // free kernel heap Vec<u8>
+    log_status!("JPEG after decode (pixels on PageBuf)");
+
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);
     let id = rt
@@ -216,13 +288,14 @@ pub fn open_jpeg(rt: &mut RuntimeState, path: &str, _name: &str) {
         .wm
         .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
     if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let px = page_pixels.as_slice();
         for y in 0..height.min(win_h) {
             for x in 0..width.min(win_w) {
                 let offset = ((y as usize) * (width as usize) + x as usize) * 3;
-                if offset + 2 < pixels.len() {
-                    let color = (pixels[offset] as u32) << 16
-                        | (pixels[offset + 1] as u32) << 8
-                        | pixels[offset + 2] as u32;
+                if offset + 2 < px.len() {
+                    let color = (px[offset] as u32) << 16
+                        | (px[offset + 1] as u32) << 8
+                        | px[offset + 2] as u32;
                     window.surface.set_pixel(x, y, color);
                 }
             }
@@ -243,7 +316,10 @@ pub fn open_wav(rt: &mut RuntimeState, path: &str, name: &str) {
             return;
         }
     };
+    open_wav_data(rt, &data, name);
+}
 
+pub fn open_wav_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     // Manual WAV parsing (pure_wav crate API is streaming-oriented)
     if data.len() < 44 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" {
         show_error(rt, "WAV Error", "Not a valid WAV file");
@@ -419,8 +495,11 @@ pub fn open_mp3(rt: &mut RuntimeState, path: &str, name: &str) {
             return;
         }
     };
+    open_mp3_data(rt, &data, name);
+}
 
-    let Some(info) = parse_mp3(&data) else {
+pub fn open_mp3_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
+    let Some(info) = parse_mp3(data) else {
         show_error(rt, "MP3 Error", "No valid MP3 audio frames found.");
         return;
     };
@@ -508,7 +587,11 @@ pub fn open_tar(rt: &mut RuntimeState, path: &str, name: &str) {
             return;
         }
     };
-    show_archive_entries(rt, name, &tar_entries(&data));
+    open_tar_data(rt, &data, name);
+}
+
+pub fn open_tar_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
+    show_archive_entries(rt, name, &tar_entries(data));
 }
 
 // ── gzip / tgz archive support ───────────────────────────────
@@ -563,7 +646,12 @@ pub fn open_gzip(rt: &mut RuntimeState, path: &str, name: &str, tar: bool) {
             return;
         }
     };
-    let decoded = match decompress_gzip(&data) {
+    open_gzip_data(rt, &data, name, tar);
+}
+
+#[cfg(feature = "gzip")]
+pub fn open_gzip_data(rt: &mut RuntimeState, data: &[u8], name: &str, tar: bool) {
+    let decoded = match decompress_gzip(data) {
         Ok(decoded) => decoded,
         Err(error) => {
             show_error(rt, "gzip Error", error);
@@ -632,7 +720,11 @@ pub fn open_zip(rt: &mut RuntimeState, path: &str, name: &str) {
             return;
         }
     };
-    show_archive_entries(rt, name, &zip_entries(&data));
+    open_zip_data(rt, &data, name);
+}
+
+pub fn open_zip_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
+    show_archive_entries(rt, name, &zip_entries(data));
 }
 
 // ── MP4 player ───────────────────────────────────────────────
@@ -662,13 +754,14 @@ pub fn open_mp4(rt: &mut RuntimeState, path: &str, name: &str) {
             return;
         }
     };
+    open_mp4_data(rt, &data, name);
+}
 
+#[cfg(feature = "shiguredo_mp4")]
+pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     // Demux MP4
     let mut demuxer = shiguredo_mp4::demux::Mp4FileDemuxer::new();
-    let input = shiguredo_mp4::demux::Input {
-        position: 0,
-        data: &data,
-    };
+    let input = shiguredo_mp4::demux::Input { position: 0, data };
     demuxer.handle_input(input);
 
     // `demuxer.tracks()` borrows demuxer, so copy the summary before sample iteration.

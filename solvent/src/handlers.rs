@@ -3,7 +3,7 @@
 //! These handlers are thin wrappers over state owned by `RuntimeContext`.
 //! The heavy logic (menu dispatch, terminal I/O) lives in dedicated modules.
 
-use crate::{FB_DIMS, RUNTIME_CONTEXT, SUPER_HELD};
+use crate::{FB_DIMS, RUNTIME_CONTEXT, SUPER_HELD, window_api::PENDING_LAUNCH};
 use lattice::shell_overlay::ShellState;
 use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
@@ -188,7 +188,7 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
         rt.explorer_dirty = true;
         rt.frame_due = true;
         if let Some(path) = launch_path {
-            crate::launch_file(rt, &path);
+            *PENDING_LAUNCH.lock() = Some(path);
         }
         return;
     }
@@ -238,9 +238,9 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
                     let launch_path = explorer.activate_entry(idx);
                     explorer.last_click_entry = None;
                     if let Some(path) = launch_path {
-                        // Save path, drop explorer borrow, then launch
-                        let _ = explorer;
-                        crate::launch_file(rt, &path);
+                        // Save path to be launched later, outside the
+                        // runtime lock, to avoid VFS deadlock.
+                        *PENDING_LAUNCH.lock() = Some(path);
                         return;
                     }
                 } else {
@@ -342,24 +342,54 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
         let ay = start_y + row * (icon_size + label_h + pad);
         if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
             match idx {
-                0 => {
-                    // Defer shell launch — cannot call ensure_terminal_window()
-                    // or launch_shell() while holding the runtime-state lock (deadlock).
+                0 | 1 => {
+                    // Shell (0) / Terminal (1) — both launch a shell.
                     rt.shell_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
                 2 => {
-                    // Defer editor launch — cannot call ensure_editor_window()
-                    // while holding the runtime-state lock (deadlock).
+                    // Editor
                     rt.editor_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
+                3 => {
+                    // Clock — show system info
+                    crate::menu_actions::open_info_window(
+                        rt,
+                        crate::menu_actions::InfoWindow::SystemInfo,
+                    );
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
                 4 => {
-                    rt.shell_state = ShellState::TimeZoneSelector;
+                    // Settings
+                    crate::menu_actions::open_settings_window(rt);
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                5 => {
+                    // File Manager
+                    crate::menu_actions::open_info_window(
+                        rt,
+                        crate::menu_actions::InfoWindow::FileManager,
+                    );
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                6 => {
+                    // About
+                    crate::menu_actions::open_info_window(
+                        rt,
+                        crate::menu_actions::InfoWindow::About,
+                    );
+                    rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
@@ -457,7 +487,6 @@ impl EventHandler for ShellEventHandler {
                 let (ww, wh) = rt.desktop.work_area(fw, fh);
                 rt.desktop.wm.toggle_tiling();
                 rt.desktop.wm.retile(ww, wh);
-                rt.desktop.force_full_redraw();
                 rt.frame_due = true;
                 true
             }

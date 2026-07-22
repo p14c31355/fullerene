@@ -5,6 +5,7 @@ pub mod constants;
 pub mod heap;
 pub mod kernel;
 pub mod memory_map;
+pub mod page_buf;
 pub mod pat;
 pub mod pe;
 pub mod process;

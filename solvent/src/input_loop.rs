@@ -4,6 +4,8 @@ use lattice::desktop::DesktopAction;
 use resonance::{Event, InputEvent, MouseButton};
 use spin::Mutex;
 
+use alloc::string::String;
+
 use crate::{
     MOUSE_SENSITIVITY, PREV_MOUSE_BUTTONS, RUNTIME_CONTEXT, RuntimeState, editor_bridge,
     network_manager, settings_bridge,
@@ -90,37 +92,52 @@ pub fn poll_keyboard() {
             Some(key) => key,
             None => break,
         };
-        let mut runtime_guard = RUNTIME_CONTEXT.runtime();
-        if let Some(runtime) = runtime_guard.as_mut() {
-            if runtime.desktop.pwd_dialog_open {
-                handle_password_dialog_key(runtime, scancode, pressed);
-                continue;
-            }
+        let mut launch_path: Option<String> = None;
+        let mut explorer_handled = false;
+        {
+            let mut runtime_guard = RUNTIME_CONTEXT.runtime();
+            if let Some(runtime) = runtime_guard.as_mut() {
+                if runtime.desktop.pwd_dialog_open {
+                    handle_password_dialog_key(runtime, scancode, pressed);
+                    continue;
+                }
 
-            let top_id = runtime.desktop.wm.windows().last().map(|window| window.id);
-            if top_id.is_some() && runtime.editor_window == top_id {
+                let top_id = runtime.desktop.wm.windows().last().map(|window| window.id);
+                if top_id.is_some() && runtime.editor_window == top_id {
+                    drop(runtime_guard);
+                    editor_bridge::editor_handle_key(scancode, pressed);
+                    push_keyboard_event(scancode, pressed);
+                    continue;
+                }
+                if top_id.is_some() && runtime.settings_window == top_id {
+                    settings_bridge::settings_handle_key_inner(runtime, scancode, pressed);
+                    continue;
+                }
+                if top_id.is_some()
+                    && runtime
+                        .explorer
+                        .as_ref()
+                        .and_then(|explorer| explorer.window_id)
+                        == top_id
+                {
+                    // Capture the launch path from Enter key, then drop the
+                    // runtime lock BEFORE calling launch_file (which does VFS
+                    // I/O that would deadlock if the lock were held).
+                    launch_path = explorer_handle_key(runtime, scancode, pressed);
+                    explorer_handled = true;
+                    // Fall through to keyboard event push UNLESS we have a
+                    // launch path (handled below).
+                }
+            }
+            if !explorer_handled {
                 drop(runtime_guard);
-                editor_bridge::editor_handle_key(scancode, pressed);
                 push_keyboard_event(scancode, pressed);
-                continue;
-            }
-            if top_id.is_some() && runtime.settings_window == top_id {
-                settings_bridge::settings_handle_key_inner(runtime, scancode, pressed);
-                continue;
-            }
-            if top_id.is_some()
-                && runtime
-                    .explorer
-                    .as_ref()
-                    .and_then(|explorer| explorer.window_id)
-                    == top_id
-            {
-                explorer_handle_key(runtime, scancode, pressed);
-                continue;
             }
         }
-        drop(runtime_guard);
-        push_keyboard_event(scancode, pressed);
+        // VFS-backed file launch must happen outside the runtime lock.
+        if let Some(path) = launch_path {
+            crate::launch_file(&path);
+        }
     }
 }
 
@@ -260,30 +277,31 @@ pub(crate) fn scancode_to_ascii(scancode: u8) -> u8 {
     }
 }
 
-fn explorer_handle_key(runtime: &mut RuntimeState, scancode: u8, pressed: bool) {
+/// Returns the path to launch (if Enter was pressed on a file),
+/// or `None` for normal navigation keys.
+fn explorer_handle_key(runtime: &mut RuntimeState, scancode: u8, pressed: bool) -> Option<String> {
     if let Some(explorer) = runtime.explorer.as_mut()
         && explorer.handle_operation_key(scancode, pressed)
     {
         runtime.explorer_dirty = true;
         runtime.frame_due = true;
-        return;
+        return None;
     }
     if !pressed {
-        return;
+        return None;
     }
 
     let key = scancode_to_resonance_keycode(scancode);
     let visible_rows = 20usize;
-    let mut enter_action = None;
     match key {
         resonance::KeyCode::Up => {
             let explorer = match runtime.explorer.as_mut() {
                 Some(explorer) => explorer,
-                None => return,
+                None => return None,
             };
             let entry_count = explorer.entries.len();
             if entry_count == 0 {
-                return;
+                return None;
             }
             let index = explorer
                 .selected_index
@@ -300,15 +318,16 @@ fn explorer_handle_key(runtime: &mut RuntimeState, scancode: u8, pressed: bool) 
             }
             runtime.explorer_dirty = true;
             runtime.frame_due = true;
+            None
         }
         resonance::KeyCode::Down => {
             let explorer = match runtime.explorer.as_mut() {
                 Some(explorer) => explorer,
-                None => return,
+                None => return None,
             };
             let entry_count = explorer.entries.len();
             if entry_count == 0 {
-                return;
+                return None;
             }
             let index = explorer.selected_index.unwrap_or(0);
             explorer.selected_index = if index + 1 >= entry_count {
@@ -323,21 +342,20 @@ fn explorer_handle_key(runtime: &mut RuntimeState, scancode: u8, pressed: bool) 
             }
             runtime.explorer_dirty = true;
             runtime.frame_due = true;
+            None
         }
         resonance::KeyCode::Enter => {
             let explorer = match runtime.explorer.as_mut() {
                 Some(explorer) => explorer,
-                None => return,
+                None => return None,
             };
-            if let Some(index) = explorer.selected_index {
-                enter_action = explorer.activate_entry(index);
-                runtime.explorer_dirty = true;
-                runtime.frame_due = true;
-            }
+            let path = explorer
+                .selected_index
+                .and_then(|idx| explorer.activate_entry(idx));
+            runtime.explorer_dirty = true;
+            runtime.frame_due = true;
+            path
         }
-        _ => {}
-    }
-    if let Some(path) = enter_action {
-        crate::launch_file(runtime, &path);
+        _ => None,
     }
 }

@@ -2,7 +2,9 @@
 //!
 //! Extracted from lib.rs to keep the main module focused on orchestration.
 
-use crate::{DISPLAY_BRIGHTNESS_X100, FB_DIMS, MOUSE_SENSITIVITY, RUNTIME_CONTEXT};
+use crate::{
+    DISPLAY_BRIGHTNESS_X100, FB_DIMS, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY, RUNTIME_CONTEXT,
+};
 use alloc::vec;
 use lattice::compositor::WINDOW_CORNER_RADIUS;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
@@ -28,7 +30,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
 
     let mut sel = SETTINGS_SELECTED.lock();
 
-    const ROWS: u32 = 5;
+    const ROWS: u32 = 6;
     match key {
         KeyCode::Up => {
             *sel = sel.saturating_sub(1).min(ROWS - 1);
@@ -94,6 +96,11 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
+                5 => {
+                    let new_val = !KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
+                    KLOG_SAVE_ENABLED.store(new_val, core::sync::atomic::Ordering::Relaxed);
+                    persist_settings();
+                }
                 _ => {}
             }
         }
@@ -112,14 +119,12 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
     rt.frame_due = true;
 }
 
+/// Set to `true` to trigger a deferred settings save (outside the runtime lock).
+pub(crate) static PERSIST_PENDING: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 fn persist_settings() {
-    let save_fn = {
-        let cb_guard = RUNTIME_CONTEXT.callback_snapshot();
-        cb_guard.settings_save
-    };
-    if let Some(f) = save_fn {
-        f();
-    }
+    PERSIST_PENDING.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
@@ -158,6 +163,8 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
             .map_or("?", |p| p.name),
     };
 
+    let klog_save = KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
+
     let info = alloc::format!(
         "{}Settings\n\
          \n\
@@ -165,7 +172,8 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
          {}Display Brightness: {}.{:02}\n\
          {}Top Panel: {}\n\
          {}Window Corner: {}\n\
-         {}Wallpaper: {}",
+         {}Wallpaper: {}\n\
+         {}SD Klog Save: {}",
         highlight(sel, 99),
         highlight(sel, 0),
         sens,
@@ -178,10 +186,12 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
         if corner > 0 { "Rounded" } else { "Square " },
         highlight(sel, 4),
         wp_name,
+        highlight(sel, 5),
+        if klog_save { "ON " } else { "OFF" },
     );
 
     let cols = 38u32;
-    let total = cols as usize * 10;
+    let total = cols as usize * 11;
     let mut cells = vec![
         LatticeCell {
             ch: b' ',

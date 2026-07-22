@@ -172,13 +172,22 @@ impl RtsxController {
             | u32::from(value)
     }
 
+    fn checked_read32(&self, reg: usize) -> Option<u32> {
+        match self.mmio.checked_read32(reg, Some(&self.health)) {
+            crate::mmio::SafeReadResult::Value(v) => Some(v),
+            crate::mmio::SafeReadResult::DeviceGone | crate::mmio::SafeReadResult::MasterAbort => {
+                None
+            }
+        }
+    }
+
     fn read_reg(&self, address: u16) -> Result<u8, crate::DriverError> {
         self.mmio.write32(
             RTSX_HAIMR,
             HAIMR_START | (u32::from(address & 0x3FFF) << 16),
         );
         match crate::timing::poll_timeout_us(10_000, || {
-            let value = self.mmio.read32(RTSX_HAIMR);
+            let value = self.checked_read32(RTSX_HAIMR)?;
             if value & HAIMR_START == 0 {
                 Some(value as u8)
             } else {
@@ -200,7 +209,7 @@ impl RtsxController {
                 | u32::from(value),
         );
         match crate::timing::poll_timeout_us(10_000, || {
-            let result = self.mmio.read32(RTSX_HAIMR);
+            let result = self.checked_read32(RTSX_HAIMR)?;
             if result & HAIMR_START == 0 {
                 Some(result)
             } else {
@@ -225,7 +234,8 @@ impl RtsxController {
     }
 
     fn card_present(&self) -> bool {
-        self.mmio.read32(RTSX_BIPR) & SD_EXIST != 0
+        self.checked_read32(RTSX_BIPR)
+            .is_some_and(|v| v & SD_EXIST != 0)
     }
 
     fn prepare_device(&mut self) -> Result<(), crate::DriverError> {
@@ -387,7 +397,7 @@ impl RtsxController {
             ),
         ]);
         let result = crate::timing::poll_timeout_us(250_000, || {
-            let status = self.mmio.read32(RTSX_BIPR);
+            let status = self.checked_read32(RTSX_BIPR)?;
             (status & TRANS_FAIL_INT != 0)
                 .then_some(Err(crate::DriverError::DeviceFault))
                 .or_else(|| (status & TRANS_OK_INT != 0).then_some(Ok(())))
@@ -503,7 +513,7 @@ impl RtsxController {
             (RTSX_HDBCTLR, Self::data_dma_control(device_to_host)),
         ]);
         let result = crate::timing::poll_timeout_us(1_000_000, || {
-            let status = self.mmio.read32(RTSX_BIPR);
+            let status = self.checked_read32(RTSX_BIPR)?;
             (status & TRANS_FAIL_INT != 0)
                 .then_some(Err(crate::DriverError::DeviceFault))
                 .or_else(|| (status & TRANS_OK_INT != 0).then_some(Ok(())))

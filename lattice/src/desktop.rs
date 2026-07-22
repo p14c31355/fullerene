@@ -18,6 +18,8 @@ pub enum DesktopAction {
     DeviceManager,
     FileManager,
     LogViewer,
+    /// Live-updating kernel log viewer.
+    KLogLive,
     ToggleTiling,
     Refresh,
     About,
@@ -51,6 +53,7 @@ impl DesktopAction {
             "device_manager" => DesktopAction::DeviceManager,
             "file_manager" => DesktopAction::FileManager,
             "log_viewer" => DesktopAction::LogViewer,
+            "klog_live" => DesktopAction::KLogLive,
             "toggle_tiling" => DesktopAction::ToggleTiling,
             "refresh" => DesktopAction::Refresh,
             "about" => DesktopAction::About,

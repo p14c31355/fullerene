@@ -555,7 +555,6 @@ impl WindowManager {
             mw.y = top;
             mw.width = master_w;
             mw.height = usable_h;
-            self.dirty_rects.push(window_dirty_rect(mw));
         }
 
         // Stack: remaining windows tiled vertically on the right.
@@ -576,10 +575,14 @@ impl WindowManager {
                     sw.y = stack_y;
                     sw.width = stack_w;
                     sw.height = each_h;
-                    self.dirty_rects.push(window_dirty_rect(sw));
                 }
             }
         }
+        // Push a SINGLE dirty rect covering the full work area instead of one
+        // per window.  This avoids O(n²) compositor overhead when tiling many
+        // windows — the compositor redraws everything in the work area once.
+        self.dirty_rects
+            .push(DirtyRect::new(left as u32, top as u32, usable_w, usable_h));
     }
 
     /// Restore windows to their saved floating positions and clear the cache.
