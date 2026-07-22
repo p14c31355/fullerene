@@ -191,45 +191,56 @@ pub fn launch_file(path: &str) {
     // See event_loop.rs:65-67.
     if is_text {
         let read_file = RUNTIME_CONTEXT.callback_snapshot().vfs_read;
-        let file_content = match read_file {
+        let read_result = match read_file {
             Some(read) => match read(path) {
                 Ok(data) => match core::str::from_utf8(&data) {
-                    Ok(text) => text.to_string(),
-                    Err(_) => return,
+                    Ok(text) => Ok(text.to_string()),
+                    Err(_) => Err("File is not valid UTF-8 text"),
                 },
-                Err(_) => return,
+                Err(_) => Err("Failed to read file"),
             },
-            None => return,
+            None => Err("VFS read callback not available"),
         };
-        let mut runtime = RUNTIME_CONTEXT.runtime();
-        let Some(runtime) = runtime.as_mut() else {
-            return;
-        };
-        let id = runtime.desktop.wm.create_titled_window(
-            100,
-            80,
-            DEFAULT_COLS * GLYPH_W,
-            DEFAULT_ROWS * GLYPH_H,
-            0x0a0a1e,
-            "Text Editor",
-        );
-        if let Some(old_id) = runtime.editor_window
-            && runtime
-                .desktop
-                .wm
-                .windows()
-                .iter()
-                .any(|window| window.id == old_id)
-        {
-            runtime.desktop.wm.close_window(old_id);
+        match read_result {
+            Ok(file_content) => {
+                let mut runtime = RUNTIME_CONTEXT.runtime();
+                let Some(runtime) = runtime.as_mut() else {
+                    return;
+                };
+                let id = runtime.desktop.wm.create_titled_window(
+                    100,
+                    80,
+                    DEFAULT_COLS * GLYPH_W,
+                    DEFAULT_ROWS * GLYPH_H,
+                    0x0a0a1e,
+                    "Text Editor",
+                );
+                if let Some(old_id) = runtime.editor_window
+                    && runtime
+                        .desktop
+                        .wm
+                        .windows()
+                        .iter()
+                        .any(|window| window.id == old_id)
+                {
+                    runtime.desktop.wm.close_window(old_id);
+                }
+                runtime.editor_window = Some(id);
+                runtime.editor_buf = lattice::editor::EditorBuffer::from_text(&file_content);
+                runtime.editor_file_path = Some(path.to_string());
+                runtime.editor_dirty = true;
+                runtime.desktop.force_full_redraw();
+                runtime.frame_due = true;
+                runtime.explorer_dirty = true;
+            }
+            Err(msg) => {
+                let mut runtime = RUNTIME_CONTEXT.runtime();
+                if let Some(runtime) = runtime.as_mut() {
+                    crate::viewers::show_error(runtime, "Cannot open file", msg);
+                    runtime.frame_due = true;
+                }
+            }
         }
-        runtime.editor_window = Some(id);
-        runtime.editor_buf = lattice::editor::EditorBuffer::from_text(&file_content);
-        runtime.editor_file_path = Some(path.to_string());
-        runtime.editor_dirty = true;
-        runtime.desktop.force_full_redraw();
-        runtime.frame_due = true;
-        runtime.explorer_dirty = true;
         return;
     }
 
@@ -244,7 +255,18 @@ pub fn launch_file(path: &str) {
         let file_data = match read_file {
             Some(read) => match read(path) {
                 Ok(data) => data,
-                Err(_) => return,
+                Err(_) => {
+                    let mut runtime = RUNTIME_CONTEXT.runtime();
+                    if let Some(runtime) = runtime.as_mut() {
+                        crate::viewers::show_error(
+                            runtime,
+                            "Cannot open file",
+                            "Failed to read file. It may be too large or the device is unresponsive.",
+                        );
+                        runtime.frame_due = true;
+                    }
+                    return;
+                }
             },
             None => return,
         };

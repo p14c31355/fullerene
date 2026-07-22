@@ -46,23 +46,7 @@ pub fn init() {
             }
             Ok(result)
         }),
-        vfs_read: Some(|path| {
-            let fd = crate::contexts::vfs::open(path, 0)?;
-            let mut buf = alloc::vec::Vec::new();
-            let mut tmp = [0u8; 4096];
-            loop {
-                match crate::contexts::vfs::read(fd.fd, &mut tmp) {
-                    Ok(0) => break,
-                    Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                    Err(e) => {
-                        let _ = crate::contexts::vfs::close(fd.fd);
-                        return Err(e);
-                    }
-                }
-            }
-            let _ = crate::contexts::vfs::close(fd.fd);
-            Ok(buf)
-        }),
+        vfs_read: Some(|path| crate::fs::read_entire_file(path)),
         vfs_write: Some(|path, data| crate::contexts::vfs::replace_file(path, data)),
         vfs_copy: Some(|source, destination, is_dir| {
             crate::contexts::vfs::copy_path(source, destination, is_dir)
