@@ -60,6 +60,7 @@ pub use services::{
 };
 pub use settings_bridge::settings_handle_key;
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
+pub use viewer::take_pending_shell_command;
 pub use window_api::{
     close_window, create_window, ensure_editor_window, ensure_terminal_window,
     force_desktop_redraw, framebuffer_dims, invalidate_window, launch_file, resume_rendering,
@@ -93,9 +94,18 @@ pub fn run_shell_on(
     prompt: &str,
     services: nozzle::ShellServices,
 ) {
+    run_shell_on_with_command(terminal, prompt, services, None);
+}
+
+pub fn run_shell_on_with_command(
+    terminal: &mut dyn carrier::terminal::Terminal,
+    prompt: &str,
+    services: nozzle::ShellServices,
+    initial_command: Option<&str>,
+) {
     let mut shell = nozzle::Shell::new(terminal, nozzle::default_commands(), services);
     shell.set_prompt(prompt);
-    shell.run();
+    shell.run_with_initial_line(initial_command);
 }
 
 pub(crate) static SUPER_HELD: core::sync::atomic::AtomicBool =

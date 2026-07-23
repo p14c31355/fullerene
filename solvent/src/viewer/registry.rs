@@ -3,9 +3,12 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use genome::io::{FileReader, SeekFrom, read_to_end_with_limit};
-use genome::{AnimationKind, ArchiveKind, AudioKind, FileKind, ImageKind, TextKind, VideoKind};
+use genome::{
+    AnimationKind, ApplicationKind, ArchiveKind, AudioKind, FileKind, ImageKind, TextKind,
+    VideoKind,
+};
 
-use super::document::{BinaryDocument, Document, TextDocument};
+use super::document::{BinaryDocument, Document, LaunchTarget, TextDocument};
 use crate::RuntimeFile;
 
 const MAX_DOCUMENT_SIZE: usize = 16 * 1024 * 1024;
@@ -39,6 +42,7 @@ struct AudioDecoder;
 struct VideoDecoder;
 struct ArchiveDecoder;
 struct AnimationDecoder;
+struct ApplicationDecoder;
 struct BinaryDecoder;
 
 static TEXT_DECODER: TextDecoder = TextDecoder;
@@ -47,6 +51,7 @@ static AUDIO_DECODER: AudioDecoder = AudioDecoder;
 static VIDEO_DECODER: VideoDecoder = VideoDecoder;
 static ARCHIVE_DECODER: ArchiveDecoder = ArchiveDecoder;
 static ANIMATION_DECODER: AnimationDecoder = AnimationDecoder;
+static APPLICATION_DECODER: ApplicationDecoder = ApplicationDecoder;
 static BINARY_DECODER: BinaryDecoder = BinaryDecoder;
 
 pub static DECODERS: &[&dyn Decoder] = &[
@@ -56,6 +61,7 @@ pub static DECODERS: &[&dyn Decoder] = &[
     &VIDEO_DECODER,
     &ARCHIVE_DECODER,
     &ANIMATION_DECODER,
+    &APPLICATION_DECODER,
     &BINARY_DECODER,
 ];
 
@@ -70,7 +76,7 @@ pub fn find(kind: FileKind) -> &'static dyn Decoder {
 pub fn decode(path: &str) -> Result<Document, DecodeError> {
     let mut reader = RuntimeFile::open(path).map_err(DecodeError::Filesystem)?;
     let kind = genome::detect(&mut reader, path).map_err(DecodeError::Filesystem)?;
-    find(kind).open(&mut reader, kind, path.rsplit('/').next().unwrap_or(path))
+    find(kind).open(&mut reader, kind, path)
 }
 
 fn read_data(reader: &mut dyn FileReader) -> Result<Vec<u8>, DecodeError> {
@@ -206,6 +212,29 @@ impl Decoder for AnimationDecoder {
             kind: AnimationKind::Rle,
             data: read_data(reader)?,
         })
+    }
+}
+
+impl Decoder for ApplicationDecoder {
+    fn probe(&self, kind: FileKind) -> bool {
+        matches!(kind, FileKind::Application(_))
+    }
+
+    fn open(
+        &self,
+        _reader: &mut dyn FileReader,
+        kind: FileKind,
+        path: &str,
+    ) -> Result<Document, DecodeError> {
+        match kind {
+            FileKind::Application(ApplicationKind::Wasm) => {
+                Ok(Document::Launch(LaunchTarget::Wasm {
+                    path: String::from(path),
+                    args: Vec::new(),
+                }))
+            }
+            _ => Err(DecodeError::Unsupported),
+        }
     }
 }
 

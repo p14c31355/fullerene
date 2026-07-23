@@ -7,13 +7,37 @@
 use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
+use spin::Mutex;
+
+const MAX_WASM_OUTPUT_BYTES: usize = 256 * 1024;
+static WASM_OUTPUT: Mutex<Option<String>> = Mutex::new(None);
+
+fn buffer_wasm_output(data: &[u8]) {
+    let mut output = WASM_OUTPUT.lock();
+    let Some(output) = output.as_mut() else {
+        return;
+    };
+    if output.len() >= MAX_WASM_OUTPUT_BYTES {
+        return;
+    }
+    let remaining = MAX_WASM_OUTPUT_BYTES - output.len();
+    let chunk_len = data.len().min(remaining);
+    output.push_str(&String::from_utf8_lossy(&data[..chunk_len]));
+}
+
+fn begin_wasm_output_capture() {
+    *WASM_OUTPUT.lock() = Some(String::new());
+}
+
+fn take_wasm_output() -> Option<String> {
+    WASM_OUTPUT.lock().take()
+}
 
 // ── WASM/WASI runtime callbacks ──────────────────────────────────
 
 fn wasm_write_stdout(data: &[u8]) {
     if solvent::is_initialized() {
-        let s = alloc::string::String::from_utf8_lossy(data);
-        solvent::write_terminal(&s);
+        buffer_wasm_output(data);
     } else {
         kernel_syscall(4, 1, data.as_ptr() as u64, data.len() as u64);
     }
@@ -21,21 +45,36 @@ fn wasm_write_stdout(data: &[u8]) {
 
 fn wasm_write_stderr(data: &[u8]) {
     if solvent::is_initialized() {
-        let s = alloc::string::String::from_utf8_lossy(data);
-        solvent::write_terminal(&s);
+        buffer_wasm_output(data);
     } else {
         kernel_syscall(4, 2, data.as_ptr() as u64, data.len() as u64);
     }
 }
 
 fn wasm_read_stdin() -> Option<u8> {
+    if solvent::is_initialized() {
+        // The GUI shell reads from the PS/2 queue directly.  The kernel
+        // read syscall is for user processes and must not be called while a
+        // WASI module is running synchronously inside shell_main.
+        return nitrogen::ps2::keyboard::read_char();
+    }
     let mut byte = 0u8;
     let res = kernel_syscall(3, 0, &mut byte as *mut u8 as u64, 1);
     if res > 0 { Some(byte) } else { None }
 }
 
 fn wasm_yield_now() {
-    kernel_syscall(22, 0, 0, 0);
+    if solvent::is_initialized() {
+        // WASM is executed synchronously by the kernel shell, not as a
+        // schedulable user process.  Calling the process-yield syscall here
+        // therefore has no current PID to switch from.  Poll devices only;
+        // doing a full runtime tick would re-enter the GUI while wasmi is
+        // still executing a host callback.
+        solvent::poll_mouse_state();
+        solvent::poll_keyboard();
+    } else {
+        kernel_syscall(22, 0, 0, 0);
+    }
 }
 
 fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
@@ -527,6 +566,10 @@ fn nozzle_services() -> nozzle::ShellServices {
                 tline!(ctx.terminal, "Loading WASM binary: {}", path);
                 match crate::fs::read_entire_file(path) {
                     Ok(binary) => {
+                        let capture_output = solvent::is_initialized();
+                        if capture_output {
+                            begin_wasm_output_capture();
+                        }
                         let wasm_args: alloc::vec::Vec<&str> =
                             ctx.args.iter().skip(1).copied().collect();
                         let code = wasi_runtime::runtime::run(
@@ -540,6 +583,9 @@ fn nozzle_services() -> nozzle::ShellServices {
                             wasm_read_directory,
                             wasm_get_monotonic_ns,
                         );
+                        if capture_output && let Some(output) = take_wasm_output() {
+                            ctx.terminal.write_str(&output);
+                        }
                         tline!(ctx.terminal, "WASI process exited with code {}", code);
                     }
                     Err(e) => {
@@ -922,12 +968,23 @@ pub fn shell_main() {
     petroleum::debug_log!("Shell main started");
 
     let services = nozzle_services();
+    let initial_command = solvent::take_pending_shell_command();
 
     if solvent::is_initialized() {
-        solvent::run_shell_on(&mut solvent::LatticeTerminal, "fullerene> ", services);
+        solvent::run_shell_on_with_command(
+            &mut solvent::LatticeTerminal,
+            "fullerene> ",
+            services,
+            initial_command.as_deref(),
+        );
     } else {
         let mut terminal = KernelTerminal::new();
-        solvent::run_shell_on(&mut terminal, "fullerene> ", services);
+        solvent::run_shell_on_with_command(
+            &mut terminal,
+            "fullerene> ",
+            services,
+            initial_command.as_deref(),
+        );
     }
 }
 

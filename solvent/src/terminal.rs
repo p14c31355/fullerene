@@ -173,6 +173,7 @@ impl carrier::terminal::Terminal for LatticeTerminal {
             if let Some(ref mut r) = *rt {
                 r.term_buf.put_str(s);
                 r.term_dirty = true;
+                r.frame_due = true;
             }
         }
     }

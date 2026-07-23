@@ -12,5 +12,6 @@ pub use block::BlockError;
 pub use fs::FsError;
 pub use io::{FileReader, Read, Seek, SeekFrom, read_to_end_with_limit};
 pub use kind::{
-    AnimationKind, ArchiveKind, AudioKind, FileKind, ImageKind, TextKind, VideoKind, detect,
+    AnimationKind, ApplicationKind, ArchiveKind, AudioKind, FileKind, ImageKind, TextKind,
+    VideoKind, detect,
 };

@@ -14,6 +14,7 @@ pub enum FileKind {
     Video(VideoKind),
     Archive(ArchiveKind),
     Animation(AnimationKind),
+    Application(ApplicationKind),
     Binary,
 }
 
@@ -51,6 +52,11 @@ pub enum ArchiveKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnimationKind {
     Rle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationKind {
+    Wasm,
 }
 
 const TEXT_EXTENSIONS: &[&str] = &[
@@ -115,6 +121,9 @@ pub fn detect<R: Read + Seek>(reader: &mut R, path: &str) -> Result<FileKind, Fs
     if prefix.starts_with(b"BARL") {
         return Ok(FileKind::Animation(AnimationKind::Rle));
     }
+    if prefix.starts_with(b"\0asm") {
+        return Ok(FileKind::Application(ApplicationKind::Wasm));
+    }
     if prefix.len() >= 262 && &prefix[257..262] == b"ustar" {
         return Ok(FileKind::Archive(ArchiveKind::Tar));
     }
@@ -127,6 +136,7 @@ pub fn detect<R: Read + Seek>(reader: &mut R, path: &str) -> Result<FileKind, Fs
         "mp3" => Some(FileKind::Audio(AudioKind::Mp3)),
         "mp4" => Some(FileKind::Video(VideoKind::Mp4)),
         "rle" => Some(FileKind::Animation(AnimationKind::Rle)),
+        "wasm" => Some(FileKind::Application(ApplicationKind::Wasm)),
         "tar" => Some(FileKind::Archive(ArchiveKind::Tar)),
         "tgz" => Some(FileKind::Archive(ArchiveKind::GzipTar)),
         "gz" => Some(FileKind::Archive(ArchiveKind::Gzip)),
@@ -155,7 +165,7 @@ fn extension(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileKind, ImageKind, TextKind, detect};
+    use super::{ApplicationKind, FileKind, ImageKind, TextKind, detect};
     use crate::FsError;
     use crate::io::{Read, Seek, SeekFrom};
     use alloc::vec::Vec;
@@ -219,6 +229,27 @@ mod tests {
         assert_eq!(
             detect(&mut reader, "notes.md"),
             Ok(FileKind::Text(TextKind::Plain))
+        );
+    }
+
+    #[test]
+    fn detects_wasm_magic_and_extension() {
+        let mut reader = Cursor {
+            data: b"\0asm\x01\0\0\0".to_vec(),
+            position: 0,
+        };
+        assert_eq!(
+            detect(&mut reader, "program.bin"),
+            Ok(FileKind::Application(ApplicationKind::Wasm))
+        );
+
+        let mut empty = Cursor {
+            data: Vec::new(),
+            position: 0,
+        };
+        assert_eq!(
+            detect(&mut empty, "program.wasm"),
+            Ok(FileKind::Application(ApplicationKind::Wasm))
         );
     }
 }

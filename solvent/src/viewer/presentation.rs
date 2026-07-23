@@ -76,6 +76,8 @@ pub fn present(runtime: &mut RuntimeState, document: Document, name: &str, path:
             kind: AnimationKind::Rle,
             data,
         } => crate::viewers::open_rle_data(runtime, data, name),
+        // Launch targets are handled by `viewer::open` before presentation.
+        Document::Launch(_) => {}
         Document::Binary(document) => present_binary(runtime, document, name),
     }
 }

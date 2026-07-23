@@ -33,7 +33,12 @@ pub enum Document {
         kind: AnimationKind,
         data: Vec<u8>,
     },
+    Launch(LaunchTarget),
     Binary(BinaryDocument),
+}
+
+pub enum LaunchTarget {
+    Wasm { path: String, args: Vec<String> },
 }
 
 pub struct TextDocument {
