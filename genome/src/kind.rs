@@ -88,7 +88,12 @@ const TEXT_EXTENSIONS: &[&str] = &[
 pub fn detect<R: Read + Seek>(reader: &mut R, path: &str) -> Result<FileKind, FsError> {
     let position = reader.seek(SeekFrom::Current(0))?;
     let mut prefix = [0u8; 512];
-    let length = reader.read(&mut prefix)?;
+    let length = if reader.read_exact(&mut prefix).is_ok() {
+        512
+    } else {
+        reader.seek(SeekFrom::Start(position))?;
+        reader.read(&mut prefix)?
+    };
     reader.seek(SeekFrom::Start(position))?;
     let prefix = &prefix[..length];
     let extension = extension(path);
