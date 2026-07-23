@@ -94,7 +94,7 @@ pub static FILE_ASSOCIATIONS: &[FileAssociation] = &[
     },
     FileAssociation {
         extensions: &["rle"],
-        app_name: "RLE Player",
+        app_name: "File Viewer",
     },
 ];
 

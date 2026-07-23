@@ -7,6 +7,7 @@ use crate::{GLYPH_H, HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use lattice::window::WindowId;
 use petroleum::PageBuf;
 
 const MAX_IMG_W: u32 = 1920;
@@ -185,6 +186,81 @@ pub struct DecodedJpeg {
     pub pixels: Vec<u8>,
 }
 
+#[cfg(feature = "zune-jpeg")]
+fn is_jpeg_sof_marker(marker: u8) -> bool {
+    matches!(
+        marker,
+        0xC0 | 0xC1 | 0xC2 | 0xC3 | 0xC5 | 0xC6 | 0xC7 | 0xC9 | 0xCA | 0xCB | 0xCD | 0xCE | 0xCF
+    )
+}
+
+/// Inspect a JPEG prefix and return dimensions once the SOF marker is present.
+#[cfg(feature = "zune-jpeg")]
+pub fn preflight_jpeg_header(data: &[u8]) -> Result<Option<(u16, u16)>, String> {
+    if data.len() < 2 {
+        return Ok(None);
+    }
+    if data.get(..2) != Some(&[0xFF, 0xD8]) {
+        return Err(String::from("Not a JPEG file"));
+    }
+
+    let mut pos = 2;
+    while pos < data.len() {
+        while pos < data.len() && data[pos] != 0xFF {
+            pos += 1;
+        }
+        if pos + 1 >= data.len() {
+            return Ok(None);
+        }
+        while pos < data.len() && data[pos] == 0xFF {
+            pos += 1;
+        }
+        if pos >= data.len() {
+            return Ok(None);
+        }
+        let marker = data[pos];
+        pos += 1;
+
+        if matches!(marker, 0x01 | 0xD0..=0xD9) {
+            if marker == 0xD9 {
+                return Err(String::from("JPEG ended before image dimensions"));
+            }
+            continue;
+        }
+        if pos + 2 > data.len() {
+            return Ok(None);
+        }
+        let segment_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+        if segment_len < 2 {
+            return Err(String::from("Invalid JPEG segment length"));
+        }
+        let segment_start = pos + 2;
+        let segment_end = pos + segment_len;
+        if segment_end > data.len() {
+            return Ok(None);
+        }
+
+        if is_jpeg_sof_marker(marker) {
+            if segment_len < 7 {
+                return Err(String::from("Invalid JPEG SOF segment"));
+            }
+            let height = u16::from_be_bytes([data[segment_start + 1], data[segment_start + 2]]);
+            let width = u16::from_be_bytes([data[segment_start + 3], data[segment_start + 4]]);
+            if u32::from(width) > MAX_IMG_W || u32::from(height) > MAX_IMG_H {
+                return Err(format!("Image too large: {}x{}", width, height));
+            }
+            return Ok(Some((width, height)));
+        }
+
+        if marker == 0xDA {
+            return Err(String::from("JPEG scan started before image dimensions"));
+        }
+        pos = segment_end;
+    }
+
+    Ok(None)
+}
+
 /// Decode JPEG data without any runtime lock held.
 /// Call this before acquiring the runtime lock to avoid UI freezes.
 #[cfg(feature = "zune-jpeg")]
@@ -278,19 +354,6 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
     let width = u32::from(decoded.width);
     let height = u32::from(decoded.height);
 
-    // Move decoded pixels out of kernel heap into page-backed memory.
-    let pixel_len = decoded.pixels.len();
-    let mut page_pixels = match unsafe { PageBuf::<u8>::alloc_zeroed_for_len(pixel_len) } {
-        Some(buf) => buf,
-        None => {
-            show_error(rt, "JPEG Error", "Out of memory for pixel buffer");
-            return;
-        }
-    };
-    page_pixels.as_mut_slice().copy_from_slice(&decoded.pixels);
-    drop(decoded.pixels);
-    log_status!("JPEG after decode (pixels on PageBuf)");
-
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);
     let id = rt
@@ -298,7 +361,7 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
         .wm
         .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
     if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        let px = page_pixels.as_slice();
+        let px = decoded.pixels.as_slice();
         for y in 0..height.min(win_h) {
             for x in 0..width.min(win_w) {
                 let offset = ((y as usize) * (width as usize) + x as usize) * 3;
@@ -314,6 +377,390 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
     }
     rt.desktop.wm.raise_to_top(id);
     rt.frame_due = true;
+}
+
+// ── RLE animation viewer ─────────────────────────────────────
+
+const RLE_FRAME_INTERVAL_MS: u64 = 33;
+const RLE_MAX_PIXELS: usize = 1920 * 1080;
+const RLE_MAX_FRAMES: u32 = 10_000;
+const RLE_MAGIC: &[u8; 4] = b"BARL";
+const RLE_HDR_SIZE: usize = 16;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RleError {
+    TooShort,
+    BadMagic,
+    BadVersion(u32),
+    ZeroFrames,
+    Truncated,
+    FrameOutOfRange,
+}
+
+struct RleFile {
+    frame_count: u32,
+    frame_width: u16,
+    frame_height: u16,
+    frame_offsets: Vec<u64>,
+    total_pixels: usize,
+}
+
+impl RleFile {
+    fn parse(data: &[u8]) -> Result<Self, RleError> {
+        if data.len() < RLE_HDR_SIZE {
+            return Err(RleError::TooShort);
+        }
+        if &data[..4] != RLE_MAGIC {
+            return Err(RleError::BadMagic);
+        }
+        let version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        if version != 1 {
+            return Err(RleError::BadVersion(version));
+        }
+        let frame_count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+        if frame_count == 0 {
+            return Err(RleError::ZeroFrames);
+        }
+        if frame_count > RLE_MAX_FRAMES {
+            return Err(RleError::Truncated);
+        }
+        let frame_width = u16::from_le_bytes([data[12], data[13]]);
+        let frame_height = u16::from_le_bytes([data[14], data[15]]);
+        let count = frame_count as usize;
+        let data_start = count
+            .checked_mul(2)
+            .and_then(|value| RLE_HDR_SIZE.checked_add(value))
+            .ok_or(RleError::Truncated)?;
+        if data_start >= data.len() {
+            return Err(RleError::Truncated);
+        }
+
+        let mut frame_offsets = Vec::with_capacity(count);
+        let mut offset = data_start as u64;
+        for index in 0..count {
+            let size_offset = RLE_HDR_SIZE + index * 2;
+            let chunk_size = u16::from_le_bytes([data[size_offset], data[size_offset + 1]]) as u64;
+            frame_offsets.push(offset);
+            offset = offset.saturating_add(chunk_size);
+        }
+
+        Ok(Self {
+            frame_count,
+            frame_width,
+            frame_height,
+            frame_offsets,
+            total_pixels: frame_width as usize * frame_height as usize,
+        })
+    }
+
+    fn total_pixels(&self) -> usize {
+        self.total_pixels
+    }
+
+    fn decode_frame(
+        &self,
+        data: &[u8],
+        frame_index: usize,
+        buffer: &mut [u8],
+    ) -> Result<bool, RleError> {
+        if buffer.len() < self.total_pixels {
+            return Err(RleError::TooShort);
+        }
+        if frame_index >= self.frame_offsets.len() {
+            return Err(RleError::FrameOutOfRange);
+        }
+
+        let start = self.frame_offsets[frame_index] as usize;
+        let end = if frame_index + 1 < self.frame_offsets.len() {
+            self.frame_offsets[frame_index + 1] as usize
+        } else {
+            data.len()
+        };
+        if start >= data.len() || end > data.len() || start > end {
+            return Ok(false);
+        }
+        decode_rle_inner(&data[start..end], buffer, self.total_pixels);
+        Ok(true)
+    }
+}
+
+fn decode_rle_inner(data: &[u8], buffer: &mut [u8], total: usize) {
+    let mut pixel = 0usize;
+    let mut cursor = 0usize;
+    while cursor + 3 <= data.len() && pixel < total {
+        let fill = data[cursor];
+        let run_len = u16::from_le_bytes([data[cursor + 1], data[cursor + 2]]) as usize;
+        cursor += 3;
+        let end = pixel.saturating_add(run_len).min(total);
+        buffer[pixel..end].fill(fill);
+        pixel = end;
+    }
+}
+
+fn compute_rle_letterbox(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32, u32, u32) {
+    if src_h == 0 || dst_h == 0 || src_w == 0 || dst_w == 0 {
+        return (0, 0, 0, 0);
+    }
+
+    let sw = src_w as u64;
+    let sh = src_h as u64;
+    let dw = dst_w as u64;
+    let dh = dst_h as u64;
+
+    if dw * sh > sw * dh {
+        let width = (dh * sw / sh).max(1);
+        (
+            width as u32,
+            dst_h,
+            ((dst_w as u64).saturating_sub(width) / 2) as u32,
+            0,
+        )
+    } else {
+        let height = (dw * sh / sw).max(1);
+        (
+            dst_w,
+            height as u32,
+            0,
+            ((dst_h as u64).saturating_sub(height) / 2) as u32,
+        )
+    }
+}
+
+fn draw_decoded_rle_frame(
+    pixels: &mut [u32],
+    stride: u32,
+    src_w: u32,
+    src_h: u32,
+    decoded: &[u8],
+    off_x: u32,
+    off_y: u32,
+    draw_w: u32,
+    draw_h: u32,
+) {
+    let stride = stride as usize;
+    let src_w = src_w as usize;
+    let src_h = src_h as usize;
+    let draw_w = draw_w as usize;
+    let draw_h = draw_h as usize;
+    let off_x = off_x as usize;
+    let off_y = off_y as usize;
+
+    if decoded.len() < src_w.saturating_mul(src_h) || draw_w == 0 || draw_h == 0 {
+        return;
+    }
+
+    for y in 0..draw_h {
+        let src_y = y * src_h / draw_h;
+        if src_y >= src_h {
+            continue;
+        }
+        let Some(row_offset) = off_y
+            .checked_add(y)
+            .and_then(|row| row.checked_mul(stride))
+            .and_then(|value| value.checked_add(off_x))
+        else {
+            continue;
+        };
+        let Some(row_end) = row_offset.checked_add(draw_w) else {
+            continue;
+        };
+        if row_end > pixels.len() {
+            continue;
+        }
+        for x in 0..draw_w {
+            let src_x = x * src_w / draw_w;
+            let shade = if decoded[src_y * src_w + src_x] >= 128 {
+                255u32
+            } else {
+                0u32
+            };
+            pixels[row_offset + x] = 0xFF00_0000 | (shade << 16) | (shade << 8) | shade;
+        }
+    }
+}
+
+pub(crate) struct RlePlayback {
+    window_id: WindowId,
+    file: RleFile,
+    data: Vec<u8>,
+    frame_buf: Vec<u8>,
+    frame_index: usize,
+    last_frame_tsc: u64,
+}
+
+fn rdtsc_now() -> u64 {
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+fn rle_window_size(src_w: u32, src_h: u32) -> (u32, u32) {
+    const MAX_W: u32 = 800;
+    const MAX_H: u32 = 600;
+
+    if src_w == 0 || src_h == 0 {
+        return (160, 120);
+    }
+    if src_w <= MAX_W && src_h <= MAX_H {
+        let scale = (MAX_W / src_w).min(MAX_H / src_h).clamp(1, 4);
+        return (src_w * scale, src_h * scale);
+    }
+
+    let (draw_w, draw_h, _, _) = compute_rle_letterbox(src_w, src_h, MAX_W, MAX_H);
+    (draw_w.max(160), draw_h.max(120))
+}
+
+fn render_rle_frame(rt: &mut RuntimeState, playback: &mut RlePlayback) -> bool {
+    let frame_count = playback.file.frame_count as usize;
+    if frame_count == 0 {
+        show_error(rt, "RLE Error", "RLE file has no frames");
+        return false;
+    }
+
+    match playback.file.decode_frame(
+        &playback.data,
+        playback.frame_index % frame_count,
+        &mut playback.frame_buf,
+    ) {
+        Ok(true) => {}
+        Ok(false) => return true,
+        Err(error) => {
+            show_error(
+                rt,
+                "RLE Error",
+                &format!("Frame decode failed: {:?}", error),
+            );
+            return false;
+        }
+    }
+
+    let Some(window) = rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|window| window.id == playback.window_id)
+    else {
+        return false;
+    };
+
+    let dst_w = window.surface.width();
+    let dst_h = window.surface.height();
+    let src_w = u32::from(playback.file.frame_width);
+    let src_h = u32::from(playback.file.frame_height);
+    let (draw_w, draw_h, off_x, off_y) = compute_rle_letterbox(src_w, src_h, dst_w, dst_h);
+    window.surface.fill_rect(0, 0, dst_w, dst_h, 0x000000);
+    draw_decoded_rle_frame(
+        window.surface.pixels_mut(),
+        dst_w,
+        src_w,
+        src_h,
+        &playback.frame_buf,
+        off_x,
+        off_y,
+        draw_w,
+        draw_h,
+    );
+    rt.desktop.invalidate_window(playback.window_id);
+    rt.frame_due = true;
+    true
+}
+
+pub(crate) fn open_rle_data(rt: &mut RuntimeState, data: Vec<u8>, name: &str) {
+    let file = match RleFile::parse(&data) {
+        Ok(file) => file,
+        Err(error) => {
+            show_error(rt, "RLE Error", &format!("Parse failed: {:?}", error));
+            return;
+        }
+    };
+    if file.total_pixels() == 0 || file.total_pixels() > RLE_MAX_PIXELS {
+        show_error(
+            rt,
+            "RLE Error",
+            &format!(
+                "Unsupported frame size: {}x{}",
+                file.frame_width, file.frame_height
+            ),
+        );
+        return;
+    }
+
+    if let Some(previous) = rt.rle_playback.take()
+        && rt
+            .desktop
+            .wm
+            .windows()
+            .iter()
+            .any(|window| window.id == previous.window_id)
+    {
+        rt.desktop.wm.close_window(previous.window_id);
+    }
+
+    let src_w = u32::from(file.frame_width);
+    let src_h = u32::from(file.frame_height);
+    let (win_w, win_h) = rle_window_size(src_w, src_h);
+    let title = format!("File Viewer - {}", name);
+    let window_id = rt
+        .desktop
+        .wm
+        .create_titled_window(120, 80, win_w, win_h, 0x000000, title);
+
+    let mut frame_buf = Vec::new();
+    frame_buf.resize(file.total_pixels(), 0);
+    let mut playback = RlePlayback {
+        window_id,
+        file,
+        data,
+        frame_buf,
+        frame_index: 0,
+        last_frame_tsc: rdtsc_now(),
+    };
+
+    if render_rle_frame(rt, &mut playback) {
+        playback.frame_index = 1 % playback.file.frame_count as usize;
+        rt.desktop.wm.raise_to_top(window_id);
+        rt.rle_playback = Some(playback);
+    } else {
+        rt.desktop.wm.close_window(window_id);
+    }
+}
+
+pub(crate) fn tick_rle_playback() {
+    let now_tsc = rdtsc_now();
+    let interval = crate::TSC_PER_MS
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .saturating_mul(RLE_FRAME_INTERVAL_MS)
+        .max(1);
+
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(rt) = runtime.as_mut() else {
+        return;
+    };
+    let Some(mut playback) = rt.rle_playback.take() else {
+        return;
+    };
+
+    let window_exists = rt
+        .desktop
+        .wm
+        .windows()
+        .iter()
+        .any(|window| window.id == playback.window_id);
+    if !window_exists {
+        return;
+    }
+
+    if now_tsc.wrapping_sub(playback.last_frame_tsc) < interval {
+        rt.rle_playback = Some(playback);
+        return;
+    }
+
+    playback.last_frame_tsc = now_tsc;
+    let keep_playing = render_rle_frame(rt, &mut playback);
+    if keep_playing {
+        let frame_count = playback.file.frame_count as usize;
+        playback.frame_index = (playback.frame_index + 1) % frame_count;
+        rt.rle_playback = Some(playback);
+    }
 }
 
 // ── WAV info viewer ─────────────────────────────────────────
@@ -681,135 +1128,253 @@ pub fn open_zip_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
     show_archive_entries(rt, name, &zip_entries(data));
 }
 
-// ── MP4 player ───────────────────────────────────────────────
+// ── MP4 info viewer ──────────────────────────────────────────
 
 #[cfg(feature = "shiguredo_mp4")]
-use shiguredo_mp4::TrackKind;
+struct Mp4Summary {
+    major_brand: String,
+    compatible_brands: Vec<String>,
+    has_moov: bool,
+    duration_seconds: Option<u64>,
+}
 
 #[cfg(feature = "shiguredo_mp4")]
-fn codec_name(entry: &shiguredo_mp4::boxes::SampleEntry) -> &'static str {
-    use shiguredo_mp4::boxes::SampleEntry;
-    match entry {
-        SampleEntry::Avc1(_) => "H.264",
-        SampleEntry::Hev1(_) | SampleEntry::Hvc1(_) => "H.265",
-        SampleEntry::Vp08(_) => "VP8",
-        SampleEntry::Vp09(_) => "VP9",
-        SampleEntry::Av01(_) => "AV1",
-        _ => "Unknown",
+fn mp4_brand(bytes: &[u8]) -> String {
+    use alloc::string::ToString;
+
+    core::str::from_utf8(bytes)
+        .map(|brand| brand.trim_matches(char::from(0)).to_string())
+        .unwrap_or_else(|_| String::from("????"))
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn mp4_box_size(data: &[u8], offset: usize) -> Option<(usize, [u8; 4], usize)> {
+    if offset.checked_add(8)? > data.len() {
+        return None;
+    }
+    let size32 = u32::from_be_bytes(data[offset..offset + 4].try_into().ok()?) as usize;
+    let kind: [u8; 4] = data[offset + 4..offset + 8].try_into().ok()?;
+    match size32 {
+        0 => Some((data.len().saturating_sub(offset), kind, 8)),
+        1 => {
+            if offset.checked_add(16)? > data.len() {
+                return None;
+            }
+            let size64 = u64::from_be_bytes(data[offset + 8..offset + 16].try_into().ok()?);
+            let size = usize::try_from(size64).ok()?;
+            Some((size, kind, 16))
+        }
+        size => Some((size, kind, 8)),
     }
 }
 
 #[cfg(feature = "shiguredo_mp4")]
-pub fn open_mp4_data(rt: &mut RuntimeState, data: &[u8], name: &str) {
-    // Demux MP4
-    let mut demuxer = shiguredo_mp4::demux::Mp4FileDemuxer::new();
-    let input = shiguredo_mp4::demux::Input { position: 0, data };
-    demuxer.handle_input(input);
+fn parse_mp4_summary(data: &[u8]) -> Mp4Summary {
+    let mut summary = Mp4Summary {
+        major_brand: String::from("unknown"),
+        compatible_brands: Vec::new(),
+        has_moov: false,
+        duration_seconds: None,
+    };
 
-    // `demuxer.tracks()` borrows demuxer, so copy the summary before sample iteration.
-    let tracks_with_kind: Vec<(u32, shiguredo_mp4::TrackKind, u64, u32)> = {
-        let t = match demuxer.tracks() {
-            Ok(t) => t,
-            Err(e) => {
-                show_error(rt, "MP4 Error", &format!("No tracks: {:?}", e));
-                return;
-            }
+    let mut offset = 0usize;
+    let mut boxes_seen = 0usize;
+    while offset + 8 <= data.len() && boxes_seen < 128 {
+        boxes_seen += 1;
+        let Some((size, kind, header)) = mp4_box_size(data, offset) else {
+            break;
         };
-        t.iter()
-            .map(|tr| (tr.track_id, tr.kind, tr.duration, tr.timescale.get()))
-            .collect()
-    };
-
-    let mut video_track_id = None;
-    let mut video_width = 0u16;
-    let mut video_height = 0u16;
-    let mut video_codec = "Unknown";
-    let mut audio_info = Vec::new();
-    let mut total_duration_ms = 0f64;
-
-    for &(tid, kind, dur, ts) in &tracks_with_kind {
-        let dur_sec = dur as f64 / ts as f64;
-        total_duration_ms = total_duration_ms.max(dur_sec * 1000.0);
-        match kind {
-            TrackKind::Video => {
-                video_track_id = Some(tid);
-            }
-            TrackKind::Audio => {
-                audio_info.push(format!("  Audio track {}: {} s", tid, dur_sec as u32));
-            }
-        }
-    }
-
-    let video_track_id = match video_track_id {
-        Some(id) => id,
-        None => {
-            show_text_window(
-                rt,
-                "Movie Player",
-                &format!(
-                    "File: {}\nFormat: MP4\n{} audio track(s)\nDuration: {:.0} s\n\nNo video track found.",
-                    name,
-                    audio_info.len(),
-                    total_duration_ms / 1000.0,
-                ),
-                50,
-                0x0d0d1a,
-                0xCCCCFF,
-            );
-            return;
-        }
-    };
-
-    // Sample entry metadata carries the encoded dimensions and codec.
-    // Limit iterations to avoid hanging on files with unrecognized codecs.
-    let mut remaining = 200u32;
-    loop {
-        if remaining == 0 {
+        if size < header {
             break;
         }
-        remaining -= 1;
-        match demuxer.next_sample() {
-            Ok(Some(sample)) if sample.track.track_id == video_track_id => {
-                if let Some(entry) = sample.sample_entry {
-                    if let Some((w, h)) = entry.video_resolution() {
-                        video_width = w;
-                        video_height = h;
-                    }
-                    if video_codec == "Unknown" {
-                        video_codec = codec_name(entry);
-                    }
-                }
-                if video_width > 0 || video_height > 0 || video_codec != "Unknown" {
-                    break;
+        let end = match offset.checked_add(size) {
+            Some(end) if end <= data.len() => end,
+            _ => break,
+        };
+        let payload = &data[offset + header..end];
+        match &kind {
+            b"ftyp" if payload.len() >= 8 => {
+                summary.major_brand = mp4_brand(&payload[..4]);
+                summary.compatible_brands.clear();
+                for brand in payload[8..].chunks_exact(4).take(8) {
+                    summary.compatible_brands.push(mp4_brand(brand));
                 }
             }
-            Ok(Some(_)) => continue,
-            Ok(None) => break,
-            Err(_) => break,
+            b"moov" => {
+                summary.has_moov = true;
+                parse_moov_summary(payload, &mut summary);
+            }
+            _ => {}
         }
+        offset = end;
     }
 
-    // Fallback: show info
-    let msg = format!(
-        "File: {}\nFormat: MP4\nVideo: {}x{} {}\n{} audio\nDuration: {:.0} s\n\nPlayback not yet implemented.",
-        name,
-        video_width,
-        video_height,
-        video_codec,
-        if audio_info.is_empty() {
-            "No audio".into()
+    summary
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn parse_moov_summary(data: &[u8], summary: &mut Mp4Summary) {
+    let mut offset = 0usize;
+    let mut boxes_seen = 0usize;
+    while offset + 8 <= data.len() && boxes_seen < 128 {
+        boxes_seen += 1;
+        let Some((size, kind, header)) = mp4_box_size(data, offset) else {
+            break;
+        };
+        if size < header {
+            break;
+        }
+        let end = match offset.checked_add(size) {
+            Some(end) if end <= data.len() => end,
+            _ => break,
+        };
+        let payload = &data[offset + header..end];
+        if &kind == b"mvhd" {
+            summary.duration_seconds = parse_mvhd_duration(payload);
+        }
+        offset = end;
+    }
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn parse_mvhd_duration(payload: &[u8]) -> Option<u64> {
+    let version = *payload.first()?;
+    match version {
+        0 if payload.len() >= 20 => {
+            let timescale = u32::from_be_bytes(payload[12..16].try_into().ok()?);
+            let duration = u32::from_be_bytes(payload[16..20].try_into().ok()?);
+            (timescale != 0).then_some(u64::from(duration / timescale))
+        }
+        1 if payload.len() >= 32 => {
+            let timescale = u32::from_be_bytes(payload[20..24].try_into().ok()?);
+            let duration = u64::from_be_bytes(payload[24..32].try_into().ok()?);
+            (timescale != 0).then_some(duration / u64::from(timescale))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn mp4_sample_entry_desc(entry: &shiguredo_mp4::boxes::SampleEntry) -> String {
+    let codec = match entry {
+        shiguredo_mp4::boxes::SampleEntry::Avc1(_) => "H.264/AVC (avc1)",
+        shiguredo_mp4::boxes::SampleEntry::Hev1(_) => "HEVC (hev1)",
+        shiguredo_mp4::boxes::SampleEntry::Hvc1(_) => "HEVC (hvc1)",
+        shiguredo_mp4::boxes::SampleEntry::Vp08(_) => "VP8 (vp08)",
+        shiguredo_mp4::boxes::SampleEntry::Vp09(_) => "VP9 (vp09)",
+        shiguredo_mp4::boxes::SampleEntry::Av01(_) => "AV1 (av01)",
+        shiguredo_mp4::boxes::SampleEntry::Opus(_) => "Opus",
+        shiguredo_mp4::boxes::SampleEntry::Mp4a(_) => "AAC/MP4A",
+        shiguredo_mp4::boxes::SampleEntry::Flac(_) => "FLAC",
+        shiguredo_mp4::boxes::SampleEntry::Unknown(_) => "unknown",
+    };
+    let mut desc = String::from(codec);
+    if let Some((width, height)) = entry.video_resolution() {
+        desc.push_str(&format!(" {}x{}", width, height));
+    }
+    if let Some(channels) = entry.audio_channel_count() {
+        desc.push_str(&format!(" {}ch", channels));
+    }
+    if let Some(rate) = entry.audio_sample_rate() {
+        desc.push_str(&format!(" {}Hz", rate));
+    }
+    desc
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+fn mp4_track_lines(data: &[u8]) -> Result<Vec<String>, String> {
+    let mut demuxer = shiguredo_mp4::demux::Mp4FileDemuxer::new();
+    demuxer.handle_input(shiguredo_mp4::demux::Input { position: 0, data });
+    let tracks = demuxer
+        .tracks()
+        .map_err(|error| format!("Track parse failed: {:?}", error))?;
+    let mut lines = Vec::new();
+    let mut seen_entries = Vec::new();
+    for track in tracks {
+        let kind = match track.kind {
+            shiguredo_mp4::TrackKind::Video => "video",
+            shiguredo_mp4::TrackKind::Audio => "audio",
+        };
+        let duration = if track.duration == 0 {
+            String::from("unknown")
         } else {
-            format!("{} track(s)", audio_info.len())
+            format!("{}s", track.duration / u64::from(track.timescale.get()))
+        };
+        lines.push(format!(
+            "Track {}: {} duration {}",
+            track.track_id, kind, duration
+        ));
+    }
+
+    for _ in 0..256 {
+        let sample = demuxer
+            .next_sample()
+            .map_err(|error| format!("Sample parse failed: {:?}", error))?;
+        let Some(sample) = sample else {
+            break;
+        };
+        if seen_entries.contains(&sample.track.track_id) {
+            continue;
+        }
+        if let Some(entry) = sample.sample_entry {
+            lines.push(format!(
+                "Codec {}: {}",
+                sample.track.track_id,
+                mp4_sample_entry_desc(entry)
+            ));
+            seen_entries.push(sample.track.track_id);
+        }
+    }
+    Ok(lines)
+}
+
+#[cfg(feature = "shiguredo_mp4")]
+pub fn open_mp4_data(rt: &mut RuntimeState, data: Vec<u8>, name: &str) {
+    let summary = parse_mp4_summary(&data);
+    let mut brands = String::new();
+    for (index, brand) in summary.compatible_brands.iter().enumerate() {
+        if index > 0 {
+            brands.push_str(", ");
+        }
+        brands.push_str(brand);
+    }
+    if brands.is_empty() {
+        brands.push_str("(none found in prefix)");
+    }
+    let duration = summary
+        .duration_seconds
+        .map(|seconds| format!("{} s", seconds))
+        .unwrap_or_else(|| String::from("(not found in prefix)"));
+    let track_details = match mp4_track_lines(&data) {
+        Ok(lines) if !lines.is_empty() => lines.join("\n"),
+        Ok(_) => String::from("(no audio/video tracks found)"),
+        Err(error) => format!("({})", error),
+    };
+    let msg = format!(
+        "File: {}\nFormat: MP4\nMajor brand: {}\nCompatible: {}\nMovie box: {}\nDuration: {}\n{}\n\nH.264 playback requires a no_std decoder; no patched decoder is bundled.",
+        name,
+        summary.major_brand,
+        brands,
+        if summary.has_moov {
+            "found"
+        } else {
+            "not in prefix"
         },
-        total_duration_ms / 1000.0,
+        duration,
+        track_details,
     );
     show_text_window(rt, "Movie Player", &msg, 50, 0x0d0d1a, 0xCCCCFF);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_mp3, tar_entries, zip_entries};
+    #[cfg(feature = "shiguredo_mp4")]
+    use super::parse_mp4_summary;
+    #[cfg(feature = "zune-jpeg")]
+    use super::preflight_jpeg_header;
+    use super::{RleError, RleFile, compute_rle_letterbox, parse_mp3, tar_entries, zip_entries};
     use alloc::vec;
+    use alloc::vec::Vec;
 
     #[test]
     fn tar_listing_parses_a_regular_file() {
@@ -854,6 +1419,113 @@ mod tests {
         assert_eq!(info.sample_rate, 44_100);
         assert_eq!(info.channels, 2);
         assert!((info.duration_seconds - 2_304.0 / 44_100.0).abs() < 0.000_001);
+    }
+
+    fn sample_rle() -> Vec<u8> {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"BARL");
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.extend_from_slice(&2u32.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.extend_from_slice(&6u16.to_le_bytes());
+        data.extend_from_slice(&6u16.to_le_bytes());
+        data.push(0);
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.push(255);
+        data.extend_from_slice(&2u16.to_le_bytes());
+        data.push(255);
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.push(0);
+        data.extend_from_slice(&3u16.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn rle_parser_decodes_file_viewer_data() {
+        let data = sample_rle();
+        let file = RleFile::parse(&data).expect("valid RLE");
+        assert_eq!(file.frame_count, 2);
+        assert_eq!(file.frame_width, 2);
+        assert_eq!(file.frame_height, 2);
+        assert_eq!(file.total_pixels(), 4);
+
+        let mut frame = vec![0u8; file.total_pixels()];
+        assert!(file.decode_frame(&data, 0, &mut frame).unwrap());
+        assert_eq!(frame, [0, 0, 255, 255]);
+        assert!(file.decode_frame(&data, 1, &mut frame).unwrap());
+        assert_eq!(frame, [255, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rle_parser_rejects_bad_magic() {
+        let mut data = sample_rle();
+        data[0] = b'X';
+        assert!(matches!(RleFile::parse(&data), Err(RleError::BadMagic)));
+    }
+
+    #[test]
+    fn rle_letterbox_preserves_source_aspect_ratio() {
+        assert_eq!(compute_rle_letterbox(160, 120, 800, 600), (800, 600, 0, 0));
+        assert_eq!(
+            compute_rle_letterbox(160, 120, 800, 400),
+            (533, 400, 133, 0)
+        );
+    }
+
+    #[cfg(feature = "shiguredo_mp4")]
+    #[test]
+    fn mp4_summary_reads_brand_and_movie_duration_from_prefix() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&24u32.to_be_bytes());
+        data.extend_from_slice(b"ftyp");
+        data.extend_from_slice(b"isom");
+        data.extend_from_slice(&0u32.to_be_bytes());
+        data.extend_from_slice(b"isom");
+        data.extend_from_slice(b"mp42");
+
+        let mut mvhd_payload = vec![0u8; 20];
+        mvhd_payload[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        mvhd_payload[16..20].copy_from_slice(&12_000u32.to_be_bytes());
+        let mvhd_size = (8 + mvhd_payload.len()) as u32;
+        let moov_size = 8 + mvhd_size;
+        data.extend_from_slice(&(moov_size as u32).to_be_bytes());
+        data.extend_from_slice(b"moov");
+        data.extend_from_slice(&mvhd_size.to_be_bytes());
+        data.extend_from_slice(b"mvhd");
+        data.extend_from_slice(&mvhd_payload);
+
+        let summary = parse_mp4_summary(&data);
+        assert_eq!(summary.major_brand, "isom");
+        assert!(summary.has_moov);
+        assert_eq!(summary.duration_seconds, Some(12));
+        assert!(
+            summary
+                .compatible_brands
+                .iter()
+                .any(|brand| brand == "mp42")
+        );
+    }
+
+    #[cfg(feature = "zune-jpeg")]
+    #[test]
+    fn jpeg_preflight_reads_dimensions_from_prefix() {
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x04, 0x12, 0x34, 0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00,
+            0x01, 0x00, 0x02, 0x01, 0x01, 0x11, 0x00,
+        ];
+
+        assert_eq!(preflight_jpeg_header(&jpeg).unwrap(), Some((2, 1)));
+
+        let mut oversized = jpeg;
+        oversized[13..15].copy_from_slice(&1081u16.to_be_bytes());
+        assert!(
+            preflight_jpeg_header(&oversized)
+                .unwrap_err()
+                .contains("Image too large")
+        );
+
+        assert_eq!(preflight_jpeg_header(&jpeg[..8]).unwrap(), None);
     }
 
     #[cfg(feature = "zune-jpeg")]

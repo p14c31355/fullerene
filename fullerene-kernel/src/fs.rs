@@ -168,6 +168,9 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
 pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     const MAX_FILE_SIZE: usize = 16 * 1024 * 1024;
     const TIMEOUT_MS: u64 = 15_000;
+    if matches!(file_size(path), Ok(size) if size > MAX_FILE_SIZE as u64) {
+        return Err(FsError::DiskFull);
+    }
     let tsc_per_ms = solvent::get_tsc_per_ms();
     let deadline = if tsc_per_ms > 0 {
         (unsafe { core::arch::x86_64::_rdtsc() })
@@ -177,7 +180,7 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     };
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
-    let mut chunk = [0u8; 65536];
+    let mut chunk = [0u8; 4096];
     let result = loop {
         if deadline > 0 && (unsafe { core::arch::x86_64::_rdtsc() }) >= deadline {
             break Err(FsError::Io);
@@ -186,6 +189,39 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
             Ok(0) => break Ok(buf),
             Ok(n) if buf.len() + n <= MAX_FILE_SIZE => buf.extend_from_slice(&chunk[..n]),
             Ok(_) => break Err(FsError::DiskFull),
+            Err(e) => break Err(e),
+        }
+    };
+    let _ = close_file(fd);
+    result
+}
+
+pub fn read_file_prefix(path: &str, limit: usize) -> Result<Vec<u8>, FsError> {
+    const TIMEOUT_MS: u64 = 15_000;
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let tsc_per_ms = solvent::get_tsc_per_ms();
+    let deadline = if tsc_per_ms > 0 {
+        (unsafe { core::arch::x86_64::_rdtsc() })
+            .wrapping_add(tsc_per_ms.saturating_mul(TIMEOUT_MS))
+    } else {
+        0
+    };
+    let mut fd = open_file(path)?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let result = loop {
+        if deadline > 0 && (unsafe { core::arch::x86_64::_rdtsc() }) >= deadline {
+            break Err(FsError::Io);
+        }
+        if buf.len() == limit {
+            break Ok(buf);
+        }
+        let want = (limit - buf.len()).min(chunk.len());
+        match read_file(&mut fd, &mut chunk[..want]) {
+            Ok(0) => break Ok(buf),
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
             Err(e) => break Err(e),
         }
     };

@@ -80,6 +80,15 @@ This command:
    - OVMF firmware for UEFI booting.
    - Boot from the ISO.
 
+To rebuild only the ISO without opening QEMU, use the long argument:
+
+```bash
+cargo run -p flasks --bin flasks -- --iso-only
+```
+
+This still rebuilds `fullerene-kernel` and `bellows`, then writes
+`fullerene.iso` and exits before preparing OVMF variables or launching QEMU.
+
 ## QEMU Options
 
 Flasks supports dynamic VGA/display configuration via CLI arguments:
@@ -92,9 +101,13 @@ Flasks supports dynamic VGA/display configuration via CLI arguments:
 | `--headless` | false | Run QEMU in headless mode (no GUI) |
 | `--timeout <seconds>` | none | Timeout for QEMU execution in seconds |
 | `--clone-ovmf` | false | Copy OVMF binaries from system installation to project |
+| `--iso-only` | false | Rebuild `fullerene.iso` and exit without launching QEMU |
 
 Examples:
 ```bash
+# Rebuild only fullerene.iso without opening QEMU
+cargo run -p flasks --bin flasks -- --iso-only
+
 # std-vga (Bochs VBE) for framebuffer debugging
 cargo run --bin flasks -- --vga std
 

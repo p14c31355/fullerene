@@ -21,6 +21,7 @@ use crate::vfs::{FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, 
 const SECTOR_SIZE: usize = 512;
 const ROOT_SCAN_SECTORS: usize = 256;
 const METADATA_CACHE_SECTORS: usize = ROOT_SCAN_SECTORS + 16;
+const MAX_CONTIGUOUS_IO_SECTORS: usize = 8;
 
 type MetadataCache = BTreeMap<u32, [u8; SECTOR_SIZE]>;
 
@@ -136,7 +137,9 @@ impl Read for ExFatDevice {
             let offset = position as usize % SECTOR_SIZE;
             let remaining = len - done;
             if offset == 0 && remaining >= SECTOR_SIZE {
-                let count = (remaining / SECTOR_SIZE).min(u16::MAX as usize) as u16;
+                let count = (remaining / SECTOR_SIZE)
+                    .min(MAX_CONTIGUOUS_IO_SECTORS)
+                    .min(u16::MAX as usize) as u16;
                 let bytes = count as usize * SECTOR_SIZE;
                 self.read_cached(
                     &mut **device,
@@ -174,7 +177,9 @@ impl Write for ExFatDevice {
             let offset = position as usize % SECTOR_SIZE;
             let remaining = len - done;
             if offset == 0 && remaining >= SECTOR_SIZE {
-                let count = (remaining / SECTOR_SIZE).min(u16::MAX as usize) as u16;
+                let count = (remaining / SECTOR_SIZE)
+                    .min(MAX_CONTIGUOUS_IO_SECTORS)
+                    .min(u16::MAX as usize) as u16;
                 let bytes = count as usize * SECTOR_SIZE;
                 self.write_cached(
                     &mut **device,
@@ -779,6 +784,27 @@ mod tests {
                 .unwrap_err()
                 .kind(),
             ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn raw_device_read_splits_large_contiguous_io() {
+        let image = Arc::new(Mutex::new(vec![0; IMAGE_SIZE]));
+        let block_device = MemoryDevice::new(image);
+        let mut adapter = ExFatDevice {
+            inner: Arc::new(Mutex::new(Box::new(block_device.clone()))),
+            cache: Arc::new(Mutex::new(MetadataCache::new())),
+            position: 0,
+            size: IMAGE_SIZE as u64,
+        };
+        let mut buf = vec![0; 64 * 1024];
+
+        adapter.read_exact(&mut buf).unwrap();
+
+        assert_eq!(
+            block_device.read_calls.load(Ordering::Relaxed),
+            16,
+            "64 KiB reads should be split into 4 KiB block-device requests"
         );
     }
 

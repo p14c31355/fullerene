@@ -183,7 +183,7 @@ const TEXT_EXTENSIONS: &[&str] = &[
     "lock",
 ];
 const MEDIA_EXTENSIONS: &[&str] = &[
-    "bmp", "png", "jpg", "jpeg", "wav", "mp3", "mp4", "tar", "tgz", "gz", "zip",
+    "bmp", "png", "jpg", "jpeg", "wav", "mp3", "mp4", "rle", "tar", "tgz", "gz", "zip",
 ];
 
 fn is_text_ext(ext: &str) -> bool {
@@ -299,6 +299,29 @@ pub fn launch_file(path: &str) {
         return;
     }
 
+    #[cfg(feature = "shiguredo_mp4")]
+    if ext_lower == "mp4" {
+        let data = match read_file_with_limit(path) {
+            Ok(data) => data,
+            Err(e) => {
+                show_open_error(e);
+                return;
+            }
+        };
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        crate::viewers::open_mp4_data(runtime, data, name);
+        return;
+    }
+
+    #[cfg(not(feature = "shiguredo_mp4"))]
+    if ext_lower == "mp4" {
+        show_open_error("MP4 support not compiled in (shiguredo_mp4 feature disabled)");
+        return;
+    }
+
     // Media files: read data (may be slow on SDXC but VFS runs without runtime lock)
     let file_data = match read_file_with_limit(path) {
         Ok(d) => d,
@@ -307,6 +330,24 @@ pub fn launch_file(path: &str) {
             return;
         }
     };
+
+    // Validate JPEG headers after the single complete read.  Reading a prefix
+    // first caused every JPEG on SDXC/exFAT to be traversed twice and could
+    // leave the UI stuck in the card reader before the normal read timeout.
+    #[cfg(feature = "zune-jpeg")]
+    if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
+        match crate::viewers::preflight_jpeg_header(&file_data) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                show_open_error("JPEG header not found");
+                return;
+            }
+            Err(e) => {
+                show_open_error(&e);
+                return;
+            }
+        }
+    }
 
     // JPEG: decode outside runtime lock
     #[cfg(feature = "zune-jpeg")]
@@ -329,6 +370,15 @@ pub fn launch_file(path: &str) {
         return;
     }
 
+    if ext_lower == "rle" {
+        let mut runtime = RUNTIME_CONTEXT.runtime();
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        crate::viewers::open_rle_data(runtime, file_data, name);
+        return;
+    }
+
     let mut runtime = RUNTIME_CONTEXT.runtime();
     let Some(runtime) = runtime.as_mut() else {
         return;
@@ -345,8 +395,6 @@ pub fn launch_file(path: &str) {
         ),
         "wav" => crate::viewers::open_wav_data(runtime, &file_data, name),
         "mp3" => crate::viewers::open_mp3_data(runtime, &file_data, name),
-        #[cfg(feature = "shiguredo_mp4")]
-        "mp4" => crate::viewers::open_mp4_data(runtime, &file_data, name),
         "tar" => crate::viewers::open_tar_data(runtime, &file_data, name),
         #[cfg(feature = "gzip")]
         "tgz" | "gz" => {

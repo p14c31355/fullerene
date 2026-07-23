@@ -68,25 +68,6 @@ fn main() {
         println!("cargo:rustc-cfg=have_ports_cpio");
     }
 
-    // ── Copy existing media assets ───────────────────────────────
-    let assets = ["badapple.rle", "badapple.pcm"];
-
-    for asset in &assets {
-        let src = manifest_dir.join("assets").join(asset);
-        let dst = out_dir.join(asset);
-
-        println!("cargo:rerun-if-changed={}", src.display());
-
-        fs::copy(&src, &dst).unwrap_or_else(|e| {
-            panic!(
-                "Failed to copy asset '{}' to '{}': {}",
-                src.display(),
-                dst.display(),
-                e
-            );
-        });
-    }
-
     // ── Build WASI test app ──────────────────────────────────────
     let wasm_src = manifest_dir
         .join("..")

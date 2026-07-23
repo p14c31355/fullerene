@@ -47,6 +47,7 @@ pub fn init() {
             Ok(result)
         }),
         vfs_read: Some(|path| crate::fs::read_entire_file(path)),
+        vfs_read_prefix: Some(|path, limit| crate::fs::read_file_prefix(path, limit)),
         vfs_write: Some(|path, data| crate::contexts::vfs::replace_file(path, data)),
         vfs_copy: Some(|source, destination, is_dir| {
             crate::contexts::vfs::copy_path(source, destination, is_dir)

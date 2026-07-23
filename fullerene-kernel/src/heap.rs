@@ -35,8 +35,10 @@ pub const MAX_DESCRIPTORS: usize = 2048;
 /// `BOOT_HEAP_BUFFER`).  The remaining [`HEAP_EXTEND_MAX`] bytes are used
 /// for dynamic heap expansion (replaces the old `HEAP_EXTEND_BUFFER`).
 ///
-/// Placed in `.data` to ensure it is page‑mapped at boot by OVMF.
-/// 36 MiB is within OVMF's safe handling limits.
+/// This is deliberately not forced into `.data`: because it is zero
+/// initialized, the PE/UEFI image can represent it as a loader-zero-filled
+/// region (BSS).  The pages are still mapped and zeroed by the UEFI image
+/// loader at runtime, but the zero bytes do not occupy space in the ISO.
 #[repr(align(4096))]
 pub struct TotalHeapBuffer(#[allow(dead_code)] pub(crate) [u8; HEAP_TOTAL]);
 
@@ -44,7 +46,6 @@ pub struct TotalHeapBuffer(#[allow(dead_code)] pub(crate) [u8; HEAP_TOTAL]);
 /// The heap buffer is written once (zeroed at compile time, mapped by UEFI),
 /// and then used by the kernel allocator which serialises access via spinlock.
 /// Only accessed after single‑core boot init is complete.
-#[unsafe(link_section = ".data")]
 pub static mut TOTAL_HEAP_BUFFER: TotalHeapBuffer = TotalHeapBuffer([0; HEAP_TOTAL]);
 
 /// Track how many bytes of the extend region (offset `HEAP_SIZE` inside

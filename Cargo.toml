@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "flasks/tools", "fullerene-kernel", "fullerene-kernel/abi", "fullerene-kernel/vdso", "genome", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "solvent/wasi", "toluene", "toluene/rle_player"]
-default-members = ["bonder", "chronoline", "flasks", "fullerene-kernel", "fullerene-kernel/abi", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene", "toluene/rle_player"]
+members = ["bellows", "bonder", "carrier", "chronoline", "flasks", "flasks/tools", "fullerene-kernel", "fullerene-kernel/abi", "fullerene-kernel/vdso", "genome", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "solvent/wasi", "toluene"]
+default-members = ["bonder", "chronoline", "flasks", "fullerene-kernel", "fullerene-kernel/abi", "lattice", "nitrogen", "nozzle", "petroleum", "resonance", "solvent", "toluene"]
 
 [profile.dev]
 panic = "abort"

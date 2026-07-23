@@ -138,6 +138,8 @@ pub fn tick_core(now: u64) {
         }
     }
 
+    crate::viewers::tick_rle_playback();
+
     process_events();
     // File launch may have been queued by event handlers that ran inside
     // the runtime lock.  Process it now, outside the lock, so that VFS I/O
