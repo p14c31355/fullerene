@@ -77,7 +77,28 @@ impl<'a> Shell<'a> {
     }
 
     pub fn run(&mut self) {
+        self.run_with_initial_line(None);
+    }
+
+    pub fn run_with_initial_line(&mut self, initial_line: Option<&str>) {
         self.show_welcome();
+
+        if let Some(line) = initial_line {
+            self.terminal.write_str(self.prompt.as_str());
+            self.terminal.write_str(line);
+            self.terminal.write_str("\n");
+            if !self.execute_line(line) {
+                self.terminal.write_str("Shell exited.\n");
+            }
+
+            // An initial line is a deferred, one-shot launch (for example a
+            // file opened from the desktop).  Do not immediately enter the
+            // blocking interactive read loop here: the caller is running on
+            // the scheduler stack and must return so the compositor can
+            // render the command's output.  A later explicit shell launch
+            // starts the interactive session normally.
+            return;
+        }
 
         loop {
             self.terminal.write_str(self.prompt.as_str());
@@ -94,18 +115,25 @@ impl<'a> Shell<'a> {
                 continue;
             }
 
-            let should_continue = carrier::exec::dispatch_with_services(
-                self.commands,
-                &mut *self.terminal,
-                trimmed,
-                &self.services,
-            );
-            if !should_continue {
+            if !self.execute_line(trimmed) {
                 break;
             }
         }
 
         self.terminal.write_str("Shell exited.\n");
+    }
+
+    pub fn execute_line(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        carrier::exec::dispatch_with_services(
+            self.commands,
+            &mut *self.terminal,
+            trimmed,
+            &self.services,
+        )
     }
 
     fn show_welcome(&mut self) {
@@ -227,6 +255,39 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
         ),
         ("wasm", "Run a WASM/WASI binary", builtins::cmd_wasm),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::String;
+
+    struct OneShotTerminal {
+        output: String,
+    }
+
+    impl Terminal for OneShotTerminal {
+        fn write_str(&mut self, s: &str) {
+            self.output.push_str(s);
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            panic!("one-shot shell unexpectedly entered interactive input");
+        }
+    }
+
+    #[test]
+    fn initial_command_returns_without_entering_interactive_loop() {
+        let mut terminal = OneShotTerminal {
+            output: String::new(),
+        };
+        let mut shell = Shell::new(&mut terminal, default_commands(), ShellServices::none());
+
+        shell.run_with_initial_line(Some("echo hello"));
+
+        assert!(terminal.output.contains("echo hello\n"));
+        assert!(terminal.output.contains("hello\n"));
+    }
 }
 
 pub fn get_completions(prefix: &str) -> alloc::vec::Vec<alloc::string::String> {

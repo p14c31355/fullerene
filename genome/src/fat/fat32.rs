@@ -161,6 +161,33 @@ impl FileSystem for FatFileSystem {
         Ok(())
     }
 
+    fn position(&mut self, fd: u32) -> Result<u64, FsError> {
+        self.handles
+            .iter()
+            .find(|handle| handle.0 == fd)
+            .map(|handle| handle.2)
+            .ok_or(FsError::InvalidFileDescriptor)
+    }
+
+    fn size(&mut self, fd: u32) -> Result<u64, FsError> {
+        let path = self
+            .handles
+            .iter()
+            .find(|handle| handle.0 == fd)
+            .map(|handle| handle.1.clone())
+            .ok_or(FsError::InvalidFileDescriptor)?;
+        let trimmed = path.trim_matches('/');
+        let (parent, name) = match trimmed.rfind('/') {
+            Some(position) => (&trimmed[..position], &trimmed[position + 1..]),
+            None => ("", trimmed),
+        };
+        self.readdir(parent)?
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.size)
+            .ok_or(FsError::FileNotFound)
+    }
+
     fn create(&mut self, path: &str, _kind: InodeType) -> Option<u64> {
         self.invalidate_dir_cache();
         let _file = self.create_file(path).ok()?;

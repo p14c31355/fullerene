@@ -3,18 +3,24 @@
 //! Each viewer reads file data via `vfs_read`, parses the format, and
 //! creates a window with the content rendered into the surface.
 
-use crate::{GLYPH_H, HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT, RuntimeState};
+#[cfg(feature = "zune-jpeg")]
+use crate::HEAP_EXTEND_RESERVE;
+use crate::{GLYPH_H, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use lattice::window::WindowId;
+#[cfg(feature = "minipng")]
 use petroleum::PageBuf;
 
+#[allow(dead_code)]
 const MAX_IMG_W: u32 = 1920;
+#[allow(dead_code)]
 const MAX_IMG_H: u32 = 1080;
 const GLYPH_SIZE: u32 = 8;
 
 /// Log a status message to the taskbar debug area + serial.
+#[allow(unused_macros)]
 macro_rules! log_status {
     ($label:expr $(, $arg:expr)*) => {{
         #[cfg(not(test))]
@@ -33,7 +39,14 @@ macro_rules! log_status {
     }};
 }
 
-fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg: u32, fg: u32) {
+pub(crate) fn show_text_window(
+    rt: &mut RuntimeState,
+    title: &str,
+    msg: &str,
+    cols: u32,
+    bg: u32,
+    fg: u32,
+) {
     let rows = (msg.lines().count() as u32).min(40) + 3;
     let id =
         rt.desktop
@@ -187,6 +200,7 @@ pub struct DecodedJpeg {
 }
 
 #[cfg(feature = "zune-jpeg")]
+#[allow(dead_code)]
 fn is_jpeg_sof_marker(marker: u8) -> bool {
     matches!(
         marker,
@@ -196,6 +210,7 @@ fn is_jpeg_sof_marker(marker: u8) -> bool {
 
 /// Inspect a JPEG prefix and return dimensions once the SOF marker is present.
 #[cfg(feature = "zune-jpeg")]
+#[allow(dead_code)]
 pub fn preflight_jpeg_header(data: &[u8]) -> Result<Option<(u16, u16)>, String> {
     if data.len() < 2 {
         return Ok(None);
@@ -261,21 +276,165 @@ pub fn preflight_jpeg_header(data: &[u8]) -> Result<Option<(u16, u16)>, String> 
     Ok(None)
 }
 
+/// Adapter from Genome's no-std stream API to zune's reader API.
+#[cfg(feature = "zune-jpeg")]
+struct GenomeJpegReader<'a, R: ?Sized> {
+    reader: &'a mut R,
+}
+
+#[cfg(feature = "zune-jpeg")]
+impl<R: genome::io::Read + genome::io::Seek + ?Sized> zune_core::bytestream::ZByteReaderTrait
+    for GenomeJpegReader<'_, R>
+{
+    fn read_byte_no_error(&mut self) -> u8 {
+        let mut byte = [0u8; 1];
+        match self.reader.read(&mut byte) {
+            Ok(1) => byte[0],
+            _ => 0,
+        }
+    }
+
+    fn read_exact_bytes(
+        &mut self,
+        buf: &mut [u8],
+    ) -> Result<(), zune_core::bytestream::ZByteIoError> {
+        let start = self.z_position()?;
+        match self.reader.read_exact(buf) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let _ = self.reader.seek(genome::io::SeekFrom::Start(start));
+                Err(zune_core::bytestream::ZByteIoError::NotEnoughBytes(
+                    0,
+                    buf.len(),
+                ))
+            }
+        }
+    }
+
+    fn read_const_bytes<const N: usize>(
+        &mut self,
+        buf: &mut [u8; N],
+    ) -> Result<(), zune_core::bytestream::ZByteIoError> {
+        self.read_exact_bytes(buf)
+    }
+
+    fn read_const_bytes_no_error<const N: usize>(&mut self, buf: &mut [u8; N]) {
+        let _ = self.read_exact_bytes(buf);
+    }
+
+    fn read_bytes(&mut self, buf: &mut [u8]) -> Result<usize, zune_core::bytestream::ZByteIoError> {
+        self.reader
+            .read(buf)
+            .map_err(|_| zune_core::bytestream::ZByteIoError::Generic("filesystem read failed"))
+    }
+
+    fn peek_bytes(&mut self, buf: &mut [u8]) -> Result<usize, zune_core::bytestream::ZByteIoError> {
+        let start = self.z_position()?;
+        let result = self.read_bytes(buf);
+        let _ = self.reader.seek(genome::io::SeekFrom::Start(start));
+        result
+    }
+
+    fn peek_exact_bytes(
+        &mut self,
+        buf: &mut [u8],
+    ) -> Result<(), zune_core::bytestream::ZByteIoError> {
+        let start = self.z_position()?;
+        let result = self.read_exact_bytes(buf);
+        let _ = self.reader.seek(genome::io::SeekFrom::Start(start));
+        result
+    }
+
+    fn z_seek(
+        &mut self,
+        from: zune_core::bytestream::ZSeekFrom,
+    ) -> Result<u64, zune_core::bytestream::ZByteIoError> {
+        let position = match from {
+            zune_core::bytestream::ZSeekFrom::Start(offset) => genome::io::SeekFrom::Start(offset),
+            zune_core::bytestream::ZSeekFrom::End(offset) => genome::io::SeekFrom::End(offset),
+            zune_core::bytestream::ZSeekFrom::Current(offset) => {
+                genome::io::SeekFrom::Current(offset)
+            }
+        };
+        self.reader
+            .seek(position)
+            .map_err(|_| zune_core::bytestream::ZByteIoError::SeekError("filesystem seek failed"))
+    }
+
+    fn is_eof(&mut self) -> Result<bool, zune_core::bytestream::ZByteIoError> {
+        let position = self.z_position()?;
+        let mut probe = [0u8; 1];
+        let read = self.read_bytes(&mut probe)?;
+        let _ = self.reader.seek(genome::io::SeekFrom::Start(position));
+        Ok(read == 0)
+    }
+
+    fn z_position(&mut self) -> Result<u64, zune_core::bytestream::ZByteIoError> {
+        self.reader
+            .seek(genome::io::SeekFrom::Current(0))
+            .map_err(|_| {
+                zune_core::bytestream::ZByteIoError::SeekError("filesystem position failed")
+            })
+    }
+
+    fn read_remaining(
+        &mut self,
+        sink: &mut Vec<u8>,
+    ) -> Result<usize, zune_core::bytestream::ZByteIoError> {
+        let mut total = 0;
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = self.read_bytes(&mut chunk)?;
+            if read == 0 {
+                return Ok(total);
+            }
+            sink.extend_from_slice(&chunk[..read]);
+            total += read;
+        }
+    }
+}
+
 /// Decode JPEG data without any runtime lock held.
 /// Call this before acquiring the runtime lock to avoid UI freezes.
 #[cfg(feature = "zune-jpeg")]
+#[allow(dead_code)]
 pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
     use zune_core::bytestream::ZCursor;
+    decode_jpeg_source(ZCursor::new(data))
+}
+
+/// Decode directly from a seekable Genome stream. The encoded file is read on
+/// demand by zune; only decoder state and decoded pixels are retained.
+#[cfg(feature = "zune-jpeg")]
+pub fn decode_jpeg_reader<R: genome::io::FileReader + ?Sized>(
+    reader: &mut R,
+) -> Result<DecodedJpeg, String> {
+    const MAX_JPEG_INPUT: u64 = 16 * 1024 * 1024;
+    if reader
+        .len()
+        .map_err(|_| String::from("Cannot determine JPEG size"))?
+        > MAX_JPEG_INPUT
+    {
+        return Err(String::from("JPEG file too large"));
+    }
+    reader
+        .seek(genome::io::SeekFrom::Start(0))
+        .map_err(|_| String::from("Cannot seek JPEG file"))?;
+    decode_jpeg_source(GenomeJpegReader { reader })
+}
+
+#[cfg(feature = "zune-jpeg")]
+fn decode_jpeg_source<T: zune_core::bytestream::ZByteReaderTrait>(
+    source: T,
+) -> Result<DecodedJpeg, String> {
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
-
-    log_status!("JPEG file read ({} B)", data.len());
 
     let options = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGB)
         .set_max_width(MAX_IMG_W as usize)
         .set_max_height(MAX_IMG_H as usize);
-    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(source, options);
 
     // Step 1: Parse headers only (no pixel buffer allocation yet).
     decoder
@@ -347,13 +506,15 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
     })
 }
 
-/// Render a decoded JPEG into a new window.
-/// Must be called with the runtime lock held.
+/// Render an RGB document produced by any image decoder.
 #[cfg(feature = "zune-jpeg")]
-pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &str) {
-    let width = u32::from(decoded.width);
-    let height = u32::from(decoded.height);
-
+pub(crate) fn render_rgb_image_window(
+    rt: &mut RuntimeState,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    _name: &str,
+) {
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);
     let id = rt
@@ -361,7 +522,7 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
         .wm
         .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
     if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        let px = decoded.pixels.as_slice();
+        let px = pixels.as_slice();
         for y in 0..height.min(win_h) {
             for x in 0..width.min(win_w) {
                 let offset = ((y as usize) * (width as usize) + x as usize) * 3;

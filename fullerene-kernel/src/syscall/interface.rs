@@ -137,6 +137,7 @@ impl From<genome::fs::FsError> for SyscallError {
             FsError::DirectoryNotEmpty => Self::DirectoryNotEmpty,
             FsError::IsADirectory => Self::IsADirectory,
             FsError::NotSupported => Self::NotSupported,
+            FsError::UnexpectedEof => Self::Io,
             FsError::Io => Self::Io,
         }
     }

@@ -2,10 +2,17 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use genome::io::SeekFrom;
+pub type VfsHandle = u32;
 pub type WallClockCallback = fn() -> Option<(u16, u8, u8, u8, u8, u8)>;
 pub type VfsReadDirCallback = fn(&str) -> Result<Vec<VfsEntry>, genome::FsError>;
 pub type VfsReadCallback = fn(&str) -> Result<Vec<u8>, genome::FsError>;
 pub type VfsReadPrefixCallback = fn(&str, usize) -> Result<Vec<u8>, genome::FsError>;
+pub type VfsOpenCallback = fn(&str) -> Result<VfsHandle, genome::FsError>;
+pub type VfsStreamReadCallback = fn(VfsHandle, &mut [u8]) -> Result<usize, genome::FsError>;
+pub type VfsStreamSeekCallback = fn(VfsHandle, SeekFrom) -> Result<u64, genome::FsError>;
+pub type VfsStreamSizeCallback = fn(VfsHandle) -> Result<u64, genome::FsError>;
+pub type VfsCloseCallback = fn(VfsHandle) -> Result<(), genome::FsError>;
 pub type VfsWriteCallback = fn(&str, &[u8]) -> Result<(), genome::FsError>;
 pub type VfsTransferCallback = fn(&str, &str, bool) -> Result<(), genome::FsError>;
 pub type VfsRemoveCallback = fn(&str, bool) -> Result<(), genome::FsError>;
@@ -21,6 +28,11 @@ pub struct SolventCallbacks {
     pub vfs_readdir: Option<VfsReadDirCallback>,
     pub vfs_read: Option<VfsReadCallback>,
     pub vfs_read_prefix: Option<VfsReadPrefixCallback>,
+    pub vfs_open: Option<VfsOpenCallback>,
+    pub vfs_stream_read: Option<VfsStreamReadCallback>,
+    pub vfs_stream_seek: Option<VfsStreamSeekCallback>,
+    pub vfs_stream_size: Option<VfsStreamSizeCallback>,
+    pub vfs_close: Option<VfsCloseCallback>,
     pub vfs_write: Option<VfsWriteCallback>,
     pub vfs_copy: Option<VfsTransferCallback>,
     pub vfs_move: Option<VfsTransferCallback>,
@@ -44,6 +56,11 @@ impl SolventCallbacks {
             vfs_readdir: None,
             vfs_read: None,
             vfs_read_prefix: None,
+            vfs_open: None,
+            vfs_stream_read: None,
+            vfs_stream_seek: None,
+            vfs_stream_size: None,
+            vfs_close: None,
             vfs_write: None,
             vfs_copy: None,
             vfs_move: None,

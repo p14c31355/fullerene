@@ -22,6 +22,7 @@ mod clock;
 mod editor_bridge;
 mod event_loop;
 mod explorer;
+mod file;
 mod handlers;
 mod input_loop;
 mod menu_actions;
@@ -31,18 +32,20 @@ mod runtime_context;
 mod services;
 mod settings_bridge;
 mod terminal;
+pub mod viewer;
 mod viewers;
 mod window_api;
 
 pub use callbacks::{
-    DeviceEntry, ProcessEntry, ProcessStateKind, SolventCallbacks, VfsEntry, exec_shell_command,
-    get_mounted_drives, launch_shell,
+    DeviceEntry, ProcessEntry, ProcessStateKind, SolventCallbacks, VfsEntry, VfsHandle,
+    exec_shell_command, get_mounted_drives, launch_shell,
 };
 pub use editor_bridge::editor_handle_key;
 pub use event_loop::{
     GLOBAL_TICK, chrono_tick, consume_frame_due, cursor_update_due, process_events, push_key_event,
     runtime_tick, runtime_tick_no_fb, set_render_fn, tick_core,
 };
+pub use file::RuntimeFile;
 pub use input_loop::{MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state};
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
@@ -57,6 +60,7 @@ pub use services::{
 };
 pub use settings_bridge::settings_handle_key;
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
+pub use viewer::take_pending_shell_command;
 pub use window_api::{
     close_window, create_window, ensure_editor_window, ensure_terminal_window,
     force_desktop_redraw, framebuffer_dims, invalidate_window, launch_file, resume_rendering,
@@ -90,9 +94,18 @@ pub fn run_shell_on(
     prompt: &str,
     services: nozzle::ShellServices,
 ) {
+    run_shell_on_with_command(terminal, prompt, services, None);
+}
+
+pub fn run_shell_on_with_command(
+    terminal: &mut dyn carrier::terminal::Terminal,
+    prompt: &str,
+    services: nozzle::ShellServices,
+    initial_command: Option<&str>,
+) {
     let mut shell = nozzle::Shell::new(terminal, nozzle::default_commands(), services);
     shell.set_prompt(prompt);
-    shell.run();
+    shell.run_with_initial_line(initial_command);
 }
 
 pub(crate) static SUPER_HELD: core::sync::atomic::AtomicBool =
