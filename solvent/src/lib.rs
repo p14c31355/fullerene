@@ -32,6 +32,7 @@ mod runtime_context;
 mod services;
 mod settings_bridge;
 mod terminal;
+pub mod viewer;
 mod viewers;
 mod window_api;
 

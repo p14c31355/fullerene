@@ -3,18 +3,24 @@
 //! Each viewer reads file data via `vfs_read`, parses the format, and
 //! creates a window with the content rendered into the surface.
 
-use crate::{GLYPH_H, HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT, RuntimeState};
+#[cfg(feature = "zune-jpeg")]
+use crate::HEAP_EXTEND_RESERVE;
+use crate::{GLYPH_H, RUNTIME_CONTEXT, RuntimeState};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use lattice::window::WindowId;
+#[cfg(feature = "minipng")]
 use petroleum::PageBuf;
 
+#[allow(dead_code)]
 const MAX_IMG_W: u32 = 1920;
+#[allow(dead_code)]
 const MAX_IMG_H: u32 = 1080;
 const GLYPH_SIZE: u32 = 8;
 
 /// Log a status message to the taskbar debug area + serial.
+#[allow(unused_macros)]
 macro_rules! log_status {
     ($label:expr $(, $arg:expr)*) => {{
         #[cfg(not(test))]
@@ -33,7 +39,14 @@ macro_rules! log_status {
     }};
 }
 
-fn show_text_window(rt: &mut RuntimeState, title: &str, msg: &str, cols: u32, bg: u32, fg: u32) {
+pub(crate) fn show_text_window(
+    rt: &mut RuntimeState,
+    title: &str,
+    msg: &str,
+    cols: u32,
+    bg: u32,
+    fg: u32,
+) {
     let rows = (msg.lines().count() as u32).min(40) + 3;
     let id =
         rt.desktop
@@ -265,12 +278,12 @@ pub fn preflight_jpeg_header(data: &[u8]) -> Result<Option<(u16, u16)>, String> 
 
 /// Adapter from Genome's no-std stream API to zune's reader API.
 #[cfg(feature = "zune-jpeg")]
-struct GenomeJpegReader<'a, R> {
+struct GenomeJpegReader<'a, R: ?Sized> {
     reader: &'a mut R,
 }
 
 #[cfg(feature = "zune-jpeg")]
-impl<R: genome::io::Read + genome::io::Seek> zune_core::bytestream::ZByteReaderTrait
+impl<R: genome::io::Read + genome::io::Seek + ?Sized> zune_core::bytestream::ZByteReaderTrait
     for GenomeJpegReader<'_, R>
 {
     fn read_byte_no_error(&mut self) -> u8 {
@@ -393,7 +406,7 @@ pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
 /// Decode directly from a seekable Genome stream. The encoded file is read on
 /// demand by zune; only decoder state and decoded pixels are retained.
 #[cfg(feature = "zune-jpeg")]
-pub fn decode_jpeg_reader<R: genome::io::FileReader>(
+pub fn decode_jpeg_reader<R: genome::io::FileReader + ?Sized>(
     reader: &mut R,
 ) -> Result<DecodedJpeg, String> {
     const MAX_JPEG_INPUT: u64 = 16 * 1024 * 1024;
@@ -493,13 +506,15 @@ fn decode_jpeg_source<T: zune_core::bytestream::ZByteReaderTrait>(
     })
 }
 
-/// Render a decoded JPEG into a new window.
-/// Must be called with the runtime lock held.
+/// Render an RGB document produced by any image decoder.
 #[cfg(feature = "zune-jpeg")]
-pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &str) {
-    let width = u32::from(decoded.width);
-    let height = u32::from(decoded.height);
-
+pub(crate) fn render_rgb_image_window(
+    rt: &mut RuntimeState,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+    _name: &str,
+) {
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);
     let id = rt
@@ -507,7 +522,7 @@ pub fn render_jpeg_window(rt: &mut RuntimeState, decoded: DecodedJpeg, _name: &s
         .wm
         .create_titled_window(120, 80, win_w, win_h, 0x000000, "Image Viewer");
     if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
-        let px = decoded.pixels.as_slice();
+        let px = pixels.as_slice();
         for y in 0..height.min(win_h) {
             for x in 0..width.min(win_w) {
                 let offset = ((y as usize) * (width as usize) + x as usize) * 3;
