@@ -92,6 +92,8 @@ pub fn detect<R: Read + Seek>(reader: &mut R, path: &str) -> Result<FileKind, Fs
     reader.seek(SeekFrom::Start(position))?;
     let prefix = &prefix[..length];
     let extension = extension(path);
+    let extension_lower = extension.to_lowercase();
+    let extension = extension_lower.as_str();
 
     if prefix.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Ok(FileKind::Image(ImageKind::Png));

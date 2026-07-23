@@ -21,8 +21,18 @@ fn buffer_wasm_output(data: &[u8]) {
         return;
     }
     let remaining = MAX_WASM_OUTPUT_BYTES - output.len();
-    let chunk_len = data.len().min(remaining);
-    output.push_str(&String::from_utf8_lossy(&data[..chunk_len]));
+    let converted = String::from_utf8_lossy(data);
+    let truncated = if converted.len() <= remaining {
+        converted.as_ref()
+    } else {
+        // Truncate at a valid UTF-8 char boundary
+        let mut end = remaining;
+        while end > 0 && !converted.is_char_boundary(end) {
+            end -= 1;
+        }
+        &converted[..end]
+    };
+    output.push_str(truncated);
 }
 
 fn begin_wasm_output_capture() {

@@ -313,13 +313,25 @@ impl VfsContext {
     }
 
     pub fn seek_from(&self, fd: u32, position: SeekFrom) -> Result<u64, FsError> {
+        let mut vfs = self.inner.lock();
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
+
         let absolute = match position {
             SeekFrom::Start(offset) => Some(offset),
-            SeekFrom::Current(offset) => self.position(fd)?.checked_add_signed(offset),
-            SeekFrom::End(offset) => self.size(fd)?.checked_add_signed(offset),
+            SeekFrom::Current(offset) => vfs
+                .position_at(handle.mount_index, handle.local_fd)?
+                .checked_add_signed(offset),
+            SeekFrom::End(offset) => vfs
+                .size_at(handle.mount_index, handle.local_fd)?
+                .checked_add_signed(offset),
         }
         .ok_or(FsError::InvalidSeek)?;
-        self.seek(fd, absolute)?;
+
+        vfs.seek_at(handle.mount_index, handle.local_fd, absolute)?;
         Ok(absolute)
     }
 
