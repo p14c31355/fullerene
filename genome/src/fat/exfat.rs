@@ -622,6 +622,22 @@ impl FileSystem for ExFatFileSystem {
         Ok(())
     }
 
+    fn position(&mut self, fd: u32) -> Result<u64, FsError> {
+        self.handles
+            .iter()
+            .find(|handle| handle.fd == fd)
+            .map(|handle| handle.offset)
+            .ok_or(FsError::InvalidFileDescriptor)
+    }
+
+    fn size(&mut self, fd: u32) -> Result<u64, FsError> {
+        self.handles
+            .iter()
+            .find(|handle| handle.fd == fd)
+            .map(|handle| handle.entry.size())
+            .ok_or(FsError::InvalidFileDescriptor)
+    }
+
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64> {
         self.invalidate_dir_cache();
         match kind {

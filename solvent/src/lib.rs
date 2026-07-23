@@ -22,6 +22,7 @@ mod clock;
 mod editor_bridge;
 mod event_loop;
 mod explorer;
+mod file;
 mod handlers;
 mod input_loop;
 mod menu_actions;
@@ -35,14 +36,15 @@ mod viewers;
 mod window_api;
 
 pub use callbacks::{
-    DeviceEntry, ProcessEntry, ProcessStateKind, SolventCallbacks, VfsEntry, exec_shell_command,
-    get_mounted_drives, launch_shell,
+    DeviceEntry, ProcessEntry, ProcessStateKind, SolventCallbacks, VfsEntry, VfsHandle,
+    exec_shell_command, get_mounted_drives, launch_shell,
 };
 pub use editor_bridge::editor_handle_key;
 pub use event_loop::{
     GLOBAL_TICK, chrono_tick, consume_frame_due, cursor_update_due, process_events, push_key_event,
     runtime_tick, runtime_tick_no_fb, set_render_fn, tick_core,
 };
+pub use file::RuntimeFile;
 pub use input_loop::{MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state};
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{

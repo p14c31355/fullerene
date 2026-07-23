@@ -21,6 +21,7 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use genome::fs::FsError;
+use genome::io::SeekFrom;
 pub use genome::vfs::{
     FileDescriptor, FileSystem, FileSystemCapabilities, InodeType, MemFileSystem, VNode, Vfs,
 };
@@ -289,6 +290,37 @@ impl VfsContext {
             .find(fd)
             .ok_or(FsError::InvalidFileDescriptor)?;
         vfs.seek_at(handle.mount_index, handle.local_fd, pos)
+    }
+
+    pub fn position(&self, fd: u32) -> Result<u64, FsError> {
+        let mut vfs = self.inner.lock();
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
+        vfs.position_at(handle.mount_index, handle.local_fd)
+    }
+
+    pub fn size(&self, fd: u32) -> Result<u64, FsError> {
+        let mut vfs = self.inner.lock();
+        let handle = self
+            .handle_table
+            .lock()
+            .find(fd)
+            .ok_or(FsError::InvalidFileDescriptor)?;
+        vfs.size_at(handle.mount_index, handle.local_fd)
+    }
+
+    pub fn seek_from(&self, fd: u32, position: SeekFrom) -> Result<u64, FsError> {
+        let absolute = match position {
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::Current(offset) => self.position(fd)?.checked_add_signed(offset),
+            SeekFrom::End(offset) => self.size(fd)?.checked_add_signed(offset),
+        }
+        .ok_or(FsError::InvalidSeek)?;
+        self.seek(fd, absolute)?;
+        Ok(absolute)
     }
 
     pub fn create(&self, path: &str) -> Result<FileDescriptor, FsError> {
@@ -590,6 +622,18 @@ pub fn close(fd: u32) -> Result<(), FsError> {
 /// Backward-compatible wrapper: seek fd.
 pub fn seek(fd: u32, pos: u64) -> Result<(), FsError> {
     with_vfs(|vfs| vfs.seek(fd, pos)).ok_or(FsError::PermissionDenied)?
+}
+
+pub fn position(fd: u32) -> Result<u64, FsError> {
+    with_vfs(|vfs| vfs.position(fd)).ok_or(FsError::PermissionDenied)?
+}
+
+pub fn size(fd: u32) -> Result<u64, FsError> {
+    with_vfs(|vfs| vfs.size(fd)).ok_or(FsError::PermissionDenied)?
+}
+
+pub fn seek_from(fd: u32, position: SeekFrom) -> Result<u64, FsError> {
+    with_vfs(|vfs| vfs.seek_from(fd, position)).ok_or(FsError::PermissionDenied)?
 }
 
 /// Backward-compatible wrapper: readdir.

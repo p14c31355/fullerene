@@ -280,6 +280,7 @@ impl From<genome::fs::FsError> for LinuxErrno {
             FsError::DirectoryNotEmpty => ENOTEMPTY,
             FsError::IsADirectory => EISDIR,
             FsError::NotSupported => ENOTSUP,
+            FsError::UnexpectedEof => EIO,
             FsError::Io => EIO,
         })
     }

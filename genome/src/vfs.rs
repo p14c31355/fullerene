@@ -4,6 +4,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::fs::FsError;
+use crate::io::{FileReader, Read, Seek, SeekFrom};
 
 const MAX_SYMLINK_DEPTH: u32 = 8;
 
@@ -95,6 +96,12 @@ pub trait FileSystem: Send {
     fn write(&mut self, fd: u32, data: &[u8]) -> Result<usize, FsError>;
     fn close(&mut self, fd: u32) -> Result<(), FsError>;
     fn seek(&mut self, fd: u32, pos: u64) -> Result<(), FsError>;
+    fn position(&mut self, _fd: u32) -> Result<u64, FsError> {
+        Err(FsError::NotSupported)
+    }
+    fn size(&mut self, _fd: u32) -> Result<u64, FsError> {
+        Err(FsError::NotSupported)
+    }
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64>;
     fn mkdir(&mut self, path: &str) -> Result<(), FsError>;
     fn unlink(&mut self, path: &str) -> Result<(), FsError>;
@@ -278,6 +285,21 @@ impl FileSystem for MemFileSystem {
             .ok_or(FsError::InvalidFileDescriptor)?;
         desc.offset = pos;
         Ok(())
+    }
+
+    fn position(&mut self, fd: u32) -> Result<u64, FsError> {
+        self.fds
+            .get(&fd)
+            .map(|descriptor| descriptor.offset)
+            .ok_or(FsError::InvalidFileDescriptor)
+    }
+
+    fn size(&mut self, fd: u32) -> Result<u64, FsError> {
+        let descriptor = self.fds.get(&fd).ok_or(FsError::InvalidFileDescriptor)?;
+        self.inodes
+            .get(&descriptor.ino)
+            .map(|inode| inode.size)
+            .ok_or(FsError::FileNotFound)
     }
 
     fn create(&mut self, path: &str, kind: InodeType) -> Option<u64> {
@@ -551,6 +573,34 @@ impl Vfs {
             .seek(fd, pos)
     }
 
+    pub fn position_at(&mut self, mount_idx: usize, fd: u32) -> Result<u64, FsError> {
+        self.mounts
+            .get_mut(mount_idx)
+            .ok_or(FsError::InvalidFileDescriptor)?
+            .fs
+            .position(fd)
+    }
+
+    pub fn size_at(&mut self, mount_idx: usize, fd: u32) -> Result<u64, FsError> {
+        self.mounts
+            .get_mut(mount_idx)
+            .ok_or(FsError::InvalidFileDescriptor)?
+            .fs
+            .size(fd)
+    }
+
+    /// Open a file directly on the VFS and expose it as a Genome stream.
+    pub fn open_reader<'a>(&'a mut self, path: &str) -> Result<VfsFile<'a>, FsError> {
+        let mount_index = self.find_fs_index(path).ok_or(FsError::FileNotFound)?;
+        let descriptor = self.open(path, 0).ok_or(FsError::FileNotFound)?;
+        Ok(VfsFile {
+            vfs: self,
+            mount_index,
+            fd: descriptor.fd,
+            position: descriptor.offset,
+        })
+    }
+
     pub fn create(&mut self, path: &str) -> Option<u64> {
         self.with_fs(path, |fs, p| fs.create(p, InodeType::File))
     }
@@ -570,6 +620,56 @@ impl Vfs {
     pub fn exists(&mut self, path: &str) -> bool {
         self.resolve_and_find(path)
             .is_some_and(|(fs, p)| fs.exists(&p))
+    }
+}
+
+/// A scoped reader for a file opened through [`Vfs`].
+pub struct VfsFile<'a> {
+    vfs: &'a mut Vfs,
+    mount_index: usize,
+    fd: u32,
+    position: u64,
+}
+
+impl Read for VfsFile<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
+        let read = self.vfs.read_at(self.mount_index, self.fd, buf)?;
+        self.position = self
+            .position
+            .checked_add(read as u64)
+            .ok_or(FsError::InvalidSeek)?;
+        Ok(read)
+    }
+}
+
+impl Seek for VfsFile<'_> {
+    fn seek(&mut self, position: SeekFrom) -> Result<u64, FsError> {
+        let absolute = match position {
+            SeekFrom::Start(offset) => offset,
+            SeekFrom::Current(offset) => self
+                .position
+                .checked_add_signed(offset)
+                .ok_or(FsError::InvalidSeek)?,
+            SeekFrom::End(offset) => self
+                .len()?
+                .checked_add_signed(offset)
+                .ok_or(FsError::InvalidSeek)?,
+        };
+        self.vfs.seek_at(self.mount_index, self.fd, absolute)?;
+        self.position = absolute;
+        Ok(absolute)
+    }
+}
+
+impl FileReader for VfsFile<'_> {
+    fn len(&mut self) -> Result<u64, FsError> {
+        self.vfs.size_at(self.mount_index, self.fd)
+    }
+}
+
+impl Drop for VfsFile<'_> {
+    fn drop(&mut self) {
+        let _ = self.vfs.close_at(self.mount_index, self.fd);
     }
 }
 
@@ -730,5 +830,29 @@ mod tests {
     fn path_normalization_stays_within_the_root() {
         assert_eq!(normalize_path("/a/./b/../c"), "/a/c");
         assert_eq!(normalize_path("../../../"), "/");
+    }
+
+    #[test]
+    fn vfs_reader_supports_bounded_stream_operations() {
+        let mut vfs = Vfs::new(Box::new(MemFileSystem::new()));
+        vfs.create("/stream.bin").unwrap();
+        let fd = vfs.open("/stream.bin", 0).unwrap().fd;
+        let mount = vfs.find_fs_index("/stream.bin").unwrap();
+        assert_eq!(vfs.write_at(mount, fd, b"fullerene"), Ok(9));
+        vfs.close_at(mount, fd).unwrap();
+
+        let mut reader = vfs.open_reader("/stream.bin").unwrap();
+        assert_eq!(reader.len(), Ok(9));
+        let mut prefix = [0u8; 4];
+        reader.read_exact(&mut prefix).unwrap();
+        assert_eq!(&prefix, b"full");
+        assert_eq!(reader.seek(SeekFrom::End(-5)), Ok(4));
+        let mut suffix = [0u8; 5];
+        reader.read_exact(&mut suffix).unwrap();
+        assert_eq!(&suffix, b"erene");
+        drop(reader);
+
+        let reopened = vfs.open("/stream.bin", 0).unwrap();
+        assert_eq!(reopened.offset, 0);
     }
 }

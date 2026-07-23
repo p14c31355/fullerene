@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::contexts::vfs;
 pub use genome::fs::{DirEntry, FsError, PackageEntry, parse_manifest};
+use genome::io::{FileReader, Read, Seek, SeekFrom};
 
 fn basename(path: &str) -> &str {
     path.trim_end_matches('/')
@@ -104,6 +105,39 @@ pub fn seek_file(fd: &mut FileDesc, position: u64) -> Result<(), FsError> {
     vfs::seek(fd.fd, position).map(|_| {
         fd.offset = position;
     })
+}
+
+pub fn file_position(fd: &FileDesc) -> Result<u64, FsError> {
+    vfs::position(fd.fd)
+}
+
+pub fn file_size_for_handle(fd: &FileDesc) -> Result<u64, FsError> {
+    vfs::size(fd.fd)
+}
+
+impl Read for FileDesc {
+    fn read(&mut self, buffer: &mut [u8]) -> Result<usize, FsError> {
+        read_file(self, buffer)
+    }
+}
+
+impl Seek for FileDesc {
+    fn seek(&mut self, position: SeekFrom) -> Result<u64, FsError> {
+        let offset = match position {
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::Current(offset) => self.offset.checked_add_signed(offset),
+            SeekFrom::End(offset) => file_size_for_handle(self)?.checked_add_signed(offset),
+        }
+        .ok_or(FsError::InvalidSeek)?;
+        seek_file(self, offset)?;
+        Ok(offset)
+    }
+}
+
+impl FileReader for FileDesc {
+    fn len(&mut self) -> Result<u64, FsError> {
+        file_size_for_handle(self)
+    }
 }
 
 pub fn list_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {

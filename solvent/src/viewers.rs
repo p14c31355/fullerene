@@ -187,6 +187,7 @@ pub struct DecodedJpeg {
 }
 
 #[cfg(feature = "zune-jpeg")]
+#[allow(dead_code)]
 fn is_jpeg_sof_marker(marker: u8) -> bool {
     matches!(
         marker,
@@ -196,6 +197,7 @@ fn is_jpeg_sof_marker(marker: u8) -> bool {
 
 /// Inspect a JPEG prefix and return dimensions once the SOF marker is present.
 #[cfg(feature = "zune-jpeg")]
+#[allow(dead_code)]
 pub fn preflight_jpeg_header(data: &[u8]) -> Result<Option<(u16, u16)>, String> {
     if data.len() < 2 {
         return Ok(None);
@@ -261,21 +263,165 @@ pub fn preflight_jpeg_header(data: &[u8]) -> Result<Option<(u16, u16)>, String> 
     Ok(None)
 }
 
+/// Adapter from Genome's no-std stream API to zune's reader API.
+#[cfg(feature = "zune-jpeg")]
+struct GenomeJpegReader<'a, R> {
+    reader: &'a mut R,
+}
+
+#[cfg(feature = "zune-jpeg")]
+impl<R: genome::io::Read + genome::io::Seek> zune_core::bytestream::ZByteReaderTrait
+    for GenomeJpegReader<'_, R>
+{
+    fn read_byte_no_error(&mut self) -> u8 {
+        let mut byte = [0u8; 1];
+        match self.reader.read(&mut byte) {
+            Ok(1) => byte[0],
+            _ => 0,
+        }
+    }
+
+    fn read_exact_bytes(
+        &mut self,
+        buf: &mut [u8],
+    ) -> Result<(), zune_core::bytestream::ZByteIoError> {
+        let start = self.z_position()?;
+        match self.reader.read_exact(buf) {
+            Ok(()) => Ok(()),
+            Err(_) => {
+                let _ = self.reader.seek(genome::io::SeekFrom::Start(start));
+                Err(zune_core::bytestream::ZByteIoError::NotEnoughBytes(
+                    0,
+                    buf.len(),
+                ))
+            }
+        }
+    }
+
+    fn read_const_bytes<const N: usize>(
+        &mut self,
+        buf: &mut [u8; N],
+    ) -> Result<(), zune_core::bytestream::ZByteIoError> {
+        self.read_exact_bytes(buf)
+    }
+
+    fn read_const_bytes_no_error<const N: usize>(&mut self, buf: &mut [u8; N]) {
+        let _ = self.read_exact_bytes(buf);
+    }
+
+    fn read_bytes(&mut self, buf: &mut [u8]) -> Result<usize, zune_core::bytestream::ZByteIoError> {
+        self.reader
+            .read(buf)
+            .map_err(|_| zune_core::bytestream::ZByteIoError::Generic("filesystem read failed"))
+    }
+
+    fn peek_bytes(&mut self, buf: &mut [u8]) -> Result<usize, zune_core::bytestream::ZByteIoError> {
+        let start = self.z_position()?;
+        let result = self.read_bytes(buf);
+        let _ = self.reader.seek(genome::io::SeekFrom::Start(start));
+        result
+    }
+
+    fn peek_exact_bytes(
+        &mut self,
+        buf: &mut [u8],
+    ) -> Result<(), zune_core::bytestream::ZByteIoError> {
+        let start = self.z_position()?;
+        let result = self.read_exact_bytes(buf);
+        let _ = self.reader.seek(genome::io::SeekFrom::Start(start));
+        result
+    }
+
+    fn z_seek(
+        &mut self,
+        from: zune_core::bytestream::ZSeekFrom,
+    ) -> Result<u64, zune_core::bytestream::ZByteIoError> {
+        let position = match from {
+            zune_core::bytestream::ZSeekFrom::Start(offset) => genome::io::SeekFrom::Start(offset),
+            zune_core::bytestream::ZSeekFrom::End(offset) => genome::io::SeekFrom::End(offset),
+            zune_core::bytestream::ZSeekFrom::Current(offset) => {
+                genome::io::SeekFrom::Current(offset)
+            }
+        };
+        self.reader
+            .seek(position)
+            .map_err(|_| zune_core::bytestream::ZByteIoError::SeekError("filesystem seek failed"))
+    }
+
+    fn is_eof(&mut self) -> Result<bool, zune_core::bytestream::ZByteIoError> {
+        let position = self.z_position()?;
+        let mut probe = [0u8; 1];
+        let read = self.read_bytes(&mut probe)?;
+        let _ = self.reader.seek(genome::io::SeekFrom::Start(position));
+        Ok(read == 0)
+    }
+
+    fn z_position(&mut self) -> Result<u64, zune_core::bytestream::ZByteIoError> {
+        self.reader
+            .seek(genome::io::SeekFrom::Current(0))
+            .map_err(|_| {
+                zune_core::bytestream::ZByteIoError::SeekError("filesystem position failed")
+            })
+    }
+
+    fn read_remaining(
+        &mut self,
+        sink: &mut Vec<u8>,
+    ) -> Result<usize, zune_core::bytestream::ZByteIoError> {
+        let mut total = 0;
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = self.read_bytes(&mut chunk)?;
+            if read == 0 {
+                return Ok(total);
+            }
+            sink.extend_from_slice(&chunk[..read]);
+            total += read;
+        }
+    }
+}
+
 /// Decode JPEG data without any runtime lock held.
 /// Call this before acquiring the runtime lock to avoid UI freezes.
 #[cfg(feature = "zune-jpeg")]
+#[allow(dead_code)]
 pub fn decode_jpeg(data: &[u8]) -> Result<DecodedJpeg, String> {
     use zune_core::bytestream::ZCursor;
+    decode_jpeg_source(ZCursor::new(data))
+}
+
+/// Decode directly from a seekable Genome stream. The encoded file is read on
+/// demand by zune; only decoder state and decoded pixels are retained.
+#[cfg(feature = "zune-jpeg")]
+pub fn decode_jpeg_reader<R: genome::io::FileReader>(
+    reader: &mut R,
+) -> Result<DecodedJpeg, String> {
+    const MAX_JPEG_INPUT: u64 = 16 * 1024 * 1024;
+    if reader
+        .len()
+        .map_err(|_| String::from("Cannot determine JPEG size"))?
+        > MAX_JPEG_INPUT
+    {
+        return Err(String::from("JPEG file too large"));
+    }
+    reader
+        .seek(genome::io::SeekFrom::Start(0))
+        .map_err(|_| String::from("Cannot seek JPEG file"))?;
+    decode_jpeg_source(GenomeJpegReader { reader })
+}
+
+#[cfg(feature = "zune-jpeg")]
+fn decode_jpeg_source<T: zune_core::bytestream::ZByteReaderTrait>(
+    source: T,
+) -> Result<DecodedJpeg, String> {
     use zune_core::colorspace::ColorSpace;
     use zune_core::options::DecoderOptions;
-
-    log_status!("JPEG file read ({} B)", data.len());
 
     let options = DecoderOptions::default()
         .jpeg_set_out_colorspace(ColorSpace::RGB)
         .set_max_width(MAX_IMG_W as usize)
         .set_max_height(MAX_IMG_H as usize);
-    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(ZCursor::new(data), options);
+    let mut decoder = zune_jpeg::JpegDecoder::new_with_options(source, options);
 
     // Step 1: Parse headers only (no pixel buffer allocation yet).
     decoder

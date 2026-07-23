@@ -21,6 +21,32 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use petroleum::graphics::Renderer;
 use solvent;
 
+fn open_runtime_file(path: &str) -> Result<solvent::VfsHandle, genome::FsError> {
+    crate::fs::open_file(path).map(|file| file.fd)
+}
+
+fn read_runtime_file(
+    handle: solvent::VfsHandle,
+    buffer: &mut [u8],
+) -> Result<usize, genome::FsError> {
+    crate::contexts::vfs::read(handle, buffer)
+}
+
+fn seek_runtime_file(
+    handle: solvent::VfsHandle,
+    position: genome::io::SeekFrom,
+) -> Result<u64, genome::FsError> {
+    crate::contexts::vfs::seek_from(handle, position)
+}
+
+fn size_runtime_file(handle: solvent::VfsHandle) -> Result<u64, genome::FsError> {
+    crate::contexts::vfs::size(handle)
+}
+
+fn close_runtime_file(handle: solvent::VfsHandle) -> Result<(), genome::FsError> {
+    crate::contexts::vfs::close(handle)
+}
+
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
     LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
@@ -48,6 +74,11 @@ pub fn init() {
         }),
         vfs_read: Some(|path| crate::fs::read_entire_file(path)),
         vfs_read_prefix: Some(|path, limit| crate::fs::read_file_prefix(path, limit)),
+        vfs_open: Some(open_runtime_file),
+        vfs_stream_read: Some(read_runtime_file),
+        vfs_stream_seek: Some(seek_runtime_file),
+        vfs_stream_size: Some(size_runtime_file),
+        vfs_close: Some(close_runtime_file),
         vfs_write: Some(|path, data| crate::contexts::vfs::replace_file(path, data)),
         vfs_copy: Some(|source, destination, is_dir| {
             crate::contexts::vfs::copy_path(source, destination, is_dir)

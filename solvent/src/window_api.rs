@@ -3,6 +3,7 @@
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use genome::io::read_to_end_with_limit;
 use lattice::window::WindowId;
 
 use crate::{
@@ -194,15 +195,12 @@ fn is_media_ext(ext: &str) -> bool {
 }
 
 fn read_file_with_limit(path: &str) -> Result<Vec<u8>, &'static str> {
-    let read = RUNTIME_CONTEXT
-        .callback_snapshot()
-        .vfs_read
-        .ok_or("VFS read callback not available")?;
-    let data = read(path).map_err(|_| "Failed to read file")?;
-    if data.len() as u64 > MAX_READ_SIZE {
-        return Err("File too large for in-memory viewer");
-    }
-    Ok(data)
+    let mut file =
+        crate::RuntimeFile::open(path).map_err(|_| "VFS stream callback not available")?;
+    read_to_end_with_limit(&mut file, MAX_READ_SIZE as usize).map_err(|error| match error {
+        genome::FsError::DiskFull => "File too large for in-memory viewer",
+        _ => "Failed to read file",
+    })
 }
 
 fn show_open_error(msg: &str) {
@@ -322,44 +320,25 @@ pub fn launch_file(path: &str) {
         return;
     }
 
-    // Media files: read data (may be slow on SDXC but VFS runs without runtime lock)
-    let file_data = match read_file_with_limit(path) {
-        Ok(d) => d,
-        Err(e) => {
-            show_open_error(e);
-            return;
-        }
-    };
-
-    // Validate JPEG headers after the single complete read.  Reading a prefix
-    // first caused every JPEG on SDXC/exFAT to be traversed twice and could
-    // leave the UI stuck in the card reader before the normal read timeout.
+    // JPEG is decoded directly from the runtime file stream. This avoids
+    // allocating a second buffer for the encoded image.
     #[cfg(feature = "zune-jpeg")]
     if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
-        match crate::viewers::preflight_jpeg_header(&file_data) {
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                show_open_error("JPEG header not found");
+        let mut file = match crate::RuntimeFile::open(path) {
+            Ok(file) => file,
+            Err(_) => {
+                show_open_error("Failed to open JPEG stream");
                 return;
             }
-            Err(e) => {
-                show_open_error(&e);
-                return;
-            }
-        }
-    }
-
-    // JPEG: decode outside runtime lock
-    #[cfg(feature = "zune-jpeg")]
-    if matches!(ext_lower.as_str(), "jpg" | "jpeg") {
-        let decoded = crate::viewers::decode_jpeg(&file_data);
+        };
+        let decoded = crate::viewers::decode_jpeg_reader(&mut file);
         let mut runtime = RUNTIME_CONTEXT.runtime();
         let Some(runtime) = runtime.as_mut() else {
             return;
         };
         match decoded {
-            Ok(d) => crate::viewers::render_jpeg_window(runtime, d, name),
-            Err(e) => crate::viewers::show_error(runtime, "JPEG Error", &e),
+            Ok(decoded) => crate::viewers::render_jpeg_window(runtime, decoded, name),
+            Err(error) => crate::viewers::show_error(runtime, "JPEG Error", &error),
         }
         return;
     }
@@ -369,6 +348,16 @@ pub fn launch_file(path: &str) {
         show_open_error("JPEG support not compiled in (zune-jpeg feature disabled)");
         return;
     }
+
+    // Other viewers currently use format crates whose public APIs accept
+    // slices. Keep those conversions bounded and explicit at this boundary.
+    let file_data = match read_file_with_limit(path) {
+        Ok(d) => d,
+        Err(e) => {
+            show_open_error(e);
+            return;
+        }
+    };
 
     if ext_lower == "rle" {
         let mut runtime = RUNTIME_CONTEXT.runtime();

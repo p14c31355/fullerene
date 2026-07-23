@@ -183,6 +183,7 @@ fn map_fs_error(err: &genome::FsError) -> u32 {
         FsError::InvalidPath => EINVAL,
         FsError::NotSupported => ENOTSUP,
         FsError::InvalidInput => EINVAL,
+        FsError::UnexpectedEof => EIO,
         FsError::Io => EIO,
     }
 }

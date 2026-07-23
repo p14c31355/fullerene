@@ -16,6 +16,7 @@ pub enum FsError {
     InvalidPath,
     NotSupported,
     InvalidInput,
+    UnexpectedEof,
     Io,
 }
 
@@ -34,6 +35,7 @@ impl core::fmt::Display for FsError {
             FsError::InvalidPath => "invalid path",
             FsError::NotSupported => "operation not supported",
             FsError::InvalidInput => "invalid input",
+            FsError::UnexpectedEof => "unexpected end of file",
             FsError::Io => "filesystem I/O error",
         })
     }
