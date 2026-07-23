@@ -24,6 +24,15 @@ pub const ENOTSUP: u32 = 58;
 
 pub const FILETYPE_DIRECTORY: u8 = 3;
 pub const FILETYPE_REGULAR_FILE: u8 = 4;
+pub const FILETYPE_CHARACTER_DEVICE: u8 = 2;
+
+// ── WASI fdflags ───────────────────────────────────────────────
+
+pub const FDFLAG_APPEND: u16 = 1;
+pub const FDFLAG_DSYNC: u16 = 2;
+pub const FDFLAG_NONBLOCK: u16 = 4;
+pub const FDFLAG_RSYNC: u16 = 8;
+pub const FDFLAG_SYNC: u16 = 16;
 
 // ── WASI whence ───────────────────────────────────────────────────
 
@@ -374,6 +383,40 @@ pub fn fd_read(
             Ok(ESUCCESS)
         }
     }
+}
+
+pub fn fd_fdstat_get(
+    mut caller: Caller<'_, WasiCtx>,
+    fd: u32,
+    buf_ptr: u32,
+) -> Result<u32, Error> {
+    let filetype = {
+        let bc = caller.data();
+        match bc.fds.get(&fd) {
+            Some(WasiFd::Stdin) => FILETYPE_CHARACTER_DEVICE,
+            Some(WasiFd::Stdout) => FILETYPE_CHARACTER_DEVICE,
+            Some(WasiFd::Stderr) => FILETYPE_CHARACTER_DEVICE,
+            Some(WasiFd::PreopenedDir { .. }) => FILETYPE_DIRECTORY,
+            Some(WasiFd::File { .. }) => FILETYPE_REGULAR_FILE,
+            None => return Ok(EBADF),
+        }
+    };
+    let memory = get_memory(&caller)?;
+    // fdstat layout: fs_filetype(u8) + padding + fs_flags(u16) + padding + fs_rights_base(u64) + fs_rights_inheriting(u64)
+    let off_flags = buf_ptr
+        .checked_add(2)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_rights = buf_ptr
+        .checked_add(8)
+        .ok_or_else(|| Error::new("overflow"))?;
+    let off_inheriting = buf_ptr
+        .checked_add(16)
+        .ok_or_else(|| Error::new("overflow"))?;
+    write_u8(&memory, &mut caller, buf_ptr, filetype)?;
+    write_u32(&memory, &mut caller, off_flags, FDFLAG_NONBLOCK as u32)?;
+    write_u64(&memory, &mut caller, off_rights, !0u64)?;
+    write_u64(&memory, &mut caller, off_inheriting, !0u64)?;
+    Ok(ESUCCESS)
 }
 
 pub fn fd_close(mut caller: Caller<'_, WasiCtx>, fd: u32) -> Result<u32, Error> {
