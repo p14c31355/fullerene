@@ -48,6 +48,18 @@ pub struct IwlWifiDevice {
     pub iwl_state: IwlState,
     pub wifi_conn: wifi::WifiConnection,
     pub wpa: WpaSupplicant,
+    /// True while the association requires WPA2-PSK protection.
+    pub wpa_required: bool,
+    /// Set only after the TX ring has reported both CCMP commands consumed.
+    /// Until then, WPA data traffic is rejected fail-closed.
+    pub wpa_keys_installed: bool,
+    /// End position of the queued pair/group key commands, awaiting TX-ring
+    /// consumption.  A command response path is not available in this
+    /// firmware interface, so the data path stays blocked until the ring has
+    /// consumed the commands at minimum.
+    pub wpa_key_command_end: Option<usize>,
+    /// EAPOL Message 4 is held until the key commands have been consumed.
+    pub pending_wpa_message4: Option<Vec<u8>>,
     pub dhcp: Option<DhcpClient>,
 
     /// Scan results.
@@ -317,6 +329,10 @@ impl IwlWifiDevice {
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
+            wpa_required: false,
+            wpa_keys_installed: false,
+            wpa_key_command_end: None,
+            pending_wpa_message4: None,
             dhcp: None,
             scan_results: Vec::new(),
             scan_channel: 0,
@@ -485,6 +501,10 @@ impl IwlWifiDevice {
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
+            wpa_required: false,
+            wpa_keys_installed: false,
+            wpa_key_command_end: None,
+            pending_wpa_message4: None,
             dhcp: None,
             scan_results: Vec::new(),
             scan_channel: 1,
@@ -951,8 +971,8 @@ impl NetDevice for IwlWifiDevice {
         if frame.len() > MAX_FRAME_SIZE {
             return Err(NetError::FrameTooLarge);
         }
-        let _ = self.send_raw_80211_frame(frame);
-        Ok(())
+        self.send_raw_80211_frame(frame)
+            .map_err(|_| NetError::SendFailed)
     }
 
     fn poll_frame(&mut self, buf: &mut [u8]) -> Result<Option<usize>, NetError> {

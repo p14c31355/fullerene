@@ -1,0 +1,6 @@
+# wasmi 0.33.1 uses unsafe pointer operations that trigger Rust nightly's
+# optional debug UB checks while translating a module in the UEFI kernel.
+# Keep ordinary debug assertions enabled, but disable those runtime checks
+# for this no_std target so a valid WASM module is not aborted in Module::new.
+[target.x86_64-unknown-uefi]
+rustflags = ["-Zub-checks=no"]

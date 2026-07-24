@@ -555,6 +555,19 @@ pub fn build_auth_frame(bssid: Bssid, client_mac: Bssid, seq: u16) -> Vec<u8> {
 
 /// Build an association request frame.
 pub fn build_assoc_request(bssid: Bssid, client_mac: Bssid, ssid: &Ssid) -> Vec<u8> {
+    build_assoc_request_with_security(bssid, client_mac, ssid, false)
+}
+
+/// Build an association request, advertising the privacy capability when the
+/// caller is about to run WPA2-PSK.  An AP must not be told that an encrypted
+/// association is open, otherwise it may accept data before the 4-way
+/// handshake has completed.
+pub fn build_assoc_request_with_security(
+    bssid: Bssid,
+    client_mac: Bssid,
+    ssid: &Ssid,
+    privacy: bool,
+) -> Vec<u8> {
     let mut frame = Vec::new();
 
     // Frame control: type=management(0), subtype=assoc request(0)
@@ -571,8 +584,8 @@ pub fn build_assoc_request(bssid: Bssid, client_mac: Bssid, ssid: &Ssid) -> Vec<
     // Sequence control
     frame.extend_from_slice(&[0x00, 0x00]);
 
-    // Capability: ESS=1, privacy=0 initially
-    frame.extend_from_slice(&[0x01, 0x00]);
+    // Capability: ESS=1, privacy=1 for WPA/WPA2 associations.
+    frame.extend_from_slice(&[(0x01 | if privacy { 0x10 } else { 0x00 }), 0x00]);
     // Listen interval
     frame.extend_from_slice(&[0x0A, 0x00]);
 
@@ -585,6 +598,21 @@ pub fn build_assoc_request(bssid: Bssid, client_mac: Bssid, ssid: &Ssid) -> Vec<
     frame.push(0x01);
     frame.push(0x08);
     frame.extend_from_slice(&[0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24]);
+
+    if privacy {
+        // RSN IE: WPA2-PSK with CCMP (group and pairwise cipher).
+        frame.push(0x30);
+        frame.push(20);
+        frame.extend_from_slice(&[
+            0x01, 0x00, // RSN version
+            0x00, 0x0F, 0xAC, 0x04, // group cipher: CCMP
+            0x01, 0x00, // pairwise cipher count
+            0x00, 0x0F, 0xAC, 0x04, // pairwise cipher: CCMP
+            0x01, 0x00, // AKM count
+            0x00, 0x0F, 0xAC, 0x02, // AKM: PSK
+            0x00, 0x00, // RSN capabilities
+        ]);
+    }
 
     frame
 }

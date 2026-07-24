@@ -11,6 +11,7 @@ use crate::wasi::{
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
 /// Returns the exit code (0 = success).
+/// Fuel metering is intentionally disabled for synchronous kernel execution.
 pub fn run(
     wasm_binary: &[u8],
     args: &[&str],
@@ -22,12 +23,7 @@ pub fn run(
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     get_monotonic_ns: fn() -> u64,
 ) -> i32 {
-    let engine = {
-        let mut engine_config = wasmi::Config::default();
-        engine_config.consume_fuel(true);
-        Engine::new(&engine_config)
-    };
-
+    let engine = Engine::new(&wasmi::Config::default());
     let module = match Module::new(&engine, wasm_binary) {
         Ok(m) => m,
         Err(e) => {
@@ -49,9 +45,6 @@ pub fn run(
     );
 
     let mut store = Store::new(&engine, ctx);
-    store
-        .set_fuel(100_000_000)
-        .expect("fuel metering should be enabled");
 
     let linker = match create_linker(&engine) {
         Ok(l) => l,
