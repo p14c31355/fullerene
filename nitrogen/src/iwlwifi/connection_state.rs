@@ -520,6 +520,8 @@ pub fn try_init_wifi_device_step() {
                 iwl_state: IwlState::Init,
                 wifi_conn: bonder::wifi::WifiConnection::new(),
                 wpa: bonder::wpa::WpaSupplicant::new(),
+                wpa_required: false,
+                wpa_keys_installed: false,
                 dhcp: None,
                 scan_results: Vec::new(),
                 scan_channel: 1,
