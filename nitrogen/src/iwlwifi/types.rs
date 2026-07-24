@@ -66,6 +66,7 @@ pub enum GroupId {
 
 #[repr(u8)]
 pub enum LegacyCmd {
+    AddStaKey = 0x17,
     ScanRequest = 0x18,
     ScanAbort = 0x19,
     ScanResults = 0x83,
@@ -81,6 +82,21 @@ pub enum LegacyCmd {
     PowerUp = 0x27,
     ReplyAlive = 0x01,
     ReplyError = 0x02,
+}
+
+/// ADD_STA_KEY command payload used by the 7000-series firmware API.
+///
+/// The common part is kept byte-oriented here because this driver supports
+/// firmware revisions with different response layouts, while the key command
+/// input layout is stable: station id, key slot, flags, 32-byte key storage,
+/// and a 16-byte receive sequence counter.
+#[repr(C, packed)]
+pub struct AddStaKeyCmd {
+    pub sta_id: u8,
+    pub key_offset: u8,
+    pub key_flags: u16,
+    pub key: [u8; 32],
+    pub rx_security_seq: [u8; 16],
 }
 
 #[repr(C, packed)]

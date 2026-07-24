@@ -945,11 +945,23 @@ impl IwlWifiDevice {
             .find(|ap| ap.ssid == *ssid)
             .cloned()
             .ok_or(crate::DriverError::DeviceNotFound)?;
+        if ap.security != bonder::wifi::Security::Open && password.is_none() {
+            // Never silently downgrade a protected AP to an open association.
+            return Err(crate::DriverError::InvalidArgument);
+        }
+        if password.is_some() && ap.security != bonder::wifi::Security::Wpa2Psk {
+            return Err(crate::DriverError::NotSupported);
+        }
         self.wifi_conn.connect(ssid, password);
+        self.wpa_required = password.is_some();
+        self.wpa_keys_installed = false;
+        self.ip_address = [0; 4];
+        self.subnet_mask = [0; 4];
+        self.gateway = [0; 4];
+        self.dns_server = [0; 4];
 
         if let Some(password) = password {
             self.wpa.init(password, ssid.as_str(), ap.bssid, self.mac);
-            self.wpa.derive_ptk();
         }
 
         self.iwl_state = IwlState::AuthSent;
@@ -979,6 +991,9 @@ impl IwlWifiDevice {
         }
         self.dhcp = None;
         self.wifi_conn.disconnect();
+        self.wpa = bonder::wpa::WpaSupplicant::new();
+        self.wpa_required = false;
+        self.wpa_keys_installed = false;
         self.iwl_state = IwlState::Disconnected;
         log::info!("iwlwifi: disconnected");
     }
@@ -992,6 +1007,9 @@ impl IwlWifiDevice {
     }
 
     pub fn is_network_ready(&self) -> bool {
-        self.wifi_conn.is_connected() && self.ip_address != [0u8; 4]
+        self.wifi_conn.is_connected()
+            && (!self.wpa_required
+                || (self.wpa.state == bonder::wpa::WpaState::Done && self.wpa_keys_installed))
+            && self.ip_address != [0u8; 4]
     }
 }

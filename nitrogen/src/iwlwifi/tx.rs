@@ -7,6 +7,69 @@ use super::registers::*;
 use super::types::*;
 
 impl IwlWifiDevice {
+    /// Install the WPA2-PSK CCMP pairwise and group keys in firmware.
+    ///
+    /// iwlwifi performs CCMP in the NIC/firmware.  Keeping the keys only in
+    /// the supplicant is not sufficient: raw data frames must never leave the
+    /// device until these two ADD_STA_KEY commands have been accepted by the
+    /// command ring.
+    pub(super) fn install_wpa_keys(
+        &mut self,
+        ptk: [u8; 16],
+        gtk: [u8; 16],
+        gtk_key_index: u8,
+    ) -> Result<(), crate::DriverError> {
+        const STA_KEY_FLG_CCM: u16 = 2;
+        const STA_KEY_FLG_KEYID_POS: u16 = 8;
+        const STA_KEY_MULTICAST: u16 = 1 << 14;
+
+        let mut pairwise = AddStaKeyCmd {
+            // The AP is the first peer station in this minimal STA mode.
+            sta_id: 0,
+            key_offset: 0,
+            key_flags: STA_KEY_FLG_CCM,
+            key: [0; 32],
+            rx_security_seq: [0; 16],
+        };
+        pairwise.key[..16].copy_from_slice(&ptk);
+
+        let mut group = AddStaKeyCmd {
+            sta_id: 0,
+            key_offset: 1,
+            key_flags: STA_KEY_FLG_CCM
+                | STA_KEY_MULTICAST
+                | ((gtk_key_index as u16 & 0x03) << STA_KEY_FLG_KEYID_POS),
+            key: [0; 32],
+            rx_security_seq: [0; 16],
+        };
+        group.key[..16].copy_from_slice(&gtk);
+
+        let pairwise_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &pairwise as *const AddStaKeyCmd as *const u8,
+                core::mem::size_of::<AddStaKeyCmd>(),
+            )
+        };
+        let group_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &group as *const AddStaKeyCmd as *const u8,
+                core::mem::size_of::<AddStaKeyCmd>(),
+            )
+        };
+
+        self.send_hcmd(
+            LegacyCmd::AddStaKey as u8,
+            GroupId::Legacy as u8,
+            pairwise_bytes,
+        )?;
+        self.send_hcmd(
+            LegacyCmd::AddStaKey as u8,
+            GroupId::Legacy as u8,
+            group_bytes,
+        )?;
+        Ok(())
+    }
+
     pub(super) fn send_hcmd(
         &mut self,
         opcode: u8,
@@ -87,6 +150,26 @@ impl IwlWifiDevice {
     }
 
     pub fn send_raw_80211_frame(&mut self, frame: &[u8]) -> Result<(), crate::DriverError> {
+        // EAPOL and management frames are intentionally allowed before the
+        // handshake.  Data frames are not: an unprotected frame is a silent
+        // plaintext fallback and must be rejected by the driver.
+        if self.wpa_required {
+            let is_eapol = frame.len() >= 4 && frame[0] <= 3 && frame[1] == 3;
+            let is_80211_data = frame.len() >= 2 && (frame[0] & 0x0C) == 0x08;
+            let is_80211_management = frame.len() >= 24 && matches!(frame[0], 0x00 | 0xB0 | 0xC0);
+
+            if is_80211_data {
+                if !self.wpa_keys_installed || (frame[1] & 0x40) == 0 {
+                    return Err(crate::DriverError::NotReady);
+                }
+            } else if !is_eapol && !is_80211_management {
+                // The old path accepted arbitrary payloads (including DHCP)
+                // as if they were encrypted 802.11 data.  Refuse malformed or
+                // unclassified frames on a protected association instead of
+                // allowing a plaintext fallback.
+                return Err(crate::DriverError::NotSupported);
+            }
+        }
         self.tx_queue.push_back(frame.to_vec());
         self.process_tx_queue();
         Ok(())

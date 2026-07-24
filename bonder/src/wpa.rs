@@ -62,6 +62,9 @@ pub struct WpaSupplicant {
     pub client_mac: Bssid,
     pub replay_counter: u64,
     pub mic_error: bool,
+    /// Length of the GTK extracted from the GTK KDE.  WPA2-CCMP uses 16.
+    gtk_len: usize,
+    pub gtk_key_index: u8,
 }
 
 impl Default for WpaSupplicant {
@@ -79,6 +82,8 @@ impl Default for WpaSupplicant {
             client_mac: [0; 6],
             replay_counter: 0,
             mic_error: false,
+            gtk_len: 0,
+            gtk_key_index: 0,
         }
     }
 }
@@ -101,8 +106,15 @@ impl WpaSupplicant {
         // Generate random SNonce (in a real impl, use hardware RNG)
         self.generate_snonce();
 
-        self.state = WpaState::HavePmk;
+        // The PMK is ready, but PTK derivation must wait for the AP's
+        // ANonce in EAPOL-Key message 1.
+        self.state = WpaState::WaitMsg1;
         self.replay_counter = 0;
+        self.anonce = [0; 32];
+        self.ptk = [0; 48];
+        self.gtk = [0; 32];
+        self.gtk_len = 0;
+        self.gtk_key_index = 0;
     }
 
     /// Derive PMK = PBKDF2-SHA1(passphrase, ssid, 4096, 256)
@@ -189,12 +201,22 @@ impl WpaSupplicant {
 
     /// Handle EAPOL-Key Message 1 (from AP).
     pub fn handle_message_1(&mut self, frame: &[u8]) -> Result<Vec<u8>, crate::NetError> {
-        if frame.len() < 4 + 97 {
+        if self.state != WpaState::WaitMsg1 || frame.len() < 4 + 95 {
             return Err(crate::NetError::Protocol);
         }
         let body = &frame[4..];
 
-        let _key_info = u16::from_be_bytes([body[1], body[2]]);
+        if body[0] != 0x02 {
+            return Err(crate::NetError::Protocol);
+        }
+        let key_info = u16::from_be_bytes([body[1], body[2]]);
+        // Message 1 is an un-MICed pairwise EAPOL-Key frame sent by the AP.
+        if key_info & (KEY_INFO_KEY_TYPE | KEY_INFO_PAIRWISE | KEY_INFO_ACK)
+            != (KEY_INFO_KEY_TYPE | KEY_INFO_PAIRWISE | KEY_INFO_ACK)
+            || key_info & (KEY_INFO_MIC | KEY_INFO_INSTALL | KEY_INFO_ERROR) != 0
+        {
+            return Err(crate::NetError::Protocol);
+        }
 
         // Extract ANonce (bytes 13-44 relative to key descriptor)
         let anonce_start = 13;
@@ -203,6 +225,14 @@ impl WpaSupplicant {
         }
         self.anonce
             .copy_from_slice(&body[anonce_start..anonce_start + 32]);
+        if self.anonce == [0; 32] {
+            return Err(crate::NetError::Protocol);
+        }
+
+        // PTK = PRF(PMK, ANonce, SNonce, AP-MAC, STA-MAC).  In particular,
+        // this must happen after ANonce has been received; deriving it in
+        // init() would permanently bind the session to an all-zero nonce.
+        self.derive_ptk();
 
         // Update replay counter
         if body.len() >= 13 {
@@ -212,7 +242,8 @@ impl WpaSupplicant {
             self.replay_counter = u64::from_be_bytes(rc_bytes);
         }
 
-        self.state = WpaState::WaitMsg2;
+        // Message 2 has just been built; the next peer message is message 3.
+        self.state = WpaState::WaitMsg3;
 
         // Build Message 2 (SNonce + MIC)
         let msg2 = self.build_message_2();
@@ -274,26 +305,51 @@ impl WpaSupplicant {
 
     /// Handle EAPOL-Key Message 3 (from AP, contains GTK).
     pub fn handle_message_3(&mut self, frame: &[u8]) -> Result<Vec<u8>, crate::NetError> {
-        if frame.len() < 4 + 97 {
+        if self.state != WpaState::WaitMsg3 || frame.len() < 4 + 95 {
             return Err(crate::NetError::Protocol);
         }
 
         // Verify MIC: zero the MIC field in a copy, compute, compare
         let mut mic_verified = false;
-        if self.state == WpaState::WaitMsg3 {
-            let mic_field = &frame[81..97];
-            let mut frame_copy = frame.to_vec();
-            frame_copy[81..97].fill(0);
-            let computed_mic = compute_mic(&self.ptk, &frame_copy);
-            if &computed_mic[..] == mic_field {
-                mic_verified = true;
-            }
+        let body = &frame[4..];
+        if body[0] != 0x02 {
+            return Err(crate::NetError::Protocol);
+        }
+        let key_info = u16::from_be_bytes([body[1], body[2]]);
+        if key_info
+            & (KEY_INFO_KEY_TYPE
+                | KEY_INFO_PAIRWISE
+                | KEY_INFO_MIC
+                | KEY_INFO_ACK
+                | KEY_INFO_INSTALL)
+            != (KEY_INFO_KEY_TYPE
+                | KEY_INFO_PAIRWISE
+                | KEY_INFO_MIC
+                | KEY_INFO_ACK
+                | KEY_INFO_INSTALL)
+            || key_info & KEY_INFO_ERROR != 0
+        {
+            return Err(crate::NetError::Protocol);
+        }
+
+        let mic_field = &frame[81..97];
+        let mut frame_copy = frame.to_vec();
+        frame_copy[81..97].fill(0);
+        let computed_mic = compute_mic(&self.ptk, &frame_copy);
+        if &computed_mic[..] == mic_field {
+            mic_verified = true;
         }
         if !mic_verified {
             return Err(crate::NetError::AuthenticationFailed);
         }
 
-        let body = &frame[4..];
+        let message3_replay = u64::from_be_bytes([
+            body[5], body[6], body[7], body[8], body[9], body[10], body[11], body[12],
+        ]);
+        if message3_replay <= self.replay_counter {
+            return Err(crate::NetError::Protocol);
+        }
+        self.replay_counter = message3_replay;
 
         let key_data_len = u16::from_be_bytes([body[93], body[94]]);
         let key_data_end = 95 + key_data_len as usize;
@@ -323,12 +379,17 @@ impl WpaSupplicant {
                 if gtk_data.len() >= 2 {
                     let gtk_len = core::cmp::min(gtk_data.len() - 2, 32);
                     self.gtk[..gtk_len].copy_from_slice(&gtk_data[2..2 + gtk_len]);
+                    self.gtk_len = gtk_len;
+                    self.gtk_key_index = gtk_data[0] & 0x03;
                 }
                 break;
             }
             pos = kde_end;
         }
 
+        if self.gtk_len < 16 {
+            return Err(crate::NetError::Protocol);
+        }
         self.state = WpaState::WaitMsg4;
 
         // Build Message 4 (ACK)
@@ -352,8 +413,8 @@ impl WpaSupplicant {
         msg.extend_from_slice(&[0x00, 0x10]); // Key Length
 
         // Key Replay Counter
-        let rc = self.replay_counter.wrapping_add(1);
-        msg.extend_from_slice(&rc.to_be_bytes());
+        // Message 4 uses the replay counter from Message 3 unchanged.
+        msg.extend_from_slice(&self.replay_counter.to_be_bytes());
 
         msg.extend_from_slice(&[0u8; 32]); // Key Nonce (zero for msg4)
 
@@ -376,13 +437,42 @@ impl WpaSupplicant {
         let mic = compute_mic(&self.ptk, &msg);
         msg[mic_offset..mic_offset + 16].copy_from_slice(&mic);
 
-        self.state = WpaState::Done;
-
         msg
+    }
+
+    /// Return the CCMP pairwise and group keys after Message 3 was verified.
+    /// The caller must install both keys in the hardware before sending
+    /// Message 4 and exposing the data path.
+    pub fn key_material(&self) -> Option<([u8; 16], [u8; 16], u8)> {
+        if !matches!(self.state, WpaState::WaitMsg4 | WpaState::Done) || self.gtk_len < 16 {
+            return None;
+        }
+        let mut ptk = [0u8; 16];
+        let mut gtk = [0u8; 16];
+        ptk.copy_from_slice(&self.ptk[32..48]);
+        gtk.copy_from_slice(&self.gtk[..16]);
+        Some((ptk, gtk, self.gtk_key_index))
+    }
+
+    /// Mark the handshake complete only after the hardware accepted both
+    /// CCMP keys and Message 4 has been queued.
+    pub fn complete_handshake(&mut self) -> Result<(), crate::NetError> {
+        if self.state != WpaState::WaitMsg4 {
+            return Err(crate::NetError::Protocol);
+        }
+        self.state = WpaState::Done;
+        Ok(())
     }
 
     /// Derive PTK from PMK, ANonce, SNonce, AP MAC, and client MAC.
     pub fn derive_ptk(&mut self) {
+        // An all-zero ANonce is the sentinel used before EAPOL-Key message 1.
+        // Refusing to derive here prevents accidental use of a predictable
+        // PTK if a caller invokes this method at the wrong point in the flow.
+        if self.anonce == [0; 32] {
+            self.ptk = [0; 48];
+            return;
+        }
         // PTK = PRF-X(PMK, "Pairwise key expansion",
         //             min(AP_MAC, Client_MAC) || max(AP_MAC, Client_MAC) ||
         //             min(ANonce, SNonce) || max(ANonce, SNonce))
@@ -568,6 +658,33 @@ fn sha1(data: &[u8]) -> [u8; 20] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn ptk_is_derived_only_after_message_one() {
+        let mut supplicant = WpaSupplicant::new();
+        supplicant.init(
+            "correct horse battery staple",
+            "TestAP",
+            [1, 2, 3, 4, 5, 6],
+            [6, 5, 4, 3, 2, 1],
+        );
+
+        assert_eq!(supplicant.state, WpaState::WaitMsg1);
+        assert_eq!(supplicant.ptk, [0; 48]);
+
+        let mut message1 = vec![0u8; 4 + 95];
+        message1[4] = 0x02; // WPA2 key descriptor
+        message1[5..7]
+            .copy_from_slice(&(KEY_INFO_KEY_TYPE | KEY_INFO_PAIRWISE | KEY_INFO_ACK).to_be_bytes());
+        message1[9..17].copy_from_slice(&1u64.to_be_bytes());
+        message1[17..49].copy_from_slice(&[0xA5; 32]);
+
+        let reply = supplicant.handle_message_1(&message1).unwrap();
+        assert!(!reply.is_empty());
+        assert_eq!(supplicant.state, WpaState::WaitMsg3);
+        assert_ne!(supplicant.ptk, [0; 48]);
+    }
 
     #[test]
     fn test_sha1_empty() {

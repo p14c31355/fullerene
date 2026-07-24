@@ -48,6 +48,10 @@ pub struct IwlWifiDevice {
     pub iwl_state: IwlState,
     pub wifi_conn: wifi::WifiConnection,
     pub wpa: WpaSupplicant,
+    /// True while the association requires WPA2-PSK protection.
+    pub wpa_required: bool,
+    /// Set only after both CCMP keys have been submitted to firmware.
+    pub wpa_keys_installed: bool,
     pub dhcp: Option<DhcpClient>,
 
     /// Scan results.
@@ -317,6 +321,8 @@ impl IwlWifiDevice {
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
+            wpa_required: false,
+            wpa_keys_installed: false,
             dhcp: None,
             scan_results: Vec::new(),
             scan_channel: 0,
@@ -485,6 +491,8 @@ impl IwlWifiDevice {
             iwl_state: IwlState::Init,
             wifi_conn: wifi::WifiConnection::new(),
             wpa: WpaSupplicant::new(),
+            wpa_required: false,
+            wpa_keys_installed: false,
             dhcp: None,
             scan_results: Vec::new(),
             scan_channel: 1,
@@ -951,8 +959,8 @@ impl NetDevice for IwlWifiDevice {
         if frame.len() > MAX_FRAME_SIZE {
             return Err(NetError::FrameTooLarge);
         }
-        let _ = self.send_raw_80211_frame(frame);
-        Ok(())
+        self.send_raw_80211_frame(frame)
+            .map_err(|_| NetError::SendFailed)
     }
 
     fn poll_frame(&mut self, buf: &mut [u8]) -> Result<Option<usize>, NetError> {

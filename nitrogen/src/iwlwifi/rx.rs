@@ -40,7 +40,12 @@ impl IwlWifiDevice {
                                 .current_ssid
                                 .clone()
                                 .unwrap_or(Ssid::new(b""));
-                            let assoc = wifi::build_assoc_request(bssid, self.mac, &ap_ssid);
+                            let assoc = wifi::build_assoc_request_with_security(
+                                bssid,
+                                self.mac,
+                                &ap_ssid,
+                                self.wpa_required,
+                            );
                             let _ = self.send_raw_80211_frame(&assoc);
                             log::info!("iwlwifi: auth successful, associating");
                         } else {
@@ -62,19 +67,20 @@ impl IwlWifiDevice {
                                 frame[body_offset + 5],
                             ]);
                             self.iwl_state = IwlState::Connected;
-                            self.wifi_conn.status = bonder::wifi::WifiStatus::Connected;
+                            self.wifi_conn.status = if self.wpa_required {
+                                // Association is not an encrypted connection.
+                                // Do not expose Connected or start DHCP until
+                                // the 4-way handshake installs CCMP keys.
+                                bonder::wifi::WifiStatus::Handshake
+                            } else {
+                                bonder::wifi::WifiStatus::Connected
+                            };
                             self.wifi_conn.current_bssid = Some([
                                 frame[10], frame[11], frame[12], frame[13], frame[14], frame[15],
                             ]);
 
-                            self.dhcp = Some(bonder::dhcp::DhcpClient::new(self.mac));
-                            if let Some(ref mut dhcp) = self.dhcp {
-                                let discover = dhcp.build_discover();
-                                log::info!(
-                                    "iwlwifi: associated (AID={}), sending DHCP discover",
-                                    aid
-                                );
-                                let _ = self.send_raw_80211_frame(&discover);
+                            if !self.wpa_required {
+                                self.start_dhcp(aid);
                             }
                         } else {
                             self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
@@ -91,16 +97,73 @@ impl IwlWifiDevice {
                         let ether_type =
                             u16::from_be_bytes([frame[llc_offset + 6], frame[llc_offset + 7]]);
                         let data = &frame[llc_offset + 8..];
+                        if self.wpa_required && ether_type == 0x888E && frame.len() >= 16 {
+                            let from_ap = self
+                                .wifi_conn
+                                .current_bssid
+                                .map(|bssid| frame[10..16] == bssid)
+                                .unwrap_or(false);
+                            let to_us = frame[4..10] == self.mac;
+                            if !from_ap || !to_us {
+                                return;
+                            }
+                        }
+                        if self.wpa_required
+                            && ether_type != 0x888E
+                            && (!self.wpa_keys_installed || (frame[1] & 0x40) == 0)
+                        {
+                            // A WPA2 data frame must be protected.  This
+                            // check applies to ARP, IPv4, IPv6, and every
+                            // other EtherType, not just DHCP/IP.
+                            return;
+                        }
                         match ether_type {
                             0x888E => {
-                                if self.wpa.state == WpaState::WaitMsg1 {
-                                    if let Ok(reply) = self.wpa.handle_message_1(data) {
-                                        let _ = self.send_raw_80211_frame(&reply);
+                                if !self.wpa_required {
+                                    return;
+                                }
+
+                                match self.wpa.state {
+                                    WpaState::WaitMsg1 => {
+                                        if let Ok(reply) = self.wpa.handle_message_1(data) {
+                                            if self.send_raw_80211_frame(&reply).is_err() {
+                                                self.wpa_failed("could not send EAPOL message 2");
+                                            }
+                                        } else {
+                                            self.wpa_failed("invalid EAPOL message 1");
+                                        }
                                     }
-                                } else if self.wpa.state == WpaState::WaitMsg3 {
-                                    if let Ok(reply) = self.wpa.handle_message_3(data) {
-                                        let _ = self.send_raw_80211_frame(&reply);
-                                    }
+                                    WpaState::WaitMsg3 => match self.wpa.handle_message_3(data) {
+                                        Ok(reply) => {
+                                            let Some((ptk, gtk, gtk_key_index)) =
+                                                self.wpa.key_material()
+                                            else {
+                                                self.wpa_failed("EAPOL message 3 had no GTK");
+                                                return;
+                                            };
+                                            if self
+                                                .install_wpa_keys(ptk, gtk, gtk_key_index)
+                                                .is_err()
+                                            {
+                                                self.wpa_failed("firmware rejected the CCMP keys");
+                                                return;
+                                            }
+                                            self.wpa_keys_installed = true;
+                                            if self.send_raw_80211_frame(&reply).is_err()
+                                                || self.wpa.complete_handshake().is_err()
+                                            {
+                                                self.wpa_failed("could not complete WPA handshake");
+                                                return;
+                                            }
+                                            self.wifi_conn.status =
+                                                bonder::wifi::WifiStatus::Connected;
+                                            self.start_dhcp(0);
+                                        }
+                                        Err(_) => {
+                                            self.wpa_failed("EAPOL message 3 authentication failed")
+                                        }
+                                    },
+                                    _ => {}
                                 }
                             }
                             0x0800 => {
@@ -166,6 +229,27 @@ impl IwlWifiDevice {
             }
             _ => {}
         }
+    }
+
+    fn start_dhcp(&mut self, aid: u16) {
+        self.dhcp = Some(bonder::dhcp::DhcpClient::new(self.mac));
+        let discover = self
+            .dhcp
+            .as_mut()
+            .expect("DHCP client was just initialized")
+            .build_discover();
+        log::info!("iwlwifi: associated (AID={}), sending DHCP discover", aid);
+        if self.send_raw_80211_frame(&discover).is_err() {
+            self.wpa_failed("refused to send unprotected DHCP discover");
+        }
+    }
+
+    fn wpa_failed(&mut self, reason: &str) {
+        self.wpa.state = WpaState::Error;
+        self.wpa_keys_installed = false;
+        self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+        self.wifi_conn.error_msg = Some(alloc::string::String::from(reason));
+        log::warn!("iwlwifi: WPA2 handshake failed: {}", reason);
     }
 
     /// Service device interrupts and consume completed receive descriptors.
