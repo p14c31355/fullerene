@@ -128,7 +128,7 @@ impl IwlWifiDevice {
                                 match self.wpa.state {
                                     WpaState::WaitMsg1 => {
                                         if let Ok(reply) = self.wpa.handle_message_1(data) {
-                                            if self.send_raw_80211_frame(&reply).is_err() {
+                                            if self.send_eapol_frame(&reply).is_err() {
                                                 self.wpa_failed("could not send EAPOL message 2");
                                             }
                                         } else {
@@ -307,10 +307,11 @@ impl IwlWifiDevice {
                 self.rx_head = raw_rx_head as usize % RX_QUEUE_SIZE;
             }
             if int_cause & (1 << 15) != 0 {
-                self.tx_tail = match self.safe_read32(FH_TX_CHNL0_WPTR) {
+                let hardware_tail = match self.safe_read32(FH_TX_CHNL0_WPTR) {
                     Some(value) => value,
                     None => return,
                 } as usize;
+                self.update_tx_tail(hardware_tail);
                 self.process_tx_queue();
             }
         }
@@ -372,7 +373,7 @@ impl IwlWifiDevice {
             self.wpa_failed("WPA Message 4 was lost before key activation");
             return;
         };
-        if self.send_raw_80211_frame(&reply).is_err() || self.wpa.complete_handshake().is_err() {
+        if self.send_eapol_frame(&reply).is_err() || self.wpa.complete_handshake().is_err() {
             self.wpa_failed("could not complete WPA handshake");
             return;
         }
