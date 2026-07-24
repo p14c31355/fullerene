@@ -396,42 +396,34 @@ pub fn fd_read(
     }
 }
 
-pub fn fd_fdstat_get(
-    mut caller: Caller<'_, WasiCtx>,
-    fd: u32,
-    buf_ptr: u32,
-) -> Result<u32, Error> {
+pub fn fd_fdstat_get(mut caller: Caller<'_, WasiCtx>, fd: u32, buf_ptr: u32) -> Result<u32, Error> {
     let (filetype, flags, rights_base, rights_inheriting) = {
         let bc = caller.data();
         match bc.fds.get(&fd) {
-            Some(WasiFd::Stdin) => (
-                FILETYPE_CHARACTER_DEVICE,
-                0u16,
-                RIGHT_FD_READ,
-                0u64,
-            ),
-            Some(WasiFd::Stdout) => (
-                FILETYPE_CHARACTER_DEVICE,
-                0u16,
-                RIGHT_FD_WRITE,
-                0u64,
-            ),
-            Some(WasiFd::Stderr) => (
-                FILETYPE_CHARACTER_DEVICE,
-                0u16,
-                RIGHT_FD_WRITE,
-                0u64,
-            ),
+            Some(WasiFd::Stdin) => (FILETYPE_CHARACTER_DEVICE, 0u16, RIGHT_FD_READ, 0u64),
+            Some(WasiFd::Stdout) => (FILETYPE_CHARACTER_DEVICE, 0u16, RIGHT_FD_WRITE, 0u64),
+            Some(WasiFd::Stderr) => (FILETYPE_CHARACTER_DEVICE, 0u16, RIGHT_FD_WRITE, 0u64),
             Some(WasiFd::PreopenedDir { .. }) => (
                 FILETYPE_DIRECTORY,
                 0u16,
-                RIGHT_FD_READDIR | RIGHT_PATH_OPEN | RIGHT_PATH_FILESTAT_GET | RIGHT_FD_FILESTAT_GET,
-                RIGHT_FD_READ | RIGHT_FD_WRITE | RIGHT_FD_SEEK | RIGHT_FD_TELL | RIGHT_FD_FILESTAT_GET,
+                RIGHT_FD_READDIR
+                    | RIGHT_PATH_OPEN
+                    | RIGHT_PATH_FILESTAT_GET
+                    | RIGHT_FD_FILESTAT_GET,
+                RIGHT_FD_READ
+                    | RIGHT_FD_WRITE
+                    | RIGHT_FD_SEEK
+                    | RIGHT_FD_TELL
+                    | RIGHT_FD_FILESTAT_GET,
             ),
             Some(WasiFd::File { .. }) => (
                 FILETYPE_REGULAR_FILE,
                 0u16,
-                RIGHT_FD_READ | RIGHT_FD_WRITE | RIGHT_FD_SEEK | RIGHT_FD_TELL | RIGHT_FD_FILESTAT_GET,
+                RIGHT_FD_READ
+                    | RIGHT_FD_WRITE
+                    | RIGHT_FD_SEEK
+                    | RIGHT_FD_TELL
+                    | RIGHT_FD_FILESTAT_GET,
                 0u64,
             ),
             None => return Ok(EBADF),
