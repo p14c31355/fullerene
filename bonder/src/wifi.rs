@@ -594,6 +594,11 @@ pub fn build_assoc_request_with_security(
     frame.push(ssid.len() as u8);
     frame.extend_from_slice(&ssid.0[..ssid.len()]);
 
+    // Supported rates
+    frame.push(0x01);
+    frame.push(0x08);
+    frame.extend_from_slice(&[0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24]);
+
     if privacy {
         // RSN IE: WPA2-PSK with CCMP (group and pairwise cipher).
         frame.push(0x30);
@@ -608,11 +613,6 @@ pub fn build_assoc_request_with_security(
             0x00, 0x00, // RSN capabilities
         ]);
     }
-
-    // Supported rates
-    frame.push(0x01);
-    frame.push(0x08);
-    frame.extend_from_slice(&[0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24]);
 
     frame
 }

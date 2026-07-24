@@ -7,12 +7,17 @@ use super::registers::*;
 use super::types::*;
 
 impl IwlWifiDevice {
-    /// Install the WPA2-PSK CCMP pairwise and group keys in firmware.
+    /// Queue WPA2-PSK CCMP pairwise and group key installation commands.
     ///
     /// iwlwifi performs CCMP in the NIC/firmware.  Keeping the keys only in
     /// the supplicant is not sufficient: raw data frames must never leave the
-    /// device until these two ADD_STA_KEY commands have been accepted by the
-    /// command ring.
+    /// device until these two ADD_STA_KEY commands have been consumed by
+    /// firmware.
+    ///
+    /// IMPORTANT: This function only queues the commands asynchronously.
+    /// The caller must NOT set wpa_keys_installed=true until firmware has
+    /// consumed both commands from the TX ring. Use process_tx_queue() and
+    /// verify tx_tail advancement before marking keys as installed.
     pub(super) fn install_wpa_keys(
         &mut self,
         ptk: [u8; 16],
@@ -149,27 +154,82 @@ impl IwlWifiDevice {
         Ok(())
     }
 
+    /// Encapsulate a UDP/IP payload into an 802.11 data frame with LLC/SNAP header
+    /// and send it. This function ensures DHCP and other IP traffic is properly
+    /// encapsulated before transmission.
+    pub fn send_ip_payload(&mut self, payload: &[u8]) -> Result<(), crate::DriverError> {
+        let bssid = self.wifi_conn.current_bssid.ok_or(crate::DriverError::NotReady)?;
+
+        let mut frame = Vec::new();
+
+        // Frame control: type=data(2), subtype=data(0), Protected bit if WPA keys installed
+        let protected_bit = if self.wpa_keys_installed { 0x40 } else { 0x00 };
+        frame.push(0x08);
+        frame.push(protected_bit);
+        // Duration
+        frame.extend_from_slice(&[0x00, 0x00]);
+        // Addr1: BSSID (destination = AP)
+        frame.extend_from_slice(&bssid);
+        // Addr2: source (client MAC)
+        frame.extend_from_slice(&self.mac);
+        // Addr3: BSSID
+        frame.extend_from_slice(&bssid);
+        // Sequence control
+        frame.extend_from_slice(&[0x00, 0x00]);
+
+        // LLC/SNAP header for IP (EtherType 0x0800)
+        frame.extend_from_slice(&[
+            0xAA, 0xAA, 0x03, // LLC header
+            0x00, 0x00, 0x00, // SNAP OUI
+            0x08, 0x00,       // EtherType: IPv4
+        ]);
+
+        // Append the IP payload
+        frame.extend_from_slice(payload);
+
+        // Send the encapsulated frame
+        self.send_raw_80211_frame(&frame)
+    }
+
     pub fn send_raw_80211_frame(&mut self, frame: &[u8]) -> Result<(), crate::DriverError> {
+        // Validate that we have a proper 802.11 frame or EAPOL packet.
+        // Reject bare payloads that need encapsulation.
+        if frame.len() < 2 {
+            return Err(crate::DriverError::InvalidArgument);
+        }
+
+        // Identify frame type based on well-known 802.11 patterns
+        let frame_control = frame[0];
+        let frame_type = (frame_control & 0x0C) >> 2;
+
+        let is_eapol = frame.len() >= 4
+            && frame[0] <= 3  // EAPOL version
+            && frame[1] == 3; // EAPOL-Key packet type
+        let is_80211_management = frame.len() >= 24
+            && frame_type == 0 // Management frame type
+            && matches!(frame[0] & 0xFC, 0x00 | 0xB0 | 0xC0); // assoc, auth, deauth subtypes
+        let is_80211_data = frame_type == 2; // Data frame type
+
         // EAPOL and management frames are intentionally allowed before the
-        // handshake.  Data frames are not: an unprotected frame is a silent
+        // handshake. Data frames are not: an unprotected frame is a silent
         // plaintext fallback and must be rejected by the driver.
         if self.wpa_required {
-            let is_eapol = frame.len() >= 4 && frame[0] <= 3 && frame[1] == 3;
-            let is_80211_data = frame.len() >= 2 && (frame[0] & 0x0C) == 0x08;
-            let is_80211_management = frame.len() >= 24 && matches!(frame[0], 0x00 | 0xB0 | 0xC0);
-
             if is_80211_data {
-                if !self.wpa_keys_installed || (frame[1] & 0x40) == 0 {
+                // For WPA-protected associations, data frames must have the
+                // Protected bit set OR keys must not yet be installed (for
+                // frames sent before handshake completion).
+                let protected_bit = (frame[1] & 0x40) != 0;
+                if !protected_bit && self.wpa_keys_installed {
                     return Err(crate::DriverError::NotReady);
                 }
             } else if !is_eapol && !is_80211_management {
-                // The old path accepted arbitrary payloads (including DHCP)
-                // as if they were encrypted 802.11 data.  Refuse malformed or
-                // unclassified frames on a protected association instead of
-                // allowing a plaintext fallback.
+                // Reject frames that are neither EAPOL, management, nor data.
+                // This prevents bare IP/UDP payloads from being misclassified
+                // and sent without proper 802.11 encapsulation.
                 return Err(crate::DriverError::NotSupported);
             }
         }
+
         self.tx_queue.push_back(frame.to_vec());
         self.process_tx_queue();
         Ok(())

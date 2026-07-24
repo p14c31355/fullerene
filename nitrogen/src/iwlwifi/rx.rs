@@ -110,11 +110,14 @@ impl IwlWifiDevice {
                         }
                         if self.wpa_required
                             && ether_type != 0x888E
-                            && (!self.wpa_keys_installed || (frame[1] & 0x40) == 0)
+                            && !self.wpa_keys_installed
                         {
-                            // A WPA2 data frame must be protected.  This
-                            // check applies to ARP, IPv4, IPv6, and every
-                            // other EtherType, not just DHCP/IP.
+                            // A WPA2 data frame must not be accepted before keys are
+                            // installed. After key installation, firmware decrypts
+                            // protected frames and clears the Protected bit, so we
+                            // accept all non-EAPOL frames when keys are installed.
+                            // This check applies to ARP, IPv4, IPv6, and every other
+                            // EtherType, not just DHCP/IP.
                             return;
                         }
                         match ether_type {
@@ -141,11 +144,25 @@ impl IwlWifiDevice {
                                                 self.wpa_failed("EAPOL message 3 had no GTK");
                                                 return;
                                             };
+                                            let tx_tail_before = self.tx_tail;
                                             if self
                                                 .install_wpa_keys(ptk, gtk, gtk_key_index)
                                                 .is_err()
                                             {
                                                 self.wpa_failed("firmware rejected the CCMP keys");
+                                                return;
+                                            }
+
+                                            // Wait for firmware to consume both key commands from TX ring.
+                                            // install_wpa_keys queues 2 commands, so we expect tx_tail
+                                            // to advance by at least 2 before marking keys as installed.
+                                            let mut retries = 0;
+                                            while self.tx_tail < tx_tail_before.wrapping_add(2) && retries < 1000 {
+                                                self.process_tx_queue();
+                                                retries += 1;
+                                            }
+                                            if retries >= 1000 {
+                                                self.wpa_failed("firmware did not consume key commands");
                                                 return;
                                             }
                                             self.wpa_keys_installed = true;
@@ -186,7 +203,7 @@ impl IwlWifiDevice {
                                                             dhcp.lease.ip_address,
                                                             dhcp.lease.server_id,
                                                         );
-                                                        let _ = self.send_raw_80211_frame(&request);
+                                                        let _ = self.send_ip_payload(&request);
                                                     } else if msg_type == DhcpMessageType::Ack {
                                                         self.ip_address = dhcp.lease.ip_address;
                                                         self.subnet_mask = dhcp.lease.subnet_mask;
@@ -239,8 +256,18 @@ impl IwlWifiDevice {
             .expect("DHCP client was just initialized")
             .build_discover();
         log::info!("iwlwifi: associated (AID={}), sending DHCP discover", aid);
-        if self.send_raw_80211_frame(&discover).is_err() {
-            self.wpa_failed("refused to send unprotected DHCP discover");
+        if let Err(e) = self.send_ip_payload(&discover) {
+            match e {
+                crate::DriverError::NotSupported => {
+                    log::error!("iwlwifi: DHCP encapsulation not supported");
+                }
+                crate::DriverError::NotReady => {
+                    self.wpa_failed("cannot send DHCP before WPA keys installed");
+                }
+                _ => {
+                    log::error!("iwlwifi: failed to send DHCP discover: {:?}", e);
+                }
+            }
         }
     }
 

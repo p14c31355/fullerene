@@ -309,9 +309,15 @@ impl WpaSupplicant {
             return Err(crate::NetError::Protocol);
         }
 
+        // Parse EAPOL length field and validate that 4 + length fits within frame
+        let eapol_length = u16::from_be_bytes([frame[2], frame[3]]) as usize;
+        let pdu_end = 4 + eapol_length;
+        if pdu_end > frame.len() {
+            return Err(crate::NetError::Protocol);
+        }
+
         // Verify MIC: zero the MIC field in a copy, compute, compare
-        let mut mic_verified = false;
-        let body = &frame[4..];
+        let body = &frame[4..pdu_end];
         if body[0] != 0x02 {
             return Err(crate::NetError::Protocol);
         }
@@ -333,13 +339,16 @@ impl WpaSupplicant {
         }
 
         let mic_field = &frame[81..97];
-        let mut frame_copy = frame.to_vec();
+        let mut frame_copy = frame[..pdu_end].to_vec();
         frame_copy[81..97].fill(0);
         let computed_mic = compute_mic(&self.ptk, &frame_copy);
-        if &computed_mic[..] == mic_field {
-            mic_verified = true;
+
+        // Use constant-time comparison and return immediately on mismatch
+        let mut mismatch = 0u8;
+        for i in 0..16 {
+            mismatch |= computed_mic[i] ^ mic_field[i];
         }
-        if !mic_verified {
+        if mismatch != 0 {
             return Err(crate::NetError::AuthenticationFailed);
         }
 
@@ -357,37 +366,67 @@ impl WpaSupplicant {
             return Err(crate::NetError::Protocol);
         }
 
+        // Extract key descriptor version from key_info (bits 0-2)
+        let descriptor_version = key_info & 0x07;
+
+        // For descriptor version 2, Key Data is encrypted with AES-Key-Wrap
+        let key_data_plaintext: Vec<u8>;
+        let key_data_slice = if descriptor_version == 2 {
+            // Key Encryption Key (KEK) is bytes 16-31 of the PTK
+            let kek: [u8; 16] = {
+                let mut k = [0u8; 16];
+                k.copy_from_slice(&self.ptk[16..32]);
+                k
+            };
+
+            // Decrypt the Key Data using AES-Key-Unwrap (RFC 3394)
+            let encrypted_data = &body[95..key_data_end];
+            match aes_key_unwrap(&kek, encrypted_data) {
+                Ok(plaintext) => {
+                    key_data_plaintext = plaintext;
+                    &key_data_plaintext[..]
+                }
+                Err(_) => return Err(crate::NetError::Protocol),
+            }
+        } else {
+            // For other descriptor versions, Key Data is plaintext
+            &body[95..key_data_end]
+        };
+
         // Parse Key Data Descriptors to extract GTK
-        let mut pos = 95;
-        while pos + 2 <= key_data_end {
-            let kde_type = body[pos];
-            let kde_len = body[pos + 1] as usize;
+        let mut gtk_len = 0;
+        let mut gtk_key_index = 0;
+        let mut pos = 0;
+        while pos + 2 <= key_data_slice.len() {
+            let kde_type = key_data_slice[pos];
+            let kde_len = key_data_slice[pos + 1] as usize;
             let kde_end = pos + 2 + kde_len;
-            if kde_end > key_data_end {
+            if kde_end > key_data_slice.len() {
                 break;
             }
             // GTK KDE: type=0xDD, OUI=00-0F-AC, data_type=1
             if kde_type == 0xDD
                 && kde_len >= 6
-                && body[pos + 2] == 0x00
-                && body[pos + 3] == 0x0F
-                && body[pos + 4] == 0xAC
-                && body[pos + 5] == 0x01
+                && key_data_slice[pos + 2] == 0x00
+                && key_data_slice[pos + 3] == 0x0F
+                && key_data_slice[pos + 4] == 0xAC
+                && key_data_slice[pos + 5] == 0x01
             {
-                let gtk_data = &body[pos + 6..kde_end];
+                let gtk_data = &key_data_slice[pos + 6..kde_end];
                 // gtk_data: key_id(1) + reserved(1) + gtk(N)
                 if gtk_data.len() >= 2 {
-                    let gtk_len = core::cmp::min(gtk_data.len() - 2, 32);
+                    gtk_len = core::cmp::min(gtk_data.len() - 2, 32);
                     self.gtk[..gtk_len].copy_from_slice(&gtk_data[2..2 + gtk_len]);
                     self.gtk_len = gtk_len;
-                    self.gtk_key_index = gtk_data[0] & 0x03;
+                    gtk_key_index = gtk_data[0] & 0x03;
+                    self.gtk_key_index = gtk_key_index;
                 }
                 break;
             }
             pos = kde_end;
         }
 
-        if self.gtk_len < 16 {
+        if gtk_len < 16 {
             return Err(crate::NetError::Protocol);
         }
         self.state = WpaState::WaitMsg4;
@@ -585,6 +624,224 @@ fn compute_mic(ptk: &[u8; 48], frame: &[u8]) -> [u8; 16] {
     mic.copy_from_slice(&hash[..16]);
     mic
 }
+
+/// AES-128 Key Unwrap algorithm (RFC 3394).
+/// Unwraps (decrypts) data encrypted with AES Key Wrap.
+fn aes_key_unwrap(kek: &[u8; 16], ciphertext: &[u8]) -> Result<Vec<u8>, ()> {
+    // Ciphertext must be at least 24 bytes (8-byte IV + minimum 16-byte block)
+    // and a multiple of 8 bytes
+    if ciphertext.len() < 24 || ciphertext.len() % 8 != 0 {
+        return Err(());
+    }
+
+    let n = (ciphertext.len() / 8) - 1;
+    let mut r = Vec::with_capacity(n * 8);
+    for i in 0..n {
+        r.extend_from_slice(&ciphertext[(i + 1) * 8..(i + 2) * 8]);
+    }
+
+    let mut a = [0u8; 8];
+    a.copy_from_slice(&ciphertext[0..8]);
+
+    // Unwrap: 6 iterations in reverse
+    for j in (0..6).rev() {
+        for i in (0..n).rev() {
+            let t = (n * j + i + 1) as u64;
+            for k in 0..8 {
+                a[7 - k] ^= ((t >> (k * 8)) & 0xFF) as u8;
+            }
+
+            let mut b = [0u8; 16];
+            b[0..8].copy_from_slice(&a);
+            b[8..16].copy_from_slice(&r[i * 8..(i + 1) * 8]);
+
+            let decrypted = aes_decrypt_block(kek, &b);
+            a.copy_from_slice(&decrypted[0..8]);
+            r[i * 8..(i + 1) * 8].copy_from_slice(&decrypted[8..16]);
+        }
+    }
+
+    // Verify the IV (default IV is 0xA6A6A6A6A6A6A6A6)
+    let expected_iv = [0xA6u8; 8];
+    if a != expected_iv {
+        return Err(());
+    }
+
+    Ok(r)
+}
+
+/// AES-128 block decryption.
+/// This is a minimal AES-128 implementation for WPA2 key unwrapping.
+fn aes_decrypt_block(key: &[u8; 16], ciphertext: &[u8; 16]) -> [u8; 16] {
+    // For a complete implementation, we would need full AES decrypt.
+    // This is a placeholder that should be replaced with a proper AES library.
+    // For now, we'll implement a basic version using the inverse AES operations.
+
+    // Expand the key
+    let round_keys = aes_key_expansion(key);
+
+    // Copy ciphertext to state
+    let mut state = [0u8; 16];
+    state.copy_from_slice(ciphertext);
+
+    // Initial round
+    aes_add_round_key(&mut state, &round_keys[10]);
+
+    // 9 main rounds (in reverse)
+    for round in (1..10).rev() {
+        aes_inv_shift_rows(&mut state);
+        aes_inv_sub_bytes(&mut state);
+        aes_add_round_key(&mut state, &round_keys[round]);
+        aes_inv_mix_columns(&mut state);
+    }
+
+    // Final round
+    aes_inv_shift_rows(&mut state);
+    aes_inv_sub_bytes(&mut state);
+    aes_add_round_key(&mut state, &round_keys[0]);
+
+    state
+}
+
+/// AES key expansion for 128-bit keys.
+fn aes_key_expansion(key: &[u8; 16]) -> [[u8; 16]; 11] {
+    let mut round_keys = [[0u8; 16]; 11];
+    round_keys[0].copy_from_slice(key);
+
+    let rcon: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36];
+
+    for i in 1..11 {
+        let mut temp = [0u8; 4];
+        temp.copy_from_slice(&round_keys[i - 1][12..16]);
+
+        // RotWord
+        temp.rotate_left(1);
+
+        // SubWord
+        for byte in &mut temp {
+            *byte = AES_SBOX[*byte as usize];
+        }
+
+        // XOR with Rcon
+        temp[0] ^= rcon[i - 1];
+
+        // Generate new round key
+        for j in 0..4 {
+            round_keys[i][j] = round_keys[i - 1][j] ^ temp[j];
+        }
+        for j in 4..8 {
+            round_keys[i][j] = round_keys[i - 1][j] ^ round_keys[i][j - 4];
+        }
+        for j in 8..12 {
+            round_keys[i][j] = round_keys[i - 1][j] ^ round_keys[i][j - 4];
+        }
+        for j in 12..16 {
+            round_keys[i][j] = round_keys[i - 1][j] ^ round_keys[i][j - 4];
+        }
+    }
+
+    round_keys
+}
+
+fn aes_add_round_key(state: &mut [u8; 16], round_key: &[u8; 16]) {
+    for i in 0..16 {
+        state[i] ^= round_key[i];
+    }
+}
+
+fn aes_inv_sub_bytes(state: &mut [u8; 16]) {
+    for byte in state.iter_mut() {
+        *byte = AES_INV_SBOX[*byte as usize];
+    }
+}
+
+fn aes_inv_shift_rows(state: &mut [u8; 16]) {
+    let tmp = *state;
+    state[0] = tmp[0];
+    state[1] = tmp[13];
+    state[2] = tmp[10];
+    state[3] = tmp[7];
+    state[4] = tmp[4];
+    state[5] = tmp[1];
+    state[6] = tmp[14];
+    state[7] = tmp[11];
+    state[8] = tmp[8];
+    state[9] = tmp[5];
+    state[10] = tmp[2];
+    state[11] = tmp[15];
+    state[12] = tmp[12];
+    state[13] = tmp[9];
+    state[14] = tmp[6];
+    state[15] = tmp[3];
+}
+
+fn aes_inv_mix_columns(state: &mut [u8; 16]) {
+    fn gf_mul(mut a: u8, mut b: u8) -> u8 {
+        let mut p = 0u8;
+        for _ in 0..8 {
+            if b & 1 != 0 {
+                p ^= a;
+            }
+            let hi_bit_set = a & 0x80 != 0;
+            a <<= 1;
+            if hi_bit_set {
+                a ^= 0x1B;
+            }
+            b >>= 1;
+        }
+        p
+    }
+
+    for i in 0..4 {
+        let s0 = state[i * 4];
+        let s1 = state[i * 4 + 1];
+        let s2 = state[i * 4 + 2];
+        let s3 = state[i * 4 + 3];
+
+        state[i * 4] = gf_mul(s0, 0x0e) ^ gf_mul(s1, 0x0b) ^ gf_mul(s2, 0x0d) ^ gf_mul(s3, 0x09);
+        state[i * 4 + 1] = gf_mul(s0, 0x09) ^ gf_mul(s1, 0x0e) ^ gf_mul(s2, 0x0b) ^ gf_mul(s3, 0x0d);
+        state[i * 4 + 2] = gf_mul(s0, 0x0d) ^ gf_mul(s1, 0x09) ^ gf_mul(s2, 0x0e) ^ gf_mul(s3, 0x0b);
+        state[i * 4 + 3] = gf_mul(s0, 0x0b) ^ gf_mul(s1, 0x0d) ^ gf_mul(s2, 0x09) ^ gf_mul(s3, 0x0e);
+    }
+}
+
+const AES_SBOX: [u8; 256] = [
+    0x63, 0x7C, 0x77, 0x7B, 0xF2, 0x6B, 0x6F, 0xC5, 0x30, 0x01, 0x67, 0x2B, 0xFE, 0xD7, 0xAB, 0x76,
+    0xCA, 0x82, 0xC9, 0x7D, 0xFA, 0x59, 0x47, 0xF0, 0xAD, 0xD4, 0xA2, 0xAF, 0x9C, 0xA4, 0x72, 0xC0,
+    0xB7, 0xFD, 0x93, 0x26, 0x36, 0x3F, 0xF7, 0xCC, 0x34, 0xA5, 0xE5, 0xF1, 0x71, 0xD8, 0x31, 0x15,
+    0x04, 0xC7, 0x23, 0xC3, 0x18, 0x96, 0x05, 0x9A, 0x07, 0x12, 0x80, 0xE2, 0xEB, 0x27, 0xB2, 0x75,
+    0x09, 0x83, 0x2C, 0x1A, 0x1B, 0x6E, 0x5A, 0xA0, 0x52, 0x3B, 0xD6, 0xB3, 0x29, 0xE3, 0x2F, 0x84,
+    0x53, 0xD1, 0x00, 0xED, 0x20, 0xFC, 0xB1, 0x5B, 0x6A, 0xCB, 0xBE, 0x39, 0x4A, 0x4C, 0x58, 0xCF,
+    0xD0, 0xEF, 0xAA, 0xFB, 0x43, 0x4D, 0x33, 0x85, 0x45, 0xF9, 0x02, 0x7F, 0x50, 0x3C, 0x9F, 0xA8,
+    0x51, 0xA3, 0x40, 0x8F, 0x92, 0x9D, 0x38, 0xF5, 0xBC, 0xB6, 0xDA, 0x21, 0x10, 0xFF, 0xF3, 0xD2,
+    0xCD, 0x0C, 0x13, 0xEC, 0x5F, 0x97, 0x44, 0x17, 0xC4, 0xA7, 0x7E, 0x3D, 0x64, 0x5D, 0x19, 0x73,
+    0x60, 0x81, 0x4F, 0xDC, 0x22, 0x2A, 0x90, 0x88, 0x46, 0xEE, 0xB8, 0x14, 0xDE, 0x5E, 0x0B, 0xDB,
+    0xE0, 0x32, 0x3A, 0x0A, 0x49, 0x06, 0x24, 0x5C, 0xC2, 0xD3, 0xAC, 0x62, 0x91, 0x95, 0xE4, 0x79,
+    0xE7, 0xC8, 0x37, 0x6D, 0x8D, 0xD5, 0x4E, 0xA9, 0x6C, 0x56, 0xF4, 0xEA, 0x65, 0x7A, 0xAE, 0x08,
+    0xBA, 0x78, 0x25, 0x2E, 0x1C, 0xA6, 0xB4, 0xC6, 0xE8, 0xDD, 0x74, 0x1F, 0x4B, 0xBD, 0x8B, 0x8A,
+    0x70, 0x3E, 0xB5, 0x66, 0x48, 0x03, 0xF6, 0x0E, 0x61, 0x35, 0x57, 0xB9, 0x86, 0xC1, 0x1D, 0x9E,
+    0xE1, 0xF8, 0x98, 0x11, 0x69, 0xD9, 0x8E, 0x94, 0x9B, 0x1E, 0x87, 0xE9, 0xCE, 0x55, 0x28, 0xDF,
+    0x8C, 0xA1, 0x89, 0x0D, 0xBF, 0xE6, 0x42, 0x68, 0x41, 0x99, 0x2D, 0x0F, 0xB0, 0x54, 0xBB, 0x16,
+];
+
+const AES_INV_SBOX: [u8; 256] = [
+    0x52, 0x09, 0x6A, 0xD5, 0x30, 0x36, 0xA5, 0x38, 0xBF, 0x40, 0xA3, 0x9E, 0x81, 0xF3, 0xD7, 0xFB,
+    0x7C, 0xE3, 0x39, 0x82, 0x9B, 0x2F, 0xFF, 0x87, 0x34, 0x8E, 0x43, 0x44, 0xC4, 0xDE, 0xE9, 0xCB,
+    0x54, 0x7B, 0x94, 0x32, 0xA6, 0xC2, 0x23, 0x3D, 0xEE, 0x4C, 0x95, 0x0B, 0x42, 0xFA, 0xC3, 0x4E,
+    0x08, 0x2E, 0xA1, 0x66, 0x28, 0xD9, 0x24, 0xB2, 0x76, 0x5B, 0xA2, 0x49, 0x6D, 0x8B, 0xD1, 0x25,
+    0x72, 0xF8, 0xF6, 0x64, 0x86, 0x68, 0x98, 0x16, 0xD4, 0xA4, 0x5C, 0xCC, 0x5D, 0x65, 0xB6, 0x92,
+    0x6C, 0x70, 0x48, 0x50, 0xFD, 0xED, 0xB9, 0xDA, 0x5E, 0x15, 0x46, 0x57, 0xA7, 0x8D, 0x9D, 0x84,
+    0x90, 0xD8, 0xAB, 0x00, 0x8C, 0xBC, 0xD3, 0x0A, 0xF7, 0xE4, 0x58, 0x05, 0xB8, 0xB3, 0x45, 0x06,
+    0xD0, 0x2C, 0x1E, 0x8F, 0xCA, 0x3F, 0x0F, 0x02, 0xC1, 0xAF, 0xBD, 0x03, 0x01, 0x13, 0x8A, 0x6B,
+    0x3A, 0x91, 0x11, 0x41, 0x4F, 0x67, 0xDC, 0xEA, 0x97, 0xF2, 0xCF, 0xCE, 0xF0, 0xB4, 0xE6, 0x73,
+    0x96, 0xAC, 0x74, 0x22, 0xE7, 0xAD, 0x35, 0x85, 0xE2, 0xF9, 0x37, 0xE8, 0x1C, 0x75, 0xDF, 0x6E,
+    0x47, 0xF1, 0x1A, 0x71, 0x1D, 0x29, 0xC5, 0x89, 0x6F, 0xB7, 0x62, 0x0E, 0xAA, 0x18, 0xBE, 0x1B,
+    0xFC, 0x56, 0x3E, 0x4B, 0xC6, 0xD2, 0x79, 0x20, 0x9A, 0xDB, 0xC0, 0xFE, 0x78, 0xCD, 0x5A, 0xF4,
+    0x1F, 0xDD, 0xA8, 0x33, 0x88, 0x07, 0xC7, 0x31, 0xB1, 0x12, 0x10, 0x59, 0x27, 0x80, 0xEC, 0x5F,
+    0x60, 0x51, 0x7F, 0xA9, 0x19, 0xB5, 0x4A, 0x0D, 0x2D, 0xE5, 0x7A, 0x9F, 0x93, 0xC9, 0x9C, 0xEF,
+    0xA0, 0xE0, 0x3B, 0x4D, 0xAE, 0x2A, 0xF5, 0xB0, 0xC8, 0xEB, 0xBB, 0x3C, 0x83, 0x53, 0x99, 0x61,
+    0x17, 0x2B, 0x04, 0x7E, 0xBA, 0x77, 0xD6, 0x26, 0xE1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0C, 0x7D,
+];
 
 /// SHA-1 hash function (simplified implementation for WPA2).
 /// This implements the SHA-1 algorithm as specified in FIPS 180-4.
