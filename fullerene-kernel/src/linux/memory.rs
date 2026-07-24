@@ -418,8 +418,6 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
             let frame_alloc =
                 unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-            let ptm = mgr.page_table_manager_mut() as *mut _;
-            let ptm = unsafe { &mut *ptm };
 
             for i in 0..num_pages {
                 let page_vaddr = start_page + (i as u64) * align;
@@ -443,15 +441,21 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 let page_flags = PageTableFlags::PRESENT
                     | PageTableFlags::WRITABLE
                     | PageTableFlags::USER_ACCESSIBLE;
-                if PageTableHelper::map_page(
-                    ptm,
-                    page_vaddr as usize,
-                    frame.start_address().as_u64() as usize,
-                    page_flags,
-                    frame_alloc,
-                )
-                .is_err()
-                {
+
+                // Create ptm in a narrow scope to avoid aliasing with mgr accesses below
+                let map_result = {
+                    let ptm = mgr.page_table_manager_mut() as *mut _;
+                    let ptm = unsafe { &mut *ptm };
+                    PageTableHelper::map_page(
+                        ptm,
+                        page_vaddr as usize,
+                        frame.start_address().as_u64() as usize,
+                        page_flags,
+                        frame_alloc,
+                    )
+                };
+
+                if map_result.is_err() {
                     frame_alloc.free_frame(frame);
                     for j in 0..i {
                         let unmap_vaddr = (start_page + (j as u64) * align) as usize;

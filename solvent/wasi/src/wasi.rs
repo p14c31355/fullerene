@@ -34,6 +34,17 @@ pub const FDFLAG_NONBLOCK: u16 = 4;
 pub const FDFLAG_RSYNC: u16 = 8;
 pub const FDFLAG_SYNC: u16 = 16;
 
+// ── WASI rights ───────────────────────────────────────────────────
+
+pub const RIGHT_FD_READ: u64 = 1 << 1;
+pub const RIGHT_FD_WRITE: u64 = 1 << 6;
+pub const RIGHT_FD_SEEK: u64 = 1 << 2;
+pub const RIGHT_FD_TELL: u64 = 1 << 5;
+pub const RIGHT_FD_FILESTAT_GET: u64 = 1 << 21;
+pub const RIGHT_PATH_OPEN: u64 = 1 << 13;
+pub const RIGHT_FD_READDIR: u64 = 1 << 14;
+pub const RIGHT_PATH_FILESTAT_GET: u64 = 1 << 18;
+
 // ── WASI whence ───────────────────────────────────────────────────
 
 pub const WHENCE_SET: u32 = 0;
@@ -390,14 +401,39 @@ pub fn fd_fdstat_get(
     fd: u32,
     buf_ptr: u32,
 ) -> Result<u32, Error> {
-    let filetype = {
+    let (filetype, flags, rights_base, rights_inheriting) = {
         let bc = caller.data();
         match bc.fds.get(&fd) {
-            Some(WasiFd::Stdin) => FILETYPE_CHARACTER_DEVICE,
-            Some(WasiFd::Stdout) => FILETYPE_CHARACTER_DEVICE,
-            Some(WasiFd::Stderr) => FILETYPE_CHARACTER_DEVICE,
-            Some(WasiFd::PreopenedDir { .. }) => FILETYPE_DIRECTORY,
-            Some(WasiFd::File { .. }) => FILETYPE_REGULAR_FILE,
+            Some(WasiFd::Stdin) => (
+                FILETYPE_CHARACTER_DEVICE,
+                0u16,
+                RIGHT_FD_READ,
+                0u64,
+            ),
+            Some(WasiFd::Stdout) => (
+                FILETYPE_CHARACTER_DEVICE,
+                0u16,
+                RIGHT_FD_WRITE,
+                0u64,
+            ),
+            Some(WasiFd::Stderr) => (
+                FILETYPE_CHARACTER_DEVICE,
+                0u16,
+                RIGHT_FD_WRITE,
+                0u64,
+            ),
+            Some(WasiFd::PreopenedDir { .. }) => (
+                FILETYPE_DIRECTORY,
+                0u16,
+                RIGHT_FD_READDIR | RIGHT_PATH_OPEN | RIGHT_PATH_FILESTAT_GET | RIGHT_FD_FILESTAT_GET,
+                RIGHT_FD_READ | RIGHT_FD_WRITE | RIGHT_FD_SEEK | RIGHT_FD_TELL | RIGHT_FD_FILESTAT_GET,
+            ),
+            Some(WasiFd::File { .. }) => (
+                FILETYPE_REGULAR_FILE,
+                0u16,
+                RIGHT_FD_READ | RIGHT_FD_WRITE | RIGHT_FD_SEEK | RIGHT_FD_TELL | RIGHT_FD_FILESTAT_GET,
+                0u64,
+            ),
             None => return Ok(EBADF),
         }
     };
@@ -413,9 +449,9 @@ pub fn fd_fdstat_get(
         .checked_add(16)
         .ok_or_else(|| Error::new("overflow"))?;
     write_u8(&memory, &mut caller, buf_ptr, filetype)?;
-    write_u32(&memory, &mut caller, off_flags, FDFLAG_NONBLOCK as u32)?;
-    write_u64(&memory, &mut caller, off_rights, !0u64)?;
-    write_u64(&memory, &mut caller, off_inheriting, !0u64)?;
+    write_u32(&memory, &mut caller, off_flags, flags as u32)?;
+    write_u64(&memory, &mut caller, off_rights, rights_base)?;
+    write_u64(&memory, &mut caller, off_inheriting, rights_inheriting)?;
     Ok(ESUCCESS)
 }
 

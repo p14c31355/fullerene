@@ -66,10 +66,12 @@ pub fn run(
         Ok(pre) => match pre.start(&mut store) {
             Ok(inst) => inst,
             Err(e) => {
+                if let Some(code) = store.data().exit_code {
+                    return code as i32;
+                }
                 let msg = format!("wasm: pre.start() failed: {}\n", e);
                 write_stderr(msg.as_bytes());
-                let code = store.data().exit_code.unwrap_or(1);
-                return code as i32;
+                return 1;
             }
         },
         Err(e) => {
@@ -84,19 +86,24 @@ pub fn run(
         match func.call(&mut store, ()) {
             Ok(()) => {}
             Err(trap) => {
-                let exit = store.data().exit_code;
-                let msg = format!("wasm: _start trapped: {} (exit_code={:?})\n", trap, exit);
+                if let Some(code) = store.data().exit_code {
+                    return code as i32;
+                }
+                let msg = format!("wasm: _start trapped: {}\n", trap);
                 write_stderr(msg.as_bytes());
-                return exit.unwrap_or(1) as i32;
+                return 1;
             }
         }
     } else if let Ok(func) = instance.get_typed_func::<(), ()>(&store, "_initialize") {
         match func.call(&mut store, ()) {
             Ok(()) => {}
             Err(trap) => {
+                if let Some(code) = store.data().exit_code {
+                    return code as i32;
+                }
                 let msg = format!("wasm: _initialize trapped: {}\n", trap);
                 write_stderr(msg.as_bytes());
-                return store.data().exit_code.unwrap_or(1) as i32;
+                return 1;
             }
         }
     } else {

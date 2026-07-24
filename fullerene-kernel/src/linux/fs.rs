@@ -848,6 +848,8 @@ pub fn sys_pipe(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let write_fd = rt.fd_table.alloc(2, 0, O_WRONLY);
     let descriptors = [read_fd, write_fd];
     if unsafe { copy_val_to_user(pipefd, &descriptors) }.is_err() {
+        rt.fd_table.remove(read_fd);
+        rt.fd_table.remove(write_fd);
         return errno_code(EFAULT);
     }
     0
