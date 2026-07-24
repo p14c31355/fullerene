@@ -360,14 +360,13 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         let rsp = stack_top - 32;
         p.context.regs[7] = rsp;
 
-        // Since the user stack is mapped in the active page table, we can write
-        // the initial stack frame (argc, argv, envp) directly.
-        unsafe {
-            let stack_ptr = rsp as *mut u64;
-            core::ptr::write_volatile(stack_ptr, 1); // argc = 1
-            core::ptr::write_volatile(stack_ptr.add(1), 0); // argv[0] = NULL
-            core::ptr::write_volatile(stack_ptr.add(2), 0); // argv[1] = NULL (terminator)
-            core::ptr::write_volatile(stack_ptr.add(3), 0); // envp[0] = NULL (terminator)
+        // Use the same validated user-copy path as every other Linux ABI
+        // output.  Even though this address was selected by the loader, it is
+        // still a user virtual address and must never be written directly by
+        // kernel code.
+        let initial_stack = [1u64, 0, 0, 0];
+        if unsafe { copy_val_to_user(rsp, &initial_stack) }.is_err() {
+            log::error!("execve: failed to initialize the user stack");
         }
 
         // Reset runtime state
