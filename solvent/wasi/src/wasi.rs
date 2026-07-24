@@ -290,15 +290,17 @@ pub fn fd_read(
                 if buf_len == 0 {
                     continue;
                 }
-                // Wait for at least one byte to be available for the first non-empty iovec.
+                // Non-blocking: if no byte is available, return 0 immediately.
+                // WASM runs synchronously inside the kernel shell, so blocking
+                // here would freeze the entire desktop with no recovery path.
                 if first_byte_opt.is_none() {
-                    let first_byte = loop {
-                        match (caller.data().read_stdin)() {
-                            Some(byte) => break byte,
-                            None => (caller.data().yield_now)(),
+                    match (caller.data().read_stdin)() {
+                        Some(byte) => first_byte_opt = Some(byte),
+                        None => {
+                            write_u32(&memory, &mut caller, nread_ptr, 0)?;
+                            return Ok(ESUCCESS);
                         }
-                    };
-                    first_byte_opt = Some(first_byte);
+                    }
                 }
                 let mut iov_written: u32 = 0;
                 while iov_written < buf_len {
