@@ -21,7 +21,9 @@ pub fn sys_rt_sigaction(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // If oldact != NULL, save current handler
     if oldact != 0 {
         let old = &rt.signal_handlers[idx];
-        unsafe { copy_val_to_user(oldact, old) }.ok();
+        if unsafe { copy_val_to_user(oldact, old) }.is_err() {
+            return errno_code(EFAULT);
+        }
     }
 
     // If act != NULL, set new handler
@@ -44,17 +46,23 @@ pub fn sys_rt_sigaction(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
 pub fn sys_rt_sigprocmask(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let _how = args[0] as i32; // SIG_BLOCK=0, SIG_UNBLOCK=1, SIG_SETMASK=2
-    let _set = args[1]; // user pointer to sigset_t
-    let _oldset = args[2]; // user pointer to old sigset_t
+    let set = args[1]; // user pointer to sigset_t
+    let oldset = args[2]; // user pointer to old sigset_t
 
     // Read/write signal masks (simplified)
-    if _oldset != 0 {
+    if oldset != 0 {
         let mask = rt.signal_pending;
-        unsafe { core::ptr::write_volatile(_oldset as *mut u64, mask) };
+        if unsafe { copy_val_to_user(oldset, &mask) }.is_err() {
+            return errno_code(EFAULT);
+        }
     }
 
-    if _set != 0 {
-        let new_mask = unsafe { core::ptr::read_volatile(_set as *const u64) };
+    if set != 0 {
+        let data = match unsafe { copy_from_user(set, core::mem::size_of::<u64>()) } {
+            Ok(data) => data,
+            Err(_) => return errno_code(EFAULT),
+        };
+        let new_mask = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const u64) };
         match _how {
             0 => rt.signal_pending |= new_mask,  // SIG_BLOCK
             1 => rt.signal_pending &= !new_mask, // SIG_UNBLOCK

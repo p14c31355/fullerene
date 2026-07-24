@@ -9,8 +9,10 @@ pub fn sys_uname(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
     let utsname = LinuxUtsname::new();
-    unsafe { copy_val_to_user(buf, &utsname) }.ok();
-    0
+    match unsafe { copy_val_to_user(buf, &utsname) } {
+        Ok(()) => 0,
+        Err(error) => errno_code(error),
+    }
 }
 
 pub fn sys_arch_prctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -20,6 +22,15 @@ pub fn sys_arch_prctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // MSR addresses for FS.base and GS.base
     const MSR_FS_BASE: u32 = 0xC0000100;
     const MSR_GS_BASE: u32 = 0xC0000101;
+
+    if matches!(code, ARCH_SET_FS | ARCH_SET_GS)
+        && (addr != 0
+            && x86_64::VirtAddr::try_new(addr)
+                .map(|address| !petroleum::is_user_address(address))
+                .unwrap_or(true))
+    {
+        return errno_code(EINVAL);
+    }
 
     match code {
         ARCH_SET_FS => {
@@ -33,7 +44,9 @@ pub fn sys_arch_prctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             if addr != 0 {
                 let val =
                     unsafe { x86_64::registers::model_specific::Msr::new(MSR_FS_BASE).read() };
-                unsafe { core::ptr::write_volatile(addr as *mut u64, val) };
+                if unsafe { copy_val_to_user(addr, &val) }.is_err() {
+                    return errno_code(EFAULT);
+                }
             }
             0
         }
@@ -47,7 +60,9 @@ pub fn sys_arch_prctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             if addr != 0 {
                 let val =
                     unsafe { x86_64::registers::model_specific::Msr::new(MSR_GS_BASE).read() };
-                unsafe { core::ptr::write_volatile(addr as *mut u64, val) };
+                if unsafe { copy_val_to_user(addr, &val) }.is_err() {
+                    return errno_code(EFAULT);
+                }
             }
             0
         }
@@ -74,7 +89,14 @@ pub fn sys_get_robust_list(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let head_ptr = args[1];
     let _len_ptr = args[2];
     if head_ptr != 0 {
-        unsafe { core::ptr::write_volatile(head_ptr as *mut u64, rt.robust_list_head) };
+        if unsafe { copy_val_to_user(head_ptr, &rt.robust_list_head) }.is_err() {
+            return errno_code(EFAULT);
+        }
+    }
+    if _len_ptr != 0 {
+        if unsafe { copy_val_to_user(_len_ptr, &rt.robust_list_len) }.is_err() {
+            return errno_code(EFAULT);
+        }
     }
     0
 }
@@ -91,6 +113,9 @@ pub fn sys_getrandom(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     use core::sync::atomic::{AtomicU64, Ordering};
     static SEED: AtomicU64 = AtomicU64::new(0);
 
+    if count > 64 * 1024 {
+        return errno_code(E2BIG);
+    }
     let mut bytes = alloc::vec![0u8; count as usize];
     for byte in bytes.iter_mut() {
         let mut current = SEED.load(Ordering::Relaxed);
@@ -145,7 +170,9 @@ pub fn sys_prlimit64(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 rlim_max: u64::MAX,
             },
         };
-        unsafe { copy_val_to_user(old_rlim, &rlim) }.ok();
+        if unsafe { copy_val_to_user(old_rlim, &rlim) }.is_err() {
+            return errno_code(EFAULT);
+        }
     }
     0
 }
@@ -181,8 +208,10 @@ pub fn sys_getrlimit(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         },
     };
 
-    unsafe { copy_val_to_user(rlim, &limit) }.ok();
-    0
+    match unsafe { copy_val_to_user(rlim, &limit) } {
+        Ok(()) => 0,
+        Err(error) => errno_code(error),
+    }
 }
 
 linux_stub!(sys_setrlimit, 0);
@@ -212,8 +241,10 @@ pub fn sys_sysinfo(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
     let si = LinuxSysinfo::new();
-    unsafe { copy_val_to_user(info, &si) }.ok();
-    0
+    match unsafe { copy_val_to_user(info, &si) } {
+        Ok(()) => 0,
+        Err(error) => errno_code(error),
+    }
 }
 
 linux_stub!(sys_prctl, 0);
@@ -255,13 +286,10 @@ pub fn sys_sched_getaffinity(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     // Return a mask indicating CPU 0 is available
     let cpusetsize = cpusetsize.min(8); // at most 8 bytes
-    for i in 0..cpusetsize {
-        unsafe {
-            core::ptr::write_volatile(
-                (mask as *mut u8).add(i as usize),
-                if i == 0 { 1 } else { 0 },
-            )
-        };
+    let mut result = [0u8; 8];
+    result[0] = 1;
+    if unsafe { copy_to_user(mask, &result[..cpusetsize as usize]) }.is_err() {
+        return errno_code(EFAULT);
     }
     0
 }

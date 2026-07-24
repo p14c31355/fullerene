@@ -702,7 +702,11 @@ pub fn sys_getcwd(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if unsafe { copy_to_user(buf, bytes) }.is_err() {
         return errno_code(EFAULT);
     }
-    if unsafe { copy_to_user(buf + bytes.len() as u64, &[0u8]) }.is_err() {
+    let nul = match buf.checked_add(bytes.len() as u64) {
+        Some(nul) => nul,
+        None => return errno_code(EFAULT),
+    };
+    if unsafe { copy_to_user(nul, &[0u8]) }.is_err() {
         return errno_code(EFAULT);
     }
     buf
@@ -812,14 +816,22 @@ pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
             TIOCGPGRP => {
                 // Return foreground process group (same as pid, or 0)
-                unsafe { core::ptr::write_volatile(arg as *mut i32, 0) };
-                0
+                let value = 0i32;
+                if unsafe { copy_val_to_user(arg, &value) }.is_err() {
+                    errno_code(EFAULT)
+                } else {
+                    0
+                }
             }
             TIOCSPGRP => 0,
             FIONREAD => {
                 // Return 0 bytes available
-                unsafe { core::ptr::write_volatile(arg as *mut i32, 0) };
-                0
+                let value = 0i32;
+                if unsafe { copy_val_to_user(arg, &value) }.is_err() {
+                    errno_code(EFAULT)
+                } else {
+                    0
+                }
             }
             _ => errno_code(ENOTTY),
         }
@@ -830,16 +842,15 @@ pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
 pub fn sys_pipe(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let pipefd = args[0];
-    if pipefd == 0 {
-        return errno_code(EFAULT);
-    }
     // Create a pair of pipe fds. For simplicity, create two anonymous files
     // that read/write to each other. This is a placeholder.
     let read_fd = rt.fd_table.alloc(1, 0, O_RDONLY);
     let write_fd = rt.fd_table.alloc(2, 0, O_WRONLY);
-    unsafe {
-        core::ptr::write_volatile(pipefd as *mut i32, read_fd);
-        core::ptr::write_volatile((pipefd + 4) as *mut i32, write_fd);
+    let descriptors = [read_fd, write_fd];
+    if unsafe { copy_val_to_user(pipefd, &descriptors) }.is_err() {
+        rt.fd_table.remove(read_fd);
+        rt.fd_table.remove(write_fd);
+        return errno_code(EFAULT);
     }
     0
 }

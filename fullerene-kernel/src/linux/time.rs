@@ -11,12 +11,6 @@ pub fn sys_nanosleep(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
 
-    let ts: LinuxTimespec = LinuxTimespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    unsafe { copy_val_to_user(req, &ts) }.ok();
-
     // Read the timespec from user space
     let ts_data = match unsafe { copy_from_user(req, core::mem::size_of::<LinuxTimespec>()) } {
         Ok(d) => d,
@@ -74,8 +68,10 @@ pub fn sys_clock_gettime(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         tv_sec: sec,
         tv_nsec: nsec,
     };
-    unsafe { copy_val_to_user(tp, &ts) }.ok();
-    0
+    match unsafe { copy_val_to_user(tp, &ts) } {
+        Ok(()) => 0,
+        Err(error) => errno_code(error),
+    }
 }
 
 pub fn sys_gettimeofday(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -98,8 +94,10 @@ pub fn sys_gettimeofday(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         tv_sec: sec,
         tv_usec: usec,
     };
-    unsafe { copy_val_to_user(tv, &timeval) }.ok();
-    0
+    match unsafe { copy_val_to_user(tv, &timeval) } {
+        Ok(()) => 0,
+        Err(error) => errno_code(error),
+    }
 }
 
 pub fn sys_time(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -110,7 +108,9 @@ pub fn sys_time(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     );
     let sec = (ticks / 1000) as i64;
     if t != 0 {
-        unsafe { core::ptr::write_volatile(t as *mut i64, sec) };
+        if unsafe { copy_val_to_user(t, &sec) }.is_err() {
+            return errno_code(EFAULT);
+        }
     }
     if sec < 0 { 0u64 } else { sec as u64 }
 }
