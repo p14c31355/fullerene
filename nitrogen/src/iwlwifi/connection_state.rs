@@ -522,6 +522,8 @@ pub fn try_init_wifi_device_step() {
                 wpa: bonder::wpa::WpaSupplicant::new(),
                 wpa_required: false,
                 wpa_keys_installed: false,
+                wpa_key_command_end: None,
+                pending_wpa_message4: None,
                 dhcp: None,
                 scan_results: Vec::new(),
                 scan_channel: 1,
@@ -957,6 +959,8 @@ impl IwlWifiDevice {
         self.wifi_conn.connect(ssid, password);
         self.wpa_required = password.is_some();
         self.wpa_keys_installed = false;
+        self.wpa_key_command_end = None;
+        self.pending_wpa_message4 = None;
         self.ip_address = [0; 4];
         self.subnet_mask = [0; 4];
         self.gateway = [0; 4];
@@ -996,6 +1000,8 @@ impl IwlWifiDevice {
         self.wpa = bonder::wpa::WpaSupplicant::new();
         self.wpa_required = false;
         self.wpa_keys_installed = false;
+        self.wpa_key_command_end = None;
+        self.pending_wpa_message4 = None;
         self.iwl_state = IwlState::Disconnected;
         log::info!("iwlwifi: disconnected");
     }

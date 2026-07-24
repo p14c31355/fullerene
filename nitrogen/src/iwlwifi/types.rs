@@ -166,6 +166,12 @@ pub struct RxDmaDesc {
     pub flags: u16,
 }
 
+/// RX descriptor status bit set by firmware when the protected 802.11 frame
+/// was successfully decrypted and authenticated.  Firmware may clear the
+/// 802.11 Protected bit before handing the plaintext up to the driver, so this
+/// status is tracked separately from the frame header.
+pub const RX_DESC_FLAG_DECRYPTED: u16 = 1 << 0;
+
 #[repr(C, packed)]
 pub struct RxPktStatus {
     pub len: u16,

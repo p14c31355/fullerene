@@ -88,6 +88,31 @@ impl Default for WpaSupplicant {
     }
 }
 
+impl Drop for WpaSupplicant {
+    fn drop(&mut self) {
+        // Passwords and derived keys must not remain in freed heap pages.
+        // Volatile writes plus a compiler fence prevent this cleanup from
+        // being optimized away.
+        unsafe {
+            for byte in self.passphrase.as_mut_vec().iter_mut() {
+                core::ptr::write_volatile(byte, 0);
+            }
+        }
+        for bytes in [
+            &mut self.pmk[..],
+            &mut self.ptk[..],
+            &mut self.gtk[..],
+            &mut self.anonce[..],
+            &mut self.snonce[..],
+        ] {
+            for byte in bytes.iter_mut() {
+                unsafe { core::ptr::write_volatile(byte, 0) };
+            }
+        }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 impl WpaSupplicant {
     pub fn new() -> Self {
         Self::default()
@@ -204,7 +229,11 @@ impl WpaSupplicant {
         if self.state != WpaState::WaitMsg1 || frame.len() < 4 + 95 {
             return Err(crate::NetError::Protocol);
         }
-        let body = &frame[4..];
+        let eapol_length = u16::from_be_bytes([frame[2], frame[3]]) as usize;
+        if eapol_length < 95 || 4 + eapol_length > frame.len() {
+            return Err(crate::NetError::Protocol);
+        }
+        let body = &frame[4..4 + eapol_length];
 
         if body[0] != 0x02 {
             return Err(crate::NetError::Protocol);
@@ -305,14 +334,14 @@ impl WpaSupplicant {
 
     /// Handle EAPOL-Key Message 3 (from AP, contains GTK).
     pub fn handle_message_3(&mut self, frame: &[u8]) -> Result<Vec<u8>, crate::NetError> {
-        if self.state != WpaState::WaitMsg3 || frame.len() < 4 + 95 {
+        if self.state != WpaState::WaitMsg3 || frame.len() < 4 {
             return Err(crate::NetError::Protocol);
         }
 
         // Parse EAPOL length field and validate that 4 + length fits within frame
         let eapol_length = u16::from_be_bytes([frame[2], frame[3]]) as usize;
         let pdu_end = 4 + eapol_length;
-        if pdu_end > frame.len() {
+        if eapol_length < 95 || pdu_end > frame.len() {
             return Err(crate::NetError::Protocol);
         }
 
@@ -395,7 +424,6 @@ impl WpaSupplicant {
 
         // Parse Key Data Descriptors to extract GTK
         let mut gtk_len = 0;
-        let mut gtk_key_index = 0;
         let mut pos = 0;
         while pos + 2 <= key_data_slice.len() {
             let kde_type = key_data_slice[pos];
@@ -418,8 +446,7 @@ impl WpaSupplicant {
                     gtk_len = core::cmp::min(gtk_data.len() - 2, 32);
                     self.gtk[..gtk_len].copy_from_slice(&gtk_data[2..2 + gtk_len]);
                     self.gtk_len = gtk_len;
-                    gtk_key_index = gtk_data[0] & 0x03;
-                    self.gtk_key_index = gtk_key_index;
+                    self.gtk_key_index = gtk_data[0] & 0x03;
                 }
                 break;
             }
@@ -799,9 +826,12 @@ fn aes_inv_mix_columns(state: &mut [u8; 16]) {
         let s3 = state[i * 4 + 3];
 
         state[i * 4] = gf_mul(s0, 0x0e) ^ gf_mul(s1, 0x0b) ^ gf_mul(s2, 0x0d) ^ gf_mul(s3, 0x09);
-        state[i * 4 + 1] = gf_mul(s0, 0x09) ^ gf_mul(s1, 0x0e) ^ gf_mul(s2, 0x0b) ^ gf_mul(s3, 0x0d);
-        state[i * 4 + 2] = gf_mul(s0, 0x0d) ^ gf_mul(s1, 0x09) ^ gf_mul(s2, 0x0e) ^ gf_mul(s3, 0x0b);
-        state[i * 4 + 3] = gf_mul(s0, 0x0b) ^ gf_mul(s1, 0x0d) ^ gf_mul(s2, 0x09) ^ gf_mul(s3, 0x0e);
+        state[i * 4 + 1] =
+            gf_mul(s0, 0x09) ^ gf_mul(s1, 0x0e) ^ gf_mul(s2, 0x0b) ^ gf_mul(s3, 0x0d);
+        state[i * 4 + 2] =
+            gf_mul(s0, 0x0d) ^ gf_mul(s1, 0x09) ^ gf_mul(s2, 0x0e) ^ gf_mul(s3, 0x0b);
+        state[i * 4 + 3] =
+            gf_mul(s0, 0x0b) ^ gf_mul(s1, 0x0d) ^ gf_mul(s2, 0x09) ^ gf_mul(s3, 0x0e);
     }
 }
 
@@ -931,6 +961,7 @@ mod tests {
         assert_eq!(supplicant.ptk, [0; 48]);
 
         let mut message1 = vec![0u8; 4 + 95];
+        message1[2..4].copy_from_slice(&95u16.to_be_bytes());
         message1[4] = 0x02; // WPA2 key descriptor
         message1[5..7]
             .copy_from_slice(&(KEY_INFO_KEY_TYPE | KEY_INFO_PAIRWISE | KEY_INFO_ACK).to_be_bytes());
@@ -961,5 +992,36 @@ mod tests {
             0xC2, 0x6C, 0x9C, 0xD0, 0xD8, 0x9D,
         ];
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn aes_key_unwrap_matches_rfc3394_vector() {
+        let kek = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f,
+        ];
+        let ciphertext = [
+            0x1f, 0xa6, 0x8b, 0x0a, 0x81, 0x12, 0xb4, 0x47, 0xae, 0xf3, 0x4b, 0xd8, 0xfb, 0x5a,
+            0x7b, 0x82, 0x9d, 0x3e, 0x86, 0x23, 0x71, 0xd2, 0xcf, 0xe5,
+        ];
+        let plaintext = aes_key_unwrap(&kek, &ciphertext).unwrap();
+        assert_eq!(
+            plaintext,
+            vec![
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff,
+            ]
+        );
+    }
+
+    #[test]
+    fn message_three_rejects_truncated_declared_pdu() {
+        let mut supplicant = WpaSupplicant::new();
+        supplicant.state = WpaState::WaitMsg3;
+        let frame = [0x03, 0x03, 0x00, 0x00];
+        assert_eq!(
+            supplicant.handle_message_3(&frame),
+            Err(crate::NetError::Protocol)
+        );
     }
 }

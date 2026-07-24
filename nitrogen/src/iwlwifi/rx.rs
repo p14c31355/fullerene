@@ -11,7 +11,7 @@ use super::registers::*;
 use super::types::*;
 
 impl IwlWifiDevice {
-    fn process_rx_frame(&mut self, frame: &[u8]) {
+    fn process_rx_frame(&mut self, frame: &[u8], rx_decrypted: bool) {
         if frame.len() < 2 {
             return;
         }
@@ -108,17 +108,16 @@ impl IwlWifiDevice {
                                 return;
                             }
                         }
-                        if self.wpa_required
-                            && ether_type != 0x888E
-                            && !self.wpa_keys_installed
-                        {
-                            // A WPA2 data frame must not be accepted before keys are
-                            // installed. After key installation, firmware decrypts
-                            // protected frames and clears the Protected bit, so we
-                            // accept all non-EAPOL frames when keys are installed.
-                            // This check applies to ARP, IPv4, IPv6, and every other
-                            // EtherType, not just DHCP/IP.
-                            return;
+                        if self.wpa_required && ether_type != 0x888E {
+                            let protected = frame[1] & 0x40 != 0;
+                            // Before the handshake completes, discard every data
+                            // frame.  Afterward, require either the Protected bit
+                            // or an explicit firmware decryption/authentication
+                            // status; this handles firmware that clears Protected
+                            // after decrypting without allowing plaintext fallback.
+                            if !self.wpa_keys_installed || (!protected && !rx_decrypted) {
+                                return;
+                            }
                         }
                         match ether_type {
                             0x888E => {
@@ -144,37 +143,24 @@ impl IwlWifiDevice {
                                                 self.wpa_failed("EAPOL message 3 had no GTK");
                                                 return;
                                             };
-                                            let tx_tail_before = self.tx_tail;
-                                            if self
-                                                .install_wpa_keys(ptk, gtk, gtk_key_index)
-                                                .is_err()
-                                            {
-                                                self.wpa_failed("firmware rejected the CCMP keys");
-                                                return;
-                                            }
-
-                                            // Wait for firmware to consume both key commands from TX ring.
-                                            // install_wpa_keys queues 2 commands, so we expect tx_tail
-                                            // to advance by at least 2 before marking keys as installed.
-                                            let mut retries = 0;
-                                            while self.tx_tail < tx_tail_before.wrapping_add(2) && retries < 1000 {
-                                                self.process_tx_queue();
-                                                retries += 1;
-                                            }
-                                            if retries >= 1000 {
-                                                self.wpa_failed("firmware did not consume key commands");
-                                                return;
-                                            }
-                                            self.wpa_keys_installed = true;
-                                            if self.send_raw_80211_frame(&reply).is_err()
-                                                || self.wpa.complete_handshake().is_err()
-                                            {
-                                                self.wpa_failed("could not complete WPA handshake");
-                                                return;
-                                            }
-                                            self.wifi_conn.status =
-                                                bonder::wifi::WifiStatus::Connected;
-                                            self.start_dhcp(0);
+                                            let key_command_end = match self.install_wpa_keys(
+                                                ptk,
+                                                gtk,
+                                                gtk_key_index,
+                                            ) {
+                                                Ok(end) => end,
+                                                Err(_) => {
+                                                    self.wpa_failed(
+                                                        "could not queue the CCMP keys",
+                                                    );
+                                                    return;
+                                                }
+                                            };
+                                            // Message 4 and all data traffic remain
+                                            // blocked until the hardware advances its
+                                            // TX tail over both key commands.
+                                            self.wpa_key_command_end = Some(key_command_end);
+                                            self.pending_wpa_message4 = Some(reply);
                                         }
                                         Err(_) => {
                                             self.wpa_failed("EAPOL message 3 authentication failed")
@@ -203,7 +189,21 @@ impl IwlWifiDevice {
                                                             dhcp.lease.ip_address,
                                                             dhcp.lease.server_id,
                                                         );
-                                                        let _ = self.send_ip_payload(&request);
+                                                        if let Err(error) =
+                                                            self.send_dhcp_payload(&request)
+                                                        {
+                                                            self.wifi_conn.status =
+                                                                bonder::wifi::WifiStatus::Error;
+                                                            self.wifi_conn.error_msg = Some(
+                                                                alloc::string::String::from(
+                                                                    "DHCP request transmission failed",
+                                                                ),
+                                                            );
+                                                            log::warn!(
+                                                                "iwlwifi: failed to send DHCP request: {:?}",
+                                                                error
+                                                            );
+                                                        }
                                                     } else if msg_type == DhcpMessageType::Ack {
                                                         self.ip_address = dhcp.lease.ip_address;
                                                         self.subnet_mask = dhcp.lease.subnet_mask;
@@ -256,10 +256,14 @@ impl IwlWifiDevice {
             .expect("DHCP client was just initialized")
             .build_discover();
         log::info!("iwlwifi: associated (AID={}), sending DHCP discover", aid);
-        if let Err(e) = self.send_ip_payload(&discover) {
+        if let Err(e) = self.send_dhcp_payload(&discover) {
             match e {
-                crate::DriverError::NotSupported => {
-                    log::error!("iwlwifi: DHCP encapsulation not supported");
+                crate::DriverError::InvalidArgument | crate::DriverError::NotSupported => {
+                    self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
+                    self.wifi_conn.error_msg = Some(alloc::string::String::from(
+                        "DHCP packet encapsulation failed",
+                    ));
+                    log::error!("iwlwifi: DHCP packet encapsulation failed");
                 }
                 crate::DriverError::NotReady => {
                     self.wpa_failed("cannot send DHCP before WPA keys installed");
@@ -274,6 +278,8 @@ impl IwlWifiDevice {
     fn wpa_failed(&mut self, reason: &str) {
         self.wpa.state = WpaState::Error;
         self.wpa_keys_installed = false;
+        self.wpa_key_command_end = None;
+        self.pending_wpa_message4 = None;
         self.wifi_conn.status = bonder::wifi::WifiStatus::Error;
         self.wifi_conn.error_msg = Some(alloc::string::String::from(reason));
         log::warn!("iwlwifi: WPA2 handshake failed: {}", reason);
@@ -309,19 +315,24 @@ impl IwlWifiDevice {
             }
         }
 
+        self.finish_pending_wpa_keys();
+
         mmio::cache_flush_range(
             self.rx_dma_ring.virt(),
             core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE,
         );
         while self.rx_tail != self.rx_head {
             let desc_idx = self.rx_tail;
-            let desc = self.rx_desc(desc_idx);
-            if desc.len > 0 && desc_idx < self.rx_bufs.len() {
+            let (desc_len, rx_decrypted) = {
+                let desc = self.rx_desc(desc_idx);
+                (desc.len, desc.flags & RX_DESC_FLAG_DECRYPTED != 0)
+            };
+            if desc_len > 0 && desc_idx < self.rx_bufs.len() {
                 let buf = &self.rx_bufs[desc_idx];
-                let frame_len = (desc.len as usize).min(buf.len());
+                let frame_len = (desc_len as usize).min(buf.len());
                 let mut frame_data = alloc::vec![0; frame_len];
                 buf.read_into(&mut frame_data);
-                self.process_rx_frame(&frame_data);
+                self.process_rx_frame(&frame_data, rx_decrypted);
             }
 
             let desc = self.rx_desc_mut(desc_idx);
@@ -342,5 +353,30 @@ impl IwlWifiDevice {
                 );
             }
         }
+    }
+
+    /// Complete the WPA transition only after the key commands have left the
+    /// host TX ring.  Message 4 is deliberately deferred so a peer cannot
+    /// start encrypted data exchange while the NIC is still unarmed.
+    fn finish_pending_wpa_keys(&mut self) {
+        let Some(command_end) = self.wpa_key_command_end else {
+            return;
+        };
+        if !self.tx_tail_reached(command_end) {
+            return;
+        }
+
+        self.wpa_key_command_end = None;
+        self.wpa_keys_installed = true;
+        let Some(reply) = self.pending_wpa_message4.take() else {
+            self.wpa_failed("WPA Message 4 was lost before key activation");
+            return;
+        };
+        if self.send_raw_80211_frame(&reply).is_err() || self.wpa.complete_handshake().is_err() {
+            self.wpa_failed("could not complete WPA handshake");
+            return;
+        }
+        self.wifi_conn.status = bonder::wifi::WifiStatus::Connected;
+        self.start_dhcp(0);
     }
 }

@@ -1,6 +1,7 @@
 //! Host-command and transmit-ring handling for [`IwlWifiDevice`].
 
 use crate::mmio;
+use alloc::vec::Vec;
 
 use super::device::IwlWifiDevice;
 use super::registers::*;
@@ -14,16 +15,15 @@ impl IwlWifiDevice {
     /// device until these two ADD_STA_KEY commands have been consumed by
     /// firmware.
     ///
-    /// IMPORTANT: This function only queues the commands asynchronously.
-    /// The caller must NOT set wpa_keys_installed=true until firmware has
-    /// consumed both commands from the TX ring. Use process_tx_queue() and
-    /// verify tx_tail advancement before marking keys as installed.
+    /// IMPORTANT: This function only queues the commands asynchronously.  The
+    /// returned TX-ring position must be retained and checked from the device
+    /// tick before enabling the protected data path.
     pub(super) fn install_wpa_keys(
         &mut self,
         ptk: [u8; 16],
         gtk: [u8; 16],
         gtk_key_index: u8,
-    ) -> Result<(), crate::DriverError> {
+    ) -> Result<usize, crate::DriverError> {
         const STA_KEY_FLG_CCM: u16 = 2;
         const STA_KEY_FLG_KEYID_POS: u16 = 8;
         const STA_KEY_MULTICAST: u16 = 1 << 14;
@@ -72,7 +72,7 @@ impl IwlWifiDevice {
             GroupId::Legacy as u8,
             group_bytes,
         )?;
-        Ok(())
+        Ok(self.tx_head)
     }
 
     pub(super) fn send_hcmd(
@@ -154,18 +154,95 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    /// Encapsulate a UDP/IP payload into an 802.11 data frame with LLC/SNAP header
-    /// and send it. This function ensures DHCP and other IP traffic is properly
-    /// encapsulated before transmission.
+    /// Send a complete IPv4 packet in an 802.11 data frame with LLC/SNAP.
+    ///
+    /// Callers must provide the IPv4 header as well as its payload.  In
+    /// particular, a bare DHCP packet must go through `send_dhcp_payload`.
     pub fn send_ip_payload(&mut self, payload: &[u8]) -> Result<(), crate::DriverError> {
-        let bssid = self.wifi_conn.current_bssid.ok_or(crate::DriverError::NotReady)?;
+        if payload.len() < 20
+            || payload[0] >> 4 != 4
+            || (payload[0] & 0x0f) < 5
+            || (payload[0] & 0x0f) as usize * 4 > payload.len()
+        {
+            return Err(crate::DriverError::InvalidArgument);
+        }
+        let ihl = (payload[0] & 0x0f) as usize * 4;
+        let total_len = u16::from_be_bytes([payload[2], payload[3]]) as usize;
+        if total_len < ihl || total_len > payload.len() {
+            return Err(crate::DriverError::InvalidArgument);
+        }
+        self.send_data_frame(0x0800, &payload[..total_len])
+    }
+
+    /// Encapsulate a DHCP packet in IPv4/UDP/LLC and send it.
+    pub fn send_dhcp_payload(&mut self, payload: &[u8]) -> Result<(), crate::DriverError> {
+        let udp_len = 8usize
+            .checked_add(payload.len())
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        let ip_len = 20usize
+            .checked_add(udp_len)
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        if ip_len > u16::MAX as usize {
+            return Err(crate::DriverError::InvalidArgument);
+        }
+
+        let mut packet = Vec::with_capacity(ip_len);
+        packet.extend_from_slice(&[
+            0x45,
+            0x00, // IPv4, IHL=5, DSCP/ECN
+            (ip_len >> 8) as u8,
+            ip_len as u8,
+            0x00,
+            0x00, // identification
+            0x00,
+            0x00, // flags/fragment offset
+            64,   // TTL
+            17,   // UDP
+            0x00,
+            0x00, // checksum placeholder
+            0x00,
+            0x00,
+            0x00,
+            0x00, // source 0.0.0.0
+            0xff,
+            0xff,
+            0xff,
+            0xff, // destination 255.255.255.255
+        ]);
+        let checksum = ipv4_checksum(&packet[..20]);
+        packet[10..12].copy_from_slice(&checksum.to_be_bytes());
+
+        packet.extend_from_slice(&[
+            0x00,
+            0x44, // source port 68
+            0x00,
+            0x43, // destination port 67
+            (udp_len >> 8) as u8,
+            udp_len as u8,
+            0x00,
+            0x00, // UDP checksum is optional for IPv4 DHCP
+        ]);
+        packet.extend_from_slice(payload);
+        self.send_data_frame(0x0800, &packet)
+    }
+
+    fn send_data_frame(
+        &mut self,
+        ether_type: u16,
+        payload: &[u8],
+    ) -> Result<(), crate::DriverError> {
+        let bssid = self
+            .wifi_conn
+            .current_bssid
+            .ok_or(crate::DriverError::NotReady)?;
 
         let mut frame = Vec::new();
 
-        // Frame control: type=data(2), subtype=data(0), Protected bit if WPA keys installed
+        // Frame control: data + ToDS.  The Protected bit is set only when the
+        // NIC has been armed with the CCMP keys.
         let protected_bit = if self.wpa_keys_installed { 0x40 } else { 0x00 };
         frame.push(0x08);
-        frame.push(protected_bit);
+        frame.push(0x01 | protected_bit);
         // Duration
         frame.extend_from_slice(&[0x00, 0x00]);
         // Addr1: BSSID (destination = AP)
@@ -177,11 +254,16 @@ impl IwlWifiDevice {
         // Sequence control
         frame.extend_from_slice(&[0x00, 0x00]);
 
-        // LLC/SNAP header for IP (EtherType 0x0800)
+        // LLC/SNAP header.
         frame.extend_from_slice(&[
-            0xAA, 0xAA, 0x03, // LLC header
-            0x00, 0x00, 0x00, // SNAP OUI
-            0x08, 0x00,       // EtherType: IPv4
+            0xAA,
+            0xAA,
+            0x03, // LLC header
+            0x00,
+            0x00,
+            0x00, // SNAP OUI
+            (ether_type >> 8) as u8,
+            ether_type as u8,
         ]);
 
         // Append the IP payload
@@ -215,11 +297,11 @@ impl IwlWifiDevice {
         // plaintext fallback and must be rejected by the driver.
         if self.wpa_required {
             if is_80211_data {
-                // For WPA-protected associations, data frames must have the
-                // Protected bit set OR keys must not yet be installed (for
-                // frames sent before handshake completion).
+                // For WPA-protected associations, data frames must not be
+                // transmitted until keys are installed, and must carry the
+                // Protected bit.  There is no plaintext fallback.
                 let protected_bit = (frame[1] & 0x40) != 0;
-                if !protected_bit && self.wpa_keys_installed {
+                if !self.wpa_keys_installed || !protected_bit {
                     return Err(crate::DriverError::NotReady);
                 }
             } else if !is_eapol && !is_80211_management {
@@ -271,4 +353,22 @@ impl IwlWifiDevice {
             mmio::write_barrier();
         }
     }
+
+    /// Return whether the hardware TX tail has reached the command sequence's
+    /// end position.  Hardware exposes ring indices, while the host counter is
+    /// monotonic, so compare their normalized positions.
+    pub(super) fn tx_tail_reached(&self, target: usize) -> bool {
+        self.tx_tail % TX_QUEUE_SIZE == target % TX_QUEUE_SIZE
+    }
+}
+
+fn ipv4_checksum(header: &[u8]) -> u16 {
+    let mut sum = 0u32;
+    for chunk in header.chunks_exact(2) {
+        sum += u16::from_be_bytes([chunk[0], chunk[1]]) as u32;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    !(sum as u16)
 }
