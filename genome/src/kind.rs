@@ -78,6 +78,8 @@ pub enum Confidence {
     Magic,
     /// Both extension and magic agree.
     Confirmed,
+    /// Content heuristics identified the file without a known extension.
+    Heuristic,
 }
 
 /// Which technique was used to detect.
@@ -86,6 +88,7 @@ pub enum DetectionSource {
     Extension,
     Magic,
     ExtensionAndMagic,
+    Content,
 }
 
 /// Result of file identification.
@@ -137,7 +140,16 @@ fn extension(path: &str) -> &str {
         .trim()
 }
 
-fn detect_by_magic(prefix: &[u8], ext: &str) -> Option<(FileKind, DetectionSource)> {
+fn is_ext(ext: &str, expected: &str) -> bool {
+    ext.eq_ignore_ascii_case(expected)
+}
+
+fn has_suffix(path: &str, suffix: &str) -> bool {
+    path.len() >= suffix.len()
+        && path.as_bytes()[path.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
+}
+
+fn detect_by_magic(prefix: &[u8], name: &str, ext: &str) -> Option<(FileKind, DetectionSource)> {
     if prefix.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some((FileKind::Image(ImageKind::Png), DetectionSource::Magic));
     }
@@ -170,7 +182,7 @@ fn detect_by_magic(prefix: &[u8], ext: &str) -> Option<(FileKind, DetectionSourc
         return Some((FileKind::Archive(ArchiveKind::Zip), DetectionSource::Magic));
     }
     if prefix.starts_with(b"\x1f\x8b") {
-        let kind = if ext == "tgz" {
+        let kind = if is_ext(ext, "tgz") || has_suffix(name, ".tar.gz") {
             FileKind::Archive(ArchiveKind::GzipTar)
         } else {
             FileKind::Archive(ArchiveKind::Gzip)
@@ -190,26 +202,31 @@ fn detect_by_magic(prefix: &[u8], ext: &str) -> Option<(FileKind, DetectionSourc
 }
 
 fn detect_by_ext(ext: &str) -> Option<(FileKind, DetectionSource)> {
-    let kind = match ext {
-        "bmp" => FileKind::Image(ImageKind::Bmp),
-        "png" => FileKind::Image(ImageKind::Png),
-        "jpg" | "jpeg" => FileKind::Image(ImageKind::Jpeg),
-        "gif" => FileKind::Image(ImageKind::Gif),
-        "webp" => FileKind::Image(ImageKind::WebP),
-        "tiff" | "tif" => FileKind::Image(ImageKind::Tiff),
-        "svg" => FileKind::Image(ImageKind::Svg),
-        "wav" => FileKind::Audio(AudioKind::Wav),
-        "mp3" => FileKind::Audio(AudioKind::Mp3),
-        "flac" => FileKind::Audio(AudioKind::Flac),
-        "mp4" => FileKind::Video(VideoKind::Mp4),
-        "webm" => FileKind::Video(VideoKind::WebM),
-        "rle" => FileKind::Animation,
-        "wasm" => FileKind::Wasm,
-        "tar" => FileKind::Archive(ArchiveKind::Tar),
-        "tgz" => FileKind::Archive(ArchiveKind::GzipTar),
-        "gz" => FileKind::Archive(ArchiveKind::Gzip),
-        "zip" => FileKind::Archive(ArchiveKind::Zip),
-        _ if TEXT_EXTENSIONS.contains(&ext) => FileKind::Text,
+    let kind = match () {
+        _ if is_ext(ext, "bmp") => FileKind::Image(ImageKind::Bmp),
+        _ if is_ext(ext, "png") => FileKind::Image(ImageKind::Png),
+        _ if is_ext(ext, "jpg") || is_ext(ext, "jpeg") => FileKind::Image(ImageKind::Jpeg),
+        _ if is_ext(ext, "gif") => FileKind::Image(ImageKind::Gif),
+        _ if is_ext(ext, "webp") => FileKind::Image(ImageKind::WebP),
+        _ if is_ext(ext, "tiff") || is_ext(ext, "tif") => FileKind::Image(ImageKind::Tiff),
+        _ if is_ext(ext, "svg") => FileKind::Image(ImageKind::Svg),
+        _ if is_ext(ext, "wav") => FileKind::Audio(AudioKind::Wav),
+        _ if is_ext(ext, "mp3") => FileKind::Audio(AudioKind::Mp3),
+        _ if is_ext(ext, "flac") => FileKind::Audio(AudioKind::Flac),
+        _ if is_ext(ext, "mp4") => FileKind::Video(VideoKind::Mp4),
+        _ if is_ext(ext, "webm") => FileKind::Video(VideoKind::WebM),
+        _ if is_ext(ext, "rle") => FileKind::Animation,
+        _ if is_ext(ext, "wasm") => FileKind::Wasm,
+        _ if is_ext(ext, "tar") => FileKind::Archive(ArchiveKind::Tar),
+        _ if is_ext(ext, "tgz") => FileKind::Archive(ArchiveKind::GzipTar),
+        _ if is_ext(ext, "gz") => FileKind::Archive(ArchiveKind::Gzip),
+        _ if is_ext(ext, "zip") => FileKind::Archive(ArchiveKind::Zip),
+        _ if TEXT_EXTENSIONS
+            .iter()
+            .any(|candidate| is_ext(ext, candidate)) =>
+        {
+            FileKind::Text
+        }
         _ => return None,
     };
     Some((kind, DetectionSource::Extension))
@@ -222,7 +239,7 @@ impl FileRecognizer for DefaultRecognizer {
     fn recognize(&self, name: &str, header: &[u8]) -> Option<FileIdentification> {
         let ext = extension(name);
         // Magic takes priority when it gives a clear answer.
-        if let Some((kind, _)) = detect_by_magic(header, ext) {
+        if let Some((kind, _)) = detect_by_magic(header, name, ext) {
             let ext_kind = detect_by_ext(ext);
             let (confidence, source) = match ext_kind {
                 Some((ek, _)) if ek == kind => {
@@ -245,11 +262,16 @@ impl FileRecognizer for DefaultRecognizer {
             });
         }
         // Last resort: is it valid UTF-8 text?
-        if !header.is_empty() && core::str::from_utf8(header).is_ok() {
+        if !header.is_empty()
+            && match core::str::from_utf8(header) {
+                Ok(_) => true,
+                Err(error) => error.error_len().is_none(),
+            }
+        {
             return Some(FileIdentification {
                 kind: FileKind::Text,
-                confidence: Confidence::Extension,
-                source: DetectionSource::Extension,
+                confidence: Confidence::Heuristic,
+                source: DetectionSource::Content,
             });
         }
         None
@@ -261,12 +283,17 @@ impl FileRecognizer for DefaultRecognizer {
 pub fn detect<R: Read + Seek>(reader: &mut R, path: &str) -> Result<FileKind, FsError> {
     let position = reader.seek(SeekFrom::Current(0))?;
     let mut prefix = [0u8; 512];
-    let length = if reader.read_exact(&mut prefix).is_ok() {
-        512
-    } else {
-        reader.seek(SeekFrom::Start(position))?;
-        reader.read(&mut prefix)?
-    };
+    let mut length = 0usize;
+    while length < prefix.len() {
+        match reader.read(&mut prefix[length..]) {
+            Ok(0) => break,
+            Ok(read) => length += read,
+            Err(error) => {
+                reader.seek(SeekFrom::Start(position))?;
+                return Err(error);
+            }
+        }
+    }
     reader.seek(SeekFrom::Start(position))?;
     let recognizer = DefaultRecognizer;
     match recognizer.recognize(path, &prefix[..length]) {
@@ -483,7 +510,30 @@ mod tests {
     #[test]
     fn utf8_content_with_unknown_extension_is_text() {
         let id = DefaultRecognizer.recognize("data.bin", b"hello world");
-        assert_eq!(id.unwrap().kind, FileKind::Text);
+        let id = id.unwrap();
+        assert_eq!(id.kind, FileKind::Text);
+        assert_eq!(id.confidence, Confidence::Heuristic);
+        assert_eq!(id.source, DetectionSource::Content);
+    }
+
+    #[test]
+    fn uppercase_extensions_are_detected() {
+        assert_eq!(
+            DefaultRecognizer.recognize("PHOTO.JPEG", b"").unwrap().kind,
+            FileKind::Image(ImageKind::Jpeg)
+        );
+        assert_eq!(
+            DefaultRecognizer.recognize("VIDEO.WEBM", b"").unwrap().kind,
+            FileKind::Video(VideoKind::WebM)
+        );
+    }
+
+    #[test]
+    fn tar_gz_suffix_is_detected_as_gzip_tar() {
+        let id = DefaultRecognizer
+            .recognize("bundle.TAR.GZ", b"\x1f\x8b\x08\x00")
+            .unwrap();
+        assert_eq!(id.kind, FileKind::Archive(ArchiveKind::GzipTar));
     }
 
     // ── detect() convenience wrapper ─────────────────────────────

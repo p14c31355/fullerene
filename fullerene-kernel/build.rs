@@ -136,37 +136,41 @@ fn main() {
         "cargo:rerun-if-changed={}",
         viewer_dir.join("Cargo.toml").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        viewer_dir.join("Cargo.lock").display()
+    );
 
-    let mut viewer_built = false;
-    if !viewer_cache.exists() {
-        if let Ok(status) = Command::new("cargo")
-            .args([
-                "build",
-                "--target",
-                "wasm32-wasip1",
-                "--release",
-                "--target-dir",
-            ])
-            .arg(&viewer_target_dir)
-            .current_dir(&viewer_dir)
-            .status()
-        {
-            viewer_built = status.success();
-            if !status.success() {
-                println!("cargo:warning=WASM viewer build failed (will continue without it)");
-            }
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let viewer_built = match Command::new(&cargo)
+        .args([
+            "build",
+            "--target",
+            "wasm32-wasip1",
+            "--release",
+            "--target-dir",
+        ])
+        .arg(&viewer_target_dir)
+        .current_dir(&viewer_dir)
+        // Do not leak the kernel's target flags into the nested WASM build.
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .status()
+    {
+        Ok(status) if status.success() => true,
+        Ok(_) => {
+            println!("cargo:warning=WASM viewer build failed (will continue without it)");
+            viewer_cache.exists()
         }
-    } else {
-        viewer_built = true;
-    }
+        Err(error) => {
+            println!("cargo:warning=WASM viewer build could not start: {}", error);
+            viewer_cache.exists()
+        }
+    };
     if viewer_built && viewer_cache.exists() {
         fs::copy(&viewer_cache, &viewer_out)
             .unwrap_or_else(|e| panic!("Failed to copy WASM viewer binary: {}", e));
         println!("cargo:rustc-cfg=have_viewer_wasm");
-        println!(
-            "cargo:warning=WASM viewer built ({} bytes)",
-            viewer_cache.metadata().map(|m| m.len()).unwrap_or(0)
-        );
     }
 }
 

@@ -10,9 +10,14 @@ unsafe extern "C" {
         text_ptr: *const u8,
         text_len: u32,
     ) -> u32;
+    fn show_error(
+        title_ptr: *const u8,
+        title_len: u32,
+        msg_ptr: *const u8,
+        msg_len: u32,
+    ) -> u32;
     fn create_window(title_ptr: *const u8, title_len: u32, width: u32, height: u32) -> i32;
     fn update_window(window_id: i32, width: u32, height: u32, pixels_ptr: *const u8, pixels_len: u32) -> i32;
-    fn close_window(window_id: i32) -> i32;
 }
 
 fn main() {
@@ -26,7 +31,10 @@ fn main() {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("Cannot read file: {}", e);
+            present_error(
+                "Viewer error",
+                &format!("Cannot read '{}': {}", path, e),
+            );
             std::process::exit(1);
         }
     };
@@ -38,7 +46,7 @@ fn main() {
         return;
     }
 
-    if try_image(&bytes) { return; }
+    if try_image(path, &bytes) { return; }
     if try_mp4(path, &bytes) { return; }
     if try_mp3(&bytes) { return; }
     if try_wav(&bytes) { return; }
@@ -86,9 +94,20 @@ fn present_text(path: &str, bytes: &[u8]) {
     }
 }
 
+fn present_error(title: &str, message: &str) {
+    unsafe {
+        show_error(
+            title.as_ptr(),
+            title.len() as u32,
+            message.as_ptr(),
+            message.len() as u32,
+        );
+    }
+}
+
 // ── Image ───────────────────────────────────────────────────────
 
-fn try_image(data: &[u8]) -> bool {
+fn try_image(path: &str, data: &[u8]) -> bool {
     const MAX_IMAGE_PIXELS: u64 = 40_000_000;
     const MAX_IMAGE_WIDTH: u32 = 800;
     const MAX_IMAGE_HEIGHT: u32 = 600;
@@ -107,6 +126,12 @@ fn try_image(data: &[u8]) -> bool {
         || source_h == 0
         || u64::from(source_w) * u64::from(source_h) > MAX_IMAGE_PIXELS
     {
+        let title = format!("Image Viewer: {}", path);
+        let report = format!(
+            "The image is too large to decode safely.\nResolution: {}x{}",
+            source_w, source_h
+        );
+        present_error(&title, &report);
         return true;
     }
 
@@ -262,8 +287,11 @@ fn yuv420_to_rgb(frame: &rust_h264::decoder::Frame, width: usize, height: usize)
 fn try_mp3(data: &[u8]) -> bool {
     if data.len() < 10 || (&data[..3] != b"ID3" && (data[0] & 0xff) != 0xff) { return false; }
     let id3_size = if data.len() >= 10 && &data[..3] == b"ID3" {
-        ((data[6] as usize) << 21) | ((data[7] as usize) << 14)
-            | ((data[8] as usize) << 7) | (data[9] as usize) + 10
+        (((data[6] as usize) << 21)
+            | ((data[7] as usize) << 14)
+            | ((data[8] as usize) << 7)
+            | data[9] as usize)
+            + 10
     } else { 0 };
 
     let (mut frames, mut samples, mut sr, mut ch, mut br, mut off) = (0u64, 0u64, 0u32, 0u32, 0u32, id3_size);
@@ -298,15 +326,26 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(u32, u32, u32, u32)> {
 // ── WAV audio ───────────────────────────────────────────────────
 
 fn try_wav(data: &[u8]) -> bool {
-    if data.len() < 12 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" { return false; }
+    if data.len() < 36 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" { return false; }
     let ch = u16::from_le_bytes([data[22], data[23]]);
     let sr = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
     let bits = u16::from_le_bytes([data[34], data[35]]);
-    let (mut ds, mut off) = (0u32, 36);
-    while off + 8 <= data.len() {
-        let cs = u32::from_le_bytes([data[off + 4], data[off + 5], data[off + 6], data[off + 7]]);
-        if &data[off..off + 4] == b"data" { ds = cs; break; }
-        off += 8 + cs as usize;
+    let (mut ds, mut off) = (0u32, 36usize);
+    while let Some(header_end) = off.checked_add(8) {
+        if header_end > data.len() { return false; }
+        let cs = u32::from_le_bytes([
+            data[off + 4], data[off + 5], data[off + 6], data[off + 7],
+        ]);
+        if &data[off..off + 4] == b"data" {
+            if usize::try_from(cs).ok().and_then(|n| header_end.checked_add(n)).is_none_or(|end| end > data.len()) {
+                return false;
+            }
+            ds = cs;
+            break;
+        }
+        let Some(next) = header_end.checked_add(cs as usize) else { return false; };
+        if next > data.len() { return false; }
+        off = next;
     }
     let dur = if sr > 0 && ch > 0 && bits > 0 { ds as f64 / (ch as f64 * (bits as f64 / 8.0) * sr as f64) } else { 0.0 };
     println!("Type: WAV audio\nChannels: {}\nSample rate: {} Hz\nBits: {}-bit\nData: {} bytes\nDuration: {:.1} s", ch, sr, bits, ds, dur);
@@ -322,13 +361,22 @@ fn try_zip(data: &[u8]) -> bool {
     println!("Archive: ZIP");
     let mut count = 0u32;
     let mut off = 0usize;
-    while off + 46 <= data.len() {
+    while off
+        .checked_add(46)
+        .map_or(false, |end| end <= data.len())
+    {
         let Some(pos) = data[off..].windows(4).position(|w| w == b"PK\x01\x02") else { break };
-        off += pos;
+        let Some(signature) = off.checked_add(pos) else { break; };
+        let Some(record_end) = signature.checked_add(46) else { break; };
+        if record_end > data.len() { break; }
+        off = signature;
         let name_len = u16::from_le_bytes([data[off + 28], data[off + 29]]) as usize;
         let extra_len = u16::from_le_bytes([data[off + 30], data[off + 31]]) as usize;
         let comment_len = u16::from_le_bytes([data[off + 32], data[off + 33]]) as usize;
-        let end = off + 46 + name_len + extra_len + comment_len;
+        let Some(end) = record_end
+            .checked_add(name_len)
+            .and_then(|end| end.checked_add(extra_len))
+            .and_then(|end| end.checked_add(comment_len)) else { break; };
         if end > data.len() { break; }
         let name = std::str::from_utf8(&data[off + 46..off + 46 + name_len]).unwrap_or("(invalid)");
         if !name.ends_with('/') { count += 1; }
@@ -348,11 +396,18 @@ fn try_tar(data: &[u8]) -> bool {
         if data[off] == 0 { break; }
         let name_end = data[off..off + 100].iter().position(|&b| b == 0).unwrap_or(100);
         let name = std::str::from_utf8(&data[off..off + name_end]).unwrap_or("(invalid)");
-        let size = data[off + 124..off + 136].iter().fold(0u64, |v, &b| v * 8 + u64::from(b - b'0'));
+        let Some(size) = parse_tar_octal(&data[off + 124..off + 136]) else { break; };
         let kind = match data.get(off + 156) { Some(&b'5') => "dir", Some(&b'2') => "link", _ => "file" };
         println!("  {} {:>12}  {}", kind, size, name);
-        let blocks = size.saturating_add(511) / 512 * 512;
-        off += 512 + blocks as usize;
+        let Some(blocks) = size
+            .checked_add(511)
+            .and_then(|value| value.checked_div(512))
+            .and_then(|value| value.checked_mul(512)) else { break; };
+        let Some(next) = usize::try_from(blocks)
+            .ok()
+            .and_then(|blocks| off.checked_add(512)?.checked_add(blocks)) else { break; };
+        if next > data.len() { break; }
+        off = next;
     }
     true
 }
@@ -362,13 +417,26 @@ fn try_gzip(data: &[u8]) -> bool {
     println!("Archive: GZIP");
     // Try to decompress and show the first entries if it's a .tar.gz
     use std::io::Read;
-    let mut decoder = flate2::read::GzDecoder::new(&data[..]);
+    const MAX_GZIP_PREVIEW: usize = 16 * 1024 * 1024;
+    let decoder = flate2::read::GzDecoder::new(&data[..]);
     let mut decompressed = Vec::new();
-    if decoder.read_to_end(&mut decompressed).is_ok() && decompressed.len() >= 512 && &decompressed[257..262] == b"ustar" {
+    let read_ok = decoder
+        .take((MAX_GZIP_PREVIEW as u64) + 1)
+        .read_to_end(&mut decompressed)
+        .is_ok();
+    let truncated = decompressed.len() > MAX_GZIP_PREVIEW;
+    if truncated {
+        decompressed.truncate(MAX_GZIP_PREVIEW);
+    }
+    if read_ok && !truncated && decompressed.len() >= 512 && &decompressed[257..262] == b"ustar" {
         println!("  (contains TAR archive)");
         try_tar_inner(&decompressed);
     } else {
-        println!("  Uncompressed size: {} bytes (preview suppressed)", decompressed.len());
+        if truncated {
+            println!("  Uncompressed size: >{} bytes (preview truncated)", MAX_GZIP_PREVIEW);
+        } else {
+            println!("  Uncompressed size: {} bytes (preview suppressed)", decompressed.len());
+        }
     }
     true
 }
@@ -379,12 +447,29 @@ fn try_tar_inner(data: &[u8]) {
         if data[off] == 0 { break; }
         let name_end = data[off..off + 100].iter().position(|&b| b == 0).unwrap_or(100);
         let name = std::str::from_utf8(&data[off..off + name_end]).unwrap_or("(invalid)");
-        let size = data[off + 124..off + 136].iter().fold(0u64, |v, &b| v * 8 + u64::from(b - b'0'));
+        let Some(size) = parse_tar_octal(&data[off + 124..off + 136]) else { break; };
         let kind = match data.get(off + 156) { Some(&b'5') => "dir", _ => "file" };
         println!("  {} {:>12}  {}", kind, size, name);
-        let blocks = size.saturating_add(511) / 512 * 512;
-        off += 512 + blocks as usize;
+        let Some(blocks) = size
+            .checked_add(511)
+            .and_then(|value| value.checked_div(512))
+            .and_then(|value| value.checked_mul(512)) else { break; };
+        let Some(next) = usize::try_from(blocks)
+            .ok()
+            .and_then(|blocks| off.checked_add(512)?.checked_add(blocks)) else { break; };
+        if next > data.len() { break; }
+        off = next;
     }
+}
+
+fn parse_tar_octal(field: &[u8]) -> Option<u64> {
+    let mut value = 0u64;
+    for &byte in field {
+        if byte == 0 || byte == b' ' { continue; }
+        if !(b'0'..=b'7').contains(&byte) { return None; }
+        value = value.checked_mul(8)?.checked_add(u64::from(byte - b'0'))?;
+    }
+    Some(value)
 }
 
 // ── RLE animation (Fullerene custom format) ─────────────────────
@@ -407,7 +492,11 @@ fn try_rle(path: &str, data: &[u8]) -> bool {
     // Decode and display the first frame
     let pix_count = frame_width as usize * frame_height as usize;
     let mut pixels = vec![0u8; pix_count * 3];
-    let mut off = 16 + frame_count as usize * 2; // skip header + offset table
+    let Some(offset_table_bytes) = usize::try_from(frame_count)
+        .ok()
+        .and_then(|count| count.checked_mul(2)) else { return true; };
+    let Some(mut off) = 16usize.checked_add(offset_table_bytes) else { return true; };
+    if off > data.len() { return true; }
 
     // Parse each frame's data (simple RLE: run of colors)
     let mut pi = 0usize;

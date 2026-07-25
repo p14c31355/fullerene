@@ -64,7 +64,11 @@ pub fn run(
     );
 
     let mut store = Store::new(&engine, ctx);
-    let _ = store.set_fuel(MAX_WASM_FUEL);
+    if let Err(error) = store.set_fuel(MAX_WASM_FUEL) {
+        let msg = format!("wasm: fuel setup failed: {}\n", error);
+        write_stderr(msg.as_bytes());
+        return -1;
+    }
 
     let linker = match create_linker(&engine) {
         Ok(l) => l,

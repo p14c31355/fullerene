@@ -71,6 +71,10 @@ pub enum WasiFd {
 
 const MAX_OPEN_FDS: usize = 128;
 const MAX_OPEN_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
+const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
+const MAX_TEXT_BYTES: u32 = 512 * 1024;
+const MAX_ERROR_BYTES: u32 = 64 * 1024;
 
 pub struct WasiCtx {
     pub exit_code: Option<u32>,
@@ -1019,6 +1023,9 @@ pub fn fullerene_show_image(
     pixels_ptr: u32,
     pixels_len: u32,
 ) -> Result<u32, Error> {
+    if pixels_len > MAX_DISPLAY_RGB_BYTES {
+        return Ok(EINVAL);
+    }
     let memory = get_memory(&caller)?;
     let mut pixels = alloc::vec![0u8; pixels_len as usize];
     memory
@@ -1036,6 +1043,9 @@ pub fn fullerene_show_text(
     text_ptr: u32,
     text_len: u32,
 ) -> Result<u32, Error> {
+    if title_len > MAX_WINDOW_TITLE_BYTES || text_len > MAX_TEXT_BYTES {
+        return Ok(EINVAL);
+    }
     let memory = get_memory(&caller)?;
     let mut title_buf = alloc::vec![0u8; title_len as usize];
     let mut text_buf = alloc::vec![0u8; text_len as usize];
@@ -1059,6 +1069,9 @@ pub fn fullerene_show_error(
     msg_ptr: u32,
     msg_len: u32,
 ) -> Result<u32, Error> {
+    if title_len > MAX_WINDOW_TITLE_BYTES || msg_len > MAX_ERROR_BYTES {
+        return Ok(EINVAL);
+    }
     let memory = get_memory(&caller)?;
     let mut title_buf = alloc::vec![0u8; title_len as usize];
     let mut msg_buf = alloc::vec![0u8; msg_len as usize];
@@ -1083,6 +1096,9 @@ pub fn fullerene_create_window(
     width: u32,
     height: u32,
 ) -> Result<u32, Error> {
+    if title_len > MAX_WINDOW_TITLE_BYTES {
+        return Ok(EINVAL);
+    }
     let memory = get_memory(&caller)?;
     let mut title_buf = alloc::vec![0u8; title_len as usize];
     memory
@@ -1102,6 +1118,9 @@ pub fn fullerene_update_window(
     pixels_ptr: u32,
     pixels_len: u32,
 ) -> Result<u32, Error> {
+    if pixels_len > MAX_DISPLAY_RGB_BYTES {
+        return Ok(EINVAL);
+    }
     let memory = get_memory(&caller)?;
     let mut pixels = alloc::vec![0u8; pixels_len as usize];
     memory

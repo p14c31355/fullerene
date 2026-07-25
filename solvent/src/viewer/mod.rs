@@ -69,11 +69,7 @@ pub fn open(path: &str) {
     if code != 0 {
         let mut rt = crate::RUNTIME_CONTEXT.runtime();
         if let Some(rt) = rt.as_mut() {
-            show_error_window(
-                rt,
-                "Viewer failed",
-                "The WASM viewer could not open this file.",
-            );
+            show_error_window(rt, "Viewer failed", "The WASM viewer could not be started.");
         }
     }
 }

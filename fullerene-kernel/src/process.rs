@@ -556,6 +556,7 @@ pub fn create_process(
     let stack_layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
     let stack_ptr = petroleum::common::memory::allocate_layout(stack_layout)?;
     let kernel_stack_top = VirtAddr::new(stack_ptr as u64 + crate::heap::KERNEL_STACK_SIZE as u64);
+    process.kernel_stack = kernel_stack_top;
 
     if is_user {
         // Allocate user stack for the process
@@ -658,6 +659,9 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
+    let is_idle = SCHEDULER
+        .with_process(pid, |process| process.name == "idle")
+        .unwrap_or(false);
     let is_current = SCHEDULER.current_pid() == pid.0 as usize;
     let to_unblock = SCHEDULER
         .with_process(pid, |process| {
@@ -692,6 +696,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
                             layout,
                         )
                     };
+                    process.kernel_stack = VirtAddr::new(0);
                 }
 
                 // Properly free page table frames recursively
@@ -718,7 +723,7 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     // If the current process is terminating, switch away before returning.
     // `schedule_next` only changes scheduler state; it does not perform the
     // context switch itself.
-    if is_current {
+    if is_current && !is_idle {
         let (old, next) = SCHEDULER.schedule_next();
         if old == Some(pid) && next != pid {
             unsafe { SCHEDULER.context_switch(Some(pid), next) };

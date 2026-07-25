@@ -23,6 +23,7 @@
 //! statics.
 
 use alloc::boxed::Box;
+use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use heapless::Vec as HeaplessVec;
 use petroleum::common::logging::SystemError;
@@ -174,10 +175,40 @@ impl SchedulerContext {
             .count()
     }
 
-    /// Remove terminated processes.
+    /// Remove terminated processes and reclaim their process-owned memory.
     pub fn cleanup(&self) {
         let mut procs = self.processes.lock();
-        procs.retain(|(_, p)| !matches!(p.state, ProcessState::Terminated));
+        let current = self.current_pid();
+        for (id, process) in procs.iter_mut() {
+            if !matches!(process.state, ProcessState::Terminated) || id.0 as usize == current {
+                continue;
+            }
+            if let Some(kernel_stack_base) = process
+                .kernel_stack
+                .as_u64()
+                .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+                .filter(|&base| base != 0)
+            {
+                let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16)
+                    .expect("kernel stack layout");
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(
+                        kernel_stack_base as *mut u8,
+                        layout,
+                    );
+                }
+                process.kernel_stack = VirtAddr::new(0);
+            }
+            if let Some(page_table) = process.page_table.take() {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    drop(page_table);
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
+        }
+        procs.retain(|(id, p)| {
+            !matches!(p.state, ProcessState::Terminated) || id.0 as usize == current
+        });
     }
 
     // ── Current PID ─────────────────────────────────────────

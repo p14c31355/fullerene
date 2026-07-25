@@ -117,6 +117,40 @@ fn wasm_get_monotonic_ns() -> u64 {
     }
 }
 
+fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixels: &[u8]) -> i32 {
+    if pixels.len() < 3 {
+        return -1;
+    }
+    let img_w = width as usize;
+    let updated = solvent::with_window_surface(window_id, |surf_pixels, surf_w, surf_h| {
+        let draw_h = (height as usize).min(surf_h as usize);
+        let draw_w = (width as usize).min(surf_w as usize);
+        for y in 0..draw_h {
+            for x in 0..draw_w {
+                let Some(src) = y
+                    .checked_mul(img_w)
+                    .and_then(|offset| offset.checked_add(x))
+                    .and_then(|pixel| pixel.checked_mul(3))
+                else {
+                    return;
+                };
+                let Some(end) = src.checked_add(3) else {
+                    return;
+                };
+                if let Some(rgb) = pixels.get(src..end) {
+                    let color = (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32;
+                    surf_pixels[y * surf_w as usize + x] = color;
+                }
+            }
+        }
+    });
+    if updated.is_none() {
+        return -1;
+    }
+    solvent::invalidate_window(window_id);
+    0
+}
+
 fn wasm_show_image(width: u32, height: u32, pixels: &[u8]) -> i32 {
     if !solvent::is_initialized() || pixels.len() < 3 {
         return -1;
@@ -126,24 +160,7 @@ fn wasm_show_image(width: u32, height: u32, pixels: &[u8]) -> i32 {
     let Some(id) = solvent::create_window("Image Viewer", 120, 80, win_w, win_h) else {
         return -1;
     };
-    let img_w = width as usize;
-    let _ = solvent::with_window_surface(id, |surf_pixels, surf_w, surf_h| {
-        let draw_h = (height as usize).min(surf_h as usize);
-        let draw_w = (width as usize).min(surf_w as usize);
-        for y in 0..draw_h {
-            for x in 0..draw_w {
-                let src = (y * img_w + x) * 3;
-                if src + 2 < pixels.len() {
-                    let color = (pixels[src] as u32) << 16
-                        | (pixels[src + 1] as u32) << 8
-                        | pixels[src + 2] as u32;
-                    surf_pixels[y * surf_w as usize + x] = color;
-                }
-            }
-        }
-    });
-    solvent::invalidate_window(id);
-    0
+    blit_rgb(id, width, height, pixels)
 }
 
 fn wasm_show_text(title: &str, text: &str) -> i32 {
@@ -159,10 +176,14 @@ fn wasm_show_text(title: &str, text: &str) -> i32 {
 }
 
 fn wasm_show_error(title: &str, msg: &str) -> i32 {
-    let header = alloc::format!("[!] {}: ", title);
-    solvent::write_terminal(&header);
-    solvent::write_terminal(msg);
-    solvent::write_terminal("\n");
+    if solvent::is_initialized() {
+        solvent::show_text_window(title, msg);
+    } else {
+        let header = alloc::format!("[!] {}: ", title);
+        solvent::write_terminal(&header);
+        solvent::write_terminal(msg);
+        solvent::write_terminal("\n");
+    }
     0
 }
 
@@ -179,32 +200,18 @@ fn wasm_create_window(title: &str, width: u32, height: u32) -> i32 {
     ) else {
         return -1;
     };
-    id.0 as i32
+    i32::try_from(id.0).unwrap_or(-1)
 }
 
 fn wasm_update_window(window_id: i32, width: u32, height: u32, pixels: &[u8]) -> i32 {
     if !solvent::is_initialized() {
         return -1;
     }
+    if window_id < 0 {
+        return -1;
+    }
     let id = lattice::window::WindowId(window_id as u64);
-    let img_w = width as usize;
-    let _ = solvent::with_window_surface(id, |surf_pixels, surf_w, surf_h| {
-        let draw_h = (height as usize).min(surf_h as usize);
-        let draw_w = (width as usize).min(surf_w as usize);
-        for y in 0..draw_h {
-            for x in 0..draw_w {
-                let src = (y * img_w + x) * 3;
-                if src + 2 < pixels.len() {
-                    let color = (pixels[src] as u32) << 16
-                        | (pixels[src + 1] as u32) << 8
-                        | pixels[src + 2] as u32;
-                    surf_pixels[y * surf_w as usize + x] = color;
-                }
-            }
-        }
-    });
-    solvent::invalidate_window(id);
-    0
+    blit_rgb(id, width, height, pixels)
 }
 
 fn wasm_close_window(window_id: i32) -> i32 {
