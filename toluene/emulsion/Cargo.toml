@@ -10,3 +10,6 @@ opt-level = "s"
 lto = true
 strip = true
 panic = "abort"
+
+[dependencies]
+qoi = "0.4"

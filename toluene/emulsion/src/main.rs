@@ -63,7 +63,8 @@ fn print_usage() {
 
 fn capture(output: &str) -> Result<(), String> {
     let (width, height, pixels) = capture_rgba()?;
-    let encoded = encode_qoi(width, height, &pixels)?;
+    let encoded = qoi::encode_to_vec(&pixels, width, height)
+        .map_err(|error| format!("Cannot encode screenshot as QOI: {error}"))?;
     std::fs::write(output, &encoded)
         .map_err(|error| format!("Cannot save screenshot to '{output}': {error}"))?;
 
@@ -101,78 +102,6 @@ fn capture_rgba() -> Result<(u32, u32, Vec<u8>), String> {
     }
     pixels.truncate(byte_len);
     Ok((width, height, pixels))
-}
-
-fn encode_qoi(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or_else(|| "The desktop dimensions are too large.".to_owned())?;
-    if rgba.len() != pixel_count.saturating_mul(4) {
-        return Err("The host returned an invalid pixel buffer.".to_owned());
-    }
-
-    let mut output = Vec::with_capacity(rgba.len().saturating_add(32));
-    output.extend_from_slice(b"qoif");
-    output.extend_from_slice(&width.to_be_bytes());
-    output.extend_from_slice(&height.to_be_bytes());
-    output.push(4); // RGBA
-    output.push(0); // sRGB with linear alpha
-
-    let mut index = [[0u8; 4]; 64];
-    let mut previous = [0u8, 0, 0, 255];
-    let mut run = 0u8;
-
-    for pixel in rgba.chunks_exact(4) {
-        let current = [pixel[0], pixel[1], pixel[2], pixel[3]];
-        if current == previous {
-            run = run.saturating_add(1);
-            if run == 62 {
-                output.push(0xC0 | (run - 1));
-                run = 0;
-            }
-            continue;
-        }
-        flush_run(&mut output, &mut run);
-
-        let slot = qoi_index(&current);
-        if index[slot] == current {
-            output.push(slot as u8);
-        } else {
-            index[slot] = current;
-            if current[3] == previous[3] {
-                let dr = current[0] as i16 - previous[0] as i16;
-                let dg = current[1] as i16 - previous[1] as i16;
-                let db = current[2] as i16 - previous[2] as i16;
-                if (-2..=1).contains(&dr) && (-2..=1).contains(&dg) && (-2..=1).contains(&db) {
-                    output.push(
-                        0x40 | (((dr + 2) as u8) << 4) | (((dg + 2) as u8) << 2) | (db + 2) as u8,
-                    );
-                } else {
-                    output.push(0xFE);
-                    output.extend_from_slice(&current[..3]);
-                }
-            } else {
-                output.push(0xFF);
-                output.extend_from_slice(&current);
-            }
-        }
-        previous = current;
-    }
-    flush_run(&mut output, &mut run);
-    output.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
-    Ok(output)
-}
-
-fn qoi_index(pixel: &[u8; 4]) -> usize {
-    (pixel[0] as usize * 3 + pixel[1] as usize * 5 + pixel[2] as usize * 7 + pixel[3] as usize * 11)
-        % 64
-}
-
-fn flush_run(output: &mut Vec<u8>, run: &mut u8) {
-    if *run != 0 {
-        output.push(0xC0 | (*run - 1));
-        *run = 0;
-    }
 }
 
 fn present_text(title: &str, message: &str) {

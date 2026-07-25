@@ -1,7 +1,7 @@
 use image::GenericImageView;
 use std::io::{Cursor, Read, Seek};
 
-const VIEWER_BUILD_ID: &str = "2026-07-25-mp4-sample-index-2";
+const VIEWER_BUILD_ID: &str = "2026-07-26-qoi-full-resolution-1";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
@@ -123,16 +123,12 @@ fn present_error(title: &str, message: &str) {
 // ── Image ───────────────────────────────────────────────────────
 
 fn try_image(path: &str, data: &[u8]) -> bool {
-    // Decoding a JPEG at its source resolution is expensive in the WASM
-    // interpreter even when the compositor only needs an 800x600 preview.
-    // Reject camera-sized frames before allocating/decoding them.
-    const MAX_IMAGE_PIXELS: u64 = 8_000_000;
     const MAX_IMAGE_WIDTH: u32 = 800;
     const MAX_IMAGE_HEIGHT: u32 = 600;
 
-    // Inspect dimensions before allocating the decoded frame. A small JPEG
-    // can still describe a very large camera image and otherwise exhaust the
-    // kernel/WASM heap during decode.
+    // Inspect dimensions before decoding so malformed images get a useful
+    // error. There is no arbitrary source-resolution ceiling: the decoded
+    // image is reduced to the compositor's client area below.
     let dimensions = image::ImageReader::new(Cursor::new(data))
         .with_guessed_format()
         .ok()
@@ -142,13 +138,10 @@ fn try_image(path: &str, data: &[u8]) -> bool {
         return false;
     };
     println!("viewer: dimensions complete {}x{}", source_w, source_h);
-    if source_w == 0
-        || source_h == 0
-        || u64::from(source_w) * u64::from(source_h) > MAX_IMAGE_PIXELS
-    {
+    if source_w == 0 || source_h == 0 {
         let title = format!("Image Viewer: {}", path);
         let report = format!(
-            "The image is too large to decode safely.\nResolution: {}x{}",
+            "The image has invalid dimensions.\nResolution: {}x{}",
             source_w, source_h
         );
         present_error(&title, &report);

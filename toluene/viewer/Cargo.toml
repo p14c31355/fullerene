@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = [
-  "jpeg", "png", "bmp", "gif",
+    "jpeg", "png", "bmp", "gif", "qoi",
 ] }
 rust_h264 = "0.4"
 mp4 = "0.14"

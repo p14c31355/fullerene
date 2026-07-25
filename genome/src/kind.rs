@@ -37,6 +37,7 @@ pub enum ImageKind {
     Png,
     Jpeg,
     Gif,
+    Qoi,
     WebP,
     Tiff,
     Svg,
@@ -162,6 +163,9 @@ fn detect_by_magic(prefix: &[u8], name: &str, ext: &str) -> Option<(FileKind, De
     if prefix.starts_with(b"GIF87a") || prefix.starts_with(b"GIF89a") {
         return Some((FileKind::Image(ImageKind::Gif), DetectionSource::Magic));
     }
+    if prefix.starts_with(b"qoif") {
+        return Some((FileKind::Image(ImageKind::Qoi), DetectionSource::Magic));
+    }
     if prefix.starts_with(b"fLaC") {
         return Some((FileKind::Audio(AudioKind::Flac), DetectionSource::Magic));
     }
@@ -207,6 +211,7 @@ fn detect_by_ext(ext: &str) -> Option<(FileKind, DetectionSource)> {
         _ if is_ext(ext, "png") => FileKind::Image(ImageKind::Png),
         _ if is_ext(ext, "jpg") || is_ext(ext, "jpeg") => FileKind::Image(ImageKind::Jpeg),
         _ if is_ext(ext, "gif") => FileKind::Image(ImageKind::Gif),
+        _ if is_ext(ext, "qoi") => FileKind::Image(ImageKind::Qoi),
         _ if is_ext(ext, "webp") => FileKind::Image(ImageKind::WebP),
         _ if is_ext(ext, "tiff") || is_ext(ext, "tif") => FileKind::Image(ImageKind::Tiff),
         _ if is_ext(ext, "svg") => FileKind::Image(ImageKind::Svg),
@@ -388,6 +393,15 @@ mod tests {
     fn detects_gif_by_magic() {
         let id = DefaultRecognizer.recognize("file.bin", b"GIF89a\x00\x00\x00\x00");
         assert_eq!(id.unwrap().kind, FileKind::Image(ImageKind::Gif));
+    }
+
+    #[test]
+    fn detects_qoi_by_magic_and_extension() {
+        let by_magic = DefaultRecognizer.recognize("screenshot.bin", b"qoif\x00\x00\x00\x00");
+        assert_eq!(by_magic.unwrap().kind, FileKind::Image(ImageKind::Qoi));
+
+        let by_extension = DefaultRecognizer.recognize("screenshot.qoi", b"");
+        assert_eq!(by_extension.unwrap().kind, FileKind::Image(ImageKind::Qoi));
     }
 
     #[test]
