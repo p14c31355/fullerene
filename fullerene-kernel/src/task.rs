@@ -137,10 +137,6 @@ where
 /// Entry point for spawned async tasks.
 extern "C" fn task_entry<F: Future<Output = ()> + Send + 'static>() {
     let pid = process::current_pid().expect("task_entry: no current PID");
-    crate::klog_fmt!("[WASM-DIAG] task entry pid={}\n", pid.0);
-    if solvent::is_initialized() {
-        solvent::mark_klog_live_dirty();
-    }
     let raw = process::SCHEDULER
         .with_process(pid, |p| {
             p.task_data as *mut Box<dyn Future<Output = ()> + Send>

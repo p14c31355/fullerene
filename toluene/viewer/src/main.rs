@@ -1,7 +1,7 @@
 use image::GenericImageView;
 use std::io::{Cursor, Read, Seek};
 
-const VIEWER_BUILD_ID: &str = "2026-07-25-mp4-flush-3";
+const VIEWER_BUILD_ID: &str = "2026-07-25-mp4-sample-index-2";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
@@ -361,31 +361,28 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
             return true;
         }
         println!("viewer: mp4 decode nal enter bytes={}", nal.rbsp.len());
-        match decoder.decode_nal(nal) {
-            Ok(Some(frame)) => {
-                println!("viewer: mp4 decode nal frame exit {}x{}", frame.width, frame.height);
-                rendered = present_mp4_frame(path, frame);
-                if rendered {
-                    break;
+        if let Ok(Some(frame)) = decoder.decode_nal(nal) {
+            println!("viewer: mp4 decode nal frame exit {}x{}", frame.width, frame.height);
+            let w = frame.width as usize;
+            let h = frame.height as usize;
+            if w > 0 && h > 0 && w <= 1920 && h <= 1080 {
+                if let Some(rgb) = yuv420_to_rgb(&frame, w, h) {
+                    let title = format!("Video: {}", path);
+                    unsafe {
+                        println!("viewer: mp4 create_window enter {}x{}", w, h);
+                        let wid = create_window(title.as_ptr(), title.len() as u32, w as u32, h as u32);
+                        println!("viewer: mp4 create_window exit id={}", wid);
+                        if wid >= 0 {
+                            println!("viewer: mp4 update_window enter bytes={}", rgb.len());
+                            update_window(wid, w as u32, h as u32, rgb.as_ptr(), rgb.len() as u32);
+                            println!("viewer: mp4 update_window exit");
+                            rendered = true;
+                        }
+                    }
+                    println!("First frame decoded ({}x{})", w, h);
                 }
             }
-            Ok(None) => println!("viewer: mp4 decode nal exit no-frame"),
-            Err(error) => {
-                println!("viewer: mp4 decode nal failed error={:?}", error);
-                break;
-            }
-        }
-    }
-    if !rendered {
-        // rust_h264 emits the picture completed by the previous access unit
-        // when the next picture begins. The first MP4 sample has no next
-        // picture, so flush it explicitly to obtain the first frame.
-        println!("viewer: mp4 decoder flush enter");
-        if let Some(frame) = decoder.flush() {
-            println!("viewer: mp4 decoder flush frame exit {}x{}", frame.width, frame.height);
-            rendered = present_mp4_frame(path, frame);
-        } else {
-            println!("viewer: mp4 decoder flush exit no-frame");
+            break;
         }
     }
     if !rendered {
@@ -395,43 +392,14 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
             path, size_mb, dur, width, height
         );
         unsafe {
-            println!("viewer: mp4 fallback show_text enter");
             show_text(
                 title.as_ptr(),
                 title.len() as u32,
                 report.as_ptr(),
                 report.len() as u32,
             );
-            println!("viewer: mp4 fallback show_text exit");
         }
     }
-    true
-}
-
-fn present_mp4_frame(path: &str, frame: rust_h264::decoder::Frame) -> bool {
-    let w = frame.width as usize;
-    let h = frame.height as usize;
-    if w == 0 || h == 0 || w > 1920 || h > 1080 {
-        println!("viewer: mp4 frame rejected dimensions={}x{}", w, h);
-        return false;
-    }
-    let Some(rgb) = yuv420_to_rgb(&frame, w, h) else {
-        println!("viewer: mp4 frame rejected invalid planes");
-        return false;
-    };
-    let title = format!("Video: {}", path);
-    unsafe {
-        println!("viewer: mp4 create_window enter {}x{}", w, h);
-        let wid = create_window(title.as_ptr(), title.len() as u32, w as u32, h as u32);
-        println!("viewer: mp4 create_window exit id={}", wid);
-        if wid < 0 {
-            return false;
-        }
-        println!("viewer: mp4 update_window enter bytes={}", rgb.len());
-        update_window(wid, w as u32, h as u32, rgb.as_ptr(), rgb.len() as u32);
-        println!("viewer: mp4 update_window exit");
-    }
-    println!("First frame decoded ({}x{})", w, h);
     true
 }
 

@@ -14,7 +14,7 @@ mp4 = "0.14"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [profile.release]
-opt-level = 3
+opt-level = "s"
 lto = true
 strip = true
 panic = "abort"

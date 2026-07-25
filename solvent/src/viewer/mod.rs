@@ -61,7 +61,7 @@ pub fn open(path: &str) {
 
     // Schedule the viewer directly through the kernel callback. This keeps
     // file paths intact (including spaces), avoids a shell window, and keeps
-    // every decoder—including small JPEGs—off the compositor/input task.
+    // decoding off the compositor/input task.
     // WASI does not synthesize argv[0] for us. The viewer expects the usual
     // argv layout: program name followed by the file to open.
     let args = ["/apps/viewer.wasm", path];

@@ -183,12 +183,6 @@ impl carrier::terminal::Terminal for LatticeTerminal {
                 return Some(ch);
             }
             crate::runtime_tick_no_fb();
-            // The GUI shell is hosted by the kernel's scheduler process. It
-            // otherwise remains inside this input wait loop and a WASM task
-            // scheduled from the shell can stay Ready forever.
-            if let Some(yield_process) = crate::RUNTIME_CONTEXT.callback_snapshot().yield_process {
-                yield_process();
-            }
         }
     }
     fn input_available(&self) -> bool {
