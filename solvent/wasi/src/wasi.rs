@@ -71,6 +71,10 @@ pub enum WasiFd {
 
 const MAX_OPEN_FDS: usize = 128;
 const MAX_OPEN_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
+const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
+const MAX_TEXT_BYTES: u32 = 512 * 1024;
+const MAX_ERROR_BYTES: u32 = 64 * 1024;
 
 pub struct WasiCtx {
     pub exit_code: Option<u32>,
@@ -86,6 +90,12 @@ pub struct WasiCtx {
     pub read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
+    pub show_image: fn(u32, u32, &[u8]) -> i32,
+    pub show_text: fn(&str, &str) -> i32,
+    pub show_error: fn(&str, &str) -> i32,
+    pub create_window: fn(&str, u32, u32) -> i32,
+    pub update_window: fn(i32, u32, u32, &[u8]) -> i32,
+    pub close_window: fn(i32) -> i32,
 }
 
 impl WasiCtx {
@@ -98,6 +108,12 @@ impl WasiCtx {
         read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         get_monotonic_ns: fn() -> u64,
+        show_image: fn(u32, u32, &[u8]) -> i32,
+        show_text: fn(&str, &str) -> i32,
+        show_error: fn(&str, &str) -> i32,
+        create_window: fn(&str, u32, u32) -> i32,
+        update_window: fn(i32, u32, u32, &[u8]) -> i32,
+        close_window: fn(i32) -> i32,
     ) -> Self {
         let args_vec: Vec<Vec<u8>> = args
             .iter()
@@ -131,6 +147,12 @@ impl WasiCtx {
             read_entire_file,
             read_directory,
             get_monotonic_ns,
+            show_image,
+            show_text,
+            show_error,
+            create_window,
+            update_window,
+            close_window,
         }
     }
 }
@@ -989,4 +1011,127 @@ pub fn random_get(
         }
         Ok(ESUCCESS)
     }
+}
+
+// ── Fullerene custom host functions ──────────────────────────────
+
+/// Display decoded RGB pixels in a new window.
+pub fn fullerene_show_image(
+    caller: Caller<'_, WasiCtx>,
+    width: u32,
+    height: u32,
+    pixels_ptr: u32,
+    pixels_len: u32,
+) -> Result<u32, Error> {
+    if pixels_len > MAX_DISPLAY_RGB_BYTES {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut pixels = alloc::vec![0u8; pixels_len as usize];
+    memory
+        .read(&caller, pixels_ptr as usize, &mut pixels)
+        .map_err(|_| Error::new("show_image: memory read failed"))?;
+    let code = (caller.data().show_image)(width, height, &pixels);
+    Ok(code as u32)
+}
+
+/// Display text in an editor-style window.
+pub fn fullerene_show_text(
+    caller: Caller<'_, WasiCtx>,
+    title_ptr: u32,
+    title_len: u32,
+    text_ptr: u32,
+    text_len: u32,
+) -> Result<u32, Error> {
+    if title_len > MAX_WINDOW_TITLE_BYTES || text_len > MAX_TEXT_BYTES {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut title_buf = alloc::vec![0u8; title_len as usize];
+    let mut text_buf = alloc::vec![0u8; text_len as usize];
+    memory
+        .read(&caller, title_ptr as usize, &mut title_buf)
+        .map_err(|_| Error::new("show_text: read title failed"))?;
+    memory
+        .read(&caller, text_ptr as usize, &mut text_buf)
+        .map_err(|_| Error::new("show_text: read text failed"))?;
+    let title = core::str::from_utf8(&title_buf).unwrap_or("Viewer");
+    let text = core::str::from_utf8(&text_buf).unwrap_or("");
+    let code = (caller.data().show_text)(title, text);
+    Ok(code as u32)
+}
+
+/// Show an error dialog.
+pub fn fullerene_show_error(
+    caller: Caller<'_, WasiCtx>,
+    title_ptr: u32,
+    title_len: u32,
+    msg_ptr: u32,
+    msg_len: u32,
+) -> Result<u32, Error> {
+    if title_len > MAX_WINDOW_TITLE_BYTES || msg_len > MAX_ERROR_BYTES {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut title_buf = alloc::vec![0u8; title_len as usize];
+    let mut msg_buf = alloc::vec![0u8; msg_len as usize];
+    memory
+        .read(&caller, title_ptr as usize, &mut title_buf)
+        .map_err(|_| Error::new("show_error: read title failed"))?;
+    memory
+        .read(&caller, msg_ptr as usize, &mut msg_buf)
+        .map_err(|_| Error::new("show_error: read msg failed"))?;
+    let title = core::str::from_utf8(&title_buf).unwrap_or("Error");
+    let msg = core::str::from_utf8(&msg_buf).unwrap_or("");
+    let code = (caller.data().show_error)(title, msg);
+    Ok(code as u32)
+}
+
+/// Create a persistent window, returning a handle that can be used with
+/// `update_window`.  Returns -1 on failure.
+pub fn fullerene_create_window(
+    caller: Caller<'_, WasiCtx>,
+    title_ptr: u32,
+    title_len: u32,
+    width: u32,
+    height: u32,
+) -> Result<u32, Error> {
+    if title_len > MAX_WINDOW_TITLE_BYTES {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut title_buf = alloc::vec![0u8; title_len as usize];
+    memory
+        .read(&caller, title_ptr as usize, &mut title_buf)
+        .map_err(|_| Error::new("create_window: read title failed"))?;
+    let title = core::str::from_utf8(&title_buf).unwrap_or("Window");
+    let id = (caller.data().create_window)(title, width, height);
+    Ok(id as u32)
+}
+
+/// Update pixel contents of a window previously created with `create_window`.
+pub fn fullerene_update_window(
+    caller: Caller<'_, WasiCtx>,
+    window_id: i32,
+    width: u32,
+    height: u32,
+    pixels_ptr: u32,
+    pixels_len: u32,
+) -> Result<u32, Error> {
+    if pixels_len > MAX_DISPLAY_RGB_BYTES {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut pixels = alloc::vec![0u8; pixels_len as usize];
+    memory
+        .read(&caller, pixels_ptr as usize, &mut pixels)
+        .map_err(|_| Error::new("update_window: memory read failed"))?;
+    let code = (caller.data().update_window)(window_id, width, height, &pixels);
+    Ok(code as u32)
+}
+
+/// Close a window previously created with `create_window`.
+pub fn fullerene_close_window(caller: Caller<'_, WasiCtx>, window_id: i32) -> Result<u32, Error> {
+    let code = (caller.data().close_window)(window_id);
+    Ok(code as u32)
 }

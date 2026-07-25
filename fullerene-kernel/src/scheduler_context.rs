@@ -23,6 +23,7 @@
 //! statics.
 
 use alloc::boxed::Box;
+use core::alloc::Layout;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use heapless::Vec as HeaplessVec;
 use petroleum::common::logging::SystemError;
@@ -174,10 +175,40 @@ impl SchedulerContext {
             .count()
     }
 
-    /// Remove terminated processes.
+    /// Remove terminated processes and reclaim their process-owned memory.
     pub fn cleanup(&self) {
         let mut procs = self.processes.lock();
-        procs.retain(|(_, p)| !matches!(p.state, ProcessState::Terminated));
+        let current = self.current_pid();
+        for (id, process) in procs.iter_mut() {
+            if !matches!(process.state, ProcessState::Terminated) || id.0 as usize == current {
+                continue;
+            }
+            if let Some(kernel_stack_base) = process
+                .kernel_stack
+                .as_u64()
+                .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+                .filter(|&base| base != 0)
+            {
+                let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16)
+                    .expect("kernel stack layout");
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(
+                        kernel_stack_base as *mut u8,
+                        layout,
+                    );
+                }
+                process.kernel_stack = VirtAddr::new(0);
+            }
+            if let Some(page_table) = process.page_table.take() {
+                if let Some(pml4_frame) = page_table.pml4_frame() {
+                    drop(page_table);
+                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+                }
+            }
+        }
+        procs.retain(|(id, p)| {
+            !matches!(p.state, ProcessState::Terminated) || id.0 as usize == current
+        });
     }
 
     // ── Current PID ─────────────────────────────────────────
@@ -332,7 +363,7 @@ impl SchedulerContext {
             .iter()
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| p.page_table_phys_addr)
-            .unwrap_or(x86_64::PhysAddr::new(0));
+            .unwrap_or_else(crate::memory_management::kernel_page_table_phys);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);

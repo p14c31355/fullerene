@@ -6,12 +6,16 @@ use wasmi::{Engine, Linker, Module, Store};
 use crate::wasi::{
     WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
     fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir,
-    fd_seek, fd_write, path_filestat_get, path_open, proc_exit, random_get,
+    fd_seek, fd_write, fullerene_close_window, fullerene_create_window, fullerene_show_error,
+    fullerene_show_image, fullerene_show_text, fullerene_update_window, path_filestat_get,
+    path_open, proc_exit, random_get,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
 /// Returns the exit code (0 = success).
-/// Fuel metering is intentionally disabled for synchronous kernel execution.
+///
+/// Fuel metering prevents a malformed WASM program from trapping the desktop
+/// forever. Host-side decoders still need their own input bounds.
 pub fn run(
     wasm_binary: &[u8],
     args: &[&str],
@@ -22,8 +26,17 @@ pub fn run(
     read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     get_monotonic_ns: fn() -> u64,
+    show_image: fn(u32, u32, &[u8]) -> i32,
+    show_text: fn(&str, &str) -> i32,
+    show_error: fn(&str, &str) -> i32,
+    create_window: fn(&str, u32, u32) -> i32,
+    update_window: fn(i32, u32, u32, &[u8]) -> i32,
+    close_window: fn(i32) -> i32,
 ) -> i32 {
-    let engine = Engine::new(&wasmi::Config::default());
+    const MAX_WASM_FUEL: u64 = 1_000_000_000;
+    let mut config = wasmi::Config::default();
+    config.consume_fuel(true);
+    let engine = Engine::new(&config);
     let module = match Module::new(&engine, wasm_binary) {
         Ok(m) => m,
         Err(e) => {
@@ -42,9 +55,20 @@ pub fn run(
         read_entire_file,
         read_directory,
         get_monotonic_ns,
+        show_image,
+        show_text,
+        show_error,
+        create_window,
+        update_window,
+        close_window,
     );
 
     let mut store = Store::new(&engine, ctx);
+    if let Err(error) = store.set_fuel(MAX_WASM_FUEL) {
+        let msg = format!("wasm: fuel setup failed: {}\n", error);
+        write_stderr(msg.as_bytes());
+        return -1;
+    }
 
     let linker = match create_linker(&engine) {
         Ok(l) => l,
@@ -136,6 +160,15 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     wasi_func!("proc_exit", proc_exit);
     wasi_func!("clock_time_get", clock_time_get);
     wasi_func!("random_get", random_get);
+
+    // Fullerene custom host functions (import module "fullerene")
+    let fullerene = "fullerene";
+    linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
+    linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
+    linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;
+    linker.func_wrap(fullerene, "create_window", fullerene_create_window)?;
+    linker.func_wrap(fullerene, "update_window", fullerene_update_window)?;
+    linker.func_wrap(fullerene, "close_window", fullerene_close_window)?;
 
     Ok(linker)
 }

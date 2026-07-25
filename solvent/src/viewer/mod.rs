@@ -1,90 +1,96 @@
-//! Universal file viewer: detect, decode through the registry, then present.
+//! Universal file viewer.  This module is a thin routing layer — all
+//! format-specific decoding lives in the WASM viewer app (toluene/viewer/).
 
-mod document;
-mod presentation;
-pub mod registry;
+use crate::RuntimeFile;
 
-use alloc::format;
-use alloc::string::String;
-use spin::Mutex;
-
-pub use document::{BinaryDocument, Document, LaunchTarget, TextDocument};
-pub use registry::{DECODERS, DecodeError, Decoder};
-
-static PENDING_SHELL_COMMAND: Mutex<Option<String>> = Mutex::new(None);
-
-pub fn take_pending_shell_command() -> Option<String> {
-    PENDING_SHELL_COMMAND.lock().take()
-}
-
-fn request_shell_command(command: String) {
-    *PENDING_SHELL_COMMAND.lock() = Some(command);
-}
-
-fn request_launch_target(target: LaunchTarget) {
-    let command = match target {
-        LaunchTarget::Wasm { path, args } => {
-            let mut command = format!("wasm {}", path);
-            for arg in args {
-                command.push(' ');
-                command.push_str(&arg);
-            }
-            command
-        }
-    };
-    request_shell_command(command);
-
-    if let Some(runtime) = crate::RUNTIME_CONTEXT.runtime().as_mut() {
-        runtime.shell_launch_pending = true;
-        runtime.frame_due = true;
+/// Present text emitted by a non-interactive WASM viewer without requiring a
+/// terminal window. This is used for media metadata when no frame can be
+/// decoded safely.
+pub fn show_text_window(title: &str, text: &str) {
+    let mut rt = crate::RUNTIME_CONTEXT.runtime();
+    let Some(rt) = rt.as_mut() else { return };
+    let cols = 80u32;
+    let rows = (text.lines().count() as u32).clamp(3, 40);
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(100, 60, cols * 8, rows * 16, 0x101018, title);
+    if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = crate::menu_actions::render_text_into_surface(
+            &mut window.surface,
+            text,
+            cols,
+            0xCCCCFF,
+            0x101018,
+        );
     }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
+/// Check whether the WASM viewer is available in the filesystem.
+fn has_wasm_viewer() -> bool {
+    RuntimeFile::open("/apps/viewer.wasm").is_ok()
 }
 
 pub fn open(path: &str) {
-    let name = path.rsplit('/').next().unwrap_or(path);
-    let document = match registry::decode(path) {
-        Ok(document) => document,
-        Err(error) => {
-            let message = match error {
-                DecodeError::Filesystem(error) => format!("Cannot read file: {}", error),
-                DecodeError::Message(message) => message,
-                DecodeError::Unsupported => String::from("No decoder is registered for this file"),
-            };
-            let mut runtime = crate::RUNTIME_CONTEXT.runtime();
-            if let Some(runtime) = runtime.as_mut() {
-                crate::viewers::show_error(runtime, "Cannot open file", &message);
-                runtime.frame_due = true;
-            }
-            return;
+    if !has_wasm_viewer() {
+        let mut rt = crate::RUNTIME_CONTEXT.runtime();
+        if let Some(rt) = rt.as_mut() {
+            show_error_window(
+                rt,
+                "Viewer unavailable",
+                "The WASM file viewer is not installed.\n\
+                 Rebuild the kernel with a working WASM build chain.",
+            );
         }
-    };
-
-    if let Document::Launch(target) = document {
-        request_launch_target(target);
         return;
     }
 
-    let mut runtime = crate::RUNTIME_CONTEXT.runtime();
-    if let Some(runtime) = runtime.as_mut() {
-        presentation::present(runtime, document, name, path);
+    let Some(run_wasm) = crate::RUNTIME_CONTEXT.callback_snapshot().run_wasm else {
+        let mut rt = crate::RUNTIME_CONTEXT.runtime();
+        if let Some(rt) = rt.as_mut() {
+            show_error_window(
+                rt,
+                "Viewer unavailable",
+                "The kernel has no WASM execution callback installed.",
+            );
+        }
+        return;
+    };
+
+    // Schedule the viewer directly through the kernel callback. This keeps
+    // file paths intact (including spaces), avoids a shell window, and keeps
+    // decoding off the compositor/input task.
+    // WASI does not synthesize argv[0] for us. The viewer expects the usual
+    // argv layout: program name followed by the file to open.
+    let args = ["/apps/viewer.wasm", path];
+    let code = run_wasm("/apps/viewer.wasm", &args);
+    if code != 0 {
+        let mut rt = crate::RUNTIME_CONTEXT.runtime();
+        if let Some(rt) = rt.as_mut() {
+            show_error_window(rt, "Viewer failed", "The WASM viewer could not be started.");
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::registry::{DECODERS, find};
-    use genome::{ApplicationKind, FileKind};
-
-    #[test]
-    fn registry_has_a_fallback_decoder() {
-        let decoder = DECODERS.last().unwrap();
-        assert!(decoder.probe(FileKind::Binary));
-        assert!(find(FileKind::Binary).probe(FileKind::Binary));
+/// Open a simple text window (used for error messages).
+pub(crate) fn show_error_window(rt: &mut crate::RuntimeState, title: &str, msg: &str) {
+    let cols = 50u32;
+    let rows = (msg.lines().count() as u32).min(40) + 3;
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(100, 60, cols * 8, rows * 16, 0x1a1a0d, title);
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = crate::menu_actions::render_text_into_surface(
+            &mut w.surface,
+            msg,
+            cols,
+            0xFFCCCC,
+            0x1a1a0d,
+        );
     }
-
-    #[test]
-    fn registry_routes_wasm_to_an_application_decoder() {
-        let kind = FileKind::Application(ApplicationKind::Wasm);
-        assert!(find(kind).probe(kind));
-    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
 }

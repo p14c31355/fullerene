@@ -75,11 +75,9 @@ fn wasm_read_stdin() -> Option<u8> {
 
 fn wasm_yield_now() {
     if solvent::is_initialized() {
-        // WASM is executed synchronously by the kernel shell, not as a
-        // schedulable user process.  Calling the process-yield syscall here
-        // therefore has no current PID to switch from.  Poll devices only;
-        // doing a full runtime tick would re-enter the GUI while wasmi is
-        // still executing a host callback.
+        // The module is already running in a kernel task. Poll input here,
+        // but do not re-enter the desktop scheduler from a WASM host call;
+        // the task is resumed by the launch/scheduler handoff instead.
         solvent::poll_mouse_state();
         solvent::poll_keyboard();
     } else {
@@ -116,6 +114,185 @@ fn wasm_get_monotonic_ns() -> u64 {
         let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
         // Use u128 to prevent overflow while maintaining full precision
         ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
+    }
+}
+
+fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixels: &[u8]) -> i32 {
+    if pixels.len() < 3 {
+        return -1;
+    }
+    let img_w = width as usize;
+    let updated = solvent::with_window_surface(window_id, |surf_pixels, surf_w, surf_h| {
+        let draw_h = (height as usize).min(surf_h as usize);
+        let draw_w = (width as usize).min(surf_w as usize);
+        for y in 0..draw_h {
+            for x in 0..draw_w {
+                let Some(src) = y
+                    .checked_mul(img_w)
+                    .and_then(|offset| offset.checked_add(x))
+                    .and_then(|pixel| pixel.checked_mul(3))
+                else {
+                    return;
+                };
+                let Some(end) = src.checked_add(3) else {
+                    return;
+                };
+                if let Some(rgb) = pixels.get(src..end) {
+                    let color = (rgb[0] as u32) << 16 | (rgb[1] as u32) << 8 | rgb[2] as u32;
+                    surf_pixels[y * surf_w as usize + x] = color;
+                }
+            }
+        }
+    });
+    if updated.is_none() {
+        return -1;
+    }
+    solvent::invalidate_window(window_id);
+    0
+}
+
+fn wasm_show_image(width: u32, height: u32, pixels: &[u8]) -> i32 {
+    if !solvent::is_initialized() || pixels.len() < 3 {
+        return -1;
+    }
+    let win_w = width.min(800).max(160);
+    let win_h = height.min(600).max(120);
+    let Some(id) = solvent::create_window("Image Viewer", 120, 80, win_w, win_h) else {
+        return -1;
+    };
+    blit_rgb(id, width, height, pixels)
+}
+
+fn wasm_show_text(title: &str, text: &str) -> i32 {
+    if solvent::is_initialized() {
+        solvent::show_text_window(title, text);
+    } else {
+        let header = alloc::format!("--- {} ---\n", title);
+        solvent::write_terminal(&header);
+        solvent::write_terminal(text);
+        solvent::write_terminal("\n--- end ---\n");
+    }
+    0
+}
+
+fn wasm_show_error(title: &str, msg: &str) -> i32 {
+    if solvent::is_initialized() {
+        solvent::show_text_window(title, msg);
+    } else {
+        let header = alloc::format!("[!] {}: ", title);
+        solvent::write_terminal(&header);
+        solvent::write_terminal(msg);
+        solvent::write_terminal("\n");
+    }
+    0
+}
+
+fn wasm_create_window(title: &str, width: u32, height: u32) -> i32 {
+    if !solvent::is_initialized() {
+        return -1;
+    }
+    let Some(id) = solvent::create_window(
+        title,
+        120,
+        80,
+        width.min(800).max(160),
+        height.min(600).max(120),
+    ) else {
+        return -1;
+    };
+    i32::try_from(id.0).unwrap_or(-1)
+}
+
+fn wasm_update_window(window_id: i32, width: u32, height: u32, pixels: &[u8]) -> i32 {
+    if !solvent::is_initialized() {
+        return -1;
+    }
+    if window_id < 0 {
+        return -1;
+    }
+    let id = lattice::window::WindowId(window_id as u64);
+    blit_rgb(id, width, height, pixels)
+}
+
+fn wasm_close_window(window_id: i32) -> i32 {
+    if solvent::close_window(lattice::window::WindowId(window_id as u64)) {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Run a WASI application from the kernel without opening a shell window.
+///
+/// This is also used by the desktop file viewer. The shell `wasm` command
+/// remains as a user-facing entry point, but both paths share the same
+/// runtime setup and host callbacks.
+pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
+    let binary = match crate::fs::read_entire_file(path) {
+        Ok(binary) => binary,
+        Err(error) => {
+            if solvent::is_initialized() {
+                let message = alloc::format!("wasm: {}: {:?}\n", path, error);
+                solvent::write_terminal(&message);
+            }
+            return -1;
+        }
+    };
+
+    let capture_output = solvent::is_initialized();
+    if capture_output {
+        begin_wasm_output_capture();
+    }
+    let code = wasi_runtime::runtime::run(
+        &binary,
+        args,
+        wasm_write_stdout,
+        wasm_write_stderr,
+        wasm_read_stdin,
+        wasm_yield_now,
+        wasm_read_entire_file,
+        wasm_read_directory,
+        wasm_get_monotonic_ns,
+        wasm_show_image,
+        wasm_show_text,
+        wasm_show_error,
+        wasm_create_window,
+        wasm_update_window,
+        wasm_close_window,
+    );
+    if capture_output && let Some(output) = take_wasm_output() {
+        solvent::write_terminal(&output);
+    }
+    code
+}
+
+/// Schedule a WASI application on its own kernel task.
+/// Desktop file opens use this wrapper so the viewer has a separate process
+/// context and a scheduling point before control returns to the caller.
+pub fn spawn_wasm_app(path: &str, args: &[&str]) -> i32 {
+    let binary_path = alloc::string::String::from(path);
+    let owned_args: alloc::vec::Vec<alloc::string::String> = args
+        .iter()
+        .map(|arg| alloc::string::String::from(*arg))
+        .collect();
+    match crate::task::spawn(async move {
+        let arg_refs: alloc::vec::Vec<&str> = owned_args.iter().map(|arg| arg.as_str()).collect();
+        let _ = run_wasm_app(&binary_path, &arg_refs);
+    }) {
+        Ok(_) => {
+            // The GUI shell is itself called from the idle process, and the
+            // timer path is deliberately non-preemptive. Give the new task a
+            // chance to run before returning to the caller; otherwise a
+            // viewer launched from File Manager or the shell remains Ready
+            // forever while the shell waits for its next command.
+            if crate::process::current_pid().is_some()
+                && crate::process::SCHEDULER.active_count() > 1
+            {
+                crate::process::yield_current();
+            }
+            0
+        }
+        Err(_) => -1,
     }
 }
 
@@ -573,38 +750,12 @@ fn nozzle_services() -> nozzle::ShellServices {
                     return tstr!(ctx.terminal, "Usage: wasm <path> [args...]");
                 }
                 let path = ctx.args[1];
-                tline!(ctx.terminal, "Loading WASM binary: {}", path);
-                match crate::fs::read_entire_file(path) {
-                    Ok(binary) => {
-                        let capture_output = solvent::is_initialized();
-                        if capture_output {
-                            begin_wasm_output_capture();
-                        }
-                        let wasm_args: alloc::vec::Vec<&str> =
-                            ctx.args.iter().skip(1).copied().collect();
-                        let code = wasi_runtime::runtime::run(
-                            &binary,
-                            &wasm_args,
-                            wasm_write_stdout,
-                            wasm_write_stderr,
-                            wasm_read_stdin,
-                            wasm_yield_now,
-                            wasm_read_entire_file,
-                            wasm_read_directory,
-                            wasm_get_monotonic_ns,
-                        );
-                        if capture_output && let Some(output) = take_wasm_output() {
-                            ctx.terminal.write_str(&output);
-                        }
-                        tline!(ctx.terminal, "WASI process exited with code {}", code);
-                    }
-                    Err(e) => {
-                        let err_str = match e {
-                            crate::fs::FsError::FileNotFound => "file not found",
-                            _ => "read failed",
-                        };
-                        tline!(ctx.terminal, "wasm: {}: {}", path, err_str);
-                    }
+                let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
+                let code = spawn_wasm_app(path, &wasm_args);
+                if code == 0 {
+                    tline!(ctx.terminal, "WASI process scheduled: {}", path);
+                } else {
+                    tline!(ctx.terminal, "Failed to schedule WASI process: {}", path);
                 }
             }
             "usb_rescan" => {
@@ -978,23 +1129,17 @@ pub fn shell_main() {
     petroleum::debug_log!("Shell main started");
 
     let services = nozzle_services();
-    let initial_command = solvent::take_pending_shell_command();
 
     if solvent::is_initialized() {
         solvent::run_shell_on_with_command(
             &mut solvent::LatticeTerminal,
             "fullerene> ",
             services,
-            initial_command.as_deref(),
+            None,
         );
     } else {
         let mut terminal = KernelTerminal::new();
-        solvent::run_shell_on_with_command(
-            &mut terminal,
-            "fullerene> ",
-            services,
-            initial_command.as_deref(),
-        );
+        solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     }
 }
 

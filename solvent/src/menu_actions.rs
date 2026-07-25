@@ -321,7 +321,11 @@ pub(crate) fn render_text_into_surface(
 ) -> u32 {
     static TEXT_CELLS: Mutex<Vec<LatticeCell>> = Mutex::new(Vec::new());
     let cols = max_cols as usize;
-    let lines_count = text.lines().count() as u32;
+    // Do not allocate a cell buffer for the entire file: a text file can be
+    // much larger than the fixed-size viewer window.
+    let max_rows = (surface.height() / GLYPH_H).max(1) as usize;
+    let lines: Vec<&str> = text.lines().take(max_rows).collect();
+    let lines_count = lines.len() as u32;
     let total = cols * lines_count as usize;
     let mut cells = TEXT_CELLS.lock();
     cells.resize(
@@ -333,7 +337,7 @@ pub(crate) fn render_text_into_surface(
         },
     );
 
-    for (row, line) in text.lines().enumerate() {
+    for (row, line) in lines.iter().enumerate() {
         for (col, ch) in line.bytes().enumerate() {
             if col < cols {
                 let idx = row * cols + col;

@@ -99,6 +99,15 @@ pub fn init_initramfs() {
         log::warn!("Initramfs: failed to write /apps/hello.wasm: {:?}", e);
     }
 
+    // Embed the viewer.wasm WASM app (built at compile time by build.rs)
+    #[cfg(have_viewer_wasm)]
+    if let Err(e) = crate::fs::write_entire_file(
+        "/apps/viewer.wasm",
+        include_bytes!(concat!(env!("OUT_DIR"), "/viewer.wasm")),
+    ) {
+        log::warn!("Initramfs: failed to write /apps/viewer.wasm: {:?}", e);
+    }
+
     // If a CPIO archive is embedded in the kernel, unpack it now.
     // This is the third layer of the storage stack foundation:
     //   block cache → FAT32 → initramfs.

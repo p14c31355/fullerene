@@ -151,6 +151,15 @@ pub fn scheduler_loop() -> ! {
             petroleum::serial::_print(format_args!("Shell exited, back to idle\n"));
         }
 
+        // The timer interrupt intentionally does not preempt. Give ready
+        // kernel tasks (for example a WASM viewer launched from the desktop)
+        // an explicit scheduling point before idling again.
+        if SCHEDULER.active_count() > 1 {
+            crate::process::yield_current();
+        }
+        // A task may only release its address space after switching away
+        // from it. Reap terminated tasks from the idle context.
+        SCHEDULER.cleanup();
         SCHEDULER.advance_tick();
         x86_64::instructions::hlt();
     }

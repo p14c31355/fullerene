@@ -33,7 +33,6 @@ mod services;
 mod settings_bridge;
 mod terminal;
 pub mod viewer;
-mod viewers;
 mod window_api;
 
 pub use callbacks::{
@@ -60,7 +59,7 @@ pub use services::{
 };
 pub use settings_bridge::settings_handle_key;
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
-pub use viewer::take_pending_shell_command;
+pub use viewer::show_text_window;
 pub use window_api::{
     close_window, create_window, ensure_editor_window, ensure_terminal_window,
     force_desktop_redraw, framebuffer_dims, invalidate_window, launch_file, resume_rendering,
