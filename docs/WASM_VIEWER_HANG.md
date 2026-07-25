@@ -262,3 +262,26 @@ decode enter`後の停止は無限ループではなく、同期WASM実行がshe
 占有している状態と判断した。viewerのrelease profileは速度優先（`opt-level=3`）
 へ変更し、shellの`wasm` commandは`spawn_wasm_app`で別kernel taskへ投入する。
 これにより、デコーダが実機上で時間を要してもshellとKlog Liveの更新を塞がない。
+
+## WASM taskがReadyのまま実行されないケース
+
+実機で「ウィンドウが出る前に別の画像を押すと、そのまま反応しない」場合は、
+WASMのデコードだけでなく、タスクがスケジューラのキューに積まれたままになって
+いないかを確認する。FullereneのGUI shellは`shell_main()`が入力待ちを
+`LatticeTerminal::read_byte()`内で行うため、スケジューラのトップレベルへ戻らず、
+`Ready`タスクを実行する明示的なyieldが必要になることがある。
+
+現行版では、WASM起動を画像・MP4とも`spawn_wasm_app`へ統一し、Klogへ次の3段階を
+記録する。
+
+```text
+[WASM-DIAG] task scheduled pid=...
+[WASM-DIAG] task entry pid=...
+[WASM-DIAG] run begin path=...
+```
+
+終了時は`task finished`と`run end`が出る。`task scheduled`で止まる場合は
+キュー待ち、`task entry`まで出て`run begin`がなければタスク入口またはfutureの
+取り出し、`run begin`後で止まる場合は従来のVFS／decoder／window境界を調べる。
+シェルの入力待ちからもkernelの`yield_current`を呼ぶため、shell経由で起動した
+WASMも同じキューから実行される。

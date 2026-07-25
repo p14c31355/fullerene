@@ -18,6 +18,7 @@ pub type VfsTransferCallback = fn(&str, &str, bool) -> Result<(), genome::FsErro
 pub type VfsRemoveCallback = fn(&str, bool) -> Result<(), genome::FsError>;
 pub type MountedDriveListCallback = fn() -> Vec<(String, String)>;
 pub type RunWasmCallback = fn(&str, &[&str]) -> i32;
+pub type YieldProcessCallback = fn();
 
 /// Kernel services installed into the Solvent orchestration layer.
 #[derive(Clone, Copy)]
@@ -25,6 +26,7 @@ pub struct SolventCallbacks {
     pub shell_cmd: Option<fn(&str) -> String>,
     pub launch_shell: Option<fn()>,
     pub run_wasm: Option<RunWasmCallback>,
+    pub yield_process: Option<YieldProcessCallback>,
     pub heap_extend: Option<fn(usize) -> Result<(), ()>>,
     pub wall_clock: Option<WallClockCallback>,
     pub vfs_readdir: Option<VfsReadDirCallback>,
@@ -54,6 +56,7 @@ impl SolventCallbacks {
             shell_cmd: None,
             launch_shell: None,
             run_wasm: None,
+            yield_process: None,
             heap_extend: None,
             wall_clock: None,
             vfs_readdir: None,
