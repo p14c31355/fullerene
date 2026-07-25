@@ -249,12 +249,12 @@ impl BootFramebuffer {
         let body_fg = self.rgb(170, 221, 255);
         unsafe { self.fill_rect(x, y, width, height, panel) };
 
-        // Keep the interrupt fallback readable while the normal compositor
-        // is blocked. The 2x glyphs intentionally trade some columns/rows
-        // for substantially larger text in the diagnostic overlay.
-        const SCALE: u32 = 2;
+        // Match the normal Klog Live text size while the compositor is
+        // blocked. The interrupt path uses the same compact diagnostic font
+        // as before, but keeps its geometry aligned with the regular view.
+        const SCALE: u32 = 1;
         let max_cols = (width / (6 * SCALE)).min(100);
-        let max_lines = (height.saturating_sub(7 * SCALE) / (8 * SCALE)).min(29);
+        let max_lines = (height.saturating_sub(8 * SCALE) / (8 * SCALE)).min(29);
         if max_cols == 0 || max_lines == 0 {
             return;
         }
@@ -279,7 +279,7 @@ impl BootFramebuffer {
         let first_line = line_count.saturating_sub(max_lines);
         let mut line = 0u32;
         let mut col = 0u32;
-        let body_y = y.saturating_add(7 * SCALE);
+        let body_y = y.saturating_add(8 * SCALE);
         for &byte in text {
             if byte == b'\n' {
                 line = line.saturating_add(1);

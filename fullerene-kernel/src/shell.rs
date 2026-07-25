@@ -285,6 +285,21 @@ fn wasm_close_window(window_id: i32) -> i32 {
     }
 }
 
+fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
+    wasm_status("capture_screen enter");
+    let result = solvent::capture_screen();
+    match &result {
+        Some((width, height, pixels)) => wasm_status(&alloc::format!(
+            "capture_screen exit {}x{} bytes={}",
+            width,
+            height,
+            pixels.len()
+        )),
+        None => wasm_status("capture_screen unavailable (back buffer busy or missing)"),
+    }
+    result
+}
+
 /// Run a WASI application from the kernel without opening a shell window.
 ///
 /// This is also used by the desktop file viewer. The shell `wasm` command
@@ -329,7 +344,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_read_directory,
         wasm_get_monotonic_ns,
         solvent::framebuffer_dims,
-        solvent::capture_screen,
+        wasm_capture_screen,
         wasm_show_image,
         wasm_show_text,
         wasm_show_error,

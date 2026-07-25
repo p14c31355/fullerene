@@ -149,22 +149,31 @@ pub fn framebuffer_dims() -> (u32, u32) {
 pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     const MAX_CAPTURE_RGBA_BYTES: usize = 32 * 1024 * 1024;
     let (width, height, _framebuffer_stride) = *FB_DIMS.lock();
-    let back = crate::BACK_BUFFER.lock();
-    let back = back.as_ref()?;
+    // A synchronous WASM command can run while another CPU is rendering.
+    // Never spin forever waiting for the compositor's back-buffer lock: a
+    // failed capture is recoverable, whereas a blocked shell is not.
     let width_usize = width as usize;
     let height_usize = height as usize;
     let pixel_count = width_usize.checked_mul(height_usize)?;
-    // BACK_BUFFER is a tightly packed width*height image, even when the GOP
-    // framebuffer has padding at the end of each physical scanline.
-    if width == 0
-        || height == 0
-        || back.len() < pixel_count
-        || pixel_count > MAX_CAPTURE_RGBA_BYTES / 4
     {
-        return None;
+        let back_guard = crate::BACK_BUFFER.try_lock()?;
+        let back = back_guard.as_ref()?;
+        // BACK_BUFFER is a tightly packed width*height image, even when the
+        // GOP framebuffer has padding at the end of each physical scanline.
+        if width == 0
+            || height == 0
+            || back.len() < pixel_count
+            || pixel_count > MAX_CAPTURE_RGBA_BYTES / 4
+        {
+            return None;
+        }
     }
 
+    // Allocate before taking the back-buffer guard so the allocator cannot
+    // become part of the lock ordering.
     let mut pixels = alloc::vec::Vec::with_capacity(pixel_count * 4);
+    let back_guard = crate::BACK_BUFFER.try_lock()?;
+    let back = back_guard.as_ref()?;
     for row in 0..height_usize {
         let start = row * width_usize;
         let end = start + width_usize;
