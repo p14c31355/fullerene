@@ -63,8 +63,16 @@ pub enum WasiFd {
     Stdin,
     Stdout,
     Stderr,
-    PreopenedDir { path: String },
-    File { data: Vec<u8>, offset: usize },
+    PreopenedDir {
+        path: String,
+    },
+    File {
+        path: String,
+        size: u64,
+        offset: u64,
+        cache_offset: u64,
+        cache: Vec<u8>,
+    },
 }
 
 // ── WASI context ─────────────────────────────────────────────────
@@ -88,6 +96,8 @@ pub struct WasiCtx {
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
     pub read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+    pub file_size: fn(&str) -> Result<u64, genome::FsError>,
+    pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
     pub show_image: fn(u32, u32, &[u8]) -> i32,
@@ -106,6 +116,8 @@ impl WasiCtx {
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
         read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+        file_size: fn(&str) -> Result<u64, genome::FsError>,
+        read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         get_monotonic_ns: fn() -> u64,
         show_image: fn(u32, u32, &[u8]) -> i32,
@@ -145,6 +157,8 @@ impl WasiCtx {
             read_stdin,
             yield_now,
             read_entire_file,
+            file_size,
+            read_file_range,
             read_directory,
             get_monotonic_ns,
             show_image,
@@ -381,36 +395,82 @@ pub fn fd_read(
                     None => return Ok(EINVAL),
                 };
                 let buf_len = read_u32(&memory, &caller, len_addr)?;
-                let (to_read, current_offset) = {
-                    let bc = caller.data();
-                    match bc.fds.get(&fd) {
-                        Some(WasiFd::File { data, offset }) => {
-                            let available = data.len().saturating_sub(*offset);
-                            ((buf_len as usize).min(available), *offset)
+                let mut iov_written = 0usize;
+                while iov_written < buf_len as usize {
+                    let (path, size, offset, cache_offset, cache_len) = {
+                        let bc = caller.data();
+                        match bc.fds.get(&fd) {
+                            Some(WasiFd::File {
+                                path,
+                                size,
+                                offset,
+                                cache_offset,
+                                cache,
+                            }) => (path.clone(), *size, *offset, *cache_offset, cache.len()),
+                            _ => return Ok(EBADF),
                         }
-                        _ => return Ok(EBADF),
+                    };
+                    if offset >= size {
+                        break;
                     }
-                };
-                if to_read > 0 {
+
+                    let in_cache = offset >= cache_offset
+                        && offset < cache_offset.saturating_add(cache_len as u64);
+                    if !in_cache {
+                        const FILE_CACHE_BYTES: usize = 64 * 1024;
+                        let fetch_len = (size - offset).min(FILE_CACHE_BYTES as u64) as usize;
+                        let read_file_range = caller.data().read_file_range;
+                        let fetched = match read_file_range(&path, offset, fetch_len) {
+                            Ok(bytes) => bytes,
+                            Err(error) => return Ok(map_fs_error(&error)),
+                        };
+                        if fetched.is_empty() {
+                            break;
+                        }
+                        let bc = caller.data_mut();
+                        let Some(WasiFd::File {
+                            cache_offset,
+                            cache,
+                            ..
+                        }) = bc.fds.get_mut(&fd)
+                        else {
+                            return Ok(EBADF);
+                        };
+                        *cache_offset = offset;
+                        *cache = fetched;
+                        continue;
+                    }
+
+                    let copy_len = (buf_len as usize - iov_written).min(
+                        cache_offset
+                            .saturating_add(cache_len as u64)
+                            .saturating_sub(offset) as usize,
+                    );
                     let chunk = {
                         let bc = caller.data();
                         match bc.fds.get(&fd) {
-                            Some(WasiFd::File { data, .. }) => {
-                                data[current_offset..current_offset + to_read].to_vec()
+                            Some(WasiFd::File {
+                                cache_offset,
+                                cache,
+                                ..
+                            }) => {
+                                let start = (offset - *cache_offset) as usize;
+                                cache[start..start + copy_len].to_vec()
                             }
                             _ => return Ok(EBADF),
                         }
                     };
                     memory
-                        .write(&mut caller, buf_ptr as usize, &chunk)
+                        .write(&mut caller, buf_ptr as usize + iov_written, &chunk)
                         .map_err(|_| Error::new("fd_read: write data failed"))?;
                     let bc = caller.data_mut();
                     if let Some(WasiFd::File { offset: o, .. }) = bc.fds.get_mut(&fd) {
-                        *o = current_offset + to_read;
+                        *o = o.saturating_add(copy_len as u64);
                     }
-                    total_read += to_read as u32;
+                    iov_written += copy_len;
+                    total_read += copy_len as u32;
                 }
-                if to_read < buf_len as usize {
+                if iov_written < buf_len as usize {
                     break;
                 }
             }
@@ -476,10 +536,7 @@ pub fn fd_close(mut caller: Caller<'_, WasiCtx>, fd: u32) -> Result<u32, Error> 
         return Ok(ENOTSUP);
     }
     let ctx = caller.data_mut();
-    if let Some(entry) = ctx.fds.remove(&fd) {
-        if let WasiFd::File { ref data, .. } = entry {
-            ctx.open_bytes = ctx.open_bytes.saturating_sub(data.len() as u64);
-        }
+    if ctx.fds.remove(&fd).is_some() {
         Ok(ESUCCESS)
     } else {
         Ok(EBADF)
@@ -496,7 +553,7 @@ pub fn fd_seek(
     let file_len = {
         let bc = caller.data();
         match bc.fds.get(&fd) {
-            Some(WasiFd::File { data, .. }) => data.len(),
+            Some(WasiFd::File { size, .. }) => *size,
             _ => return Ok(EBADF),
         }
     };
@@ -519,7 +576,7 @@ pub fn fd_seek(
     if new_offset < 0 {
         return Ok(EINVAL);
     }
-    let new_offset = new_offset as usize;
+    let new_offset = new_offset as u64;
     {
         let bc = caller.data_mut();
         if let Some(WasiFd::File { offset: o, .. }) = bc.fds.get_mut(&fd) {
@@ -610,30 +667,28 @@ pub fn path_open(
     } else {
         alloc::format!("/{}", clean)
     };
-    let data = {
+    let size = {
         let bc = caller.data();
-        (bc.read_entire_file)(&full_path)
+        (bc.file_size)(&full_path)
     };
-    match data {
-        Ok(bytes) => {
-            let (fd_count, open_bytes) = {
-                let bc = caller.data();
-                (bc.fds.len(), bc.open_bytes)
-            };
-            let new_bytes = open_bytes + bytes.len() as u64;
-            if fd_count >= MAX_OPEN_FDS || new_bytes > MAX_OPEN_BYTES {
+    match size {
+        Ok(size) => {
+            let fd_count = caller.data().fds.len();
+            if fd_count >= MAX_OPEN_FDS || size > MAX_OPEN_BYTES {
                 return Ok(ENOSPC);
             }
             let new_fd = {
                 let bc = caller.data_mut();
                 let fd = bc.next_fd;
                 bc.next_fd += 1;
-                bc.open_bytes = new_bytes;
                 bc.fds.insert(
                     fd,
                     WasiFd::File {
-                        data: bytes,
+                        path: full_path,
+                        size,
                         offset: 0,
+                        cache_offset: 0,
+                        cache: Vec::new(),
                     },
                 );
                 fd
@@ -641,7 +696,7 @@ pub fn path_open(
             write_u32(&memory, &mut caller, result_fd_ptr, new_fd)?;
             Ok(ESUCCESS)
         }
-        Err(e) => Ok(map_fs_error(&e)),
+        Err(error) => Ok(map_fs_error(&error)),
     }
 }
 
@@ -673,8 +728,8 @@ pub fn path_filestat_get(
     };
     let size = {
         let bc = caller.data();
-        match (bc.read_entire_file)(&full_path) {
-            Ok(d) => d.len() as u64,
+        match (bc.file_size)(&full_path) {
+            Ok(size) => size,
             Err(_) => return Ok(ENOENT),
         }
     };
@@ -718,7 +773,7 @@ pub fn fd_filestat_get(
     let (filetype, size) = {
         let bc = caller.data();
         match bc.fds.get(&fd) {
-            Some(WasiFd::File { data, .. }) => (FILETYPE_REGULAR_FILE, data.len() as u64),
+            Some(WasiFd::File { size, .. }) => (FILETYPE_REGULAR_FILE, *size),
             Some(WasiFd::PreopenedDir { .. }) => (FILETYPE_DIRECTORY, 0u64),
             _ => return Ok(EBADF),
         }

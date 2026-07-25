@@ -121,6 +121,18 @@ fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsEr
     result
 }
 
+fn wasm_file_size(path: &str) -> Result<u64, genome::FsError> {
+    crate::fs::file_size(path)
+}
+
+fn wasm_read_file_range(
+    path: &str,
+    offset: u64,
+    limit: usize,
+) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
+    crate::fs::read_file_range(path, offset, limit)
+}
+
 fn wasm_read_directory(
     path: &str,
 ) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, genome::FsError> {
@@ -310,6 +322,8 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_read_stdin,
         wasm_yield_now,
         wasm_read_entire_file,
+        wasm_file_size,
+        wasm_read_file_range,
         wasm_read_directory,
         wasm_get_monotonic_ns,
         wasm_show_image,

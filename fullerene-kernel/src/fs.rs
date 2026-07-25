@@ -223,7 +223,25 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     } else {
         0
     };
-    let mut fd = open_file(path)?;
+    crate::klog_fmt!("[WASM-DIAG] read_entire open begin path={}\n", path);
+    let mut fd = match open_file(path) {
+        Ok(fd) => {
+            crate::klog_fmt!(
+                "[WASM-DIAG] read_entire open exit path={} fd={}\n",
+                path,
+                fd.fd
+            );
+            fd
+        }
+        Err(error) => {
+            crate::klog_fmt!(
+                "[WASM-DIAG] read_entire open error path={} error={:?}\n",
+                path,
+                error
+            );
+            return Err(error);
+        }
+    };
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     let mut read_calls = 0usize;
@@ -231,6 +249,15 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     let result = loop {
         if deadline > 0 && (unsafe { core::arch::x86_64::_rdtsc() }) >= deadline {
             break Err(FsError::Io);
+        }
+        let call = read_calls + 1;
+        if call <= 4 || call.is_multiple_of(64) {
+            crate::klog_fmt!(
+                "[WASM-DIAG] read_entire read begin path={} call={} offset={}\n",
+                path,
+                call,
+                fd.offset
+            );
         }
         match read_file(&mut fd, &mut chunk) {
             Ok(0) => {
@@ -246,6 +273,15 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
                 read_calls += 1;
                 total_bytes += n;
                 buf.extend_from_slice(&chunk[..n]);
+                if call <= 4 || call.is_multiple_of(64) {
+                    crate::klog_fmt!(
+                        "[WASM-DIAG] read_entire read exit path={} call={} bytes={} total={}\n",
+                        path,
+                        call,
+                        n,
+                        total_bytes
+                    );
+                }
             }
             Ok(_) => break Err(FsError::DiskFull),
             Err(e) => break Err(e),
@@ -272,6 +308,39 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
         ),
     }
     result
+}
+
+/// Read a bounded range without materializing the whole file.
+pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>, FsError> {
+    const MAX_RANGE_BYTES: usize = 64 * 1024;
+    if limit > MAX_RANGE_BYTES {
+        return Err(FsError::InvalidInput);
+    }
+    let size = file_size(path)?;
+    if offset > size {
+        return Err(FsError::InvalidSeek);
+    }
+    let target = (size - offset).min(limit as u64) as usize;
+    let mut fd = open_file(path)?;
+    if let Err(error) = seek_file(&mut fd, offset) {
+        let _ = close_file(fd);
+        return Err(error);
+    }
+    let mut result = Vec::with_capacity(target);
+    let mut chunk = [0u8; 4096];
+    while result.len() < target {
+        let want = (target - result.len()).min(chunk.len());
+        match read_file(&mut fd, &mut chunk[..want]) {
+            Ok(0) => break,
+            Ok(n) => result.extend_from_slice(&chunk[..n]),
+            Err(error) => {
+                let _ = close_file(fd);
+                return Err(error);
+            }
+        }
+    }
+    close_file(fd)?;
+    Ok(result)
 }
 
 /// Temporary diagnostic fingerprint used to compare removable-media copies.

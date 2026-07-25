@@ -166,3 +166,57 @@ cargo build -p fullerene-kernel --target x86_64-unknown-uefi
 7. `show_image enter` 後まで進んだ場合は、window/surface境界を調べる。
 
 今回のサンプルでは、`MAX_IMAGE_PIXELS` の値を変更するより、thumbnailで小画像を拡大しないことが有効だった。
+
+## MP4の追加切り分け
+
+MP4では、サイズ確認後に停止するケースがある。現行のviewerソースには
+`MP4 size OK` というログ文字列は存在しないため、実機へ投入した
+`viewer.wasm` が古い世代でないかを先に確認する。
+
+現行版は次の境界を順番にKlogへ出す。
+
+```text
+viewer: mp4 header enter/exit
+viewer: mp4 video track scan enter/exit
+viewer: mp4 sample read enter/exit
+viewer: mp4 decoder config enter/exit
+viewer: mp4 avcc parse enter/exit
+viewer: mp4 decode nal enter/frame exit
+viewer: mp4 create_window enter/exit
+viewer: mp4 update_window enter/exit
+```
+
+`mp4 header enter` の後で止まる場合はMP4 atom解析、`decode nal enter` の後で
+止まる場合はH.264デコーダ、`create_window` 以降ならWASM host callbackまたは
+ウィンドウ描画を調べる。viewer単体だけでなく、次のUEFIビルドで生成された
+成果物を実機へ投入する。
+
+なお、Klog Liveで次のように見える場合はMP4処理前である。
+
+```text
+WASM DIAG READ ENTIRE BEGIN PATH ... FILE SIZE OK
+```
+
+これはkernelの `read_entire_file()` が `file_size()` を終えた直後の表示で、
+`open_file()` または最初のVFS readへ進んでいない状態を示す。現行版では
+その前後とread call/offsetも記録する。
+
+実機での `Bad Apple!!` MP4（9,121,103 bytes）では、次のログまで進んだ。
+
+```text
+read_entire read begin ... call=256 offset=1044480
+```
+
+対応する `read exit ... total=1048576` が出ていないため、現時点の停止点は
+WASMやMP4 decoderではなく、SD上のファイルを1MiB付近まで読むFAT/exFATまたは
+RTSX SD controllerの読み出し経路である。
+
+対策としてviewerの `.mp4` 経路は、ファイル全体を `std::fs::read()` でWASM
+メモリへ取り込まず、seek可能なWASI `File` を `mp4::Mp4Reader` に直接渡す。
+これにより、先頭の `moov` と最初のサンプルだけを必要な位置から読み、不要な
+9MB全体読み出しを避ける。WASI側の `path_open` も全体キャッシュではなく、
+ファイルサイズだけを取得して64KiB単位の遅延レンジ読み出しを行うよう変更した。
+
+```bash
+cargo build -p fullerene-kernel --target x86_64-unknown-uefi --offline
+```
