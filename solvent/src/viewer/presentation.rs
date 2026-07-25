@@ -1,144 +1,55 @@
-//! Presentation of decoded, format-independent documents.
+//! Mini presentation layer — only used as a last-resort fallback when the
+//! WASM viewer is not available.  Shows text or binary hex view.
 
 use alloc::format;
 use alloc::string::{String, ToString};
-use genome::{ArchiveKind, AudioKind, ImageKind, VideoKind};
 
 use super::document::Document;
-use crate::{DEFAULT_COLS, DEFAULT_ROWS, GLYPH_H, GLYPH_W, RuntimeState};
 
-pub fn present(runtime: &mut RuntimeState, document: Document, name: &str, path: &str) {
+pub fn present(rt: &mut crate::RuntimeState, document: Document, _name: &str, path: &str) {
     match document {
-        Document::Text(document) => present_text(runtime, document.text, path),
-        Document::Image { kind, data } => match kind {
-            ImageKind::Bmp => crate::viewers::open_bmp_data(runtime, &data, name),
-            #[cfg(feature = "minipng")]
-            ImageKind::Png => crate::viewers::open_png_data(runtime, &data, name),
-            #[cfg(not(feature = "minipng"))]
-            ImageKind::Png => crate::viewers::show_error(
-                runtime,
-                "PNG Error",
-                "PNG support not compiled in (minipng feature disabled)",
-            ),
-            ImageKind::Jpeg => {
-                let _ = data;
-                crate::viewers::show_error(
-                    runtime,
-                    "JPEG Error",
-                    "JPEG support not compiled in (zune-jpeg feature disabled)",
-                )
-            }
-            // Remaining image formats require the WASM viewer or a std-capable decoder.
-            _ => crate::viewers::show_error(
-                runtime,
-                "Image Error",
-                &alloc::format!("{:?} format not yet supported by kernel-side decoders", kind),
-            ),
-        },
-        #[cfg(feature = "zune-jpeg")]
-        Document::ImagePixels {
-            width,
-            height,
-            pixels,
-            ..
-        } => crate::viewers::render_rgb_image_window(runtime, width, height, pixels, name),
-        Document::Audio { kind, data } => match kind {
-            AudioKind::Wav => crate::viewers::open_wav_data(runtime, &data, name),
-            AudioKind::Mp3 => crate::viewers::open_mp3_data(runtime, &data, name),
-            _ => crate::viewers::show_error(
-                runtime,
-                "Audio Error",
-                &alloc::format!("{:?} audio format not yet supported", kind),
-            ),
-        },
-        Document::Video {
-            kind,
-            data,
-        } => match kind {
-            VideoKind::Mp4 => {
-                #[cfg(feature = "shiguredo_mp4")]
-                crate::viewers::open_mp4_data(runtime, data, name);
-                #[cfg(not(feature = "shiguredo_mp4"))]
-                crate::viewers::show_error(
-                    runtime,
-                    "MP4 Error",
-                    "MP4 support not compiled in (shiguredo_mp4 feature disabled)",
-                );
-            }
-            _ => crate::viewers::show_error(
-                runtime,
-                "Video Error",
-                &alloc::format!("{:?} video format not yet supported", kind),
-            ),
-        }
-        Document::Archive { kind, data } => match kind {
-            ArchiveKind::Tar => crate::viewers::open_tar_data(runtime, &data, name),
-            ArchiveKind::Gzip => {
-                #[cfg(feature = "gzip")]
-                crate::viewers::open_gzip_data(runtime, &data, name, false);
-                #[cfg(not(feature = "gzip"))]
-                crate::viewers::show_error(runtime, "gzip Error", "gzip support is disabled");
-            }
-            ArchiveKind::GzipTar => {
-                #[cfg(feature = "gzip")]
-                crate::viewers::open_gzip_data(runtime, &data, name, true);
-                #[cfg(not(feature = "gzip"))]
-                crate::viewers::show_error(runtime, "gzip Error", "gzip support is disabled");
-            }
-            ArchiveKind::Zip => crate::viewers::open_zip_data(runtime, &data, name),
-            _ => crate::viewers::show_error(
-                runtime,
-                "Archive Error",
-                &alloc::format!("{:?} archive format not yet supported", kind),
-            ),
-        },
-        Document::Animation { data } => crate::viewers::open_rle_data(runtime, data, name),
+        Document::Text(doc) => present_text(rt, doc.text, path),
+        Document::Binary(doc) => present_binary(rt, doc, _name),
         // Launch targets are handled by `viewer::open` before presentation.
         Document::Launch(_) => {}
-        Document::Binary(document) => present_binary(runtime, document, name),
     }
 }
 
-fn present_text(runtime: &mut RuntimeState, text: String, path: &str) {
-    let id = runtime.desktop.wm.create_titled_window(
+fn present_text(rt: &mut crate::RuntimeState, text: String, path: &str) {
+    let id = rt.desktop.wm.create_titled_window(
         100,
         80,
-        DEFAULT_COLS * GLYPH_W,
-        DEFAULT_ROWS * GLYPH_H,
+        80 * 8,
+        25 * 16,
         0x0a0a1e,
         "Text Editor",
     );
-    if let Some(old_id) = runtime.editor_window
-        && runtime
-            .desktop
-            .wm
-            .windows()
-            .iter()
-            .any(|window| window.id == old_id)
+    if let Some(old_id) = rt.editor_window
+        && rt.desktop.wm.windows().iter().any(|w| w.id == old_id)
     {
-        runtime.desktop.wm.close_window(old_id);
+        rt.desktop.wm.close_window(old_id);
     }
-    runtime.editor_window = Some(id);
-    runtime.editor_buf = lattice::editor::EditorBuffer::from_text(&text);
-    runtime.editor_file_path = Some(path.to_string());
-    runtime.editor_dirty = true;
-    runtime.desktop.force_full_redraw();
-    runtime.frame_due = true;
-    runtime.explorer_dirty = true;
+    rt.editor_window = Some(id);
+    rt.editor_buf = lattice::editor::EditorBuffer::from_text(&text);
+    rt.editor_file_path = Some(path.to_string());
+    rt.editor_dirty = true;
+    rt.desktop.force_full_redraw();
+    rt.frame_due = true;
+    rt.explorer_dirty = true;
 }
 
 fn present_binary(
-    runtime: &mut RuntimeState,
-    document: super::document::BinaryDocument,
+    rt: &mut crate::RuntimeState,
+    doc: super::document::BinaryDocument,
     name: &str,
 ) {
-    let mut message = format!("File: {}\nSize: {} bytes\n\n", name, document.size);
-    for (offset, chunk) in document.preview.chunks(16).enumerate() {
-        message.push_str(&format!("{:08x}: ", offset * 16));
-        for byte in chunk {
-            message.push_str(&format!("{:02x} ", byte));
+    let mut msg = format!("File: {}\nSize: {} bytes\n\n", name, doc.size);
+    for (off, chunk) in doc.preview.chunks(16).enumerate() {
+        msg.push_str(&format!("{:08x}: ", off * 16));
+        for b in chunk {
+            msg.push_str(&format!("{:02x} ", b));
         }
-        message.push('\n');
+        msg.push('\n');
     }
-    crate::viewers::show_text_window(runtime, "Hex Viewer", &message, 70, 0x101018, 0xCCCCFF);
+    crate::viewer::show_error_window(rt, "Hex Viewer", &msg);
 }

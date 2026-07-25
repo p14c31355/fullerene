@@ -1,9 +1,10 @@
-//! Decoder registry. Decoders produce documents; presentation is separate.
+//! Minimal decoder registry — all format decoding is now handled by the
+//! WASM viewer app (toluene/viewer/).  This module exists only as a
+//! fallback when the WASM viewer is not available.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use genome::io::{FileReader, SeekFrom, read_to_end_with_limit};
-use genome::{ArchiveKind, AudioKind, FileKind, ImageKind, VideoKind};
 
 use super::document::{BinaryDocument, Document, LaunchTarget, TextDocument};
 use crate::RuntimeFile;
@@ -24,50 +25,25 @@ impl From<genome::FsError> for DecodeError {
 }
 
 pub trait Decoder: Sync {
-    fn probe(&self, kind: FileKind) -> bool;
+    fn probe(&self, _kind: genome::FileKind) -> bool {
+        false
+    }
     fn open(
         &self,
         reader: &mut dyn FileReader,
-        kind: FileKind,
+        kind: genome::FileKind,
         name: &str,
     ) -> Result<Document, DecodeError>;
 }
 
-struct TextDecoder;
-struct ImageDecoder;
-struct AudioDecoder;
-struct VideoDecoder;
-struct ArchiveDecoder;
-struct AnimationDecoder;
-struct ApplicationDecoder;
-struct BinaryDecoder;
+struct FallbackDecoder;
 
-static TEXT_DECODER: TextDecoder = TextDecoder;
-static IMAGE_DECODER: ImageDecoder = ImageDecoder;
-static AUDIO_DECODER: AudioDecoder = AudioDecoder;
-static VIDEO_DECODER: VideoDecoder = VideoDecoder;
-static ARCHIVE_DECODER: ArchiveDecoder = ArchiveDecoder;
-static ANIMATION_DECODER: AnimationDecoder = AnimationDecoder;
-static APPLICATION_DECODER: ApplicationDecoder = ApplicationDecoder;
-static BINARY_DECODER: BinaryDecoder = BinaryDecoder;
+static FALLBACK: FallbackDecoder = FallbackDecoder;
 
-pub static DECODERS: &[&dyn Decoder] = &[
-    &TEXT_DECODER,
-    &IMAGE_DECODER,
-    &AUDIO_DECODER,
-    &VIDEO_DECODER,
-    &ARCHIVE_DECODER,
-    &ANIMATION_DECODER,
-    &APPLICATION_DECODER,
-    &BINARY_DECODER,
-];
+pub static DECODERS: &[&dyn Decoder] = &[&FALLBACK];
 
-pub fn find(kind: FileKind) -> &'static dyn Decoder {
-    DECODERS
-        .iter()
-        .copied()
-        .find(|decoder| decoder.probe(kind))
-        .unwrap_or(&BINARY_DECODER)
+pub fn find(_kind: genome::FileKind) -> &'static dyn Decoder {
+    &FALLBACK
 }
 
 pub fn decode(path: &str) -> Result<Document, DecodeError> {
@@ -81,172 +57,28 @@ fn read_data(reader: &mut dyn FileReader) -> Result<Vec<u8>, DecodeError> {
     read_to_end_with_limit(reader, MAX_DOCUMENT_SIZE).map_err(DecodeError::Filesystem)
 }
 
-impl Decoder for TextDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Text)
-    }
-
+impl Decoder for FallbackDecoder {
     fn open(
         &self,
         reader: &mut dyn FileReader,
-        _kind: FileKind,
+        _kind: genome::FileKind,
         _name: &str,
     ) -> Result<Document, DecodeError> {
+        // Last-resort: try UTF-8 text, else show as binary
         let data = read_data(reader)?;
-        let text = core::str::from_utf8(&data)
-            .map_err(|_| DecodeError::Message(String::from("File is not valid UTF-8 text")))?;
-        Ok(Document::Text(TextDocument {
-            text: String::from(text),
-        }))
-    }
-}
-
-impl Decoder for ImageDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Image(_))
-    }
-
-    fn open(
-        &self,
-        reader: &mut dyn FileReader,
-        kind: FileKind,
-        _name: &str,
-    ) -> Result<Document, DecodeError> {
-        #[cfg(feature = "zune-jpeg")]
-        if matches!(kind, FileKind::Image(ImageKind::Jpeg)) {
+        if let Ok(text) = core::str::from_utf8(&data) {
+            Ok(Document::Text(TextDocument {
+                text: String::from(text),
+            }))
+        } else {
             reader.seek(SeekFrom::Start(0))?;
-            let decoded =
-                crate::viewers::decode_jpeg_reader(reader).map_err(DecodeError::Message)?;
-            return Ok(Document::ImagePixels {
-                kind: ImageKind::Jpeg,
-                width: u32::from(decoded.width),
-                height: u32::from(decoded.height),
-                pixels: decoded.pixels,
-            });
+            let size = reader.len()?;
+            let mut preview = [0u8; 256];
+            let read = reader.read(&mut preview)?;
+            Ok(Document::Binary(BinaryDocument {
+                size,
+                preview: preview[..read].to_vec(),
+            }))
         }
-        Ok(Document::Image {
-            kind: match kind {
-                FileKind::Image(kind) => kind,
-                _ => ImageKind::Bmp,
-            },
-            data: read_data(reader)?,
-        })
-    }
-}
-
-impl Decoder for AudioDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Audio(_))
-    }
-
-    fn open(
-        &self,
-        reader: &mut dyn FileReader,
-        kind: FileKind,
-        _name: &str,
-    ) -> Result<Document, DecodeError> {
-        Ok(Document::Audio {
-            kind: match kind {
-                FileKind::Audio(kind) => kind,
-                _ => AudioKind::Wav,
-            },
-            data: read_data(reader)?,
-        })
-    }
-}
-
-impl Decoder for VideoDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Video(VideoKind::Mp4))
-    }
-
-    fn open(
-        &self,
-        reader: &mut dyn FileReader,
-        _kind: FileKind,
-        _name: &str,
-    ) -> Result<Document, DecodeError> {
-        Ok(Document::Video {
-            kind: VideoKind::Mp4,
-            data: read_data(reader)?,
-        })
-    }
-}
-
-impl Decoder for ArchiveDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Archive(_))
-    }
-
-    fn open(
-        &self,
-        reader: &mut dyn FileReader,
-        kind: FileKind,
-        _name: &str,
-    ) -> Result<Document, DecodeError> {
-        Ok(Document::Archive {
-            kind: match kind {
-                FileKind::Archive(kind) => kind,
-                _ => ArchiveKind::Tar,
-            },
-            data: read_data(reader)?,
-        })
-    }
-}
-
-impl Decoder for AnimationDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Animation)
-    }
-
-    fn open(
-        &self,
-        reader: &mut dyn FileReader,
-        _kind: FileKind,
-        _name: &str,
-    ) -> Result<Document, DecodeError> {
-        Ok(Document::Animation {
-            data: read_data(reader)?,
-        })
-    }
-}
-
-impl Decoder for ApplicationDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Wasm)
-    }
-
-    fn open(
-        &self,
-        _reader: &mut dyn FileReader,
-        _kind: FileKind,
-        path: &str,
-    ) -> Result<Document, DecodeError> {
-        Ok(Document::Launch(LaunchTarget::Wasm {
-            path: String::from(path),
-            args: Vec::new(),
-        }))
-    }
-}
-
-impl Decoder for BinaryDecoder {
-    fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Unknown)
-    }
-
-    fn open(
-        &self,
-        reader: &mut dyn FileReader,
-        _kind: FileKind,
-        _name: &str,
-    ) -> Result<Document, DecodeError> {
-        reader.seek(SeekFrom::Start(0))?;
-        let size = reader.len()?;
-        let mut preview = [0u8; 256];
-        let read = reader.read(&mut preview)?;
-        Ok(Document::Binary(BinaryDocument {
-            size,
-            preview: preview[..read].to_vec(),
-        }))
     }
 }

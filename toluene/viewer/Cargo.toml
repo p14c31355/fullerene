@@ -7,11 +7,11 @@ edition = "2024"
 
 [dependencies]
 image = { version = "0.25", default-features = false, features = [
-  "jpeg",
-  "png",
-  "bmp",
-  "gif",
+  "jpeg", "png", "bmp", "gif",
 ] }
+rust_h264 = "0.4"
+mp4 = "0.14"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [profile.release]
 opt-level = "s"

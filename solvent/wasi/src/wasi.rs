@@ -89,6 +89,9 @@ pub struct WasiCtx {
     pub show_image: fn(u32, u32, &[u8]) -> i32,
     pub show_text: fn(&str, &str) -> i32,
     pub show_error: fn(&str, &str) -> i32,
+    pub create_window: fn(&str, u32, u32) -> i32,
+    pub update_window: fn(i32, u32, u32, &[u8]) -> i32,
+    pub close_window: fn(i32) -> i32,
 }
 
 impl WasiCtx {
@@ -104,6 +107,9 @@ impl WasiCtx {
         show_image: fn(u32, u32, &[u8]) -> i32,
         show_text: fn(&str, &str) -> i32,
         show_error: fn(&str, &str) -> i32,
+        create_window: fn(&str, u32, u32) -> i32,
+        update_window: fn(i32, u32, u32, &[u8]) -> i32,
+        close_window: fn(i32) -> i32,
     ) -> Self {
         let args_vec: Vec<Vec<u8>> = args
             .iter()
@@ -140,6 +146,9 @@ impl WasiCtx {
             show_image,
             show_text,
             show_error,
+            create_window,
+            update_window,
+            close_window,
         }
     }
 }
@@ -1062,5 +1071,51 @@ pub fn fullerene_show_error(
     let title = core::str::from_utf8(&title_buf).unwrap_or("Error");
     let msg = core::str::from_utf8(&msg_buf).unwrap_or("");
     let code = (caller.data().show_error)(title, msg);
+    Ok(code as u32)
+}
+
+/// Create a persistent window, returning a handle that can be used with
+/// `update_window`.  Returns -1 on failure.
+pub fn fullerene_create_window(
+    caller: Caller<'_, WasiCtx>,
+    title_ptr: u32,
+    title_len: u32,
+    width: u32,
+    height: u32,
+) -> Result<u32, Error> {
+    let memory = get_memory(&caller)?;
+    let mut title_buf = alloc::vec![0u8; title_len as usize];
+    memory
+        .read(&caller, title_ptr as usize, &mut title_buf)
+        .map_err(|_| Error::new("create_window: read title failed"))?;
+    let title = core::str::from_utf8(&title_buf).unwrap_or("Window");
+    let id = (caller.data().create_window)(title, width, height);
+    Ok(id as u32)
+}
+
+/// Update pixel contents of a window previously created with `create_window`.
+pub fn fullerene_update_window(
+    caller: Caller<'_, WasiCtx>,
+    window_id: i32,
+    width: u32,
+    height: u32,
+    pixels_ptr: u32,
+    pixels_len: u32,
+) -> Result<u32, Error> {
+    let memory = get_memory(&caller)?;
+    let mut pixels = alloc::vec![0u8; pixels_len as usize];
+    memory
+        .read(&caller, pixels_ptr as usize, &mut pixels)
+        .map_err(|_| Error::new("update_window: memory read failed"))?;
+    let code = (caller.data().update_window)(window_id, width, height, &pixels);
+    Ok(code as u32)
+}
+
+/// Close a window previously created with `create_window`.
+pub fn fullerene_close_window(
+    caller: Caller<'_, WasiCtx>,
+    window_id: i32,
+) -> Result<u32, Error> {
+    let code = (caller.data().close_window)(window_id);
     Ok(code as u32)
 }

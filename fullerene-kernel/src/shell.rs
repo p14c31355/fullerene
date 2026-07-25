@@ -166,6 +166,49 @@ fn wasm_show_error(title: &str, msg: &str) -> i32 {
     0
 }
 
+fn wasm_create_window(title: &str, width: u32, height: u32) -> i32 {
+    if !solvent::is_initialized() {
+        return -1;
+    }
+    let Some(id) = solvent::create_window(title, 120, 80, width.min(800).max(160), height.min(600).max(120)) else {
+        return -1;
+    };
+    id.0 as i32
+}
+
+fn wasm_update_window(window_id: i32, width: u32, height: u32, pixels: &[u8]) -> i32 {
+    if !solvent::is_initialized() {
+        return -1;
+    }
+    let id = lattice::window::WindowId(window_id as u64);
+    let img_w = width as usize;
+    let _ = solvent::with_window_surface(id, |surf_pixels, surf_w, surf_h| {
+        let draw_h = (height as usize).min(surf_h as usize);
+        let draw_w = (width as usize).min(surf_w as usize);
+        for y in 0..draw_h {
+            for x in 0..draw_w {
+                let src = (y * img_w + x) * 3;
+                if src + 2 < pixels.len() {
+                    let color = (pixels[src] as u32) << 16
+                        | (pixels[src + 1] as u32) << 8
+                        | pixels[src + 2] as u32;
+                    surf_pixels[y * surf_w as usize + x] = color;
+                }
+            }
+        }
+    });
+    solvent::invalidate_window(id);
+    0
+}
+
+fn wasm_close_window(window_id: i32) -> i32 {
+    if solvent::close_window(lattice::window::WindowId(window_id as u64)) {
+        0
+    } else {
+        -1
+    }
+}
+
 /// Helper: write a formatted line to the terminal.
 macro_rules! tline {
     ($t:expr, $($arg:tt)*) => {{
@@ -642,6 +685,9 @@ fn nozzle_services() -> nozzle::ShellServices {
                             wasm_show_image,
                             wasm_show_text,
                             wasm_show_error,
+                            wasm_create_window,
+                            wasm_update_window,
+                            wasm_close_window,
                         );
                         if capture_output && let Some(output) = take_wasm_output() {
                             ctx.terminal.write_str(&output);

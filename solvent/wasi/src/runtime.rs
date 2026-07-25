@@ -6,8 +6,9 @@ use wasmi::{Engine, Linker, Module, Store};
 use crate::wasi::{
     WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
     fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir,
-    fd_seek, fd_write, fullerene_show_error, fullerene_show_image, fullerene_show_text,
-    path_filestat_get, path_open, proc_exit, random_get,
+    fd_seek, fd_write, fullerene_close_window, fullerene_create_window, fullerene_show_error,
+    fullerene_show_image, fullerene_show_text, fullerene_update_window, path_filestat_get,
+    path_open, proc_exit, random_get,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -26,6 +27,9 @@ pub fn run(
     show_image: fn(u32, u32, &[u8]) -> i32,
     show_text: fn(&str, &str) -> i32,
     show_error: fn(&str, &str) -> i32,
+    create_window: fn(&str, u32, u32) -> i32,
+    update_window: fn(i32, u32, u32, &[u8]) -> i32,
+    close_window: fn(i32) -> i32,
 ) -> i32 {
     let engine = Engine::new(&wasmi::Config::default());
     let module = match Module::new(&engine, wasm_binary) {
@@ -49,6 +53,9 @@ pub fn run(
         show_image,
         show_text,
         show_error,
+        create_window,
+        update_window,
+        close_window,
     );
 
     let mut store = Store::new(&engine, ctx);
@@ -149,6 +156,9 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
     linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
     linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;
+    linker.func_wrap(fullerene, "create_window", fullerene_create_window)?;
+    linker.func_wrap(fullerene, "update_window", fullerene_update_window)?;
+    linker.func_wrap(fullerene, "close_window", fullerene_close_window)?;
 
     Ok(linker)
 }

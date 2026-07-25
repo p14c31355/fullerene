@@ -1,4 +1,6 @@
-//! Universal file viewer: detect, decode through the registry, then present.
+//! Universal file viewer: detect kind via Genome, then launch the WASM viewer
+//! app for decoding and display.  This module is a thin routing layer; all
+//! format-specific logic lives in toluene/viewer/ (the WASM app).
 
 mod document;
 mod presentation;
@@ -6,10 +8,11 @@ pub mod registry;
 
 use alloc::format;
 use alloc::string::String;
-use spin::Mutex;
 
 pub use document::{BinaryDocument, Document, LaunchTarget, TextDocument};
 pub use registry::{DECODERS, DecodeError, Decoder};
+
+use spin::Mutex;
 
 static PENDING_SHELL_COMMAND: Mutex<Option<String>> = Mutex::new(None);
 
@@ -46,80 +49,53 @@ fn has_wasm_viewer() -> bool {
 }
 
 pub fn open(path: &str) {
-    // Phase 1: if the WASM file viewer is available and the file looks like
-    // an image, launch the WASM viewer.  It can decode JPEG, PNG, BMP, GIF
-    // and more via the `image` crate with full std support.
-    // Audio, video, archives, and animations still use the old kernel-side
-    // decoders (will be migrated in Phase 2).
-    if has_wasm_viewer() {
-        let lower = path.to_lowercase();
-        let supported = lower.ends_with(".jpg")
-            || lower.ends_with(".jpeg")
-            || lower.ends_with(".png")
-            || lower.ends_with(".bmp")
-            || lower.ends_with(".gif")
-            || lower.ends_with(".webp")
-            || lower.ends_with(".tiff")
-            || lower.ends_with(".tif")
-            || lower.ends_with(".mp4")
-            || lower.ends_with(".mp3")
-            || lower.ends_with(".wav")
-            || lower.ends_with(".flac")
-            || lower.ends_with(".txt")
-            || lower.ends_with(".md");
-        if supported {
-            let target = LaunchTarget::Wasm {
-                path: String::from("/apps/viewer.wasm"),
-                args: alloc::vec![String::from(path)],
-            };
-            request_launch_target(target);
-            return;
+    if !has_wasm_viewer() {
+        let mut runtime = crate::RUNTIME_CONTEXT.runtime();
+        if let Some(runtime) = runtime.as_mut() {
+            show_error_window(
+                runtime,
+                "Viewer unavailable",
+                "The WASM file viewer is not installed.\n\
+                 Rebuild the kernel with a working WASM build chain.",
+            );
         }
-    }
-
-    let name = path.rsplit('/').next().unwrap_or(path);
-    let document = match registry::decode(path) {
-        Ok(document) => document,
-        Err(error) => {
-            let message = match error {
-                DecodeError::Filesystem(error) => format!("Cannot read file: {}", error),
-                DecodeError::Message(message) => message,
-                DecodeError::Unsupported => String::from("No decoder is registered for this file"),
-            };
-            let mut runtime = crate::RUNTIME_CONTEXT.runtime();
-            if let Some(runtime) = runtime.as_mut() {
-                crate::viewers::show_error(runtime, "Cannot open file", &message);
-                runtime.frame_due = true;
-            }
-            return;
-        }
-    };
-
-    if let Document::Launch(target) = document {
-        request_launch_target(target);
         return;
     }
 
-    let mut runtime = crate::RUNTIME_CONTEXT.runtime();
-    if let Some(runtime) = runtime.as_mut() {
-        presentation::present(runtime, document, name, path);
-    }
+    let target = LaunchTarget::Wasm {
+        path: String::from("/apps/viewer.wasm"),
+        args: alloc::vec![String::from(path)],
+    };
+    request_launch_target(target);
 }
 
-#[cfg(test)]
-mod tests {
-    use super::registry::{DECODERS, find};
-    use genome::FileKind;
-
-    #[test]
-    fn registry_has_a_fallback_decoder() {
-        let decoder = DECODERS.last().unwrap();
-        assert!(decoder.probe(FileKind::Unknown));
-        assert!(find(FileKind::Unknown).probe(FileKind::Unknown));
+/// Open a simple text window (used for error messages).
+pub(crate) fn show_error_window(
+    rt: &mut crate::RuntimeState,
+    title: &str,
+    msg: &str,
+) {
+    let cols = 50u32;
+    let rows = (msg.lines().count() as u32).min(40) + 3;
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(100, 60, cols * 8, rows * 16, 0x1a1a0d, title);
+    if let Some(w) = rt
+        .desktop
+        .wm
+        .windows_mut()
+        .iter_mut()
+        .find(|w| w.id == id)
+    {
+        let _ = crate::menu_actions::render_text_into_surface(
+            &mut w.surface,
+            msg,
+            cols,
+            0xFFCCCC,
+            0x1a1a0d,
+        );
     }
-
-    #[test]
-    fn registry_routes_wasm_to_an_application_decoder() {
-        assert!(find(FileKind::Wasm).probe(FileKind::Wasm));
-    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
 }
