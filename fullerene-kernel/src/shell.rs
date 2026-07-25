@@ -75,9 +75,8 @@ fn wasm_read_stdin() -> Option<u8> {
 
 fn wasm_yield_now() {
     if solvent::is_initialized() {
-        // The module is already running in a kernel task. Poll input here,
-        // but do not re-enter the desktop scheduler from a WASM host call;
-        // the task is resumed by the launch/scheduler handoff instead.
+        // WASM is executed synchronously by the kernel shell. Poll devices
+        // here, but do not re-enter the GUI scheduler from a host callback.
         solvent::poll_mouse_state();
         solvent::poll_keyboard();
     } else {
@@ -264,36 +263,6 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         solvent::write_terminal(&output);
     }
     code
-}
-
-/// Schedule a WASI application on its own kernel task.
-/// Desktop file opens use this wrapper so the viewer has a separate process
-/// context and a scheduling point before control returns to the caller.
-pub fn spawn_wasm_app(path: &str, args: &[&str]) -> i32 {
-    let binary_path = alloc::string::String::from(path);
-    let owned_args: alloc::vec::Vec<alloc::string::String> = args
-        .iter()
-        .map(|arg| alloc::string::String::from(*arg))
-        .collect();
-    match crate::task::spawn(async move {
-        let arg_refs: alloc::vec::Vec<&str> = owned_args.iter().map(|arg| arg.as_str()).collect();
-        let _ = run_wasm_app(&binary_path, &arg_refs);
-    }) {
-        Ok(_) => {
-            // The GUI shell is itself called from the idle process, and the
-            // timer path is deliberately non-preemptive. Give the new task a
-            // chance to run before returning to the caller; otherwise a
-            // viewer launched from File Manager or the shell remains Ready
-            // forever while the shell waits for its next command.
-            if crate::process::current_pid().is_some()
-                && crate::process::SCHEDULER.active_count() > 1
-            {
-                crate::process::yield_current();
-            }
-            0
-        }
-        Err(_) => -1,
-    }
 }
 
 /// Helper: write a formatted line to the terminal.
@@ -751,12 +720,9 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
                 let path = ctx.args[1];
                 let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
-                let code = spawn_wasm_app(path, &wasm_args);
-                if code == 0 {
-                    tline!(ctx.terminal, "WASI process scheduled: {}", path);
-                } else {
-                    tline!(ctx.terminal, "Failed to schedule WASI process: {}", path);
-                }
+                tline!(ctx.terminal, "Loading WASM binary: {}", path);
+                let code = run_wasm_app(path, &wasm_args);
+                tline!(ctx.terminal, "WASI process exited with code {}", code);
             }
             "usb_rescan" => {
                 ctx.terminal.write_str(

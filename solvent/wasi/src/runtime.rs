@@ -14,8 +14,7 @@ use crate::wasi::{
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
 /// Returns the exit code (0 = success).
 ///
-/// Fuel metering prevents a malformed WASM program from trapping the desktop
-/// forever. Host-side decoders still need their own input bounds.
+/// Fuel metering is intentionally disabled for synchronous kernel execution.
 pub fn run(
     wasm_binary: &[u8],
     args: &[&str],
@@ -33,10 +32,7 @@ pub fn run(
     update_window: fn(i32, u32, u32, &[u8]) -> i32,
     close_window: fn(i32) -> i32,
 ) -> i32 {
-    const MAX_WASM_FUEL: u64 = 1_000_000_000;
-    let mut config = wasmi::Config::default();
-    config.consume_fuel(true);
-    let engine = Engine::new(&config);
+    let engine = Engine::new(&wasmi::Config::default());
     let module = match Module::new(&engine, wasm_binary) {
         Ok(m) => m,
         Err(e) => {
@@ -64,11 +60,6 @@ pub fn run(
     );
 
     let mut store = Store::new(&engine, ctx);
-    if let Err(error) = store.set_fuel(MAX_WASM_FUEL) {
-        let msg = format!("wasm: fuel setup failed: {}\n", error);
-        write_stderr(msg.as_bytes());
-        return -1;
-    }
 
     let linker = match create_linker(&engine) {
         Ok(l) => l,
