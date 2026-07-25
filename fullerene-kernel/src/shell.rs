@@ -136,6 +136,10 @@ fn wasm_read_file_range(
     crate::fs::read_file_range(path, offset, limit)
 }
 
+fn wasm_write_file(path: &str, data: &[u8]) -> Result<(), genome::FsError> {
+    crate::fs::write_entire_file(path, data)
+}
+
 fn wasm_read_directory(
     path: &str,
 ) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, genome::FsError> {
@@ -285,6 +289,21 @@ fn wasm_close_window(window_id: i32) -> i32 {
     }
 }
 
+fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
+    wasm_status("capture_screen enter");
+    let result = solvent::capture_screen();
+    match &result {
+        Some((width, height, pixels)) => wasm_status(&alloc::format!(
+            "capture_screen exit {}x{} bytes={}",
+            width,
+            height,
+            pixels.len()
+        )),
+        None => wasm_status("capture_screen unavailable (back buffer busy or missing)"),
+    }
+    result
+}
+
 /// Run a WASI application from the kernel without opening a shell window.
 ///
 /// This is also used by the desktop file viewer. The shell `wasm` command
@@ -327,7 +346,10 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_file_size,
         wasm_read_file_range,
         wasm_read_directory,
+        wasm_write_file,
         wasm_get_monotonic_ns,
+        solvent::framebuffer_dims,
+        wasm_capture_screen,
         wasm_show_image,
         wasm_show_text,
         wasm_show_error,
@@ -801,6 +823,17 @@ fn nozzle_services() -> nozzle::ShellServices {
                 tline!(ctx.terminal, "Loading WASM binary: {}", path);
                 let code = run_wasm_app(path, &wasm_args);
                 tline!(ctx.terminal, "WASI process exited with code {}", code);
+            }
+            "emulsion" => {
+                let wasm_args = if ctx.args.len() > 1 {
+                    ctx.args[1..].to_vec()
+                } else {
+                    alloc::vec!["capture"]
+                };
+                let mut args = alloc::vec!["/apps/emulsion.wasm"];
+                args.extend(wasm_args);
+                let code = run_wasm_app("/apps/emulsion.wasm", &args);
+                tline!(ctx.terminal, "Emulsion exited with code {}", code);
             }
             "usb_rescan" => {
                 ctx.terminal.write_str(

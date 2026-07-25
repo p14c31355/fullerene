@@ -6,9 +6,9 @@ use wasmi::{Engine, Linker, Module, Store};
 use crate::wasi::{
     WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
     fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir,
-    fd_seek, fd_write, fullerene_close_window, fullerene_create_window, fullerene_show_error,
-    fullerene_show_image, fullerene_show_text, fullerene_update_window, path_filestat_get,
-    path_open, proc_exit, random_get,
+    fd_seek, fd_write, fullerene_capture_screen, fullerene_close_window, fullerene_create_window,
+    fullerene_screen_dimensions, fullerene_show_error, fullerene_show_image, fullerene_show_text,
+    fullerene_update_window, path_filestat_get, path_open, proc_exit, random_get,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -26,7 +26,10 @@ pub fn run(
     file_size: fn(&str) -> Result<u64, genome::FsError>,
     read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
+    write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
     get_monotonic_ns: fn() -> u64,
+    screen_dimensions: fn() -> (u32, u32),
+    capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
     show_image: fn(u32, u32, &[u8]) -> i32,
     show_text: fn(&str, &str) -> i32,
     show_error: fn(&str, &str) -> i32,
@@ -56,7 +59,10 @@ pub fn run(
         file_size,
         read_file_range,
         read_directory,
+        write_file,
         get_monotonic_ns,
+        screen_dimensions,
+        capture_screen,
         show_image,
         show_text,
         show_error,
@@ -165,6 +171,8 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
 
     // Fullerene custom host functions (import module "fullerene")
     let fullerene = "fullerene";
+    linker.func_wrap(fullerene, "screen_dimensions", fullerene_screen_dimensions)?;
+    linker.func_wrap(fullerene, "capture_screen", fullerene_capture_screen)?;
     linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
     linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
     linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;

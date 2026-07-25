@@ -72,13 +72,18 @@ pub enum WasiFd {
         offset: u64,
         cache_offset: u64,
         cache: Vec<u8>,
+        writable: bool,
+        dirty: bool,
+        write_data: Vec<u8>,
     },
 }
 
 // ── WASI context ─────────────────────────────────────────────────
 
 const MAX_OPEN_FDS: usize = 128;
+const MAX_WRITE_FILE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
+const MAX_CAPTURE_RGBA_BYTES: u32 = 32 * 1024 * 1024;
 const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
 const MAX_TEXT_BYTES: u32 = 512 * 1024;
 const MAX_ERROR_BYTES: u32 = 64 * 1024;
@@ -96,7 +101,10 @@ pub struct WasiCtx {
     pub file_size: fn(&str) -> Result<u64, genome::FsError>,
     pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
+    pub write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
+    pub screen_dimensions: fn() -> (u32, u32),
+    pub capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
     pub show_image: fn(u32, u32, &[u8]) -> i32,
     pub show_text: fn(&str, &str) -> i32,
     pub show_error: fn(&str, &str) -> i32,
@@ -115,7 +123,10 @@ impl WasiCtx {
         file_size: fn(&str) -> Result<u64, genome::FsError>,
         read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
+        write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
         get_monotonic_ns: fn() -> u64,
+        screen_dimensions: fn() -> (u32, u32),
+        capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
         show_image: fn(u32, u32, &[u8]) -> i32,
         show_text: fn(&str, &str) -> i32,
         show_error: fn(&str, &str) -> i32,
@@ -154,7 +165,10 @@ impl WasiCtx {
             file_size,
             read_file_range,
             read_directory,
+            write_file,
             get_monotonic_ns,
+            screen_dimensions,
+            capture_screen,
             show_image,
             show_text,
             show_error,
@@ -272,15 +286,42 @@ pub fn fd_write(
                     &mut temp_buf[..chunk_len],
                 )
                 .map_err(|_| Error::new("fd_write: read iov failed"))?;
-            let ctx = caller.data();
             match fd {
-                1 => (ctx.write_stdout)(&temp_buf[..chunk_len]),
-                2 => (ctx.write_stderr)(&temp_buf[..chunk_len]),
-                _ => return Ok(EBADF),
+                1 => (caller.data().write_stdout)(&temp_buf[..chunk_len]),
+                2 => (caller.data().write_stderr)(&temp_buf[..chunk_len]),
+                _ => {
+                    let ctx = caller.data_mut();
+                    let Some(WasiFd::File {
+                        writable: true,
+                        offset,
+                        size,
+                        dirty,
+                        write_data,
+                        ..
+                    }) = ctx.fds.get_mut(&fd)
+                    else {
+                        return Ok(EBADF);
+                    };
+                    let start = usize::try_from(*offset)
+                        .map_err(|_| Error::new("fd_write: offset overflow"))?;
+                    let end = start
+                        .checked_add(chunk_len)
+                        .ok_or_else(|| Error::new("fd_write: size overflow"))?;
+                    if end > MAX_WRITE_FILE_BYTES {
+                        return Ok(ENOSPC);
+                    }
+                    if write_data.len() < end {
+                        write_data.resize(end, 0);
+                    }
+                    write_data[start..end].copy_from_slice(&temp_buf[..chunk_len]);
+                    *offset = end as u64;
+                    *size = (*size).max(*offset);
+                    *dirty = true;
+                }
             }
             offset += chunk_len as u32;
+            total = total.saturating_add(chunk_len as u32);
         }
-        total += buf_len;
     }
     write_u32(&memory, &mut caller, nwritten_ptr, total)?;
     Ok(ESUCCESS)
@@ -400,6 +441,7 @@ pub fn fd_read(
                                 offset,
                                 cache_offset,
                                 cache,
+                                ..
                             }) => (path.clone(), *size, *offset, *cache_offset, cache.len()),
                             _ => return Ok(EBADF),
                         }
@@ -529,6 +571,27 @@ pub fn fd_close(mut caller: Caller<'_, WasiCtx>, fd: u32) -> Result<u32, Error> 
     if fd <= 3 {
         return Ok(ENOTSUP);
     }
+    let pending_write = {
+        let ctx = caller.data();
+        match ctx.fds.get(&fd) {
+            Some(WasiFd::File {
+                path,
+                writable: true,
+                dirty: true,
+                write_data,
+                ..
+            }) => Some((path.clone(), write_data.clone())),
+            Some(WasiFd::File { .. }) => None,
+            Some(_) => return Ok(EBADF),
+            None => return Ok(EBADF),
+        }
+    };
+    if let Some((path, data)) = pending_write {
+        let write_file = caller.data().write_file;
+        if let Err(error) = write_file(&path, &data) {
+            return Ok(map_fs_error(&error));
+        }
+    }
     let ctx = caller.data_mut();
     if ctx.fds.remove(&fd).is_some() {
         Ok(ESUCCESS)
@@ -634,8 +697,8 @@ pub fn path_open(
     _dirflags: u32,
     path_ptr: u32,
     path_len: u32,
-    _oflags: u32,
-    _fs_rights_base: u64,
+    oflags: u32,
+    fs_rights_base: u64,
     _fs_rights_inheriting: u64,
     _fdflags: u32,
     result_fd_ptr: u32,
@@ -661,37 +724,77 @@ pub fn path_open(
     } else {
         alloc::format!("/{}", clean)
     };
-    let size = {
+    const OFLAGS_CREAT: u32 = 1;
+    const OFLAGS_EXCL: u32 = 4;
+    const OFLAGS_TRUNC: u32 = 8;
+    let writable = fs_rights_base & RIGHT_FD_WRITE != 0;
+    let truncate = oflags & OFLAGS_TRUNC != 0;
+    if truncate && !writable {
+        return Ok(EACCES);
+    }
+    let existing_size = {
         let bc = caller.data();
         (bc.file_size)(&full_path)
     };
-    match size {
+    let (size, exists) = match existing_size {
         Ok(size) => {
-            let fd_count = caller.data().fds.len();
-            if fd_count >= MAX_OPEN_FDS {
-                return Ok(ENOSPC);
+            if oflags & OFLAGS_EXCL != 0 && oflags & OFLAGS_CREAT != 0 {
+                return Ok(EEXIST);
             }
-            let new_fd = {
-                let bc = caller.data_mut();
-                let fd = bc.next_fd;
-                bc.next_fd += 1;
-                bc.fds.insert(
-                    fd,
-                    WasiFd::File {
-                        path: full_path,
-                        size,
-                        offset: 0,
-                        cache_offset: 0,
-                        cache: Vec::new(),
-                    },
-                );
-                fd
-            };
-            write_u32(&memory, &mut caller, result_fd_ptr, new_fd)?;
-            Ok(ESUCCESS)
+            if truncate { (0, true) } else { (size, true) }
         }
-        Err(error) => Ok(map_fs_error(&error)),
+        Err(genome::FsError::FileNotFound) if oflags & OFLAGS_CREAT != 0 => (0, false),
+        Err(error) => return Ok(map_fs_error(&error)),
+    };
+    if exists && size > MAX_WRITE_FILE_BYTES as u64 && writable {
+        return Ok(ENOSPC);
     }
+
+    let mut write_data = Vec::new();
+    if writable && exists && !truncate {
+        let read_file_range = caller.data().read_file_range;
+        let mut offset = 0u64;
+        while offset < size {
+            let want = (size - offset).min(64 * 1024) as usize;
+            let chunk = match read_file_range(&full_path, offset, want) {
+                Ok(chunk) => chunk,
+                Err(error) => return Ok(map_fs_error(&error)),
+            };
+            if chunk.is_empty() {
+                return Ok(EIO);
+            }
+            offset = offset.saturating_add(chunk.len() as u64);
+            write_data.extend_from_slice(&chunk);
+        }
+    }
+
+    let fd_count = caller.data().fds.len();
+    if fd_count >= MAX_OPEN_FDS {
+        return Ok(ENOSPC);
+    }
+    let new_fd = {
+        let bc = caller.data_mut();
+        let fd = bc.next_fd;
+        bc.next_fd += 1;
+        bc.fds.insert(
+            fd,
+            WasiFd::File {
+                path: full_path,
+                size,
+                offset: 0,
+                cache_offset: 0,
+                cache: Vec::new(),
+                writable,
+                // A create/truncate open must be committed even when the
+                // guest writes zero bytes (for example fs::write(path, [])).
+                dirty: writable && (truncate || !exists),
+                write_data,
+            },
+        );
+        fd
+    };
+    write_u32(&memory, &mut caller, result_fd_ptr, new_fd)?;
+    Ok(ESUCCESS)
 }
 
 pub fn path_filestat_get(
@@ -1063,6 +1166,42 @@ pub fn random_get(
 }
 
 // ── Fullerene custom host functions ──────────────────────────────
+
+/// Return the compositor framebuffer dimensions without allocating a capture.
+pub fn fullerene_screen_dimensions(
+    mut caller: Caller<'_, WasiCtx>,
+    width_ptr: u32,
+    height_ptr: u32,
+) -> Result<u32, Error> {
+    let (width, height) = (caller.data().screen_dimensions)();
+    let memory = get_memory(&caller)?;
+    write_u32(&memory, &mut caller, width_ptr, width)?;
+    write_u32(&memory, &mut caller, height_ptr, height)?;
+    Ok(ESUCCESS)
+}
+
+/// Copy the compositor's clean desktop back buffer into WASM memory.
+pub fn fullerene_capture_screen(
+    mut caller: Caller<'_, WasiCtx>,
+    pixels_ptr: u32,
+    pixels_len: u32,
+    width_ptr: u32,
+    height_ptr: u32,
+) -> Result<u32, Error> {
+    let Some((width, height, pixels)) = (caller.data().capture_screen)() else {
+        return Ok(ENOTSUP);
+    };
+    if pixels.len() > MAX_CAPTURE_RGBA_BYTES as usize || pixels.len() > pixels_len as usize {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    memory
+        .write(&mut caller, pixels_ptr as usize, &pixels)
+        .map_err(|_| Error::new("capture_screen: memory write failed"))?;
+    write_u32(&memory, &mut caller, width_ptr, width)?;
+    write_u32(&memory, &mut caller, height_ptr, height)?;
+    Ok(ESUCCESS)
+}
 
 /// Display decoded RGB pixels in a new window.
 pub fn fullerene_show_image(

@@ -219,6 +219,53 @@ impl BootFramebuffer {
         }
     }
 
+    /// Draw the compact interrupt-safe font with a rational pixel scale.
+    /// Fixed-point coordinates provide a 3/2 scale without floating-point
+    /// work in the interrupt path.
+    unsafe fn draw_text_scaled(
+        &self,
+        mut x: u32,
+        y: u32,
+        text: &[u8],
+        scale_num: u32,
+        scale_den: u32,
+        color: u32,
+    ) {
+        if scale_num == 0 || scale_den == 0 {
+            return;
+        }
+
+        for &byte in text {
+            let rows = glyph(byte.to_ascii_uppercase());
+            for (gy, bits) in rows.iter().copied().enumerate() {
+                for gx in 0..5u32 {
+                    if bits & (1 << (4 - gx)) != 0 {
+                        let rx = x.saturating_add(gx.saturating_mul(scale_num) / scale_den);
+                        let ry =
+                            y.saturating_add((gy as u32).saturating_mul(scale_num) / scale_den);
+                        let rx_next =
+                            x.saturating_add((gx + 1).saturating_mul(scale_num) / scale_den);
+                        let ry_next =
+                            y.saturating_add((gy as u32 + 1).saturating_mul(scale_num) / scale_den);
+
+                        if rx < self.width && ry < self.height {
+                            unsafe {
+                                self.fill_rect(
+                                    rx,
+                                    ry,
+                                    rx_next.saturating_sub(rx).max(1),
+                                    ry_next.saturating_sub(ry).max(1),
+                                    color,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            x = x.saturating_add(6 * scale_num / scale_den);
+        }
+    }
+
     /// Draw the Klog Live contents directly into an existing window's client
     /// area.
     ///
@@ -249,10 +296,16 @@ impl BootFramebuffer {
         let body_fg = self.rgb(170, 221, 255);
         unsafe { self.fill_rect(x, y, width, height, panel) };
 
-        // Match the normal Klog Live surface (100 columns x 29 rows) so the
-        // interrupt path has a bounded amount of MMIO work.
-        let max_cols = (width / 6).min(100);
-        let max_lines = (height.saturating_sub(8) / 8).min(29);
+        // The fallback uses a compact 5x7 glyph. Use a fixed-point 3/2 scale
+        // so the interrupt overlay is easier to read without the earlier 2x
+        // diagnostic enlargement.
+        const SCALE_NUM: u32 = 3;
+        const SCALE_DEN: u32 = 2;
+        const CELL_WIDTH: u32 = (6 * SCALE_NUM + SCALE_DEN - 1) / SCALE_DEN;
+        const CELL_HEIGHT: u32 = (8 * SCALE_NUM + SCALE_DEN - 1) / SCALE_DEN;
+        const BODY_OFFSET: u32 = (8 * SCALE_NUM + SCALE_DEN - 1) / SCALE_DEN;
+        let max_cols = (width / CELL_WIDTH).min(100);
+        let max_lines = (height.saturating_sub(BODY_OFFSET) / CELL_HEIGHT).min(29);
         if max_cols == 0 || max_lines == 0 {
             return;
         }
@@ -263,7 +316,7 @@ impl BootFramebuffer {
         unsafe {
             let header = b"--- KLog Live (auto-refresh) ---";
             let header_len = header.len().min(max_cols as usize);
-            self.draw_text(x, y, &header[..header_len], 1, body_fg);
+            self.draw_text_scaled(x, y, &header[..header_len], SCALE_NUM, SCALE_DEN, body_fg);
         }
 
         // Count complete lines and skip older lines so the newest messages
@@ -277,7 +330,7 @@ impl BootFramebuffer {
         let first_line = line_count.saturating_sub(max_lines);
         let mut line = 0u32;
         let mut col = 0u32;
-        let body_y = y.saturating_add(8);
+        let body_y = y.saturating_add(BODY_OFFSET);
         for &byte in text {
             if byte == b'\n' {
                 line = line.saturating_add(1);
@@ -291,9 +344,9 @@ impl BootFramebuffer {
                 break;
             }
             if col < max_cols {
-                let px = x.saturating_add(col.saturating_mul(6));
-                let py = body_y.saturating_add((line - first_line).saturating_mul(8));
-                unsafe { self.draw_text(px, py, &[byte], 1, body_fg) };
+                let px = x.saturating_add(col.saturating_mul(CELL_WIDTH));
+                let py = body_y.saturating_add((line - first_line).saturating_mul(CELL_HEIGHT));
+                unsafe { self.draw_text_scaled(px, py, &[byte], SCALE_NUM, SCALE_DEN, body_fg) };
             }
             col = col.saturating_add(1);
         }

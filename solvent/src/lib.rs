@@ -61,7 +61,7 @@ pub use settings_bridge::settings_handle_key;
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
 pub use viewer::show_text_window;
 pub use window_api::{
-    close_window, create_window, ensure_editor_window, ensure_terminal_window,
+    capture_screen, close_window, create_window, ensure_editor_window, ensure_terminal_window,
     force_desktop_redraw, framebuffer_dims, invalidate_window, is_klog_live_active,
     klog_live_surface_geometry, launch_file, mark_klog_live_dirty, resume_rendering,
     suspend_rendering, with_window_surface, write_terminal,
