@@ -40,7 +40,43 @@ fn request_launch_target(target: LaunchTarget) {
     }
 }
 
+/// Check whether the WASM viewer is available in the filesystem.
+fn has_wasm_viewer() -> bool {
+    crate::RuntimeFile::open("/apps/viewer.wasm").is_ok()
+}
+
 pub fn open(path: &str) {
+    // Phase 1: if the WASM file viewer is available and the file looks like
+    // an image, launch the WASM viewer.  It can decode JPEG, PNG, BMP, GIF
+    // and more via the `image` crate with full std support.
+    // Audio, video, archives, and animations still use the old kernel-side
+    // decoders (will be migrated in Phase 2).
+    if has_wasm_viewer() {
+        let lower = path.to_lowercase();
+        let supported = lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".png")
+            || lower.ends_with(".bmp")
+            || lower.ends_with(".gif")
+            || lower.ends_with(".webp")
+            || lower.ends_with(".tiff")
+            || lower.ends_with(".tif")
+            || lower.ends_with(".mp4")
+            || lower.ends_with(".mp3")
+            || lower.ends_with(".wav")
+            || lower.ends_with(".flac")
+            || lower.ends_with(".txt")
+            || lower.ends_with(".md");
+        if supported {
+            let target = LaunchTarget::Wasm {
+                path: String::from("/apps/viewer.wasm"),
+                args: alloc::vec![String::from(path)],
+            };
+            request_launch_target(target);
+            return;
+        }
+    }
+
     let name = path.rsplit('/').next().unwrap_or(path);
     let document = match registry::decode(path) {
         Ok(document) => document,
@@ -73,18 +109,17 @@ pub fn open(path: &str) {
 #[cfg(test)]
 mod tests {
     use super::registry::{DECODERS, find};
-    use genome::{ApplicationKind, FileKind};
+    use genome::FileKind;
 
     #[test]
     fn registry_has_a_fallback_decoder() {
         let decoder = DECODERS.last().unwrap();
-        assert!(decoder.probe(FileKind::Binary));
-        assert!(find(FileKind::Binary).probe(FileKind::Binary));
+        assert!(decoder.probe(FileKind::Unknown));
+        assert!(find(FileKind::Unknown).probe(FileKind::Unknown));
     }
 
     #[test]
     fn registry_routes_wasm_to_an_application_decoder() {
-        let kind = FileKind::Application(ApplicationKind::Wasm);
-        assert!(find(kind).probe(kind));
+        assert!(find(FileKind::Wasm).probe(FileKind::Wasm));
     }
 }

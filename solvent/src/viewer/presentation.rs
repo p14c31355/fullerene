@@ -2,7 +2,7 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
-use genome::{AnimationKind, ArchiveKind, AudioKind, ImageKind, VideoKind};
+use genome::{ArchiveKind, AudioKind, ImageKind, VideoKind};
 
 use super::document::Document;
 use crate::{DEFAULT_COLS, DEFAULT_ROWS, GLYPH_H, GLYPH_W, RuntimeState};
@@ -28,6 +28,12 @@ pub fn present(runtime: &mut RuntimeState, document: Document, name: &str, path:
                     "JPEG support not compiled in (zune-jpeg feature disabled)",
                 )
             }
+            // Remaining image formats require the WASM viewer or a std-capable decoder.
+            _ => crate::viewers::show_error(
+                runtime,
+                "Image Error",
+                &alloc::format!("{:?} format not yet supported by kernel-side decoders", kind),
+            ),
         },
         #[cfg(feature = "zune-jpeg")]
         Document::ImagePixels {
@@ -39,22 +45,31 @@ pub fn present(runtime: &mut RuntimeState, document: Document, name: &str, path:
         Document::Audio { kind, data } => match kind {
             AudioKind::Wav => crate::viewers::open_wav_data(runtime, &data, name),
             AudioKind::Mp3 => crate::viewers::open_mp3_data(runtime, &data, name),
+            _ => crate::viewers::show_error(
+                runtime,
+                "Audio Error",
+                &alloc::format!("{:?} audio format not yet supported", kind),
+            ),
         },
         Document::Video {
-            kind: VideoKind::Mp4,
-            #[cfg(feature = "shiguredo_mp4")]
+            kind,
             data,
-            #[cfg(not(feature = "shiguredo_mp4"))]
-                data: _,
-        } => {
-            #[cfg(feature = "shiguredo_mp4")]
-            crate::viewers::open_mp4_data(runtime, data, name);
-            #[cfg(not(feature = "shiguredo_mp4"))]
-            crate::viewers::show_error(
+        } => match kind {
+            VideoKind::Mp4 => {
+                #[cfg(feature = "shiguredo_mp4")]
+                crate::viewers::open_mp4_data(runtime, data, name);
+                #[cfg(not(feature = "shiguredo_mp4"))]
+                crate::viewers::show_error(
+                    runtime,
+                    "MP4 Error",
+                    "MP4 support not compiled in (shiguredo_mp4 feature disabled)",
+                );
+            }
+            _ => crate::viewers::show_error(
                 runtime,
-                "MP4 Error",
-                "MP4 support not compiled in (shiguredo_mp4 feature disabled)",
-            );
+                "Video Error",
+                &alloc::format!("{:?} video format not yet supported", kind),
+            ),
         }
         Document::Archive { kind, data } => match kind {
             ArchiveKind::Tar => crate::viewers::open_tar_data(runtime, &data, name),
@@ -71,11 +86,13 @@ pub fn present(runtime: &mut RuntimeState, document: Document, name: &str, path:
                 crate::viewers::show_error(runtime, "gzip Error", "gzip support is disabled");
             }
             ArchiveKind::Zip => crate::viewers::open_zip_data(runtime, &data, name),
+            _ => crate::viewers::show_error(
+                runtime,
+                "Archive Error",
+                &alloc::format!("{:?} archive format not yet supported", kind),
+            ),
         },
-        Document::Animation {
-            kind: AnimationKind::Rle,
-            data,
-        } => crate::viewers::open_rle_data(runtime, data, name),
+        Document::Animation { data } => crate::viewers::open_rle_data(runtime, data, name),
         // Launch targets are handled by `viewer::open` before presentation.
         Document::Launch(_) => {}
         Document::Binary(document) => present_binary(runtime, document, name),

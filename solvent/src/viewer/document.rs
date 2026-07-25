@@ -2,7 +2,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use genome::{AnimationKind, ArchiveKind, AudioKind, ImageKind, VideoKind};
+use genome::{ArchiveKind, AudioKind, ImageKind, VideoKind};
 
 pub enum Document {
     Text(TextDocument),
@@ -30,7 +30,6 @@ pub enum Document {
         data: Vec<u8>,
     },
     Animation {
-        kind: AnimationKind,
         data: Vec<u8>,
     },
     Launch(LaunchTarget),

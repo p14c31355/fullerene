@@ -3,10 +3,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use genome::io::{FileReader, SeekFrom, read_to_end_with_limit};
-use genome::{
-    AnimationKind, ApplicationKind, ArchiveKind, AudioKind, FileKind, ImageKind, TextKind,
-    VideoKind,
-};
+use genome::{ArchiveKind, AudioKind, FileKind, ImageKind, VideoKind};
 
 use super::document::{BinaryDocument, Document, LaunchTarget, TextDocument};
 use crate::RuntimeFile;
@@ -86,7 +83,7 @@ fn read_data(reader: &mut dyn FileReader) -> Result<Vec<u8>, DecodeError> {
 
 impl Decoder for TextDecoder {
     fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Text(TextKind::Plain))
+        matches!(kind, FileKind::Text)
     }
 
     fn open(
@@ -199,7 +196,7 @@ impl Decoder for ArchiveDecoder {
 
 impl Decoder for AnimationDecoder {
     fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Animation(AnimationKind::Rle))
+        matches!(kind, FileKind::Animation)
     }
 
     fn open(
@@ -209,7 +206,6 @@ impl Decoder for AnimationDecoder {
         _name: &str,
     ) -> Result<Document, DecodeError> {
         Ok(Document::Animation {
-            kind: AnimationKind::Rle,
             data: read_data(reader)?,
         })
     }
@@ -217,30 +213,25 @@ impl Decoder for AnimationDecoder {
 
 impl Decoder for ApplicationDecoder {
     fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Application(_))
+        matches!(kind, FileKind::Wasm)
     }
 
     fn open(
         &self,
         _reader: &mut dyn FileReader,
-        kind: FileKind,
+        _kind: FileKind,
         path: &str,
     ) -> Result<Document, DecodeError> {
-        match kind {
-            FileKind::Application(ApplicationKind::Wasm) => {
-                Ok(Document::Launch(LaunchTarget::Wasm {
-                    path: String::from(path),
-                    args: Vec::new(),
-                }))
-            }
-            _ => Err(DecodeError::Unsupported),
-        }
+        Ok(Document::Launch(LaunchTarget::Wasm {
+            path: String::from(path),
+            args: Vec::new(),
+        }))
     }
 }
 
 impl Decoder for BinaryDecoder {
     fn probe(&self, kind: FileKind) -> bool {
-        matches!(kind, FileKind::Binary)
+        matches!(kind, FileKind::Unknown)
     }
 
     fn open(

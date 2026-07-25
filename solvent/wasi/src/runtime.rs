@@ -6,7 +6,8 @@ use wasmi::{Engine, Linker, Module, Store};
 use crate::wasi::{
     WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
     fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir,
-    fd_seek, fd_write, path_filestat_get, path_open, proc_exit, random_get,
+    fd_seek, fd_write, fullerene_show_error, fullerene_show_image, fullerene_show_text,
+    path_filestat_get, path_open, proc_exit, random_get,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -22,6 +23,9 @@ pub fn run(
     read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     get_monotonic_ns: fn() -> u64,
+    show_image: fn(u32, u32, &[u8]) -> i32,
+    show_text: fn(&str, &str) -> i32,
+    show_error: fn(&str, &str) -> i32,
 ) -> i32 {
     let engine = Engine::new(&wasmi::Config::default());
     let module = match Module::new(&engine, wasm_binary) {
@@ -42,6 +46,9 @@ pub fn run(
         read_entire_file,
         read_directory,
         get_monotonic_ns,
+        show_image,
+        show_text,
+        show_error,
     );
 
     let mut store = Store::new(&engine, ctx);
@@ -136,6 +143,12 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     wasi_func!("proc_exit", proc_exit);
     wasi_func!("clock_time_get", clock_time_get);
     wasi_func!("random_get", random_get);
+
+    // Fullerene custom host functions (import module "fullerene")
+    let fullerene = "fullerene";
+    linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
+    linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
+    linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;
 
     Ok(linker)
 }

@@ -119,6 +119,53 @@ fn wasm_get_monotonic_ns() -> u64 {
     }
 }
 
+fn wasm_show_image(width: u32, height: u32, pixels: &[u8]) -> i32 {
+    if !solvent::is_initialized() || pixels.len() < 3 {
+        return -1;
+    }
+    let win_w = width.min(800).max(160);
+    let win_h = height.min(600).max(120);
+    let Some(id) = solvent::create_window("Image Viewer", 120, 80, win_w, win_h) else {
+        return -1;
+    };
+    let img_w = width as usize;
+    let _ = solvent::with_window_surface(id, |surf_pixels, surf_w, surf_h| {
+        let draw_h = (height as usize).min(surf_h as usize);
+        let draw_w = (width as usize).min(surf_w as usize);
+        for y in 0..draw_h {
+            for x in 0..draw_w {
+                let src = (y * img_w + x) * 3;
+                if src + 2 < pixels.len() {
+                    let color = (pixels[src] as u32) << 16
+                        | (pixels[src + 1] as u32) << 8
+                        | pixels[src + 2] as u32;
+                    surf_pixels[y * surf_w as usize + x] = color;
+                }
+            }
+        }
+    });
+    solvent::invalidate_window(id);
+    0
+}
+
+fn wasm_show_text(title: &str, text: &str) -> i32 {
+    // Phase 1: display text in the terminal rather than a dedicated editor
+    // window, since the editor state is not accessible from kernel callbacks.
+    let header = alloc::format!("--- {} ---\n", title);
+    solvent::write_terminal(&header);
+    solvent::write_terminal(text);
+    solvent::write_terminal("\n--- end ---\n");
+    0
+}
+
+fn wasm_show_error(title: &str, msg: &str) -> i32 {
+    let header = alloc::format!("[!] {}: ", title);
+    solvent::write_terminal(&header);
+    solvent::write_terminal(msg);
+    solvent::write_terminal("\n");
+    0
+}
+
 /// Helper: write a formatted line to the terminal.
 macro_rules! tline {
     ($t:expr, $($arg:tt)*) => {{
@@ -592,6 +639,9 @@ fn nozzle_services() -> nozzle::ShellServices {
                             wasm_read_entire_file,
                             wasm_read_directory,
                             wasm_get_monotonic_ns,
+                            wasm_show_image,
+                            wasm_show_text,
+                            wasm_show_error,
                         );
                         if capture_output && let Some(output) = take_wasm_output() {
                             ctx.terminal.write_str(&output);
