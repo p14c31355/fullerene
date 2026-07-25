@@ -1,6 +1,7 @@
 use alloc::string::String;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 
 use crate::contexts::vfs;
 pub use genome::fs::{DirEntry, FsError, PackageEntry, parse_manifest};
@@ -202,7 +203,17 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
 pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     const MAX_FILE_SIZE: usize = 16 * 1024 * 1024;
     const TIMEOUT_MS: u64 = 15_000;
-    if matches!(file_size(path), Ok(size) if size > MAX_FILE_SIZE as u64) {
+    let reported_size = file_size(path);
+    crate::klog_fmt!(
+        "[WASM-DIAG] read_entire begin path={} file_size={:?}\n",
+        path,
+        reported_size
+    );
+    if matches!(reported_size, Ok(size) if size > MAX_FILE_SIZE as u64) {
+        crate::klog_fmt!(
+            "[WASM-DIAG] read_entire reject path={} reason=too-large\n",
+            path
+        );
         return Err(FsError::DiskFull);
     }
     let tsc_per_ms = solvent::get_tsc_per_ms();
@@ -215,19 +226,75 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     let mut fd = open_file(path)?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
+    let mut read_calls = 0usize;
+    let mut total_bytes = 0usize;
     let result = loop {
         if deadline > 0 && (unsafe { core::arch::x86_64::_rdtsc() }) >= deadline {
             break Err(FsError::Io);
         }
         match read_file(&mut fd, &mut chunk) {
-            Ok(0) => break Ok(buf),
-            Ok(n) if buf.len() + n <= MAX_FILE_SIZE => buf.extend_from_slice(&chunk[..n]),
+            Ok(0) => {
+                crate::klog_fmt!(
+                    "[WASM-DIAG] read_entire eof path={} calls={} bytes={}\n",
+                    path,
+                    read_calls,
+                    total_bytes
+                );
+                break Ok(buf);
+            }
+            Ok(n) if buf.len() + n <= MAX_FILE_SIZE => {
+                read_calls += 1;
+                total_bytes += n;
+                buf.extend_from_slice(&chunk[..n]);
+            }
             Ok(_) => break Err(FsError::DiskFull),
             Err(e) => break Err(e),
         }
     };
     let _ = close_file(fd);
+    match &result {
+        Ok(data) => {
+            let (len, fingerprint, edges) = diagnostic_fingerprint(data);
+            crate::klog_fmt!(
+                "[WASM-DIAG] read_entire done path={} len={} fnv=0x{:016x} edges={}\n",
+                path,
+                len,
+                fingerprint,
+                edges
+            );
+        }
+        Err(error) => crate::klog_fmt!(
+            "[WASM-DIAG] read_entire error path={} calls={} bytes={} error={:?}\n",
+            path,
+            read_calls,
+            total_bytes,
+            error
+        ),
+    }
     result
+}
+
+/// Temporary diagnostic fingerprint used to compare removable-media copies.
+/// It is deliberately cheap enough for the no_std kernel; size plus the edge
+/// bytes make short/truncated files immediately apparent as well.
+pub(crate) fn diagnostic_fingerprint(data: &[u8]) -> (usize, u64, String) {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in data {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let mut edges = String::new();
+    for &byte in data.iter().take(8) {
+        let _ = write!(edges, "{:02x}", byte);
+    }
+    if data.len() > 8 {
+        edges.push('/');
+        let tail_start = data.len().saturating_sub(8);
+        for &byte in &data[tail_start..] {
+            let _ = write!(edges, "{:02x}", byte);
+        }
+    }
+    (data.len(), hash, edges)
 }
 
 pub fn read_file_prefix(path: &str, limit: usize) -> Result<Vec<u8>, FsError> {

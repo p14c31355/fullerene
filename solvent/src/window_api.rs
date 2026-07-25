@@ -47,19 +47,23 @@ pub fn create_window(
     width: u32,
     height: u32,
 ) -> Option<WindowId> {
-    RUNTIME_CONTEXT.runtime().as_mut().map(|runtime| {
+    nitrogen::debug_status!("WASM", "window_api create enter");
+    let result = RUNTIME_CONTEXT.runtime().as_mut().map(|runtime| {
         runtime
             .desktop
             .wm
             .create_titled_window(x, y, width, height, 0x000000, title)
-    })
+    });
+    nitrogen::debug_status!("WASM", "window_api create exit");
+    result
 }
 
 pub fn with_window_surface<F, R>(id: WindowId, callback: F) -> Option<R>
 where
     F: FnOnce(&mut [u32], u32, u32) -> R,
 {
-    RUNTIME_CONTEXT.runtime().as_mut().and_then(|runtime| {
+    nitrogen::debug_status!("WASM", "window_api surface enter");
+    let result = RUNTIME_CONTEXT.runtime().as_mut().and_then(|runtime| {
         let window = runtime
             .desktop
             .wm
@@ -71,15 +75,19 @@ where
         }
         let (width, height) = (window.surface.width(), window.surface.height());
         Some(callback(window.surface.pixels_mut(), width, height))
-    })
+    });
+    nitrogen::debug_status!("WASM", "window_api surface exit");
+    result
 }
 
 pub fn invalidate_window(id: WindowId) {
+    nitrogen::debug_status!("WASM", "window_api invalidate enter");
     if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
         runtime.desktop.invalidate_window(id);
         runtime.frame_due = true;
         runtime.term_dirty = true;
     }
+    nitrogen::debug_status!("WASM", "window_api invalidate exit");
 }
 
 pub fn close_window(id: WindowId) -> bool {

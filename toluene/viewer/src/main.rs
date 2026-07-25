@@ -38,6 +38,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    println!("viewer: read complete path={} bytes={}", path, bytes.len());
 
     // Keep ordinary text on the WASM viewer's text-window path and avoid
     // probing it with binary/media parsers first.
@@ -108,7 +109,10 @@ fn present_error(title: &str, message: &str) {
 // ── Image ───────────────────────────────────────────────────────
 
 fn try_image(path: &str, data: &[u8]) -> bool {
-    const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+    // Decoding a JPEG at its source resolution is expensive in the WASM
+    // interpreter even when the compositor only needs an 800x600 preview.
+    // Reject camera-sized frames before allocating/decoding them.
+    const MAX_IMAGE_PIXELS: u64 = 8_000_000;
     const MAX_IMAGE_WIDTH: u32 = 800;
     const MAX_IMAGE_HEIGHT: u32 = 600;
 
@@ -120,8 +124,10 @@ fn try_image(path: &str, data: &[u8]) -> bool {
         .ok()
         .and_then(|reader| reader.into_dimensions().ok());
     let Some((source_w, source_h)) = dimensions else {
+        println!("viewer: dimensions failed");
         return false;
     };
+    println!("viewer: dimensions complete {}x{}", source_w, source_h);
     if source_w == 0
         || source_h == 0
         || u64::from(source_w) * u64::from(source_h) > MAX_IMAGE_PIXELS
@@ -136,11 +142,15 @@ fn try_image(path: &str, data: &[u8]) -> bool {
     }
 
     let Ok(reader) = image::ImageReader::new(Cursor::new(data)).with_guessed_format() else {
+        println!("viewer: decoder setup failed");
         return false;
     };
+    println!("viewer: decode enter");
     let Ok(img) = reader.decode() else {
+        println!("viewer: decode failed");
         return false;
     };
+    println!("viewer: decode exit");
 
     // The compositor only displays an 800x600 client area. Downsample before
     // converting to RGB so we do not keep a second full-resolution buffer.
@@ -148,7 +158,9 @@ fn try_image(path: &str, data: &[u8]) -> bool {
     drop(img);
     let (w, h) = thumbnail.dimensions();
     let pixels = thumbnail.to_rgb8().into_raw();
-    let _ = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
+    println!("viewer: show_image enter {}x{} bytes={}", w, h, pixels.len());
+    let result = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
+    println!("viewer: show_image exit result={}", result);
     true
 }
 

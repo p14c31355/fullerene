@@ -18,6 +18,7 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::fmt::Write as _;
 use spin::Mutex;
 
 use genome::fs::FsError;
@@ -717,6 +718,12 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
         return Ok(());
     }
 
+    crate::klog_fmt!(
+        "[VFS-DIAG] copy begin source={} destination={}\n",
+        source,
+        destination
+    );
+
     // Each free function acquires/releases the kernel lock individually,
     // so the system can render and process events between I/O operations.
     let source_fd = open(&source, 0)?.fd;
@@ -735,16 +742,68 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
     };
     let result = (|| {
         let mut buffer = [0; 4096];
+        let mut read_calls = 0usize;
+        let mut write_calls = 0usize;
+        let mut source_bytes = 0usize;
+        let mut source_fingerprint = 0xcbf29ce484222325u64;
+        let mut source_head = [0u8; 8];
+        let mut source_head_len = 0usize;
+        let mut source_tail = [0u8; 8];
+        let mut source_tail_len = 0usize;
         loop {
             match read(source_fd, &mut buffer) {
-                Ok(0) => return Ok(()),
+                Ok(0) => {
+                    let edges = diagnostic_copy_edges(
+                        &source_head,
+                        source_head_len,
+                        &source_tail,
+                        source_tail_len,
+                        source_bytes,
+                    );
+                    crate::klog_fmt!(
+                        "[VFS-DIAG] copy source-summary path={} reads={} bytes={} fnv=0x{:016x} edges={}\n",
+                        source,
+                        read_calls,
+                        source_bytes,
+                        source_fingerprint,
+                        edges
+                    );
+                    return Ok(());
+                }
                 Ok(n) => {
+                    read_calls += 1;
+                    source_bytes += n;
+                    for &byte in &buffer[..n] {
+                        source_fingerprint ^= u64::from(byte);
+                        source_fingerprint = source_fingerprint.wrapping_mul(0x100000001b3);
+                        if source_head_len < source_head.len() {
+                            source_head[source_head_len] = byte;
+                            source_head_len += 1;
+                        }
+                        source_tail[source_tail_len % source_tail.len()] = byte;
+                        source_tail_len += 1;
+                    }
+                    crate::klog_fmt!(
+                        "[VFS-DIAG] copy read source={} call={} bytes={} total={}\n",
+                        source,
+                        read_calls,
+                        n,
+                        source_bytes
+                    );
                     let mut data = &buffer[..n];
                     while !data.is_empty() {
                         let written = write(destination_fd, data)?;
                         if written == 0 {
                             return Err(FsError::InvalidInput);
                         }
+                        write_calls += 1;
+                        crate::klog_fmt!(
+                            "[VFS-DIAG] copy write destination={} call={} bytes={} remaining={}\n",
+                            destination,
+                            write_calls,
+                            written,
+                            data.len() - written
+                        );
                         data = &data[written..];
                     }
                 }
@@ -754,7 +813,59 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
     })();
     let source_close = close(source_fd);
     let destination_close = close(destination_fd);
-    result.and(source_close).and(destination_close)
+    let result = result.and(source_close).and(destination_close);
+    if result.is_ok() {
+        match crate::fs::read_entire_file(&destination) {
+            Ok(data) => {
+                let (len, fingerprint, edges) = crate::fs::diagnostic_fingerprint(&data);
+                crate::klog_fmt!(
+                    "[VFS-DIAG] copy destination-check path={} len={} fnv=0x{:016x} edges={}\n",
+                    destination,
+                    len,
+                    fingerprint,
+                    edges
+                );
+            }
+            Err(error) => crate::klog_fmt!(
+                "[VFS-DIAG] copy destination-check failed path={} error={:?}\n",
+                destination,
+                error
+            ),
+        }
+    }
+    crate::klog_fmt!(
+        "[VFS-DIAG] copy end source={} destination={} result={:?}\n",
+        source,
+        destination,
+        result
+    );
+    result
+}
+
+fn diagnostic_copy_edges(
+    head: &[u8; 8],
+    head_len: usize,
+    tail: &[u8; 8],
+    tail_len: usize,
+    total_len: usize,
+) -> String {
+    let mut edges = String::new();
+    for &byte in &head[..head_len.min(head.len())] {
+        let _ = write!(edges, "{:02x}", byte);
+    }
+    if total_len > head.len() {
+        edges.push('/');
+        let count = tail_len.min(tail.len());
+        let start = if tail_len >= tail.len() {
+            tail_len % tail.len()
+        } else {
+            0
+        };
+        for offset in 0..count {
+            let _ = write!(edges, "{:02x}", tail[(start + offset) % tail.len()]);
+        }
+    }
+    edges
 }
 
 pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {

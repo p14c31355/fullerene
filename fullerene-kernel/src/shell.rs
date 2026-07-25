@@ -46,6 +46,9 @@ fn take_wasm_output() -> Option<String> {
 // ── WASM/WASI runtime callbacks ──────────────────────────────────
 
 fn wasm_write_stdout(data: &[u8]) {
+    if let Ok(text) = core::str::from_utf8(data) {
+        crate::klog_fmt!("[WASM-DIAG] stdout {}", text);
+    }
     if solvent::is_initialized() {
         buffer_wasm_output(data);
     } else {
@@ -54,6 +57,9 @@ fn wasm_write_stdout(data: &[u8]) {
 }
 
 fn wasm_write_stderr(data: &[u8]) {
+    if let Ok(text) = core::str::from_utf8(data) {
+        crate::klog_fmt!("[WASM-DIAG] stderr {}", text);
+    }
     if solvent::is_initialized() {
         buffer_wasm_output(data);
     } else {
@@ -85,7 +91,14 @@ fn wasm_yield_now() {
 }
 
 fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
-    crate::fs::read_entire_file(path)
+    crate::klog_fmt!("[WASM-DIAG] host read callback enter path={}\n", path);
+    let result = crate::fs::read_entire_file(path);
+    crate::klog_fmt!(
+        "[WASM-DIAG] host read callback exit path={} result={:?}\n",
+        path,
+        result.as_ref().map(alloc::vec::Vec::len)
+    );
+    result
 }
 
 fn wasm_read_directory(
@@ -121,6 +134,7 @@ fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixel
         return -1;
     }
     let img_w = width as usize;
+    nitrogen::debug_status!("WASM", "surface blit enter");
     let updated = solvent::with_window_surface(window_id, |surf_pixels, surf_w, surf_h| {
         let draw_h = (height as usize).min(surf_h as usize);
         let draw_w = (width as usize).min(surf_w as usize);
@@ -144,21 +158,35 @@ fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixel
         }
     });
     if updated.is_none() {
+        nitrogen::debug_status!("WASM", "surface blit no surface");
         return -1;
     }
+    nitrogen::debug_status!("WASM", "surface blit exit");
     solvent::invalidate_window(window_id);
+    nitrogen::debug_status!("WASM", "surface invalidate exit");
     0
 }
 
 fn wasm_show_image(width: u32, height: u32, pixels: &[u8]) -> i32 {
+    nitrogen::debug_status!(
+        "WASM",
+        "show_image enter {}x{} bytes={}",
+        width,
+        height,
+        pixels.len()
+    );
     if !solvent::is_initialized() || pixels.len() < 3 {
+        nitrogen::debug_status!("WASM", "show_image rejected");
         return -1;
     }
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);
+    nitrogen::debug_status!("WASM", "create_window enter");
     let Some(id) = solvent::create_window("Image Viewer", 120, 80, win_w, win_h) else {
+        nitrogen::debug_status!("WASM", "create_window failed");
         return -1;
     };
+    nitrogen::debug_status!("WASM", "create_window exit");
     blit_rgb(id, width, height, pixels)
 }
 
@@ -227,6 +255,7 @@ fn wasm_close_window(window_id: i32) -> i32 {
 /// remains as a user-facing entry point, but both paths share the same
 /// runtime setup and host callbacks.
 pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
+    crate::klog_fmt!("[WASM-DIAG] run begin path={} argc={}\n", path, args.len());
     let binary = match crate::fs::read_entire_file(path) {
         Ok(binary) => binary,
         Err(error) => {
@@ -237,6 +266,14 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
             return -1;
         }
     };
+    let (len, fingerprint, edges) = crate::fs::diagnostic_fingerprint(&binary);
+    crate::klog_fmt!(
+        "[WASM-DIAG] run binary path={} len={} fnv=0x{:016x} edges={}\n",
+        path,
+        len,
+        fingerprint,
+        edges
+    );
 
     let capture_output = solvent::is_initialized();
     if capture_output {
@@ -262,6 +299,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
     if capture_output && let Some(output) = take_wasm_output() {
         solvent::write_terminal(&output);
     }
+    crate::klog_fmt!("[WASM-DIAG] run end path={} code={}\n", path, code);
     code
 }
 
