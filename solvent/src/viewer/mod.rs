@@ -35,7 +35,10 @@ pub fn open(path: &str) {
     // Run the viewer directly through the kernel callback.  This keeps file
     // paths intact (including spaces) and avoids opening a terminal merely to
     // execute a one-shot `wasm` command.
-    let code = run_wasm("/apps/viewer.wasm", &[path]);
+    // WASI does not synthesize argv[0] for us. The viewer expects the usual
+    // argv layout: program name followed by the file to open.
+    let args = ["/apps/viewer.wasm", path];
+    let code = run_wasm("/apps/viewer.wasm", &args);
     if code != 0 {
         let mut rt = crate::RUNTIME_CONTEXT.runtime();
         if let Some(rt) = rt.as_mut() {
