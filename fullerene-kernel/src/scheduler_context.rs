@@ -332,7 +332,7 @@ impl SchedulerContext {
             .iter()
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| p.page_table_phys_addr)
-            .unwrap_or(x86_64::PhysAddr::new(0));
+            .unwrap_or_else(crate::memory_management::kernel_page_table_phys);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);

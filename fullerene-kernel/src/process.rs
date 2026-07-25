@@ -658,6 +658,7 @@ fn unblock_waiting_parents(child_pid: ProcessId) {
 
 /// Terminate a process
 pub fn terminate_process(pid: ProcessId, exit_code: i32) {
+    let is_current = SCHEDULER.current_pid() == pid.0 as usize;
     let to_unblock = SCHEDULER
         .with_process(pid, |process| {
             // The idle task owns neither an allocated stack nor a replacement task.
@@ -672,31 +673,37 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
             // Collects waiters to unblock outside the process-manager lock.
             let waiters = process.resources.cleanup();
 
-            // Free resources
-            if let Some(kernel_stack_base) = process
-                .kernel_stack
-                .as_u64()
-                .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
-                .filter(|&base| base != 0)
-            {
-                let layout = Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
-                unsafe {
-                    petroleum::common::memory::deallocate_layout(
-                        kernel_stack_base as *mut u8,
-                        layout,
-                    )
-                };
-            }
-
-            // Properly free page table frames recursively
-            if let Some(page_table) = process.page_table.take() {
-                if let Some(pml4_frame) = page_table.pml4_frame() {
-                    drop(page_table);
-                    crate::memory_management::deallocate_process_page_table(pml4_frame);
+            // An executing process cannot release its own address space before
+            // the context switch. The scheduler will reclaim it after the
+            // process is no longer current.
+            if !is_current {
+                // Free resources
+                if let Some(kernel_stack_base) = process
+                    .kernel_stack
+                    .as_u64()
+                    .checked_sub(crate::heap::KERNEL_STACK_SIZE as u64)
+                    .filter(|&base| base != 0)
+                {
+                    let layout =
+                        Layout::from_size_align(crate::heap::KERNEL_STACK_SIZE, 16).unwrap();
+                    unsafe {
+                        petroleum::common::memory::deallocate_layout(
+                            kernel_stack_base as *mut u8,
+                            layout,
+                        )
+                    };
                 }
-            }
 
-            process.page_table = None;
+                // Properly free page table frames recursively
+                if let Some(page_table) = process.page_table.take() {
+                    if let Some(pml4_frame) = page_table.pml4_frame() {
+                        drop(page_table);
+                        crate::memory_management::deallocate_process_page_table(pml4_frame);
+                    }
+                }
+
+                process.page_table = None;
+            }
 
             waiters
         })
@@ -708,10 +715,15 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     }
     unblock_waiting_parents(pid);
 
-    // If current process is terminating, schedule next
-    let current_pid = SCHEDULER.current_pid();
-    if current_pid == pid.0 as usize {
-        schedule_next();
+    // If the current process is terminating, switch away before returning.
+    // `schedule_next` only changes scheduler state; it does not perform the
+    // context switch itself.
+    if is_current {
+        let (old, next) = SCHEDULER.schedule_next();
+        if old == Some(pid) && next != pid {
+            unsafe { SCHEDULER.context_switch(Some(pid), next) };
+        }
+        petroleum::halt_loop();
     }
 }
 

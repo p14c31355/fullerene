@@ -183,6 +183,17 @@ pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
     &MEMORY_MANAGER
 }
 
+/// Return the physical address of the kernel page table used by the idle
+/// context. Kernel processes have their own cloned page tables, so switching
+/// back to the idle process must explicitly restore this CR3 value.
+pub fn kernel_page_table_phys() -> x86_64::PhysAddr {
+    MEMORY_MANAGER
+        .lock()
+        .as_ref()
+        .map(|manager| x86_64::PhysAddr::new(manager.kernel_pml4_phys as u64))
+        .unwrap_or_else(|| x86_64::PhysAddr::new(0))
+}
+
 /// Map a user page for kernel access
 pub fn map_user_page(
     virtual_addr: usize,
