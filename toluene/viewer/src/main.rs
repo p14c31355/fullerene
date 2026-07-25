@@ -154,10 +154,23 @@ fn try_image(path: &str, data: &[u8]) -> bool {
 
     // The compositor only displays an 800x600 client area. Downsample before
     // converting to RGB so we do not keep a second full-resolution buffer.
-    let thumbnail = img.thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT);
-    drop(img);
+    println!(
+        "viewer: thumbnail enter source={}x{} limit={}x{}",
+        source_w, source_h, MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT
+    );
+    let thumbnail = if source_w <= MAX_IMAGE_WIDTH && source_h <= MAX_IMAGE_HEIGHT {
+        // image::DynamicImage::thumbnail() upscales small images to fit the
+        // requested bounds. Avoid turning a 225x225 JPEG into a 600x600
+        // surface in the WASM interpreter.
+        img
+    } else {
+        img.thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT)
+    };
     let (w, h) = thumbnail.dimensions();
+    println!("viewer: thumbnail exit {}x{}", w, h);
+    println!("viewer: to_rgb8 enter");
     let pixels = thumbnail.to_rgb8().into_raw();
+    println!("viewer: to_rgb8 exit bytes={}", pixels.len());
     println!("viewer: show_image enter {}x{} bytes={}", w, h, pixels.len());
     let result = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
     println!("viewer: show_image exit result={}", result);

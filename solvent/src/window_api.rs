@@ -90,6 +90,18 @@ pub fn invalidate_window(id: WindowId) {
     nitrogen::debug_status!("WASM", "window_api invalidate exit");
 }
 
+/// Mark the live kernel-log window dirty from a synchronous diagnostic path.
+/// Normally the event loop does this periodically, but a synchronous WASM
+/// command prevents that loop from running while the command is blocked.
+pub fn mark_klog_live_dirty() {
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
+        && runtime.klog_live_window.is_some()
+    {
+        runtime.klog_live_dirty = true;
+        runtime.frame_due = true;
+    }
+}
+
 pub fn close_window(id: WindowId) -> bool {
     RUNTIME_CONTEXT
         .runtime()
