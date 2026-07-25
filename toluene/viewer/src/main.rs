@@ -1,7 +1,7 @@
 use image::GenericImageView;
 use std::io::{Cursor, Read, Seek};
 
-const VIEWER_BUILD_ID: &str = "2026-07-25-mp4-file-stream-1";
+const VIEWER_BUILD_ID: &str = "2026-07-25-mp4-sample-index-2";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
@@ -305,9 +305,19 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     }
 
     println!("viewer: mp4 sample read enter");
-    let Ok(Some(sample)) = reader.read_sample(track_id, 0) else {
-        println!("viewer: mp4 sample read failed");
-        return true;
+    // mp4 crate sample IDs are one-based (the stsc/stsz tables use sample 1
+    // for their first entry). Passing 0 makes the first sample lookup fail
+    // even though the MP4 header and track metadata are valid.
+    let sample = match reader.read_sample(track_id, 1) {
+        Ok(Some(sample)) => sample,
+        Ok(None) => {
+            println!("viewer: mp4 sample read returned none id=1");
+            return true;
+        }
+        Err(error) => {
+            println!("viewer: mp4 sample read failed id=1 error={:?}", error);
+            return true;
+        }
     };
     println!("viewer: mp4 sample read exit bytes={}", sample.bytes.len());
     if sample.bytes.len() > MAX_FIRST_SAMPLE_BYTES {

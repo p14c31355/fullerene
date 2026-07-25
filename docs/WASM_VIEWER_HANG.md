@@ -220,3 +220,21 @@ RTSX SD controllerの読み出し経路である。
 ```bash
 cargo build -p fullerene-kernel --target x86_64-unknown-uefi --offline
 ```
+
+## MP4がハングせず再生されなかった原因
+
+遅延読み出し版を実機で実行したところ、次の段階まで成功した。
+
+```text
+viewer: mp4 header exit
+viewer: mp4 video track scan exit id=1
+viewer: mp4 sample count=6572
+viewer: mp4 sample read enter
+viewer: mp4 sample read failed
+```
+
+`mp4` crateのsample IDは1始まりであり、viewerが最初のサンプルを
+`read_sample(track_id, 0)` と指定していたため、MP4が正常でも最初のフレームを
+取得できなかった。`read_sample(track_id, 1)`へ修正し、失敗時にはエラー内容も
+表示するようにした。修正版のviewer build IDは
+`2026-07-25-mp4-sample-index-2`。
