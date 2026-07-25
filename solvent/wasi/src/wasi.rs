@@ -98,6 +98,7 @@ pub struct WasiCtx {
     pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
+    pub screen_dimensions: fn() -> (u32, u32),
     pub capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
     pub show_image: fn(u32, u32, &[u8]) -> i32,
     pub show_text: fn(&str, &str) -> i32,
@@ -118,6 +119,7 @@ impl WasiCtx {
         read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         get_monotonic_ns: fn() -> u64,
+        screen_dimensions: fn() -> (u32, u32),
         capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
         show_image: fn(u32, u32, &[u8]) -> i32,
         show_text: fn(&str, &str) -> i32,
@@ -158,6 +160,7 @@ impl WasiCtx {
             read_file_range,
             read_directory,
             get_monotonic_ns,
+            screen_dimensions,
             capture_screen,
             show_image,
             show_text,
@@ -1067,6 +1070,19 @@ pub fn random_get(
 }
 
 // ── Fullerene custom host functions ──────────────────────────────
+
+/// Return the compositor framebuffer dimensions without allocating a capture.
+pub fn fullerene_screen_dimensions(
+    mut caller: Caller<'_, WasiCtx>,
+    width_ptr: u32,
+    height_ptr: u32,
+) -> Result<u32, Error> {
+    let (width, height) = (caller.data().screen_dimensions)();
+    let memory = get_memory(&caller)?;
+    write_u32(&memory, &mut caller, width_ptr, width)?;
+    write_u32(&memory, &mut caller, height_ptr, height)?;
+    Ok(ESUCCESS)
+}
 
 /// Copy the compositor's clean desktop back buffer into WASM memory.
 pub fn fullerene_capture_screen(

@@ -249,10 +249,12 @@ impl BootFramebuffer {
         let body_fg = self.rgb(170, 221, 255);
         unsafe { self.fill_rect(x, y, width, height, panel) };
 
-        // Match the normal Klog Live surface (100 columns x 29 rows) so the
-        // interrupt path has a bounded amount of MMIO work.
-        let max_cols = (width / 6).min(100);
-        let max_lines = (height.saturating_sub(8) / 8).min(29);
+        // Keep the interrupt fallback readable while the normal compositor
+        // is blocked. The 2x glyphs intentionally trade some columns/rows
+        // for substantially larger text in the diagnostic overlay.
+        const SCALE: u32 = 2;
+        let max_cols = (width / (6 * SCALE)).min(100);
+        let max_lines = (height.saturating_sub(7 * SCALE) / (8 * SCALE)).min(29);
         if max_cols == 0 || max_lines == 0 {
             return;
         }
@@ -263,7 +265,7 @@ impl BootFramebuffer {
         unsafe {
             let header = b"--- KLog Live (auto-refresh) ---";
             let header_len = header.len().min(max_cols as usize);
-            self.draw_text(x, y, &header[..header_len], 1, body_fg);
+            self.draw_text(x, y, &header[..header_len], SCALE, body_fg);
         }
 
         // Count complete lines and skip older lines so the newest messages
@@ -277,7 +279,7 @@ impl BootFramebuffer {
         let first_line = line_count.saturating_sub(max_lines);
         let mut line = 0u32;
         let mut col = 0u32;
-        let body_y = y.saturating_add(8);
+        let body_y = y.saturating_add(7 * SCALE);
         for &byte in text {
             if byte == b'\n' {
                 line = line.saturating_add(1);
@@ -291,9 +293,9 @@ impl BootFramebuffer {
                 break;
             }
             if col < max_cols {
-                let px = x.saturating_add(col.saturating_mul(6));
-                let py = body_y.saturating_add((line - first_line).saturating_mul(8));
-                unsafe { self.draw_text(px, py, &[byte], 1, body_fg) };
+                let px = x.saturating_add(col.saturating_mul(6 * SCALE));
+                let py = body_y.saturating_add((line - first_line).saturating_mul(8 * SCALE));
+                unsafe { self.draw_text(px, py, &[byte], SCALE, body_fg) };
             }
             col = col.saturating_add(1);
         }

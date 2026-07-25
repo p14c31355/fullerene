@@ -1,10 +1,11 @@
 use std::fmt::Write as _;
 
-const BUILD_ID: &str = "2026-07-26-screenshot-mvp-1";
+const BUILD_ID: &str = "2026-07-26-screenshot-mvp-2";
 const DEFAULT_OUTPUT: &str = "/tmp/emulsion-screenshot.qoi";
 
 #[link(wasm_import_module = "fullerene")]
 unsafe extern "C" {
+    fn screen_dimensions(width_ptr: *mut u32, height_ptr: *mut u32) -> u32;
     fn capture_screen(
         pixels_ptr: *mut u8,
         pixels_len: u32,
@@ -62,11 +63,15 @@ fn print_usage() {
 }
 
 fn capture(output: &str) -> Result<(), String> {
+    println!("Emulsion: capture begin");
     let (width, height, pixels) = capture_rgba()?;
+    println!("Emulsion: capture complete {}x{}", width, height);
     let encoded = qoi::encode_to_vec(&pixels, width, height)
         .map_err(|error| format!("Cannot encode screenshot as QOI: {error}"))?;
+    println!("Emulsion: qoi encode complete bytes={}", encoded.len());
     std::fs::write(output, &encoded)
         .map_err(|error| format!("Cannot save screenshot to '{output}': {error}"))?;
+    println!("Emulsion: file write complete path={output}");
 
     let mut report = String::new();
     let _ = writeln!(report, "Screenshot captured successfully.");
@@ -81,7 +86,21 @@ fn capture(output: &str) -> Result<(), String> {
 fn capture_rgba() -> Result<(u32, u32, Vec<u8>), String> {
     let mut width = 0u32;
     let mut height = 0u32;
-    let mut pixels = vec![0u8; 32 * 1024 * 1024];
+    let dimensions_result = unsafe { screen_dimensions(&mut width, &mut height) };
+    if dimensions_result != 0 {
+        return Err(format!(
+            "Cannot query desktop dimensions (host error {dimensions_result})."
+        ));
+    }
+    let byte_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "The desktop dimensions are too large.".to_owned())?;
+    if byte_len == 0 || byte_len > 32 * 1024 * 1024 {
+        return Err("The desktop capture is outside the supported size.".to_owned());
+    }
+    println!("Emulsion: allocating capture bytes={byte_len}");
+    let mut pixels = vec![0u8; byte_len];
     let result = unsafe {
         capture_screen(
             pixels.as_mut_ptr(),
@@ -93,14 +112,6 @@ fn capture_rgba() -> Result<(u32, u32, Vec<u8>), String> {
     if result != 0 {
         return Err(format!("Cannot capture the desktop (host error {result})."));
     }
-    let byte_len = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| "The desktop dimensions are too large.".to_owned())?;
-    if byte_len > pixels.len() {
-        return Err("The desktop capture did not fit in the WASM buffer.".to_owned());
-    }
-    pixels.truncate(byte_len);
     Ok((width, height, pixels))
 }
 

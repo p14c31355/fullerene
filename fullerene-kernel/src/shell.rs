@@ -328,6 +328,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_read_file_range,
         wasm_read_directory,
         wasm_get_monotonic_ns,
+        solvent::framebuffer_dims,
         solvent::capture_screen,
         wasm_show_image,
         wasm_show_text,
