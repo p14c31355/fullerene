@@ -157,6 +157,8 @@ pub enum KeyCode {
     F10,
     F11,
     F12,
+    /// Print Screen (often emitted by a laptop's Fn+PrtSc combination).
+    PrintScreen,
 
     /// Catch-all for unhandled keys.
     Unknown(u32),

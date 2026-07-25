@@ -11,6 +11,7 @@ fn main() {
     // ── Declare expected cfg flags ────────────────────────────────
     println!("cargo::rustc-check-cfg=cfg(have_ports_cpio)");
     println!("cargo::rustc-check-cfg=cfg(have_viewer_wasm)");
+    println!("cargo::rustc-check-cfg=cfg(have_emulsion_wasm)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────
@@ -171,6 +172,55 @@ fn main() {
         fs::copy(&viewer_cache, &viewer_out)
             .unwrap_or_else(|e| panic!("Failed to copy WASM viewer binary: {}", e));
         println!("cargo:rustc-cfg=have_viewer_wasm");
+    }
+
+    // ── Build the Emulsion screenshot app ──────────────────────
+    let emulsion_dir = workspace_root.join("toluene").join("emulsion");
+    let emulsion_out = out_dir.join("emulsion.wasm");
+    let emulsion_target_dir = workspace_root.join("target").join("wasm-emulsion-build");
+    let emulsion_cache = emulsion_target_dir
+        .join("wasm32-wasip1")
+        .join("release")
+        .join("emulsion.wasm");
+    println!(
+        "cargo:rerun-if-changed={}",
+        emulsion_dir.join("src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        emulsion_dir.join("Cargo.toml").display()
+    );
+    let emulsion_built = match Command::new(&cargo)
+        .args([
+            "build",
+            "--target",
+            "wasm32-wasip1",
+            "--release",
+            "--target-dir",
+        ])
+        .arg(&emulsion_target_dir)
+        .current_dir(&emulsion_dir)
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .status()
+    {
+        Ok(status) if status.success() => true,
+        Ok(_) => {
+            println!("cargo:warning=WASM Emulsion build failed (will continue without it)");
+            emulsion_cache.exists()
+        }
+        Err(error) => {
+            println!(
+                "cargo:warning=WASM Emulsion build could not start: {}",
+                error
+            );
+            emulsion_cache.exists()
+        }
+    };
+    if emulsion_built && emulsion_cache.exists() {
+        fs::copy(&emulsion_cache, &emulsion_out)
+            .unwrap_or_else(|e| panic!("Failed to copy WASM Emulsion binary: {}", e));
+        println!("cargo:rustc-cfg=have_emulsion_wasm");
     }
 }
 

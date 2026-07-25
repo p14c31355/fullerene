@@ -79,6 +79,7 @@ pub enum WasiFd {
 
 const MAX_OPEN_FDS: usize = 128;
 const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
+const MAX_CAPTURE_RGBA_BYTES: u32 = 32 * 1024 * 1024;
 const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
 const MAX_TEXT_BYTES: u32 = 512 * 1024;
 const MAX_ERROR_BYTES: u32 = 64 * 1024;
@@ -97,6 +98,7 @@ pub struct WasiCtx {
     pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
+    pub capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
     pub show_image: fn(u32, u32, &[u8]) -> i32,
     pub show_text: fn(&str, &str) -> i32,
     pub show_error: fn(&str, &str) -> i32,
@@ -116,6 +118,7 @@ impl WasiCtx {
         read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         get_monotonic_ns: fn() -> u64,
+        capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
         show_image: fn(u32, u32, &[u8]) -> i32,
         show_text: fn(&str, &str) -> i32,
         show_error: fn(&str, &str) -> i32,
@@ -155,6 +158,7 @@ impl WasiCtx {
             read_file_range,
             read_directory,
             get_monotonic_ns,
+            capture_screen,
             show_image,
             show_text,
             show_error,
@@ -1063,6 +1067,29 @@ pub fn random_get(
 }
 
 // ── Fullerene custom host functions ──────────────────────────────
+
+/// Copy the compositor's clean desktop back buffer into WASM memory.
+pub fn fullerene_capture_screen(
+    mut caller: Caller<'_, WasiCtx>,
+    pixels_ptr: u32,
+    pixels_len: u32,
+    width_ptr: u32,
+    height_ptr: u32,
+) -> Result<u32, Error> {
+    let Some((width, height, pixels)) = (caller.data().capture_screen)() else {
+        return Ok(ENOTSUP);
+    };
+    if pixels.len() > MAX_CAPTURE_RGBA_BYTES as usize || pixels.len() > pixels_len as usize {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    memory
+        .write(&mut caller, pixels_ptr as usize, &pixels)
+        .map_err(|_| Error::new("capture_screen: memory write failed"))?;
+    write_u32(&memory, &mut caller, width_ptr, width)?;
+    write_u32(&memory, &mut caller, height_ptr, height)?;
+    Ok(ESUCCESS)
+}
 
 /// Display decoded RGB pixels in a new window.
 pub fn fullerene_show_image(

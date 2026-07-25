@@ -328,6 +328,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_read_file_range,
         wasm_read_directory,
         wasm_get_monotonic_ns,
+        solvent::capture_screen,
         wasm_show_image,
         wasm_show_text,
         wasm_show_error,
@@ -801,6 +802,17 @@ fn nozzle_services() -> nozzle::ShellServices {
                 tline!(ctx.terminal, "Loading WASM binary: {}", path);
                 let code = run_wasm_app(path, &wasm_args);
                 tline!(ctx.terminal, "WASI process exited with code {}", code);
+            }
+            "emulsion" => {
+                let wasm_args = if ctx.args.len() > 1 {
+                    ctx.args[1..].to_vec()
+                } else {
+                    alloc::vec!["capture"]
+                };
+                let mut args = alloc::vec!["/apps/emulsion.wasm"];
+                args.extend(wasm_args);
+                let code = run_wasm_app("/apps/emulsion.wasm", &args);
+                tline!(ctx.terminal, "Emulsion exited with code {}", code);
             }
             "usb_rescan" => {
                 ctx.terminal.write_str(

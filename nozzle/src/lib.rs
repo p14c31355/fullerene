@@ -254,6 +254,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_run_busybox
         ),
         ("wasm", "Run a WASM/WASI binary", builtins::cmd_wasm),
+        (
+            "emulsion",
+            "Capture the desktop with the Emulsion WASM app",
+            builtins::cmd_emulsion
+        ),
     )
 }
 

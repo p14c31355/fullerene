@@ -7,6 +7,9 @@ pub const EXT: [Option<KeyCode>; 128] = {
     t[0x38] = Some(Alt);
     t[0x5B] = Some(SuperLeft);
     t[0x5C] = Some(SuperRight);
+    // Set 1 Print Screen is emitted as E0 37; input_loop preserves the
+    // extended bit in the high bit of the raw scancode.
+    t[0x37] = Some(PrintScreen);
     t
 };
 

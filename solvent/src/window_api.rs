@@ -141,6 +141,43 @@ pub fn framebuffer_dims() -> (u32, u32) {
     (width, height)
 }
 
+/// Copy the compositor's clean RAM back buffer for a screen capture.
+///
+/// The cursor is intentionally omitted: the back buffer is the same stable,
+/// cursor-free image used to restore the GOP framebuffer during cursor-only
+/// updates. This also avoids reading from device-backed framebuffer memory.
+pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
+    const MAX_CAPTURE_RGBA_BYTES: usize = 32 * 1024 * 1024;
+    let (width, height, _framebuffer_stride) = *FB_DIMS.lock();
+    let back = crate::BACK_BUFFER.lock();
+    let back = back.as_ref()?;
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let pixel_count = width_usize.checked_mul(height_usize)?;
+    // BACK_BUFFER is a tightly packed width*height image, even when the GOP
+    // framebuffer has padding at the end of each physical scanline.
+    if width == 0
+        || height == 0
+        || back.len() < pixel_count
+        || pixel_count > MAX_CAPTURE_RGBA_BYTES / 4
+    {
+        return None;
+    }
+
+    let mut pixels = alloc::vec::Vec::with_capacity(pixel_count * 4);
+    for row in 0..height_usize {
+        let start = row * width_usize;
+        let end = start + width_usize;
+        for &pixel in &back.as_slice()[start..end] {
+            pixels.push(((pixel >> 16) & 0xFF) as u8);
+            pixels.push(((pixel >> 8) & 0xFF) as u8);
+            pixels.push((pixel & 0xFF) as u8);
+            pixels.push(0xFF);
+        }
+    }
+    Some((width, height, pixels))
+}
+
 pub fn ensure_terminal_window() -> Option<WindowId> {
     let mut runtime = RUNTIME_CONTEXT.runtime();
     let runtime = runtime.as_mut()?;
