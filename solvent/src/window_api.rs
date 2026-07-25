@@ -173,7 +173,24 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     // become part of the lock ordering.
     let mut pixels = alloc::vec::Vec::with_capacity(pixel_count * 4);
     let back_guard = crate::BACK_BUFFER.try_lock()?;
+    // Render updates FB_DIMS before taking BACK_BUFFER, so use try_lock here
+    // to avoid acquiring the two locks in the opposite order and deadlocking
+    // a concurrent render.
+    let (current_width, current_height, _) = *FB_DIMS.try_lock()?;
+    if (current_width, current_height) != (width, height) {
+        return None;
+    }
     let back = back_guard.as_ref()?;
+    let width_usize = current_width as usize;
+    let height_usize = current_height as usize;
+    let current_pixel_count = width_usize.checked_mul(height_usize)?;
+    if current_width == 0
+        || current_height == 0
+        || back.len() < current_pixel_count
+        || current_pixel_count > MAX_CAPTURE_RGBA_BYTES / 4
+    {
+        return None;
+    }
     for row in 0..height_usize {
         let start = row * width_usize;
         let end = start + width_usize;
@@ -184,7 +201,7 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
             pixels.push(0xFF);
         }
     }
-    Some((width, height, pixels))
+    Some((current_width, current_height, pixels))
 }
 
 pub fn ensure_terminal_window() -> Option<WindowId> {

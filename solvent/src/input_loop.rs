@@ -97,11 +97,15 @@ pub fn poll_keyboard() {
         // as a PS/2 modifier. The resulting E0 37 Print Screen event is the
         // stable signal for Fn+PrtSc on laptops, so handle it before normal
         // focused-window routing.
-        if pressed && scancode_to_resonance_keycode(scancode) == resonance::KeyCode::PrintScreen {
-            if let Some(run_wasm) = RUNTIME_CONTEXT.callback_snapshot().run_wasm {
-                let args = ["/apps/emulsion.wasm", "capture"];
-                let _ = run_wasm("/apps/emulsion.wasm", &args);
+        if scancode_to_resonance_keycode(scancode) == resonance::KeyCode::PrintScreen {
+            if pressed {
+                if let Some(run_wasm) = RUNTIME_CONTEXT.callback_snapshot().run_wasm {
+                    let args = ["/apps/emulsion.wasm", "capture"];
+                    let _ = run_wasm("/apps/emulsion.wasm", &args);
+                }
             }
+            // Swallow both halves of the Print Screen sequence so the key-up
+            // event cannot leak into the focused application.
             continue;
         }
 

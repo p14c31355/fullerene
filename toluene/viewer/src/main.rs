@@ -5,6 +5,11 @@ const VIEWER_BUILD_ID: &str = "2026-07-26-qoi-full-resolution-1";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
+const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_SOURCE_IMAGE_WIDTH: u32 = 16_384;
+const MAX_SOURCE_IMAGE_HEIGHT: u32 = 16_384;
+const MAX_SOURCE_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
+const MAX_IMAGE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
 
 #[link(wasm_import_module = "fullerene")]
 unsafe extern "C" {
@@ -126,9 +131,8 @@ fn try_image(path: &str, data: &[u8]) -> bool {
     const MAX_IMAGE_WIDTH: u32 = 800;
     const MAX_IMAGE_HEIGHT: u32 = 600;
 
-    // Inspect dimensions before decoding so malformed images get a useful
-    // error. There is no arbitrary source-resolution ceiling: the decoded
-    // image is reduced to the compositor's client area below.
+    // Inspect dimensions before decoding so malformed or hostile images get
+    // a useful error before the decoder allocates a full-resolution surface.
     let dimensions = image::ImageReader::new(Cursor::new(data))
         .with_guessed_format()
         .ok()
@@ -147,11 +151,25 @@ fn try_image(path: &str, data: &[u8]) -> bool {
         present_error(&title, &report);
         return true;
     }
+    if data.len() > MAX_IMAGE_BYTES || !source_dimensions_allowed(source_w, source_h) {
+        let title = format!("Image Viewer: {}", path);
+        let report = format!(
+            "The image is too large to decode safely.\nResolution: {}x{}\nMaximum pixels: {}",
+            source_w, source_h, MAX_SOURCE_IMAGE_PIXELS
+        );
+        present_error(&title, &report);
+        return true;
+    }
 
-    let Ok(reader) = image::ImageReader::new(Cursor::new(data)).with_guessed_format() else {
+    let Ok(mut reader) = image::ImageReader::new(Cursor::new(data)).with_guessed_format() else {
         println!("viewer: decoder setup failed");
         return false;
     };
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_SOURCE_IMAGE_WIDTH);
+    limits.max_image_height = Some(MAX_SOURCE_IMAGE_HEIGHT);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
+    reader.limits(limits);
     println!("viewer: decode enter");
     let Ok(img) = reader.decode() else {
         println!("viewer: decode failed");
@@ -182,6 +200,14 @@ fn try_image(path: &str, data: &[u8]) -> bool {
     let result = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
     println!("viewer: show_image exit result={}", result);
     true
+}
+
+fn source_dimensions_allowed(width: u32, height: u32) -> bool {
+    width <= MAX_SOURCE_IMAGE_WIDTH
+        && height <= MAX_SOURCE_IMAGE_HEIGHT
+        && u64::from(width)
+            .checked_mul(u64::from(height))
+            .is_some_and(|pixels| pixels <= MAX_SOURCE_IMAGE_PIXELS)
 }
 
 // ── MP4 video ───────────────────────────────────────────────────
@@ -703,5 +729,17 @@ fn print_hex(path: &str, data: &[u8]) {
         print!("{:08x}: ", i * 16);
         for b in chunk { print!("{:02x} ", b); }
         println!();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::source_dimensions_allowed;
+
+    #[test]
+    fn rejects_images_that_would_allocate_too_many_pixels() {
+        assert!(!source_dimensions_allowed(4096, 4097));
+        assert!(!source_dimensions_allowed(16_385, 1));
+        assert!(source_dimensions_allowed(4096, 4096));
     }
 }

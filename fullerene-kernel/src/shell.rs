@@ -136,6 +136,10 @@ fn wasm_read_file_range(
     crate::fs::read_file_range(path, offset, limit)
 }
 
+fn wasm_write_file(path: &str, data: &[u8]) -> Result<(), genome::FsError> {
+    crate::fs::write_entire_file(path, data)
+}
+
 fn wasm_read_directory(
     path: &str,
 ) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, genome::FsError> {
@@ -342,6 +346,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_file_size,
         wasm_read_file_range,
         wasm_read_directory,
+        wasm_write_file,
         wasm_get_monotonic_ns,
         solvent::framebuffer_dims,
         wasm_capture_screen,
