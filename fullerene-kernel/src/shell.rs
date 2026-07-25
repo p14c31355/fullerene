@@ -215,6 +215,50 @@ fn wasm_close_window(window_id: i32) -> i32 {
     }
 }
 
+/// Run a WASI application from the kernel without opening a shell window.
+///
+/// This is also used by the desktop file viewer. The shell `wasm` command
+/// remains as a user-facing entry point, but both paths share the same
+/// runtime setup and host callbacks.
+pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
+    let binary = match crate::fs::read_entire_file(path) {
+        Ok(binary) => binary,
+        Err(error) => {
+            if solvent::is_initialized() {
+                let message = alloc::format!("wasm: {}: {:?}\n", path, error);
+                solvent::write_terminal(&message);
+            }
+            return -1;
+        }
+    };
+
+    let capture_output = solvent::is_initialized();
+    if capture_output {
+        begin_wasm_output_capture();
+    }
+    let code = wasi_runtime::runtime::run(
+        &binary,
+        args,
+        wasm_write_stdout,
+        wasm_write_stderr,
+        wasm_read_stdin,
+        wasm_yield_now,
+        wasm_read_entire_file,
+        wasm_read_directory,
+        wasm_get_monotonic_ns,
+        wasm_show_image,
+        wasm_show_text,
+        wasm_show_error,
+        wasm_create_window,
+        wasm_update_window,
+        wasm_close_window,
+    );
+    if capture_output && let Some(output) = take_wasm_output() {
+        solvent::write_terminal(&output);
+    }
+    code
+}
+
 /// Helper: write a formatted line to the terminal.
 macro_rules! tline {
     ($t:expr, $($arg:tt)*) => {{
@@ -670,44 +714,9 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
                 let path = ctx.args[1];
                 tline!(ctx.terminal, "Loading WASM binary: {}", path);
-                match crate::fs::read_entire_file(path) {
-                    Ok(binary) => {
-                        let capture_output = solvent::is_initialized();
-                        if capture_output {
-                            begin_wasm_output_capture();
-                        }
-                        let wasm_args: alloc::vec::Vec<&str> =
-                            ctx.args.iter().skip(1).copied().collect();
-                        let code = wasi_runtime::runtime::run(
-                            &binary,
-                            &wasm_args,
-                            wasm_write_stdout,
-                            wasm_write_stderr,
-                            wasm_read_stdin,
-                            wasm_yield_now,
-                            wasm_read_entire_file,
-                            wasm_read_directory,
-                            wasm_get_monotonic_ns,
-                            wasm_show_image,
-                            wasm_show_text,
-                            wasm_show_error,
-                            wasm_create_window,
-                            wasm_update_window,
-                            wasm_close_window,
-                        );
-                        if capture_output && let Some(output) = take_wasm_output() {
-                            ctx.terminal.write_str(&output);
-                        }
-                        tline!(ctx.terminal, "WASI process exited with code {}", code);
-                    }
-                    Err(e) => {
-                        let err_str = match e {
-                            crate::fs::FsError::FileNotFound => "file not found",
-                            _ => "read failed",
-                        };
-                        tline!(ctx.terminal, "wasm: {}: {}", path, err_str);
-                    }
-                }
+                let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
+                let code = run_wasm_app(path, &wasm_args);
+                tline!(ctx.terminal, "WASI process exited with code {}", code);
             }
             "usb_rescan" => {
                 ctx.terminal.write_str(
@@ -1080,23 +1089,17 @@ pub fn shell_main() {
     petroleum::debug_log!("Shell main started");
 
     let services = nozzle_services();
-    let initial_command = solvent::take_pending_shell_command();
 
     if solvent::is_initialized() {
         solvent::run_shell_on_with_command(
             &mut solvent::LatticeTerminal,
             "fullerene> ",
             services,
-            initial_command.as_deref(),
+            None,
         );
     } else {
         let mut terminal = KernelTerminal::new();
-        solvent::run_shell_on_with_command(
-            &mut terminal,
-            "fullerene> ",
-            services,
-            initial_command.as_deref(),
-        );
+        solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     }
 }
 
