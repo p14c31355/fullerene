@@ -36,6 +36,7 @@ struct KLogRing {
 /// emitted while formatting another log message) are forwarded to the
 /// serial port instead of attempting to re-acquire the mutex.
 static IN_KLOG: AtomicBool = AtomicBool::new(false);
+static KLOG_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Write a formatted message to the kernel log buffer.
 ///
@@ -56,6 +57,7 @@ pub fn write_fmt(args: fmt::Arguments<'_>) {
     let _ = fmt::Write::write_fmt(&mut writer, args);
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
+    KLOG_GENERATION.fetch_add(1, Ordering::Release);
 }
 
 /// Write a raw byte slice to the kernel log buffer.
@@ -83,6 +85,12 @@ pub fn write_bytes(bytes: &[u8]) {
     }
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
+    KLOG_GENERATION.fetch_add(1, Ordering::Release);
+}
+
+/// Monotonic change counter used by the timer-driven Klog Live overlay.
+pub fn generation() -> u64 {
+    KLOG_GENERATION.load(Ordering::Acquire)
 }
 
 /// Return the entire kernel log as an owned `Vec<u8>`.
@@ -100,6 +108,48 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
         }
     }
     result
+}
+
+/// Copy the newest log bytes without waiting for the log lock.
+///
+/// This is used from the timer interrupt by the Klog Live emergency overlay.
+/// Returning zero when the writer currently owns the lock is intentional:
+/// an observability path must never turn a suspected deadlock into another
+/// deadlock.
+pub fn try_snapshot_tail(out: &mut [u8]) -> usize {
+    let Some(guard) = KLOG_BUF.try_lock() else {
+        return 0;
+    };
+    let ring = &*guard;
+    let count = ring.len.min(out.len());
+    if count == 0 {
+        return 0;
+    }
+    let start = (ring.head + ring.len - count) % KLOG_CAPACITY;
+    for (offset, byte) in out[..count].iter_mut().enumerate() {
+        *byte = ring.buf[(start + offset) % KLOG_CAPACITY];
+    }
+    count
+}
+
+/// Attempt one allocation-free direct Klog Live repaint.
+///
+/// The normal compositor remains responsible for ordinary rendering. This
+/// fallback is called only from the timer interrupt while Klog Live is open,
+/// and deliberately avoids KERNEL/runtime/framebuffer locks.
+pub fn try_render_live_overlay() -> bool {
+    let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
+        return false;
+    };
+    let mut text = [0u8; 4096];
+    let len = try_snapshot_tail(&mut text);
+    if len == 0 {
+        return false;
+    }
+    unsafe {
+        framebuffer.draw_diagnostic_panel(60, 40, 800, 480, b"KLog Live (emergency)", &text[..len]);
+    }
+    true
 }
 
 /// Write kernel log to a string-sink callback without heap allocation.

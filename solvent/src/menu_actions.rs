@@ -378,6 +378,7 @@ pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
         "KLog Live",
     );
     rt.klog_live_window = Some(id);
+    crate::runtime_context::KLOG_LIVE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
     rt.klog_live_dirty = true;
     rt.frame_due = true;
     rt.desktop.wm.raise_to_top(id);
@@ -391,6 +392,8 @@ pub fn render_klog_live(rt: &mut RuntimeState) {
         Some(w) => w,
         None => {
             rt.klog_live_window = None;
+            crate::runtime_context::KLOG_LIVE_ACTIVE
+                .store(false, core::sync::atomic::Ordering::Release);
             return;
         }
     };

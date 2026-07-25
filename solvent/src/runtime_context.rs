@@ -43,6 +43,11 @@ pub(crate) static BACK_BUFFER: Mutex<Option<petroleum::PageBuf<u32>>> = Mutex::n
 /// When enabled, the kernel log ring buffer is periodically written to `/mnt/klog.txt`.
 pub static KLOG_SAVE_ENABLED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+/// Set while the Klog Live window is open. The kernel timer uses this atomic
+/// flag to refresh a lock-free emergency overlay even if the normal event loop
+/// is blocked by a synchronous kernel operation.
+pub(crate) static KLOG_LIVE_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
 

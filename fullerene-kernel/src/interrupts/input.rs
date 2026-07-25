@@ -3,8 +3,11 @@
 //! This module handles keyboard and mouse interrupts.
 
 use super::apic::send_eoi;
+use core::sync::atomic::{AtomicU64, Ordering};
 use petroleum::port_read_u8;
 use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue};
+
+static LAST_KLOG_LIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Macro to create input device interrupt handlers
 macro_rules! define_input_interrupt_handler {
@@ -36,12 +39,22 @@ define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
     nitrogen::ps2::mouse::handle_mouse_data(byte);
 });
 
-/// Timer interrupt handler (no preemption - scheduler loop handles yielding)
+/// Timer interrupt handler (no preemption - scheduler loop handles yielding).
 /// Also detects NMI MMIO watchdog recovery and redirects to the scheduler loop.
 #[unsafe(no_mangle)]
 pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
     // Increment global tick counter (lock-free atomic increment)
-    super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let tick = super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    // Klog Live has a direct, lock-free emergency overlay so it can continue
+    // repainting while the normal scheduler/compositor is blocked.
+    if tick % 50 == 0 && solvent::is_klog_live_active() {
+        let generation = crate::klog::generation();
+        let last = LAST_KLOG_LIVE_GENERATION.load(Ordering::Acquire);
+        if generation != last && crate::klog::try_render_live_overlay() {
+            LAST_KLOG_LIVE_GENERATION.store(generation, Ordering::Release);
+        }
+    }
 
     if nitrogen::mmio::mmio_watchdog_recovery_triggered() {
         petroleum::serial::serial_log(format_args!(

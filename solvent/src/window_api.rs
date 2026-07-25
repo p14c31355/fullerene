@@ -102,6 +102,11 @@ pub fn mark_klog_live_dirty() {
     }
 }
 
+/// Lock-free state query for the timer-driven emergency Klog overlay.
+pub fn is_klog_live_active() -> bool {
+    crate::runtime_context::KLOG_LIVE_ACTIVE.load(core::sync::atomic::Ordering::Acquire)
+}
+
 pub fn close_window(id: WindowId) -> bool {
     RUNTIME_CONTEXT
         .runtime()
