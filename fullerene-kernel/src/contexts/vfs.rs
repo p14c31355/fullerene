@@ -740,16 +740,18 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
             return Err(error);
         }
     };
+    let mut read_calls = 0usize;
+    let mut write_calls = 0usize;
+    let mut source_bytes = 0usize;
+    let mut source_fingerprint = 0xcbf29ce484222325u64;
+    let mut destination_bytes = 0usize;
+    let mut destination_fingerprint = 0xcbf29ce484222325u64;
+    let mut source_head = [0u8; 8];
+    let mut source_head_len = 0usize;
+    let mut source_tail = [0u8; 8];
+    let mut source_tail_len = 0usize;
     let result = (|| {
         let mut buffer = [0; 4096];
-        let mut read_calls = 0usize;
-        let mut write_calls = 0usize;
-        let mut source_bytes = 0usize;
-        let mut source_fingerprint = 0xcbf29ce484222325u64;
-        let mut source_head = [0u8; 8];
-        let mut source_head_len = 0usize;
-        let mut source_tail = [0u8; 8];
-        let mut source_tail_len = 0usize;
         loop {
             match read(source_fd, &mut buffer) {
                 Ok(0) => {
@@ -797,6 +799,12 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
                             return Err(FsError::InvalidInput);
                         }
                         write_calls += 1;
+                        for &byte in &data[..written] {
+                            destination_fingerprint ^= u64::from(byte);
+                            destination_fingerprint =
+                                destination_fingerprint.wrapping_mul(0x100000001b3);
+                        }
+                        destination_bytes += written;
                         crate::klog_fmt!(
                             "[VFS-DIAG] copy write destination={} call={} bytes={} remaining={}\n",
                             destination,
@@ -814,24 +822,25 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
     let source_close = close(source_fd);
     let destination_close = close(destination_fd);
     let result = result.and(source_close).and(destination_close);
-    if result.is_ok() {
-        match crate::fs::read_entire_file(&destination) {
-            Ok(data) => {
-                let (len, fingerprint, edges) = crate::fs::diagnostic_fingerprint(&data);
-                crate::klog_fmt!(
-                    "[VFS-DIAG] copy destination-check path={} len={} fnv=0x{:016x} edges={}\n",
-                    destination,
-                    len,
-                    fingerprint,
-                    edges
-                );
-            }
-            Err(error) => crate::klog_fmt!(
-                "[VFS-DIAG] copy destination-check failed path={} error={:?}\n",
-                destination,
-                error
-            ),
-        }
+    crate::klog_fmt!(
+        "[VFS-DIAG] copy destination-summary path={} writes={} bytes={} fnv=0x{:016x}\n",
+        destination,
+        write_calls,
+        destination_bytes,
+        destination_fingerprint
+    );
+    if result.is_ok()
+        && (source_bytes != destination_bytes || source_fingerprint != destination_fingerprint)
+    {
+        crate::klog_fmt!(
+            "[VFS-DIAG] copy mismatch source={} destination={} source_bytes={} destination_bytes={} source_fnv=0x{:016x} destination_fnv=0x{:016x}\n",
+            source,
+            destination,
+            source_bytes,
+            destination_bytes,
+            source_fingerprint,
+            destination_fingerprint
+        );
     }
     crate::klog_fmt!(
         "[VFS-DIAG] copy end source={} destination={} result={:?}\n",

@@ -223,7 +223,8 @@ impl BootFramebuffer {
     /// area.
     ///
     /// This intentionally bypasses the normal compositor and allocators. It
-    /// This does not draw a title, border, or any other second window. It is
+    /// draws only the log text; it does not draw a title, border, or any other
+    /// second window. It is
     /// used only by the kernel's timer path so the existing Klog Live window
     /// remains readable when the scheduler or compositor is blocked. The
     /// caller must ensure that the framebuffer mapping is valid for the
@@ -255,9 +256,14 @@ impl BootFramebuffer {
         if max_cols == 0 || max_lines == 0 {
             return;
         }
+        if max_cols.saturating_mul(max_lines) > 100 * 29 {
+            return;
+        }
 
         unsafe {
-            self.draw_text(x, y, b"--- KLog Live (auto-refresh) ---", 1, body_fg);
+            let header = b"--- KLog Live (auto-refresh) ---";
+            let header_len = header.len().min(max_cols as usize);
+            self.draw_text(x, y, &header[..header_len], 1, body_fg);
         }
 
         // Count complete lines and skip older lines so the newest messages

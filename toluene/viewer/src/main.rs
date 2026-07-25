@@ -278,17 +278,19 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         })
     else {
         println!("viewer: mp4 video track unavailable");
-        return true;
+        return present_mp4_failure(path, size_mb, dur, 0, 0, "video track unavailable");
     };
     println!("viewer: mp4 video track scan exit id={}", track_id);
     println!("Resolution: {}x{}", width, height);
     if width == 0 || height == 0 || width > 1920 || height > 1080 {
         println!("viewer: mp4 rejected resolution");
-        return true;
+        return present_mp4_failure(path, size_mb, dur, width, height, "unsupported resolution");
     }
     let sample_count = reader.sample_count(track_id).ok().unwrap_or(0);
     println!("viewer: mp4 sample count={}", sample_count);
-    if sample_count == 0 { return true; }
+    if sample_count == 0 {
+        return present_mp4_failure(path, size_mb, dur, width, height, "video has no samples");
+    }
 
     let length_size = usize::from(avcc.length_size_minus_one) + 1;
     println!(
@@ -301,7 +303,7 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         || avcc.sequence_parameter_sets.is_empty()
         || avcc.picture_parameter_sets.is_empty()
     {
-        return true;
+        return present_mp4_failure(path, size_mb, dur, width, height, "invalid AVC configuration");
     }
 
     println!("viewer: mp4 sample read enter");
@@ -312,17 +314,17 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         Ok(Some(sample)) => sample,
         Ok(None) => {
             println!("viewer: mp4 sample read returned none id=1");
-            return true;
+            return present_mp4_failure(path, size_mb, dur, width, height, "first sample unavailable");
         }
         Err(error) => {
             println!("viewer: mp4 sample read failed id=1 error={:?}", error);
-            return true;
+            return present_mp4_failure(path, size_mb, dur, width, height, "first sample read failed");
         }
     };
     println!("viewer: mp4 sample read exit bytes={}", sample.bytes.len());
     if sample.bytes.len() > MAX_FIRST_SAMPLE_BYTES {
         println!("viewer: mp4 sample rejected size>{} bytes", MAX_FIRST_SAMPLE_BYTES);
-        return true;
+        return present_mp4_failure(path, size_mb, dur, width, height, "first sample is too large");
     }
 
     let mut decoder = rust_h264::decoder::Decoder::new();
@@ -342,7 +344,7 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     for nal in rust_h264::nal::parse_annex_b(&config_stream) {
         if decoder.decode_nal(&nal).is_err() {
             println!("viewer: mp4 decoder config failed");
-            return true;
+            return present_mp4_failure(path, size_mb, dur, width, height, "decoder configuration failed");
         }
     }
     println!("viewer: mp4 decoder config exit");
@@ -352,13 +354,13 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     println!("viewer: mp4 avcc parse exit nals={}", nals.len());
     if nals.len() > MAX_NALS_PER_SAMPLE {
         println!("viewer: mp4 sample rejected nals>{}", MAX_NALS_PER_SAMPLE);
-        return true;
+        return present_mp4_failure(path, size_mb, dur, width, height, "sample has too many NAL units");
     }
     let mut rendered = false;
     for nal in &nals {
         if nal.rbsp.len() > MAX_FIRST_SAMPLE_BYTES {
             println!("viewer: mp4 nal rejected size>{} bytes", MAX_FIRST_SAMPLE_BYTES);
-            return true;
+            return present_mp4_failure(path, size_mb, dur, width, height, "NAL unit is too large");
         }
         println!("viewer: mp4 decode nal enter bytes={}", nal.rbsp.len());
         if let Ok(Some(frame)) = decoder.decode_nal(nal) {
@@ -386,19 +388,38 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         }
     }
     if !rendered {
-        let title = format!("Video: {}", path);
-        let report = format!(
-            "File: {}\nType: MP4 video\nSize: {:.1} MB\nDuration: {}\nResolution: {}x{}\n\nFirst frame could not be decoded safely.",
-            path, size_mb, dur, width, height
+        return present_mp4_failure(
+            path,
+            size_mb,
+            dur,
+            width,
+            height,
+            "first frame could not be decoded safely",
         );
-        unsafe {
-            show_text(
-                title.as_ptr(),
-                title.len() as u32,
-                report.as_ptr(),
-                report.len() as u32,
-            );
-        }
+    }
+    true
+}
+
+fn present_mp4_failure(
+    path: &str,
+    size_mb: f64,
+    duration: String,
+    width: u32,
+    height: u32,
+    reason: &str,
+) -> bool {
+    let title = format!("Video: {}", path);
+    let report = format!(
+        "File: {}\nType: MP4 video\nSize: {:.1} MB\nDuration: {}\nResolution: {}x{}\n\n{}.",
+        path, size_mb, duration, width, height, reason
+    );
+    unsafe {
+        show_text(
+            title.as_ptr(),
+            title.len() as u32,
+            report.as_ptr(),
+            report.len() as u32,
+        );
     }
     true
 }

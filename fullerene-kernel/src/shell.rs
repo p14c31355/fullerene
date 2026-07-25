@@ -7,10 +7,12 @@
 use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 const MAX_WASM_OUTPUT_BYTES: usize = 256 * 1024;
 static WASM_OUTPUT: Mutex<Option<String>> = Mutex::new(None);
+static LAST_WASM_OUTPUT_REFRESH: AtomicU64 = AtomicU64::new(u64::MAX);
 
 fn buffer_wasm_output(data: &[u8]) {
     let mut output = WASM_OUTPUT.lock();
@@ -55,6 +57,20 @@ fn wasm_diag_refresh() {
     }
 }
 
+fn wasm_diag_refresh_throttled() {
+    if !solvent::is_initialized() {
+        return;
+    }
+    let now = solvent::GLOBAL_TICK.load(Ordering::Relaxed);
+    let last = LAST_WASM_OUTPUT_REFRESH.load(Ordering::Relaxed);
+    if last != u64::MAX && now.wrapping_sub(last) < 5 {
+        return;
+    }
+    LAST_WASM_OUTPUT_REFRESH.store(now, Ordering::Relaxed);
+    solvent::mark_klog_live_dirty();
+    crate::gui::render();
+}
+
 fn wasm_status(message: &str) {
     crate::klog_fmt!("[WASM-DIAG] status {}\n", message);
     nitrogen::debug_status!("WASM", "{}", message);
@@ -64,7 +80,7 @@ fn wasm_status(message: &str) {
 fn wasm_write_stdout(data: &[u8]) {
     if let Ok(text) = core::str::from_utf8(data) {
         crate::klog_fmt!("[WASM-DIAG] stdout {}", text);
-        wasm_diag_refresh();
+        wasm_diag_refresh_throttled();
     }
     if solvent::is_initialized() {
         buffer_wasm_output(data);
@@ -76,7 +92,7 @@ fn wasm_write_stdout(data: &[u8]) {
 fn wasm_write_stderr(data: &[u8]) {
     if let Ok(text) = core::str::from_utf8(data) {
         crate::klog_fmt!("[WASM-DIAG] stderr {}", text);
-        wasm_diag_refresh();
+        wasm_diag_refresh_throttled();
     }
     if solvent::is_initialized() {
         buffer_wasm_output(data);
@@ -106,19 +122,6 @@ fn wasm_yield_now() {
     } else {
         kernel_syscall(22, 0, 0, 0);
     }
-}
-
-fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
-    crate::klog_fmt!("[WASM-DIAG] host read callback enter path={}\n", path);
-    wasm_diag_refresh();
-    let result = crate::fs::read_entire_file(path);
-    crate::klog_fmt!(
-        "[WASM-DIAG] host read callback exit path={} result={:?}\n",
-        path,
-        result.as_ref().map(alloc::vec::Vec::len)
-    );
-    wasm_diag_refresh();
-    result
 }
 
 fn wasm_file_size(path: &str) -> Result<u64, genome::FsError> {
@@ -321,7 +324,6 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_write_stderr,
         wasm_read_stdin,
         wasm_yield_now,
-        wasm_read_entire_file,
         wasm_file_size,
         wasm_read_file_range,
         wasm_read_directory,

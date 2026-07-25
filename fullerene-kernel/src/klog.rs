@@ -145,7 +145,7 @@ pub fn try_render_live_surface() -> bool {
     let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
         return false;
     };
-    let mut text = [0u8; 4096];
+    let mut text = [0u8; 2048];
     let len = try_snapshot_tail(&mut text);
     if len == 0 {
         return false;

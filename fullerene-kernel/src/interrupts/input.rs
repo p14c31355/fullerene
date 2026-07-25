@@ -46,16 +46,6 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
     // Increment global tick counter (lock-free atomic increment)
     let tick = super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Klog Live has a direct, lock-free repaint path so the existing window
-    // can continue updating while the normal scheduler/compositor is blocked.
-    if tick % 50 == 0 && solvent::is_klog_live_active() {
-        let generation = crate::klog::generation();
-        let last = LAST_KLOG_LIVE_GENERATION.load(Ordering::Acquire);
-        if generation != last && crate::klog::try_render_live_surface() {
-            LAST_KLOG_LIVE_GENERATION.store(generation, Ordering::Release);
-        }
-    }
-
     if nitrogen::mmio::mmio_watchdog_recovery_triggered() {
         petroleum::serial::serial_log(format_args!(
             "[timer_handler] NMI recovery triggered — jumping to scheduler_loop\n"
@@ -76,6 +66,18 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
             // If no restart target is available, leave the trigger set so a
             // later recovery attempt can succeed.
             nitrogen::mmio::clear_watchdog_recovery_trigger();
+            send_eoi();
+            return;
+        }
+    }
+
+    // Klog Live has a direct, lock-free repaint path so the existing window
+    // can continue updating while the normal scheduler/compositor is blocked.
+    if tick % 50 == 0 && solvent::is_klog_live_active() {
+        let generation = crate::klog::generation();
+        let last = LAST_KLOG_LIVE_GENERATION.load(Ordering::Acquire);
+        if generation != last && crate::klog::try_render_live_surface() {
+            LAST_KLOG_LIVE_GENERATION.store(generation, Ordering::Release);
         }
     }
 

@@ -203,17 +203,22 @@ pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
 pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     const MAX_FILE_SIZE: usize = 16 * 1024 * 1024;
     const TIMEOUT_MS: u64 = 15_000;
+    const WASM_DIAGNOSTICS: bool = cfg!(debug_assertions);
     let reported_size = file_size(path);
-    crate::klog_fmt!(
-        "[WASM-DIAG] read_entire begin path={} file_size={:?}\n",
-        path,
-        reported_size
-    );
-    if matches!(reported_size, Ok(size) if size > MAX_FILE_SIZE as u64) {
+    if WASM_DIAGNOSTICS {
         crate::klog_fmt!(
-            "[WASM-DIAG] read_entire reject path={} reason=too-large\n",
-            path
+            "[WASM-DIAG] read_entire begin path={} file_size={:?}\n",
+            path,
+            reported_size
         );
+    }
+    if matches!(reported_size, Ok(size) if size > MAX_FILE_SIZE as u64) {
+        if WASM_DIAGNOSTICS {
+            crate::klog_fmt!(
+                "[WASM-DIAG] read_entire reject path={} reason=too-large\n",
+                path
+            );
+        }
         return Err(FsError::DiskFull);
     }
     let tsc_per_ms = solvent::get_tsc_per_ms();
@@ -223,22 +228,28 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     } else {
         0
     };
-    crate::klog_fmt!("[WASM-DIAG] read_entire open begin path={}\n", path);
+    if WASM_DIAGNOSTICS {
+        crate::klog_fmt!("[WASM-DIAG] read_entire open begin path={}\n", path);
+    }
     let mut fd = match open_file(path) {
         Ok(fd) => {
-            crate::klog_fmt!(
-                "[WASM-DIAG] read_entire open exit path={} fd={}\n",
-                path,
-                fd.fd
-            );
+            if WASM_DIAGNOSTICS {
+                crate::klog_fmt!(
+                    "[WASM-DIAG] read_entire open exit path={} fd={}\n",
+                    path,
+                    fd.fd
+                );
+            }
             fd
         }
         Err(error) => {
-            crate::klog_fmt!(
-                "[WASM-DIAG] read_entire open error path={} error={:?}\n",
-                path,
-                error
-            );
+            if WASM_DIAGNOSTICS {
+                crate::klog_fmt!(
+                    "[WASM-DIAG] read_entire open error path={} error={:?}\n",
+                    path,
+                    error
+                );
+            }
             return Err(error);
         }
     };
@@ -251,7 +262,7 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
             break Err(FsError::Io);
         }
         let call = read_calls + 1;
-        if call <= 4 || call.is_multiple_of(64) {
+        if WASM_DIAGNOSTICS && (call <= 4 || call.is_multiple_of(64)) {
             crate::klog_fmt!(
                 "[WASM-DIAG] read_entire read begin path={} call={} offset={}\n",
                 path,
@@ -261,19 +272,21 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
         }
         match read_file(&mut fd, &mut chunk) {
             Ok(0) => {
-                crate::klog_fmt!(
-                    "[WASM-DIAG] read_entire eof path={} calls={} bytes={}\n",
-                    path,
-                    read_calls,
-                    total_bytes
-                );
+                if WASM_DIAGNOSTICS {
+                    crate::klog_fmt!(
+                        "[WASM-DIAG] read_entire eof path={} calls={} bytes={}\n",
+                        path,
+                        read_calls,
+                        total_bytes
+                    );
+                }
                 break Ok(buf);
             }
             Ok(n) if buf.len() + n <= MAX_FILE_SIZE => {
                 read_calls += 1;
                 total_bytes += n;
                 buf.extend_from_slice(&chunk[..n]);
-                if call <= 4 || call.is_multiple_of(64) {
+                if WASM_DIAGNOSTICS && (call <= 4 || call.is_multiple_of(64)) {
                     crate::klog_fmt!(
                         "[WASM-DIAG] read_entire read exit path={} call={} bytes={} total={}\n",
                         path,
@@ -289,7 +302,7 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
     };
     let _ = close_file(fd);
     match &result {
-        Ok(data) => {
+        Ok(data) if WASM_DIAGNOSTICS => {
             let (len, fingerprint, edges) = diagnostic_fingerprint(data);
             crate::klog_fmt!(
                 "[WASM-DIAG] read_entire done path={} len={} fnv=0x{:016x} edges={}\n",
@@ -299,13 +312,14 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
                 edges
             );
         }
-        Err(error) => crate::klog_fmt!(
+        Err(error) if WASM_DIAGNOSTICS => crate::klog_fmt!(
             "[WASM-DIAG] read_entire error path={} calls={} bytes={} error={:?}\n",
             path,
             read_calls,
             total_bytes,
             error
         ),
+        _ => {}
     }
     result
 }

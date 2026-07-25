@@ -78,7 +78,6 @@ pub enum WasiFd {
 // ── WASI context ─────────────────────────────────────────────────
 
 const MAX_OPEN_FDS: usize = 128;
-const MAX_OPEN_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
 const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
 const MAX_TEXT_BYTES: u32 = 512 * 1024;
@@ -90,12 +89,10 @@ pub struct WasiCtx {
     pub env: Vec<Vec<u8>>,
     pub fds: BTreeMap<u32, WasiFd>,
     pub next_fd: u32,
-    pub open_bytes: u64,
     pub write_stdout: fn(&[u8]),
     pub write_stderr: fn(&[u8]),
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
-    pub read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
     pub file_size: fn(&str) -> Result<u64, genome::FsError>,
     pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
@@ -115,7 +112,6 @@ impl WasiCtx {
         write_stderr: fn(&[u8]),
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
-        read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
         file_size: fn(&str) -> Result<u64, genome::FsError>,
         read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
@@ -151,12 +147,10 @@ impl WasiCtx {
             env: Vec::new(),
             fds,
             next_fd: 4,
-            open_bytes: 0,
             write_stdout,
             write_stderr,
             read_stdin,
             yield_now,
-            read_entire_file,
             file_size,
             read_file_range,
             read_directory,
@@ -674,7 +668,7 @@ pub fn path_open(
     match size {
         Ok(size) => {
             let fd_count = caller.data().fds.len();
-            if fd_count >= MAX_OPEN_FDS || size > MAX_OPEN_BYTES {
+            if fd_count >= MAX_OPEN_FDS {
                 return Ok(ENOSPC);
             }
             let new_fd = {
