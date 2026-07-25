@@ -70,24 +70,14 @@ pub fn open(path: &str) {
 }
 
 /// Open a simple text window (used for error messages).
-pub(crate) fn show_error_window(
-    rt: &mut crate::RuntimeState,
-    title: &str,
-    msg: &str,
-) {
+pub(crate) fn show_error_window(rt: &mut crate::RuntimeState, title: &str, msg: &str) {
     let cols = 50u32;
     let rows = (msg.lines().count() as u32).min(40) + 3;
     let id = rt
         .desktop
         .wm
         .create_titled_window(100, 60, cols * 8, rows * 16, 0x1a1a0d, title);
-    if let Some(w) = rt
-        .desktop
-        .wm
-        .windows_mut()
-        .iter_mut()
-        .find(|w| w.id == id)
-    {
+    if let Some(w) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
         let _ = crate::menu_actions::render_text_into_surface(
             &mut w.surface,
             msg,

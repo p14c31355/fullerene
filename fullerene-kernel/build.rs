@@ -128,8 +128,14 @@ fn main() {
         .join("wasm32-wasip1")
         .join("release")
         .join("viewer.wasm");
-    println!("cargo:rerun-if-changed={}", viewer_dir.join("src").display());
-    println!("cargo:rerun-if-changed={}", viewer_dir.join("Cargo.toml").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        viewer_dir.join("src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        viewer_dir.join("Cargo.toml").display()
+    );
 
     let mut viewer_built = false;
     if !viewer_cache.exists() {

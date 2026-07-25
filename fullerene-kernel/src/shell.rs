@@ -170,7 +170,13 @@ fn wasm_create_window(title: &str, width: u32, height: u32) -> i32 {
     if !solvent::is_initialized() {
         return -1;
     }
-    let Some(id) = solvent::create_window(title, 120, 80, width.min(800).max(160), height.min(600).max(120)) else {
+    let Some(id) = solvent::create_window(
+        title,
+        120,
+        80,
+        width.min(800).max(160),
+        height.min(600).max(120),
+    ) else {
         return -1;
     };
     id.0 as i32

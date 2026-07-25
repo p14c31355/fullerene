@@ -12,6 +12,6 @@ pub use block::BlockError;
 pub use fs::FsError;
 pub use io::{FileReader, Read, Seek, SeekFrom, read_to_end_with_limit};
 pub use kind::{
-    ArchiveKind, AudioKind, Confidence, DefaultRecognizer, DetectionSource, FileKind,
-    FileIdentification, FileRecognizer, ImageKind, VideoKind, detect,
+    ArchiveKind, AudioKind, Confidence, DefaultRecognizer, DetectionSource, FileIdentification,
+    FileKind, FileRecognizer, ImageKind, VideoKind, detect,
 };

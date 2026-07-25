@@ -1112,10 +1112,7 @@ pub fn fullerene_update_window(
 }
 
 /// Close a window previously created with `create_window`.
-pub fn fullerene_close_window(
-    caller: Caller<'_, WasiCtx>,
-    window_id: i32,
-) -> Result<u32, Error> {
+pub fn fullerene_close_window(caller: Caller<'_, WasiCtx>, window_id: i32) -> Result<u32, Error> {
     let code = (caller.data().close_window)(window_id);
     Ok(code as u32)
 }

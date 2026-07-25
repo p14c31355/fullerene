@@ -16,14 +16,10 @@ pub fn present(rt: &mut crate::RuntimeState, document: Document, _name: &str, pa
 }
 
 fn present_text(rt: &mut crate::RuntimeState, text: String, path: &str) {
-    let id = rt.desktop.wm.create_titled_window(
-        100,
-        80,
-        80 * 8,
-        25 * 16,
-        0x0a0a1e,
-        "Text Editor",
-    );
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(100, 80, 80 * 8, 25 * 16, 0x0a0a1e, "Text Editor");
     if let Some(old_id) = rt.editor_window
         && rt.desktop.wm.windows().iter().any(|w| w.id == old_id)
     {
@@ -38,11 +34,7 @@ fn present_text(rt: &mut crate::RuntimeState, text: String, path: &str) {
     rt.explorer_dirty = true;
 }
 
-fn present_binary(
-    rt: &mut crate::RuntimeState,
-    doc: super::document::BinaryDocument,
-    name: &str,
-) {
+fn present_binary(rt: &mut crate::RuntimeState, doc: super::document::BinaryDocument, name: &str) {
     let mut msg = format!("File: {}\nSize: {} bytes\n\n", name, doc.size);
     for (off, chunk) in doc.preview.chunks(16).enumerate() {
         msg.push_str(&format!("{:08x}: ", off * 16));

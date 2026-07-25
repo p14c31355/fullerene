@@ -153,10 +153,7 @@ fn detect_by_magic(prefix: &[u8], ext: &str) -> Option<(FileKind, DetectionSourc
     if prefix.starts_with(b"fLaC") {
         return Some((FileKind::Audio(AudioKind::Flac), DetectionSource::Magic));
     }
-    if prefix.starts_with(b"RIFF")
-        && prefix.len() >= 12
-        && &prefix[8..12] == b"WAVE"
-    {
+    if prefix.starts_with(b"RIFF") && prefix.len() >= 12 && &prefix[8..12] == b"WAVE" {
         return Some((FileKind::Audio(AudioKind::Wav), DetectionSource::Magic));
     }
     if prefix.len() >= 3 && &prefix[..3] == b"ID3" {
@@ -228,10 +225,16 @@ impl FileRecognizer for DefaultRecognizer {
         if let Some((kind, _)) = detect_by_magic(header, ext) {
             let ext_kind = detect_by_ext(ext);
             let (confidence, source) = match ext_kind {
-                Some((ek, _)) if ek == kind => (Confidence::Confirmed, DetectionSource::ExtensionAndMagic),
+                Some((ek, _)) if ek == kind => {
+                    (Confidence::Confirmed, DetectionSource::ExtensionAndMagic)
+                }
                 _ => (Confidence::Magic, DetectionSource::Magic),
             };
-            return Some(FileIdentification { kind, confidence, source });
+            return Some(FileIdentification {
+                kind,
+                confidence,
+                source,
+            });
         }
         // Fall back to extension.
         if let Some((kind, source)) = detect_by_ext(ext) {
@@ -368,7 +371,10 @@ mod tests {
 
     #[test]
     fn detects_mp4_by_magic() {
-        let id = DefaultRecognizer.recognize("video.bin", b"\x00\x00\x00\x1cftypmp42\x00\x00\x00\x00mp42mp41");
+        let id = DefaultRecognizer.recognize(
+            "video.bin",
+            b"\x00\x00\x00\x1cftypmp42\x00\x00\x00\x00mp42mp41",
+        );
         assert_eq!(id.unwrap().kind, FileKind::Video(VideoKind::Mp4));
     }
 
@@ -511,10 +517,7 @@ mod tests {
             data: b"\xff\xff\xff\xff".to_vec(),
             position: 0,
         };
-        assert_eq!(
-            detect(&mut reader, "data.bin"),
-            Ok(FileKind::Unknown)
-        );
+        assert_eq!(detect(&mut reader, "data.bin"), Ok(FileKind::Unknown));
     }
 
     // ── FileKind utility ─────────────────────────────────────────
@@ -542,4 +545,3 @@ mod tests {
         assert_eq!(id.kind, FileKind::Archive(ArchiveKind::GzipTar));
     }
 }
-
