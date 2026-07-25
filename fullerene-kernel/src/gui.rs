@@ -60,7 +60,7 @@ pub fn init() {
     solvent::SolventCallbacks {
         heap_extend: Some(|additional| unsafe { crate::heap::extend_kernel_heap(additional) }),
         wall_clock: Some(read_cmos_time),
-        run_wasm: Some(crate::shell::run_wasm_app),
+        run_wasm: Some(crate::shell::spawn_wasm_app),
         vfs_readdir: Some(|path| {
             let entries = crate::contexts::vfs::readdir(path)?;
             let mut result = alloc::vec::Vec::new();

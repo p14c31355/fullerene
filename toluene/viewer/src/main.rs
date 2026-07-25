@@ -4,6 +4,12 @@ use std::io::Cursor;
 #[link(wasm_import_module = "fullerene")]
 unsafe extern "C" {
     fn show_image(width: u32, height: u32, pixels_ptr: *const u8, pixels_len: u32) -> u32;
+    fn show_text(
+        title_ptr: *const u8,
+        title_len: u32,
+        text_ptr: *const u8,
+        text_len: u32,
+    ) -> u32;
     fn create_window(title_ptr: *const u8, title_len: u32, width: u32, height: u32) -> i32;
     fn update_window(window_id: i32, width: u32, height: u32, pixels_ptr: *const u8, pixels_len: u32) -> i32;
     fn close_window(window_id: i32) -> i32;
@@ -25,6 +31,13 @@ fn main() {
         }
     };
 
+    // Keep ordinary text on the WASM viewer's text-window path and avoid
+    // probing it with binary/media parsers first.
+    if is_text_path(path) {
+        present_text(path, &bytes);
+        return;
+    }
+
     if try_image(&bytes) { return; }
     if try_mp4(path, &bytes) { return; }
     if try_mp3(&bytes) { return; }
@@ -39,26 +52,87 @@ fn main() {
     if try_rle(path, &bytes) { return; }
 
     // Text/fallback
-    if let Ok(text) = std::str::from_utf8(&bytes) {
-        println!("{}", text);
+    if std::str::from_utf8(&bytes).is_ok() {
+        present_text(path, &bytes);
         return;
     }
     print_hex(path, &bytes);
 }
 
+fn is_text_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    matches!(
+        lower.rsplit('.').next(),
+        Some(
+            "txt" | "md" | "log" | "toml" | "rs" | "c" | "h" | "py" | "js" | "json"
+                | "xml" | "yml" | "yaml" | "ini" | "cfg" | "conf" | "sh" | "bat"
+                | "env" | "lock"
+        )
+    )
+}
+
+fn present_text(path: &str, bytes: &[u8]) {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return;
+    };
+    let title = format!("Text Viewer: {}", path);
+    unsafe {
+        show_text(
+            title.as_ptr(),
+            title.len() as u32,
+            text.as_ptr(),
+            text.len() as u32,
+        );
+    }
+}
+
 // ── Image ───────────────────────────────────────────────────────
 
 fn try_image(data: &[u8]) -> bool {
-    image::load_from_memory(data).ok().map(|img| {
-        let (w, h) = img.dimensions();
-        let pixels = img.to_rgb8().into_raw();
-        let _ = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
-    }).is_some()
+    const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+    const MAX_IMAGE_WIDTH: u32 = 800;
+    const MAX_IMAGE_HEIGHT: u32 = 600;
+
+    // Inspect dimensions before allocating the decoded frame. A small JPEG
+    // can still describe a very large camera image and otherwise exhaust the
+    // kernel/WASM heap during decode.
+    let dimensions = image::ImageReader::new(Cursor::new(data))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok());
+    let Some((source_w, source_h)) = dimensions else {
+        return false;
+    };
+    if source_w == 0
+        || source_h == 0
+        || u64::from(source_w) * u64::from(source_h) > MAX_IMAGE_PIXELS
+    {
+        return true;
+    }
+
+    let Ok(reader) = image::ImageReader::new(Cursor::new(data)).with_guessed_format() else {
+        return false;
+    };
+    let Ok(img) = reader.decode() else {
+        return false;
+    };
+
+    // The compositor only displays an 800x600 client area. Downsample before
+    // converting to RGB so we do not keep a second full-resolution buffer.
+    let thumbnail = img.thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT);
+    drop(img);
+    let (w, h) = thumbnail.dimensions();
+    let pixels = thumbnail.to_rgb8().into_raw();
+    let _ = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
+    true
 }
 
 // ── MP4 video ───────────────────────────────────────────────────
 
 fn try_mp4(path: &str, data: &[u8]) -> bool {
+    const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_NALS_PER_SAMPLE: usize = 128;
+
     let Ok(mut reader) = mp4::Mp4Reader::read_header(Cursor::new(data), data.len() as u64) else {
         return false;
     };
@@ -76,20 +150,54 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
     println!("Size: {:.1} MB", size_mb);
     println!("Duration: {}", dur);
 
-    let video_track = reader.tracks().values().find(|t| t.track_type().ok() == Some(mp4::TrackType::Video));
-    let Some(video_track) = video_track else { return true };
-
-    let track_id = video_track.track_id();
-    let width = video_track.width() as u32;
-    let height = video_track.height() as u32;
+    let Some((track_id, width, height, avcc)) = reader
+        .tracks()
+        .values()
+        .find(|t| t.track_type().ok() == Some(mp4::TrackType::Video))
+        .and_then(|track| {
+            let avc1 = track.trak.mdia.minf.stbl.stsd.avc1.as_ref()?;
+            Some((track.track_id(), track.width() as u32, track.height() as u32, avc1.avcc.clone()))
+        })
+    else {
+        return true;
+    };
     println!("Resolution: {}x{}", width, height);
     if width == 0 || height == 0 || width > 1920 || height > 1080 { return true; }
-    if video_track.sample_count() == 0 { return true; }
-    let Ok(Some(sample)) = reader.read_sample(track_id, 0) else { return true };
+    if reader.sample_count(track_id).ok().unwrap_or(0) == 0 { return true; }
 
-    let nals = rust_h264::nal::parse_avcc(&sample.bytes, 4);
+    let length_size = usize::from(avcc.length_size_minus_one) + 1;
+    if !matches!(length_size, 1 | 2 | 4)
+        || avcc.sequence_parameter_sets.is_empty()
+        || avcc.picture_parameter_sets.is_empty()
+    {
+        return true;
+    }
+
+    let Ok(Some(sample)) = reader.read_sample(track_id, 0) else { return true };
+    if sample.bytes.len() > MAX_FIRST_SAMPLE_BYTES { return true; }
+
     let mut decoder = rust_h264::decoder::Decoder::new();
+    // MP4 stores SPS/PPS in avcC, outside the sample. Feed those parameter
+    // sets first; parsing the sample as if it used a fixed 4-byte prefix can
+    // make malformed/ordinary phone videos take an unbounded decode path.
+    let mut config_stream = Vec::new();
+    for nal in avcc
+        .sequence_parameter_sets
+        .iter()
+        .chain(avcc.picture_parameter_sets.iter())
+    {
+        config_stream.extend_from_slice(&[0, 0, 0, 1]);
+        config_stream.extend_from_slice(&nal.bytes);
+    }
+    for nal in rust_h264::nal::parse_annex_b(&config_stream) {
+        if decoder.decode_nal(&nal).is_err() { return true; }
+    }
+
+    let nals = rust_h264::nal::parse_avcc(&sample.bytes, length_size);
+    if nals.len() > MAX_NALS_PER_SAMPLE { return true; }
+    let mut rendered = false;
     for nal in &nals {
+        if nal.rbsp.len() > MAX_FIRST_SAMPLE_BYTES { return true; }
         if let Ok(Some(frame)) = decoder.decode_nal(nal) {
             let w = frame.width as usize;
             let h = frame.height as usize;
@@ -100,12 +208,28 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
                         let wid = create_window(title.as_ptr(), title.len() as u32, w as u32, h as u32);
                         if wid >= 0 {
                             update_window(wid, w as u32, h as u32, rgb.as_ptr(), rgb.len() as u32);
+                            rendered = true;
                         }
                     }
                     println!("First frame decoded ({}x{})", w, h);
                 }
             }
             break;
+        }
+    }
+    if !rendered {
+        let title = format!("Video: {}", path);
+        let report = format!(
+            "File: {}\nType: MP4 video\nSize: {:.1} MB\nDuration: {}\nResolution: {}x{}\n\nFirst frame could not be decoded safely.",
+            path, size_mb, dur, width, height
+        );
+        unsafe {
+            show_text(
+                title.as_ptr(),
+                title.len() as u32,
+                report.as_ptr(),
+                report.len() as u32,
+            );
         }
     }
     true

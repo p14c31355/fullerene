@@ -1,9 +1,36 @@
 //! Universal file viewer.  This module is a thin routing layer — all
 //! format-specific decoding lives in the WASM viewer app (toluene/viewer/).
 
+use crate::RuntimeFile;
+
+/// Present text emitted by a non-interactive WASM viewer without requiring a
+/// terminal window. This is used for media metadata when no frame can be
+/// decoded safely.
+pub fn show_text_window(title: &str, text: &str) {
+    let mut rt = crate::RUNTIME_CONTEXT.runtime();
+    let Some(rt) = rt.as_mut() else { return };
+    let cols = 80u32;
+    let rows = (text.lines().count() as u32).clamp(3, 40);
+    let id = rt
+        .desktop
+        .wm
+        .create_titled_window(100, 60, cols * 8, rows * 16, 0x101018, title);
+    if let Some(window) = rt.desktop.wm.windows_mut().iter_mut().find(|w| w.id == id) {
+        let _ = crate::menu_actions::render_text_into_surface(
+            &mut window.surface,
+            text,
+            cols,
+            0xCCCCFF,
+            0x101018,
+        );
+    }
+    rt.desktop.wm.raise_to_top(id);
+    rt.frame_due = true;
+}
+
 /// Check whether the WASM viewer is available in the filesystem.
 fn has_wasm_viewer() -> bool {
-    crate::RuntimeFile::open("/apps/viewer.wasm").is_ok()
+    RuntimeFile::open("/apps/viewer.wasm").is_ok()
 }
 
 pub fn open(path: &str) {
@@ -32,9 +59,9 @@ pub fn open(path: &str) {
         return;
     };
 
-    // Run the viewer directly through the kernel callback.  This keeps file
-    // paths intact (including spaces) and avoids opening a terminal merely to
-    // execute a one-shot `wasm` command.
+    // Schedule the viewer directly through the kernel callback. This keeps
+    // file paths intact (including spaces), avoids a shell window, and keeps
+    // decoding off the compositor/input task.
     // WASI does not synthesize argv[0] for us. The viewer expects the usual
     // argv layout: program name followed by the file to open.
     let args = ["/apps/viewer.wasm", path];

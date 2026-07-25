@@ -149,12 +149,14 @@ fn wasm_show_image(width: u32, height: u32, pixels: &[u8]) -> i32 {
 }
 
 fn wasm_show_text(title: &str, text: &str) -> i32 {
-    // Phase 1: display text in the terminal rather than a dedicated editor
-    // window, since the editor state is not accessible from kernel callbacks.
-    let header = alloc::format!("--- {} ---\n", title);
-    solvent::write_terminal(&header);
-    solvent::write_terminal(text);
-    solvent::write_terminal("\n--- end ---\n");
+    if solvent::is_initialized() {
+        solvent::show_text_window(title, text);
+    } else {
+        let header = alloc::format!("--- {} ---\n", title);
+        solvent::write_terminal(&header);
+        solvent::write_terminal(text);
+        solvent::write_terminal("\n--- end ---\n");
+    }
     0
 }
 
@@ -257,6 +259,24 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         solvent::write_terminal(&output);
     }
     code
+}
+
+/// Schedule a WASI application on its own preemptively scheduled kernel task.
+/// Desktop file opens use this wrapper so a decoder cannot block compositor
+/// and input processing while it is working.
+pub fn spawn_wasm_app(path: &str, args: &[&str]) -> i32 {
+    let binary_path = alloc::string::String::from(path);
+    let owned_args: alloc::vec::Vec<alloc::string::String> = args
+        .iter()
+        .map(|arg| alloc::string::String::from(*arg))
+        .collect();
+    match crate::task::spawn(async move {
+        let arg_refs: alloc::vec::Vec<&str> = owned_args.iter().map(|arg| arg.as_str()).collect();
+        let _ = run_wasm_app(&binary_path, &arg_refs);
+    }) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
 }
 
 /// Helper: write a formatted line to the terminal.
