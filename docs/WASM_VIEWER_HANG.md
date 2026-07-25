@@ -238,3 +238,27 @@ viewer: mp4 sample read failed
 取得できなかった。`read_sample(track_id, 1)`へ修正し、失敗時にはエラー内容も
 表示するようにした。修正版のviewer build IDは
 `2026-07-25-mp4-sample-index-2`。
+
+その後の実機ログではsampleのNAL処理入口まで進んだが、最初のsampleだけを
+処理した場合はdecoderがまだフレームを返さないことも判明した。これは
+`rust_h264`が次のpicture開始時に前のpictureを返す設計で、最初のpictureは
+保留されたままになるためである。sample NAL処理後に`decoder.flush()`を呼び、
+保留中の480x360フレームを取得してwindowへ表示するよう修正した。
+
+ネイティブWASIハーネスでは、修正版は次の順で完了した。
+
+```text
+viewer: mp4 decoder flush frame exit 480x360
+viewer: mp4 create_window exit id=0
+viewer: mp4 update_window exit
+First frame decoded (480x360)
+DONE code=0 elapsed=3.1s
+```
+
+この修正版のviewer build IDは`2026-07-25-mp4-flush-3`。
+
+なお、ネイティブWASIハーネスでは同じNAL処理が約3秒で完了するため、`NAL
+decode enter`後の停止は無限ループではなく、同期WASM実行がshell/compositorを
+占有している状態と判断した。viewerのrelease profileは速度優先（`opt-level=3`）
+へ変更し、shellの`wasm` commandは`spawn_wasm_app`で別kernel taskへ投入する。
+これにより、デコーダが実機上で時間を要してもshellとKlog Liveの更新を塞がない。

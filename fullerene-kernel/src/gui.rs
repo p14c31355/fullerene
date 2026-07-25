@@ -60,10 +60,7 @@ pub fn init() {
     solvent::SolventCallbacks {
         heap_extend: Some(|additional| unsafe { crate::heap::extend_kernel_heap(additional) }),
         wall_clock: Some(read_cmos_time),
-        // The viewer is intentionally run synchronously from the GUI launch
-        // path. This is the known-good execution model used before the
-        // separate-task viewer experiment.
-        run_wasm: Some(crate::shell::run_wasm_app),
+        run_wasm: Some(crate::shell::run_wasm_for_desktop),
         vfs_readdir: Some(|path| {
             let entries = crate::contexts::vfs::readdir(path)?;
             let mut result = alloc::vec::Vec::new();

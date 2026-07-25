@@ -341,6 +341,36 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
     code
 }
 
+/// Schedule a WASI application on its own kernel task so a slow decoder does
+/// not block the shell and compositor until the WASM module exits.
+pub fn spawn_wasm_app(path: &str, args: &[&str]) -> i32 {
+    let binary_path = alloc::string::String::from(path);
+    let owned_args: alloc::vec::Vec<alloc::string::String> = args
+        .iter()
+        .map(|arg| alloc::string::String::from(*arg))
+        .collect();
+    match crate::task::spawn(async move {
+        let arg_refs: alloc::vec::Vec<&str> = owned_args.iter().map(|arg| arg.as_str()).collect();
+        let _ = run_wasm_app(&binary_path, &arg_refs);
+    }) {
+        Ok(_) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Keep lightweight viewers synchronous, but never let the MP4 decoder occupy
+/// the desktop event-loop task while it processes a H.264 access unit.
+pub fn run_wasm_for_desktop(path: &str, args: &[&str]) -> i32 {
+    let is_mp4 = args.get(1).is_some_and(|arg| {
+        arg.len() >= 4 && arg.as_bytes()[arg.len() - 4..].eq_ignore_ascii_case(b".mp4")
+    });
+    if is_mp4 {
+        spawn_wasm_app(path, args)
+    } else {
+        run_wasm_app(path, args)
+    }
+}
+
 /// Helper: write a formatted line to the terminal.
 macro_rules! tline {
     ($t:expr, $($arg:tt)*) => {{
@@ -796,9 +826,9 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
                 let path = ctx.args[1];
                 let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
-                tline!(ctx.terminal, "Loading WASM binary: {}", path);
-                let code = run_wasm_app(path, &wasm_args);
-                tline!(ctx.terminal, "WASI process exited with code {}", code);
+                tline!(ctx.terminal, "Scheduling WASM binary: {}", path);
+                let code = spawn_wasm_app(path, &wasm_args);
+                tline!(ctx.terminal, "WASI task scheduled with code {}", code);
             }
             "usb_rescan" => {
                 ctx.terminal.write_str(
