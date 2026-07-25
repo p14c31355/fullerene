@@ -378,7 +378,20 @@ pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
         "KLog Live",
     );
     rt.klog_live_window = Some(id);
-    crate::runtime_context::KLOG_LIVE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
+    if let Some(window) = rt
+        .desktop
+        .wm
+        .windows()
+        .iter()
+        .find(|window| window.id == id)
+    {
+        crate::runtime_context::publish_klog_live_surface(
+            window.x,
+            window.y + lattice::compositor::TITLE_BAR_HEIGHT as i32,
+            window.surface.width(),
+            window.surface.height(),
+        );
+    }
     rt.klog_live_dirty = true;
     rt.frame_due = true;
     rt.desktop.wm.raise_to_top(id);
@@ -392,11 +405,16 @@ pub fn render_klog_live(rt: &mut RuntimeState) {
         Some(w) => w,
         None => {
             rt.klog_live_window = None;
-            crate::runtime_context::KLOG_LIVE_ACTIVE
-                .store(false, core::sync::atomic::Ordering::Release);
+            crate::runtime_context::clear_klog_live_surface();
             return;
         }
     };
+    crate::runtime_context::publish_klog_live_surface(
+        window.x,
+        window.y + lattice::compositor::TITLE_BAR_HEIGHT as i32,
+        window.surface.width(),
+        window.surface.height(),
+    );
     // Clear the entire surface to prevent stale rows
     window.surface.pixels_mut().fill(0x0d0d14);
     let log = RUNTIME_CONTEXT

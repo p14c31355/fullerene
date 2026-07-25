@@ -46,12 +46,12 @@ pub extern "x86-interrupt" fn timer_handler(mut frame: InterruptStackFrame) {
     // Increment global tick counter (lock-free atomic increment)
     let tick = super::TICK_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 
-    // Klog Live has a direct, lock-free emergency overlay so it can continue
-    // repainting while the normal scheduler/compositor is blocked.
+    // Klog Live has a direct, lock-free repaint path so the existing window
+    // can continue updating while the normal scheduler/compositor is blocked.
     if tick % 50 == 0 && solvent::is_klog_live_active() {
         let generation = crate::klog::generation();
         let last = LAST_KLOG_LIVE_GENERATION.load(Ordering::Acquire);
-        if generation != last && crate::klog::try_render_live_overlay() {
+        if generation != last && crate::klog::try_render_live_surface() {
             LAST_KLOG_LIVE_GENERATION.store(generation, Ordering::Release);
         }
     }

@@ -102,16 +102,38 @@ pub fn mark_klog_live_dirty() {
     }
 }
 
-/// Lock-free state query for the timer-driven emergency Klog overlay.
+/// Lock-free state query for the timer-driven Klog Live repaint.
 pub fn is_klog_live_active() -> bool {
     crate::runtime_context::KLOG_LIVE_ACTIVE.load(core::sync::atomic::Ordering::Acquire)
 }
 
+/// Return the existing Klog Live window's client-area geometry without taking
+/// the runtime lock. The timer path uses this while the runtime may be stuck.
+pub fn klog_live_surface_geometry() -> Option<(i32, i32, u32, u32)> {
+    if !is_klog_live_active() {
+        return None;
+    }
+    Some((
+        crate::runtime_context::KLOG_LIVE_SURFACE_X.load(core::sync::atomic::Ordering::Relaxed),
+        crate::runtime_context::KLOG_LIVE_SURFACE_Y.load(core::sync::atomic::Ordering::Relaxed),
+        crate::runtime_context::KLOG_LIVE_SURFACE_WIDTH.load(core::sync::atomic::Ordering::Relaxed),
+        crate::runtime_context::KLOG_LIVE_SURFACE_HEIGHT
+            .load(core::sync::atomic::Ordering::Relaxed),
+    ))
+}
+
 pub fn close_window(id: WindowId) -> bool {
-    RUNTIME_CONTEXT
-        .runtime()
-        .as_mut()
-        .is_some_and(|runtime| runtime.desktop.wm.close_window(id))
+    let mut context = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = context.as_mut() else {
+        return false;
+    };
+    let closed = runtime.desktop.wm.close_window(id);
+    if closed && runtime.klog_live_window == Some(id) {
+        runtime.klog_live_window = None;
+        crate::runtime_context::clear_klog_live_surface();
+        runtime.frame_due = true;
+    }
+    closed
 }
 
 pub fn framebuffer_dims() -> (u32, u32) {

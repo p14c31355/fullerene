@@ -219,20 +219,21 @@ impl BootFramebuffer {
         }
     }
 
-    /// Draw a compact diagnostic text panel directly into the framebuffer.
+    /// Draw the Klog Live contents directly into an existing window's client
+    /// area.
     ///
     /// This intentionally bypasses the normal compositor and allocators. It
-    /// is used only by the kernel's timer-driven Klog Live emergency overlay,
-    /// so the last log lines remain visible when the scheduler or compositor
-    /// is blocked. The caller must ensure that the framebuffer mapping is
-    /// valid for the duration of the write.
-    pub unsafe fn draw_diagnostic_panel(
+    /// This does not draw a title, border, or any other second window. It is
+    /// used only by the kernel's timer path so the existing Klog Live window
+    /// remains readable when the scheduler or compositor is blocked. The
+    /// caller must ensure that the framebuffer mapping is valid for the
+    /// duration of the write.
+    pub unsafe fn draw_klog_live_surface(
         &self,
         x: u32,
         y: u32,
         width: u32,
         height: u32,
-        title: &[u8],
         text: &[u8],
     ) {
         let x = x.min(self.width);
@@ -243,39 +244,20 @@ impl BootFramebuffer {
             return;
         }
 
-        let border = self.rgb(88, 94, 105);
         let panel = self.rgb(13, 13, 20);
-        let title_bg = self.rgb(31, 35, 42);
-        let title_fg = self.rgb(244, 246, 248);
         let body_fg = self.rgb(170, 221, 255);
-        unsafe {
-            self.fill_rect(x, y, width, height, border);
-            self.fill_rect(
-                x.saturating_add(1),
-                y.saturating_add(1),
-                width.saturating_sub(2),
-                height.saturating_sub(2),
-                panel,
-            );
-        }
-        let title_height = 16.min(height.saturating_sub(2));
-        unsafe {
-            self.fill_rect(
-                x.saturating_add(1),
-                y.saturating_add(1),
-                width.saturating_sub(2),
-                title_height,
-                title_bg,
-            );
-            self.draw_text(x.saturating_add(6), y.saturating_add(4), title, 1, title_fg);
-        }
+        unsafe { self.fill_rect(x, y, width, height, panel) };
 
         // Match the normal Klog Live surface (100 columns x 29 rows) so the
         // interrupt path has a bounded amount of MMIO work.
-        let max_cols = (width.saturating_sub(12) / 6).min(100);
-        let max_lines = (height.saturating_sub(title_height).saturating_sub(6) / 8).min(29);
+        let max_cols = (width / 6).min(100);
+        let max_lines = (height.saturating_sub(8) / 8).min(29);
         if max_cols == 0 || max_lines == 0 {
             return;
+        }
+
+        unsafe {
+            self.draw_text(x, y, b"--- KLog Live (auto-refresh) ---", 1, body_fg);
         }
 
         // Count complete lines and skip older lines so the newest messages
@@ -289,7 +271,7 @@ impl BootFramebuffer {
         let first_line = line_count.saturating_sub(max_lines);
         let mut line = 0u32;
         let mut col = 0u32;
-        let body_y = y.saturating_add(title_height).saturating_add(5);
+        let body_y = y.saturating_add(8);
         for &byte in text {
             if byte == b'\n' {
                 line = line.saturating_add(1);
@@ -303,7 +285,7 @@ impl BootFramebuffer {
                 break;
             }
             if col < max_cols {
-                let px = x.saturating_add(6).saturating_add(col.saturating_mul(6));
+                let px = x.saturating_add(col.saturating_mul(6));
                 let py = body_y.saturating_add((line - first_line).saturating_mul(8));
                 unsafe { self.draw_text(px, py, &[byte], 1, body_fg) };
             }

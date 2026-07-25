@@ -112,7 +112,7 @@ pub fn snapshot() -> alloc::vec::Vec<u8> {
 
 /// Copy the newest log bytes without waiting for the log lock.
 ///
-/// This is used from the timer interrupt by the Klog Live emergency overlay.
+/// This is used from the timer interrupt by the lock-free Klog Live repaint.
 /// Returning zero when the writer currently owns the lock is intentional:
 /// an observability path must never turn a suspected deadlock into another
 /// deadlock.
@@ -132,12 +132,16 @@ pub fn try_snapshot_tail(out: &mut [u8]) -> usize {
     count
 }
 
-/// Attempt one allocation-free direct Klog Live repaint.
+/// Attempt one allocation-free direct repaint of the existing Klog Live
+/// window's client area.
 ///
 /// The normal compositor remains responsible for ordinary rendering. This
 /// fallback is called only from the timer interrupt while Klog Live is open,
 /// and deliberately avoids KERNEL/runtime/framebuffer locks.
-pub fn try_render_live_overlay() -> bool {
+pub fn try_render_live_surface() -> bool {
+    let Some((x, y, width, height)) = solvent::klog_live_surface_geometry() else {
+        return false;
+    };
     let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
         return false;
     };
@@ -146,8 +150,11 @@ pub fn try_render_live_overlay() -> bool {
     if len == 0 {
         return false;
     }
+    if x < 0 || y < 0 {
+        return false;
+    }
     unsafe {
-        framebuffer.draw_diagnostic_panel(60, 40, 800, 480, b"KLog Live (emergency)", &text[..len]);
+        framebuffer.draw_klog_live_surface(x as u32, y as u32, width, height, &text[..len]);
     }
     true
 }
