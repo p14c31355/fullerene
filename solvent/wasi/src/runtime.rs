@@ -14,8 +14,8 @@ use crate::wasi::{
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
 /// Returns the exit code (0 = success).
 ///
-/// Fuel metering prevents a malformed WASM program from trapping the desktop
-/// forever. Host-side decoders still need their own input bounds.
+/// Synchronous WASM still has a finite fuel budget so compute-only modules
+/// cannot trap the kernel forever.
 pub fn run(
     wasm_binary: &[u8],
     args: &[&str],
@@ -23,7 +23,8 @@ pub fn run(
     write_stderr: fn(&[u8]),
     read_stdin: fn() -> Option<u8>,
     yield_now: fn(),
-    read_entire_file: fn(&str) -> Result<Vec<u8>, genome::FsError>,
+    file_size: fn(&str) -> Result<u64, genome::FsError>,
+    read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     get_monotonic_ns: fn() -> u64,
     show_image: fn(u32, u32, &[u8]) -> i32,
@@ -33,7 +34,7 @@ pub fn run(
     update_window: fn(i32, u32, u32, &[u8]) -> i32,
     close_window: fn(i32) -> i32,
 ) -> i32 {
-    const MAX_WASM_FUEL: u64 = 1_000_000_000;
+    const INITIAL_FUEL: u64 = 100_000_000;
     let mut config = wasmi::Config::default();
     config.consume_fuel(true);
     let engine = Engine::new(&config);
@@ -52,7 +53,8 @@ pub fn run(
         write_stderr,
         read_stdin,
         yield_now,
-        read_entire_file,
+        file_size,
+        read_file_range,
         read_directory,
         get_monotonic_ns,
         show_image,
@@ -64,7 +66,7 @@ pub fn run(
     );
 
     let mut store = Store::new(&engine, ctx);
-    if let Err(error) = store.set_fuel(MAX_WASM_FUEL) {
+    if let Err(error) = store.set_fuel(INITIAL_FUEL) {
         let msg = format!("wasm: fuel setup failed: {}\n", error);
         write_stderr(msg.as_bytes());
         return -1;

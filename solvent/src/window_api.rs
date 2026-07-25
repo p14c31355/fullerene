@@ -47,19 +47,23 @@ pub fn create_window(
     width: u32,
     height: u32,
 ) -> Option<WindowId> {
-    RUNTIME_CONTEXT.runtime().as_mut().map(|runtime| {
+    nitrogen::debug_status!("WASM", "window_api create enter");
+    let result = RUNTIME_CONTEXT.runtime().as_mut().map(|runtime| {
         runtime
             .desktop
             .wm
             .create_titled_window(x, y, width, height, 0x000000, title)
-    })
+    });
+    nitrogen::debug_status!("WASM", "window_api create exit");
+    result
 }
 
 pub fn with_window_surface<F, R>(id: WindowId, callback: F) -> Option<R>
 where
     F: FnOnce(&mut [u32], u32, u32) -> R,
 {
-    RUNTIME_CONTEXT.runtime().as_mut().and_then(|runtime| {
+    nitrogen::debug_status!("WASM", "window_api surface enter");
+    let result = RUNTIME_CONTEXT.runtime().as_mut().and_then(|runtime| {
         let window = runtime
             .desktop
             .wm
@@ -71,22 +75,65 @@ where
         }
         let (width, height) = (window.surface.width(), window.surface.height());
         Some(callback(window.surface.pixels_mut(), width, height))
-    })
+    });
+    nitrogen::debug_status!("WASM", "window_api surface exit");
+    result
 }
 
 pub fn invalidate_window(id: WindowId) {
+    nitrogen::debug_status!("WASM", "window_api invalidate enter");
     if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
         runtime.desktop.invalidate_window(id);
         runtime.frame_due = true;
         runtime.term_dirty = true;
     }
+    nitrogen::debug_status!("WASM", "window_api invalidate exit");
+}
+
+/// Mark the live kernel-log window dirty from a synchronous diagnostic path.
+/// Normally the event loop does this periodically, but a synchronous WASM
+/// command prevents that loop from running while the command is blocked.
+pub fn mark_klog_live_dirty() {
+    if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut()
+        && runtime.klog_live_window.is_some()
+    {
+        runtime.klog_live_dirty = true;
+        runtime.frame_due = true;
+    }
+}
+
+/// Lock-free state query for the timer-driven Klog Live repaint.
+pub fn is_klog_live_active() -> bool {
+    crate::runtime_context::KLOG_LIVE_ACTIVE.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Return the existing Klog Live window's client-area geometry without taking
+/// the runtime lock. The timer path uses this while the runtime may be stuck.
+pub fn klog_live_surface_geometry() -> Option<(i32, i32, u32, u32)> {
+    if !is_klog_live_active() {
+        return None;
+    }
+    Some((
+        crate::runtime_context::KLOG_LIVE_SURFACE_X.load(core::sync::atomic::Ordering::Relaxed),
+        crate::runtime_context::KLOG_LIVE_SURFACE_Y.load(core::sync::atomic::Ordering::Relaxed),
+        crate::runtime_context::KLOG_LIVE_SURFACE_WIDTH.load(core::sync::atomic::Ordering::Relaxed),
+        crate::runtime_context::KLOG_LIVE_SURFACE_HEIGHT
+            .load(core::sync::atomic::Ordering::Relaxed),
+    ))
 }
 
 pub fn close_window(id: WindowId) -> bool {
-    RUNTIME_CONTEXT
-        .runtime()
-        .as_mut()
-        .is_some_and(|runtime| runtime.desktop.wm.close_window(id))
+    let mut context = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = context.as_mut() else {
+        return false;
+    };
+    let closed = runtime.desktop.wm.close_window(id);
+    if closed && runtime.klog_live_window == Some(id) {
+        runtime.klog_live_window = None;
+        crate::runtime_context::clear_klog_live_surface();
+        runtime.frame_due = true;
+    }
+    closed
 }
 
 pub fn framebuffer_dims() -> (u32, u32) {

@@ -7,10 +7,12 @@
 use crate::syscall::kernel_syscall;
 use alloc::format;
 use alloc::string::String;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 const MAX_WASM_OUTPUT_BYTES: usize = 256 * 1024;
 static WASM_OUTPUT: Mutex<Option<String>> = Mutex::new(None);
+static LAST_WASM_OUTPUT_REFRESH: AtomicU64 = AtomicU64::new(u64::MAX);
 
 fn buffer_wasm_output(data: &[u8]) {
     let mut output = WASM_OUTPUT.lock();
@@ -45,7 +47,41 @@ fn take_wasm_output() -> Option<String> {
 
 // ── WASM/WASI runtime callbacks ──────────────────────────────────
 
+/// Synchronous WASM normally prevents the event loop from repainting Klog
+/// Live. Force one repaint after each diagnostic marker so a blocked command
+/// remains observable without serial access.
+fn wasm_diag_refresh() {
+    if solvent::is_initialized() {
+        solvent::mark_klog_live_dirty();
+        crate::gui::render();
+    }
+}
+
+fn wasm_diag_refresh_throttled() {
+    if !solvent::is_initialized() {
+        return;
+    }
+    let now = solvent::GLOBAL_TICK.load(Ordering::Relaxed);
+    let last = LAST_WASM_OUTPUT_REFRESH.load(Ordering::Relaxed);
+    if last != u64::MAX && now.wrapping_sub(last) < 5 {
+        return;
+    }
+    LAST_WASM_OUTPUT_REFRESH.store(now, Ordering::Relaxed);
+    solvent::mark_klog_live_dirty();
+    crate::gui::render();
+}
+
+fn wasm_status(message: &str) {
+    crate::klog_fmt!("[WASM-DIAG] status {}\n", message);
+    nitrogen::debug_status!("WASM", "{}", message);
+    wasm_diag_refresh();
+}
+
 fn wasm_write_stdout(data: &[u8]) {
+    if let Ok(text) = core::str::from_utf8(data) {
+        crate::klog_fmt!("[WASM-DIAG] stdout {}", text);
+        wasm_diag_refresh_throttled();
+    }
     if solvent::is_initialized() {
         buffer_wasm_output(data);
     } else {
@@ -54,6 +90,10 @@ fn wasm_write_stdout(data: &[u8]) {
 }
 
 fn wasm_write_stderr(data: &[u8]) {
+    if let Ok(text) = core::str::from_utf8(data) {
+        crate::klog_fmt!("[WASM-DIAG] stderr {}", text);
+        wasm_diag_refresh_throttled();
+    }
     if solvent::is_initialized() {
         buffer_wasm_output(data);
     } else {
@@ -75,9 +115,8 @@ fn wasm_read_stdin() -> Option<u8> {
 
 fn wasm_yield_now() {
     if solvent::is_initialized() {
-        // The module is already running in a kernel task. Poll input here,
-        // but do not re-enter the desktop scheduler from a WASM host call;
-        // the task is resumed by the launch/scheduler handoff instead.
+        // WASM is executed synchronously by the kernel shell. Poll devices
+        // here, but do not re-enter the GUI scheduler from a host callback.
         solvent::poll_mouse_state();
         solvent::poll_keyboard();
     } else {
@@ -85,8 +124,16 @@ fn wasm_yield_now() {
     }
 }
 
-fn wasm_read_entire_file(path: &str) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
-    crate::fs::read_entire_file(path)
+fn wasm_file_size(path: &str) -> Result<u64, genome::FsError> {
+    crate::fs::file_size(path)
+}
+
+fn wasm_read_file_range(
+    path: &str,
+    offset: u64,
+    limit: usize,
+) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
+    crate::fs::read_file_range(path, offset, limit)
 }
 
 fn wasm_read_directory(
@@ -122,6 +169,7 @@ fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixel
         return -1;
     }
     let img_w = width as usize;
+    wasm_status("surface blit enter");
     let updated = solvent::with_window_surface(window_id, |surf_pixels, surf_w, surf_h| {
         let draw_h = (height as usize).min(surf_h as usize);
         let draw_w = (width as usize).min(surf_w as usize);
@@ -145,21 +193,36 @@ fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixel
         }
     });
     if updated.is_none() {
+        wasm_status("surface blit no surface");
         return -1;
     }
+    wasm_status("surface blit exit");
+    wasm_status("window invalidate enter");
     solvent::invalidate_window(window_id);
+    wasm_status("window invalidate exit");
     0
 }
 
 fn wasm_show_image(width: u32, height: u32, pixels: &[u8]) -> i32 {
+    let message = alloc::format!(
+        "show_image enter {}x{} bytes={}",
+        width,
+        height,
+        pixels.len()
+    );
+    wasm_status(&message);
     if !solvent::is_initialized() || pixels.len() < 3 {
+        wasm_status("show_image rejected");
         return -1;
     }
     let win_w = width.min(800).max(160);
     let win_h = height.min(600).max(120);
+    wasm_status("create_window enter");
     let Some(id) = solvent::create_window("Image Viewer", 120, 80, win_w, win_h) else {
+        wasm_status("create_window failed");
         return -1;
     };
+    wasm_status("create_window exit");
     blit_rgb(id, width, height, pixels)
 }
 
@@ -228,6 +291,8 @@ fn wasm_close_window(window_id: i32) -> i32 {
 /// remains as a user-facing entry point, but both paths share the same
 /// runtime setup and host callbacks.
 pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
+    crate::klog_fmt!("[WASM-DIAG] run begin path={} argc={}\n", path, args.len());
+    wasm_diag_refresh();
     let binary = match crate::fs::read_entire_file(path) {
         Ok(binary) => binary,
         Err(error) => {
@@ -238,6 +303,15 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
             return -1;
         }
     };
+    let (len, fingerprint, edges) = crate::fs::diagnostic_fingerprint(&binary);
+    crate::klog_fmt!(
+        "[WASM-DIAG] run binary path={} len={} fnv=0x{:016x} edges={}\n",
+        path,
+        len,
+        fingerprint,
+        edges
+    );
+    wasm_diag_refresh();
 
     let capture_output = solvent::is_initialized();
     if capture_output {
@@ -250,7 +324,8 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_write_stderr,
         wasm_read_stdin,
         wasm_yield_now,
-        wasm_read_entire_file,
+        wasm_file_size,
+        wasm_read_file_range,
         wasm_read_directory,
         wasm_get_monotonic_ns,
         wasm_show_image,
@@ -263,37 +338,9 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
     if capture_output && let Some(output) = take_wasm_output() {
         solvent::write_terminal(&output);
     }
+    crate::klog_fmt!("[WASM-DIAG] run end path={} code={}\n", path, code);
+    wasm_diag_refresh();
     code
-}
-
-/// Schedule a WASI application on its own kernel task.
-/// Desktop file opens use this wrapper so the viewer has a separate process
-/// context and a scheduling point before control returns to the caller.
-pub fn spawn_wasm_app(path: &str, args: &[&str]) -> i32 {
-    let binary_path = alloc::string::String::from(path);
-    let owned_args: alloc::vec::Vec<alloc::string::String> = args
-        .iter()
-        .map(|arg| alloc::string::String::from(*arg))
-        .collect();
-    match crate::task::spawn(async move {
-        let arg_refs: alloc::vec::Vec<&str> = owned_args.iter().map(|arg| arg.as_str()).collect();
-        let _ = run_wasm_app(&binary_path, &arg_refs);
-    }) {
-        Ok(_) => {
-            // The GUI shell is itself called from the idle process, and the
-            // timer path is deliberately non-preemptive. Give the new task a
-            // chance to run before returning to the caller; otherwise a
-            // viewer launched from File Manager or the shell remains Ready
-            // forever while the shell waits for its next command.
-            if crate::process::current_pid().is_some()
-                && crate::process::SCHEDULER.active_count() > 1
-            {
-                crate::process::yield_current();
-            }
-            0
-        }
-        Err(_) => -1,
-    }
 }
 
 /// Helper: write a formatted line to the terminal.
@@ -751,12 +798,9 @@ fn nozzle_services() -> nozzle::ShellServices {
                 }
                 let path = ctx.args[1];
                 let wasm_args: alloc::vec::Vec<&str> = ctx.args.iter().skip(1).copied().collect();
-                let code = spawn_wasm_app(path, &wasm_args);
-                if code == 0 {
-                    tline!(ctx.terminal, "WASI process scheduled: {}", path);
-                } else {
-                    tline!(ctx.terminal, "Failed to schedule WASI process: {}", path);
-                }
+                tline!(ctx.terminal, "Loading WASM binary: {}", path);
+                let code = run_wasm_app(path, &wasm_args);
+                tline!(ctx.terminal, "WASI process exited with code {}", code);
             }
             "usb_rescan" => {
                 ctx.terminal.write_str(

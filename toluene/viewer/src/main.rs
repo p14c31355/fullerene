@@ -1,5 +1,10 @@
 use image::GenericImageView;
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek};
+
+const VIEWER_BUILD_ID: &str = "2026-07-25-mp4-sample-index-2";
+const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_NALS_PER_SAMPLE: usize = 128;
 
 #[link(wasm_import_module = "fullerene")]
 unsafe extern "C" {
@@ -21,6 +26,7 @@ unsafe extern "C" {
 }
 
 fn main() {
+    println!("viewer: build={}", VIEWER_BUILD_ID);
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: viewer <path>");
@@ -28,6 +34,10 @@ fn main() {
     }
 
     let path = &args[1];
+    if is_mp4_path(path) && try_mp4_file(path) {
+        return;
+    }
+
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(e) => {
@@ -38,6 +48,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    println!("viewer: read complete path={} bytes={}", path, bytes.len());
 
     // Keep ordinary text on the WASM viewer's text-window path and avoid
     // probing it with binary/media parsers first.
@@ -65,6 +76,10 @@ fn main() {
         return;
     }
     print_hex(path, &bytes);
+}
+
+fn is_mp4_path(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".mp4")
 }
 
 fn is_text_path(path: &str) -> bool {
@@ -108,7 +123,10 @@ fn present_error(title: &str, message: &str) {
 // ── Image ───────────────────────────────────────────────────────
 
 fn try_image(path: &str, data: &[u8]) -> bool {
-    const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+    // Decoding a JPEG at its source resolution is expensive in the WASM
+    // interpreter even when the compositor only needs an 800x600 preview.
+    // Reject camera-sized frames before allocating/decoding them.
+    const MAX_IMAGE_PIXELS: u64 = 8_000_000;
     const MAX_IMAGE_WIDTH: u32 = 800;
     const MAX_IMAGE_HEIGHT: u32 = 600;
 
@@ -120,8 +138,10 @@ fn try_image(path: &str, data: &[u8]) -> bool {
         .ok()
         .and_then(|reader| reader.into_dimensions().ok());
     let Some((source_w, source_h)) = dimensions else {
+        println!("viewer: dimensions failed");
         return false;
     };
+    println!("viewer: dimensions complete {}x{}", source_w, source_h);
     if source_w == 0
         || source_h == 0
         || u64::from(source_w) * u64::from(source_h) > MAX_IMAGE_PIXELS
@@ -136,45 +156,118 @@ fn try_image(path: &str, data: &[u8]) -> bool {
     }
 
     let Ok(reader) = image::ImageReader::new(Cursor::new(data)).with_guessed_format() else {
+        println!("viewer: decoder setup failed");
         return false;
     };
+    println!("viewer: decode enter");
     let Ok(img) = reader.decode() else {
+        println!("viewer: decode failed");
         return false;
     };
+    println!("viewer: decode exit");
 
     // The compositor only displays an 800x600 client area. Downsample before
     // converting to RGB so we do not keep a second full-resolution buffer.
-    let thumbnail = img.thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT);
-    drop(img);
+    println!(
+        "viewer: thumbnail enter source={}x{} limit={}x{}",
+        source_w, source_h, MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT
+    );
+    let thumbnail = if source_w <= MAX_IMAGE_WIDTH && source_h <= MAX_IMAGE_HEIGHT {
+        // image::DynamicImage::thumbnail() upscales small images to fit the
+        // requested bounds. Avoid turning a 225x225 JPEG into a 600x600
+        // surface in the WASM interpreter.
+        img
+    } else {
+        img.thumbnail(MAX_IMAGE_WIDTH, MAX_IMAGE_HEIGHT)
+    };
     let (w, h) = thumbnail.dimensions();
+    println!("viewer: thumbnail exit {}x{}", w, h);
+    println!("viewer: to_rgb8 enter");
     let pixels = thumbnail.to_rgb8().into_raw();
-    let _ = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
+    println!("viewer: to_rgb8 exit bytes={}", pixels.len());
+    println!("viewer: show_image enter {}x{} bytes={}", w, h, pixels.len());
+    let result = unsafe { show_image(w, h, pixels.as_ptr(), pixels.len() as u32) };
+    println!("viewer: show_image exit result={}", result);
     true
 }
 
 // ── MP4 video ───────────────────────────────────────────────────
 
 fn try_mp4(path: &str, data: &[u8]) -> bool {
-    const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
-    const MAX_NALS_PER_SAMPLE: usize = 128;
+    println!("viewer: mp4 probe enter bytes={}", data.len());
+    if data.len() as u64 > MAX_MP4_BYTES {
+        println!("viewer: mp4 rejected size>{} bytes", MAX_MP4_BYTES);
+        return false;
+    }
 
-    let Ok(mut reader) = mp4::Mp4Reader::read_header(Cursor::new(data), data.len() as u64) else {
+    println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
+    println!("viewer: mp4 header enter");
+    let Ok(reader) = mp4::Mp4Reader::read_header(Cursor::new(data), data.len() as u64) else {
+        println!("viewer: mp4 header failed");
         return false;
     };
+    println!("viewer: mp4 header exit");
+
+    try_mp4_reader(path, data.len() as u64, reader)
+}
+
+/// Open an MP4 through a seekable WASI file instead of reading the whole
+/// media file into a WASM Vec.  The MP4 metadata is at the beginning of the
+/// sample file, and the reader only seeks to the first sample it needs.
+fn try_mp4_file(path: &str) -> bool {
+    let size = match std::fs::metadata(path).map(|metadata| metadata.len()) {
+        Ok(size) => size,
+        Err(error) => {
+            present_error("MP4 Viewer error", &format!("Cannot stat '{}': {}", path, error));
+            return true;
+        }
+    };
+    println!("viewer: mp4 file mode size={}", size);
+    if size > MAX_MP4_BYTES {
+        present_error(
+            "MP4 Viewer error",
+            &format!("MP4 is too large to preview safely: {} bytes", size),
+        );
+        return true;
+    }
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            present_error("MP4 Viewer error", &format!("Cannot open '{}': {}", path, error));
+            return true;
+        }
+    };
+    println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
+    println!("viewer: mp4 header enter");
+    let reader = match mp4::Mp4Reader::read_header(file, size) {
+        Ok(reader) => reader,
+        Err(error) => {
+            println!("viewer: mp4 header failed");
+            present_error("MP4 Viewer error", &format!("MP4 header error: {:?}", error));
+            return true;
+        }
+    };
+    println!("viewer: mp4 header exit");
+    try_mp4_reader(path, size, reader)
+}
+
+fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Reader<R>) -> bool {
 
     let duration = reader.duration().as_secs_f64();
+    println!("viewer: mp4 duration exit seconds={:.3}", duration);
     let total = duration as u64;
     let h = total / 3600;
     let m = (total % 3600) / 60;
     let s = total % 60;
     let dur = if h > 0 { format!("{}h{:02}m{:02}s", h, m, s) } else { format!("{:02}m{:02}s", m, s) };
 
-    let size_mb = data.len() as f64 / (1024.0 * 1024.0);
+    let size_mb = size as f64 / (1024.0 * 1024.0);
     println!("File: {}", path);
     println!("Type: MP4 video");
     println!("Size: {:.1} MB", size_mb);
     println!("Duration: {}", dur);
 
+    println!("viewer: mp4 video track scan enter");
     let Some((track_id, width, height, avcc)) = reader
         .tracks()
         .values()
@@ -184,22 +277,55 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
             Some((track.track_id(), track.width() as u32, track.height() as u32, avc1.avcc.clone()))
         })
     else {
-        return true;
+        println!("viewer: mp4 video track unavailable");
+        return present_mp4_failure(path, size_mb, dur, 0, 0, "video track unavailable");
     };
+    println!("viewer: mp4 video track scan exit id={}", track_id);
     println!("Resolution: {}x{}", width, height);
-    if width == 0 || height == 0 || width > 1920 || height > 1080 { return true; }
-    if reader.sample_count(track_id).ok().unwrap_or(0) == 0 { return true; }
+    if width == 0 || height == 0 || width > 1920 || height > 1080 {
+        println!("viewer: mp4 rejected resolution");
+        return present_mp4_failure(path, size_mb, dur, width, height, "unsupported resolution");
+    }
+    let sample_count = reader.sample_count(track_id).ok().unwrap_or(0);
+    println!("viewer: mp4 sample count={}", sample_count);
+    if sample_count == 0 {
+        return present_mp4_failure(path, size_mb, dur, width, height, "video has no samples");
+    }
 
     let length_size = usize::from(avcc.length_size_minus_one) + 1;
+    println!(
+        "viewer: mp4 avcc length_size={} sps={} pps={}",
+        length_size,
+        avcc.sequence_parameter_sets.len(),
+        avcc.picture_parameter_sets.len()
+    );
     if !matches!(length_size, 1 | 2 | 4)
         || avcc.sequence_parameter_sets.is_empty()
         || avcc.picture_parameter_sets.is_empty()
     {
-        return true;
+        return present_mp4_failure(path, size_mb, dur, width, height, "invalid AVC configuration");
     }
 
-    let Ok(Some(sample)) = reader.read_sample(track_id, 0) else { return true };
-    if sample.bytes.len() > MAX_FIRST_SAMPLE_BYTES { return true; }
+    println!("viewer: mp4 sample read enter");
+    // mp4 crate sample IDs are one-based (the stsc/stsz tables use sample 1
+    // for their first entry). Passing 0 makes the first sample lookup fail
+    // even though the MP4 header and track metadata are valid.
+    let sample = match reader.read_sample(track_id, 1) {
+        Ok(Some(sample)) => sample,
+        Ok(None) => {
+            println!("viewer: mp4 sample read returned none id=1");
+            return present_mp4_failure(path, size_mb, dur, width, height, "first sample unavailable");
+        }
+        Err(error) => {
+            println!("viewer: mp4 sample read failed id=1 error={:?}", error);
+            return present_mp4_failure(path, size_mb, dur, width, height, "first sample read failed");
+        }
+    };
+    println!("viewer: mp4 sample read exit bytes={}", sample.bytes.len());
+    if sample.bytes.len() > MAX_FIRST_SAMPLE_BYTES {
+        println!("viewer: mp4 sample rejected size>{} bytes", MAX_FIRST_SAMPLE_BYTES);
+        return present_mp4_failure(path, size_mb, dur, width, height, "first sample is too large");
+    }
 
     let mut decoder = rust_h264::decoder::Decoder::new();
     // MP4 stores SPS/PPS in avcC, outside the sample. Feed those parameter
@@ -214,25 +340,44 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
         config_stream.extend_from_slice(&[0, 0, 0, 1]);
         config_stream.extend_from_slice(&nal.bytes);
     }
+    println!("viewer: mp4 decoder config enter bytes={}", config_stream.len());
     for nal in rust_h264::nal::parse_annex_b(&config_stream) {
-        if decoder.decode_nal(&nal).is_err() { return true; }
+        if decoder.decode_nal(&nal).is_err() {
+            println!("viewer: mp4 decoder config failed");
+            return present_mp4_failure(path, size_mb, dur, width, height, "decoder configuration failed");
+        }
     }
+    println!("viewer: mp4 decoder config exit");
 
+    println!("viewer: mp4 avcc parse enter");
     let nals = rust_h264::nal::parse_avcc(&sample.bytes, length_size);
-    if nals.len() > MAX_NALS_PER_SAMPLE { return true; }
+    println!("viewer: mp4 avcc parse exit nals={}", nals.len());
+    if nals.len() > MAX_NALS_PER_SAMPLE {
+        println!("viewer: mp4 sample rejected nals>{}", MAX_NALS_PER_SAMPLE);
+        return present_mp4_failure(path, size_mb, dur, width, height, "sample has too many NAL units");
+    }
     let mut rendered = false;
     for nal in &nals {
-        if nal.rbsp.len() > MAX_FIRST_SAMPLE_BYTES { return true; }
+        if nal.rbsp.len() > MAX_FIRST_SAMPLE_BYTES {
+            println!("viewer: mp4 nal rejected size>{} bytes", MAX_FIRST_SAMPLE_BYTES);
+            return present_mp4_failure(path, size_mb, dur, width, height, "NAL unit is too large");
+        }
+        println!("viewer: mp4 decode nal enter bytes={}", nal.rbsp.len());
         if let Ok(Some(frame)) = decoder.decode_nal(nal) {
+            println!("viewer: mp4 decode nal frame exit {}x{}", frame.width, frame.height);
             let w = frame.width as usize;
             let h = frame.height as usize;
             if w > 0 && h > 0 && w <= 1920 && h <= 1080 {
                 if let Some(rgb) = yuv420_to_rgb(&frame, w, h) {
                     let title = format!("Video: {}", path);
                     unsafe {
+                        println!("viewer: mp4 create_window enter {}x{}", w, h);
                         let wid = create_window(title.as_ptr(), title.len() as u32, w as u32, h as u32);
+                        println!("viewer: mp4 create_window exit id={}", wid);
                         if wid >= 0 {
+                            println!("viewer: mp4 update_window enter bytes={}", rgb.len());
                             update_window(wid, w as u32, h as u32, rgb.as_ptr(), rgb.len() as u32);
+                            println!("viewer: mp4 update_window exit");
                             rendered = true;
                         }
                     }
@@ -243,19 +388,38 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
         }
     }
     if !rendered {
-        let title = format!("Video: {}", path);
-        let report = format!(
-            "File: {}\nType: MP4 video\nSize: {:.1} MB\nDuration: {}\nResolution: {}x{}\n\nFirst frame could not be decoded safely.",
-            path, size_mb, dur, width, height
+        return present_mp4_failure(
+            path,
+            size_mb,
+            dur,
+            width,
+            height,
+            "first frame could not be decoded safely",
         );
-        unsafe {
-            show_text(
-                title.as_ptr(),
-                title.len() as u32,
-                report.as_ptr(),
-                report.len() as u32,
-            );
-        }
+    }
+    true
+}
+
+fn present_mp4_failure(
+    path: &str,
+    size_mb: f64,
+    duration: String,
+    width: u32,
+    height: u32,
+    reason: &str,
+) -> bool {
+    let title = format!("Video: {}", path);
+    let report = format!(
+        "File: {}\nType: MP4 video\nSize: {:.1} MB\nDuration: {}\nResolution: {}x{}\n\n{}.",
+        path, size_mb, duration, width, height, reason
+    );
+    unsafe {
+        show_text(
+            title.as_ptr(),
+            title.len() as u32,
+            report.as_ptr(),
+            report.len() as u32,
+        );
     }
     true
 }

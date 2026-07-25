@@ -43,6 +43,33 @@ pub(crate) static BACK_BUFFER: Mutex<Option<petroleum::PageBuf<u32>>> = Mutex::n
 /// When enabled, the kernel log ring buffer is periodically written to `/mnt/klog.txt`.
 pub static KLOG_SAVE_ENABLED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+/// Set while the Klog Live window is open. The kernel timer uses this atomic
+/// flag to refresh the existing window's client area even if the normal event
+/// loop is blocked by a synchronous kernel operation.
+pub(crate) static KLOG_LIVE_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+pub(crate) static KLOG_LIVE_SURFACE_X: core::sync::atomic::AtomicI32 =
+    core::sync::atomic::AtomicI32::new(0);
+pub(crate) static KLOG_LIVE_SURFACE_Y: core::sync::atomic::AtomicI32 =
+    core::sync::atomic::AtomicI32::new(0);
+pub(crate) static KLOG_LIVE_SURFACE_WIDTH: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+pub(crate) static KLOG_LIVE_SURFACE_HEIGHT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
+pub(crate) fn publish_klog_live_surface(x: i32, y: i32, width: u32, height: u32) {
+    KLOG_LIVE_SURFACE_X.store(x, core::sync::atomic::Ordering::Relaxed);
+    KLOG_LIVE_SURFACE_Y.store(y, core::sync::atomic::Ordering::Relaxed);
+    KLOG_LIVE_SURFACE_WIDTH.store(width, core::sync::atomic::Ordering::Relaxed);
+    KLOG_LIVE_SURFACE_HEIGHT.store(height, core::sync::atomic::Ordering::Relaxed);
+    KLOG_LIVE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn clear_klog_live_surface() {
+    KLOG_LIVE_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
+    KLOG_LIVE_SURFACE_WIDTH.store(0, core::sync::atomic::Ordering::Relaxed);
+    KLOG_LIVE_SURFACE_HEIGHT.store(0, core::sync::atomic::Ordering::Relaxed);
+}
 pub(crate) static PREV_MOUSE_BUTTONS: Mutex<u8> = Mutex::new(0);
 pub(crate) static FB_DIMS: Mutex<(u32, u32, u32)> = Mutex::new((1024, 768, 1024));
 

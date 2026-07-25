@@ -366,6 +366,15 @@ pub(crate) fn render_text_into_surface(
 
 /// Open a live-updating kernel log viewer window.
 /// The window content is automatically refreshed by the event loop.
+fn publish_klog_live_geometry(window: &lattice::window::Window) {
+    crate::runtime_context::publish_klog_live_surface(
+        window.x,
+        window.y + lattice::compositor::TITLE_BAR_HEIGHT as i32,
+        window.surface.width(),
+        window.surface.height(),
+    );
+}
+
 pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
     const COLS: u32 = 100;
     const ROWS: u32 = 30;
@@ -378,6 +387,15 @@ pub(crate) fn open_klog_live_window(rt: &mut RuntimeState) {
         "KLog Live",
     );
     rt.klog_live_window = Some(id);
+    if let Some(window) = rt
+        .desktop
+        .wm
+        .windows()
+        .iter()
+        .find(|window| window.id == id)
+    {
+        publish_klog_live_geometry(window);
+    }
     rt.klog_live_dirty = true;
     rt.frame_due = true;
     rt.desktop.wm.raise_to_top(id);
@@ -391,9 +409,11 @@ pub fn render_klog_live(rt: &mut RuntimeState) {
         Some(w) => w,
         None => {
             rt.klog_live_window = None;
+            crate::runtime_context::clear_klog_live_surface();
             return;
         }
     };
+    publish_klog_live_geometry(window);
     // Clear the entire surface to prevent stale rows
     window.surface.pixels_mut().fill(0x0d0d14);
     let log = RUNTIME_CONTEXT
