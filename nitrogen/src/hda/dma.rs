@@ -90,10 +90,13 @@ impl DmaEngine {
     /// least `DMA_BUF_SIZE + BDL_ENTRIES * sizeof(BdlEntry)` bytes.
     pub unsafe fn init(&mut self, mmio: *mut u8, dma_region: &DmaRegion, stream_tag: u8) {
         let bdl_sz = (core::mem::size_of::<BdlEntry>() as u32) * BDL_ENTRIES;
-        let audio_phys = dma_region.phys + bdl_sz as u64;
-        let audio_off = bdl_sz;
-        let audio_size = DMA_BUF_SIZE - audio_off;
-        let half = audio_size / 2;
+        // HDA requires every BDLE buffer start to be 128-byte aligned.
+        // Keep both halves aligned as well by rounding the half length down
+        // to a 128-byte multiple.
+        let audio_off = (bdl_sz + 127) & !127;
+        let half = ((DMA_BUF_SIZE - audio_off) / 2) & !127;
+        let audio_size = half * 2;
+        let audio_phys = dma_region.phys + audio_off as u64;
 
         // Write BDL entries (two half‑buffer segments with IOC)
         unsafe {
@@ -111,6 +114,8 @@ impl DmaEngine {
                 length: half,
                 flags: 0x01, // IOC
             });
+            // TP may select non-snooped DMA traffic on some controllers.
+            crate::mmio::cache_flush_range(dma_region.virt, bdl_sz as usize);
         }
 
         let sd = self.sd_offset;
@@ -161,12 +166,9 @@ impl DmaEngine {
 
         unsafe {
             // SAFETY: Start stream after fence
-            // Start stream: RUN (bit 1) + IOCE (bit 2) + STRIPE1 (bits 18:16) + STREAMTAG (bits 23:20)
-            mmio_write32(
-                mmio,
-                sd + SD_CTL,
-                ((stream_tag as u32) << 20) | (1u32 << 16) | 0x06,
-            );
+            // Start stream: RUN (bit 1) + IOCE (bit 2) + STREAMTAG (bits 23:20).
+            // Keep the stripe field at zero for the mono PCM stream.
+            mmio_write32(mmio, sd + SD_CTL, ((stream_tag as u32) << 20) | 0x06);
         }
 
         log::info!("HDA: stream started ({} B, fmt=0x0010)", audio_size);
@@ -209,6 +211,7 @@ impl DmaEngine {
         unsafe {
             let dst = self.dma_virt.add((self.audio_off + offset) as usize);
             core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, n);
+            crate::mmio::cache_flush_range(dst, n);
         }
         n
     }
@@ -224,7 +227,9 @@ impl DmaEngine {
             return 0;
         }
         unsafe {
-            core::ptr::write_bytes(self.dma_virt.add((self.audio_off + offset) as usize), 0, n);
+            let dst = self.dma_virt.add((self.audio_off + offset) as usize);
+            core::ptr::write_bytes(dst, 0, n);
+            crate::mmio::cache_flush_range(dst, n);
         }
         n
     }
@@ -285,6 +290,7 @@ impl DmaEngine {
             if n < write_max {
                 core::ptr::write_bytes(dst.add(n), 0, write_max - n);
             }
+            crate::mmio::cache_flush_range(dst, write_max);
             n
         }
     }
@@ -302,6 +308,22 @@ impl DmaEngine {
             let sd = self.sd_offset;
             let raw = mmio_read32(mmio, sd + SD_LPIB);
             Some(raw as u64)
+        }
+    }
+
+    /// Read stream control, status, and link position for diagnostics.
+    ///
+    /// # Safety
+    ///
+    /// `mmio` must be a valid MMIO base pointer.
+    pub unsafe fn debug_status(&self, mmio: *mut u8) -> (u32, u8, u32) {
+        unsafe {
+            let sd = self.sd_offset;
+            (
+                mmio_read32(mmio, sd + SD_CTL),
+                mmio_read8(mmio, sd + SD_STS),
+                mmio_read32(mmio, sd + SD_LPIB),
+            )
         }
     }
 
@@ -326,6 +348,15 @@ impl DmaEngine {
             loop {
                 let sts = mmio_read8(mmio, sd + SD_STS);
                 if sts & 0x04 != 0 {
+                    return true;
+                }
+                // Some controllers advance LPIB but do not expose BCIS when
+                // stream interrupts are not routed to the driver. Treat a
+                // crossed half-buffer as completion in that case.
+                let lpib = mmio_read32(mmio, sd + SD_LPIB);
+                let last_lpib = self.last_lpib.load(Ordering::Relaxed) as u32;
+                if lpib.wrapping_sub(last_lpib) >= self.half_size {
+                    self.last_lpib.store(lpib as u64, Ordering::Relaxed);
                     return true;
                 }
                 if timeout_tsc.is_some() && core::arch::x86_64::_rdtsc() >= deadline {

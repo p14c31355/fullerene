@@ -213,7 +213,14 @@ impl AudioContext {
         let mut next_half = 2usize;
         while completed < half_count {
             if !controller.poll(Some(timeout_tsc)) {
-                log::warn!("Sound: HDA playback timed out at half {}", completed);
+                let (ctl, sts, lpib) = controller.debug_stream_status();
+                log::warn!(
+                    "Sound: HDA playback timed out at half {} (CTL=0x{:08x} STS=0x{:02x} LPIB={})",
+                    completed,
+                    ctl,
+                    sts,
+                    lpib
+                );
                 return false;
             }
 
