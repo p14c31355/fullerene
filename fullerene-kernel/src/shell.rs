@@ -496,6 +496,7 @@ macro_rules! tstr {
 macro_rules! launch_cmd {
     ($t:expr, $launch:expr, $ok:expr) => {{
         crate::klog_fmt!("[LINUX-DIAG] launch command call enter\n");
+        petroleum::serial::serial_log(format_args!("[LINUX-DIAG] launch command call enter\n"));
         match $launch {
             Ok(pid) => {
                 crate::klog_fmt!(
@@ -508,9 +509,17 @@ macro_rules! launch_cmd {
                 // context-switch assembly boundary.
                 crate::process::defer_yield_to(pid);
                 crate::klog_fmt!("[LINUX-DIAG] launch command returned pid={} ready\n", pid.0);
+                petroleum::serial::serial_log(format_args!(
+                    "[LINUX-DIAG] launch command returned pid={} ready\n",
+                    pid.0
+                ));
             }
             Err(e) => {
                 crate::klog_fmt!("[LINUX-DIAG] launch command error={:?}\n", e);
+                petroleum::serial::serial_log(format_args!(
+                    "[LINUX-DIAG] launch command error={:?}\n",
+                    e
+                ));
                 tline!($t, "Failed to launch: {:?}", e)
             }
         }

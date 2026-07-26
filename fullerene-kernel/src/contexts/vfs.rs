@@ -441,6 +441,11 @@ impl VfsContext {
             return Ok(());
         }
 
+        crate::klog_fmt!(
+            "[VFS-DIAG] context copy begin source={} destination={}\n",
+            source,
+            destination
+        );
         let source_fd = self.open(&source, 0).ok_or(FsError::FileNotFound)?;
         if self.exists(&destination) {
             if let Err(error) = self.unlink(&destination) {
@@ -455,6 +460,10 @@ impl VfsContext {
                 return Err(error);
             }
         };
+        let mut read_calls = 0usize;
+        let mut read_bytes = 0usize;
+        let mut write_calls = 0usize;
+        let mut write_bytes = 0usize;
         let result = (|| {
             let mut buffer = [0; 4096];
             loop {
@@ -462,12 +471,53 @@ impl VfsContext {
                 if read == 0 {
                     return Ok(());
                 }
+                read_calls += 1;
+                read_bytes += read;
                 self.write_all(destination_fd.fd, &buffer[..read])?;
+                write_calls += 1;
+                write_bytes += read;
             }
         })();
         let source_close = self.close(source_fd.fd);
         let destination_close = self.close(destination_fd.fd);
-        result.and(source_close).and(destination_close)
+        let result = result.and(source_close).and(destination_close);
+        let result = if result.is_ok() {
+            let verify = self
+                .open(&destination, 0)
+                .ok_or(FsError::FileNotFound)
+                .and_then(|descriptor| {
+                    let size = self.size(descriptor.fd);
+                    let close = self.close(descriptor.fd);
+                    size.and_then(|actual| close.map(|()| actual))
+                })
+                .and_then(|actual| {
+                    if actual == read_bytes as u64 {
+                        Ok(())
+                    } else {
+                        crate::klog_fmt!(
+                            "[VFS-DIAG] context copy committed-size mismatch destination={} expected={} actual={}\n",
+                            destination,
+                            read_bytes,
+                            actual
+                        );
+                        Err(FsError::Io)
+                    }
+                });
+            result.and(verify)
+        } else {
+            result
+        };
+        crate::klog_fmt!(
+            "[VFS-DIAG] context copy end source={} destination={} reads={} read_bytes={} writes={} write_bytes={} result={:?}\n",
+            source,
+            destination,
+            read_calls,
+            read_bytes,
+            write_calls,
+            write_bytes,
+            result
+        );
+        result
     }
 
     /// Recursively remove a path selected by the file manager.
@@ -844,6 +894,30 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
     let source_close = close(source_fd);
     let destination_close = close(destination_fd);
     let result = result.and(source_close).and(destination_close);
+    let result = if result.is_ok() {
+        let verify = open(&destination, 0)
+            .and_then(|descriptor| {
+                let size_result = size(descriptor.fd);
+                let close_result = close(descriptor.fd);
+                size_result.and_then(|actual| close_result.map(|()| actual))
+            })
+            .and_then(|actual| {
+                if actual == source_bytes as u64 {
+                    Ok(())
+                } else {
+                    crate::klog_fmt!(
+                        "[VFS-DIAG] copy committed-size mismatch destination={} expected={} actual={}\n",
+                        destination,
+                        source_bytes,
+                        actual
+                    );
+                    Err(FsError::Io)
+                }
+            });
+        result.and(verify)
+    } else {
+        result
+    };
     crate::klog_fmt!(
         "[VFS-DIAG] copy destination-summary path={} writes={} bytes={} fnv=0x{:016x}\n",
         destination,

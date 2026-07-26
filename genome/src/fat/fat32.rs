@@ -133,7 +133,13 @@ impl FileSystem for FatFileSystem {
         let bytes_written = {
             let mut file = self.open_file(&path)?;
             Self::map_err(file.seek(SeekFrom::Start(offset)))?;
-            Self::map_err(file.write(data))?
+            let written = Self::map_err(file.write(data))?;
+            // `write()` updates fatfs' in-memory file state.  This adapter
+            // opens a short-lived handle for every VFS write, so dropping it
+            // without flush can leave the directory entry at size 0 even
+            // though the data path reported success.
+            Self::map_err(file.flush())?;
+            written
         };
         if let Some(handle) = self.handles.iter_mut().find(|handle| handle.0 == fd) {
             handle.2 += bytes_written as u64;

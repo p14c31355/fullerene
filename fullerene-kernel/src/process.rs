@@ -873,9 +873,10 @@ pub fn yield_current() {
 pub fn yield_from_scheduler_stack() {
     let target = PENDING_YIELD_TO.swap(0, core::sync::atomic::Ordering::AcqRel);
     // Terminal input polling calls this callback repeatedly while idle. Only
-    // a launch handoff is a scheduling point here; otherwise an unrelated
-    // Ready task would make Klog Live look like it is continuously streaming.
-    if target == 0 || SCHEDULER.active_count() <= 1 {
+    // an explicit launch handoff is a scheduling point here.  Do not gate it
+    // on a racy active-count snapshot: the target PID itself is authoritative,
+    // and `yield_to` verifies that it is still Ready.
+    if target == 0 {
         return;
     }
     let old_pid = current_pid();
@@ -899,6 +900,11 @@ pub fn yield_from_scheduler_stack() {
 
 /// Defer a direct handoff until the shell's current command callback returns.
 pub fn defer_yield_to(pid: ProcessId) {
+    crate::klog_fmt!("[LINUX-DIAG] defer yield target={} armed\n", pid.0);
+    petroleum::serial::serial_log(format_args!(
+        "[LINUX-DIAG] defer yield target={} armed\n",
+        pid.0
+    ));
     PENDING_YIELD_TO.store(pid.0, core::sync::atomic::Ordering::Release);
 }
 
