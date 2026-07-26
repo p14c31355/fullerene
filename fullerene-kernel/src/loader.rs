@@ -652,11 +652,11 @@ fn load_program_inner(
 
                 p.user_stack = x86_64::VirtAddr::new(LINUX_STACK_TOP);
                 p.context.registers.rsp = rsp;
-                // User processes may receive timer interrupts now that the
-                // TSS privilege stack is installed per process. Keeping IF
-                // set is also required for Klog Live's emergency repaint
-                // while a synchronous command is running.
-                p.context.rflags = 0x202;
+                // Keep maskable interrupts disabled until the user-mode
+                // interrupt return path is proven stable. Klog Live also has
+                // a direct repaint path from klog writes, so it does not need
+                // to make Linux startup depend on timer delivery.
+                p.context.rflags = 0x2;
                 crate::klog_fmt!("[LINUX-DIAG] stack exit pid={} rsp={:#x}\n", pid.0, rsp);
                 let runtime = crate::linux::LinuxRuntime::new(p.id.0, loaded.layout.initial_break);
                 p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(

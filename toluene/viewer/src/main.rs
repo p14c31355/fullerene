@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 
 const VIEWER_BUILD_ID: &str = "2026-07-26-mp4-watchdog-2";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_MP4_IO_OPERATIONS: usize = 256;
+const MAX_MP4_IO_OPERATIONS: usize = 1024;
 const MAX_MP4_PARSE_TIME: Duration = Duration::from_secs(3);
+const MAX_MP4_TABLE_ENTRIES: u64 = 1_000_000;
 const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -222,14 +223,18 @@ struct BoundedMp4Reader<R> {
     inner: R,
     operations: usize,
     started_at: Instant,
+    file_size: u64,
+    position: u64,
 }
 
 impl<R> BoundedMp4Reader<R> {
-    fn new(inner: R) -> Self {
+    fn new(inner: R, file_size: u64) -> Self {
         Self {
             inner,
             operations: 0,
             started_at: Instant::now(),
+            file_size,
+            position: 0,
         }
     }
 
@@ -255,6 +260,28 @@ impl<R> BoundedMp4Reader<R> {
         self.operations += 1;
         Ok(())
     }
+
+    fn validate_scalar_count(&self, buffer: &[u8], read: usize) -> io::Result<()> {
+        if read != 4 || buffer.len() != 4 {
+            return Ok(());
+        }
+        let value = u32::from_be_bytes(buffer.try_into().unwrap()) as u64;
+        let remaining = self.file_size.saturating_sub(self.position);
+        // The mp4 crate uses untrusted 32-bit fields directly in
+        // Vec::with_capacity for sample/table counts. Reject a count that
+        // cannot fit in the remaining file before that allocation occurs.
+        if value > MAX_MP4_TABLE_ENTRIES {
+            println!(
+                "viewer: mp4 suspicious table count value={} position={} remaining={}",
+                value, self.position, remaining
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MP4 table count exceeds safe bounds",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl<R: Read> Read for BoundedMp4Reader<R> {
@@ -262,7 +289,15 @@ impl<R: Read> Read for BoundedMp4Reader<R> {
         self.begin_operation()?;
         println!("viewer: mp4 io read begin op={} bytes={}", self.operations, buffer.len());
         let result = self.inner.read(buffer);
-        println!("viewer: mp4 io read exit op={} result={:?}", self.operations, result.as_ref().map(|n| *n));
+        if let Ok(read) = result.as_ref() {
+            self.position = self.position.saturating_add(*read as u64);
+            self.validate_scalar_count(buffer, *read)?;
+        }
+        println!(
+            "viewer: mp4 io read exit op={} result={:?}",
+            self.operations,
+            result.as_ref().map(|n| *n)
+        );
         result
     }
 }
@@ -272,7 +307,14 @@ impl<R: Seek> Seek for BoundedMp4Reader<R> {
         self.begin_operation()?;
         println!("viewer: mp4 io seek begin op={} position={:?}", self.operations, position);
         let result = self.inner.seek(position);
-        println!("viewer: mp4 io seek exit op={} result={:?}", self.operations, result.as_ref().map(|n| *n));
+        if let Ok(new_position) = result.as_ref() {
+            self.position = *new_position;
+        }
+        println!(
+            "viewer: mp4 io seek exit op={} result={:?}",
+            self.operations,
+            result.as_ref().map(|n| *n)
+        );
         result
     }
 }
@@ -287,7 +329,7 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
     println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
     println!("viewer: mp4 header enter");
     let Ok(reader) = mp4::Mp4Reader::read_header(
-        BoundedMp4Reader::new(Cursor::new(data)),
+        BoundedMp4Reader::new(Cursor::new(data), data.len() as u64),
         data.len() as u64,
     ) else {
         println!("viewer: mp4 header failed");
@@ -329,7 +371,7 @@ fn try_mp4_file(path: &str) -> bool {
     println!("viewer: mp4 file open exit");
     println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
     println!("viewer: mp4 header enter");
-    let reader = match mp4::Mp4Reader::read_header(BoundedMp4Reader::new(file), size) {
+    let reader = match mp4::Mp4Reader::read_header(BoundedMp4Reader::new(file, size), size) {
         Ok(reader) => reader,
         Err(error) => {
             println!("viewer: mp4 header failed");

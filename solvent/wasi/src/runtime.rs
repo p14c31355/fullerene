@@ -6,9 +6,10 @@ use wasmi::{Engine, Linker, Module, Store};
 use crate::wasi::{
     WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
     fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir,
-    fd_seek, fd_write, fullerene_capture_screen, fullerene_close_window, fullerene_create_window,
-    fullerene_screen_dimensions, fullerene_show_error, fullerene_show_image, fullerene_show_text,
-    fullerene_update_window, path_filestat_get, path_open, proc_exit, random_get,
+    fd_seek, fd_write, fullerene_capture_screen, fullerene_capture_screen_chunk,
+    fullerene_close_window, fullerene_create_window, fullerene_screen_dimensions,
+    fullerene_show_error, fullerene_show_image, fullerene_show_text, fullerene_update_window,
+    path_filestat_get, path_open, proc_exit, random_get,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -30,6 +31,7 @@ pub fn run(
     get_monotonic_ns: fn() -> u64,
     screen_dimensions: fn() -> (u32, u32),
     capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
+    capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
     show_image: fn(u32, u32, &[u8]) -> i32,
     show_text: fn(&str, &str) -> i32,
     show_error: fn(&str, &str) -> i32,
@@ -41,10 +43,16 @@ pub fn run(
     // The file viewer is synchronous by design. Give it a smaller compute
     // budget so malformed media metadata cannot monopolize the shell while
     // still leaving enough room for normal image/video decoding.
-    let fuel = if args
+    let is_viewer = args
         .first()
-        .is_some_and(|path| path.ends_with("viewer.wasm"))
-    {
+        .is_some_and(|path| path.ends_with("viewer.wasm"));
+    let is_mp4 = args
+        .iter()
+        .any(|path| path.to_ascii_lowercase().ends_with(".mp4"));
+    let fuel = if is_mp4 {
+        // MP4 header parsing must fail quickly on pathological table counts.
+        2_000_000
+    } else if is_viewer {
         25_000_000
     } else {
         INITIAL_FUEL
@@ -74,6 +82,7 @@ pub fn run(
         get_monotonic_ns,
         screen_dimensions,
         capture_screen,
+        capture_screen_chunk,
         show_image,
         show_text,
         show_error,
@@ -184,6 +193,11 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     let fullerene = "fullerene";
     linker.func_wrap(fullerene, "screen_dimensions", fullerene_screen_dimensions)?;
     linker.func_wrap(fullerene, "capture_screen", fullerene_capture_screen)?;
+    linker.func_wrap(
+        fullerene,
+        "capture_screen_chunk",
+        fullerene_capture_screen_chunk,
+    )?;
     linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
     linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
     linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;

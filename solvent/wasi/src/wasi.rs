@@ -84,6 +84,7 @@ const MAX_OPEN_FDS: usize = 128;
 const MAX_WRITE_FILE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
 const MAX_CAPTURE_RGBA_BYTES: u32 = 32 * 1024 * 1024;
+const MAX_CAPTURE_CHUNK_BYTES: u32 = 256 * 1024;
 const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
 const MAX_TEXT_BYTES: u32 = 512 * 1024;
 const MAX_ERROR_BYTES: u32 = 64 * 1024;
@@ -105,6 +106,7 @@ pub struct WasiCtx {
     pub get_monotonic_ns: fn() -> u64,
     pub screen_dimensions: fn() -> (u32, u32),
     pub capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
+    pub capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
     pub show_image: fn(u32, u32, &[u8]) -> i32,
     pub show_text: fn(&str, &str) -> i32,
     pub show_error: fn(&str, &str) -> i32,
@@ -127,6 +129,7 @@ impl WasiCtx {
         get_monotonic_ns: fn() -> u64,
         screen_dimensions: fn() -> (u32, u32),
         capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
+        capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
         show_image: fn(u32, u32, &[u8]) -> i32,
         show_text: fn(&str, &str) -> i32,
         show_error: fn(&str, &str) -> i32,
@@ -169,6 +172,7 @@ impl WasiCtx {
             get_monotonic_ns,
             screen_dimensions,
             capture_screen,
+            capture_screen_chunk,
             show_image,
             show_text,
             show_error,
@@ -1198,6 +1202,32 @@ pub fn fullerene_capture_screen(
     memory
         .write(&mut caller, pixels_ptr as usize, &pixels)
         .map_err(|_| Error::new("capture_screen: memory write failed"))?;
+    write_u32(&memory, &mut caller, width_ptr, width)?;
+    write_u32(&memory, &mut caller, height_ptr, height)?;
+    Ok(ESUCCESS)
+}
+
+/// Copy one bounded RGBA capture chunk into WASM memory. Unlike the legacy
+/// whole-image callback, this never requires a multi-megabyte guest buffer.
+pub fn fullerene_capture_screen_chunk(
+    mut caller: Caller<'_, WasiCtx>,
+    offset: u32,
+    pixels_ptr: u32,
+    pixels_len: u32,
+    width_ptr: u32,
+    height_ptr: u32,
+) -> Result<u32, Error> {
+    if pixels_len == 0 || pixels_len > MAX_CAPTURE_CHUNK_BYTES || offset % 4 != 0 {
+        return Ok(EINVAL);
+    }
+    let mut pixels = alloc::vec![0u8; pixels_len as usize];
+    let Some((width, height)) = (caller.data().capture_screen_chunk)(offset, &mut pixels) else {
+        return Ok(ENOTSUP);
+    };
+    let memory = get_memory(&caller)?;
+    memory
+        .write(&mut caller, pixels_ptr as usize, &pixels)
+        .map_err(|_| Error::new("capture_screen_chunk: memory write failed"))?;
     write_u32(&memory, &mut caller, width_ptr, width)?;
     write_u32(&memory, &mut caller, height_ptr, height)?;
     Ok(ESUCCESS)

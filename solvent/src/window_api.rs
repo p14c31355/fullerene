@@ -176,6 +176,67 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     capture_screen_scaled(u32::MAX, u32::MAX)
 }
 
+/// Copy one RGBA chunk of a constrained screen capture without allocating the
+/// complete image in the kernel or WASM guest.
+pub fn capture_screen_chunk(
+    max_width: u32,
+    max_height: u32,
+    offset: usize,
+    pixels: &mut [u8],
+) -> Option<(u32, u32)> {
+    if pixels.is_empty() || offset % 4 != 0 || pixels.len() % 4 != 0 {
+        return None;
+    }
+    let (width, height, _) = *FB_DIMS.lock();
+    let (output_width, output_height) = scaled_framebuffer_dims(max_width, max_height);
+    let output_pixels = (output_width as usize).checked_mul(output_height as usize)?;
+    let total_bytes = output_pixels.checked_mul(4)?;
+    let end = offset.checked_add(pixels.len())?;
+    if end > total_bytes {
+        return None;
+    }
+    nitrogen::debug_status!(
+        "CAPTURE",
+        "chunk enter offset={} bytes={} output={}x{}",
+        offset,
+        pixels.len(),
+        output_width,
+        output_height
+    );
+    let back_guard = crate::BACK_BUFFER.try_lock()?;
+    let (current_width, current_height, _) = *FB_DIMS.try_lock()?;
+    if (current_width, current_height) != (width, height) {
+        return None;
+    }
+    let back = back_guard.as_ref()?;
+    let source_width = width as usize;
+    let source_height = height as usize;
+    let source_pixels = source_width.checked_mul(source_height)?;
+    if width == 0 || height == 0 || back.len() < source_pixels {
+        return None;
+    }
+    let first_pixel = offset / 4;
+    for (chunk_pixel, output) in pixels.chunks_exact_mut(4).enumerate() {
+        let output_pixel = first_pixel + chunk_pixel;
+        let output_row = output_pixel / output_width as usize;
+        let output_column = output_pixel % output_width as usize;
+        let source_row = output_row * source_height / output_height as usize;
+        let source_column = output_column * source_width / output_width as usize;
+        let pixel = back.as_slice()[source_row * source_width + source_column];
+        output[0] = ((pixel >> 16) & 0xFF) as u8;
+        output[1] = ((pixel >> 8) & 0xFF) as u8;
+        output[2] = (pixel & 0xFF) as u8;
+        output[3] = 0xFF;
+    }
+    nitrogen::debug_status!(
+        "CAPTURE",
+        "chunk exit offset={} bytes={}",
+        offset,
+        pixels.len()
+    );
+    Some((output_width, output_height))
+}
+
 /// Copy the compositor back buffer, optionally downsampling it to fit within
 /// `max_width` x `max_height`.
 pub fn capture_screen_scaled(

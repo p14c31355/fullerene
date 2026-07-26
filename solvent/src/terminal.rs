@@ -183,6 +183,9 @@ impl carrier::terminal::Terminal for LatticeTerminal {
                 return Some(ch);
             }
             crate::runtime_tick_no_fb();
+            // Yield only after runtime locks have been released. A shell
+            // command may have started a user process just before polling.
+            crate::yield_scheduler();
         }
     }
     fn input_available(&self) -> bool {

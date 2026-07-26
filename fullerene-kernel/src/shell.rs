@@ -343,6 +343,26 @@ fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     result
 }
 
+fn wasm_capture_screen_chunk(offset: u32, pixels: &mut [u8]) -> Option<(u32, u32)> {
+    crate::klog_fmt!(
+        "[WASM-DIAG] capture chunk enter offset={} bytes={}\n",
+        offset,
+        pixels.len()
+    );
+    let result = solvent::capture_screen_chunk(
+        WASM_CAPTURE_MAX_WIDTH,
+        WASM_CAPTURE_MAX_HEIGHT,
+        offset as usize,
+        pixels,
+    );
+    crate::klog_fmt!(
+        "[WASM-DIAG] capture chunk exit offset={} result={:?}\n",
+        offset,
+        result
+    );
+    result
+}
+
 /// Run a WASI application from the kernel without opening a shell window.
 ///
 /// This is also used by the desktop file viewer. The shell `wasm` command
@@ -389,6 +409,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_get_monotonic_ns,
         wasm_screen_dimensions,
         wasm_capture_screen,
+        wasm_capture_screen_chunk,
         wasm_show_image,
         wasm_show_text,
         wasm_show_error,
@@ -427,18 +448,13 @@ macro_rules! launch_cmd {
         match $launch {
             Ok(pid) => {
                 crate::klog_fmt!(
-                    "[LINUX-DIAG] launch command created pid={} enter-yield\n",
+                    "[LINUX-DIAG] launch command created pid={} deferred-yield\n",
                     pid.0
                 );
                 tline!($t, $ok, pid.0);
-                // The interactive shell runs synchronously from the idle
-                // scheduler context. Switch to the process we just launched,
-                // rather than whichever unrelated task happens to be next in
-                // the round-robin list.
-                if crate::process::current_pid().is_some() {
-                    let _ = crate::process::yield_to(pid);
-                }
-                crate::klog_fmt!("[LINUX-DIAG] launch command returned pid={}\n", pid.0);
+                // The terminal input loop yields after this callback returns,
+                // so the process starts with no shell/runtime locks held.
+                crate::klog_fmt!("[LINUX-DIAG] launch command returned pid={} ready\n", pid.0);
             }
             Err(e) => {
                 crate::klog_fmt!("[LINUX-DIAG] launch command error={:?}\n", e);

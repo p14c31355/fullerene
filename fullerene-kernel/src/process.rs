@@ -831,6 +831,30 @@ pub fn yield_current() {
     }
 }
 
+/// Yield from code that may be running on the idle scheduler stack.
+///
+/// The interactive desktop shell is currently entered directly by the idle
+/// loop, so it has no process PID even though it can launch a user process.
+/// Use the scheduler's `(old, new)` result instead of assuming a non-zero
+/// current PID in that case.
+pub fn yield_from_scheduler_stack() {
+    let (old_pid, new_pid) = SCHEDULER.schedule_next();
+    crate::klog_fmt!(
+        "[LINUX-DIAG] scheduler-stack yield old={:?} new={} enter\n",
+        old_pid.map(|pid| pid.0),
+        new_pid.0
+    );
+    if old_pid != Some(new_pid) {
+        unsafe {
+            context_switch(old_pid, new_pid);
+        }
+    }
+    crate::klog_fmt!(
+        "[LINUX-DIAG] scheduler-stack yield returned new={}\n",
+        new_pid.0
+    );
+}
+
 /// Cooperatively switch directly to a specific ready process.
 pub fn yield_to(pid: ProcessId) -> bool {
     SCHEDULER.yield_to(pid)
