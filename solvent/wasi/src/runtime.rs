@@ -52,12 +52,19 @@ pub fn run(
     let is_mp4 = args
         .iter()
         .any(|path| path.to_ascii_lowercase().ends_with(".mp4"));
+    let is_mp3 = args
+        .iter()
+        .any(|path| path.to_ascii_lowercase().ends_with(".mp3"));
     let fuel = if is_mp4 {
         // H.264 decoding every sample is intentionally synchronous. The
         // parser still has independent time/I/O/sample-count guards, so the
         // fuel budget must cover a complete long video instead of aborting
         // partway through playback.
         500_000_000
+    } else if is_mp3 {
+        // MP3 metadata scanning is linear but may inspect thousands of
+        // frames. Keep it finite while leaving enough room for a long track.
+        100_000_000
     } else if is_viewer {
         25_000_000
     } else {

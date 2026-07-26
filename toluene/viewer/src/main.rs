@@ -817,7 +817,7 @@ fn try_mp3(data: &[u8]) -> bool {
 
     let (mut frames, mut samples, mut sr, mut ch, mut br, mut off) =
         (0u64, 0u64, 0u32, 0u32, 0u32, id3_size);
-    while let Some((b, s, c, spf)) = mp3_frame(data, off) {
+    while let Some((b, s, c, spf, frame_len)) = mp3_frame(data, off) {
         if frames == 0 {
             br = b;
             sr = s;
@@ -825,7 +825,7 @@ fn try_mp3(data: &[u8]) -> bool {
         }
         frames += 1;
         samples += spf as u64;
-        off += (144_000 * b / s).max(1) as usize;
+        off = off.saturating_add(frame_len as usize);
         if frames > 10000 {
             break;
         }
@@ -845,12 +845,17 @@ fn try_mp3(data: &[u8]) -> bool {
     true
 }
 
-fn mp3_frame(data: &[u8], start: usize) -> Option<(u32, u32, u32, u32)> {
-    const BR: [u32; 16] = [
+fn mp3_frame(data: &[u8], start: usize) -> Option<(u32, u32, u32, u32, u32)> {
+    const BR_MPEG1: [u32; 16] = [
         0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
     ];
+    const BR_MPEG2: [u32; 16] = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0];
     const SR: [u32; 4] = [44100, 48000, 32000, 0];
-    for off in start..data.len().saturating_sub(4) {
+    let last = data.len().checked_sub(4)?;
+    if start > last {
+        return None;
+    }
+    for off in start..=last {
         let h = u32::from_be_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]]);
         if h & 0xffe0_0000 != 0xffe0_0000 {
             continue;
@@ -862,14 +867,30 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(u32, u32, u32, u32)> {
         if ver == 1 || layer != 1 || bi == 0 || bi == 15 || si == 3 {
             continue;
         }
-        let b = BR[bi];
+        let b = if ver == 3 {
+            BR_MPEG1[bi]
+        } else {
+            BR_MPEG2[bi]
+        };
         let s = match ver {
             3 => SR[si],
             2 => SR[si] / 2,
             _ => SR[si] / 4,
         };
         let c = if (h >> 6) & 3 == 3 { 1 } else { 2 };
-        return Some((b, s, c, if ver == 3 { 1152 } else { 576 }));
+        // MPEG-1 Layer III uses 144 * bitrate / sample_rate; MPEG-2/2.5
+        // Layer III uses 72. Include the padding slot or the next scan starts
+        // at the wrong byte and can consume the complete WASM fuel budget.
+        let coefficient = if ver == 3 { 144_000 } else { 72_000 };
+        let padding = if (h >> 9) & 1 == 0 { 0 } else { 1 };
+        let frame_len = (coefficient * b / s).saturating_add(padding).max(1);
+        return Some((
+            b,
+            s,
+            c,
+            if ver == 3 { 1152 } else { 576 },
+            frame_len,
+        ));
     }
     None
 }
@@ -1221,7 +1242,7 @@ fn print_hex(path: &str, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{qoi_header_allowed, source_dimensions_allowed, try_image};
+    use super::{mp3_frame, qoi_header_allowed, source_dimensions_allowed, try_image};
     use image::GenericImageView;
     use image::ImageReader;
     use std::io::Cursor;
@@ -1330,6 +1351,20 @@ mod tests {
             .unwrap();
 
         assert!(try_image("sample.jpg", &jpeg));
+    }
+
+    #[test]
+    fn advances_mp3_by_the_encoded_frame_length() {
+        let header = [0xff, 0xfb, 0x90, 0x64];
+        let frame = mp3_frame(&header, 0).unwrap();
+        assert_eq!(frame, (128, 44_100, 2, 1152, 417));
+    }
+
+    #[test]
+    fn uses_mpeg2_bitrate_table_and_frame_coefficient() {
+        let header = [0xff, 0xf3, 0x80, 0x64];
+        let frame = mp3_frame(&header, 0).unwrap();
+        assert_eq!(frame, (64, 22_050, 2, 576, 208));
     }
 
     #[test]
