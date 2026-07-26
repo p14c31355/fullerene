@@ -58,7 +58,11 @@ impl ParsedCommand {
 
         let name = parts.first().cloned().unwrap_or_default();
         let args: Vec<String> = parts.into_iter().skip(1).collect();
-        Self { name, args, redirect }
+        Self {
+            name,
+            args,
+            redirect,
+        }
     }
 
     pub fn args_slice(&self) -> Vec<&str> {
