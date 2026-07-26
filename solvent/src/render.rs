@@ -382,7 +382,21 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 }
                 ShellState::Desktop => {}
             }
-            if rt.shell_state == ShellState::Desktop && lattice::top_panel::is_top_panel_enabled() {
+            let top_panel_rect = lattice::scene::DirtyRect::new(
+                0,
+                0,
+                fb_width,
+                lattice::top_panel::TOP_PANEL_HEIGHT,
+            );
+            let top_panel_dirty = was_transition
+                || scene
+                    .dirty_rects
+                    .iter()
+                    .any(|rect| rect.intersects(&top_panel_rect));
+            if rt.shell_state == ShellState::Desktop
+                && lattice::top_panel::is_top_panel_enabled()
+                && top_panel_dirty
+            {
                 rt.desktop
                     .top_panel
                     .render(back, fb_width, fb_height, fb_width);

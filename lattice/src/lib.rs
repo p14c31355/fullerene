@@ -80,6 +80,20 @@ mod tests {
     }
 
     #[test]
+    fn compositor_keeps_pixels_between_disjoint_dirty_regions() {
+        let dirty = [DirtyRect::new(0, 0, 2, 2), DirtyRect::new(8, 8, 2, 2)];
+        let scene = Scene::with_dirty_rects(&[], None, 0x112233, &dirty);
+        let mut target = VecFramebuffer::new(10, 10);
+        target.pixels.fill(0xDEADBE);
+
+        Compositor::render(&scene, &mut target);
+
+        assert_eq!(target.pixels[0], 0x112233);
+        assert_eq!(target.pixels[9 * 10 + 9], 0x112233);
+        assert_eq!(target.pixels[5 * 10 + 5], 0xDEADBE);
+    }
+
+    #[test]
     fn test_vec_framebuffer_creation() {
         let fb = VecFramebuffer::new(64, 48);
         assert_eq!(fb.width, 64);

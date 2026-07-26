@@ -335,23 +335,56 @@ impl Compositor {
         let (fb_width, fb_height) = target.dimensions();
         let framebuffer = target.buffer();
 
-        // When there are no dirty rects, render the full framebuffer.
-        let merged = if scene.dirty_rects.is_empty() {
-            DirtyRect::full(fb_width, fb_height)
+        // Render each dirty region independently. Merging all dirty regions
+        // into one bounding box makes a pair of small updates (for example,
+        // the old and new cursor positions) repaint every pixel between them.
+        // The framebuffer is persistent, so each region can be composited
+        // independently without changing the resulting image.
+        let mut drawn: Option<DirtyRect> = None;
+        if scene.dirty_rects.is_empty() {
+            let region = DirtyRect::full(fb_width, fb_height);
+            Self::render_region(scene, framebuffer, fb_width, fb_height, region);
+            drawn = Some(region);
         } else {
-            let mut m = scene.dirty_rects[0];
-            for r in &scene.dirty_rects[1..] {
-                m.merge(r);
+            for &dirty in scene.dirty_rects {
+                let Some(region) = Self::clip_region(dirty, fb_width, fb_height) else {
+                    continue;
+                };
+                Self::render_region(scene, framebuffer, fb_width, fb_height, region);
+                if let Some(bounds) = drawn.as_mut() {
+                    bounds.merge(&region);
+                } else {
+                    drawn = Some(region);
+                }
             }
-            m
-        };
-        let dx = merged.x;
-        let dy = merged.y;
-        let dw = merged.width.min(fb_width.saturating_sub(merged.x));
-        let dh = merged.height.min(fb_height.saturating_sub(merged.y));
-        if dw == 0 || dh == 0 {
-            return (0, 0, 0, 0);
         }
+
+        drawn.map_or((0, 0, 0, 0), |region| {
+            (region.x, region.y, region.width, region.height)
+        })
+    }
+
+    #[inline]
+    fn clip_region(region: DirtyRect, fb_width: u32, fb_height: u32) -> Option<DirtyRect> {
+        if region.x >= fb_width || region.y >= fb_height {
+            return None;
+        }
+        let width = region.width.min(fb_width - region.x);
+        let height = region.height.min(fb_height - region.y);
+        (width > 0 && height > 0).then_some(DirtyRect::new(region.x, region.y, width, height))
+    }
+
+    fn render_region(
+        scene: &Scene<'_>,
+        framebuffer: &mut [u32],
+        fb_width: u32,
+        fb_height: u32,
+        region: DirtyRect,
+    ) {
+        let dx = region.x;
+        let dy = region.y;
+        let dw = region.width;
+        let dh = region.height;
 
         // ── Layer 0: Desktop background (wallpaper) + icons ───
         if scene.layered {
@@ -370,11 +403,9 @@ impl Compositor {
 
         // ── Layer 1: Windows ─────────────────────────────
         for window in scene.windows {
-            // Skip minimized windows
-            if window.minimized {
-                continue;
+            if !window.minimized {
+                Self::draw_window_clipped(framebuffer, fb_width, fb_height, window, dx, dy, dw, dh);
             }
-            Self::draw_window_clipped(framebuffer, fb_width, fb_height, window, dx, dy, dw, dh);
         }
         inc_draw_calls();
 
@@ -386,80 +417,81 @@ impl Compositor {
             inc_draw_calls();
         }
 
-        // Draw menu text on top of overlay rectangles
         if let Some(menu) = scene.active_menu {
-            menu.render_text(framebuffer, fb_width, fb_height, fb_width);
-            inc_draw_calls();
+            let menu_rect = DirtyRect::new(menu.x, menu.y, menu.width, menu.height);
+            if menu_rect.intersects(&region) {
+                menu.render_text(framebuffer, fb_width, fb_height, fb_width);
+                inc_draw_calls();
+            }
         }
 
-        // ── Network menu overlay ───────────────────────
         if scene.network_menu_open {
-            crate::network_menu::render_network_menu(
-                framebuffer,
-                fb_width,
-                fb_height,
+            let menu_height =
+                4 + (scene.net_aps.len() as u32 + 1) * crate::network_menu::NET_MENU_ITEM_HEIGHT;
+            let menu_rect = DirtyRect::new(
                 scene.net_menu_x,
                 scene.net_menu_y,
-                scene.net_aps,
-                scene.net_status,
-                None,
+                crate::network_menu::NET_MENU_WIDTH,
+                menu_height,
             );
-            inc_draw_calls();
+            if menu_rect.intersects(&region) {
+                crate::network_menu::render_network_menu(
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    scene.net_menu_x,
+                    scene.net_menu_y,
+                    scene.net_aps,
+                    scene.net_status,
+                    None,
+                );
+                inc_draw_calls();
+            }
         }
 
-        // ── Password dialog overlay ────────────────────
         if scene.pwd_dialog_open {
-            crate::network_menu::render_password_dialog(
-                framebuffer,
-                fb_width,
-                fb_height,
+            let dialog_rect = DirtyRect::new(
                 scene.pwd_dialog_x,
                 scene.pwd_dialog_y,
-                scene.pwd_ssid,
-                scene.pwd_password,
-                scene.pwd_cursor,
+                crate::network_menu::PWD_DIALOG_W,
+                crate::network_menu::PWD_DIALOG_H,
             );
-            inc_draw_calls();
+            if dialog_rect.intersects(&region) {
+                crate::network_menu::render_password_dialog(
+                    framebuffer,
+                    fb_width,
+                    fb_height,
+                    scene.pwd_dialog_x,
+                    scene.pwd_dialog_y,
+                    scene.pwd_ssid,
+                    scene.pwd_password,
+                    scene.pwd_cursor,
+                );
+                inc_draw_calls();
+            }
         }
 
         // ── Layer 3: System UI ───────────────────────────
-        // Taskbar
         if let Some(tb) = scene.taskbar {
             let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT);
             let bar_rect = DirtyRect::new(0, bar_y, fb_width, crate::taskbar::TASKBAR_HEIGHT);
-            let clip = DirtyRect::new(dx, dy, dw, dh);
-            if bar_rect.intersects(&clip) {
+            if bar_rect.intersects(&region) {
                 tb.render(framebuffer, fb_width, fb_height);
             }
             inc_draw_calls();
         }
 
-        // Cursor — drawn in the back‑buffer so the compositor owns
-        // cursor rendering exclusively.  The dirty rect for the old and
-        // new cursor positions is already pushed by prepare_frame(), so
-        // the compositor redraws both the restored old area and the new
-        // cursor position in a single pass.
         if let Some(c) = scene.cursor
             && c.visible
         {
-            render_cursor(
-                framebuffer,
-                fb_width,
-                fb_height,
-                c,
-                DirtyRect::new(dx, dy, dw, dh),
-            );
+            render_cursor(framebuffer, fb_width, fb_height, c, region);
             inc_draw_calls();
         }
 
-        // Debug overlay (FPS + draw calls)
-        Self::draw_debug_overlay(framebuffer, fb_width, fb_height);
+        // Clip the debug text too; otherwise every small region writes into
+        // the top-left area of the persistent back buffer unnecessarily.
+        Self::draw_debug_overlay(framebuffer, fb_width, fb_height, region);
         inc_draw_calls();
-
-        // Return the drawn bounding box for partial blit.
-        let max_x = (dx + dw).min(fb_width);
-        let max_y = (dy + dh).min(fb_height);
-        (dx, dy, max_x - dx, max_y - dy)
     }
 
     // ── Overlay drawing ────────────────────────────────────
@@ -500,7 +532,7 @@ impl Compositor {
         }
     }
 
-    fn draw_debug_overlay(fb: &mut [u32], fbw: u32, fbh: u32) {
+    fn draw_debug_overlay(fb: &mut [u32], fbw: u32, fbh: u32, clip: DirtyRect) {
         let fps = current_fps_x100();
         if fps == 0 {
             return;
@@ -519,8 +551,18 @@ impl Compositor {
         let text = &buf[..pos.min(32)];
         let text_str = core::str::from_utf8(text).unwrap_or("FPS:?");
 
-        let mut p = crate::painter::Painter::new(fb, fbw, fbh);
         let x = (fbw.saturating_sub(150)) as i32;
+        // Painter text rendering currently clips to the framebuffer but not
+        // to its painter clip rectangle. Avoid invoking the relatively
+        // expensive font renderer unless this region can touch the overlay.
+        if clip.x as i32 >= fbw as i32
+            || clip.y >= 20
+            || (clip.x + clip.width) as i32 <= x
+            || clip.y + clip.height <= 4
+        {
+            return;
+        }
+        let mut p = crate::painter::Painter::new(fb, fbw, fbh);
         p.draw_text(x, 4, text_str, accent, 13.0);
     }
 
