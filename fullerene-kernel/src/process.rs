@@ -819,6 +819,11 @@ pub fn yield_current() {
     }
 }
 
+/// Cooperatively switch directly to a specific ready process.
+pub fn yield_to(pid: ProcessId) -> bool {
+    SCHEDULER.yield_to(pid)
+}
+
 /// Perform context switch between two processes
 pub unsafe fn context_switch(old_pid: Option<ProcessId>, new_pid: ProcessId) {
     unsafe { SCHEDULER.context_switch(old_pid, new_pid) };

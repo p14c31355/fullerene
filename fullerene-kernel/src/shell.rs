@@ -388,11 +388,11 @@ macro_rules! launch_cmd {
             Ok(pid) => {
                 tline!($t, $ok, pid.0);
                 // The interactive shell runs synchronously from the idle
-                // scheduler context. Give the newly-ready process a
-                // scheduling point now so short commands can print and exit
-                // before Nozzle draws the next prompt.
+                // scheduler context. Switch to the process we just launched,
+                // rather than whichever unrelated task happens to be next in
+                // the round-robin list.
                 if crate::process::current_pid().is_some() {
-                    crate::process::yield_current();
+                    let _ = crate::process::yield_to(pid);
                 }
             }
             Err(e) => tline!($t, "Failed to launch: {:?}", e),
@@ -1246,22 +1246,52 @@ pub fn shell_main() {
 /// Run the Linux-musl smoke fixture through the real Nozzle command path.
 #[cfg(linux_musl_smoke)]
 pub fn run_linux_musl_smoke() {
+    extern "C" fn unrelated_ready_task() -> ! {
+        loop {
+            petroleum::cpu_pause();
+        }
+    }
+
+    struct ScriptedTerminal {
+        input: alloc::collections::VecDeque<u8>,
+    }
+
+    impl ScriptedTerminal {
+        fn new(script: &str) -> Self {
+            Self {
+                input: script.bytes().collect(),
+            }
+        }
+    }
+
+    impl nozzle::Terminal for ScriptedTerminal {
+        fn write_str(&mut self, text: &str) {
+            solvent::write_terminal(text);
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            self.input.pop_front()
+        }
+
+        fn input_available(&self) -> bool {
+            !self.input.is_empty()
+        }
+    }
+
+    // Keep a non-yielding Ready task ahead of the Linux process. This catches
+    // launchers that use a generic round-robin yield instead of switching to
+    // the PID they just created.
+    let _ = crate::process::create_process(
+        "linux-smoke-unrelated-ready",
+        x86_64::VirtAddr::from_ptr(unrelated_ready_task as *const ()),
+        false,
+    );
+
     let services = nozzle_services();
-    solvent::run_shell_on_with_command(
-        &mut solvent::LatticeTerminal,
-        "fullerene> ",
-        services,
-        Some("linux_run /bin/rust_std_hello"),
+    let mut terminal = ScriptedTerminal::new(
+        "linux_run /bin/rust_std_hello\necho shell-resumed-after-linux\nexit\n",
     );
-    // Run a second command after the Linux process exits. Reaching its marker
-    // proves that cooperative scheduling restored a usable shell context, not
-    // merely an instruction address that happened to reach this function.
-    solvent::run_shell_on_with_command(
-        &mut solvent::LatticeTerminal,
-        "fullerene> ",
-        services,
-        Some("echo shell-resumed-after-linux"),
-    );
+    solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     petroleum::serial::serial_log(format_args!("[linux-smoke] shell-resumed-after-linux\n"));
     // Flasks maps 0x10 to status 33.
     unsafe {

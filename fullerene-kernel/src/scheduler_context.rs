@@ -361,6 +361,48 @@ impl SchedulerContext {
         }
     }
 
+    /// Cooperatively switch directly to a specific ready process.
+    ///
+    /// Launchers use this instead of a generic round-robin yield so the
+    /// process they just created is guaranteed to receive the next timeslice,
+    /// even when unrelated ready tasks already exist.
+    pub fn yield_to(&self, new_pid: ProcessId) -> bool {
+        let old_pid = ProcessId(self.current_pid() as u64);
+        if old_pid.0 == 0 {
+            return false;
+        }
+        if old_pid == new_pid {
+            return true;
+        }
+
+        let selected = self.with_list(|list| {
+            let Some(old_index) = list.iter().position(|(pid, _)| *pid == old_pid) else {
+                return false;
+            };
+            let Some(new_index) = list.iter().position(|(pid, _)| *pid == new_pid) else {
+                return false;
+            };
+            if list[new_index].1.state != ProcessState::Ready {
+                return false;
+            }
+
+            if list[old_index].1.state == ProcessState::Running {
+                list[old_index].1.state = ProcessState::Ready;
+            }
+            list[new_index].1.state = ProcessState::Running;
+            self.set_schedule_index(new_index);
+            self.set_current_pid(new_pid.0 as usize);
+            true
+        });
+
+        if selected {
+            unsafe {
+                self.context_switch(Some(old_pid), new_pid);
+            }
+        }
+        selected
+    }
+
     /// Raw context switch — updates CR3 when needed.
     ///
     /// # Safety
