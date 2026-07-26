@@ -1411,9 +1411,8 @@ pub fn run_linux_musl_smoke() {
     );
 
     let services = nozzle_services();
-    let mut terminal = ScriptedTerminal::new(
-        "linux_run /bin/rust_std_hello\necho shell-resumed-after-linux\nexit\n",
-    );
+    let mut terminal =
+        ScriptedTerminal::new("hello_rust_linux\necho shell-resumed-after-linux\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     if crate::linux::launch::smoke_verified() {
         petroleum::serial::serial_log(format_args!(

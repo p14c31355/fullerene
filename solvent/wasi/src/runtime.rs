@@ -53,8 +53,11 @@ pub fn run(
         .iter()
         .any(|path| path.to_ascii_lowercase().ends_with(".mp4"));
     let fuel = if is_mp4 {
-        // MP4 header parsing must fail quickly on pathological table counts.
-        2_000_000
+        // H.264 decoding every sample is intentionally synchronous. The
+        // parser still has independent time/I/O/sample-count guards, so the
+        // fuel budget must cover a complete long video instead of aborting
+        // partway through playback.
+        500_000_000
     } else if is_viewer {
         25_000_000
     } else {

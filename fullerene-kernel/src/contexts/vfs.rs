@@ -680,11 +680,23 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
     // Resolve paths to get canonical forms (handles ".", "..", trailing slashes).
-    let (source, destination) = with_vfs(|vfs| {
+    let (source, mut destination) = with_vfs(|vfs| {
         let inner = vfs.inner.lock();
         (inner.resolve_path(source), inner.resolve_path(destination))
     })
     .ok_or(FsError::PermissionDenied)?;
+
+    // Match shell/file-manager copy semantics: when the destination names an
+    // existing directory, place the source below it instead of trying to
+    // create a file whose name is the directory itself.
+    if readdir(&destination).is_ok() {
+        let name = source
+            .trim_end_matches('/')
+            .rsplit('/')
+            .find(|name| !name.is_empty())
+            .ok_or(FsError::InvalidPath)?;
+        destination = join_path(&destination, name);
+    }
 
     // Prevent copying into self
     if source == destination
@@ -701,10 +713,6 @@ pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), Fs
     if !is_dir && readdir(&source).is_ok() {
         return Err(FsError::IsADirectory);
     }
-    if !is_dir && readdir(&destination).is_ok() {
-        return Err(FsError::IsADirectory);
-    }
-
     if is_dir {
         mkdir(&destination)?;
         for entry in readdir(&source)? {
@@ -1042,11 +1050,9 @@ mod tests {
         let expected: Vec<u8> = (0..9_000).map(|index| (index % 251) as u8).collect();
 
         context.replace_file("/source.bin", &expected).unwrap();
-        context
-            .copy_path("/source.bin", "/mnt/copied.bin", false)
-            .unwrap();
+        context.copy_path("/source.bin", "/mnt", false).unwrap();
 
-        let descriptor = context.open("/mnt/copied.bin", 0).unwrap();
+        let descriptor = context.open("/mnt/source.bin", 0).unwrap();
         let mut actual = vec![0; expected.len()];
         let mut offset = 0;
         while offset < actual.len() {

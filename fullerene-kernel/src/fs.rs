@@ -10,13 +10,6 @@ use spin::Mutex;
 
 static STREAM_FILE: Mutex<Option<(String, FileDesc)>> = Mutex::new(None);
 
-fn basename(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit_once('/')
-        .map(|(_, name)| name)
-        .unwrap_or(path)
-}
-
 fn is_dir(path: &str) -> bool {
     vfs::readdir(path).is_ok()
 }
@@ -225,19 +218,13 @@ pub fn change_directory(path: &str) -> Result<(), FsError> {
 }
 
 pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
-    let dst = if is_dir(dst) {
-        let name = basename(src);
-        alloc::format!("{}/{}", dst.trim_end_matches('/'), name)
-    } else {
-        dst.to_string()
-    };
-    let data = read_entire_file(src)?;
-    write_entire_file(&dst, &data)
+    let is_directory = is_dir(src);
+    crate::contexts::vfs::copy_path(src, dst, is_directory)
 }
 
 pub fn move_file(src: &str, dst: &str) -> Result<(), FsError> {
-    copy_file(src, dst)?;
-    remove(src)
+    let is_directory = is_dir(src);
+    crate::contexts::vfs::move_path(src, dst, is_directory)
 }
 
 pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {

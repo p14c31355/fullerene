@@ -1170,6 +1170,9 @@ fn print_hex(path: &str, data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::source_dimensions_allowed;
+    use image::GenericImageView;
+    use image::ImageReader;
+    use std::io::Cursor;
 
     #[unsafe(no_mangle)]
     extern "C" fn create_window(
@@ -1232,6 +1235,28 @@ mod tests {
         assert!(!source_dimensions_allowed(4096, 4097));
         assert!(!source_dimensions_allowed(16_385, 1));
         assert!(source_dimensions_allowed(4096, 4096));
+    }
+
+    #[test]
+    fn accepts_streamed_qoi_rgba_layout() {
+        let pixels = [[255u8, 0, 0, 255], [0, 255, 0, 255]];
+        let mut qoi = Vec::from(*b"qoif");
+        qoi.extend_from_slice(&2u32.to_be_bytes());
+        qoi.extend_from_slice(&1u32.to_be_bytes());
+        qoi.extend_from_slice(&[4, 0]);
+        for pixel in pixels {
+            qoi.push(0xFF);
+            qoi.extend_from_slice(&pixel);
+        }
+        qoi.extend_from_slice(&[0; 7]);
+        qoi.push(1);
+
+        let decoded = ImageReader::new(Cursor::new(qoi))
+            .with_guessed_format()
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!(decoded.dimensions(), (2, 1));
     }
 
     #[test]

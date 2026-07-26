@@ -100,6 +100,7 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
                 unsafe {
                     let ptr = core::ptr::addr_of_mut!(HEAP) as *mut u8;
                     petroleum::init_global_heap(ptr, crate::heap::HEAP_SIZE);
+                    crate::heap::configure_heap_extension();
                     petroleum::common::memory::set_heap_range(ptr as usize, crate::heap::HEAP_SIZE);
                     crate::gdt::init(x86_64::VirtAddr::from_ptr(ptr));
                 }

@@ -134,8 +134,16 @@ fn capture(output: &str) -> Result<(), String> {
         );
         offset += chunk_len;
     }
-    write_chunk(output, 14 + encoded_offset(total_bytes), &[0; 7], false)?;
-    write_chunk(output, 14 + encoded_offset(total_bytes) + 7, &[1], false)?;
+    // Keep the end marker in one contiguous write. Some mounted filesystems
+    // finalize/flush metadata per write, so splitting the marker can leave a
+    // structurally complete-looking file that decoders reject.
+    const QOI_END_MARKER: [u8; 8] = [0, 0, 0, 0, 0, 0, 0, 1];
+    write_chunk(
+        output,
+        14 + encoded_offset(total_bytes),
+        &QOI_END_MARKER,
+        false,
+    )?;
     println!("Emulsion: qoi stream complete");
     println!("Emulsion: file write complete path={output}");
 
