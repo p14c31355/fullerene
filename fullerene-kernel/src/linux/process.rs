@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::PhysAddr;
+use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableFlags, Size4KiB};
 
 pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -15,7 +16,20 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if rt.child_clear_tid != 0 {
         let _ = unsafe { copy_val_to_user(rt.child_clear_tid, &0i32) };
     }
+    // No more user-memory access is needed. Return to the canonical kernel
+    // address space before touching scheduler-owned heap objects: process
+    // page tables can lack kernel-heap mappings added after they were cloned.
+    let kernel_root = crate::memory_management::kernel_page_table_phys();
+    if kernel_root.as_u64() != 0 {
+        let frame = x86_64::structures::paging::PhysFrame::containing_address(kernel_root);
+        let (_, current_flags) = Cr3::read();
+        unsafe {
+            Cr3::write(frame, current_flags);
+        }
+    }
     if let Some(pid) = process::current_pid() {
+        #[cfg(linux_musl_smoke)]
+        crate::linux::launch::observe_smoke_exit(pid, code);
         process::terminate_process(pid, code);
     }
     loop {
@@ -99,18 +113,9 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     // Create child VDSO page
     let child_vdso = {
-        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
-        let fa = match fa_lock.as_mut() {
-            Some(f) => f,
-            None => {
-                drop(fa_lock);
-                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
-                crate::memory_management::deallocate_process_page_table(cloned_frame);
-                return errno_code(ENOMEM);
-            }
-        };
-        let vdso = crate::vdso::create_vdso_page(&mut child_pt, fa, child_pid.0);
-        drop(fa_lock);
+        let vdso = petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
+            crate::vdso::create_vdso_page(&mut child_pt, frame_allocator, child_pid.0)
+        });
         match vdso {
             Ok(v) => Some(v),
             Err(_) => {
@@ -128,7 +133,8 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         context: {
             let mut ctx = parent_ctx.clone();
             // Child returns 0 from clone
-            ctx.regs[0] = 0;
+            ctx.registers.rax = 0;
+            ctx.kernel_rsp = 0;
             ctx
         },
         page_table_phys_addr: x86_64::PhysAddr::new(cloned_table as u64),
@@ -324,25 +330,20 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         p.user_stack = x86_64::VirtAddr::new(stack_top_vaddr_default);
 
         // Reset context for the new binary
+        p.context.registers = crate::process::GeneralRegisters::default();
         p.context.rip = entry;
-        p.context.regs[7] = stack_top_vaddr_default; // RSP
+        p.context.kernel_rsp = 0;
 
         if p.is_user {
-            p.context.segments[0] = crate::gdt::user_code()
+            p.context.segments.cs = crate::gdt::user_code()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(1);
-            p.context.segments[1] = crate::gdt::user_data()
+            p.context.segments.ss = crate::gdt::user_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(2);
         }
-
-        // Clear registers
-        for reg in &mut p.context.regs {
-            *reg = 0;
-        }
-        p.context.regs[7] = stack_top_vaddr_default; // RSP
 
         // Return 0 from execve on the new stack by pushing it
         // Actually, execve doesn't return on success - the new program starts at entry.
@@ -358,7 +359,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         // Set RSP and write initial stack frame (argc, argv, envp)
         let stack_top = stack_top_vaddr_default;
         let rsp = stack_top - 32;
-        p.context.regs[7] = rsp;
+        p.context.registers.rsp = rsp;
 
         // Use the same validated user-copy path as every other Linux ABI
         // output.  Even though this address was selected by the loader, it is

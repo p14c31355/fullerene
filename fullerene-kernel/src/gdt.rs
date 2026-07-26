@@ -81,6 +81,19 @@ pub fn user_data_selector() -> SegmentSelector {
     user_data().expect("USER_DATA_SELECTOR not initialized")
 }
 
+/// Set the ring-0 stack used when an interrupt enters from user mode.
+///
+/// Fullerene is single-core today, so the syscall entry stack is also the
+/// per-CPU privilege-transition stack. Interrupt gates clear IF, and SYSCALL
+/// masks IF through SFMASK, preventing the two users from nesting.
+pub fn set_ring0_stack(stack_top: VirtAddr) {
+    unsafe {
+        TSS.as_mut()
+            .expect("TSS not initialized")
+            .privilege_stack_table[0] = stack_top;
+    }
+}
+
 /// Checked accessors that return a fallback if the GDT is not yet initialized.
 pub fn code_selector_checked() -> SegmentSelector {
     code().unwrap_or(SegmentSelector::new(1, x86_64::PrivilegeLevel::Ring0))
@@ -191,6 +204,7 @@ pub fn init_with_stacks(stacks: TssStacks) {
 
     unsafe {
         let mut tss = TaskStateSegment::new();
+        tss.privilege_stack_table[0] = stacks.timer;
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
         tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;
@@ -217,6 +231,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     unsafe {
         let mut tss = TaskStateSegment::new();
+        tss.privilege_stack_table[0] = stacks.timer;
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
         tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;

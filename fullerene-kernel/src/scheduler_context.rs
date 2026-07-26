@@ -29,7 +29,6 @@ use heapless::Vec as HeaplessVec;
 use petroleum::common::logging::SystemError;
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::PhysFrame;
 
 use crate::context_switch::switch_context;
 use crate::process::{MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessState};
@@ -236,7 +235,29 @@ impl SchedulerContext {
     pub fn schedule_next(&self) -> (Option<ProcessId>, ProcessId) {
         petroleum::scheduler_log!("Starting process scheduling");
 
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] scheduler lock currently held={}\n",
+            self.processes.is_locked()
+        ));
         let (old_pid, new_pid) = self.with_list(|list| {
+            #[cfg(linux_musl_smoke)]
+            petroleum::serial::serial_log(format_args!(
+                "[linux-smoke] scheduler acquired list len={} index={}\n",
+                list.len(),
+                self.schedule_index()
+            ));
+            #[cfg(linux_musl_smoke)]
+            for (pid, process) in list.iter() {
+                petroleum::serial::serial_log(format_args!(
+                    "[linux-smoke] pid={} entry_rip={:#x} entry_rsp={:#x} kernel_rsp={:#x} user={}\n",
+                    pid.0,
+                    process.context.rip,
+                    process.context.registers.rsp,
+                    process.context.kernel_rsp,
+                    process.context.is_user
+                ));
+            }
             if list.is_empty() {
                 petroleum::scheduler_log!("No processes in list");
                 return (None, ProcessId(0));
@@ -250,6 +271,11 @@ impl SchedulerContext {
             // Round‑robin scan
             loop {
                 next_idx = (next_idx + 1) % list.len();
+                #[cfg(linux_musl_smoke)]
+                petroleum::serial::serial_log(format_args!(
+                    "[linux-smoke] scan idx={} pid={} state={:?}\n",
+                    next_idx, list[next_idx].0.0, list[next_idx].1.state
+                ));
                 if list[next_idx].1.state == ProcessState::Ready {
                     break;
                 }
@@ -284,9 +310,17 @@ impl SchedulerContext {
                 }
             }
 
+            #[cfg(linux_musl_smoke)]
+            petroleum::serial::serial_log(format_args!(
+                "[linux-smoke] scheduler selected old={:?} new={}\n",
+                old.map(|pid| pid.0),
+                new.0
+            ));
             (old, new)
         });
 
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!("[linux-smoke] scheduler released list\n"));
         (old_pid, new_pid)
     }
 
@@ -328,6 +362,48 @@ impl SchedulerContext {
         }
     }
 
+    /// Cooperatively switch directly to a specific ready process.
+    ///
+    /// Launchers use this instead of a generic round-robin yield so the
+    /// process they just created is guaranteed to receive the next timeslice,
+    /// even when unrelated ready tasks already exist.
+    pub fn yield_to(&self, new_pid: ProcessId) -> bool {
+        let old_pid = ProcessId(self.current_pid() as u64);
+        if old_pid.0 == 0 {
+            return false;
+        }
+        if old_pid == new_pid {
+            return true;
+        }
+
+        let selected = self.with_list(|list| {
+            let Some(old_index) = list.iter().position(|(pid, _)| *pid == old_pid) else {
+                return false;
+            };
+            let Some(new_index) = list.iter().position(|(pid, _)| *pid == new_pid) else {
+                return false;
+            };
+            if list[new_index].1.state != ProcessState::Ready {
+                return false;
+            }
+
+            if list[old_index].1.state == ProcessState::Running {
+                list[old_index].1.state = ProcessState::Ready;
+            }
+            list[new_index].1.state = ProcessState::Running;
+            self.set_schedule_index(new_index);
+            self.set_current_pid(new_pid.0 as usize);
+            true
+        });
+
+        if selected {
+            unsafe {
+                self.context_switch(Some(old_pid), new_pid);
+            }
+        }
+        selected
+    }
+
     /// Raw context switch — updates CR3 when needed.
     ///
     /// # Safety
@@ -363,24 +439,28 @@ impl SchedulerContext {
             .iter()
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| p.page_table_phys_addr)
-            .unwrap_or_else(crate::memory_management::kernel_page_table_phys);
+            .filter(|address| address.as_u64() != 0)
+            .or_else(|| {
+                let kernel = crate::memory_management::kernel_page_table_phys();
+                (kernel.as_u64() != 0).then_some(kernel)
+            })
+            .unwrap_or_else(|| Cr3::read().0.start_address());
+        let new_kernel_stack = list
+            .iter()
+            .find(|(id, _)| *id == new_pid)
+            .map(|(_, process)| process.kernel_stack)
+            .filter(|stack| stack.as_u64() != 0);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
         drop(guard);
 
         if let Some(new) = new_ctx {
-            if pt.as_u64() != 0 {
-                let new_frame = PhysFrame::containing_address(pt);
-                let (current_frame, _) = Cr3::read();
-                if new_frame != current_frame {
-                    unsafe {
-                        Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
-                    }
-                }
+            if let Some(kernel_stack) = new_kernel_stack {
+                crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
-            let old_ref = old_ctx.map(|ptr| unsafe { &mut *ptr });
-            unsafe { switch_context(old_ref, &*new) };
+            let old = old_ctx.unwrap_or(core::ptr::null_mut());
+            unsafe { switch_context(old, new, pt.as_u64()) };
         }
     }
 

@@ -18,6 +18,7 @@ pub fn write_terminal(text: &str) {
     if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
         runtime.term_buf.put_str(text);
         runtime.term_dirty = true;
+        runtime.frame_due = true;
     }
 }
 

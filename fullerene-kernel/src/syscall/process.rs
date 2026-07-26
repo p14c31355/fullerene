@@ -157,19 +157,9 @@ pub(crate) fn syscall_fork() -> SyscallResult {
     let _ = child_page_table.unmap_page(petroleum::vdso::VDSO_USER_BASE as usize);
 
     let child_vdso = if parent_context.is_user {
-        let mut allocator_guard = crate::heap::FRAME_ALLOCATOR.lock();
-        let allocator = match allocator_guard.as_mut() {
-            Some(allocator) => allocator,
-            None => {
-                drop(allocator_guard);
-                free_kernel_stack(kernel_stack_ptr);
-                crate::memory_management::deallocate_process_page_table(cloned_pml4_frame);
-                return Err(SyscallError::OutOfMemory);
-            }
-        };
-        let vdso =
-            crate::vdso::create_vdso_page(&mut child_page_table, allocator, child_pid as u64);
-        drop(allocator_guard);
+        let vdso = petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
+            crate::vdso::create_vdso_page(&mut child_page_table, frame_allocator, child_pid as u64)
+        });
         match vdso {
             Ok(vdso) => Some(vdso),
             Err(_) => {
@@ -201,8 +191,9 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         resources: process::ProcessResources::new(),
     };
 
-    child_process.context.regs[0] = 0;
-    child_process.context.regs[7] = child_process.user_stack.as_u64();
+    child_process.context.registers.rax = 0;
+    child_process.context.registers.rsp = child_process.user_stack.as_u64();
+    child_process.context.kernel_rsp = 0;
 
     process::SCHEDULER
         .add(Box::new(child_process))

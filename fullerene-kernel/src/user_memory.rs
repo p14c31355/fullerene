@@ -133,6 +133,17 @@ pub(crate) unsafe fn copy_value_to_user<T: Copy>(
     Ok(())
 }
 
+/// Copy one `Copy` value from user memory with alignment-independent access.
+///
+/// # Safety
+///
+/// The caller must keep the current process address space stable for the
+/// duration of the copy.
+pub(crate) unsafe fn copy_value_from_user<T: Copy>(ptr: *const T) -> Result<T, UserCopyError> {
+    let user = UserPtr::new(ptr)?;
+    unsafe { user.copy_from_user() }.map_err(UserCopyError::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

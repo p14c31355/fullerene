@@ -43,40 +43,90 @@ pub enum ProcessState {
     Terminated,
 }
 
-/// Process context for context switching
+/// Named general-purpose register image used for a process's initial entry.
+///
+/// Suspended kernel continuations are kept on their kernel stack instead of
+/// rewriting this image on every context switch.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GeneralRegisters {
+    pub(crate) rax: u64,
+    pub(crate) rbx: u64,
+    pub(crate) rcx: u64,
+    pub(crate) rdx: u64,
+    pub(crate) rsi: u64,
+    pub(crate) rdi: u64,
+    pub(crate) rbp: u64,
+    pub(crate) rsp: u64,
+    pub(crate) r8: u64,
+    pub(crate) r9: u64,
+    pub(crate) r10: u64,
+    pub(crate) r11: u64,
+    pub(crate) r12: u64,
+    pub(crate) r13: u64,
+    pub(crate) r14: u64,
+    pub(crate) r15: u64,
+}
+
+/// Segment-selector image used when entering a process for the first time.
+///
+/// `cs` and `ss` are authoritative and are restored by `iretq`. The legacy
+/// `ds`, `es`, `fs`, and `gs` selector fields are informational only; long-mode
+/// FS/GS bases are managed separately and the context trampoline does not
+/// restore these four selectors.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SegmentRegisters {
+    pub(crate) cs: u64,
+    pub(crate) ss: u64,
+    pub(crate) ds: u64,
+    pub(crate) es: u64,
+    pub(crate) fs: u64,
+    pub(crate) gs: u64,
+}
+
+/// Process context for context switching.
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessContext {
-    /// General purpose registers: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8-r15
-    pub(crate) regs: [u64; 16],
+    /// Register image for the first kernel/user entry.
+    pub(crate) registers: GeneralRegisters,
     /// CPU flags
     pub(crate) rflags: u64,
     /// Instruction pointer
     pub(crate) rip: u64,
     /// Segment registers: cs, ss, ds, es, fs, gs
-    pub(crate) segments: [u64; 6],
-    /// Task State Segment
-    pub(crate) tss: u64,
+    pub(crate) segments: SegmentRegisters,
+    /// Stack image created by the low-level switch trampoline. A zero value
+    /// means this process has not yet suspended a kernel continuation.
+    pub(crate) kernel_rsp: u64,
     /// Whether the process runs in user mode (Ring 3)
     pub(crate) is_user: bool,
 }
 
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, registers), 0);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, rflags), 128);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, rip), 136);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, segments), 144);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, kernel_rsp), 192);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, is_user), 200);
+
 impl Default for ProcessContext {
     fn default() -> Self {
         Self {
-            regs: [0; 16],
+            registers: GeneralRegisters::default(),
             rflags: 0x0202, // IF flag set
             rip: 0,
-            segments: [
-                // Use fallback segment selectors if GDT not ready
-                crate::gdt::code().as_ref().map_or(1, |s| s.0 as u64), // cs
-                crate::gdt::kernel_data().as_ref().map_or(2, |s| s.0 as u64), // ss
-                0,
-                0,
-                0,
-                0, // ds, es, fs, gs
-            ],
-            tss: 0,
+            segments: SegmentRegisters {
+                // Use fallback segment selectors if GDT is not ready.
+                cs: crate::gdt::code().as_ref().map_or(1, |s| s.0 as u64),
+                ss: crate::gdt::kernel_data().as_ref().map_or(2, |s| s.0 as u64),
+                ds: 0,
+                es: 0,
+                fs: 0,
+                gs: 0,
+            },
+            kernel_rsp: 0,
             is_user: false,
         }
     }
@@ -439,25 +489,27 @@ impl Process {
         petroleum::mem_debug!(self.name);
         petroleum::mem_debug!("\n");
 
+        self.context.kernel_rsp = 0;
+        self.context.is_user = self.is_user;
         if self.is_user {
             // For user processes, the context RSP should be the user stack
-            self.context.regs[7] = self.user_stack.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::user_code().as_ref().map_or(1, |s| s.0 as u64); // cs
-            self.context.segments[1] = crate::gdt::user_data().as_ref().map_or(2, |s| s.0 as u64); // ss
+            self.context.registers.rsp = self.user_stack.as_u64();
+            self.context.segments.cs = crate::gdt::user_code().as_ref().map_or(1, |s| s.0 as u64);
+            self.context.segments.ss = crate::gdt::user_data().as_ref().map_or(2, |s| s.0 as u64);
         } else {
             // For kernel processes, the context RSP is the kernel stack
-            self.context.regs[7] = kernel_stack_top.as_u64(); // rsp
-            self.context.segments[0] = crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1); // cs
-            self.context.segments[1] = crate::gdt::kernel_data()
+            self.context.registers.rsp = kernel_stack_top.as_u64();
+            self.context.segments.cs = crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1);
+            self.context.segments.ss = crate::gdt::kernel_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
-                .unwrap_or(2); // ss
+                .unwrap_or(2);
         }
 
         // Set RIP to entry point directly
         self.context.rip = self.entry_point.as_u64();
         petroleum::mem_debug!("Process: RIP set, RSP set\n");
-        self.context.regs[0] = 0; // rax
+        self.context.registers.rax = 0;
         self.context.rflags = 0x202; // Set Interrupt Enable flag
     }
 }
@@ -497,21 +549,21 @@ pub fn init(heap_start: usize, heap_end: usize) {
     let pid = SCHEDULER.allocate_pid();
 
     let ctx = ProcessContext {
-        regs: [0; 16],
+        registers: GeneralRegisters::default(),
         rflags: 0x0202,
         rip: idle_addr.as_u64(),
-        segments: [
-            crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1),
-            crate::gdt::kernel_data()
+        segments: SegmentRegisters {
+            cs: crate::gdt::code().as_ref().map(|s| s.0 as u64).unwrap_or(1),
+            ss: crate::gdt::kernel_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(2),
-            0,
-            0,
-            0,
-            0,
-        ],
-        tss: 0,
+            ds: 0,
+            es: 0,
+            fs: 0,
+            gs: 0,
+        },
+        kernel_rsp: 0,
         is_user: false,
     };
 
@@ -586,34 +638,28 @@ pub fn create_process(
         process.page_table_phys_addr = PhysAddr::new(page_table_phys);
         process.page_table = Some(Box::new(page_table));
 
-        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
-        let fa = fa_lock.as_mut().ok_or_else(|| {
-            unsafe {
-                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            }
-            if let Some(ref page_table) = process.page_table {
-                if let Some(pml4_frame) = page_table.pml4_frame() {
+        let vdso_result = {
+            let pt: &mut petroleum::page_table::process::ProcessPageTable =
+                process.page_table.as_mut().unwrap();
+            petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
+                create_vdso_page(pt, frame_allocator, process.id.0).map_err(|_| ())
+            })
+        };
+        let vdso_ref = match vdso_result {
+            Ok(vdso) => vdso,
+            Err(_) => {
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                    petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                }
+                if let Some(ref page_table) = process.page_table
+                    && let Some(pml4_frame) = page_table.pml4_frame()
+                {
                     crate::memory_management::deallocate_process_page_table(pml4_frame);
                 }
+                return Err(petroleum::common::logging::SystemError::FrameAllocationFailed);
             }
-            petroleum::common::logging::SystemError::InternalError
-        })?;
-        let pt: &mut petroleum::page_table::process::ProcessPageTable =
-            process.page_table.as_mut().unwrap();
-        let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
-            unsafe {
-                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            }
-            if let Some(ref page_table) = process.page_table {
-                if let Some(pml4_frame) = page_table.pml4_frame() {
-                    crate::memory_management::deallocate_process_page_table(pml4_frame);
-                }
-            }
-            petroleum::common::logging::SystemError::FrameAllocationFailed
-        })?;
-        drop(fa_lock);
+        };
         process.vdso_page = Some(vdso_ref);
     } else {
         // Create page table for the process (kernel process, no user stack)
@@ -725,6 +771,23 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     // context switch itself.
     if is_current && !is_idle {
         let (old, next) = SCHEDULER.schedule_next();
+        #[cfg(linux_musl_smoke)]
+        if let Some((rip, rsp, kernel_rsp, is_user, state)) =
+            SCHEDULER.with_process(next, |process| {
+                (
+                    process.context.rip,
+                    process.context.registers.rsp,
+                    process.context.kernel_rsp,
+                    process.context.is_user,
+                    process.state,
+                )
+            })
+        {
+            petroleum::serial::serial_log(format_args!(
+                "[linux-smoke] resume PID {} entry_rip={:#x} entry_rsp={:#x} kernel_rsp={:#x} user={} state={:?}\n",
+                next.0, rip, rsp, kernel_rsp, is_user, state
+            ));
+        }
         if old == Some(pid) && next != pid {
             unsafe { SCHEDULER.context_switch(Some(pid), next) };
         }
@@ -766,6 +829,11 @@ pub fn yield_current() {
     unsafe {
         context_switch(Some(old_pid), new_pid);
     }
+}
+
+/// Cooperatively switch directly to a specific ready process.
+pub fn yield_to(pid: ProcessId) -> bool {
+    SCHEDULER.yield_to(pid)
 }
 
 /// Perform context switch between two processes

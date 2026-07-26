@@ -14,7 +14,7 @@ use super::time;
 use super::window;
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn handle_syscall(
+pub unsafe extern "sysv64" fn handle_syscall(
     syscall_num: u64,
     arg1: u64,
     arg2: u64,

@@ -105,6 +105,11 @@ pub fn scheduler_loop() -> ! {
     // Wire kernel renderer into Solvent so runtime ticks can paint the display.
     gui::set_render_fn(gui::render);
 
+    // Exercise the same command registration, shell service, VFS loader, and
+    // cooperative scheduling path used by an interactive invocation.
+    #[cfg(linux_musl_smoke)]
+    crate::shell::run_linux_musl_smoke();
+
     // Register NMI recovery restart context with a dedicated stack.
     let recovery_rsp = {
         let base = core::ptr::addr_of!(NMI_RECOVERY_STACK) as u64;

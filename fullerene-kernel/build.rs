@@ -12,7 +12,11 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(have_ports_cpio)");
     println!("cargo::rustc-check-cfg=cfg(have_viewer_wasm)");
     println!("cargo::rustc-check-cfg=cfg(have_emulsion_wasm)");
+    println!("cargo::rustc-check-cfg=cfg(have_linux_musl_hello)");
+    println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
+    println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
+    let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────
     let nitrogen_dir = manifest_dir.parent().unwrap().join("nitrogen");
@@ -83,6 +87,77 @@ fn main() {
     // Use the RUSTC from cargo's build environment — it points to the correct
     // toolchain (respecting rust-toolchain.toml). Derive sysroot from it.
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+
+    // ── Build the ordinary Rust std / musl Linux fixture ─────────
+    // Watch the target libdir as well as the source. If a developer installs
+    // the target after an earlier failed build, Cargo must rerun this script
+    // instead of reusing the old "fixture unavailable" cfg result.
+    if let Ok(output) = Command::new(&rustc)
+        .args([
+            "--print",
+            "target-libdir",
+            "--target",
+            "x86_64-unknown-linux-musl",
+        ])
+        .output()
+        && let Ok(target_libdir) = String::from_utf8(output.stdout)
+    {
+        let target_libdir = target_libdir.trim();
+        if !target_libdir.is_empty() {
+            println!("cargo:rerun-if-changed={target_libdir}");
+        }
+    }
+
+    let linux_musl_src = manifest_dir.join("examples").join("linux_musl_hello.rs");
+    let linux_musl_out = out_dir.join("linux_musl_hello");
+    println!("cargo:rerun-if-changed={}", linux_musl_src.display());
+    match Command::new(&rustc)
+        .args([
+            "--edition=2024",
+            "--target",
+            "x86_64-unknown-linux-musl",
+            "-C",
+            "target-feature=+crt-static",
+            "-C",
+            "relocation-model=static",
+            "-C",
+            "opt-level=2",
+            "-C",
+            "strip=debuginfo",
+            "-o",
+        ])
+        .arg(&linux_musl_out)
+        .arg(&linux_musl_src)
+        .status()
+    {
+        Ok(status) if status.success() => {
+            println!("cargo:rustc-cfg=have_linux_musl_hello");
+            if linux_musl_smoke_requested {
+                println!("cargo:rustc-cfg=linux_musl_smoke");
+            }
+        }
+        Ok(_) => {
+            assert!(
+                !linux_musl_smoke_requested,
+                "FULLERENE_LINUX_MUSL_SMOKE requires the x86_64-unknown-linux-musl target; \
+                 install it with: rustup target add x86_64-unknown-linux-musl"
+            );
+            println!(
+                "cargo:warning=Rust std/musl example build failed; install it with: \
+                 rustup target add x86_64-unknown-linux-musl"
+            );
+        }
+        Err(error) => {
+            assert!(
+                !linux_musl_smoke_requested,
+                "FULLERENE_LINUX_MUSL_SMOKE could not start rustc for its fixture: {error}"
+            );
+            println!(
+                "cargo:warning=Rust std/musl example compiler could not start: {}",
+                error
+            );
+        }
+    }
 
     let sysroot = String::from_utf8(
         Command::new(&rustc)

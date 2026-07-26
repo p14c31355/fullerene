@@ -3,10 +3,35 @@ use crate::loader::LoadError;
 use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
+#[cfg(linux_musl_smoke)]
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+#[cfg(linux_musl_smoke)]
+static MUSL_SMOKE_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(linux_musl_smoke)]
+static MUSL_SMOKE_OUTPUT_SEEN: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_musl_smoke)]
+static MUSL_SMOKE_EXIT_OK: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_musl_smoke)]
+static MUSL_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(linux_musl_smoke)]
+const MUSL_SMOKE_OUTPUT: &[u8] = b"Hello from Rust std on musl!";
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
     launch_linux_from_data(crate::linux::test_binary::HELLO_ELF, "hello-linux")
+}
+
+/// Launch the ordinary Rust `std` example compiled for static musl Linux.
+#[cfg(have_linux_musl_hello)]
+pub fn launch_rust_std_hello() -> Result<ProcessId, LoadError> {
+    launch_linux_binary_named("/bin/rust-std-hello", "rust-std-musl-hello")
+}
+
+#[cfg(not(have_linux_musl_hello))]
+pub fn launch_rust_std_hello() -> Result<ProcessId, LoadError> {
+    Err(LoadError::FileNotFound)
 }
 
 /// Launch a Linux ELF binary from the VFS at `path`.
@@ -21,9 +46,62 @@ pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
 pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<ProcessId, LoadError> {
     let data = match crate::fs::read_entire_file(path) {
         Ok(d) => d,
-        Err(_) => return Err(LoadError::InvalidFormat),
+        Err(_) => return Err(LoadError::FileNotFound),
     };
-    launch_linux_from_data(&data, name)
+    let pid = launch_linux_from_data(&data, name)?;
+    #[cfg(linux_musl_smoke)]
+    if matches!(path, "/bin/rust-std-hello" | "/bin/rust_std_hello") {
+        MUSL_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
+        MUSL_SMOKE_EXIT_OK.store(false, Ordering::Release);
+        MUSL_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
+        MUSL_SMOKE_PID.store(pid.0, Ordering::Release);
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] fixture launched as PID {}\n",
+            pid.0
+        ));
+    }
+    Ok(pid)
+}
+
+#[cfg(linux_musl_smoke)]
+pub fn observe_smoke_output(pid: u64, bytes: &[u8]) {
+    if MUSL_SMOKE_PID.load(Ordering::Acquire) != pid {
+        return;
+    }
+
+    let mut matched = MUSL_SMOKE_OUTPUT_MATCHED.load(Ordering::Acquire);
+    for &byte in bytes {
+        matched = if byte == MUSL_SMOKE_OUTPUT[matched] {
+            matched + 1
+        } else if byte == MUSL_SMOKE_OUTPUT[0] {
+            1
+        } else {
+            0
+        };
+        if matched == MUSL_SMOKE_OUTPUT.len() {
+            MUSL_SMOKE_OUTPUT_SEEN.store(true, Ordering::Release);
+            matched = 0;
+        }
+    }
+    MUSL_SMOKE_OUTPUT_MATCHED.store(matched, Ordering::Release);
+}
+
+#[cfg(linux_musl_smoke)]
+pub fn observe_smoke_exit(pid: ProcessId, code: i32) {
+    if MUSL_SMOKE_PID.load(Ordering::Acquire) == pid.0
+        && code == 0
+        && MUSL_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
+    {
+        MUSL_SMOKE_EXIT_OK.store(true, Ordering::Release);
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] verified fixture output and exit status\n"
+        ));
+    }
+}
+
+#[cfg(linux_musl_smoke)]
+pub fn smoke_verified() -> bool {
+    MUSL_SMOKE_EXIT_OK.load(Ordering::Acquire)
 }
 
 /// Launch a Linux ELF binary from raw bytes.
@@ -87,6 +165,16 @@ pub fn init_initramfs() {
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
+
+    #[cfg(have_linux_musl_hello)]
+    {
+        let fixture = include_bytes!(concat!(env!("OUT_DIR"), "/linux_musl_hello"));
+        for path in ["/bin/rust-std-hello", "/bin/rust_std_hello"] {
+            if let Err(error) = crate::fs::write_entire_file(path, fixture) {
+                log::warn!("Initramfs: failed to install {}: {:?}", path, error);
+            }
+        }
+    }
 
     // Create /apps directory for WASI applications
     let _ = crate::contexts::vfs::mkdir("/apps");

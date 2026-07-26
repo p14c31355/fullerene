@@ -405,7 +405,9 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         loop {
             match child.try_wait()? {
                 Some(status) => {
-                    if !status.success() {
+                    let linux_smoke_passed = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some()
+                        && status.code() == Some(35);
+                    if !status.success() && !linux_smoke_passed {
                         return Err(io::Error::other("QEMU execution failed"));
                     }
                     return Ok(());
@@ -425,7 +427,9 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
         }
     } else {
         let qemu_status = child.wait()?;
-        if !qemu_status.success() {
+        let linux_smoke_passed =
+            env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some() && qemu_status.code() == Some(35);
+        if !qemu_status.success() && !linux_smoke_passed {
             return Err(io::Error::other("QEMU execution failed"));
         }
     }

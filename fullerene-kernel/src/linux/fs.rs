@@ -77,13 +77,42 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return 0;
     }
     if fd == 1 || fd == 2 {
-        // Read data from user space into kernel buffer, then write to serial
-        let data = match unsafe { copy_from_user(buf, count.min(4096)) } {
-            Ok(d) => d,
-            Err(_) => return errno_code(EFAULT),
-        };
-        petroleum::write_serial_bytes(0x3F8, 0x3FD, &data);
-        return data.len() as u64;
+        // Keep the console fast path allocation-free: it is also used by the
+        // allocator's own diagnostics and by very early Linux processes.
+        let limit = count.min(4096);
+        let mut written = 0usize;
+        let mut chunk = [0u8; 256];
+        while written < limit {
+            let chunk_len = (limit - written).min(chunk.len());
+            let Some(chunk_address) = buf.checked_add(written as u64) else {
+                return if written == 0 {
+                    errno_code(EFAULT)
+                } else {
+                    written as u64
+                };
+            };
+            if unsafe {
+                super::runtime::copy_from_user_into(chunk_address, &mut chunk[..chunk_len])
+            }
+            .is_err()
+            {
+                return if written == 0 {
+                    errno_code(EFAULT)
+                } else {
+                    written as u64
+                };
+            }
+            #[cfg(linux_musl_smoke)]
+            crate::linux::launch::observe_smoke_output(rt.tid, &chunk[..chunk_len]);
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, &chunk[..chunk_len]);
+            // Linux stdout/stderr belongs on the interactive terminal too.
+            // Keep the serial mirror for headless diagnostics and smoke
+            // tests, while forwarding textual output to Solvent's terminal.
+            let text = alloc::string::String::from_utf8_lossy(&chunk[..chunk_len]);
+            solvent::write_terminal(&text);
+            written += chunk_len;
+        }
+        return written as u64;
     }
     if fd == 0 {
         return errno_code(EBADF);
@@ -107,6 +136,58 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
         Err(e) => fs_errno_result(&e),
     }
+}
+
+pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    const POLLOUT: i16 = 0x0004;
+    const POLLNVAL: i16 = 0x0020;
+    const MAX_POLL_FDS: usize = 1024;
+
+    let fds = args[0];
+    let nfds = match usize::try_from(args[1]) {
+        Ok(nfds) if nfds <= MAX_POLL_FDS => nfds,
+        _ => return errno_code(EINVAL),
+    };
+    if nfds == 0 {
+        return 0;
+    }
+    if fds == 0 {
+        return errno_code(EFAULT);
+    }
+
+    let mut ready = 0u64;
+    for index in 0..nfds {
+        let offset = match index.checked_mul(core::mem::size_of::<LinuxPollFd>()) {
+            Some(offset) => offset as u64,
+            None => return errno_code(EFAULT),
+        };
+        let address = match fds.checked_add(offset) {
+            Some(address) => address,
+            None => return errno_code(EFAULT),
+        };
+        let data = match unsafe { copy_from_user(address, core::mem::size_of::<LinuxPollFd>()) } {
+            Ok(data) => data,
+            Err(_) => return errno_code(EFAULT),
+        };
+        let mut pollfd = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const LinuxPollFd) };
+        pollfd.revents = 0;
+
+        if pollfd.fd >= 0 {
+            let valid = LinuxRuntime::is_std_fd(pollfd.fd) || rt.fd_table.contains(pollfd.fd);
+            if !valid {
+                pollfd.revents = POLLNVAL;
+            } else if matches!(pollfd.fd, 1 | 2) && (pollfd.events & POLLOUT) != 0 {
+                pollfd.revents = POLLOUT;
+            }
+        }
+        if pollfd.revents != 0 {
+            ready += 1;
+        }
+        if unsafe { copy_val_to_user(address, &pollfd) }.is_err() {
+            return errno_code(EFAULT);
+        }
+    }
+    ready
 }
 
 pub fn sys_open(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {

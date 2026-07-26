@@ -385,7 +385,16 @@ macro_rules! tstr {
 macro_rules! launch_cmd {
     ($t:expr, $launch:expr, $ok:expr) => {
         match $launch {
-            Ok(pid) => tline!($t, $ok, pid.0),
+            Ok(pid) => {
+                tline!($t, $ok, pid.0);
+                // The interactive shell runs synchronously from the idle
+                // scheduler context. Switch to the process we just launched,
+                // rather than whichever unrelated task happens to be next in
+                // the round-robin list.
+                if crate::process::current_pid().is_some() {
+                    let _ = crate::process::yield_to(pid);
+                }
+            }
             Err(e) => tline!($t, "Failed to launch: {:?}", e),
         }
     };
@@ -814,6 +823,20 @@ fn nozzle_services() -> nozzle::ShellServices {
                 crate::linux::launch::launch_test_binary(),
                 "Test Linux binary started (PID: {})"
             ),
+            "hello_rust_linux" => {
+                #[cfg(have_linux_musl_hello)]
+                launch_cmd!(
+                    ctx.terminal,
+                    crate::linux::launch::launch_rust_std_hello(),
+                    "Rust std/musl Linux process started (PID: {})"
+                );
+                #[cfg(not(have_linux_musl_hello))]
+                ctx.terminal.write_str(
+                    "Rust std/musl fixture is unavailable. Run \
+                     `rustup target add --toolchain nightly x86_64-unknown-linux-musl`, \
+                     then rebuild the ISO.\n",
+                );
+            }
             "wasm" => {
                 if ctx.args.len() <= 1 {
                     return tstr!(ctx.terminal, "Usage: wasm <path> [args...]");
@@ -1217,6 +1240,72 @@ pub fn shell_main() {
     } else {
         let mut terminal = KernelTerminal::new();
         solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
+    }
+}
+
+/// Run the Linux-musl smoke fixture through the real Nozzle command path.
+#[cfg(linux_musl_smoke)]
+pub fn run_linux_musl_smoke() {
+    extern "C" fn unrelated_ready_task() -> ! {
+        loop {
+            petroleum::cpu_pause();
+        }
+    }
+
+    struct ScriptedTerminal {
+        input: alloc::collections::VecDeque<u8>,
+    }
+
+    impl ScriptedTerminal {
+        fn new(script: &str) -> Self {
+            Self {
+                input: script.bytes().collect(),
+            }
+        }
+    }
+
+    impl nozzle::Terminal for ScriptedTerminal {
+        fn write_str(&mut self, text: &str) {
+            solvent::write_terminal(text);
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            self.input.pop_front()
+        }
+
+        fn input_available(&self) -> bool {
+            !self.input.is_empty()
+        }
+    }
+
+    // Keep a non-yielding Ready task ahead of the Linux process. This catches
+    // launchers that use a generic round-robin yield instead of switching to
+    // the PID they just created.
+    let _ = crate::process::create_process(
+        "linux-smoke-unrelated-ready",
+        x86_64::VirtAddr::from_ptr(unrelated_ready_task as *const ()),
+        false,
+    );
+
+    let services = nozzle_services();
+    let mut terminal = ScriptedTerminal::new(
+        "linux_run /bin/rust_std_hello\necho shell-resumed-after-linux\nexit\n",
+    );
+    solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
+    if crate::linux::launch::smoke_verified() {
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] PASS: fixture output observed, exit=0, shell resumed\n"
+        ));
+        // isa-debug-exit maps 0x11 to host status 35. Flasks accepts that
+        // status only while the explicit smoke mode is enabled.
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);
+        }
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] FAIL: fixture output or successful exit was not observed\n"
+        ));
+        petroleum::halt_loop();
     }
 }
 

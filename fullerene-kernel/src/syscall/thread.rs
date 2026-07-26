@@ -54,8 +54,9 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
         resources: process::ProcessResources::new(),
     };
 
-    thread_process.context.regs[0] = 0;
-    thread_process.context.regs[7] = thread_process.user_stack.as_u64();
+    thread_process.context.registers.rax = 0;
+    thread_process.context.registers.rsp = thread_process.user_stack.as_u64();
+    thread_process.context.kernel_rsp = 0;
     thread_process.context.rip = entry;
 
     let thread_box = Box::new(thread_process);
