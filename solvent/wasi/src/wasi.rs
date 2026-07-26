@@ -10,6 +10,7 @@ use wasmi::{AsContext, Caller, Error, Memory};
 pub const ESUCCESS: u32 = 0;
 pub const EACCES: u32 = 2;
 pub const EBADF: u32 = 8;
+pub const EBUSY: u32 = 10;
 pub const EEXIST: u32 = 20;
 pub const EINVAL: u32 = 28;
 pub const EIO: u32 = 29;
@@ -253,6 +254,7 @@ fn map_fs_error(err: &genome::FsError) -> u32 {
         FsError::FileExists => EEXIST,
         FsError::PermissionDenied => EACCES,
         FsError::InvalidFileDescriptor => EBADF,
+        FsError::Busy => EBUSY,
         FsError::InvalidSeek => EINVAL,
         FsError::DiskFull => ENOSPC,
         FsError::NotADirectory => ENOTDIR,
@@ -1314,7 +1316,13 @@ pub fn fullerene_write_file_chunk(
     memory
         .read(&caller, data_ptr as usize, &mut data)
         .map_err(|_| Error::new("write_file_chunk: read data failed"))?;
-    let path = str::from_utf8(&path_buf).unwrap_or("");
+    let Ok(path) = str::from_utf8(&path_buf) else {
+        return Ok(EINVAL);
+    };
+    let path = path.trim_end_matches('\0');
+    if path.is_empty() {
+        return Ok(EINVAL);
+    }
     let result = (caller.data().write_file_chunk)(path, offset, &data, replace != 0);
     Ok(match result {
         Ok(()) => ESUCCESS,

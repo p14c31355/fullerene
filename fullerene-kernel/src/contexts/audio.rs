@@ -189,7 +189,7 @@ impl AudioContext {
         // halves before waiting for the first boundary; this prevents the
         // first audible buffer from containing stale or uninitialised data.
         for slot in 0..2 {
-            let start = slot * half_size;
+            let start = (slot * half_size).min(pcm.len());
             let end = (start + half_size).min(pcm.len());
             let offset = (slot * half_size) as u32;
             let written = controller.write_at(offset, &pcm[start..end]);

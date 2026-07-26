@@ -7,7 +7,7 @@
 use crate::page_table::memory_map::descriptor::MemoryMapDescriptor;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 use x86_64::PhysAddr;
 
@@ -28,6 +28,23 @@ pub static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [cons
 /// In bare-metal environments, .bss may not be zeroed by the bootloader.
 /// We use a workaround by checking if HEAP_START is non-zero instead.
 pub static HEAP_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+// Heap growth may expose pages that are recovered only by the idle-kernel
+// page-fault path.  The owner of the global allocator installs a cheap,
+// allocation-free predicate before enabling automatic extension.
+static EXTENSION_GUARD: AtomicUsize = AtomicUsize::new(0);
+
+fn extension_allowed() -> bool {
+    let guard = EXTENSION_GUARD.load(Ordering::Acquire);
+    if guard == 0 {
+        true
+    } else {
+        // Function pointers are stored atomically so the allocator can check
+        // the guard without taking a lock or allocating.
+        let guard: fn() -> bool = unsafe { core::mem::transmute(guard) };
+        guard()
+    }
+}
 
 /// State for the statically mapped heap extension region.
 struct ExtensionState {
@@ -85,6 +102,9 @@ impl GrowingHeap {
     fn extend_for(&self, layout: Layout) -> bool {
         const PAGE: usize = 4096;
         const MIN_GROW: usize = 64 * 1024;
+        if !extension_allowed() {
+            return false;
+        }
         let required = layout
             .size()
             .saturating_add(layout.align())
@@ -145,6 +165,9 @@ impl GrowingHeap {
     }
 
     pub unsafe fn extend(&self, additional: usize) -> Result<(), ()> {
+        if !extension_allowed() {
+            return Err(());
+        }
         let mut extension = self.extension.lock();
         let available = extension.limit.saturating_sub(extension.used);
         if additional == 0 || additional > available {
@@ -270,6 +293,12 @@ pub fn configure_heap_extension(limit: usize) {
     let _ = limit;
 }
 
+/// Install an allocation-free predicate that decides whether heap extension
+/// may expose more pages in the current execution context.
+pub fn set_heap_extension_guard(guard: fn() -> bool) {
+    EXTENSION_GUARD.store(guard as usize, Ordering::Release);
+}
+
 /// Allocate heap memory from EFI memory map
 ///
 /// # Arguments
@@ -312,6 +341,9 @@ pub unsafe fn extend_global_heap(additional: usize) {
 pub unsafe fn try_extend_global_heap(additional: usize) -> Result<(), ()> {
     #[cfg(all(not(feature = "std"), not(test)))]
     unsafe {
+        if !extension_allowed() {
+            return Err(());
+        }
         let old_top = ALLOCATOR.top() as usize;
         ALLOCATOR.extend(additional)?;
         // Update the tracked heap range so page-fault detection still works.

@@ -91,7 +91,13 @@ pub fn dispatch_with_redirect_handler(
     services: &dyn Any,
     redirect_handler: fn(&mut CommandContext, &str, &str),
 ) -> bool {
-    dispatch_inner(commands, terminal, line, Some(services), Some(redirect_handler))
+    dispatch_inner(
+        commands,
+        terminal,
+        line,
+        Some(services),
+        Some(redirect_handler),
+    )
 }
 
 fn dispatch_inner(
@@ -160,6 +166,9 @@ fn dispatch_inner(
                             services,
                         };
                         handler(&mut redir_ctx, path, &output);
+                    } else {
+                        terminal.write_str("redirection is not supported here\n");
+                        terminal.write_str(&output);
                     }
                 } else {
                     pipe_buffer = Some(output);

@@ -336,9 +336,19 @@ impl BlockDevice for BlockDeviceLease {
             count,
             buf.len()
         );
-        let Some(mut device) = self.device.try_lock() else {
+        let mut device = None;
+        for attempt in 0..4 {
+            if let Some(guard) = self.device.try_lock() {
+                device = Some(guard);
+                break;
+            }
+            for _ in 0..(1usize << attempt) {
+                core::hint::spin_loop();
+            }
+        }
+        let Some(mut device) = device else {
             crate::klog_fmt!("[VFS-DIAG] block read busy lba={} count={}\n", lba, count);
-            return Err(genome::block::BlockError::Device);
+            return Err(genome::block::BlockError::Busy);
         };
         let result = device.read_sectors(lba, count, buf);
         crate::klog_fmt!(
@@ -356,9 +366,19 @@ impl BlockDevice for BlockDeviceLease {
         count: u16,
         buf: &[u8],
     ) -> Result<(), genome::block::BlockError> {
-        let Some(mut device) = self.device.try_lock() else {
+        let mut device = None;
+        for attempt in 0..4 {
+            if let Some(guard) = self.device.try_lock() {
+                device = Some(guard);
+                break;
+            }
+            for _ in 0..(1usize << attempt) {
+                core::hint::spin_loop();
+            }
+        }
+        let Some(mut device) = device else {
             crate::klog_fmt!("[VFS-DIAG] block write busy lba={} count={}\n", lba, count);
-            return Err(genome::block::BlockError::Device);
+            return Err(genome::block::BlockError::Busy);
         };
         device.write_sectors(lba, count, buf)
     }

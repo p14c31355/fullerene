@@ -96,11 +96,10 @@ pub fn render(params: RenderParams<'_>) {
         cursor_visible,
     } = params;
 
-    let rows = if cols > 0 {
-        (cells.len() as u32).div_ceil(cols)
-    } else {
-        0
-    };
+    if cols == 0 {
+        return;
+    }
+    let rows = (cells.len() as u32).div_ceil(cols);
 
     for (i, cell) in cells.iter().enumerate() {
         let col = (i as u32) % cols;

@@ -93,21 +93,28 @@ pub fn write_file_chunk(
         stream.replace((path.to_string(), FileDesc::from(descriptor)));
     }
 
-    let file = &mut stream.as_mut().expect("stream file installed").1;
-    let result = (|| {
-        if file.offset != offset {
-            seek_file(file, offset)?;
-        }
-        let mut remaining = data;
-        while !remaining.is_empty() {
-            let written = write_file(file, remaining)?;
-            if written == 0 {
-                return Err(FsError::InvalidInput);
+    let result = {
+        let file = &mut stream.as_mut().expect("stream file installed").1;
+        (|| {
+            if file.offset != offset {
+                seek_file(file, offset)?;
             }
-            remaining = &remaining[written..];
-        }
-        Ok(())
-    })();
+            let mut remaining = data;
+            while !remaining.is_empty() {
+                let written = write_file(file, remaining)?;
+                if written == 0 {
+                    return Err(FsError::InvalidInput);
+                }
+                remaining = &remaining[written..];
+            }
+            Ok(())
+        })()
+    };
+    if result.is_err()
+        && let Some((_, file)) = stream.take()
+    {
+        let _ = close_file(file);
+    }
     result
 }
 
@@ -393,9 +400,12 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
         return Err(FsError::InvalidSeek);
     }
     let target = (size - offset).min(limit as u64) as usize;
-    let deadline = solvent::get_tsc_per_ms()
-        .checked_mul(TIMEOUT_MS)
-        .map(|ticks| unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(ticks));
+    let deadline = match solvent::get_tsc_per_ms() {
+        0 => None,
+        tsc_per_ms => tsc_per_ms
+            .checked_mul(TIMEOUT_MS)
+            .map(|ticks| unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(ticks)),
+    };
     crate::klog_fmt!(
         "[WASM-DIAG] range begin path={} offset={} limit={} size={} target={}\n",
         path,
@@ -538,6 +548,15 @@ pub fn file_size(path: &str) -> Result<u64, FsError> {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
         return Ok(0);
+    }
+    if is_dir(trimmed) {
+        let (parent, name) = trimmed.rsplit_once('/').unwrap_or((".", trimmed));
+        let parent = if parent.is_empty() { "/" } else { parent };
+        return list_dir(parent)?
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.size)
+            .ok_or(FsError::FileNotFound);
     }
     // Use the filesystem's open-handle metadata instead of enumerating the
     // parent directory.  Besides being cheaper for WASM reads, this avoids a

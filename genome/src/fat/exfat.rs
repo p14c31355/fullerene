@@ -50,6 +50,7 @@ impl ExFatDevice {
                 Self::error(ErrorKind::NotFound, "block sector not found")
             }
             BlockError::Device => Self::error(ErrorKind::Other, "block device I/O failed"),
+            BlockError::Busy => Self::error(ErrorKind::WouldBlock, "block device busy"),
         }
     }
 
@@ -331,6 +332,7 @@ impl ExFatFileSystem {
             ErrorKind::NotFound => FsError::FileNotFound,
             ErrorKind::AlreadyExists => FsError::FileExists,
             ErrorKind::PermissionDenied => FsError::PermissionDenied,
+            ErrorKind::WouldBlock => FsError::Busy,
             ErrorKind::OutOfMemory | ErrorKind::WriteZero => FsError::DiskFull,
             _ => FsError::InvalidInput,
         }

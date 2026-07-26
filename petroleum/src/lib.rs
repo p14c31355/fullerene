@@ -59,6 +59,7 @@ pub use page_table::heap::extend_global_heap;
 pub use page_table::heap::heap_stats;
 pub use page_table::heap::heap_top;
 pub use page_table::heap::init_global_heap;
+pub use page_table::heap::set_heap_extension_guard;
 pub use page_table::heap::try_extend_global_heap;
 pub use page_table::page_buf::PageBuf;
 

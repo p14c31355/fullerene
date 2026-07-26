@@ -817,7 +817,7 @@ fn try_mp3(data: &[u8]) -> bool {
 
     let (mut frames, mut samples, mut sr, mut ch, mut br, mut off) =
         (0u64, 0u64, 0u32, 0u32, 0u32, id3_size);
-    while let Some((b, s, c, spf, frame_len)) = mp3_frame(data, off) {
+    while let Some((matched, b, s, c, spf, frame_len)) = mp3_frame(data, off) {
         if frames == 0 {
             br = b;
             sr = s;
@@ -825,7 +825,7 @@ fn try_mp3(data: &[u8]) -> bool {
         }
         frames += 1;
         samples += spf as u64;
-        off = off.saturating_add(frame_len as usize);
+        off = matched.saturating_add(frame_len as usize);
         if frames > 10000 {
             break;
         }
@@ -845,7 +845,7 @@ fn try_mp3(data: &[u8]) -> bool {
     true
 }
 
-fn mp3_frame(data: &[u8], start: usize) -> Option<(u32, u32, u32, u32, u32)> {
+fn mp3_frame(data: &[u8], start: usize) -> Option<(usize, u32, u32, u32, u32, u32)> {
     const BR_MPEG1: [u32; 16] = [
         0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
     ];
@@ -885,6 +885,7 @@ fn mp3_frame(data: &[u8], start: usize) -> Option<(u32, u32, u32, u32, u32)> {
         let padding = if (h >> 9) & 1 == 0 { 0 } else { 1 };
         let frame_len = (coefficient * b / s).saturating_add(padding).max(1);
         return Some((
+            off,
             b,
             s,
             c,
@@ -1357,14 +1358,14 @@ mod tests {
     fn advances_mp3_by_the_encoded_frame_length() {
         let header = [0xff, 0xfb, 0x90, 0x64];
         let frame = mp3_frame(&header, 0).unwrap();
-        assert_eq!(frame, (128, 44_100, 2, 1152, 417));
+        assert_eq!(frame, (0, 128, 44_100, 2, 1152, 417));
     }
 
     #[test]
     fn uses_mpeg2_bitrate_table_and_frame_coefficient() {
         let header = [0xff, 0xf3, 0x80, 0x64];
         let frame = mp3_frame(&header, 0).unwrap();
-        assert_eq!(frame, (64, 22_050, 2, 576, 208));
+        assert_eq!(frame, (0, 64, 22_050, 2, 576, 208));
     }
 
     #[test]

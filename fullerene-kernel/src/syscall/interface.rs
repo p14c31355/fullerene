@@ -133,6 +133,7 @@ impl From<genome::fs::FsError> for SyscallError {
                 Self::InvalidArgument
             }
             FsError::DiskFull => Self::NoSpace,
+            FsError::Busy => Self::Busy,
             FsError::NotADirectory => Self::NotADirectory,
             FsError::DirectoryNotEmpty => Self::DirectoryNotEmpty,
             FsError::IsADirectory => Self::IsADirectory,
@@ -148,6 +149,7 @@ impl From<genome::block::BlockError> for SyscallError {
         use genome::block::BlockError;
         match error {
             BlockError::Device => Self::Io,
+            BlockError::Busy => Self::Busy,
             BlockError::BufferTooSmall { .. } => Self::InvalidArgument,
             BlockError::LbaOverflow => Self::Overflow,
             BlockError::SectorNotFound => Self::FileNotFound,

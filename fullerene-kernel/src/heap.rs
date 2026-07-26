@@ -87,7 +87,15 @@ pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
 
 /// Configure automatic heap extension after the initial allocator is ready.
 pub fn configure_heap_extension() {
+    petroleum::set_heap_extension_guard(heap_extension_allowed);
     petroleum::configure_heap_extension(HEAP_EXTEND_MAX);
+}
+
+fn heap_extension_allowed() -> bool {
+    // Page-fault continuation currently maps reserved heap pages only for the
+    // idle kernel/shell context.  Refuse growth from user or other kernel
+    // processes instead of exposing an unmapped range they cannot recover.
+    crate::process::SCHEDULER.current_pid() == 1
 }
 
 /// Extend the kernel heap by `additional` bytes.

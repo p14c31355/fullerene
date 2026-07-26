@@ -18,7 +18,6 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt::Write as _;
 use spin::Mutex;
 
 use genome::fs::FsError;
@@ -412,8 +411,10 @@ impl VfsContext {
         // surface: `cp file existing-dir` means `existing-dir/file`.
         // Resolve before checking the relationship so `.` and `..` cannot
         // bypass the self-copy guard.
-        let source = self.inner.lock().resolve_path(source);
-        let mut destination = self.inner.lock().resolve_path(destination);
+        let (source, mut destination) = {
+            let inner = self.inner.lock();
+            (inner.resolve_path(source), inner.resolve_path(destination))
+        };
         if self.readdir(&destination).is_ok() {
             let name = source
                 .trim_end_matches('/')
@@ -428,6 +429,9 @@ impl VfsContext {
             || is_dir && destination_suffix.is_some_and(|suffix| suffix.starts_with('/'))
         {
             return Err(FsError::InvalidPath);
+        }
+        if !is_dir && self.readdir(&source).is_ok() {
+            return Err(FsError::IsADirectory);
         }
         if is_dir {
             self.mkdir(&destination)?;
@@ -744,233 +748,7 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-    // Resolve paths to get canonical forms (handles ".", "..", trailing slashes).
-    let (source, mut destination) = with_vfs(|vfs| {
-        let inner = vfs.inner.lock();
-        (inner.resolve_path(source), inner.resolve_path(destination))
-    })
-    .ok_or(FsError::PermissionDenied)?;
-
-    // Match shell/file-manager copy semantics: when the destination names an
-    // existing directory, place the source below it instead of trying to
-    // create a file whose name is the directory itself.
-    if readdir(&destination).is_ok() {
-        let name = source
-            .trim_end_matches('/')
-            .rsplit('/')
-            .find(|name| !name.is_empty())
-            .ok_or(FsError::InvalidPath)?;
-        destination = join_path(&destination, name);
-    }
-
-    // Prevent copying into self
-    if source == destination
-        || is_dir
-            && destination.starts_with(&source)
-            && source.len() > 1
-            && destination.len() > source.len()
-            && destination.as_bytes()[source.len()] == b'/'
-    {
-        return Err(FsError::InvalidPath);
-    }
-
-    // Validate file types match caller's intent.
-    if !is_dir && readdir(&source).is_ok() {
-        return Err(FsError::IsADirectory);
-    }
-    if is_dir {
-        mkdir(&destination)?;
-        for entry in readdir(&source)? {
-            copy_path(
-                &join_path(&source, &entry.name),
-                &join_path(&destination, &entry.name),
-                entry.is_dir,
-            )?;
-        }
-        return Ok(());
-    }
-
-    crate::klog_fmt!(
-        "[VFS-DIAG] copy begin source={} destination={}\n",
-        source,
-        destination
-    );
-
-    // Each free function acquires/releases the kernel lock individually,
-    // so the system can render and process events between I/O operations.
-    let source_fd = open(&source, 0)?.fd;
-    if exists(&destination) {
-        if let Err(error) = unlink(&destination) {
-            let _ = close(source_fd);
-            return Err(error);
-        }
-    }
-    let destination_fd = match create(&destination) {
-        Ok(descriptor) => descriptor.fd,
-        Err(error) => {
-            let _ = close(source_fd);
-            return Err(error);
-        }
-    };
-    let mut read_calls = 0usize;
-    let mut write_calls = 0usize;
-    let mut source_bytes = 0usize;
-    let mut source_fingerprint = 0xcbf29ce484222325u64;
-    let mut destination_bytes = 0usize;
-    let mut destination_fingerprint = 0xcbf29ce484222325u64;
-    let mut source_head = [0u8; 8];
-    let mut source_head_len = 0usize;
-    let mut source_tail = [0u8; 8];
-    let mut source_tail_len = 0usize;
-    let result = (|| {
-        let mut buffer = [0; 4096];
-        loop {
-            match read(source_fd, &mut buffer) {
-                Ok(0) => {
-                    let edges = diagnostic_copy_edges(
-                        &source_head,
-                        source_head_len,
-                        &source_tail,
-                        source_tail_len,
-                        source_bytes,
-                    );
-                    crate::klog_fmt!(
-                        "[VFS-DIAG] copy source-summary path={} reads={} bytes={} fnv=0x{:016x} edges={}\n",
-                        source,
-                        read_calls,
-                        source_bytes,
-                        source_fingerprint,
-                        edges
-                    );
-                    return Ok(());
-                }
-                Ok(n) => {
-                    read_calls += 1;
-                    source_bytes += n;
-                    for &byte in &buffer[..n] {
-                        source_fingerprint ^= u64::from(byte);
-                        source_fingerprint = source_fingerprint.wrapping_mul(0x100000001b3);
-                        if source_head_len < source_head.len() {
-                            source_head[source_head_len] = byte;
-                            source_head_len += 1;
-                        }
-                        source_tail[source_tail_len % source_tail.len()] = byte;
-                        source_tail_len += 1;
-                    }
-                    crate::klog_fmt!(
-                        "[VFS-DIAG] copy read source={} call={} bytes={} total={}\n",
-                        source,
-                        read_calls,
-                        n,
-                        source_bytes
-                    );
-                    let mut data = &buffer[..n];
-                    while !data.is_empty() {
-                        let written = write(destination_fd, data)?;
-                        if written == 0 {
-                            return Err(FsError::InvalidInput);
-                        }
-                        write_calls += 1;
-                        for &byte in &data[..written] {
-                            destination_fingerprint ^= u64::from(byte);
-                            destination_fingerprint =
-                                destination_fingerprint.wrapping_mul(0x100000001b3);
-                        }
-                        destination_bytes += written;
-                        crate::klog_fmt!(
-                            "[VFS-DIAG] copy write destination={} call={} bytes={} remaining={}\n",
-                            destination,
-                            write_calls,
-                            written,
-                            data.len() - written
-                        );
-                        data = &data[written..];
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    })();
-    let source_close = close(source_fd);
-    let destination_close = close(destination_fd);
-    let result = result.and(source_close).and(destination_close);
-    let result = if result.is_ok() {
-        let verify = open(&destination, 0)
-            .and_then(|descriptor| {
-                let size_result = size(descriptor.fd);
-                let close_result = close(descriptor.fd);
-                size_result.and_then(|actual| close_result.map(|()| actual))
-            })
-            .and_then(|actual| {
-                if actual == source_bytes as u64 {
-                    Ok(())
-                } else {
-                    crate::klog_fmt!(
-                        "[VFS-DIAG] copy committed-size mismatch destination={} expected={} actual={}\n",
-                        destination,
-                        source_bytes,
-                        actual
-                    );
-                    Err(FsError::Io)
-                }
-            });
-        result.and(verify)
-    } else {
-        result
-    };
-    crate::klog_fmt!(
-        "[VFS-DIAG] copy destination-summary path={} writes={} bytes={} fnv=0x{:016x}\n",
-        destination,
-        write_calls,
-        destination_bytes,
-        destination_fingerprint
-    );
-    if result.is_ok()
-        && (source_bytes != destination_bytes || source_fingerprint != destination_fingerprint)
-    {
-        crate::klog_fmt!(
-            "[VFS-DIAG] copy mismatch source={} destination={} source_bytes={} destination_bytes={} source_fnv=0x{:016x} destination_fnv=0x{:016x}\n",
-            source,
-            destination,
-            source_bytes,
-            destination_bytes,
-            source_fingerprint,
-            destination_fingerprint
-        );
-    }
-    crate::klog_fmt!(
-        "[VFS-DIAG] copy end source={} destination={} result={:?}\n",
-        source,
-        destination,
-        result
-    );
-    result
-}
-
-fn diagnostic_copy_edges(
-    head: &[u8; 8],
-    head_len: usize,
-    tail: &[u8; 8],
-    tail_len: usize,
-    total_len: usize,
-) -> String {
-    let mut edges = String::new();
-    for &byte in &head[..head_len.min(head.len())] {
-        let _ = write!(edges, "{:02x}", byte);
-    }
-    if total_len > head.len() {
-        edges.push('/');
-        let count = tail_len.min(tail.len());
-        let start = if tail_len >= tail.len() {
-            tail_len % tail.len()
-        } else {
-            0
-        };
-        for offset in 0..count {
-            let _ = write!(edges, "{:02x}", tail[(start + offset) % tail.len()]);
-        }
-    }
-    edges
+    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
 }
 
 pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {

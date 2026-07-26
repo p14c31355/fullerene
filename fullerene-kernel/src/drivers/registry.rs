@@ -592,11 +592,17 @@ unsafe impl Send for SdBlockDev {}
 impl BlockDevice for SdBlockDev {
     fn read_sectors(&mut self, lba: u64, count: u16, buf: &mut [u8]) -> Result<(), BlockError> {
         let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
-        nitrogen::storage::rtsx::read_sectors(lba, count, buf).map_err(|_| BlockError::Device)
+        nitrogen::storage::rtsx::read_sectors(lba, count, buf).map_err(|error| match error {
+            nitrogen::DriverError::Busy => BlockError::Busy,
+            _ => BlockError::Device,
+        })
     }
     fn write_sectors(&mut self, lba: u64, count: u16, buf: &[u8]) -> Result<(), BlockError> {
         let lba = u32::try_from(lba).map_err(|_| BlockError::LbaOverflow)?;
-        nitrogen::storage::rtsx::write_sectors(lba, count, buf).map_err(|_| BlockError::Device)
+        nitrogen::storage::rtsx::write_sectors(lba, count, buf).map_err(|error| match error {
+            nitrogen::DriverError::Busy => BlockError::Busy,
+            _ => BlockError::Device,
+        })
     }
     fn sector_size(&self) -> u32 {
         self.block_size
