@@ -46,6 +46,49 @@ pub const RIGHT_PATH_OPEN: u64 = 1 << 13;
 pub const RIGHT_FD_READDIR: u64 = 1 << 14;
 pub const RIGHT_PATH_FILESTAT_GET: u64 = 1 << 18;
 
+pub type WriteBytes = fn(&[u8]);
+pub type ReadStdin = fn() -> Option<u8>;
+pub type FileSize = fn(&str) -> Result<u64, genome::FsError>;
+pub type ReadFileRange = fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>;
+pub type ReadDirectory = fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>;
+pub type WriteFile = fn(&str, &[u8]) -> Result<(), genome::FsError>;
+pub type WriteFileChunk = fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>;
+pub type GetMonotonicNs = fn() -> u64;
+pub type ScreenDimensions = fn() -> (u32, u32);
+pub type CaptureScreen = fn() -> Option<(u32, u32, Vec<u8>)>;
+pub type CaptureScreenChunk = fn(u32, &mut [u8]) -> Option<(u32, u32)>;
+pub type ShowImage = fn(u32, u32, &[u8]) -> i32;
+pub type ShowText = fn(&str, &str) -> i32;
+pub type ShowError = fn(&str, &str) -> i32;
+pub type CreateWindow = fn(&str, u32, u32) -> i32;
+pub type UpdateWindow = fn(i32, u32, u32, &[u8]) -> i32;
+pub type CloseWindow = fn(i32) -> i32;
+pub type PlayPcm = fn(u32, u8, u8, &[u8]) -> i32;
+
+pub struct WasiHost {
+    pub write_stdout: WriteBytes,
+    pub write_stderr: WriteBytes,
+    pub read_stdin: ReadStdin,
+    pub yield_now: fn(),
+    pub wait_for_ns: fn(u64),
+    pub file_size: FileSize,
+    pub read_file_range: ReadFileRange,
+    pub read_directory: ReadDirectory,
+    pub write_file: WriteFile,
+    pub write_file_chunk: WriteFileChunk,
+    pub get_monotonic_ns: GetMonotonicNs,
+    pub screen_dimensions: ScreenDimensions,
+    pub capture_screen: CaptureScreen,
+    pub capture_screen_chunk: CaptureScreenChunk,
+    pub show_image: ShowImage,
+    pub show_text: ShowText,
+    pub show_error: ShowError,
+    pub create_window: CreateWindow,
+    pub update_window: UpdateWindow,
+    pub close_window: CloseWindow,
+    pub play_pcm: PlayPcm,
+}
+
 // ── WASI whence ───────────────────────────────────────────────────
 
 pub const WHENCE_SET: u32 = 0;
@@ -97,54 +140,11 @@ pub struct WasiCtx {
     pub env: Vec<Vec<u8>>,
     pub fds: BTreeMap<u32, WasiFd>,
     pub next_fd: u32,
-    pub write_stdout: fn(&[u8]),
-    pub write_stderr: fn(&[u8]),
-    pub read_stdin: fn() -> Option<u8>,
-    pub yield_now: fn(),
-    pub wait_for_ns: fn(u64),
-    pub file_size: fn(&str) -> Result<u64, genome::FsError>,
-    pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
-    pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
-    pub write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
-    pub write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
-    pub get_monotonic_ns: fn() -> u64,
-    pub screen_dimensions: fn() -> (u32, u32),
-    pub capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
-    pub capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
-    pub show_image: fn(u32, u32, &[u8]) -> i32,
-    pub show_text: fn(&str, &str) -> i32,
-    pub show_error: fn(&str, &str) -> i32,
-    pub create_window: fn(&str, u32, u32) -> i32,
-    pub update_window: fn(i32, u32, u32, &[u8]) -> i32,
-    pub close_window: fn(i32) -> i32,
-    pub play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
+    pub host: WasiHost,
 }
 
 impl WasiCtx {
-    pub fn new(
-        args: &[&str],
-        write_stdout: fn(&[u8]),
-        write_stderr: fn(&[u8]),
-        read_stdin: fn() -> Option<u8>,
-        yield_now: fn(),
-        wait_for_ns: fn(u64),
-        file_size: fn(&str) -> Result<u64, genome::FsError>,
-        read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
-        read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
-        write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
-        write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
-        get_monotonic_ns: fn() -> u64,
-        screen_dimensions: fn() -> (u32, u32),
-        capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
-        capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
-        show_image: fn(u32, u32, &[u8]) -> i32,
-        show_text: fn(&str, &str) -> i32,
-        show_error: fn(&str, &str) -> i32,
-        create_window: fn(&str, u32, u32) -> i32,
-        update_window: fn(i32, u32, u32, &[u8]) -> i32,
-        close_window: fn(i32) -> i32,
-        play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
-    ) -> Self {
+    pub fn new(args: &[&str], host: WasiHost) -> Self {
         let args_vec: Vec<Vec<u8>> = args
             .iter()
             .map(|s| {
@@ -169,28 +169,16 @@ impl WasiCtx {
             env: Vec::new(),
             fds,
             next_fd: 4,
-            write_stdout,
-            write_stderr,
-            read_stdin,
-            yield_now,
-            wait_for_ns,
-            file_size,
-            read_file_range,
-            read_directory,
-            write_file,
-            write_file_chunk,
-            get_monotonic_ns,
-            screen_dimensions,
-            capture_screen,
-            capture_screen_chunk,
-            show_image,
-            show_text,
-            show_error,
-            create_window,
-            update_window,
-            close_window,
-            play_pcm,
+            host,
         }
+    }
+}
+
+impl core::ops::Deref for WasiCtx {
+    type Target = WasiHost;
+
+    fn deref(&self) -> &Self::Target {
+        &self.host
     }
 }
 
@@ -266,6 +254,13 @@ fn map_fs_error(err: &genome::FsError) -> u32 {
         FsError::UnexpectedEof => EIO,
         FsError::Io => EIO,
     }
+}
+
+fn pixel_bytes(width: u32, height: u32, channels: u32) -> Option<u32> {
+    u64::from(width)
+        .checked_mul(u64::from(height))?
+        .checked_mul(u64::from(channels))
+        .and_then(|bytes| u32::try_from(bytes).ok())
 }
 
 // ── Host function implementations ─────────────────────────────────
@@ -400,10 +395,10 @@ pub fn fd_read(
                             chunk_read = 1;
                         }
                     }
-                    for j in chunk_read..chunk_len {
+                    for slot in temp_buf.iter_mut().take(chunk_len).skip(chunk_read) {
                         match (caller.data().read_stdin)() {
                             Some(byte) => {
-                                temp_buf[j] = byte;
+                                *slot = byte;
                                 chunk_read += 1;
                             }
                             None => break,
@@ -672,8 +667,12 @@ pub fn fd_seek(
     };
     let new_offset = match whence {
         WHENCE_SET => Some(offset),
-        WHENCE_CUR => (current_offset as i64).checked_add(offset),
-        WHENCE_END => (file_len as i64).checked_add(offset),
+        WHENCE_CUR => i64::try_from(current_offset)
+            .ok()
+            .and_then(|current| current.checked_add(offset)),
+        WHENCE_END => i64::try_from(file_len)
+            .ok()
+            .and_then(|end| end.checked_add(offset)),
         _ => return Ok(EINVAL),
     };
     let Some(new_offset) = new_offset else {
@@ -690,7 +689,7 @@ pub fn fd_seek(
         }
     }
     let memory = get_memory(&caller)?;
-    write_u64(&memory, &mut caller, newoffset_ptr, new_offset as u64)?;
+    write_u64(&memory, &mut caller, newoffset_ptr, new_offset)?;
     Ok(ESUCCESS)
 }
 
@@ -740,6 +739,7 @@ pub fn fd_prestat_dir_name(
     Ok(ESUCCESS)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn path_open(
     mut caller: Caller<'_, WasiCtx>,
     fd: u32,
@@ -995,7 +995,7 @@ pub fn fd_readdir(
                 .checked_add(24)
                 .ok_or_else(|| Error::new("overflow"))?;
             write_u64(&memory, &mut caller, buf_ptr, 1)?;
-            write_u64(&memory, &mut caller, off_next, 0)?;
+            write_u64(&memory, &mut caller, off_next, 1)?;
             write_u32(&memory, &mut caller, off_namelen, name.len() as u32)?;
             write_u8(&memory, &mut caller, off_type, FILETYPE_DIRECTORY)?;
             memory
@@ -1007,11 +1007,10 @@ pub fn fd_readdir(
     } else {
         cookie_start.saturating_sub(1)
     };
-    for entry_idx in start_entry..entries.len() {
-        let (ref name, filetype) = entries[entry_idx];
+    for (entry_idx, (name, filetype)) in entries.iter().enumerate().skip(start_entry) {
         let name_bytes = name.as_bytes();
-        let entry_size = 24 + name_bytes.len() as u32;
-        if used + entry_size > buf_len {
+        let entry_size = 24u32.saturating_add(name_bytes.len() as u32);
+        if used.saturating_add(entry_size) > buf_len {
             break;
         }
         let off = buf_ptr
@@ -1023,9 +1022,9 @@ pub fn fd_readdir(
         let off_name = off.checked_add(24).ok_or_else(|| Error::new("overflow"))?;
         let next_cookie = entry_idx + 2;
         write_u64(&memory, &mut caller, off, next_cookie as u64)?;
-        write_u64(&memory, &mut caller, off_next, entry_idx as u64)?;
+        write_u64(&memory, &mut caller, off_next, next_cookie as u64)?;
         write_u32(&memory, &mut caller, off_namelen, name_bytes.len() as u32)?;
-        write_u8(&memory, &mut caller, off_type, filetype)?;
+        write_u8(&memory, &mut caller, off_type, *filetype)?;
         memory
             .write(&mut caller, off_name as usize, name_bytes)
             .map_err(|_| Error::new("fd_readdir: write name failed"))?;
@@ -1253,7 +1252,13 @@ pub fn fullerene_capture_screen(
     let Some((width, height, pixels)) = (caller.data().capture_screen)() else {
         return Ok(ENOTSUP);
     };
-    if pixels.len() > MAX_CAPTURE_RGBA_BYTES as usize || pixels.len() > pixels_len as usize {
+    let Some(expected_len) = pixel_bytes(width, height, 4) else {
+        return Ok(EINVAL);
+    };
+    if expected_len > MAX_CAPTURE_RGBA_BYTES
+        || pixels.len() != expected_len as usize
+        || pixels.len() > pixels_len as usize
+    {
         return Ok(EINVAL);
     }
     let memory = get_memory(&caller)?;
@@ -1338,7 +1343,10 @@ pub fn fullerene_show_image(
     pixels_ptr: u32,
     pixels_len: u32,
 ) -> Result<u32, Error> {
-    if pixels_len > MAX_DISPLAY_RGB_BYTES {
+    let Some(expected_len) = pixel_bytes(width, height, 3) else {
+        return Ok(EINVAL);
+    };
+    if expected_len > MAX_DISPLAY_RGB_BYTES || pixels_len != expected_len {
         return Ok(EINVAL);
     }
     let memory = get_memory(&caller)?;
@@ -1433,7 +1441,10 @@ pub fn fullerene_update_window(
     pixels_ptr: u32,
     pixels_len: u32,
 ) -> Result<u32, Error> {
-    if pixels_len > MAX_DISPLAY_RGB_BYTES {
+    let Some(expected_len) = pixel_bytes(width, height, 3) else {
+        return Ok(EINVAL);
+    };
+    if expected_len > MAX_DISPLAY_RGB_BYTES || pixels_len != expected_len {
         return Ok(EINVAL);
     }
     let memory = get_memory(&caller)?;
@@ -1460,7 +1471,13 @@ pub fn fullerene_play_pcm(
     data_ptr: u32,
     data_len: u32,
 ) -> Result<u32, Error> {
-    if data_len > MAX_AUDIO_BYTES || channels > u8::MAX as u32 || bits_per_sample > u8::MAX as u32 {
+    if data_len > MAX_AUDIO_BYTES
+        || sample_rate == 0
+        || channels == 0
+        || bits_per_sample == 0
+        || channels > u8::MAX as u32
+        || bits_per_sample > u8::MAX as u32
+    {
         return Ok(EINVAL);
     }
     let memory = get_memory(&caller)?;

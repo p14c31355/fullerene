@@ -44,6 +44,8 @@ pixel output and can be run with:
 cargo run -p lattice --example render_ppm
 # Compare full-frame and disjoint dirty-region composition
 cargo run -p lattice --release --example bench_render
+# WASM viewer image decode/downsample path
+cargo run --manifest-path toluene/viewer/Cargo.toml --release --example bench_image -- /path/to/image.jpg
 ```
 
 ## Debugging

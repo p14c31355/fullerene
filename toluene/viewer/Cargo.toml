@@ -16,5 +16,6 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 [profile.release]
 opt-level = "s"
 lto = true
+codegen-units = 1
 strip = true
 panic = "abort"

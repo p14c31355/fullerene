@@ -29,6 +29,14 @@ The repository also contains the nested `toluene/cargo` third-party source
 tree. It is an application port input, not a Fullerene architecture layer and
 is excluded from workspace-wide source refactors.
 
+WASM applications cross the kernel boundary through `solvent/wasi`. The WASI
+runtime owns execution state, fuel limits, file-descriptor caching, and the
+WASI/custom import linker; the kernel supplies one grouped `WasiHost` callback
+set. The viewer and Emulsion applications are built as separate nested
+workspaces and copied into the kernel build output. Viewer MP4 access is
+seek-based and Emulsion screen capture is chunked, so neither path requires a
+full media or framebuffer-sized temporary buffer in the host runtime.
+
 ## 1. Overall Philosophy (Highest Priority)
 
 - **Fullerene aims to be a safe, readable, maintainable, loosely-coupled no_std operating system.**

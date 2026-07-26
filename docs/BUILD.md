@@ -51,6 +51,12 @@ request source builds and their diagnostics explicitly, set
 `FULLERENE_BUILD_PORTS=1`. You can also place a manually‑compiled ELF at
 `target/ports/<name>/app.bin`.
 
+The kernel build also compiles the WASI fixtures and the nested
+`toluene/viewer` and `toluene/emulsion` workspaces for `wasm32-wasip1`. These
+WASM release builds use size optimization, LTO, one codegen unit, and symbol
+stripping; their cached outputs are copied into the kernel `OUT_DIR` before
+the applications are embedded.
+
 When the kernel boots, ports are unpacked from the initramfs into
 `/packages/` and launched with `app run <name>`.
 

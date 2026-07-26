@@ -238,3 +238,6 @@ viewer: mp4 sample read failed
 取得できなかった。`read_sample(track_id, 1)`へ修正し、失敗時にはエラー内容も
 表示するようにした。修正版のviewer build IDは
 `2026-07-25-mp4-sample-index-2`。
+
+その後のWASMパイプライン整理・縦横比修正を含む現行ビルドIDは
+`2026-07-27-wasm-pipeline-1`。
