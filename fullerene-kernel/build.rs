@@ -16,9 +16,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
     println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
-    if env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some() {
-        println!("cargo:rustc-cfg=linux_musl_smoke");
-    }
+    let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────
     let nitrogen_dir = manifest_dir.parent().unwrap().join("nitrogen");
@@ -134,14 +132,26 @@ fn main() {
     {
         Ok(status) if status.success() => {
             println!("cargo:rustc-cfg=have_linux_musl_hello");
+            if linux_musl_smoke_requested {
+                println!("cargo:rustc-cfg=linux_musl_smoke");
+            }
         }
         Ok(_) => {
+            assert!(
+                !linux_musl_smoke_requested,
+                "FULLERENE_LINUX_MUSL_SMOKE requires the x86_64-unknown-linux-musl target; \
+                 install it with: rustup target add x86_64-unknown-linux-musl"
+            );
             println!(
                 "cargo:warning=Rust std/musl example build failed; install it with: \
                  rustup target add x86_64-unknown-linux-musl"
             );
         }
         Err(error) => {
+            assert!(
+                !linux_musl_smoke_requested,
+                "FULLERENE_LINUX_MUSL_SMOKE could not start rustc for its fixture: {error}"
+            );
             println!(
                 "cargo:warning=Rust std/musl example compiler could not start: {}",
                 error

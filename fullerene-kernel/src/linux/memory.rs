@@ -14,6 +14,7 @@ const MAX_LINUX_MEMORY: u64 = 128 * 1024 * 1024;
 const USER_ADDRESS_LIMIT: u64 = 0x0000_8000_0000_0000;
 const DEFAULT_MMAP_BASE: u64 = 0x0000_0001_0000_0000;
 const VDSO_SIZE: u64 = PAGE_SIZE;
+const MAX_MMAP_PROBES: usize = (MAX_LINUX_MEMORY / PAGE_SIZE) as usize * 4;
 
 /// Per-process virtual memory region tracked for mmap/munmap.
 #[derive(Clone, Copy)]
@@ -112,7 +113,7 @@ fn find_free_anon_region(
     start: u64,
 ) -> u64 {
     let mut candidate = (start + PAGE_MASK) & !PAGE_MASK;
-    loop {
+    for _ in 0..MAX_MMAP_PROBES {
         if candidate.checked_add(size).is_none()
             || candidate.checked_add(size).unwrap() > USER_ADDRESS_LIMIT
         {
@@ -127,7 +128,10 @@ fn find_free_anon_region(
                 .filter_map(|region| region.addr.checked_add(region.size))
                 .max()
                 .unwrap_or(USER_ADDRESS_LIMIT);
-            candidate = (candidate + PAGE_MASK) & !PAGE_MASK;
+            let Some(aligned) = candidate.checked_add(PAGE_MASK) else {
+                return 0;
+            };
+            candidate = aligned & !PAGE_MASK;
             continue;
         }
 
@@ -140,9 +144,10 @@ fn find_free_anon_region(
         }
         return candidate;
     }
+    0
 }
 
-fn with_current_page_table<R>(operation: impl FnOnce(&mut ProcessPageTable) -> R) -> Option<R> {
+fn with_current_page_table<R>(operation: impl FnOnce(&mut ProcessPageTable) -> R) -> R {
     let (pml4_frame, _) = x86_64::registers::control::Cr3::read();
     let physical_offset =
         VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
@@ -156,7 +161,7 @@ fn with_current_page_table<R>(operation: impl FnOnce(&mut ProcessPageTable) -> R
     let mut page_table = ProcessPageTable::new_with_frame(pml4_frame);
     page_table.mapper = Some(mapper);
     page_table.initialized = true;
-    Some(operation(&mut page_table))
+    operation(&mut page_table)
 }
 
 fn unmap_and_free(page_table: &mut ProcessPageTable, virtual_addr: usize) -> Result<(), ()> {
@@ -248,7 +253,7 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     };
 
-    let Some(mapped) = with_current_page_table(|page_table| {
+    let mapped = with_current_page_table(|page_table| {
         #[cfg(linux_musl_smoke)]
         petroleum::serial::serial_log(format_args!("[linux-smoke] mmap page table acquired\n"));
         let addr = find_free_anon_region(rt, page_table, aligned_len, hint);
@@ -288,6 +293,15 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                     return Err(ENOMEM);
                 }
             };
+            unsafe {
+                core::ptr::write_bytes(
+                    petroleum::common::memory::physical_to_virtual(
+                        frame.start_address().as_u64() as usize
+                    ) as *mut u8,
+                    0,
+                    PAGE_SIZE as usize,
+                );
+            }
 
             if page_table
                 .map_page(
@@ -310,9 +324,7 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         #[cfg(linux_musl_smoke)]
         petroleum::serial::serial_log(format_args!("[linux-smoke] mmap mapping done\n"));
         Ok(addr)
-    }) else {
-        return errno_code(ENOMEM);
-    };
+    });
     let addr = match mapped {
         Ok(addr) => addr,
         Err(error) => return errno_code(error),
@@ -321,7 +333,7 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     #[cfg(linux_musl_smoke)]
     petroleum::serial::serial_log(format_args!("[linux-smoke] mmap tracking region\n"));
     if let Err(error) = track_region(rt, addr, aligned_len, prot, flags) {
-        let _ = with_current_page_table(|page_table| {
+        with_current_page_table(|page_table| {
             for index in 0..(aligned_len / PAGE_SIZE) {
                 let page = (addr + index * PAGE_SIZE) as usize;
                 let _ = unmap_and_free(page_table, page);
@@ -345,7 +357,7 @@ pub fn sys_munmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EINVAL);
     }
 
-    let Some(result) = with_current_page_table(|page_table| {
+    let result = with_current_page_table(|page_table| {
         if !range_is_owned_user_memory(page_table, aligned_addr, aligned_len) {
             return Err(EINVAL);
         }
@@ -358,9 +370,7 @@ pub fn sys_munmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
         }
         Ok(())
-    }) else {
-        return errno_code(ENOMEM);
-    };
+    });
     if let Err(error) = result {
         return errno_code(error);
     }
@@ -399,29 +409,31 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     }
 
-    let Some(result) = with_current_page_table(|page_table| {
+    let result = with_current_page_table(|page_table| {
         if !range_is_owned_user_memory(page_table, aligned_addr, aligned_len) {
             return Err(EINVAL);
         }
 
         let pages = (aligned_len / PAGE_SIZE) as usize;
-        for index in 0..pages {
-            let page = aligned_addr + index as u64 * PAGE_SIZE;
-            page_table
-                .get_page_flags(page as usize)
-                .map_err(|_| EINVAL)?;
-        }
-
+        let mut original_flags = alloc::vec::Vec::with_capacity(pages);
         for index in 0..pages {
             let page = (aligned_addr + index as u64 * PAGE_SIZE) as usize;
-            if page_table.set_page_flags(page, page_flags).is_err() {
+            let flags = page_table
+                .get_page_flags(page as usize)
+                .map_err(|_| EINVAL)?;
+            original_flags.push((page, flags));
+        }
+
+        for (index, (page, _)) in original_flags.iter().enumerate() {
+            if page_table.set_page_flags(*page, page_flags).is_err() {
+                for (restore_page, restore_flags) in original_flags.iter().take(index) {
+                    let _ = page_table.set_page_flags(*restore_page, *restore_flags);
+                }
                 return Err(ENOMEM);
             }
         }
         Ok(())
-    }) else {
-        return errno_code(ENOMEM);
-    };
+    });
     if let Err(error) = result {
         return errno_code(error);
     }
@@ -460,7 +472,7 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
         if end_page > start_page {
             let num_pages = ((end_page - start_page) / align) as usize;
-            let Some(mapped) = with_current_page_table(|page_table| {
+            let mapped = with_current_page_table(|page_table| {
                 let growth = end_page - start_page;
                 if tracked_range_overlaps(rt, start_page, growth)
                     || range_is_mapped(page_table, start_page, growth)
@@ -483,9 +495,19 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                             return false;
                         }
                     };
+                    unsafe {
+                        core::ptr::write_bytes(
+                            petroleum::common::memory::physical_to_virtual(
+                                frame.start_address().as_u64() as usize,
+                            ) as *mut u8,
+                            0,
+                            PAGE_SIZE as usize,
+                        );
+                    }
                     let page_flags = PageTableFlags::PRESENT
                         | PageTableFlags::WRITABLE
-                        | PageTableFlags::USER_ACCESSIBLE;
+                        | PageTableFlags::USER_ACCESSIBLE
+                        | PageTableFlags::NO_EXECUTE;
 
                     if page_table
                         .map_page(
@@ -505,9 +527,7 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                     }
                 }
                 true
-            }) else {
-                return old_brk;
-            };
+            });
             if !mapped {
                 return old_brk;
             }

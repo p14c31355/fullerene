@@ -1292,10 +1292,20 @@ pub fn run_linux_musl_smoke() {
         "linux_run /bin/rust_std_hello\necho shell-resumed-after-linux\nexit\n",
     );
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
-    petroleum::serial::serial_log(format_args!("[linux-smoke] shell-resumed-after-linux\n"));
-    // Flasks maps 0x10 to status 33.
-    unsafe {
-        x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x10);
+    if crate::linux::launch::smoke_verified() {
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] PASS: fixture output observed, exit=0, shell resumed\n"
+        ));
+        // isa-debug-exit maps 0x11 to host status 35. Flasks accepts that
+        // status only while the explicit smoke mode is enabled.
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);
+        }
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] FAIL: fixture output or successful exit was not observed\n"
+        ));
+        petroleum::halt_loop();
     }
 }
 

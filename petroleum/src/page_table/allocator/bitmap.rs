@@ -7,7 +7,7 @@ use x86_64::structures::paging::{
 
 /// Normal allocations stay above legacy low memory.  Call
 /// `allocate_frame_low` explicitly for hardware that genuinely requires a
-/// sub-1MiB DMA frame.
+/// sub-16MiB DMA frame.
 const LOW_MEM_SKIP_FRAMES: usize = 16 * 1024 * 1024 / 4096;
 
 pub struct BitmapFrameAllocator {
@@ -16,6 +16,16 @@ pub struct BitmapFrameAllocator {
 }
 
 impl BitmapFrameAllocator {
+    fn take_available_frame(&mut self, start: usize, end: usize) -> Option<usize> {
+        for frame_idx in start.max(1)..end.min(self.total_frames) {
+            if self.is_frame_available(frame_idx) {
+                self.set_frame_used(frame_idx, true);
+                return Some(frame_idx);
+            }
+        }
+        None
+    }
+
     pub fn new(total_frames: usize) -> Self {
         let bitmap_size = (total_frames + 63) / 64;
         Self {
@@ -169,28 +179,13 @@ impl BitmapFrameAllocator {
 
 impl FrameAllocator for BitmapFrameAllocator {
     fn allocate(&mut self) -> Result<PhysFrame, crate::page_table::allocator::traits::AllocError> {
-        let first_word = LOW_MEM_SKIP_FRAMES / 64;
-        for i in first_word..self.bitmap.len() {
-            if self.bitmap[i] != u64::MAX {
-                for j in 0..64 {
-                    let frame_idx = i * 64 + j;
-                    if frame_idx < LOW_MEM_SKIP_FRAMES {
-                        continue;
-                    }
-                    if frame_idx >= self.total_frames {
-                        return Err(crate::page_table::allocator::traits::AllocError::OutOfMemory);
-                    }
-                    if (self.bitmap[i] & (1 << j)) == 0 {
-                        self.set_frame_used(frame_idx, true);
-                        let phys_addr = frame_idx as u64 * 4096;
-                        return Ok(PhysFrame {
-                            start_address: phys_addr,
-                        });
-                    }
-                }
-            }
-        }
-        Err(crate::page_table::allocator::traits::AllocError::OutOfMemory)
+        let frame_idx = self
+            .take_available_frame(LOW_MEM_SKIP_FRAMES, self.total_frames)
+            .or_else(|| self.take_available_frame(1, LOW_MEM_SKIP_FRAMES))
+            .ok_or(crate::page_table::allocator::traits::AllocError::OutOfMemory)?;
+        Ok(PhysFrame {
+            start_address: frame_idx as u64 * 4096,
+        })
     }
 
     fn deallocate(&mut self, frame: PhysFrame) {
@@ -240,27 +235,36 @@ impl FrameAllocatorExt for BitmapFrameAllocator {
 
 unsafe impl X86FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> Option<X86PhysFrame> {
-        let first_word = LOW_MEM_SKIP_FRAMES / 64;
-        for i in first_word..self.bitmap.len() {
-            if self.bitmap[i] != u64::MAX {
-                for j in 0..64 {
-                    let frame_idx = i * 64 + j;
-                    if frame_idx < LOW_MEM_SKIP_FRAMES {
-                        continue;
-                    }
-                    if frame_idx >= self.total_frames {
-                        return None;
-                    }
-                    if (self.bitmap[i] & (1 << j)) == 0 {
-                        self.set_frame_used(frame_idx, true);
-                        let phys_addr = frame_idx as u64 * 4096;
-                        return Some(X86PhysFrame::containing_address(x86_64::PhysAddr::new(
-                            phys_addr,
-                        )));
-                    }
-                }
-            }
-        }
-        None
+        let frame_idx = self
+            .take_available_frame(LOW_MEM_SKIP_FRAMES, self.total_frames)
+            .or_else(|| self.take_available_frame(1, LOW_MEM_SKIP_FRAMES))?;
+        Some(X86PhysFrame::containing_address(x86_64::PhysAddr::new(
+            frame_idx as u64 * 4096,
+        )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_allocation_falls_back_below_16_mib_on_small_systems() {
+        let mut allocator = BitmapFrameAllocator::new(128);
+        allocator.init(1);
+
+        let frame = FrameAllocator::allocate(&mut allocator).expect("fallback frame");
+
+        assert_eq!(frame.start_address(), 4096);
+    }
+
+    #[test]
+    fn ordinary_allocation_prefers_memory_at_or_above_16_mib() {
+        let mut allocator = BitmapFrameAllocator::new(LOW_MEM_SKIP_FRAMES + 2);
+        allocator.init(1);
+
+        let frame = FrameAllocator::allocate(&mut allocator).expect("high frame");
+
+        assert_eq!(frame.start_address(), LOW_MEM_SKIP_FRAMES as u64 * 4096);
     }
 }

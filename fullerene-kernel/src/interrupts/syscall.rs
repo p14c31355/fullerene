@@ -7,18 +7,11 @@ use x86_64::VirtAddr;
 use x86_64::registers::model_specific::Msr;
 use x86_64::registers::rflags::RFlags;
 
-/// Kernel stack used while dispatching SYSCALL handlers.
-///
-/// A single page is not enough for Rust syscall handlers: formatting,
-/// user-copy validation, VFS calls, and Linux-personality dispatch can nest
-/// deeply enough to cross 4 KiB. Keep this aligned with ordinary process
-/// kernel stacks so an otherwise valid syscall cannot corrupt neighboring
-/// heap allocations.
-const SYSCALL_STACK_SIZE: usize = crate::heap::KERNEL_STACK_SIZE;
-
 /// Per-CPU syscall entry state addressed through `KERNEL_GS_BASE`.
 ///
 /// Fullerene is currently single-core, so one entry state is sufficient.
+/// `kernel_stack_top` is updated by the scheduler before entering each process;
+/// it always names that process's dedicated kernel stack.
 /// `user_rsp` is only scratch space until it has been copied to the kernel
 /// stack; keeping it here lets the naked entry switch stacks without
 /// clobbering a user register.
@@ -35,20 +28,28 @@ static mut SYSCALL_ENTRY_STATE: SyscallEntryState = SyscallEntryState {
     syscall_number: 0,
 };
 
-/// Initialize syscall kernel stack
+/// Initialize the per-CPU SYSCALL entry state.
+///
+/// No stack is allocated here. User processes receive a dedicated kernel
+/// stack in `create_process`, and the scheduler installs it before CPL3 entry.
 pub fn init_syscall_stack() {
     mem_debug!("Syscall: init_syscall_stack start\n");
-    use alloc::alloc::{Layout, alloc};
-    let layout = Layout::from_size_align(SYSCALL_STACK_SIZE, 16).unwrap();
-    mem_debug!("Syscall: allocating stack\n");
-    let ptr = unsafe { alloc(layout) };
-    mem_debug!("Syscall: stack allocated\n");
-    let stack_top = unsafe { ptr.add(SYSCALL_STACK_SIZE) };
     unsafe {
-        SYSCALL_ENTRY_STATE.kernel_stack_top = stack_top as u64;
+        SYSCALL_ENTRY_STATE.kernel_stack_top = 0;
     }
-    crate::gdt::set_ring0_stack(VirtAddr::new(stack_top as u64));
     mem_debug!("Syscall: init_syscall_stack done\n");
+}
+
+/// Install the kernel stack for the process that is about to run.
+///
+/// This must be called before switching to a user context so both SYSCALL and
+/// interrupt privilege transitions land on the same process-owned stack.
+pub fn set_process_kernel_stack(stack_top: VirtAddr) {
+    debug_assert_ne!(stack_top.as_u64(), 0);
+    unsafe {
+        SYSCALL_ENTRY_STATE.kernel_stack_top = stack_top.as_u64();
+    }
+    crate::gdt::set_ring0_stack(stack_top);
 }
 
 /// System call entry point (naked function for manual assembly handling)
@@ -154,8 +155,6 @@ pub fn setup_syscall() {
     ));
     mem_debug!("Syscall: KernelGsBase written\n");
 
-    let stack_top_addr = unsafe { SYSCALL_ENTRY_STATE.kernel_stack_top };
     petroleum::debug_log_no_alloc!("Syscall: initialized. LSTAR: {}", entry_addr);
-    petroleum::debug_log_no_alloc!("Syscall: kernel stack: {}", stack_top_addr);
     mem_debug!("Syscall: setup_syscall done\n");
 }

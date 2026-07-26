@@ -204,6 +204,7 @@ pub fn init_with_stacks(stacks: TssStacks) {
 
     unsafe {
         let mut tss = TaskStateSegment::new();
+        tss.privilege_stack_table[0] = stacks.timer;
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
         tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;
@@ -230,6 +231,7 @@ pub fn init(heap_start: VirtAddr) -> VirtAddr {
 
     unsafe {
         let mut tss = TaskStateSegment::new();
+        tss.privilege_stack_table[0] = stacks.timer;
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = stacks.double_fault;
         tss.interrupt_stack_table[TIMER_IST_INDEX as usize] = stacks.timer;
         tss.interrupt_stack_table[STACK_FAULT_IST_INDEX as usize] = stacks.stack_fault;

@@ -141,11 +141,14 @@ FULLERENE_LINUX_MUSL_SMOKE=1 \
   cargo run -p flasks -- --display none --vga none --timeout 70
 ```
 
-The smoke test dispatches `linux_run /bin/rust_std_hello` through Nozzle. The
-end-to-end success marker on the serial console is:
+The smoke test dispatches `linux_run /bin/rust_std_hello` through Nozzle. It
+only asks QEMU to exit successfully after observing the expected stdout,
+exit status 0, and the shell resuming. The end-to-end success markers on the
+serial console are:
 
 ```text
 Hello from Rust std on musl!
+[linux-smoke] PASS: fixture output observed, exit=0, shell resumed
 ```
 
 Without the smoke environment variable, the same embedded executable can be

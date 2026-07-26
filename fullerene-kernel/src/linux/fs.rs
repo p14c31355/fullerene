@@ -84,8 +84,15 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         let mut chunk = [0u8; 256];
         while written < limit {
             let chunk_len = (limit - written).min(chunk.len());
+            let Some(chunk_address) = buf.checked_add(written as u64) else {
+                return if written == 0 {
+                    errno_code(EFAULT)
+                } else {
+                    written as u64
+                };
+            };
             if unsafe {
-                super::runtime::copy_from_user_into(buf + written as u64, &mut chunk[..chunk_len])
+                super::runtime::copy_from_user_into(chunk_address, &mut chunk[..chunk_len])
             }
             .is_err()
             {
@@ -95,6 +102,8 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                     written as u64
                 };
             }
+            #[cfg(linux_musl_smoke)]
+            crate::linux::launch::observe_smoke_output(rt.tid, &chunk[..chunk_len]);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &chunk[..chunk_len]);
             // Linux stdout/stderr belongs on the interactive terminal too.
             // Keep the serial mirror for headless diagnostics and smoke

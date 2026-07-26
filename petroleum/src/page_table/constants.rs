@@ -33,6 +33,7 @@ unsafe impl<T> Sync for SyncUnsafeCell<T> {}
 static FRAME_ALLOCATOR: SyncUnsafeCell<Option<BootInfoFrameAllocator>> = SyncUnsafeCell {
     inner: UnsafeCell::new(None),
 };
+static FRAME_ALLOCATOR_ACCESS: spin::Mutex<()> = spin::Mutex::new(());
 
 pub fn init_frame_allocator(allocator: BootInfoFrameAllocator) {
     unsafe {
@@ -48,6 +49,7 @@ pub fn with_frame_allocator<F, R>(f: F) -> R
 where
     F: FnOnce(&mut BootInfoFrameAllocator) -> R,
 {
+    let _access = FRAME_ALLOCATOR_ACCESS.lock();
     unsafe {
         let allocator = (*FRAME_ALLOCATOR.inner.get())
             .as_mut()

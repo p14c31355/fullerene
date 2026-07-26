@@ -7,7 +7,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::PhysAddr;
-use x86_64::registers::control::{Cr3, Cr3Flags};
+use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableFlags, Size4KiB};
 
 pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -22,11 +22,14 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let kernel_root = crate::memory_management::kernel_page_table_phys();
     if kernel_root.as_u64() != 0 {
         let frame = x86_64::structures::paging::PhysFrame::containing_address(kernel_root);
+        let (_, current_flags) = Cr3::read();
         unsafe {
-            Cr3::write(frame, Cr3Flags::empty());
+            Cr3::write(frame, current_flags);
         }
     }
     if let Some(pid) = process::current_pid() {
+        #[cfg(linux_musl_smoke)]
+        crate::linux::launch::observe_smoke_exit(pid, code);
         process::terminate_process(pid, code);
     }
     loop {
@@ -110,18 +113,9 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
     // Create child VDSO page
     let child_vdso = {
-        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
-        let fa = match fa_lock.as_mut() {
-            Some(f) => f,
-            None => {
-                drop(fa_lock);
-                unsafe { petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout) };
-                crate::memory_management::deallocate_process_page_table(cloned_frame);
-                return errno_code(ENOMEM);
-            }
-        };
-        let vdso = crate::vdso::create_vdso_page(&mut child_pt, fa, child_pid.0);
-        drop(fa_lock);
+        let vdso = petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
+            crate::vdso::create_vdso_page(&mut child_pt, frame_allocator, child_pid.0)
+        });
         match vdso {
             Ok(v) => Some(v),
             Err(_) => {
@@ -336,8 +330,9 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         p.user_stack = x86_64::VirtAddr::new(stack_top_vaddr_default);
 
         // Reset context for the new binary
+        p.context.registers = crate::process::GeneralRegisters::default();
         p.context.rip = entry;
-        p.context.registers.rsp = stack_top_vaddr_default;
+        p.context.kernel_rsp = 0;
 
         if p.is_user {
             p.context.segments.cs = crate::gdt::user_code()
@@ -349,11 +344,6 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 .map(|s| s.0 as u64)
                 .unwrap_or(2);
         }
-
-        // Clear registers
-        p.context.registers = crate::process::GeneralRegisters::default();
-        p.context.registers.rsp = stack_top_vaddr_default;
-        p.context.kernel_rsp = 0;
 
         // Return 0 from execve on the new stack by pushing it
         // Actually, execve doesn't return on success - the new program starts at entry.

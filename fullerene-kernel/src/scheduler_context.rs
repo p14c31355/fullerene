@@ -28,6 +28,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use heapless::Vec as HeaplessVec;
 use petroleum::common::logging::SystemError;
 use x86_64::VirtAddr;
+use x86_64::registers::control::Cr3;
 
 use crate::context_switch::switch_context;
 use crate::process::{MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessState};
@@ -439,13 +440,25 @@ impl SchedulerContext {
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| p.page_table_phys_addr)
             .filter(|address| address.as_u64() != 0)
-            .unwrap_or_else(crate::memory_management::kernel_page_table_phys);
+            .or_else(|| {
+                let kernel = crate::memory_management::kernel_page_table_phys();
+                (kernel.as_u64() != 0).then_some(kernel)
+            })
+            .unwrap_or_else(|| Cr3::read().0.start_address());
+        let new_kernel_stack = list
+            .iter()
+            .find(|(id, _)| *id == new_pid)
+            .map(|(_, process)| process.kernel_stack)
+            .filter(|stack| stack.as_u64() != 0);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
             .map(|(_, p)| &mut *p.context as *mut ProcessContext);
         drop(guard);
 
         if let Some(new) = new_ctx {
+            if let Some(kernel_stack) = new_kernel_stack {
+                crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
+            }
             let old = old_ctx.unwrap_or(core::ptr::null_mut());
             unsafe { switch_context(old, new, pt.as_u64()) };
         }

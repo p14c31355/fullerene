@@ -69,6 +69,11 @@ pub struct GeneralRegisters {
 }
 
 /// Segment-selector image used when entering a process for the first time.
+///
+/// `cs` and `ss` are authoritative and are restored by `iretq`. The legacy
+/// `ds`, `es`, `fs`, and `gs` selector fields are informational only; long-mode
+/// FS/GS bases are managed separately and the context trampoline does not
+/// restore these four selectors.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct SegmentRegisters {
@@ -484,6 +489,7 @@ impl Process {
         petroleum::mem_debug!(self.name);
         petroleum::mem_debug!("\n");
 
+        self.context.kernel_rsp = 0;
         self.context.is_user = self.is_user;
         if self.is_user {
             // For user processes, the context RSP should be the user stack
@@ -632,22 +638,28 @@ pub fn create_process(
         process.page_table_phys_addr = PhysAddr::new(page_table_phys);
         process.page_table = Some(Box::new(page_table));
 
-        let pt: &mut petroleum::page_table::process::ProcessPageTable =
-            process.page_table.as_mut().unwrap();
-        let frame_allocator =
-            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-        let vdso_ref = create_vdso_page(pt, frame_allocator, process.id.0).map_err(|_| {
-            unsafe {
-                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            }
-            if let Some(ref page_table) = process.page_table {
-                if let Some(pml4_frame) = page_table.pml4_frame() {
+        let vdso_result = {
+            let pt: &mut petroleum::page_table::process::ProcessPageTable =
+                process.page_table.as_mut().unwrap();
+            petroleum::page_table::constants::with_frame_allocator(|frame_allocator| {
+                create_vdso_page(pt, frame_allocator, process.id.0).map_err(|_| ())
+            })
+        };
+        let vdso_ref = match vdso_result {
+            Ok(vdso) => vdso,
+            Err(_) => {
+                unsafe {
+                    petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
+                    petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
+                }
+                if let Some(ref page_table) = process.page_table
+                    && let Some(pml4_frame) = page_table.pml4_frame()
+                {
                     crate::memory_management::deallocate_process_page_table(pml4_frame);
                 }
+                return Err(petroleum::common::logging::SystemError::FrameAllocationFailed);
             }
-            petroleum::common::logging::SystemError::FrameAllocationFailed
-        })?;
+        };
         process.vdso_page = Some(vdso_ref);
     } else {
         // Create page table for the process (kernel process, no user stack)
