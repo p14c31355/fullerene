@@ -137,13 +137,27 @@ impl BootStage {
 /// Last boot stage reached (atomic, lock-free for panic-safety).
 static LAST_STAGE: AtomicU8 = AtomicU8::new(0);
 
+/// Boot progress owns the framebuffer only until the first desktop frame is
+/// presented. Without this handoff, late boot/log callbacks can repaint the
+/// splash over an already usable desktop.
+static BOOT_SCREEN_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(true);
+
+/// Stop normal boot-progress drawing after the desktop has taken ownership
+/// of the scanout. Panic stages are still allowed to draw afterwards.
+pub fn disable_boot_screen() {
+    BOOT_SCREEN_ACTIVE.store(false, Ordering::Release);
+}
+
 /// Update the global boot stage and emit a `klog` line.
 pub fn set_boot_stage(stage: BootStage) {
     let prev = LAST_STAGE.fetch_max(stage as u8, Ordering::Release);
     // Only log if we actually advanced (monotonic).
     if stage as u8 > prev {
         crate::klog::write_fmt(format_args!("[BOOT] {}\n", stage.label()));
-        draw_boot_stage(stage);
+        if stage == BootStage::Panic || BOOT_SCREEN_ACTIVE.load(Ordering::Acquire) {
+            draw_boot_stage(stage);
+        }
     }
 }
 
@@ -153,6 +167,9 @@ pub fn set_boot_stage(stage: BootStage) {
 ///
 /// The progress bar stays at the last-committed stage position.
 pub fn draw_boot_label(label: &[u8]) {
+    if !BOOT_SCREEN_ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
     let Some(framebuffer) = crate::graphics::discovery::direct_boot_framebuffer() else {
         return;
     };
@@ -170,6 +187,9 @@ pub fn draw_boot_label(label: &[u8]) {
 /// Draw a small status line at the bottom of the boot panel — used as a
 /// serial-free progress indicator for init steps on real hardware.
 pub fn draw_step_hint(hint: &[u8]) {
+    if !BOOT_SCREEN_ACTIVE.load(Ordering::Acquire) {
+        return;
+    }
     let fb = match crate::graphics::discovery::direct_boot_framebuffer() {
         Some(f) => f,
         None => return,

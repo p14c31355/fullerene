@@ -4,6 +4,7 @@
 
 use crate::{HEAP_EXTEND_RESERVE, RUNTIME_CONTEXT};
 use alloc::string::String;
+use lattice::scene::DirtyRect;
 use lattice::terminal_surface::{self, Cell as LatticeCell};
 use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
@@ -105,44 +106,77 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
         );
     }
 
-    let total = (rt.term_buf.cols() * rt.term_buf.rows()) as usize;
-    if rt.term_cells.len() != total {
-        rt.term_cells.resize(
-            total,
-            LatticeCell {
-                ch: b' ',
-                fg: 0,
-                bg: 0,
-            },
-        );
-    }
     let visible = rt.term_buf.visible_cells();
-    rt.term_cells.resize(
-        visible.len(),
-        LatticeCell {
-            ch: b' ',
-            fg: 0,
-            bg: 0,
-        },
-    );
-    for (i, c) in visible.iter().enumerate() {
-        if i < rt.term_cells.len() {
-            rt.term_cells[i] = LatticeCell {
-                ch: c.ch,
-                fg: c.fg,
-                bg: c.bg,
-            };
+    let cols = rt.term_buf.cols().max(1);
+    let current_cursor = (rt.term_buf.cursor_col(), rt.term_buf.cursor_row());
+    let client_x = window.x;
+    let client_y = window.y
+        + if window.title.is_some() {
+            lattice::compositor::TITLE_BAR_HEIGHT as i32
+        } else {
+            0
+        };
+    let mut dirty_cells: Option<DirtyRect> = None;
+    let mut mark_cell_dirty = |col: u32, row: u32| {
+        let x = client_x.saturating_add((col * GLYPH_W) as i32).max(0) as u32;
+        let y = client_y.saturating_add((row * GLYPH_H) as i32).max(0) as u32;
+        let cell_rect = DirtyRect::new(x, y, GLYPH_W, GLYPH_H);
+        if let Some(dirty) = dirty_cells.as_mut() {
+            dirty.merge(&cell_rect);
+        } else {
+            dirty_cells = Some(cell_rect);
+        }
+    };
+
+    // `term_cells` is the last grid actually painted to the surface. Update
+    // only changed cells; this matters when a shell is maximized, because the
+    // grid can contain tens of thousands of cells.
+    let old_cursor = rt.term_rendered_cursor;
+    if let Some((col, row, _)) = old_cursor {
+        if (col, row) != current_cursor {
+            let index = row as usize * cols as usize + col as usize;
+            if let Some(cell) = rt.term_cells.get(index).copied() {
+                terminal_surface::render_cell(&mut window.surface, cell, col, row, false);
+                mark_cell_dirty(col, row);
+            }
         }
     }
-    terminal_surface::render(terminal_surface::RenderParams {
-        surface: &mut window.surface,
-        cells: &rt.term_cells,
-        cols: rt.term_buf.cols(),
-        cursor_col: Some(rt.term_buf.cursor_col()),
-        cursor_row: Some(rt.term_buf.cursor_row()),
-        cursor_visible: rt.cursor_visible,
-    });
-    rt.desktop.invalidate_window(term_window);
+
+    for (i, source) in visible.iter().enumerate() {
+        let cell = LatticeCell {
+            ch: source.ch,
+            fg: source.fg,
+            bg: source.bg,
+        };
+        let col = (i as u32) % cols;
+        let row = (i as u32) / cols;
+        let changed = rt.term_cells.get(i).copied() != Some(cell);
+        let cursor_changed = old_cursor
+            != Some((current_cursor.0, current_cursor.1, rt.cursor_visible))
+            && (col, row) == current_cursor;
+        if changed || cursor_changed {
+            terminal_surface::render_cell(
+                &mut window.surface,
+                cell,
+                col,
+                row,
+                rt.cursor_visible && (col, row) == current_cursor,
+            );
+            mark_cell_dirty(col, row);
+        }
+    }
+
+    rt.term_cells.clear();
+    rt.term_cells
+        .extend(visible.iter().map(|source| LatticeCell {
+            ch: source.ch,
+            fg: source.fg,
+            bg: source.bg,
+        }));
+    rt.term_rendered_cursor = Some((current_cursor.0, current_cursor.1, rt.cursor_visible));
+    if let Some(dirty) = dirty_cells {
+        rt.desktop.push_dirty_rect(dirty);
+    }
     rt.term_dirty = false;
 }
 
