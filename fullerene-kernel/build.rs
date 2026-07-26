@@ -91,6 +91,25 @@ fn main() {
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
 
     // ── Build the ordinary Rust std / musl Linux fixture ─────────
+    // Watch the target libdir as well as the source. If a developer installs
+    // the target after an earlier failed build, Cargo must rerun this script
+    // instead of reusing the old "fixture unavailable" cfg result.
+    if let Ok(output) = Command::new(&rustc)
+        .args([
+            "--print",
+            "target-libdir",
+            "--target",
+            "x86_64-unknown-linux-musl",
+        ])
+        .output()
+        && let Ok(target_libdir) = String::from_utf8(output.stdout)
+    {
+        let target_libdir = target_libdir.trim();
+        if !target_libdir.is_empty() {
+            println!("cargo:rerun-if-changed={target_libdir}");
+        }
+    }
+
     let linux_musl_src = manifest_dir.join("examples").join("linux_musl_hello.rs");
     let linux_musl_out = out_dir.join("linux_musl_hello");
     println!("cargo:rerun-if-changed={}", linux_musl_src.display());

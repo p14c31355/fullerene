@@ -385,7 +385,16 @@ macro_rules! tstr {
 macro_rules! launch_cmd {
     ($t:expr, $launch:expr, $ok:expr) => {
         match $launch {
-            Ok(pid) => tline!($t, $ok, pid.0),
+            Ok(pid) => {
+                tline!($t, $ok, pid.0);
+                // The interactive shell runs synchronously from the idle
+                // scheduler context. Give the newly-ready process a
+                // scheduling point now so short commands can print and exit
+                // before Nozzle draws the next prompt.
+                if crate::process::current_pid().is_some() {
+                    crate::process::yield_current();
+                }
+            }
             Err(e) => tline!($t, "Failed to launch: {:?}", e),
         }
     };
@@ -814,12 +823,20 @@ fn nozzle_services() -> nozzle::ShellServices {
                 crate::linux::launch::launch_test_binary(),
                 "Test Linux binary started (PID: {})"
             ),
-            #[cfg(have_linux_musl_hello)]
-            "hello_rust_linux" => launch_cmd!(
-                ctx.terminal,
-                crate::linux::launch::launch_rust_std_hello(),
-                "Rust std/musl Linux process started (PID: {})"
-            ),
+            "hello_rust_linux" => {
+                #[cfg(have_linux_musl_hello)]
+                launch_cmd!(
+                    ctx.terminal,
+                    crate::linux::launch::launch_rust_std_hello(),
+                    "Rust std/musl Linux process started (PID: {})"
+                );
+                #[cfg(not(have_linux_musl_hello))]
+                ctx.terminal.write_str(
+                    "Rust std/musl fixture is unavailable. Run \
+                     `rustup target add --toolchain nightly x86_64-unknown-linux-musl`, \
+                     then rebuild the ISO.\n",
+                );
+            }
             "wasm" => {
                 if ctx.args.len() <= 1 {
                     return tstr!(ctx.terminal, "Usage: wasm <path> [args...]");
@@ -1223,6 +1240,23 @@ pub fn shell_main() {
     } else {
         let mut terminal = KernelTerminal::new();
         solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
+    }
+}
+
+/// Run the Linux-musl smoke fixture through the real Nozzle command path.
+#[cfg(linux_musl_smoke)]
+pub fn run_linux_musl_smoke() {
+    let services = nozzle_services();
+    solvent::run_shell_on_with_command(
+        &mut solvent::LatticeTerminal,
+        "fullerene> ",
+        services,
+        Some("linux_run /bin/rust_std_hello"),
+    );
+    // Reaching here proves that the Linux process exited and cooperative
+    // scheduling restored the shell context. Flasks maps 0x10 to status 33.
+    unsafe {
+        x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x10);
     }
 }
 

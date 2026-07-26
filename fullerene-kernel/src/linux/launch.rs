@@ -15,6 +15,11 @@ pub fn launch_rust_std_hello() -> Result<ProcessId, LoadError> {
     launch_linux_binary_named("/bin/rust-std-hello", "rust-std-musl-hello")
 }
 
+#[cfg(not(have_linux_musl_hello))]
+pub fn launch_rust_std_hello() -> Result<ProcessId, LoadError> {
+    Err(LoadError::FileNotFound)
+}
+
 /// Launch a Linux ELF binary from the VFS at `path`.
 pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
     // General-purpose callers can provide arbitrary paths, so retain a stable
@@ -27,7 +32,7 @@ pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
 pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<ProcessId, LoadError> {
     let data = match crate::fs::read_entire_file(path) {
         Ok(d) => d,
-        Err(_) => return Err(LoadError::InvalidFormat),
+        Err(_) => return Err(LoadError::FileNotFound),
     };
     launch_linux_from_data(&data, name)
 }
@@ -95,20 +100,13 @@ pub fn init_initramfs() {
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
 
     #[cfg(have_linux_musl_hello)]
-    if let Err(error) = crate::fs::write_entire_file(
-        "/bin/rust-std-hello",
-        include_bytes!(concat!(env!("OUT_DIR"), "/linux_musl_hello")),
-    ) {
-        log::warn!(
-            "Initramfs: failed to install /bin/rust-std-hello: {:?}",
-            error
-        );
-    }
-
-    #[cfg(all(have_linux_musl_hello, linux_musl_smoke))]
-    match launch_rust_std_hello() {
-        Ok(pid) => log::info!("Linux musl smoke process queued as PID {}", pid),
-        Err(error) => log::error!("Linux musl smoke launch failed: {:?}", error),
+    {
+        let fixture = include_bytes!(concat!(env!("OUT_DIR"), "/linux_musl_hello"));
+        for path in ["/bin/rust-std-hello", "/bin/rust_std_hello"] {
+            if let Err(error) = crate::fs::write_entire_file(path, fixture) {
+                log::warn!("Initramfs: failed to install {}: {:?}", path, error);
+            }
+        }
     }
 
     // Create /apps directory for WASI applications

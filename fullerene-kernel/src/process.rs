@@ -719,6 +719,20 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     // context switch itself.
     if is_current && !is_idle {
         let (old, next) = SCHEDULER.schedule_next();
+        #[cfg(linux_musl_smoke)]
+        if let Some((rip, rsp, is_user, state)) = SCHEDULER.with_process(next, |process| {
+            (
+                process.context.rip,
+                process.context.regs[7],
+                process.context.is_user,
+                process.state,
+            )
+        }) {
+            petroleum::serial::serial_log(format_args!(
+                "[linux-smoke] resume PID {} rip={:#x} rsp={:#x} user={} state={:?}\n",
+                next.0, rip, rsp, is_user, state
+            ));
+        }
         if old == Some(pid) && next != pid {
             unsafe { SCHEDULER.context_switch(Some(pid), next) };
         }

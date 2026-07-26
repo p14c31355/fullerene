@@ -141,7 +141,8 @@ FULLERENE_LINUX_MUSL_SMOKE=1 \
   cargo run -p flasks -- --display none --vga none --timeout 70
 ```
 
-The end-to-end success marker on the serial console is:
+The smoke test dispatches `linux_run /bin/rust_std_hello` through Nozzle. The
+end-to-end success marker on the serial console is:
 
 ```text
 Hello from Rust std on musl!
@@ -151,7 +152,16 @@ Without the smoke environment variable, the same embedded executable can be
 started from the Fullerene shell with `hello_rust_linux`. The source fixture is
 kept in `fullerene-kernel/examples/linux_musl_hello.rs`; it uses the official
 `x86_64-unknown-linux-musl` `std` and does not depend on a Fullerene-specific
-standard library.
+standard library. Linux stdout and stderr are mirrored to the serial console
+and the interactive Lattice terminal, so the Hello line appears in the shell
+before the next prompt.
+
+The fixture is also available to `linux_run` under both spellings:
+
+```text
+linux_run /bin/rust-std-hello
+linux_run /bin/rust_std_hello
+```
 
 Expected output:
 - Serial logs from bootloader: Heap init, GOP init, kernel load.

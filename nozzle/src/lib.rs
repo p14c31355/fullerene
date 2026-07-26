@@ -244,6 +244,11 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
             builtins::cmd_hello_linux
         ),
         (
+            "hello_rust_linux",
+            "Launch the static Rust std/musl Linux example",
+            builtins::cmd_hello_rust_linux
+        ),
+        (
             "linux_run",
             "Launch a Linux ELF binary from the filesystem",
             builtins::cmd_linux_run
@@ -292,6 +297,29 @@ mod tests {
 
         assert!(terminal.output.contains("echo hello\n"));
         assert!(terminal.output.contains("hello\n"));
+    }
+
+    #[test]
+    fn rust_linux_command_dispatches_to_the_kernel_service() {
+        fn echo_action(ctx: &mut CommandContext, action: &str) {
+            ctx.terminal.write_str(action);
+        }
+
+        let mut terminal = OneShotTerminal {
+            output: String::new(),
+        };
+        let services = ShellServices::new(
+            fs_hooks::FsHooks::none(),
+            sys_hooks::SysHooks {
+                info: Some(echo_action),
+                ctl: None,
+            },
+            None,
+        );
+        let mut shell = Shell::new(&mut terminal, default_commands(), services);
+
+        assert!(shell.execute_line("hello_rust_linux"));
+        assert_eq!(terminal.output, "hello_rust_linux");
     }
 }
 

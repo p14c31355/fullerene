@@ -96,6 +96,11 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 };
             }
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &chunk[..chunk_len]);
+            // Linux stdout/stderr belongs on the interactive terminal too.
+            // Keep the serial mirror for headless diagnostics and smoke
+            // tests, while forwarding textual output to Solvent's terminal.
+            let text = alloc::string::String::from_utf8_lossy(&chunk[..chunk_len]);
+            solvent::write_terminal(&text);
             written += chunk_len;
         }
         return written as u64;

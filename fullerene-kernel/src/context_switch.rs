@@ -18,7 +18,12 @@ pub extern "sysv64" fn switch_context(
         "mov [rdi + 32], rsi",
         "mov [rdi + 40], rdi",
         "mov [rdi + 48], rbp",
-        "mov [rdi + 56], rsp",
+        // RIP is saved separately from the return address at [rsp]. Resume
+        // with the caller's post-return stack, otherwise the restored
+        // function later executes `ret` with the same return address still
+        // on top and jumps back into itself.
+        "lea rax, [rsp + 8]",
+        "mov [rdi + 56], rax",
         "mov [rdi + 64], r8",
         "mov [rdi + 72], r9",
         "mov [rdi + 80], r10",
@@ -45,7 +50,10 @@ pub extern "sysv64" fn switch_context(
         "mov rbx, rsi",
         // Push all values we need after GPR restore onto stack
         // This avoids callee-saved register aliasing with GPR restore
-        "mov rax, [rbx + 200]", // rax = is_user (push to stack)
+        // is_user is a one-byte Rust bool. Reading a qword would include
+        // unspecified trailing padding and can misclassify a kernel context
+        // as a user context on resume.
+        "movzx eax, byte ptr [rbx + 200]", // rax = is_user
         "push rax",
         "mov rax, [rbx + 128]", // rax = rflags
         "push rax",

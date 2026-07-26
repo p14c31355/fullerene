@@ -236,7 +236,25 @@ impl SchedulerContext {
     pub fn schedule_next(&self) -> (Option<ProcessId>, ProcessId) {
         petroleum::scheduler_log!("Starting process scheduling");
 
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] scheduler lock currently held={}\n",
+            self.processes.is_locked()
+        ));
         let (old_pid, new_pid) = self.with_list(|list| {
+            #[cfg(linux_musl_smoke)]
+            petroleum::serial::serial_log(format_args!(
+                "[linux-smoke] scheduler acquired list len={} index={}\n",
+                list.len(),
+                self.schedule_index()
+            ));
+            #[cfg(linux_musl_smoke)]
+            for (pid, process) in list.iter() {
+                petroleum::serial::serial_log(format_args!(
+                    "[linux-smoke] pid={} ctx rip={:#x} rsp={:#x} user={}\n",
+                    pid.0, process.context.rip, process.context.regs[7], process.context.is_user
+                ));
+            }
             if list.is_empty() {
                 petroleum::scheduler_log!("No processes in list");
                 return (None, ProcessId(0));
@@ -250,6 +268,11 @@ impl SchedulerContext {
             // Round‑robin scan
             loop {
                 next_idx = (next_idx + 1) % list.len();
+                #[cfg(linux_musl_smoke)]
+                petroleum::serial::serial_log(format_args!(
+                    "[linux-smoke] scan idx={} pid={} state={:?}\n",
+                    next_idx, list[next_idx].0.0, list[next_idx].1.state
+                ));
                 if list[next_idx].1.state == ProcessState::Ready {
                     break;
                 }
@@ -284,9 +307,17 @@ impl SchedulerContext {
                 }
             }
 
+            #[cfg(linux_musl_smoke)]
+            petroleum::serial::serial_log(format_args!(
+                "[linux-smoke] scheduler selected old={:?} new={}\n",
+                old.map(|pid| pid.0),
+                new.0
+            ));
             (old, new)
         });
 
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!("[linux-smoke] scheduler released list\n"));
         (old_pid, new_pid)
     }
 

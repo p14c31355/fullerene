@@ -264,6 +264,7 @@ pub fn cmd_mount(ctx: &mut CommandContext) -> bool {
 }
 
 sys_info_cmd!(cmd_hello_linux, "hello_linux");
+sys_info_cmd!(cmd_hello_rust_linux, "hello_rust_linux");
 sys_info_cmd!(cmd_linux_run, "linux_run");
 sys_info_cmd!(cmd_run_busybox, "run_busybox");
 sys_info_cmd!(cmd_wasm, "wasm");
