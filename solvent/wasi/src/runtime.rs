@@ -38,6 +38,17 @@ pub fn run(
     close_window: fn(i32) -> i32,
 ) -> i32 {
     const INITIAL_FUEL: u64 = 100_000_000;
+    // The file viewer is synchronous by design. Give it a smaller compute
+    // budget so malformed media metadata cannot monopolize the shell while
+    // still leaving enough room for normal image/video decoding.
+    let fuel = if args
+        .first()
+        .is_some_and(|path| path.ends_with("viewer.wasm"))
+    {
+        25_000_000
+    } else {
+        INITIAL_FUEL
+    };
     let mut config = wasmi::Config::default();
     config.consume_fuel(true);
     let engine = Engine::new(&config);
@@ -72,7 +83,7 @@ pub fn run(
     );
 
     let mut store = Store::new(&engine, ctx);
-    if let Err(error) = store.set_fuel(INITIAL_FUEL) {
+    if let Err(error) = store.set_fuel(fuel) {
         let msg = format!("wasm: fuel setup failed: {}\n", error);
         write_stderr(msg.as_bytes());
         return -1;

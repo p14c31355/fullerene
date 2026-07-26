@@ -309,10 +309,24 @@ fn wasm_close_window(window_id: i32) -> i32 {
     }
 }
 
+const WASM_CAPTURE_MAX_WIDTH: u32 = 1920;
+const WASM_CAPTURE_MAX_HEIGHT: u32 = 1080;
+
+fn wasm_screen_dimensions() -> (u32, u32) {
+    let dimensions =
+        solvent::scaled_framebuffer_dims(WASM_CAPTURE_MAX_WIDTH, WASM_CAPTURE_MAX_HEIGHT);
+    crate::klog_fmt!(
+        "[WASM-DIAG] screen dimensions {}x{}\n",
+        dimensions.0,
+        dimensions.1
+    );
+    dimensions
+}
+
 fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     wasm_status("capture_screen enter");
     crate::klog_fmt!("[WASM-DIAG] capture host callback enter\n");
-    let result = solvent::capture_screen();
+    let result = solvent::capture_screen_scaled(WASM_CAPTURE_MAX_WIDTH, WASM_CAPTURE_MAX_HEIGHT);
     match &result {
         Some((width, height, pixels)) => wasm_status(&alloc::format!(
             "capture_screen exit {}x{} bytes={}",
@@ -373,7 +387,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_read_directory,
         wasm_write_file,
         wasm_get_monotonic_ns,
-        solvent::framebuffer_dims,
+        wasm_screen_dimensions,
         wasm_capture_screen,
         wasm_show_image,
         wasm_show_text,
@@ -408,9 +422,14 @@ macro_rules! tstr {
 /// Helper: match a launch function returning Result<ProcessId, Err>, write
 /// ok/error messages to the terminal.
 macro_rules! launch_cmd {
-    ($t:expr, $launch:expr, $ok:expr) => {
+    ($t:expr, $launch:expr, $ok:expr) => {{
+        crate::klog_fmt!("[LINUX-DIAG] launch command call enter\n");
         match $launch {
             Ok(pid) => {
+                crate::klog_fmt!(
+                    "[LINUX-DIAG] launch command created pid={} enter-yield\n",
+                    pid.0
+                );
                 tline!($t, $ok, pid.0);
                 // The interactive shell runs synchronously from the idle
                 // scheduler context. Switch to the process we just launched,
@@ -419,10 +438,14 @@ macro_rules! launch_cmd {
                 if crate::process::current_pid().is_some() {
                     let _ = crate::process::yield_to(pid);
                 }
+                crate::klog_fmt!("[LINUX-DIAG] launch command returned pid={}\n", pid.0);
             }
-            Err(e) => tline!($t, "Failed to launch: {:?}", e),
+            Err(e) => {
+                crate::klog_fmt!("[LINUX-DIAG] launch command error={:?}\n", e);
+                tline!($t, "Failed to launch: {:?}", e)
+            }
         }
-    };
+    }};
 }
 
 /// Read the entire contents of a file at `path`. Returns the raw bytes.
@@ -849,6 +872,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                 "Test Linux binary started (PID: {})"
             ),
             "hello_rust_linux" => {
+                crate::klog_fmt!("[LINUX-DIAG] hello_rust command enter\n");
                 #[cfg(have_linux_musl_hello)]
                 launch_cmd!(
                     ctx.terminal,

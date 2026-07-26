@@ -1,9 +1,11 @@
 use image::GenericImageView;
 use std::io::{self, Cursor, Read, Seek};
+use std::time::{Duration, Instant};
 
-const VIEWER_BUILD_ID: &str = "2026-07-26-qoi-full-resolution-1";
+const VIEWER_BUILD_ID: &str = "2026-07-26-mp4-watchdog-2";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_MP4_IO_OPERATIONS: usize = 16 * 1024;
+const MAX_MP4_IO_OPERATIONS: usize = 256;
+const MAX_MP4_PARSE_TIME: Duration = Duration::from_secs(3);
 const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -219,6 +221,7 @@ fn source_dimensions_allowed(width: u32, height: u32) -> bool {
 struct BoundedMp4Reader<R> {
     inner: R,
     operations: usize,
+    started_at: Instant,
 }
 
 impl<R> BoundedMp4Reader<R> {
@@ -226,10 +229,22 @@ impl<R> BoundedMp4Reader<R> {
         Self {
             inner,
             operations: 0,
+            started_at: Instant::now(),
         }
     }
 
     fn begin_operation(&mut self) -> io::Result<()> {
+        if self.started_at.elapsed() >= MAX_MP4_PARSE_TIME {
+            println!(
+                "viewer: mp4 parse time budget exhausted operations={} elapsed_ms={}",
+                self.operations,
+                self.started_at.elapsed().as_millis()
+            );
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "MP4 metadata parse time budget exhausted",
+            ));
+        }
         if self.operations >= MAX_MP4_IO_OPERATIONS {
             println!("viewer: mp4 io budget exhausted operations={}", self.operations);
             return Err(io::Error::new(

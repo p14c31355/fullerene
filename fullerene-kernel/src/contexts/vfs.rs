@@ -251,7 +251,6 @@ impl VfsContext {
     }
 
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-        trace!("read fd={}", fd);
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
         let handle = self

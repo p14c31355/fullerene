@@ -38,6 +38,17 @@ struct KLogRing {
 static IN_KLOG: AtomicBool = AtomicBool::new(false);
 static KLOG_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+#[inline]
+fn refresh_live_after_write() {
+    // The timer remains the normal repaint path, but Linux user code can run
+    // synchronously while maskable interrupts are unavailable.  Repaint only
+    // after releasing KLOG_BUF so this observability fallback cannot create a
+    // second lock dependency.
+    if solvent::is_klog_live_active() {
+        let _ = try_render_live_surface();
+    }
+}
+
 /// Write a formatted message to the kernel log buffer.
 ///
 /// This is the primary entry point.  Use it like `write!`:
@@ -58,6 +69,7 @@ pub fn write_fmt(args: fmt::Arguments<'_>) {
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
     KLOG_GENERATION.fetch_add(1, Ordering::Release);
+    refresh_live_after_write();
 }
 
 /// Write a raw byte slice to the kernel log buffer.
@@ -86,6 +98,7 @@ pub fn write_bytes(bytes: &[u8]) {
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
     KLOG_GENERATION.fetch_add(1, Ordering::Release);
+    refresh_live_after_write();
 }
 
 /// Monotonic change counter used by the timer-driven Klog Live overlay.

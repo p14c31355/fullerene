@@ -142,12 +142,46 @@ pub fn framebuffer_dims() -> (u32, u32) {
     (width, height)
 }
 
+/// Return dimensions for a capture constrained to the requested maximum.
+///
+/// WASM applications need room for both the pixel buffer and their encoder
+/// state.  Keeping the limit here means the guest never has to allocate a
+/// native-resolution RGBA buffer just to discover that capture is too large.
+pub fn scaled_framebuffer_dims(max_width: u32, max_height: u32) -> (u32, u32) {
+    let (width, height) = framebuffer_dims();
+    if width == 0 || height == 0 || max_width == 0 || max_height == 0 {
+        return (0, 0);
+    }
+    let mut output_width = width.min(max_width);
+    let mut output_height = height.min(max_height);
+    if width > max_width {
+        output_height = ((height as u64 * max_width as u64) / width as u64)
+            .max(1)
+            .min(max_height as u64) as u32;
+    }
+    if height > max_height {
+        output_width = ((width as u64 * max_height as u64) / height as u64)
+            .max(1)
+            .min(max_width as u64) as u32;
+    }
+    (output_width, output_height)
+}
+
 /// Copy the compositor's clean RAM back buffer for a screen capture.
 ///
 /// The cursor is intentionally omitted: the back buffer is the same stable,
 /// cursor-free image used to restore the GOP framebuffer during cursor-only
 /// updates. This also avoids reading from device-backed framebuffer memory.
 pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
+    capture_screen_scaled(u32::MAX, u32::MAX)
+}
+
+/// Copy the compositor back buffer, optionally downsampling it to fit within
+/// `max_width` x `max_height`.
+pub fn capture_screen_scaled(
+    max_width: u32,
+    max_height: u32,
+) -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     const MAX_CAPTURE_RGBA_BYTES: usize = 32 * 1024 * 1024;
     nitrogen::debug_status!("CAPTURE", "dimensions enter");
     let (width, height, _framebuffer_stride) = *FB_DIMS.lock();
@@ -157,11 +191,16 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     let width_usize = width as usize;
     let height_usize = height as usize;
     let pixel_count = width_usize.checked_mul(height_usize)?;
+    let (output_width, output_height) = scaled_framebuffer_dims(max_width, max_height);
+    let output_width_usize = output_width as usize;
+    let output_height_usize = output_height as usize;
     nitrogen::debug_status!(
         "CAPTURE",
-        "dimensions exit {}x{} pixels={}",
+        "dimensions exit {}x{} output={}x{} pixels={}",
         width,
         height,
+        output_width,
+        output_height,
         pixel_count
     );
     {
@@ -184,7 +223,9 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     // Allocate before taking the back-buffer guard so the allocator cannot
     // become part of the lock ordering.
     nitrogen::debug_status!("CAPTURE", "host allocation enter bytes={}", pixel_count * 4);
-    let mut pixels = alloc::vec::Vec::with_capacity(pixel_count * 4);
+    let output_pixel_count = output_width_usize.checked_mul(output_height_usize)?;
+    let output_bytes = output_pixel_count.checked_mul(4)?;
+    let mut pixels = alloc::vec::Vec::with_capacity(output_bytes);
     nitrogen::debug_status!("CAPTURE", "host allocation exit");
     let back_guard = crate::BACK_BUFFER.try_lock()?;
     // Render updates FB_DIMS before taking BACK_BUFFER, so use try_lock here
@@ -206,11 +247,20 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
         nitrogen::debug_status!("CAPTURE", "copy rejected after lock");
         return None;
     }
-    nitrogen::debug_status!("CAPTURE", "copy enter {}x{}", current_width, current_height);
-    for row in 0..height_usize {
-        let start = row * width_usize;
-        let end = start + width_usize;
-        for &pixel in &back.as_slice()[start..end] {
+    nitrogen::debug_status!(
+        "CAPTURE",
+        "copy enter {}x{} -> {}x{}",
+        current_width,
+        current_height,
+        output_width,
+        output_height
+    );
+    for row in 0..output_height_usize {
+        let source_row = row * height_usize / output_height_usize;
+        let start = source_row * width_usize;
+        for column in 0..output_width_usize {
+            let source_column = column * width_usize / output_width_usize;
+            let pixel = back.as_slice()[start + source_column];
             pixels.push(((pixel >> 16) & 0xFF) as u8);
             pixels.push(((pixel >> 8) & 0xFF) as u8);
             pixels.push((pixel & 0xFF) as u8);
@@ -218,7 +268,7 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
         }
     }
     nitrogen::debug_status!("CAPTURE", "copy exit bytes={}", pixels.len());
-    Some((current_width, current_height, pixels))
+    Some((output_width, output_height, pixels))
 }
 
 pub fn ensure_terminal_window() -> Option<WindowId> {

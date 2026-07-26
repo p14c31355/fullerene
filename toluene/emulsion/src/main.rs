@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-const BUILD_ID: &str = "2026-07-26-screenshot-mvp-2";
+const BUILD_ID: &str = "2026-07-26-screenshot-mvp-3-capped-capture";
 const DEFAULT_OUTPUT: &str = "/tmp/emulsion-screenshot.qoi";
 
 #[link(wasm_import_module = "fullerene")]
@@ -99,6 +99,7 @@ fn capture_rgba() -> Result<(u32, u32, Vec<u8>), String> {
     if byte_len == 0 || byte_len > 32 * 1024 * 1024 {
         return Err("The desktop capture is outside the supported size.".to_owned());
     }
+    println!("Emulsion: capture dimensions={width}x{height} bytes={byte_len}");
     println!("Emulsion: allocating capture bytes={byte_len}");
     // The host callback overwrites every byte. Avoid zero-initialising a
     // 14.7 MiB 2560x1440 buffer in the WASM interpreter before entering the
