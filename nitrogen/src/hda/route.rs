@@ -143,8 +143,27 @@ impl RouteFinder {
 
         // 16-bit signed mono at 48 kHz:
         // bit[7]=0→48kHz, bits[6:4]=1→16-bit, bits[3:0]=0→1ch
-        unsafe { corb.send_verb(mmio, 0, dac, verbs::SET_FMT, 0x10u16) };
-        unsafe { corb.send_verb(mmio, 0, dac, verbs::SET_STREAM, stream_tag as u16) };
+        let fmt_res = unsafe { corb.send_verb(mmio, 0, dac, verbs::SET_FMT, 0x10u16) };
+        // Converter Channel Count is zero-indexed: 0 means one active
+        // channel, matching the mono PCM stream.
+        let chan_res = unsafe { corb.send_verb(mmio, 0, dac, verbs::SET_CVT_CHAN_COUNT, 0) };
+        log::info!(
+            "HDA: DAC 0x{:x} SET_FMT(0x0010)=0x{:08x} SET_CVT_CHAN_COUNT(0)=0x{:08x}",
+            dac,
+            fmt_res,
+            chan_res
+        );
+        // SET_CHANNEL_STREAMID encodes the stream tag in bits 7:4 and the
+        // converter channel in bits 3:0.  This is mono, so channel 0.
+        let stream_channel = (stream_tag as u16) << 4;
+        let stream_res = unsafe { corb.send_verb(mmio, 0, dac, verbs::SET_STREAM, stream_channel) };
+        log::info!(
+            "HDA: DAC 0x{:x} SET_STREAM tag={} channel=0 payload=0x{:02x} result=0x{:08x}",
+            dac,
+            stream_tag,
+            stream_channel,
+            stream_res
+        );
 
         // ── Configure Pin ─────────────────────────────────────────
         let pin_widget = graph.get_widget(pin);

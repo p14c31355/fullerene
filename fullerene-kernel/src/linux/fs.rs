@@ -109,6 +109,7 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             // Keep the serial mirror for headless diagnostics and smoke
             // tests, while forwarding textual output to Solvent's terminal.
             let text = alloc::string::String::from_utf8_lossy(&chunk[..chunk_len]);
+            crate::klog_fmt!("[LINUX-STDOUT] {}", text);
             solvent::write_terminal(&text);
             written += chunk_len;
         }

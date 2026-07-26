@@ -10,6 +10,7 @@ use wasmi::{AsContext, Caller, Error, Memory};
 pub const ESUCCESS: u32 = 0;
 pub const EACCES: u32 = 2;
 pub const EBADF: u32 = 8;
+pub const EBUSY: u32 = 10;
 pub const EEXIST: u32 = 20;
 pub const EINVAL: u32 = 28;
 pub const EIO: u32 = 29;
@@ -84,9 +85,11 @@ const MAX_OPEN_FDS: usize = 128;
 const MAX_WRITE_FILE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DISPLAY_RGB_BYTES: u32 = 800 * 600 * 3;
 const MAX_CAPTURE_RGBA_BYTES: u32 = 32 * 1024 * 1024;
+const MAX_CAPTURE_CHUNK_BYTES: u32 = 256 * 1024;
 const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
 const MAX_TEXT_BYTES: u32 = 512 * 1024;
 const MAX_ERROR_BYTES: u32 = 64 * 1024;
+const MAX_AUDIO_BYTES: u32 = 8 * 1024 * 1024;
 
 pub struct WasiCtx {
     pub exit_code: Option<u32>,
@@ -98,19 +101,23 @@ pub struct WasiCtx {
     pub write_stderr: fn(&[u8]),
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
+    pub wait_for_ns: fn(u64),
     pub file_size: fn(&str) -> Result<u64, genome::FsError>,
     pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
+    pub write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
     pub screen_dimensions: fn() -> (u32, u32),
     pub capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
+    pub capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
     pub show_image: fn(u32, u32, &[u8]) -> i32,
     pub show_text: fn(&str, &str) -> i32,
     pub show_error: fn(&str, &str) -> i32,
     pub create_window: fn(&str, u32, u32) -> i32,
     pub update_window: fn(i32, u32, u32, &[u8]) -> i32,
     pub close_window: fn(i32) -> i32,
+    pub play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
 }
 
 impl WasiCtx {
@@ -120,19 +127,23 @@ impl WasiCtx {
         write_stderr: fn(&[u8]),
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
+        wait_for_ns: fn(u64),
         file_size: fn(&str) -> Result<u64, genome::FsError>,
         read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
+        write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
         get_monotonic_ns: fn() -> u64,
         screen_dimensions: fn() -> (u32, u32),
         capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
+        capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
         show_image: fn(u32, u32, &[u8]) -> i32,
         show_text: fn(&str, &str) -> i32,
         show_error: fn(&str, &str) -> i32,
         create_window: fn(&str, u32, u32) -> i32,
         update_window: fn(i32, u32, u32, &[u8]) -> i32,
         close_window: fn(i32) -> i32,
+        play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
     ) -> Self {
         let args_vec: Vec<Vec<u8>> = args
             .iter()
@@ -162,19 +173,23 @@ impl WasiCtx {
             write_stderr,
             read_stdin,
             yield_now,
+            wait_for_ns,
             file_size,
             read_file_range,
             read_directory,
             write_file,
+            write_file_chunk,
             get_monotonic_ns,
             screen_dimensions,
             capture_screen,
+            capture_screen_chunk,
             show_image,
             show_text,
             show_error,
             create_window,
             update_window,
             close_window,
+            play_pcm,
         }
     }
 }
@@ -239,6 +254,7 @@ fn map_fs_error(err: &genome::FsError) -> u32 {
         FsError::FileExists => EEXIST,
         FsError::PermissionDenied => EACCES,
         FsError::InvalidFileDescriptor => EBADF,
+        FsError::Busy => EBUSY,
         FsError::InvalidSeek => EINVAL,
         FsError::DiskFull => ENOSPC,
         FsError::NotADirectory => ENOTDIR,
@@ -458,10 +474,43 @@ pub fn fd_read(
                         let read_file_range = caller.data().read_file_range;
                         let fetched = match read_file_range(&path, offset, fetch_len) {
                             Ok(bytes) => bytes,
-                            Err(error) => return Ok(map_fs_error(&error)),
+                            Err(error) => {
+                                let errno = map_fs_error(&error);
+                                let message = alloc::format!(
+                                    "[WASI-DIAG] fd_read range error path={} offset={} request={} fs={:?} errno={}\n",
+                                    path,
+                                    offset,
+                                    fetch_len,
+                                    error,
+                                    errno
+                                );
+                                (caller.data().write_stderr)(message.as_bytes());
+                                return Ok(errno);
+                            }
                         };
                         if fetched.is_empty() {
-                            break;
+                            let message = alloc::format!(
+                                "[WASI-DIAG] fd_read short EOF path={} offset={} size={} request={} errno={}\n",
+                                path,
+                                offset,
+                                size,
+                                fetch_len,
+                                EIO
+                            );
+                            (caller.data().write_stderr)(message.as_bytes());
+                            return Ok(EIO);
+                        }
+                        if fetched.len() > fetch_len {
+                            let message = alloc::format!(
+                                "[WASI-DIAG] fd_read invalid host range path={} offset={} request={} returned={} errno={}\n",
+                                path,
+                                offset,
+                                fetch_len,
+                                fetched.len(),
+                                EIO
+                            );
+                            (caller.data().write_stderr)(message.as_bytes());
+                            return Ok(EIO);
                         }
                         let bc = caller.data_mut();
                         let Some(WasiFd::File {
@@ -991,6 +1040,19 @@ pub fn proc_exit(mut caller: Caller<'_, WasiCtx>, code: u32) -> Result<(), Error
     Err(Error::new("proc_exit"))
 }
 
+/// Cooperative scheduling point for synchronous WASM applications such as
+/// the MP4 player. The host callback also lets the compositor repaint while
+/// the application remains inside one WASM invocation.
+pub fn sched_yield(caller: Caller<'_, WasiCtx>) -> Result<u32, Error> {
+    (caller.data().yield_now)();
+    Ok(ESUCCESS)
+}
+
+pub fn fullerene_wait_for_ns(caller: Caller<'_, WasiCtx>, duration_ns: u64) -> Result<u32, Error> {
+    (caller.data().wait_for_ns)(duration_ns);
+    Ok(ESUCCESS)
+}
+
 pub fn environ_sizes_get(
     mut caller: Caller<'_, WasiCtx>,
     count_ptr: u32,
@@ -1203,6 +1265,71 @@ pub fn fullerene_capture_screen(
     Ok(ESUCCESS)
 }
 
+/// Copy one bounded RGBA capture chunk into WASM memory. Unlike the legacy
+/// whole-image callback, this never requires a multi-megabyte guest buffer.
+pub fn fullerene_capture_screen_chunk(
+    mut caller: Caller<'_, WasiCtx>,
+    offset: u32,
+    pixels_ptr: u32,
+    pixels_len: u32,
+    width_ptr: u32,
+    height_ptr: u32,
+) -> Result<u32, Error> {
+    if pixels_len == 0 || pixels_len > MAX_CAPTURE_CHUNK_BYTES || offset % 4 != 0 {
+        return Ok(EINVAL);
+    }
+    let mut pixels = alloc::vec![0u8; pixels_len as usize];
+    let Some((width, height)) = (caller.data().capture_screen_chunk)(offset, &mut pixels) else {
+        return Ok(ENOTSUP);
+    };
+    let memory = get_memory(&caller)?;
+    memory
+        .write(&mut caller, pixels_ptr as usize, &pixels)
+        .map_err(|_| Error::new("capture_screen_chunk: memory write failed"))?;
+    write_u32(&memory, &mut caller, width_ptr, width)?;
+    write_u32(&memory, &mut caller, height_ptr, height)?;
+    Ok(ESUCCESS)
+}
+
+/// Write one bounded output chunk directly to the host VFS.  Streaming
+/// writers use this instead of WASI's close-time write buffer, which would
+/// otherwise retain the complete screenshot in the guest heap.
+pub fn fullerene_write_file_chunk(
+    caller: Caller<'_, WasiCtx>,
+    path_ptr: u32,
+    path_len: u32,
+    offset: u64,
+    data_ptr: u32,
+    data_len: u32,
+    replace: u32,
+) -> Result<u32, Error> {
+    let end = offset.saturating_add(data_len as u64);
+    if path_len == 0 || path_len > 4096 || data_len > 512 * 1024 || end > 64 * 1024 * 1024 {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut path_buf = vec![0u8; path_len as usize];
+    memory
+        .read(&caller, path_ptr as usize, &mut path_buf)
+        .map_err(|_| Error::new("write_file_chunk: read path failed"))?;
+    let mut data = vec![0u8; data_len as usize];
+    memory
+        .read(&caller, data_ptr as usize, &mut data)
+        .map_err(|_| Error::new("write_file_chunk: read data failed"))?;
+    let Ok(path) = str::from_utf8(&path_buf) else {
+        return Ok(EINVAL);
+    };
+    let path = path.trim_end_matches('\0');
+    if path.is_empty() {
+        return Ok(EINVAL);
+    }
+    let result = (caller.data().write_file_chunk)(path, offset, &data, replace != 0);
+    Ok(match result {
+        Ok(()) => ESUCCESS,
+        Err(error) => map_fs_error(&error),
+    })
+}
+
 /// Display decoded RGB pixels in a new window.
 pub fn fullerene_show_image(
     caller: Caller<'_, WasiCtx>,
@@ -1321,5 +1448,26 @@ pub fn fullerene_update_window(
 /// Close a window previously created with `create_window`.
 pub fn fullerene_close_window(caller: Caller<'_, WasiCtx>, window_id: i32) -> Result<u32, Error> {
     let code = (caller.data().close_window)(window_id);
+    Ok(code as u32)
+}
+
+/// Submit a bounded raw PCM buffer to the kernel audio backend.
+pub fn fullerene_play_pcm(
+    caller: Caller<'_, WasiCtx>,
+    sample_rate: u32,
+    channels: u32,
+    bits_per_sample: u32,
+    data_ptr: u32,
+    data_len: u32,
+) -> Result<u32, Error> {
+    if data_len > MAX_AUDIO_BYTES || channels > u8::MAX as u32 || bits_per_sample > u8::MAX as u32 {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut data = alloc::vec![0u8; data_len as usize];
+    memory
+        .read(&caller, data_ptr as usize, &mut data)
+        .map_err(|_| Error::new("play_pcm: memory read failed"))?;
+    let code = (caller.data().play_pcm)(sample_rate, channels as u8, bits_per_sample as u8, &data);
     Ok(code as u32)
 }

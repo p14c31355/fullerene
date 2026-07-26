@@ -48,6 +48,7 @@ pub(crate) fn syscall_create_thread(entry: u64, stack: u64, _flags: u64) -> Sysc
         is_user: true,
         task_data: 0,
         exit_code: None,
+        fault: None,
         parent_id: Some(current_pid),
         dispatch_mode: None,
         vdso_page: None,

@@ -138,6 +138,8 @@ pub struct RuntimeState {
     pub frame_due: bool,
     pub back_len: usize,
     pub term_cells: Vec<LatticeCell>,
+    /// Cursor state at the last terminal-surface paint.
+    pub term_rendered_cursor: Option<(u32, u32, bool)>,
     pub term_dirty: bool,
     /// Command history owned by this terminal session (newest first).
     pub command_history: VecDeque<String>,
@@ -207,6 +209,7 @@ pub fn init() {
         frame_due: true,
         back_len: 0,
         term_cells: Vec::new(),
+        term_rendered_cursor: None,
         term_dirty: true,
         command_history: VecDeque::with_capacity(128),
         shell_state: ShellState::Desktop,

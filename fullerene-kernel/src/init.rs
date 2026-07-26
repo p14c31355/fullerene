@@ -92,14 +92,12 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(all(not(target_os = "uefi"), not(test)))]
     {
-        use core::mem::MaybeUninit;
         let bios_init_steps = [
             petroleum::init_step!("BIOS Heap and GDT", || {
-                static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] =
-                    [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
                 unsafe {
-                    let ptr = core::ptr::addr_of_mut!(HEAP) as *mut u8;
+                    let ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
                     petroleum::init_global_heap(ptr, crate::heap::HEAP_SIZE);
+                    crate::heap::configure_heap_extension();
                     petroleum::common::memory::set_heap_range(ptr as usize, crate::heap::HEAP_SIZE);
                     crate::gdt::init(x86_64::VirtAddr::from_ptr(ptr));
                 }
@@ -118,7 +116,10 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     #[cfg(target_os = "uefi")]
     {
         let heap_ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
-        petroleum::common::memory::set_heap_range(heap_ptr as usize, crate::heap::HEAP_TOTAL);
+        // Only the initial region is committed at boot.  The remaining
+        // 128 MiB is reserved for GrowingHeap and is published in HEAP_END
+        // only after a successful, bounded extension transaction.
+        petroleum::common::memory::set_heap_range(heap_ptr as usize, crate::heap::HEAP_SIZE);
     }
 
     // ── Log system initialisation ──────────────────────────────
@@ -340,6 +341,13 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
         }),
+        petroleum::init_step!("audio", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] audio start\n");
+            crate::boot_stage::draw_boot_label(b"AUDIO");
+            crate::contexts::kernel::with_kernel_mut(|kernel| kernel.audio.probe());
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] audio done\n");
+            Ok(())
+        }),
         // draw_step_hint shows the step name at the bottom of the boot
         // screen so we can identify hangs without serial access.
         petroleum::init_step!("PS2 Controller", || {
@@ -440,6 +448,17 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::GuiReady);
             crate::boot_stage::draw_step_hint(b"gui_ok ");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] gui done\n");
+            Ok(())
+        }),
+        petroleum::init_step!("startup_sound", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] startup sound start\n");
+            crate::boot_stage::draw_boot_label(b"STARTUP SOUND");
+            let args = ["/apps/startup_sound.wasm"];
+            let code = crate::shell::run_wasm_app("/apps/startup_sound.wasm", &args);
+            if code != 0 {
+                log::warn!("Startup sound WASM exited with code {}", code);
+            }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] startup sound done\n");
             Ok(())
         }),
         petroleum::init_step!("task_manager", || {

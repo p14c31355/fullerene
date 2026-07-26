@@ -43,6 +43,20 @@ pub enum ProcessState {
     Terminated,
 }
 
+/// Register snapshot kept when a user process is stopped by a CPU fault.
+///
+/// This is the kernel-side "last safe footprint": the faulting instruction
+/// is never resumed, while the scheduler can still report exactly where the
+/// process crossed the boundary before its resources are reaped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FaultRecord {
+    pub reason: &'static str,
+    pub rip: u64,
+    pub rsp: u64,
+    pub address: u64,
+    pub error_code: u64,
+}
+
 /// Named general-purpose register image used for a process's initial entry.
 ///
 /// Suspended kernel continuations are kept on their kernel stack instead of
@@ -446,6 +460,8 @@ pub struct Process {
     pub is_user: bool,
     /// Exit code - used for signaling ChildProcessExited signal
     pub exit_code: Option<i32>,
+    /// CPU fault that caused termination, if any.
+    pub fault: Option<FaultRecord>,
     /// Parent process ID (for wait() and signal propagation)
     pub parent_id: Option<ProcessId>,
     /// Opaque data for async task futures (used by task.rs spawn/entry)
@@ -475,6 +491,7 @@ impl Process {
             entry_point,
             is_user,
             exit_code: None,
+            fault: None,
             parent_id: None, // Will be set by fork
             task_data: 0,
             dispatch_mode: None,
@@ -519,6 +536,11 @@ impl Process {
 /// Use the convenience functions below (which delegate to `SCHEDULER`) or
 /// access `SCHEDULER` directly.
 pub use crate::scheduler_context::SCHEDULER;
+
+/// PID requested by a shell command that just created a process.  The actual
+/// switch is deferred until terminal control has returned to the polling
+/// loop, so no shell/VFS/runtime lock is held across the assembly switch.
+static PENDING_YIELD_TO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // Use KERNEL_STACK_SIZE from crate::heap
 
@@ -579,6 +601,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
         entry_point: idle_addr,
         is_user: false,
         exit_code: None,
+        fault: None,
         parent_id: None,
         task_data: 0,
         dispatch_mode: None,
@@ -795,6 +818,20 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
     }
 }
 
+/// Stop a user process at a CPU exception boundary and retain its fault
+/// footprint until the normal scheduler cleanup reaps it.
+pub fn mark_faulted(pid: ProcessId, record: FaultRecord) {
+    let waiters = SCHEDULER.with_process(pid, |process| {
+        process.state = ProcessState::Terminated;
+        process.exit_code = Some(128);
+        process.fault = Some(record);
+        process.resources.cleanup()
+    });
+    for waiter in waiters.unwrap_or_default() {
+        unblock_process(waiter);
+    }
+    unblock_waiting_parents(pid);
+}
 /// Idle process loop
 fn idle_loop() {
     loop {
@@ -829,6 +866,50 @@ pub fn yield_current() {
     unsafe {
         context_switch(Some(old_pid), new_pid);
     }
+}
+
+/// Yield from code that may be running on the idle scheduler stack.
+///
+/// The interactive desktop shell is currently entered directly by the idle
+/// loop, so it has no process PID even though it can launch a user process.
+/// Use the scheduler's `(old, new)` result instead of assuming a non-zero
+/// current PID in that case.
+pub fn yield_from_scheduler_stack() {
+    let target = PENDING_YIELD_TO.swap(0, core::sync::atomic::Ordering::AcqRel);
+    // Terminal input polling calls this callback repeatedly while idle. Only
+    // an explicit launch handoff is a scheduling point here.  Do not gate it
+    // on a racy active-count snapshot: the target PID itself is authoritative,
+    // and `yield_to` verifies that it is still Ready.
+    if target == 0 {
+        return;
+    }
+    let old_pid = current_pid();
+    let new_pid = ProcessId(target);
+    crate::klog_fmt!(
+        "[LINUX-DIAG] scheduler-stack yield old={:?} new={} enter\n",
+        old_pid.map(|pid| pid.0),
+        new_pid.0
+    );
+    if !SCHEDULER.yield_to(new_pid) {
+        crate::klog_fmt!(
+            "[LINUX-DIAG] scheduler-stack yield target={} rejected\n",
+            new_pid.0
+        );
+    }
+    crate::klog_fmt!(
+        "[LINUX-DIAG] scheduler-stack yield returned new={}\n",
+        new_pid.0
+    );
+}
+
+/// Defer a direct handoff until the shell's current command callback returns.
+pub fn defer_yield_to(pid: ProcessId) {
+    crate::klog_fmt!("[LINUX-DIAG] defer yield target={} armed\n", pid.0);
+    petroleum::serial::serial_log(format_args!(
+        "[LINUX-DIAG] defer yield target={} armed\n",
+        pid.0
+    ));
+    PENDING_YIELD_TO.store(pid.0, core::sync::atomic::Ordering::Release);
 }
 
 /// Cooperatively switch directly to a specific ready process.

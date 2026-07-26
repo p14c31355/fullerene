@@ -10,6 +10,7 @@ pub enum FsError {
     InvalidFileDescriptor,
     InvalidSeek,
     DiskFull,
+    Busy,
     NotADirectory,
     DirectoryNotEmpty,
     IsADirectory,
@@ -29,6 +30,7 @@ impl core::fmt::Display for FsError {
             FsError::InvalidFileDescriptor => "invalid file descriptor",
             FsError::InvalidSeek => "invalid seek",
             FsError::DiskFull => "disk full",
+            FsError::Busy => "resource busy",
             FsError::NotADirectory => "not a directory",
             FsError::DirectoryNotEmpty => "directory not empty",
             FsError::IsADirectory => "is a directory",
@@ -48,6 +50,7 @@ impl From<crate::block::BlockError> for FsError {
             | crate::block::BlockError::LbaOverflow => Self::InvalidInput,
             crate::block::BlockError::SectorNotFound => Self::FileNotFound,
             crate::block::BlockError::Device => Self::Io,
+            crate::block::BlockError::Busy => Self::Busy,
         }
     }
 }

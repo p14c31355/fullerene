@@ -88,20 +88,26 @@ impl CodecGraph {
             let end_root = start_root + count_root - 1;
             for n in start_root..=end_root {
                 let wc = unsafe {
-                    corb.send_verb(mmio, codec, n, verbs::GET_PARAM, params::AUDIO_WIDGET_CAP)
+                    corb.send_verb(
+                        mmio,
+                        codec,
+                        n,
+                        verbs::GET_PARAM,
+                        params::FUNCTION_GROUP_TYPE,
+                    )
                 };
                 if wc == 0xFFFF_FFFF {
                     continue;
                 }
-                let t = (wc >> 20) & 0xF;
+                let function_type = wc & 0xFF;
                 log::info!(
-                    "HDA: root node=0x{:02x} wcaps=0x{:08x} type={}({})",
+                    "HDA: root node=0x{:02x} function-group-type=0x{:08x}",
                     n,
-                    wc,
-                    widget_type_name(t),
-                    t
+                    wc
                 );
-                if t == widget_type::AFG {
+                // Function Group Type 0x01 denotes the Audio Function
+                // Group (AFG); it is not an Audio Widget Capabilities type.
+                if function_type == 0x01 {
                     afg = Some(n);
                 }
             }

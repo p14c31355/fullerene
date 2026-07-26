@@ -18,7 +18,6 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt::Write as _;
 use spin::Mutex;
 
 use genome::fs::FsError;
@@ -251,7 +250,6 @@ impl VfsContext {
     }
 
     pub fn read(&self, fd: u32, buf: &mut [u8]) -> Result<usize, FsError> {
-        trace!("read fd={}", fd);
         // Acquire inner first, then handle_table (correct lock order).
         let mut vfs = self.inner.lock();
         let handle = self
@@ -409,38 +407,67 @@ impl VfsContext {
 
     /// Copy a file or directory tree without buffering whole files in the GUI.
     pub fn copy_path(&self, source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-        let destination_suffix = destination.strip_prefix(source);
+        // Keep the context method identical to the free-function/file-manager
+        // surface: `cp file existing-dir` means `existing-dir/file`.
+        // Resolve before checking the relationship so `.` and `..` cannot
+        // bypass the self-copy guard.
+        let (source, mut destination) = {
+            let inner = self.inner.lock();
+            (inner.resolve_path(source), inner.resolve_path(destination))
+        };
+        if self.readdir(&destination).is_ok() {
+            let name = source
+                .trim_end_matches('/')
+                .rsplit('/')
+                .find(|name| !name.is_empty())
+                .ok_or(FsError::InvalidPath)?;
+            destination = join_path(&destination, name);
+        }
+
+        let destination_suffix = destination.strip_prefix(&source);
         if source == destination
             || is_dir && destination_suffix.is_some_and(|suffix| suffix.starts_with('/'))
         {
             return Err(FsError::InvalidPath);
         }
+        if !is_dir && self.readdir(&source).is_ok() {
+            return Err(FsError::IsADirectory);
+        }
         if is_dir {
-            self.mkdir(destination)?;
-            for entry in self.readdir(source)? {
+            self.mkdir(&destination)?;
+            for entry in self.readdir(&source)? {
                 self.copy_path(
-                    &join_path(source, &entry.name),
-                    &join_path(destination, &entry.name),
+                    &join_path(&source, &entry.name),
+                    &join_path(&destination, &entry.name),
                     entry.is_dir,
                 )?;
             }
             return Ok(());
         }
 
-        let source_fd = self.open(source, 0).ok_or(FsError::FileNotFound)?;
-        if self.exists(destination) {
-            if let Err(error) = self.unlink(destination) {
+        crate::klog_fmt!(
+            "[VFS-DIAG] context copy begin source={} destination={}\n",
+            source,
+            destination
+        );
+        let source_fd = self.open(&source, 0).ok_or(FsError::FileNotFound)?;
+        if self.exists(&destination) {
+            if let Err(error) = self.unlink(&destination) {
                 let _ = self.close(source_fd.fd);
                 return Err(error);
             }
         }
-        let destination_fd = match self.create(destination) {
+        let destination_fd = match self.create(&destination) {
             Ok(descriptor) => descriptor,
             Err(error) => {
                 let _ = self.close(source_fd.fd);
                 return Err(error);
             }
         };
+        let mut read_calls = 0usize;
+        let mut read_bytes = 0usize;
+        let mut write_calls = 0usize;
+        let mut write_bytes = 0usize;
         let result = (|| {
             let mut buffer = [0; 4096];
             loop {
@@ -448,12 +475,53 @@ impl VfsContext {
                 if read == 0 {
                     return Ok(());
                 }
+                read_calls += 1;
+                read_bytes += read;
                 self.write_all(destination_fd.fd, &buffer[..read])?;
+                write_calls += 1;
+                write_bytes += read;
             }
         })();
         let source_close = self.close(source_fd.fd);
         let destination_close = self.close(destination_fd.fd);
-        result.and(source_close).and(destination_close)
+        let result = result.and(source_close).and(destination_close);
+        let result = if result.is_ok() {
+            let verify = self
+                .open(&destination, 0)
+                .ok_or(FsError::FileNotFound)
+                .and_then(|descriptor| {
+                    let size = self.size(descriptor.fd);
+                    let close = self.close(descriptor.fd);
+                    size.and_then(|actual| close.map(|()| actual))
+                })
+                .and_then(|actual| {
+                    if actual == read_bytes as u64 {
+                        Ok(())
+                    } else {
+                        crate::klog_fmt!(
+                            "[VFS-DIAG] context copy committed-size mismatch destination={} expected={} actual={}\n",
+                            destination,
+                            read_bytes,
+                            actual
+                        );
+                        Err(FsError::Io)
+                    }
+                });
+            result.and(verify)
+        } else {
+            result
+        };
+        crate::klog_fmt!(
+            "[VFS-DIAG] context copy end source={} destination={} reads={} read_bytes={} writes={} write_bytes={} result={:?}\n",
+            source,
+            destination,
+            read_calls,
+            read_bytes,
+            write_calls,
+            write_bytes,
+            result
+        );
+        result
     }
 
     /// Recursively remove a path selected by the file manager.
@@ -680,201 +748,7 @@ pub fn replace_file(path: &str, data: &[u8]) -> Result<(), FsError> {
 }
 
 pub fn copy_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-    // Resolve paths to get canonical forms (handles ".", "..", trailing slashes).
-    let (source, destination) = with_vfs(|vfs| {
-        let inner = vfs.inner.lock();
-        (inner.resolve_path(source), inner.resolve_path(destination))
-    })
-    .ok_or(FsError::PermissionDenied)?;
-
-    // Prevent copying into self
-    if source == destination
-        || is_dir
-            && destination.starts_with(&source)
-            && source.len() > 1
-            && destination.len() > source.len()
-            && destination.as_bytes()[source.len()] == b'/'
-    {
-        return Err(FsError::InvalidPath);
-    }
-
-    // Validate file types match caller's intent.
-    if !is_dir && readdir(&source).is_ok() {
-        return Err(FsError::IsADirectory);
-    }
-    if !is_dir && readdir(&destination).is_ok() {
-        return Err(FsError::IsADirectory);
-    }
-
-    if is_dir {
-        mkdir(&destination)?;
-        for entry in readdir(&source)? {
-            copy_path(
-                &join_path(&source, &entry.name),
-                &join_path(&destination, &entry.name),
-                entry.is_dir,
-            )?;
-        }
-        return Ok(());
-    }
-
-    crate::klog_fmt!(
-        "[VFS-DIAG] copy begin source={} destination={}\n",
-        source,
-        destination
-    );
-
-    // Each free function acquires/releases the kernel lock individually,
-    // so the system can render and process events between I/O operations.
-    let source_fd = open(&source, 0)?.fd;
-    if exists(&destination) {
-        if let Err(error) = unlink(&destination) {
-            let _ = close(source_fd);
-            return Err(error);
-        }
-    }
-    let destination_fd = match create(&destination) {
-        Ok(descriptor) => descriptor.fd,
-        Err(error) => {
-            let _ = close(source_fd);
-            return Err(error);
-        }
-    };
-    let mut read_calls = 0usize;
-    let mut write_calls = 0usize;
-    let mut source_bytes = 0usize;
-    let mut source_fingerprint = 0xcbf29ce484222325u64;
-    let mut destination_bytes = 0usize;
-    let mut destination_fingerprint = 0xcbf29ce484222325u64;
-    let mut source_head = [0u8; 8];
-    let mut source_head_len = 0usize;
-    let mut source_tail = [0u8; 8];
-    let mut source_tail_len = 0usize;
-    let result = (|| {
-        let mut buffer = [0; 4096];
-        loop {
-            match read(source_fd, &mut buffer) {
-                Ok(0) => {
-                    let edges = diagnostic_copy_edges(
-                        &source_head,
-                        source_head_len,
-                        &source_tail,
-                        source_tail_len,
-                        source_bytes,
-                    );
-                    crate::klog_fmt!(
-                        "[VFS-DIAG] copy source-summary path={} reads={} bytes={} fnv=0x{:016x} edges={}\n",
-                        source,
-                        read_calls,
-                        source_bytes,
-                        source_fingerprint,
-                        edges
-                    );
-                    return Ok(());
-                }
-                Ok(n) => {
-                    read_calls += 1;
-                    source_bytes += n;
-                    for &byte in &buffer[..n] {
-                        source_fingerprint ^= u64::from(byte);
-                        source_fingerprint = source_fingerprint.wrapping_mul(0x100000001b3);
-                        if source_head_len < source_head.len() {
-                            source_head[source_head_len] = byte;
-                            source_head_len += 1;
-                        }
-                        source_tail[source_tail_len % source_tail.len()] = byte;
-                        source_tail_len += 1;
-                    }
-                    crate::klog_fmt!(
-                        "[VFS-DIAG] copy read source={} call={} bytes={} total={}\n",
-                        source,
-                        read_calls,
-                        n,
-                        source_bytes
-                    );
-                    let mut data = &buffer[..n];
-                    while !data.is_empty() {
-                        let written = write(destination_fd, data)?;
-                        if written == 0 {
-                            return Err(FsError::InvalidInput);
-                        }
-                        write_calls += 1;
-                        for &byte in &data[..written] {
-                            destination_fingerprint ^= u64::from(byte);
-                            destination_fingerprint =
-                                destination_fingerprint.wrapping_mul(0x100000001b3);
-                        }
-                        destination_bytes += written;
-                        crate::klog_fmt!(
-                            "[VFS-DIAG] copy write destination={} call={} bytes={} remaining={}\n",
-                            destination,
-                            write_calls,
-                            written,
-                            data.len() - written
-                        );
-                        data = &data[written..];
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    })();
-    let source_close = close(source_fd);
-    let destination_close = close(destination_fd);
-    let result = result.and(source_close).and(destination_close);
-    crate::klog_fmt!(
-        "[VFS-DIAG] copy destination-summary path={} writes={} bytes={} fnv=0x{:016x}\n",
-        destination,
-        write_calls,
-        destination_bytes,
-        destination_fingerprint
-    );
-    if result.is_ok()
-        && (source_bytes != destination_bytes || source_fingerprint != destination_fingerprint)
-    {
-        crate::klog_fmt!(
-            "[VFS-DIAG] copy mismatch source={} destination={} source_bytes={} destination_bytes={} source_fnv=0x{:016x} destination_fnv=0x{:016x}\n",
-            source,
-            destination,
-            source_bytes,
-            destination_bytes,
-            source_fingerprint,
-            destination_fingerprint
-        );
-    }
-    crate::klog_fmt!(
-        "[VFS-DIAG] copy end source={} destination={} result={:?}\n",
-        source,
-        destination,
-        result
-    );
-    result
-}
-
-fn diagnostic_copy_edges(
-    head: &[u8; 8],
-    head_len: usize,
-    tail: &[u8; 8],
-    tail_len: usize,
-    total_len: usize,
-) -> String {
-    let mut edges = String::new();
-    for &byte in &head[..head_len.min(head.len())] {
-        let _ = write!(edges, "{:02x}", byte);
-    }
-    if total_len > head.len() {
-        edges.push('/');
-        let count = tail_len.min(tail.len());
-        let start = if tail_len >= tail.len() {
-            tail_len % tail.len()
-        } else {
-            0
-        };
-        for offset in 0..count {
-            let _ = write!(edges, "{:02x}", tail[(start + offset) % tail.len()]);
-        }
-    }
-    edges
+    with_vfs(|vfs| vfs.copy_path(source, destination, is_dir)).ok_or(FsError::PermissionDenied)?
 }
 
 pub fn move_path(source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
@@ -1043,11 +917,9 @@ mod tests {
         let expected: Vec<u8> = (0..9_000).map(|index| (index % 251) as u8).collect();
 
         context.replace_file("/source.bin", &expected).unwrap();
-        context
-            .copy_path("/source.bin", "/mnt/copied.bin", false)
-            .unwrap();
+        context.copy_path("/source.bin", "/mnt", false).unwrap();
 
-        let descriptor = context.open("/mnt/copied.bin", 0).unwrap();
+        let descriptor = context.open("/mnt/source.bin", 0).unwrap();
         let mut actual = vec![0; expected.len()];
         let mut offset = 0;
         while offset < actual.len() {
@@ -1082,5 +954,23 @@ mod tests {
         assert!(context.exists("/moved/nested/file"));
         context.remove_path("/moved", true).unwrap();
         assert!(!context.exists("/moved"));
+    }
+
+    #[test]
+    fn move_file_into_existing_directory_uses_source_basename() {
+        let context = VfsContext::new();
+        context.mkdir("/destination").unwrap();
+        context.replace_file("/source.txt", b"hello").unwrap();
+
+        context
+            .move_path("/source.txt", "/destination", false)
+            .unwrap();
+
+        assert!(!context.exists("/source.txt"));
+        let descriptor = context.open("/destination/source.txt", 0).unwrap();
+        let mut data = [0u8; 5];
+        assert_eq!(context.read(descriptor.fd, &mut data).unwrap(), 5);
+        context.close(descriptor.fd).unwrap();
+        assert_eq!(&data, b"hello");
     }
 }

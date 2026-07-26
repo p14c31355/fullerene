@@ -568,6 +568,30 @@ impl Compositor {
         let cex = (cx + cw) as i32;
         let cey = (cy + ch) as i32;
         let sp = src.pixels();
+
+        // A maximized shell is an opaque, focused surface that usually
+        // covers almost the entire work area. The general path performs
+        // several bounds checks and a focus colour branch for every pixel;
+        // copy complete rows directly in this common case.
+        if win.focused && wdx >= 0 && wdy >= 0 && sw >= win.width as i32 && sh >= win.height as i32
+        {
+            let x0 = (cx as i32).max(wdx) as u32;
+            let x1 = cex.min(wdx + win.width as i32).min(fbw as i32) as u32;
+            let y0 = (cy as i32).max(wdy) as u32;
+            let y1 = cey.min(wdy + win.height as i32).min(fbh as i32) as u32;
+            if x0 < x1 && y0 < y1 {
+                let copy_width = (x1 - x0) as usize;
+                let source_x = (x0 as i32 - wdx) as usize;
+                for y in y0..y1 {
+                    let source_start = (y as i32 - wdy) as usize * sw as usize + source_x;
+                    let dest_start = y as usize * fbw as usize + x0 as usize;
+                    fb[dest_start..dest_start + copy_width]
+                        .copy_from_slice(&sp[source_start..source_start + copy_width]);
+                }
+                return;
+            }
+        }
+
         for sr in sys..sye {
             let dr = (wdy + sr) as i32;
             if dr < cy as i32 || dr >= cey {

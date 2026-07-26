@@ -196,8 +196,14 @@ pub fn render() {
         solvent::set_render_progress_fn(|_| {});
     }
 
-    if crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_none() {
+    let framebuffer_available =
+        crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_some();
+    if !framebuffer_available {
         crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
+    } else {
+        // From this point on the desktop compositor owns the scanout. Any
+        // late boot-stage or diagnostic callback must not repaint the splash.
+        crate::boot_stage::disable_boot_screen();
     }
 
     BOOT_PROGRESS_DONE.store(true, Ordering::Release);

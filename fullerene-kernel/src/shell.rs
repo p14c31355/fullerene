@@ -115,17 +115,43 @@ fn wasm_read_stdin() -> Option<u8> {
 
 fn wasm_yield_now() {
     if solvent::is_initialized() {
-        // WASM is executed synchronously by the kernel shell. Poll devices
-        // here, but do not re-enter the GUI scheduler from a host callback.
+        // WASM is executed synchronously by the kernel shell. A cooperative
+        // yield is also the repaint point for long-running media playback.
         solvent::poll_mouse_state();
         solvent::poll_keyboard();
+        solvent::runtime_tick_no_fb();
     } else {
         kernel_syscall(22, 0, 0, 0);
     }
 }
 
+fn wasm_wait_for_ns(duration_ns: u64) {
+    const MAX_WAIT_NS: u64 = 5_000_000_000;
+    let duration_ns = duration_ns.min(MAX_WAIT_NS);
+    let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
+    let ticks = ((duration_ns as u128 * tsc_per_ms as u128) / 1_000_000) as u64;
+    let deadline = unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(ticks);
+    let mut next_tick = 0u64;
+    while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
+        let now = unsafe { core::arch::x86_64::_rdtsc() };
+        if now >= next_tick {
+            solvent::runtime_tick_no_fb();
+            next_tick = now.saturating_add(tsc_per_ms.saturating_mul(4));
+        } else {
+            petroleum::cpu_pause();
+        }
+    }
+}
+
 fn wasm_file_size(path: &str) -> Result<u64, genome::FsError> {
-    crate::fs::file_size(path)
+    crate::klog_fmt!("[WASM-DIAG] file_size begin path={}\n", path);
+    let result = crate::fs::file_size(path);
+    crate::klog_fmt!(
+        "[WASM-DIAG] file_size end path={} result={:?}\n",
+        path,
+        result
+    );
+    result
 }
 
 fn wasm_read_file_range(
@@ -133,11 +159,47 @@ fn wasm_read_file_range(
     offset: u64,
     limit: usize,
 ) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
-    crate::fs::read_file_range(path, offset, limit)
+    crate::klog_fmt!(
+        "[WASM-DIAG] read_range callback begin path={} offset={} limit={}\n",
+        path,
+        offset,
+        limit
+    );
+    let result = crate::fs::read_file_range(path, offset, limit);
+    crate::klog_fmt!(
+        "[WASM-DIAG] read_range callback end path={} offset={} result={:?}\n",
+        path,
+        offset,
+        result.as_ref().map(alloc::vec::Vec::len)
+    );
+    result
 }
 
 fn wasm_write_file(path: &str, data: &[u8]) -> Result<(), genome::FsError> {
     crate::fs::write_entire_file(path, data)
+}
+
+fn wasm_write_file_chunk(
+    path: &str,
+    offset: u64,
+    data: &[u8],
+    replace: bool,
+) -> Result<(), genome::FsError> {
+    crate::klog_fmt!(
+        "[WASM-DIAG] file chunk enter path={} offset={} bytes={} replace={}\n",
+        path,
+        offset,
+        data.len(),
+        replace
+    );
+    let result = crate::fs::write_file_chunk(path, offset, data, replace);
+    crate::klog_fmt!(
+        "[WASM-DIAG] file chunk exit path={} offset={} result={:?}\n",
+        path,
+        offset,
+        result
+    );
+    result
 }
 
 fn wasm_read_directory(
@@ -166,6 +228,19 @@ fn wasm_get_monotonic_ns() -> u64 {
         // Use u128 to prevent overflow while maintaining full precision
         ((tsc as u128 * 1_000_000) / tsc_per_ms as u128) as u64
     }
+}
+
+fn wasm_play_pcm(sample_rate: u32, channels: u8, bits_per_sample: u8, pcm: &[u8]) -> i32 {
+    if pcm.is_empty() || pcm.len() > 8 * 1024 * 1024 {
+        return -1;
+    }
+    let played = crate::contexts::kernel::with_kernel_mut(|kernel| {
+        kernel
+            .audio
+            .play_pcm(sample_rate, channels, bits_per_sample, pcm)
+    })
+    .unwrap_or(false);
+    if played { 0 } else { -1 }
 }
 
 fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixels: &[u8]) -> i32 {
@@ -278,7 +353,11 @@ fn wasm_update_window(window_id: i32, width: u32, height: u32, pixels: &[u8]) ->
         return -1;
     }
     let id = lattice::window::WindowId(window_id as u64);
-    blit_rgb(id, width, height, pixels)
+    let result = blit_rgb(id, width, height, pixels);
+    if result == 0 {
+        solvent::runtime_tick_no_fb();
+    }
+    result
 }
 
 fn wasm_close_window(window_id: i32) -> i32 {
@@ -289,9 +368,24 @@ fn wasm_close_window(window_id: i32) -> i32 {
     }
 }
 
+const WASM_CAPTURE_MAX_WIDTH: u32 = 1920;
+const WASM_CAPTURE_MAX_HEIGHT: u32 = 1080;
+
+fn wasm_screen_dimensions() -> (u32, u32) {
+    let dimensions =
+        solvent::scaled_framebuffer_dims(WASM_CAPTURE_MAX_WIDTH, WASM_CAPTURE_MAX_HEIGHT);
+    crate::klog_fmt!(
+        "[WASM-DIAG] screen dimensions {}x{}\n",
+        dimensions.0,
+        dimensions.1
+    );
+    dimensions
+}
+
 fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     wasm_status("capture_screen enter");
-    let result = solvent::capture_screen();
+    crate::klog_fmt!("[WASM-DIAG] capture host callback enter\n");
+    let result = solvent::capture_screen_scaled(WASM_CAPTURE_MAX_WIDTH, WASM_CAPTURE_MAX_HEIGHT);
     match &result {
         Some((width, height, pixels)) => wasm_status(&alloc::format!(
             "capture_screen exit {}x{} bytes={}",
@@ -301,6 +395,30 @@ fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
         )),
         None => wasm_status("capture_screen unavailable (back buffer busy or missing)"),
     }
+    crate::klog_fmt!(
+        "[WASM-DIAG] capture host callback exit available={}\n",
+        result.is_some()
+    );
+    result
+}
+
+fn wasm_capture_screen_chunk(offset: u32, pixels: &mut [u8]) -> Option<(u32, u32)> {
+    crate::klog_fmt!(
+        "[WASM-DIAG] capture chunk enter offset={} bytes={}\n",
+        offset,
+        pixels.len()
+    );
+    let result = solvent::capture_screen_chunk(
+        WASM_CAPTURE_MAX_WIDTH,
+        WASM_CAPTURE_MAX_HEIGHT,
+        offset as usize,
+        pixels,
+    );
+    crate::klog_fmt!(
+        "[WASM-DIAG] capture chunk exit offset={} result={:?}\n",
+        offset,
+        result
+    );
     result
 }
 
@@ -343,20 +461,27 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_write_stderr,
         wasm_read_stdin,
         wasm_yield_now,
+        wasm_wait_for_ns,
         wasm_file_size,
         wasm_read_file_range,
         wasm_read_directory,
         wasm_write_file,
+        wasm_write_file_chunk,
         wasm_get_monotonic_ns,
-        solvent::framebuffer_dims,
+        wasm_screen_dimensions,
         wasm_capture_screen,
+        wasm_capture_screen_chunk,
         wasm_show_image,
         wasm_show_text,
         wasm_show_error,
         wasm_create_window,
         wasm_update_window,
         wasm_close_window,
+        wasm_play_pcm,
     );
+    if let Err(error) = crate::fs::finish_file_chunk() {
+        crate::klog_fmt!("[WASM-DIAG] file stream close error={:?}\n", error);
+    }
     if capture_output && let Some(output) = take_wasm_output() {
         solvent::write_terminal(&output);
     }
@@ -383,21 +508,36 @@ macro_rules! tstr {
 /// Helper: match a launch function returning Result<ProcessId, Err>, write
 /// ok/error messages to the terminal.
 macro_rules! launch_cmd {
-    ($t:expr, $launch:expr, $ok:expr) => {
+    ($t:expr, $launch:expr, $ok:expr) => {{
+        crate::klog_fmt!("[LINUX-DIAG] launch command call enter\n");
+        petroleum::serial::serial_log(format_args!("[LINUX-DIAG] launch command call enter\n"));
         match $launch {
             Ok(pid) => {
+                crate::klog_fmt!(
+                    "[LINUX-DIAG] launch command created pid={} deferred-yield\n",
+                    pid.0
+                );
                 tline!($t, $ok, pid.0);
-                // The interactive shell runs synchronously from the idle
-                // scheduler context. Switch to the process we just launched,
-                // rather than whichever unrelated task happens to be next in
-                // the round-robin list.
-                if crate::process::current_pid().is_some() {
-                    let _ = crate::process::yield_to(pid);
-                }
+                // The terminal input loop performs this direct handoff after
+                // the callback returns, so no shell/runtime lock crosses the
+                // context-switch assembly boundary.
+                crate::process::defer_yield_to(pid);
+                crate::klog_fmt!("[LINUX-DIAG] launch command returned pid={} ready\n", pid.0);
+                petroleum::serial::serial_log(format_args!(
+                    "[LINUX-DIAG] launch command returned pid={} ready\n",
+                    pid.0
+                ));
             }
-            Err(e) => tline!($t, "Failed to launch: {:?}", e),
+            Err(e) => {
+                crate::klog_fmt!("[LINUX-DIAG] launch command error={:?}\n", e);
+                petroleum::serial::serial_log(format_args!(
+                    "[LINUX-DIAG] launch command error={:?}\n",
+                    e
+                ));
+                tline!($t, "Failed to launch: {:?}", e)
+            }
         }
-    };
+    }};
 }
 
 /// Read the entire contents of a file at `path`. Returns the raw bytes.
@@ -824,6 +964,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                 "Test Linux binary started (PID: {})"
             ),
             "hello_rust_linux" => {
+                crate::klog_fmt!("[LINUX-DIAG] hello_rust command enter\n");
                 #[cfg(have_linux_musl_hello)]
                 launch_cmd!(
                     ctx.terminal,
@@ -1270,6 +1411,11 @@ pub fn run_linux_musl_smoke() {
         }
 
         fn read_byte(&mut self) -> Option<u8> {
+            // The scripted input is already available, so it would never
+            // enter the normal empty-keyboard yield path. Exercise the same
+            // deferred launch handoff explicitly before consuming the next
+            // command byte.
+            crate::process::yield_from_scheduler_stack();
             self.input.pop_front()
         }
 
@@ -1288,9 +1434,8 @@ pub fn run_linux_musl_smoke() {
     );
 
     let services = nozzle_services();
-    let mut terminal = ScriptedTerminal::new(
-        "linux_run /bin/rust_std_hello\necho shell-resumed-after-linux\nexit\n",
-    );
+    let mut terminal =
+        ScriptedTerminal::new("hello_rust_linux\necho shell-resumed-after-linux\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     if crate::linux::launch::smoke_verified() {
         petroleum::serial::serial_log(format_args!(

@@ -28,6 +28,11 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     }
     if let Some(pid) = process::current_pid() {
+        crate::klog_fmt!("[LINUX-DIAG] exit pid={} code={} enter\n", pid.0, code);
+        petroleum::serial::serial_log(format_args!(
+            "[LINUX-DIAG] exit pid={} code={} enter\n",
+            pid.0, code
+        ));
         #[cfg(linux_musl_smoke)]
         crate::linux::launch::observe_smoke_exit(pid, code);
         process::terminate_process(pid, code);
@@ -144,6 +149,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         entry_point: x86_64::VirtAddr::new(0),
         is_user: true,
         exit_code: None,
+        fault: None,
         parent_id: Some(current_pid),
         task_data: 0,
         vdso_page: child_vdso,

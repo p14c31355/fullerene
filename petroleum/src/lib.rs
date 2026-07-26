@@ -54,10 +54,13 @@ pub use page_table::allocator::{BitmapFrameAllocator, bitmap};
 pub use page_table::heap::ALLOCATOR;
 pub use page_table::heap::HeapStats;
 pub use page_table::heap::allocate_heap_from_map;
+pub use page_table::heap::configure_heap_extension;
 pub use page_table::heap::extend_global_heap;
 pub use page_table::heap::heap_stats;
 pub use page_table::heap::heap_top;
 pub use page_table::heap::init_global_heap;
+pub use page_table::heap::set_heap_extension_guard;
+pub use page_table::heap::try_extend_global_heap;
 pub use page_table::page_buf::PageBuf;
 
 use crate::common::EfiSystemTable;
@@ -141,8 +144,16 @@ macro_rules! define_alloc_error_handler {
         #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
         #[alloc_error_handler]
         fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
-            $crate::serial::_print(format_args!("ALLOC ERROR: {:?}\n", layout));
-            loop {}
+            // GlobalAlloc has already performed its bounded extension
+            // transaction.  Re-entering allocation here would hide the real
+            // OOM behind an infinite retry.  Keep this kernel-fatal path
+            // allocation-free and stop the CPU until the fault supervisor can
+            // report/restart the owning domain.
+            $crate::serial::_print(format_args!("ALLOC ERROR (no retry): {:?}\n", layout));
+            loop {
+                x86_64::instructions::interrupts::disable();
+                x86_64::instructions::hlt();
+            }
         }
     };
 }
@@ -151,9 +162,7 @@ macro_rules! define_alloc_error_handler {
 #[macro_export]
 macro_rules! get_memory_stats {
     () => {{
-        let allocator = $crate::page_table::ALLOCATOR.lock();
-        let used = allocator.used();
-        let total = allocator.size();
-        (used, total, total.saturating_sub(used))
+        let stats = $crate::page_table::heap_stats();
+        (stats.used, stats.total, stats.free)
     }};
 }

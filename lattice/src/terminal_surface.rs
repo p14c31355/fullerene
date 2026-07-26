@@ -40,6 +40,48 @@ pub struct RenderParams<'a> {
     pub cursor_visible: bool,
 }
 
+/// Render one terminal cell without walking the rest of the terminal grid.
+///
+/// Terminal windows can become as large as the framebuffer. Keeping this
+/// operation cell-sized lets the runtime update only the cells that changed
+/// instead of repainting a multi-million-pixel surface for every keystroke.
+pub fn render_cell(surface: &mut Surface, cell: Cell, col: u32, row: u32, cursor: bool) {
+    let glyph_w = font::GLYPH_WIDTH as usize;
+    let glyph_h = font::GLYPH_HEIGHT as usize;
+    let surf_w = surface.width() as usize;
+    let surf_h = surface.height() as usize;
+    let dx = col as usize * glyph_w;
+    let dy = row as usize * glyph_h;
+
+    if dx > surf_w.saturating_sub(glyph_w) || dy > surf_h.saturating_sub(glyph_h) {
+        return;
+    }
+
+    let pixels = surface.pixels_mut();
+    for gy in 0..glyph_h {
+        let row_base = (dy + gy) * surf_w;
+        pixels[row_base + dx..row_base + dx + glyph_w].fill(cell.bg);
+    }
+
+    let glyph = font::glyph_fast(cell.ch);
+    for gy in 0..glyph_h {
+        let row_base = (dy + gy) * surf_w;
+        let bits = glyph.row_byte(gy as u32);
+        for gx in 0..glyph_w {
+            if bits & (0x80 >> gx) != 0 {
+                pixels[row_base + dx + gx] = cell.fg;
+            }
+        }
+    }
+
+    if cursor {
+        for gy in (glyph_h - 2)..glyph_h {
+            let row_base = (dy + gy) * surf_w;
+            pixels[row_base + dx..row_base + dx + glyph_w].fill(cell.fg);
+        }
+    }
+}
+
 /// Render a terminal cell grid onto a surface using the 8×16 bitmap font.
 ///
 /// Each cell occupies `font::GLYPH_WIDTH × font::GLYPH_HEIGHT` pixels.
@@ -54,18 +96,10 @@ pub fn render(params: RenderParams<'_>) {
         cursor_visible,
     } = params;
 
-    let rows = if cols > 0 {
-        (cells.len() as u32).div_ceil(cols)
-    } else {
-        0
-    };
-
-    let glyph_w = font::GLYPH_WIDTH;
-    let glyph_h = font::GLYPH_HEIGHT;
-
-    let surf_w = surface.width() as usize;
-    let surf_h = surface.height() as usize;
-    let pixels = surface.pixels_mut();
+    if cols == 0 {
+        return;
+    }
+    let rows = (cells.len() as u32).div_ceil(cols);
 
     for (i, cell) in cells.iter().enumerate() {
         let col = (i as u32) % cols;
@@ -74,50 +108,10 @@ pub fn render(params: RenderParams<'_>) {
             break;
         }
 
-        let dx = (col * glyph_w) as usize;
-        let dy = (row * glyph_h) as usize;
-
         // Check if this cell is the cursor position
         let is_cursor = cursor_visible
             && cursor_col.map_or(false, |cc| cc == col)
             && cursor_row.map_or(false, |rr| rr == row);
-
-        // Draw glyph early-exit guard: skip this cell entirely if it
-        // hangs off the right or bottom edge of the surface.
-        if dx + glyph_w as usize > surf_w || dy + glyph_h as usize > surf_h {
-            continue;
-        }
-
-        // Draw background — write directly to pixels slice
-        let bg = cell.bg;
-        for gy in 0..glyph_h as usize {
-            let row_base = (dy + gy) * surf_w;
-            let row_slice = &mut pixels[row_base + dx..row_base + dx + glyph_w as usize];
-            row_slice.fill(bg);
-        }
-
-        // Draw glyph pixels — write directly to pixels slice
-        let gl = font::glyph_fast(cell.ch);
-        let fg = cell.fg;
-        for gy in 0..glyph_h as usize {
-            let row_base = (dy + gy) * surf_w;
-            let byte = gl.row_byte(gy as u32);
-            for gx in 0..glyph_w as usize {
-                if byte & (0x80 >> gx) != 0 {
-                    pixels[row_base + dx + gx] = fg;
-                }
-            }
-        }
-
-        // Draw cursor (underline on the bottom 2 rows)
-        if is_cursor {
-            let cur_y0 = dy + glyph_h as usize - 2;
-            let cur_y1 = dy + glyph_h as usize - 1;
-            for &cy in &[cur_y0, cur_y1] {
-                let row_base = cy * surf_w;
-                let row_slice = &mut pixels[row_base + dx..row_base + dx + glyph_w as usize];
-                row_slice.fill(fg);
-            }
-        }
+        render_cell(surface, *cell, col, row, is_cursor);
     }
 }

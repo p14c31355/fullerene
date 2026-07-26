@@ -286,6 +286,7 @@ impl From<genome::fs::FsError> for LinuxErrno {
             FsError::InvalidFileDescriptor => EBADF,
             FsError::InvalidSeek | FsError::InvalidPath | FsError::InvalidInput => EINVAL,
             FsError::DiskFull => ENOSPC,
+            FsError::Busy => EBUSY,
             FsError::NotADirectory => ENOTDIR,
             FsError::DirectoryNotEmpty => ENOTEMPTY,
             FsError::IsADirectory => EISDIR,
@@ -301,6 +302,7 @@ impl From<genome::block::BlockError> for LinuxErrno {
         use genome::block::BlockError;
         Self(match error {
             BlockError::Device => EIO,
+            BlockError::Busy => EBUSY,
             BlockError::BufferTooSmall { .. } => EINVAL,
             BlockError::LbaOverflow => EOVERFLOW,
             BlockError::SectorNotFound => ENOENT,

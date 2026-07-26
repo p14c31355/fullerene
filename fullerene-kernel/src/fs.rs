@@ -6,13 +6,9 @@ use core::fmt::Write as _;
 use crate::contexts::vfs;
 pub use genome::fs::{DirEntry, FsError, PackageEntry, parse_manifest};
 use genome::io::{FileReader, Read, Seek, SeekFrom};
+use spin::Mutex;
 
-fn basename(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit_once('/')
-        .map(|(_, name)| name)
-        .unwrap_or(path)
-}
+static STREAM_FILE: Mutex<Option<(String, FileDesc)>> = Mutex::new(None);
 
 fn is_dir(path: &str) -> bool {
     vfs::readdir(path).is_ok()
@@ -65,6 +61,68 @@ pub fn create_file(path: &str, data: &[u8]) -> Result<(), FsError> {
         }
     }
     let _ = vfs::close(fd_info.fd);
+    Ok(())
+}
+
+/// Replace or append one bounded file chunk without retaining the complete
+/// output in a guest/WASI buffer.  This is used by streaming WASM producers.
+pub fn write_file_chunk(
+    path: &str,
+    offset: u64,
+    data: &[u8],
+    replace: bool,
+) -> Result<(), FsError> {
+    let mut stream = STREAM_FILE.lock();
+    let same_path = stream.as_ref().is_some_and(|(current, _)| current == path);
+    if replace || !same_path {
+        if let Some((_, old_file)) = stream.take() {
+            close_file(old_file)?;
+        }
+        let descriptor = if replace {
+            if vfs::exists(path) {
+                vfs::unlink(path)?;
+            }
+            vfs::create(path)?
+        } else {
+            match vfs::open(path, 0) {
+                Ok(fd) => fd,
+                Err(FsError::FileNotFound) => vfs::create(path)?,
+                Err(error) => return Err(error),
+            }
+        };
+        stream.replace((path.to_string(), FileDesc::from(descriptor)));
+    }
+
+    let result = {
+        let file = &mut stream.as_mut().expect("stream file installed").1;
+        (|| {
+            if file.offset != offset {
+                seek_file(file, offset)?;
+            }
+            let mut remaining = data;
+            while !remaining.is_empty() {
+                let written = write_file(file, remaining)?;
+                if written == 0 {
+                    return Err(FsError::InvalidInput);
+                }
+                remaining = &remaining[written..];
+            }
+            Ok(())
+        })()
+    };
+    if result.is_err()
+        && let Some((_, file)) = stream.take()
+    {
+        let _ = close_file(file);
+    }
+    result
+}
+
+pub fn finish_file_chunk() -> Result<(), FsError> {
+    let mut stream = STREAM_FILE.lock();
+    if let Some((_, file)) = stream.take() {
+        close_file(file)?;
+    }
     Ok(())
 }
 
@@ -167,19 +225,13 @@ pub fn change_directory(path: &str) -> Result<(), FsError> {
 }
 
 pub fn copy_file(src: &str, dst: &str) -> Result<(), FsError> {
-    let dst = if is_dir(dst) {
-        let name = basename(src);
-        alloc::format!("{}/{}", dst.trim_end_matches('/'), name)
-    } else {
-        dst.to_string()
-    };
-    let data = read_entire_file(src)?;
-    write_entire_file(&dst, &data)
+    let is_directory = is_dir(src);
+    crate::contexts::vfs::copy_path(src, dst, is_directory)
 }
 
 pub fn move_file(src: &str, dst: &str) -> Result<(), FsError> {
-    copy_file(src, dst)?;
-    remove(src)
+    let is_directory = is_dir(src);
+    crate::contexts::vfs::move_path(src, dst, is_directory)
 }
 
 pub fn walk_dir(path: &str) -> Result<Vec<String>, FsError> {
@@ -327,15 +379,42 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
 /// Read a bounded range without materializing the whole file.
 pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>, FsError> {
     const MAX_RANGE_BYTES: usize = 64 * 1024;
+    const TIMEOUT_MS: u64 = 15_000;
     if limit > MAX_RANGE_BYTES {
         return Err(FsError::InvalidInput);
     }
-    let size = file_size(path)?;
+    // Obtain the length from the already-open descriptor.  Looking up the
+    // parent directory first made every WASM cache miss reopen the directory
+    // on removable filesystems; some backends reported that metadata request
+    // as InvalidInput (WASI EINVAL=28) even though the file itself was valid.
+    let mut fd = open_file(path)?;
+    let size = match file_size_for_handle(&fd) {
+        Ok(size) => size,
+        Err(error) => {
+            let _ = close_file(fd);
+            return Err(error);
+        }
+    };
     if offset > size {
+        let _ = close_file(fd);
         return Err(FsError::InvalidSeek);
     }
     let target = (size - offset).min(limit as u64) as usize;
-    let mut fd = open_file(path)?;
+    let deadline = match solvent::get_tsc_per_ms() {
+        0 => None,
+        tsc_per_ms => tsc_per_ms
+            .checked_mul(TIMEOUT_MS)
+            .map(|ticks| unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(ticks)),
+    };
+    crate::klog_fmt!(
+        "[WASM-DIAG] range begin path={} offset={} limit={} size={} target={}\n",
+        path,
+        offset,
+        limit,
+        size,
+        target
+    );
+    crate::klog_fmt!("[WASM-DIAG] range open exit path={} fd={}\n", path, fd.fd);
     if let Err(error) = seek_file(&mut fd, offset) {
         let _ = close_file(fd);
         return Err(error);
@@ -343,17 +422,59 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
     let mut result = Vec::with_capacity(target);
     let mut chunk = [0u8; 4096];
     while result.len() < target {
+        if deadline.is_some_and(|deadline| unsafe { core::arch::x86_64::_rdtsc() } >= deadline) {
+            let _ = close_file(fd);
+            crate::klog_fmt!(
+                "[WASM-DIAG] range timeout path={} offset={} bytes={}\n",
+                path,
+                offset,
+                result.len()
+            );
+            return Err(FsError::Io);
+        }
         let want = (target - result.len()).min(chunk.len());
+        crate::klog_fmt!(
+            "[WASM-DIAG] range read begin path={} at={} want={} total={}\n",
+            path,
+            fd.offset,
+            want,
+            result.len()
+        );
         match read_file(&mut fd, &mut chunk[..want]) {
-            Ok(0) => break,
-            Ok(n) => result.extend_from_slice(&chunk[..n]),
+            Ok(0) => {
+                crate::klog_fmt!(
+                    "[WASM-DIAG] range eof path={} total={}\n",
+                    path,
+                    result.len()
+                );
+                break;
+            }
+            Ok(n) => {
+                result.extend_from_slice(&chunk[..n]);
+                crate::klog_fmt!(
+                    "[WASM-DIAG] range read exit path={} bytes={} total={}\n",
+                    path,
+                    n,
+                    result.len()
+                );
+            }
             Err(error) => {
                 let _ = close_file(fd);
+                crate::klog_fmt!(
+                    "[WASM-DIAG] range read error path={} error={:?}\n",
+                    path,
+                    error
+                );
                 return Err(error);
             }
         }
     }
     close_file(fd)?;
+    crate::klog_fmt!(
+        "[WASM-DIAG] range end path={} bytes={}\n",
+        path,
+        result.len()
+    );
     Ok(result)
 }
 
@@ -428,14 +549,23 @@ pub fn file_size(path: &str) -> Result<u64, FsError> {
     if trimmed.is_empty() {
         return Ok(0);
     }
-    let (parent, name) = trimmed.rsplit_once('/').unwrap_or((".", trimmed));
-    let parent = if parent.is_empty() { "/" } else { parent };
-    let entries = list_dir(parent)?;
-    entries
-        .iter()
-        .find(|e| e.name == name)
-        .map(|e| e.size)
-        .ok_or(FsError::FileNotFound)
+    if is_dir(trimmed) {
+        let (parent, name) = trimmed.rsplit_once('/').unwrap_or((".", trimmed));
+        let parent = if parent.is_empty() { "/" } else { parent };
+        return list_dir(parent)?
+            .into_iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.size)
+            .ok_or(FsError::FileNotFound);
+    }
+    // Use the filesystem's open-handle metadata instead of enumerating the
+    // parent directory.  Besides being cheaper for WASM reads, this avoids a
+    // removable filesystem metadata path that can report InvalidInput for a
+    // perfectly valid regular file.
+    let fd = open_file(trimmed)?;
+    let result = file_size_for_handle(&fd);
+    let close_result = close_file(fd);
+    result.and_then(|size| close_result.map(|()| size))
 }
 
 // ── Package management ─────────────────────────────────────

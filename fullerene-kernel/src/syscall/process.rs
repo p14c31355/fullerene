@@ -185,6 +185,7 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         is_user: parent_context.is_user,
         task_data: 0,
         exit_code: None,
+        fault: None,
         parent_id: Some(current_pid),
         dispatch_mode: None,
         vdso_page: child_vdso,

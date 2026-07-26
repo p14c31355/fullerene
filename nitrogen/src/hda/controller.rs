@@ -67,6 +67,7 @@ impl HdaController {
         }
 
         let mut fallback: Option<(u8, u8, u8, u64)> = None;
+        let mut codec_candidate: Option<(u8, u8, u8, u64)> = None;
 
         for bus in 0..=255u8 {
             if bus > 0 && !bus_exists(bus) {
@@ -111,19 +112,27 @@ impl HdaController {
                 );
 
                 if states & 0x0001 != 0 {
-                    log::info!(
-                        "HDA: selecting {:04x}:{:02x}.{} (codec connected)",
-                        bus,
-                        d,
-                        0
-                    );
-                    return Some((bus, d, 0, bar0));
+                    log::info!("HDA: codec connected at {:04x}:{:02x}.{}", bus, d, 0);
+                    // Systems with integrated graphics commonly expose an
+                    // HDMI HDA controller at a low device number and the
+                    // analog PCH codec later in the bus. Keep scanning so a
+                    // later connected controller can be preferred.
+                    codec_candidate = Some((bus, d, 0, bar0));
                 }
 
                 fallback = Some((bus, d, 0, bar0));
             }
         }
 
+        if let Some(ref b) = codec_candidate {
+            log::info!(
+                "HDA: selecting {:04x}:{:02x}.{} (last codec-connected controller)",
+                b.0,
+                b.1,
+                b.2
+            );
+            return codec_candidate;
+        }
         if let Some(ref b) = fallback {
             log::info!(
                 "HDA: falling back to {:04x}:{:02x}.{} (no codec detected)",
@@ -274,7 +283,8 @@ impl HdaController {
         // Determine CORB size from CORBSIZE register (offset 0x4E)
         // Read CORBSZCAP field (bits [7:4]) which indicates supported sizes
         let corbsize_reg = unsafe { mmio_read8(mmio, 0x004E) };
-        let corb_szcap = corbsize_reg & 0x0F;
+        // CORBSZCAP is the upper nibble; CORBSIZE is the lower two bits.
+        let corb_szcap = (corbsize_reg >> 4) & 0x0F;
         let corb_entries: usize = if corb_szcap & 0x4 != 0 {
             256
         } else if corb_szcap & 0x2 != 0 {
@@ -308,13 +318,22 @@ impl HdaController {
 
         // Find route
         let stream_tag: u8 = 1;
-        if let Some((dac, pin)) =
+        let route_found = if let Some((dac, pin)) =
             unsafe { RouteFinder::find_speaker_route(mmio, &self.corb, &graph) }
         {
             log::info!("HDA: route DAC=0x{:x} → Pin=0x{:x}", dac, pin);
             unsafe { RouteFinder::configure_route(mmio, &self.corb, &graph, dac, pin, stream_tag) };
+            true
         } else {
             log::warn!("HDA: no speaker route found");
+            false
+        };
+
+        // Without a connected DAC/pin route the stream cannot produce a
+        // boundary interrupt. Do not start DMA in that case: callers would
+        // otherwise wait forever for playback progress.
+        if !route_found {
+            return false;
         }
 
         // Init DMA engine
@@ -374,6 +393,12 @@ impl HdaController {
         self.dma.write_at(offset, samples)
     }
 
+    /// Clear a region of the DMA buffer without allocating a temporary
+    /// silence buffer. Used to pad the final playback half.
+    pub fn clear_at(&self, offset: u32, len: usize) -> usize {
+        self.dma.clear_at(offset, len)
+    }
+
     /// Convenience: reset LPIB prefill tracking.
     pub fn reset_prefill_tracking(&self) {
         self.dma.reset_prefill_tracking();
@@ -401,6 +426,12 @@ impl HdaController {
     pub fn playback_progress(&self) -> Option<u64> {
         // Safety: self.mmio is valid
         unsafe { self.dma.playback_progress_bytes(self.mmio) }
+    }
+
+    /// Read stream state for diagnostics.
+    pub fn debug_stream_status(&self) -> (u32, u8, u32) {
+        // Safety: self.mmio is valid
+        unsafe { self.dma.debug_status(self.mmio) }
     }
 }
 

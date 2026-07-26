@@ -86,6 +86,7 @@ pub fn request_shell_launch() {
 /// `gui::runtime_tick()`.  Shell (and future apps) are launched on
 /// demand.
 pub fn scheduler_loop() -> ! {
+    solvent::install_scheduler_yield(crate::process::yield_from_scheduler_stack);
     let boot_tsc = unsafe { core::arch::x86_64::_rdtsc() };
     let tsc_per_ms = solvent::get_tsc_per_ms();
     let boot_ms_est = if tsc_per_ms > 0 {

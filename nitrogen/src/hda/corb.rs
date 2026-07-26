@@ -41,6 +41,7 @@ pub mod verbs {
     // ── 4‑bit verbs (payload in lower 16 bits) ──
     pub const SET_FMT: u32 = 0x002;
     pub const SET_AMP_GAIN_MUTE: u32 = 0x003;
+    pub const SET_CVT_CHAN_COUNT: u32 = 0x72D;
     pub const SET_PIN_CTL: u32 = 0x707;
     pub const SET_STREAM: u32 = 0x706;
     pub const SET_EAPD: u32 = 0x70C;
@@ -64,6 +65,7 @@ pub mod params {
     pub const VENDOR_ID: u16 = 0x00;
     pub const REVISION_ID: u16 = 0x02;
     pub const SUBORDINATE_COUNT: u16 = 0x04;
+    pub const FUNCTION_GROUP_TYPE: u16 = 0x05;
     pub const AUDIO_WIDGET_CAP: u16 = 0x09;
     pub const PCM: u16 = 0x0A;
     pub const STREAM: u16 = 0x0B;
@@ -108,16 +110,15 @@ impl CorbEngine {
     ) -> bool {
         unsafe {
             // Determine CORBSIZE code (0 = 2, 1 = 16, 2 = 256).
-            // The SIZE field lives in CORBSIZE[7:6]; the value must be
-            // shifted before writing.
-            let corb_sz_code_raw: u8 = if corb_entries >= 256 {
+            // CORBSIZE[1:0] is the selected size; CORBSZCAP[7:4] is
+            // read-only capability information.
+            let corb_sz_code: u8 = if corb_entries >= 256 {
                 2
             } else if corb_entries >= 16 {
                 1
             } else {
                 0
             };
-            let corb_sz_code: u8 = corb_sz_code_raw << 6;
 
             // Check GCAP 64-bit support
             let gcap = mmio_read32(mmio, 0x0000);
@@ -154,10 +155,10 @@ impl CorbEngine {
             mmio_write16(mmio, CORBRP, 0);
             mmio_write16(mmio, CORBWP, 0);
 
-            // Program CORB size (CORBSIZE bits [7:6] = corb_sz_code),
-            // preserving CORBSZCAP (bits [3:0], read-only).
+            // Program CORB size (CORBSIZE bits [1:0]), preserving the
+            // read-only capability nibble in CORBSZCAP[7:4].
             // Then enable CORB DMA (CORBRUN = bit 1).
-            let corb_szcap = mmio_read8(mmio, CORBCTL + 2) & 0x0F;
+            let corb_szcap = mmio_read8(mmio, CORBCTL + 2) & 0xF0;
             mmio_write8(mmio, CORBCTL + 2, corb_sz_code | corb_szcap);
             mmio_write8(mmio, CORBCTL, 0x02);
 
@@ -174,7 +175,7 @@ impl CorbEngine {
             }
 
             // Program RIRB size and enable RIRB DMA
-            let rirb_szcap = mmio_read8(mmio, RIRBCTL + 2) & 0x0F;
+            let rirb_szcap = mmio_read8(mmio, RIRBCTL + 2) & 0xF0;
             mmio_write8(mmio, RIRBCTL + 2, corb_sz_code | rirb_szcap);
             mmio_write8(mmio, RIRBCTL, 0x02);
 
@@ -249,18 +250,16 @@ impl CorbEngine {
             };
             let cmd = ((codec as u32) << 28) | ((node as u32) << 20) | cmd_val;
 
-            // CORBWP / CORBRP are byte offsets (4 bytes per entry).
-            // RIRBWP is a byte offset (8 bytes per response entry).
-            let _corb_mask = (corb_n - 1) as u16;
-            let corb_byte_mask = (corb_n * 4 - 1) as u16;
-            let rirb_byte_mask = (corb_n * 8 - 1) as u16;
+            // CORBWP/CORBRP are entry offsets in Dword units. RIRBWP is
+            // an entry offset in two-Dword units. They are not byte
+            // addresses, so the register values index the rings directly.
+            let corb_mask = (corb_n - 1) as u16;
+            let rirb_mask = (corb_n - 1) as u16;
 
             // Wait for space in CORB (1 ms deadline).
             let has_space = crate::timing::poll_timeout_us(1_000, || {
-                let wp_byte = mmio_read16(mmio, CORBWP) & corb_byte_mask;
-                let rp_byte = mmio_read16(mmio, CORBRP) & corb_byte_mask;
-                let wp = (wp_byte / 4) as usize;
-                let rp = (rp_byte / 4) as usize;
+                let wp = (mmio_read16(mmio, CORBWP) & corb_mask) as usize;
+                let rp = (mmio_read16(mmio, CORBRP) & corb_mask) as usize;
                 if (wp + 1) % corb_n != rp {
                     Some(true)
                 } else {
@@ -273,9 +272,8 @@ impl CorbEngine {
             }
 
             // Capture RIRBWP before writing CORBWP
-            let curr_rp = ((mmio_read16(mmio, RIRBWP) & rirb_byte_mask) / 8) as usize;
-            let wp_byte = mmio_read16(mmio, CORBWP) & corb_byte_mask;
-            let wp = (wp_byte / 4) as usize;
+            let curr_rp = (mmio_read16(mmio, RIRBWP) & rirb_mask) as usize;
+            let wp = (mmio_read16(mmio, CORBWP) & corb_mask) as usize;
             let next_wp = (wp + 1) % corb_n;
 
             // Write CORB entry
@@ -287,21 +285,28 @@ impl CorbEngine {
             // the updated CORB entry before we advance CORBWP.
             Self::tick_vm_exit();
 
-            mmio_write16(mmio, CORBWP, (next_wp * 4) as u16);
+            mmio_write16(mmio, CORBWP, next_wp as u16);
 
-            // Walk RIRB entries incrementally (100 ms deadline).
+            // Walk RIRB entries incrementally. A codec response should be
+            // available within a few milliseconds; keep enumeration from
+            // blocking the boot path when a controller advertises a codec
+            // that does not actually answer verbs (for example, a partial
+            // virtual HDA device).
             let rirb_n: usize = corb_n;
             let rirb_entry_mask = rirb_n - 1;
             let mut rp = curr_rp;
-            let verb_result = crate::timing::poll_timeout_us(100_000, || {
+            let verb_result = crate::timing::poll_timeout_us(5_000, || {
                 Self::tick_vm_exit();
-                let rirb_wp = ((mmio_read16(mmio, RIRBWP) & rirb_byte_mask) / 8) as usize;
+                let rirb_wp = (mmio_read16(mmio, RIRBWP) & rirb_mask) as usize;
                 while rp != rirb_wp {
                     rp = (rp + 1) & rirb_entry_mask;
                     let resp = core::ptr::read_volatile(rirb.add(rp));
                     let unsol = (resp >> 63) & 1;
                     if unsol == 0 {
-                        let raw = (resp >> 32) as u32;
+                        // RIRB entries store the codec response in the
+                        // lower dword. The upper dword is response metadata
+                        // (codec address, unsolicited-response bit, etc.).
+                        let raw = resp as u32;
                         if verb == verbs::GET_PARAM && payload <= 0x12 {
                             log::info!(
                                 "HDA: corb verb OK c={} n={:#x} v={:#03x} → raw=0x{:08x}",

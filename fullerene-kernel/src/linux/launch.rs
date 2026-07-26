@@ -44,11 +44,28 @@ pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
 
 /// Launch a Linux ELF binary from the VFS with a caller-owned static label.
 pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<ProcessId, LoadError> {
+    crate::klog_fmt!("[LINUX-DIAG] launch begin path={} name={}\n", path, name);
     let data = match crate::fs::read_entire_file(path) {
-        Ok(d) => d,
-        Err(_) => return Err(LoadError::FileNotFound),
+        Ok(d) => {
+            crate::klog_fmt!(
+                "[LINUX-DIAG] binary read exit path={} bytes={}\n",
+                path,
+                d.len()
+            );
+            d
+        }
+        Err(error) => {
+            crate::klog_fmt!(
+                "[LINUX-DIAG] binary read error path={} error={:?}\n",
+                path,
+                error
+            );
+            return Err(LoadError::FileNotFound);
+        }
     };
+    crate::klog_fmt!("[LINUX-DIAG] loader enter path={}\n", path);
     let pid = launch_linux_from_data(&data, name)?;
+    crate::klog_fmt!("[LINUX-DIAG] loader exit path={} pid={}\n", path, pid.0);
     #[cfg(linux_musl_smoke)]
     if matches!(path, "/bin/rust-std-hello" | "/bin/rust_std_hello") {
         MUSL_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
@@ -155,6 +172,9 @@ pub fn init_initramfs() {
         "/lib",
         "/lib64",
         "/mnt",
+        "/usr/share",
+        "/usr/share/sounds",
+        "/usr/share/sounds/fullerene",
     ];
 
     for dir in &dirs {
@@ -185,6 +205,39 @@ pub fn init_initramfs() {
         include_bytes!(concat!(env!("OUT_DIR"), "/hello.wasm")),
     ) {
         log::warn!("Initramfs: failed to write /apps/hello.wasm: {:?}", e);
+    }
+
+    // Embed the std-based startup sound player and both source encodings.
+    if let Err(e) = crate::fs::write_entire_file(
+        "/apps/startup_sound.wasm",
+        include_bytes!(concat!(env!("OUT_DIR"), "/startup_sound.wasm")),
+    ) {
+        log::warn!(
+            "Initramfs: failed to write /apps/startup_sound.wasm: {:?}",
+            e
+        );
+    }
+    let wav: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/audio/fullerene_startup_sound.wav"
+    ));
+    let mp3: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/audio/fullerene_startup_sound.mp3"
+    ));
+    for (path, data) in [
+        (
+            "/usr/share/sounds/fullerene/fullerene_startup_sound.wav",
+            wav,
+        ),
+        (
+            "/usr/share/sounds/fullerene/fullerene_startup_sound.mp3",
+            mp3,
+        ),
+    ] {
+        if let Err(e) = crate::fs::write_entire_file(path, data) {
+            log::warn!("Initramfs: failed to write {}: {:?}", path, e);
+        }
     }
 
     // Embed the viewer.wasm WASM app (built at compile time by build.rs)

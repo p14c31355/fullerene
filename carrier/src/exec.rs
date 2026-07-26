@@ -66,7 +66,7 @@ macro_rules! define_commands {
 /// buffering a potentially large result (e.g. `dmesg`) in a String only
 /// to flush it in one shot.
 pub fn dispatch(commands: &[&dyn Command], terminal: &mut dyn Terminal, line: &str) -> bool {
-    dispatch_inner(commands, terminal, line, None)
+    dispatch_inner(commands, terminal, line, None, None)
 }
 
 /// Dispatch a command line with immutable, constructor-injected services.
@@ -76,7 +76,28 @@ pub fn dispatch_with_services(
     line: &str,
     services: &dyn Any,
 ) -> bool {
-    dispatch_inner(commands, terminal, line, Some(services))
+    dispatch_inner(commands, terminal, line, Some(services), None)
+}
+
+/// Dispatch a command line with services and an output redirect handler.
+///
+/// When a command in the pipeline contains `> <file>`, the captured stdout
+/// of that command is passed to `redirect_handler` together with the target
+/// path instead of being written to the terminal.
+pub fn dispatch_with_redirect_handler(
+    commands: &[&dyn Command],
+    terminal: &mut dyn Terminal,
+    line: &str,
+    services: &dyn Any,
+    redirect_handler: fn(&mut CommandContext, &str, &str),
+) -> bool {
+    dispatch_inner(
+        commands,
+        terminal,
+        line,
+        Some(services),
+        Some(redirect_handler),
+    )
 }
 
 fn dispatch_inner(
@@ -84,6 +105,7 @@ fn dispatch_inner(
     terminal: &mut dyn Terminal,
     line: &str,
     services: Option<&dyn Any>,
+    redirect_handler: Option<fn(&mut CommandContext, &str, &str)>,
 ) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -121,7 +143,8 @@ fn dispatch_inner(
             terminal.set_stdin(input);
         }
 
-        if !is_last {
+        let capture = !is_last || cmd.redirect.is_some();
+        if capture {
             terminal.arm_pipe_stdout();
         }
 
@@ -132,8 +155,25 @@ fn dispatch_inner(
         };
         let continue_shell = matched.execute(&mut ctx);
 
-        if !is_last {
-            pipe_buffer = terminal.take_stdout();
+        if capture {
+            if let Some(output) = terminal.take_stdout() {
+                if let Some(ref path) = cmd.redirect {
+                    if let Some(handler) = redirect_handler {
+                        let empty: [&str; 0] = [];
+                        let mut redir_ctx = CommandContext {
+                            terminal: &mut *terminal,
+                            args: &empty[..],
+                            services,
+                        };
+                        handler(&mut redir_ctx, path, &output);
+                    } else {
+                        terminal.write_str("redirection is not supported here\n");
+                        terminal.write_str(&output);
+                    }
+                } else {
+                    pipe_buffer = Some(output);
+                }
+            }
         }
         terminal.clear_pipe_stdin();
 

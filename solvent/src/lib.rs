@@ -17,6 +17,20 @@
 
 extern crate alloc;
 
+static SCHEDULER_YIELD: spin::Mutex<Option<fn()>> = spin::Mutex::new(None);
+
+/// Install the kernel's cooperative scheduler handoff for terminal polling.
+pub fn install_scheduler_yield(callback: fn()) {
+    *SCHEDULER_YIELD.lock() = Some(callback);
+}
+
+pub(crate) fn yield_scheduler() {
+    let callback = *SCHEDULER_YIELD.lock();
+    if let Some(callback) = callback {
+        callback();
+    }
+}
+
 mod callbacks;
 mod clock;
 mod editor_bridge;
@@ -61,10 +75,11 @@ pub use settings_bridge::settings_handle_key;
 pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
 pub use viewer::show_text_window;
 pub use window_api::{
-    capture_screen, close_window, create_window, ensure_editor_window, ensure_terminal_window,
-    force_desktop_redraw, framebuffer_dims, invalidate_window, is_klog_live_active,
-    klog_live_surface_geometry, launch_file, mark_klog_live_dirty, resume_rendering,
-    suspend_rendering, with_window_surface, write_terminal,
+    capture_screen, capture_screen_chunk, capture_screen_scaled, close_window, create_window,
+    ensure_editor_window, ensure_terminal_window, force_desktop_redraw, framebuffer_dims,
+    invalidate_window, is_klog_live_active, klog_live_surface_geometry, launch_file,
+    mark_klog_live_dirty, resume_rendering, scaled_framebuffer_dims, suspend_rendering,
+    with_window_surface, write_terminal,
 };
 
 pub use lattice::theme::{

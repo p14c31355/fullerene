@@ -128,11 +128,17 @@ impl<'a> Shell<'a> {
         if trimmed.is_empty() {
             return true;
         }
-        carrier::exec::dispatch_with_services(
+
+        fn redirect_handler(ctx: &mut CommandContext, path: &str, content: &str) {
+            crate::fs_hooks::write_file(ctx, path, content);
+        }
+
+        carrier::exec::dispatch_with_redirect_handler(
             self.commands,
             &mut *self.terminal,
             trimmed,
             &self.services,
+            redirect_handler,
         )
     }
 

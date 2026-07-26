@@ -1156,16 +1156,20 @@ pub fn sd_card_info() -> Option<SdCardInfo> {
 }
 
 pub fn read_sectors(lba: u32, count: u16, buffer: &mut [u8]) -> Result<(), crate::DriverError> {
-    CONTROLLER
-        .lock()
+    let Some(mut controller) = CONTROLLER.try_lock() else {
+        return Err(crate::DriverError::Busy);
+    };
+    controller
         .as_mut()
         .ok_or(crate::DriverError::DeviceNotFound)?
         .read_sectors(lba, count, buffer)
 }
 
 pub fn write_sectors(lba: u32, count: u16, buffer: &[u8]) -> Result<(), crate::DriverError> {
-    CONTROLLER
-        .lock()
+    let Some(mut controller) = CONTROLLER.try_lock() else {
+        return Err(crate::DriverError::Busy);
+    };
+    controller
         .as_mut()
         .ok_or(crate::DriverError::DeviceNotFound)?
         .write_sectors(lba, count, buffer)

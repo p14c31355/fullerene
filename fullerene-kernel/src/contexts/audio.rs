@@ -148,6 +148,110 @@ impl AudioContext {
             }
         }
     }
+
+    /// Play a complete 48 kHz, mono, signed 16-bit PCM stream.
+    ///
+    /// HDA is configured for the format used by the Fullerene startup WAV.
+    /// The stream is double-buffered, so this method pre-fills both halves
+    /// and then advances the DMA ring one half at a time while the caller
+    /// (the synchronous WASM runtime) waits for playback to finish.
+    pub fn play_pcm(
+        &mut self,
+        sample_rate: u32,
+        channels: u8,
+        bits_per_sample: u8,
+        pcm: &[u8],
+    ) -> bool {
+        if sample_rate != 48_000 || channels != 1 || bits_per_sample != 16 || pcm.is_empty() {
+            log::warn!(
+                "Sound: unsupported PCM format rate={} channels={} bits={} bytes={}",
+                sample_rate,
+                channels,
+                bits_per_sample,
+                pcm.len()
+            );
+            return false;
+        }
+
+        self.lazy_init();
+        let Some(controller) = self.hda.as_ref().filter(|c| c.is_ready()) else {
+            log::warn!("Sound: HDA playback requested before controller became ready");
+            return false;
+        };
+
+        let half_size = controller.dma().half_size() as usize;
+        if half_size == 0 {
+            return false;
+        }
+        let half_count = core::cmp::max(2, pcm.len().div_ceil(half_size));
+
+        // The stream starts as soon as HDA is initialised. Fill both DMA
+        // halves before waiting for the first boundary; this prevents the
+        // first audible buffer from containing stale or uninitialised data.
+        for slot in 0..2 {
+            let start = (slot * half_size).min(pcm.len());
+            let end = (start + half_size).min(pcm.len());
+            let offset = (slot * half_size) as u32;
+            let written = controller.write_at(offset, &pcm[start..end]);
+            if written != end - start {
+                log::warn!(
+                    "Sound: HDA prefill short write {} / {}",
+                    written,
+                    end - start
+                );
+                return false;
+            }
+            if written < half_size {
+                controller.clear_at(offset + written as u32, half_size - written);
+            }
+        }
+        controller.reset_prefill_tracking();
+
+        let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
+        let timeout_tsc = tsc_per_ms.saturating_mul(500);
+        let mut completed = 0usize;
+        let mut next_half = 2usize;
+        while completed < half_count {
+            if !controller.poll(Some(timeout_tsc)) {
+                let (ctl, sts, lpib) = controller.debug_stream_status();
+                log::warn!(
+                    "Sound: HDA playback timed out at half {} (CTL=0x{:08x} STS=0x{:02x} LPIB={})",
+                    completed,
+                    ctl,
+                    sts,
+                    lpib
+                );
+                return false;
+            }
+
+            // A zero-length feed acknowledges BCIS and advances the driver's
+            // LPIB tracking without copying data into the DMA buffer.
+            let _ = controller.feed_samples(&[]);
+            if next_half < half_count {
+                let start = next_half * half_size;
+                let end = (start + half_size).min(pcm.len());
+                let offset = ((next_half % 2) * half_size) as u32;
+                let written = controller.write_at(offset, &pcm[start..end]);
+                if written != end - start {
+                    log::warn!(
+                        "Sound: HDA playback short write {} / {}",
+                        written,
+                        end - start
+                    );
+                    return false;
+                }
+                if written < half_size {
+                    controller.clear_at(offset + written as u32, half_size - written);
+                }
+                next_half += 1;
+            }
+            completed += 1;
+        }
+
+        log::info!("Sound: startup PCM playback complete ({} bytes)", pcm.len());
+        true
+    }
+
     pub fn pc_speaker_on(freq_hz: u32) {
         if freq_hz == 0 {
             Self::pc_speaker_off();

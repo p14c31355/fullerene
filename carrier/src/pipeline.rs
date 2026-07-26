@@ -39,14 +39,30 @@ impl fmt::Display for Pipeline {
 pub struct ParsedCommand {
     pub name: String,
     pub args: Vec<String>,
+    /// Target filename for `>` redirect, if present.
+    pub redirect: Option<String>,
 }
 
 impl ParsedCommand {
     pub fn parse(line: &str) -> Self {
-        let mut parts = line.split_whitespace();
-        let name = parts.next().unwrap_or("").to_string();
-        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
-        Self { name, args }
+        let mut parts: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
+
+        // Check for "> filename" redirect at the end of the command.
+        let redirect = if parts.len() >= 3 && parts[parts.len() - 2] == ">" {
+            let file = parts.pop().unwrap(); // filename
+            parts.pop(); // ">"
+            Some(file)
+        } else {
+            None
+        };
+
+        let name = parts.first().cloned().unwrap_or_default();
+        let args: Vec<String> = parts.into_iter().skip(1).collect();
+        Self {
+            name,
+            args,
+            redirect,
+        }
     }
 
     pub fn args_slice(&self) -> Vec<&str> {

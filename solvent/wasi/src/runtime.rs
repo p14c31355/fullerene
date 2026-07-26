@@ -6,9 +6,11 @@ use wasmi::{Engine, Linker, Module, Store};
 use crate::wasi::{
     WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
     fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir,
-    fd_seek, fd_write, fullerene_capture_screen, fullerene_close_window, fullerene_create_window,
+    fd_seek, fd_write, fullerene_capture_screen, fullerene_capture_screen_chunk,
+    fullerene_close_window, fullerene_create_window, fullerene_play_pcm,
     fullerene_screen_dimensions, fullerene_show_error, fullerene_show_image, fullerene_show_text,
-    fullerene_update_window, path_filestat_get, path_open, proc_exit, random_get,
+    fullerene_update_window, fullerene_wait_for_ns, fullerene_write_file_chunk, path_filestat_get,
+    path_open, proc_exit, random_get, sched_yield,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -23,21 +25,52 @@ pub fn run(
     write_stderr: fn(&[u8]),
     read_stdin: fn() -> Option<u8>,
     yield_now: fn(),
+    wait_for_ns: fn(u64),
     file_size: fn(&str) -> Result<u64, genome::FsError>,
     read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
+    write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
     get_monotonic_ns: fn() -> u64,
     screen_dimensions: fn() -> (u32, u32),
     capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
+    capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
     show_image: fn(u32, u32, &[u8]) -> i32,
     show_text: fn(&str, &str) -> i32,
     show_error: fn(&str, &str) -> i32,
     create_window: fn(&str, u32, u32) -> i32,
     update_window: fn(i32, u32, u32, &[u8]) -> i32,
     close_window: fn(i32) -> i32,
+    play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
 ) -> i32 {
     const INITIAL_FUEL: u64 = 100_000_000;
+    // The file viewer is synchronous by design. Give it a smaller compute
+    // budget so malformed media metadata cannot monopolize the shell while
+    // still leaving enough room for normal image/video decoding.
+    let is_viewer = args
+        .first()
+        .is_some_and(|path| path.ends_with("viewer.wasm"));
+    let is_mp4 = args
+        .iter()
+        .any(|path| path.to_ascii_lowercase().ends_with(".mp4"));
+    let is_mp3 = args
+        .iter()
+        .any(|path| path.to_ascii_lowercase().ends_with(".mp3"));
+    let fuel = if is_mp4 {
+        // H.264 decoding every sample is intentionally synchronous. The
+        // parser still has independent time/I/O/sample-count guards, so the
+        // fuel budget must cover a complete long video instead of aborting
+        // partway through playback.
+        500_000_000
+    } else if is_mp3 {
+        // MP3 metadata scanning is linear but may inspect thousands of
+        // frames. Keep it finite while leaving enough room for a long track.
+        100_000_000
+    } else if is_viewer {
+        25_000_000
+    } else {
+        INITIAL_FUEL
+    };
     let mut config = wasmi::Config::default();
     config.consume_fuel(true);
     let engine = Engine::new(&config);
@@ -56,23 +89,27 @@ pub fn run(
         write_stderr,
         read_stdin,
         yield_now,
+        wait_for_ns,
         file_size,
         read_file_range,
         read_directory,
         write_file,
+        write_file_chunk,
         get_monotonic_ns,
         screen_dimensions,
         capture_screen,
+        capture_screen_chunk,
         show_image,
         show_text,
         show_error,
         create_window,
         update_window,
         close_window,
+        play_pcm,
     );
 
     let mut store = Store::new(&engine, ctx);
-    if let Err(error) = store.set_fuel(INITIAL_FUEL) {
+    if let Err(error) = store.set_fuel(fuel) {
         let msg = format!("wasm: fuel setup failed: {}\n", error);
         write_stderr(msg.as_bytes());
         return -1;
@@ -166,6 +203,7 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     wasi_func!("path_open", path_open);
     wasi_func!("path_filestat_get", path_filestat_get);
     wasi_func!("proc_exit", proc_exit);
+    wasi_func!("sched_yield", sched_yield);
     wasi_func!("clock_time_get", clock_time_get);
     wasi_func!("random_get", random_get);
 
@@ -173,12 +211,20 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     let fullerene = "fullerene";
     linker.func_wrap(fullerene, "screen_dimensions", fullerene_screen_dimensions)?;
     linker.func_wrap(fullerene, "capture_screen", fullerene_capture_screen)?;
+    linker.func_wrap(
+        fullerene,
+        "capture_screen_chunk",
+        fullerene_capture_screen_chunk,
+    )?;
+    linker.func_wrap(fullerene, "write_file_chunk", fullerene_write_file_chunk)?;
+    linker.func_wrap(fullerene, "wait_for_ns", fullerene_wait_for_ns)?;
     linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
     linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
     linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;
     linker.func_wrap(fullerene, "create_window", fullerene_create_window)?;
     linker.func_wrap(fullerene, "update_window", fullerene_update_window)?;
     linker.func_wrap(fullerene, "close_window", fullerene_close_window)?;
+    linker.func_wrap(fullerene, "play_pcm", fullerene_play_pcm)?;
 
     Ok(linker)
 }

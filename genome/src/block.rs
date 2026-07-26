@@ -3,6 +3,7 @@ use core::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockError {
     Device,
+    Busy,
     BufferTooSmall { required: usize, provided: usize },
     LbaOverflow,
     SectorNotFound,
@@ -12,6 +13,7 @@ impl fmt::Display for BlockError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BlockError::Device => write!(f, "block device error"),
+            BlockError::Busy => write!(f, "block device busy"),
             BlockError::BufferTooSmall { required, provided } => {
                 write!(f, "buffer too small: need {} got {}", required, provided)
             }

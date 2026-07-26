@@ -5,16 +5,15 @@
 
 use petroleum::page_table::BootInfoFrameAllocator;
 
-pub const HEAP_SIZE: usize = 12 * 1024 * 1024; // 12MB heap (allows ~4MB back buffer + overhead)
+/// Initial contiguous heap available before automatic extension.
+pub const HEAP_SIZE: usize = 12 * 1024 * 1024;
 pub const KERNEL_STACK_SIZE: usize = 4096 * 64; // 256KB
 
-/// Maximum additional heap that can be requested via `extend_kernel_heap`.
-/// Increased to 80 MiB to accommodate large image decode buffers (e.g.
-/// 1920x1080x4 = ~8 MiB) plus decoder working memory and terminal/editor surfaces.
-const HEAP_EXTEND_MAX: usize = 80 * 1024 * 1024; // 80 MiB
+/// Maximum additional heap exposed automatically when an allocation fails.
+pub const HEAP_EXTEND_MAX: usize = 128 * 1024 * 1024;
 
-/// Total heap size: initial 12 MiB + extendable 80 MiB.
-pub const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX; // 92 MiB
+/// Total static heap buffer: initial 12 MiB + extendable 128 MiB.
+pub const HEAP_TOTAL: usize = HEAP_SIZE + HEAP_EXTEND_MAX;
 
 use petroleum::page_table::MemoryDescriptorValidator;
 use petroleum::page_table::memory_map::MemoryMapDescriptor;
@@ -31,26 +30,32 @@ pub const MAX_DESCRIPTORS: usize = 2048;
 
 /// Single contiguous static buffer for the global allocator.
 ///
-/// The first [`HEAP_SIZE`] bytes serve as the initial heap (replaces the old
-/// `BOOT_HEAP_BUFFER`).  The remaining [`HEAP_EXTEND_MAX`] bytes are used
-/// for dynamic heap expansion (replaces the old `HEAP_EXTEND_BUFFER`).
+/// The first [`HEAP_SIZE`] bytes serve as the initial heap. The remaining
+/// [`HEAP_EXTEND_MAX`] bytes are exposed lazily by the global allocator.
 ///
-/// This is deliberately not forced into `.data`: because it is zero
-/// initialized, the PE/UEFI image can represent it as a loader-zero-filled
-/// region (BSS).  The pages are still mapped and zeroed by the UEFI image
-/// loader at runtime, but the zero bytes do not occupy space in the ISO.
+/// This is deliberately zero initialized so the PE/UEFI image can represent
+/// it as a loader-zero-filled region (BSS); the bytes do not occupy ISO file
+/// space. The first 12 MiB is committed at boot and the extension backing is
+/// exposed page-by-page as the allocator grows.
 #[repr(align(4096))]
 pub struct TotalHeapBuffer(#[allow(dead_code)] pub(crate) [u8; HEAP_TOTAL]);
 
 /// # Safety
-/// The heap buffer is written once (zeroed at compile time, mapped by UEFI),
-/// and then used by the kernel allocator which serialises access via spinlock.
+/// The heap backing is zero initialized and accessed by the kernel allocator,
+/// which serialises its metadata via spinlock. Extension pages are only
+/// exposed after the bounded growth path has established their range.
 /// Only accessed after single‑core boot init is complete.
 pub static mut TOTAL_HEAP_BUFFER: TotalHeapBuffer = TotalHeapBuffer([0; HEAP_TOTAL]);
 
-/// Track how many bytes of the extend region (offset `HEAP_SIZE` inside
-/// `TOTAL_HEAP_BUFFER`) have already been passed to `extend_global_heap`.
-static HEAP_EXTEND_USED: Mutex<usize> = Mutex::new(0);
+/// Return whether an address belongs to the reserved, not-yet-committed
+/// extension backing.  The page-fault handler uses this narrow predicate; it
+/// must never turn an arbitrary kernel pointer into a demand-mapped page.
+pub fn is_reserved_extension_address(address: usize) -> bool {
+    let start = core::ptr::addr_of!(TOTAL_HEAP_BUFFER) as usize;
+    let extension_start = start.saturating_add(HEAP_SIZE);
+    let end = start.saturating_add(HEAP_TOTAL);
+    address >= extension_start && address < end
+}
 
 /// # Safety
 /// Written once during boot by `MemoryDescriptorValidator`, then read-only.
@@ -80,16 +85,27 @@ pub fn init_frame_allocator(memory_map: &[impl MemoryDescriptorValidator]) {
     *FRAME_ALLOCATOR.lock() = Some(allocator);
 }
 
+/// Configure automatic heap extension after the initial allocator is ready.
+pub fn configure_heap_extension() {
+    petroleum::set_heap_extension_guard(heap_extension_allowed);
+    petroleum::configure_heap_extension(HEAP_EXTEND_MAX);
+}
+
+fn heap_extension_allowed() -> bool {
+    // Page-fault continuation currently maps reserved heap pages only for the
+    // idle kernel/shell context.  Refuse growth from user or other kernel
+    // processes instead of exposing an unmapped range they cannot recover.
+    crate::process::SCHEDULER.current_pid() == 1
+}
+
 /// Extend the kernel heap by `additional` bytes.
 ///
-/// The entire [`TOTAL_HEAP_BUFFER`] (including the extend region starting
-/// at offset [`HEAP_SIZE`]) is placed in `.data` and already mapped by
-/// the UEFI PE loader with zeroed physical pages.  Therefore we only need
-/// to call `petroleum::extend_global_heap` — no additional frame
-/// allocation or page-table manipulation is required.
+/// The entire [`TOTAL_HEAP_BUFFER`] is reserved as the backing range. The
+/// allocator exposes the extension transactionally; missing pages in the
+/// idle kernel context are mapped by the page-fault continuation path.
 ///
 /// Returns `Ok(())` if the extension succeeded, or `Err(())` if the
-/// extension would exceed `HEAP_EXTEND_MAX`.
+/// configured extension region is exhausted.
 ///
 /// # Safety
 ///
@@ -100,29 +116,8 @@ pub unsafe fn extend_kernel_heap(additional: usize) -> Result<(), ()> {
     let pages = (additional + 4095) / 4096;
     let bytes = pages * 4096;
 
-    // Check we haven't exceeded the extend region.
-    let mut used = HEAP_EXTEND_USED.lock();
-    if *used + bytes > HEAP_EXTEND_MAX {
-        petroleum::serial::serial_log(format_args!(
-            "extend_kernel_heap: would exceed HEAP_EXTEND_MAX (used={}, need={}, max={})\n",
-            *used, bytes, HEAP_EXTEND_MAX,
-        ));
-        return Err(());
-    }
-
-    // The extend region is already mapped (it's part of .data), so just
-    // tell the allocator to make it available.
-    unsafe {
-        petroleum::extend_global_heap(bytes);
-    }
-
-    *used += bytes;
-
-    petroleum::serial::serial_log(format_args!(
-        "extend_kernel_heap: extended by {} bytes (total extend used={})\n",
-        bytes, *used,
-    ));
-    Ok(())
+    // The allocator serializes the extension and tracks its reserved limit.
+    unsafe { petroleum::try_extend_global_heap(bytes) }
 }
 
 /// Return the number of bytes currently available in the global heap
