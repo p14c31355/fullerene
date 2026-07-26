@@ -133,3 +133,28 @@ example remains available through `cargo run -p lattice --example render_ppm`.
 Dirty-region systems should preserve region topology until the last possible
 stage. A bounding box is useful for reporting, but not as the composition
 worklist when the backing store already contains the unchanged pixels.
+
+---
+
+## Entry 003 — Window shadows and terminal-cell redraw coverage
+
+### Symptoms
+
+Incremental desktop updates could leave a thin shadow or decoration from a
+window's previous position. Shell text updates could also retain pixels in
+the line gap below a glyph or place the cursor above the terminal cell's
+baseline.
+
+### Root cause and fix
+
+The window-manager dirty rectangle used a stale 20px title-bar height while
+the compositor rendered a 28px title bar, and it did not cover the shadow
+falloff. Dirty bounds now use the compositor's title-bar constant and include
+a conservative shadow margin. Terminal cells are treated as 16px high: every
+cell redraw clears the complete cell background and the cursor is drawn in
+the final two rows.
+
+### Regression coverage
+
+The Lattice tests compare incremental and full composition after moving a
+titled window, and verify terminal-cell gap/cursor redraw behavior.

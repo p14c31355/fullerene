@@ -13,6 +13,9 @@
 use crate::font;
 use crate::surface::Surface;
 
+/// Terminal cells keep a 3px line gap below the embedded 8x13 glyph.
+pub const CELL_HEIGHT: u32 = 16;
+
 /// A single terminal cell — the minimal unit the renderer consumes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cell {
@@ -48,17 +51,18 @@ pub struct RenderParams<'a> {
 pub fn render_cell(surface: &mut Surface, cell: Cell, col: u32, row: u32, cursor: bool) {
     let glyph_w = font::GLYPH_WIDTH as usize;
     let glyph_h = font::GLYPH_HEIGHT as usize;
+    let cell_h = CELL_HEIGHT as usize;
     let surf_w = surface.width() as usize;
     let surf_h = surface.height() as usize;
     let dx = col as usize * glyph_w;
-    let dy = row as usize * glyph_h;
+    let dy = row as usize * cell_h;
 
-    if dx > surf_w.saturating_sub(glyph_w) || dy > surf_h.saturating_sub(glyph_h) {
+    if dx > surf_w.saturating_sub(glyph_w) || dy > surf_h.saturating_sub(cell_h) {
         return;
     }
 
     let pixels = surface.pixels_mut();
-    for gy in 0..glyph_h {
+    for gy in 0..cell_h {
         let row_base = (dy + gy) * surf_w;
         pixels[row_base + dx..row_base + dx + glyph_w].fill(cell.bg);
     }
@@ -75,7 +79,7 @@ pub fn render_cell(surface: &mut Surface, cell: Cell, col: u32, row: u32, cursor
     }
 
     if cursor {
-        for gy in (glyph_h - 2)..glyph_h {
+        for gy in (cell_h - 2)..cell_h {
             let row_base = (dy + gy) * surf_w;
             pixels[row_base + dx..row_base + dx + glyph_w].fill(cell.fg);
         }
@@ -84,7 +88,7 @@ pub fn render_cell(surface: &mut Surface, cell: Cell, col: u32, row: u32, cursor
 
 /// Render a terminal cell grid onto a surface using the 8×16 bitmap font.
 ///
-/// Each cell occupies `font::GLYPH_WIDTH × font::GLYPH_HEIGHT` pixels.
+/// Each cell occupies `font::GLYPH_WIDTH × CELL_HEIGHT` pixels.
 /// The surface is filled cell‑by‑cell from the top‑left.
 pub fn render(params: RenderParams<'_>) {
     let RenderParams {
@@ -113,5 +117,64 @@ pub fn render(params: RenderParams<'_>) {
             && cursor_col.map_or(false, |cc| cc == col)
             && cursor_row.map_or(false, |rr| rr == row);
         render_cell(surface, *cell, col, row, is_cursor);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CELL_HEIGHT, Cell, render_cell};
+    use crate::font;
+    use crate::surface::Surface;
+
+    #[test]
+    fn cell_redraw_clears_the_line_gap() {
+        let mut surface = Surface::new(8, CELL_HEIGHT, 0x112233);
+        render_cell(
+            &mut surface,
+            Cell {
+                ch: b'A',
+                fg: 0xFFFFFF,
+                bg: 0x445566,
+            },
+            0,
+            0,
+            false,
+        );
+        render_cell(
+            &mut surface,
+            Cell {
+                ch: b'B',
+                fg: 0xFFFFFF,
+                bg: 0x778899,
+            },
+            0,
+            0,
+            false,
+        );
+
+        assert!(
+            (font::GLYPH_HEIGHT..CELL_HEIGHT).all(|row| {
+                (0..8).all(|column| surface.get_pixel(column, row) == Some(0x778899))
+            })
+        );
+    }
+
+    #[test]
+    fn cursor_is_drawn_at_the_bottom_of_the_terminal_cell() {
+        let mut surface = Surface::new(8, CELL_HEIGHT, 0);
+        render_cell(
+            &mut surface,
+            Cell {
+                ch: b' ',
+                fg: 0xFFFFFF,
+                bg: 0,
+            },
+            0,
+            0,
+            true,
+        );
+
+        assert_eq!(surface.get_pixel(0, CELL_HEIGHT - 2), Some(0xFFFFFF));
+        assert_eq!(surface.get_pixel(0, CELL_HEIGHT - 1), Some(0xFFFFFF));
     }
 }
