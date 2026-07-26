@@ -41,6 +41,7 @@ pub mod verbs {
     // ── 4‑bit verbs (payload in lower 16 bits) ──
     pub const SET_FMT: u32 = 0x002;
     pub const SET_AMP_GAIN_MUTE: u32 = 0x003;
+    pub const SET_CVT_CHAN_COUNT: u32 = 0x72D;
     pub const SET_PIN_CTL: u32 = 0x707;
     pub const SET_STREAM: u32 = 0x706;
     pub const SET_EAPD: u32 = 0x70C;
