@@ -100,7 +100,13 @@ fn capture_rgba() -> Result<(u32, u32, Vec<u8>), String> {
         return Err("The desktop capture is outside the supported size.".to_owned());
     }
     println!("Emulsion: allocating capture bytes={byte_len}");
-    let mut pixels = vec![0u8; byte_len];
+    // The host callback overwrites every byte. Avoid zero-initialising a
+    // 14.7 MiB 2560x1440 buffer in the WASM interpreter before entering the
+    // callback; that work can exhaust the synchronous execution budget and
+    // makes the last visible line look like a capture deadlock.
+    let mut pixels = Vec::with_capacity(byte_len);
+    unsafe { pixels.set_len(byte_len); }
+    println!("Emulsion: capture buffer allocated bytes={byte_len}");
     let result = unsafe {
         capture_screen(
             pixels.as_mut_ptr(),
@@ -109,6 +115,7 @@ fn capture_rgba() -> Result<(u32, u32, Vec<u8>), String> {
             &mut height,
         )
     };
+    println!("Emulsion: capture host returned result={result}");
     if result != 0 {
         return Err(format!("Cannot capture the desktop (host error {result})."));
     }

@@ -327,6 +327,7 @@ pub fn read_entire_file(path: &str) -> Result<Vec<u8>, FsError> {
 /// Read a bounded range without materializing the whole file.
 pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>, FsError> {
     const MAX_RANGE_BYTES: usize = 64 * 1024;
+    const TIMEOUT_MS: u64 = 15_000;
     if limit > MAX_RANGE_BYTES {
         return Err(FsError::InvalidInput);
     }
@@ -335,7 +336,19 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
         return Err(FsError::InvalidSeek);
     }
     let target = (size - offset).min(limit as u64) as usize;
+    let deadline = solvent::get_tsc_per_ms()
+        .checked_mul(TIMEOUT_MS)
+        .map(|ticks| unsafe { core::arch::x86_64::_rdtsc() }.wrapping_add(ticks));
+    crate::klog_fmt!(
+        "[WASM-DIAG] range begin path={} offset={} limit={} size={} target={}\n",
+        path,
+        offset,
+        limit,
+        size,
+        target
+    );
     let mut fd = open_file(path)?;
+    crate::klog_fmt!("[WASM-DIAG] range open exit path={} fd={}\n", path, fd.fd);
     if let Err(error) = seek_file(&mut fd, offset) {
         let _ = close_file(fd);
         return Err(error);
@@ -343,17 +356,59 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
     let mut result = Vec::with_capacity(target);
     let mut chunk = [0u8; 4096];
     while result.len() < target {
+        if deadline.is_some_and(|deadline| unsafe { core::arch::x86_64::_rdtsc() } >= deadline) {
+            let _ = close_file(fd);
+            crate::klog_fmt!(
+                "[WASM-DIAG] range timeout path={} offset={} bytes={}\n",
+                path,
+                offset,
+                result.len()
+            );
+            return Err(FsError::Io);
+        }
         let want = (target - result.len()).min(chunk.len());
+        crate::klog_fmt!(
+            "[WASM-DIAG] range read begin path={} at={} want={} total={}\n",
+            path,
+            fd.offset,
+            want,
+            result.len()
+        );
         match read_file(&mut fd, &mut chunk[..want]) {
-            Ok(0) => break,
-            Ok(n) => result.extend_from_slice(&chunk[..n]),
+            Ok(0) => {
+                crate::klog_fmt!(
+                    "[WASM-DIAG] range eof path={} total={}\n",
+                    path,
+                    result.len()
+                );
+                break;
+            }
+            Ok(n) => {
+                result.extend_from_slice(&chunk[..n]);
+                crate::klog_fmt!(
+                    "[WASM-DIAG] range read exit path={} bytes={} total={}\n",
+                    path,
+                    n,
+                    result.len()
+                );
+            }
             Err(error) => {
                 let _ = close_file(fd);
+                crate::klog_fmt!(
+                    "[WASM-DIAG] range read error path={} error={:?}\n",
+                    path,
+                    error
+                );
                 return Err(error);
             }
         }
     }
     close_file(fd)?;
+    crate::klog_fmt!(
+        "[WASM-DIAG] range end path={} bytes={}\n",
+        path,
+        result.len()
+    );
     Ok(result)
 }
 

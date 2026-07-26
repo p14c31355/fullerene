@@ -44,11 +44,28 @@ pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
 
 /// Launch a Linux ELF binary from the VFS with a caller-owned static label.
 pub fn launch_linux_binary_named(path: &str, name: &'static str) -> Result<ProcessId, LoadError> {
+    crate::klog_fmt!("[LINUX-DIAG] launch begin path={} name={}\n", path, name);
     let data = match crate::fs::read_entire_file(path) {
-        Ok(d) => d,
-        Err(_) => return Err(LoadError::FileNotFound),
+        Ok(d) => {
+            crate::klog_fmt!(
+                "[LINUX-DIAG] binary read exit path={} bytes={}\n",
+                path,
+                d.len()
+            );
+            d
+        }
+        Err(error) => {
+            crate::klog_fmt!(
+                "[LINUX-DIAG] binary read error path={} error={:?}\n",
+                path,
+                error
+            );
+            return Err(LoadError::FileNotFound);
+        }
     };
+    crate::klog_fmt!("[LINUX-DIAG] loader enter path={}\n", path);
     let pid = launch_linux_from_data(&data, name)?;
+    crate::klog_fmt!("[LINUX-DIAG] loader exit path={} pid={}\n", path, pid.0);
     #[cfg(linux_musl_smoke)]
     if matches!(path, "/bin/rust-std-hello" | "/bin/rust_std_hello") {
         MUSL_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);

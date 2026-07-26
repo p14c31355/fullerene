@@ -330,7 +330,24 @@ impl BlockDevice for BlockDeviceLease {
         count: u16,
         buf: &mut [u8],
     ) -> Result<(), genome::block::BlockError> {
-        self.device.lock().read_sectors(lba, count, buf)
+        crate::klog_fmt!(
+            "[VFS-DIAG] block read begin lba={} count={} bytes={}\n",
+            lba,
+            count,
+            buf.len()
+        );
+        let Some(mut device) = self.device.try_lock() else {
+            crate::klog_fmt!("[VFS-DIAG] block read busy lba={} count={}\n", lba, count);
+            return Err(genome::block::BlockError::Device);
+        };
+        let result = device.read_sectors(lba, count, buf);
+        crate::klog_fmt!(
+            "[VFS-DIAG] block read exit lba={} count={} result={:?}\n",
+            lba,
+            count,
+            result
+        );
+        result
     }
 
     fn write_sectors(
@@ -339,7 +356,11 @@ impl BlockDevice for BlockDeviceLease {
         count: u16,
         buf: &[u8],
     ) -> Result<(), genome::block::BlockError> {
-        self.device.lock().write_sectors(lba, count, buf)
+        let Some(mut device) = self.device.try_lock() else {
+            crate::klog_fmt!("[VFS-DIAG] block write busy lba={} count={}\n", lba, count);
+            return Err(genome::block::BlockError::Device);
+        };
+        device.write_sectors(lba, count, buf)
     }
 
     fn sector_size(&self) -> u32 {

@@ -1,8 +1,9 @@
 use image::GenericImageView;
-use std::io::{Cursor, Read, Seek};
+use std::io::{self, Cursor, Read, Seek};
 
 const VIEWER_BUILD_ID: &str = "2026-07-26-qoi-full-resolution-1";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_MP4_IO_OPERATIONS: usize = 16 * 1024;
 const MAX_FIRST_SAMPLE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NALS_PER_SAMPLE: usize = 128;
 const MAX_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -212,6 +213,55 @@ fn source_dimensions_allowed(width: u32, height: u32) -> bool {
 
 // ── MP4 video ───────────────────────────────────────────────────
 
+/// Keep malformed metadata from turning the synchronous viewer into an
+/// unbounded parser. This also makes the last successful read visible in the
+/// diagnostic log instead of leaving the caller inside `read_header` forever.
+struct BoundedMp4Reader<R> {
+    inner: R,
+    operations: usize,
+}
+
+impl<R> BoundedMp4Reader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            operations: 0,
+        }
+    }
+
+    fn begin_operation(&mut self) -> io::Result<()> {
+        if self.operations >= MAX_MP4_IO_OPERATIONS {
+            println!("viewer: mp4 io budget exhausted operations={}", self.operations);
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MP4 metadata I/O budget exhausted",
+            ));
+        }
+        self.operations += 1;
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for BoundedMp4Reader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.begin_operation()?;
+        println!("viewer: mp4 io read begin op={} bytes={}", self.operations, buffer.len());
+        let result = self.inner.read(buffer);
+        println!("viewer: mp4 io read exit op={} result={:?}", self.operations, result.as_ref().map(|n| *n));
+        result
+    }
+}
+
+impl<R: Seek> Seek for BoundedMp4Reader<R> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> io::Result<u64> {
+        self.begin_operation()?;
+        println!("viewer: mp4 io seek begin op={} position={:?}", self.operations, position);
+        let result = self.inner.seek(position);
+        println!("viewer: mp4 io seek exit op={} result={:?}", self.operations, result.as_ref().map(|n| *n));
+        result
+    }
+}
+
 fn try_mp4(path: &str, data: &[u8]) -> bool {
     println!("viewer: mp4 probe enter bytes={}", data.len());
     if data.len() as u64 > MAX_MP4_BYTES {
@@ -221,7 +271,10 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
 
     println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
     println!("viewer: mp4 header enter");
-    let Ok(reader) = mp4::Mp4Reader::read_header(Cursor::new(data), data.len() as u64) else {
+    let Ok(reader) = mp4::Mp4Reader::read_header(
+        BoundedMp4Reader::new(Cursor::new(data)),
+        data.len() as u64,
+    ) else {
         println!("viewer: mp4 header failed");
         return false;
     };
@@ -234,6 +287,7 @@ fn try_mp4(path: &str, data: &[u8]) -> bool {
 /// media file into a WASM Vec.  The MP4 metadata is at the beginning of the
 /// sample file, and the reader only seeks to the first sample it needs.
 fn try_mp4_file(path: &str) -> bool {
+    println!("viewer: mp4 file stat enter path={path}");
     let size = match std::fs::metadata(path).map(|metadata| metadata.len()) {
         Ok(size) => size,
         Err(error) => {
@@ -241,6 +295,7 @@ fn try_mp4_file(path: &str) -> bool {
             return true;
         }
     };
+    println!("viewer: mp4 file stat exit size={size}");
     println!("viewer: mp4 file mode size={}", size);
     if size > MAX_MP4_BYTES {
         present_error(
@@ -256,9 +311,10 @@ fn try_mp4_file(path: &str) -> bool {
             return true;
         }
     };
+    println!("viewer: mp4 file open exit");
     println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
     println!("viewer: mp4 header enter");
-    let reader = match mp4::Mp4Reader::read_header(file, size) {
+    let reader = match mp4::Mp4Reader::read_header(BoundedMp4Reader::new(file), size) {
         Ok(reader) => reader,
         Err(error) => {
             println!("viewer: mp4 header failed");

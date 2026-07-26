@@ -397,6 +397,10 @@ impl SchedulerContext {
         });
 
         if selected {
+            petroleum::serial::serial_log(format_args!(
+                "[LINUX-DIAG] yield_to old={} new={} selected\n",
+                old_pid.0, new_pid.0
+            ));
             unsafe {
                 self.context_switch(Some(old_pid), new_pid);
             }
@@ -414,8 +418,8 @@ impl SchedulerContext {
     /// cooperative scheduling:
     ///
     ///   * No other core can concurrently terminate/clean up a process.
-    ///   * Interrupt handlers (interrupt‑gate, IF=0) never touch the process
-    ///     list, so they cannot race with the pointer window.
+    ///   * Timer and device interrupt handlers do not touch the process list,
+    ///     so they cannot race with the pointer window.
     ///   * Cooperative scheduling means no preemption can occur between the
     ///     lock drop and `switch_context`.
     ///
@@ -456,11 +460,22 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
+            petroleum::serial::serial_log(format_args!(
+                "[LINUX-DIAG] switch prepare old={:?} new={} cr3={:#x} kernel_stack={:#x}\n",
+                old_pid,
+                new_pid.0,
+                pt.as_u64(),
+                new_kernel_stack.map_or(0, |stack| stack.as_u64())
+            ));
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
             let old = old_ctx.unwrap_or(core::ptr::null_mut());
             unsafe { switch_context(old, new, pt.as_u64()) };
+            petroleum::serial::serial_log(format_args!(
+                "[LINUX-DIAG] switch resumed old={:?} new={}\n",
+                old_pid, new_pid.0
+            ));
         }
     }
 

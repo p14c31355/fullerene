@@ -33,6 +33,16 @@ pub unsafe extern "sysv64" fn handle_syscall(
         .unwrap_or(false);
 
     if dispatch_mode {
+        crate::klog_fmt!(
+            "[LINUX-DIAG] syscall enter pid={:?} nr={} args={:#x},{:#x}\n",
+            current_pid,
+            syscall_num,
+            arg1,
+            arg2
+        );
+    }
+
+    if dispatch_mode {
         let mut linux_rt = current_pid.and_then(|pid| {
             crate::process::SCHEDULER
                 .with_process(pid, |p| {
@@ -59,6 +69,12 @@ pub unsafe extern "sysv64" fn handle_syscall(
         } else {
             crate::linux::errno_code(crate::linux::ENOSYS)
         };
+        crate::klog_fmt!(
+            "[LINUX-DIAG] syscall exit pid={:?} nr={} ret={:#x}\n",
+            current_pid,
+            syscall_num,
+            ret
+        );
         return ret;
     }
 

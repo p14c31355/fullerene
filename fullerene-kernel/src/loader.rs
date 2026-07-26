@@ -558,8 +558,20 @@ fn load_program_inner(
     name: &'static str,
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
+    crate::klog_fmt!(
+        "[LINUX-DIAG] elf parse begin name={} bytes={} linux={}\n",
+        name,
+        image_data.len(),
+        is_linux
+    );
     // Parse ELF using goblin
     let elf = goblin::elf::Elf::parse(image_data).map_err(|_| LoadError::InvalidFormat)?;
+    crate::klog_fmt!(
+        "[LINUX-DIAG] elf parse exit entry={:#x} phnum={} interp={}\n",
+        elf.entry,
+        elf.program_headers.len(),
+        elf.interpreter.is_some()
+    );
 
     // The first Linux personality milestone intentionally supports static
     // x86_64 executables.  A PT_INTERP image would require a dynamic linker,
@@ -582,18 +594,30 @@ fn load_program_inner(
 
     // Create process with the loaded program (user mode)
     let pid = process::create_process(name, entry_point_address, true)?;
+    crate::klog_fmt!(
+        "[LINUX-DIAG] process created pid={} entry={:#x}\n",
+        pid.0,
+        elf.entry
+    );
 
     let load_result = process::SCHEDULER
         .with_process(pid, |p| {
             let loaded = {
                 let process_page_table = p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
+                crate::klog_fmt!("[LINUX-DIAG] segments begin pid={}\n", pid.0);
                 load_elf_segments(process_page_table, &elf, image_data)?
             };
+            crate::klog_fmt!(
+                "[LINUX-DIAG] segments exit pid={} break={:#x}\n",
+                pid.0,
+                loaded.layout.initial_break
+            );
 
             if is_linux {
                 let stack_result = {
                     let process_page_table =
                         p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
+                    crate::klog_fmt!("[LINUX-DIAG] stack begin pid={}\n", pid.0);
                     initialize_linux_stack(process_page_table, name, loaded.layout)
                 };
                 let rsp = match stack_result {
@@ -628,12 +652,12 @@ fn load_program_inner(
 
                 p.user_stack = x86_64::VirtAddr::new(LINUX_STACK_TOP);
                 p.context.registers.rsp = rsp;
-                // Linux personality processes are currently cooperative. The
-                // kernel's Rust `x86-interrupt` handlers cannot yet return
-                // reliably to CPL3, so do not expose hardware interrupts
-                // until that generic interrupt-return path is repaired.
-                // SYSCALL/SYSRET preserves this choice in R11.
-                p.context.rflags = 0x2;
+                // User processes may receive timer interrupts now that the
+                // TSS privilege stack is installed per process. Keeping IF
+                // set is also required for Klog Live's emergency repaint
+                // while a synchronous command is running.
+                p.context.rflags = 0x202;
+                crate::klog_fmt!("[LINUX-DIAG] stack exit pid={} rsp={:#x}\n", pid.0, rsp);
                 let runtime = crate::linux::LinuxRuntime::new(p.id.0, loaded.layout.initial_break);
                 p.dispatch_mode = Some(crate::linux::DispatchMode::Linux(alloc::boxed::Box::new(
                     runtime,

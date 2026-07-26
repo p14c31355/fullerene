@@ -125,7 +125,14 @@ fn wasm_yield_now() {
 }
 
 fn wasm_file_size(path: &str) -> Result<u64, genome::FsError> {
-    crate::fs::file_size(path)
+    crate::klog_fmt!("[WASM-DIAG] file_size begin path={}\n", path);
+    let result = crate::fs::file_size(path);
+    crate::klog_fmt!(
+        "[WASM-DIAG] file_size end path={} result={:?}\n",
+        path,
+        result
+    );
+    result
 }
 
 fn wasm_read_file_range(
@@ -133,7 +140,20 @@ fn wasm_read_file_range(
     offset: u64,
     limit: usize,
 ) -> Result<alloc::vec::Vec<u8>, genome::FsError> {
-    crate::fs::read_file_range(path, offset, limit)
+    crate::klog_fmt!(
+        "[WASM-DIAG] read_range callback begin path={} offset={} limit={}\n",
+        path,
+        offset,
+        limit
+    );
+    let result = crate::fs::read_file_range(path, offset, limit);
+    crate::klog_fmt!(
+        "[WASM-DIAG] read_range callback end path={} offset={} result={:?}\n",
+        path,
+        offset,
+        result.as_ref().map(alloc::vec::Vec::len)
+    );
+    result
 }
 
 fn wasm_write_file(path: &str, data: &[u8]) -> Result<(), genome::FsError> {
@@ -291,6 +311,7 @@ fn wasm_close_window(window_id: i32) -> i32 {
 
 fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     wasm_status("capture_screen enter");
+    crate::klog_fmt!("[WASM-DIAG] capture host callback enter\n");
     let result = solvent::capture_screen();
     match &result {
         Some((width, height, pixels)) => wasm_status(&alloc::format!(
@@ -301,6 +322,10 @@ fn wasm_capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
         )),
         None => wasm_status("capture_screen unavailable (back buffer busy or missing)"),
     }
+    crate::klog_fmt!(
+        "[WASM-DIAG] capture host callback exit available={}\n",
+        result.is_some()
+    );
     result
 }
 

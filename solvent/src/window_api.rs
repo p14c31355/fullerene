@@ -149,6 +149,7 @@ pub fn framebuffer_dims() -> (u32, u32) {
 /// updates. This also avoids reading from device-backed framebuffer memory.
 pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     const MAX_CAPTURE_RGBA_BYTES: usize = 32 * 1024 * 1024;
+    nitrogen::debug_status!("CAPTURE", "dimensions enter");
     let (width, height, _framebuffer_stride) = *FB_DIMS.lock();
     // A synchronous WASM command can run while another CPU is rendering.
     // Never spin forever waiting for the compositor's back-buffer lock: a
@@ -156,7 +157,15 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
     let width_usize = width as usize;
     let height_usize = height as usize;
     let pixel_count = width_usize.checked_mul(height_usize)?;
+    nitrogen::debug_status!(
+        "CAPTURE",
+        "dimensions exit {}x{} pixels={}",
+        width,
+        height,
+        pixel_count
+    );
     {
+        nitrogen::debug_status!("CAPTURE", "back buffer probe enter");
         let back_guard = crate::BACK_BUFFER.try_lock()?;
         let back = back_guard.as_ref()?;
         // BACK_BUFFER is a tightly packed width*height image, even when the
@@ -166,13 +175,17 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
             || back.len() < pixel_count
             || pixel_count > MAX_CAPTURE_RGBA_BYTES / 4
         {
+            nitrogen::debug_status!("CAPTURE", "back buffer probe rejected");
             return None;
         }
+        nitrogen::debug_status!("CAPTURE", "back buffer probe exit len={}", back.len());
     }
 
     // Allocate before taking the back-buffer guard so the allocator cannot
     // become part of the lock ordering.
+    nitrogen::debug_status!("CAPTURE", "host allocation enter bytes={}", pixel_count * 4);
     let mut pixels = alloc::vec::Vec::with_capacity(pixel_count * 4);
+    nitrogen::debug_status!("CAPTURE", "host allocation exit");
     let back_guard = crate::BACK_BUFFER.try_lock()?;
     // Render updates FB_DIMS before taking BACK_BUFFER, so use try_lock here
     // to avoid acquiring the two locks in the opposite order and deadlocking
@@ -190,8 +203,10 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
         || back.len() < current_pixel_count
         || current_pixel_count > MAX_CAPTURE_RGBA_BYTES / 4
     {
+        nitrogen::debug_status!("CAPTURE", "copy rejected after lock");
         return None;
     }
+    nitrogen::debug_status!("CAPTURE", "copy enter {}x{}", current_width, current_height);
     for row in 0..height_usize {
         let start = row * width_usize;
         let end = start + width_usize;
@@ -202,6 +217,7 @@ pub fn capture_screen() -> Option<(u32, u32, alloc::vec::Vec<u8>)> {
             pixels.push(0xFF);
         }
     }
+    nitrogen::debug_status!("CAPTURE", "copy exit bytes={}", pixels.len());
     Some((current_width, current_height, pixels))
 }
 
