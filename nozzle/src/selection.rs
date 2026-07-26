@@ -10,7 +10,7 @@ use crate::terminal_buffer::TerminalBuffer;
 /// Coordinates are (col, row) with (0, 0) at the top‑left.
 /// `start` is always the anchor point (where the drag began);
 /// the actual selected region is the bounding rectangle between start and end.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Selection {
     /// Anchor column (where drag started).
     pub anchor_col: u32,
@@ -27,13 +27,7 @@ pub struct Selection {
 impl Selection {
     /// Create an inactive selection.
     pub fn new() -> Self {
-        Self {
-            anchor_col: 0,
-            anchor_row: 0,
-            end_col: 0,
-            end_row: 0,
-            active: false,
-        }
+        Self::default()
     }
 
     /// Start a selection at the given cell coordinates.

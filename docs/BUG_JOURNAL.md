@@ -99,3 +99,37 @@ now; a true async I/O layer with timeouts remains future work.
 - **Always test deferred I/O paths on real hardware** even when the
   target filesystem is RAM-backed and "instant". Lock ordering and
   interrupt interactions can differ between QEMU and native hardware.
+
+---
+
+## Entry 002 — Disjoint redraws expanded into a large repaint
+
+### Symptoms
+
+Small updates such as cursor movement or two unrelated UI invalidations could
+cause the compositor to repaint every pixel inside the bounding rectangle of
+all dirty regions. A cursor moving across a maximized window therefore made
+wallpaper generation, window composition, and text overlays operate on the
+entire path between the old and new positions.
+
+### Root cause and fix
+
+`lattice::Compositor::render` merged every dirty rectangle before rendering.
+The RAM back buffer is persistent, so the merge was unnecessary: each clipped
+region can be reconstructed independently from the same immutable `Scene`.
+The compositor now renders each region separately and Solvent continues to
+copy only the queued regions to scanout. Menu text, network dialogs, and the
+debug overlay are also skipped when their bounds do not intersect the active
+region. The upper panel is not regenerated for frames that cannot touch it.
+
+### Regression coverage
+
+`lattice::tests::compositor_keeps_pixels_between_disjoint_dirty_regions`
+ensures that pixels between two updates remain untouched. The host rendering
+example remains available through `cargo run -p lattice --example render_ppm`.
+
+### Lesson
+
+Dirty-region systems should preserve region topology until the last possible
+stage. A bounding box is useful for reporting, but not as the composition
+worklist when the backing store already contains the unchanged pixels.

@@ -32,6 +32,21 @@ impl RenderTarget for FramebufferTarget<'_> {
 
 static RENDER_PROGRESS_FN: Mutex<Option<fn(&[u8])>> = Mutex::new(None);
 
+struct RenderingGuard;
+
+impl RenderingGuard {
+    fn acquire() -> Option<Self> {
+        (!crate::RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst))
+            .then_some(Self)
+    }
+}
+
+impl Drop for RenderingGuard {
+    fn drop(&mut self) {
+        crate::RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 pub fn set_render_progress_fn(f: fn(&[u8])) {
     *RENDER_PROGRESS_FN.lock() = Some(f);
 }
@@ -185,16 +200,9 @@ fn update_cursor_pixels(
 /// buffer. No framebuffer address or mutable slice is retained after the
 /// `FramebufferGuard` borrow ends, and the GOP framebuffer is never read.
 pub fn render_cursor_fast(framebuffer: &mut petroleum::graphics::FramebufferGuard) {
-    if crate::RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    let Some(_rendering) = RenderingGuard::acquire() else {
         return;
-    }
-    struct SuspendGuard;
-    impl Drop for SuspendGuard {
-        fn drop(&mut self) {
-            crate::RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    let _suspend = SuspendGuard;
+    };
 
     let mut runtime = RUNTIME_CONTEXT.runtime();
     let Some(runtime) = runtime.as_mut() else {
@@ -218,16 +226,9 @@ pub fn render_cursor_fast(framebuffer: &mut petroleum::graphics::FramebufferGuar
 // ── Main render function ─────────────────────────────────────
 
 pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
-    if crate::RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    let Some(_rendering) = RenderingGuard::acquire() else {
         return;
-    }
-    struct SuspendGuard;
-    impl Drop for SuspendGuard {
-        fn drop(&mut self) {
-            crate::RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
-        }
-    }
-    let _guard = SuspendGuard;
+    };
 
     let mut rt_lock = RUNTIME_CONTEXT.runtime();
     let rt = match rt_lock.as_mut() {

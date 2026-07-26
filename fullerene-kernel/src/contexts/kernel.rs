@@ -101,14 +101,14 @@ static KERNEL: Mutex<Option<KernelContext>> = Mutex::new(None);
 /// calls.  After this, all sub-contexts are accessible via
 /// `kernel_context().with(…)`.
 pub fn init_kernel() {
-    // Check if already initialized (idempotent)
-    if KERNEL.lock().is_some() {
+    let mut kernel = KERNEL.lock();
+    if kernel.is_some() {
         return;
     }
     let mut k = KernelContext::new();
     // PCI scan is mandatory early.
     let _ = k.pci.scan();
-    *KERNEL.lock() = Some(k);
+    *kernel = Some(k);
 }
 
 /// Get a direct reference to the global `Mutex<Option<KernelContext>>`.

@@ -344,7 +344,7 @@ impl ExFatFileSystem {
         mut visit: impl FnMut(&[u8; SECTOR_SIZE]) -> bool,
     ) -> Result<(), FsError> {
         let cluster_size = info.bytes_per_cluster;
-        if cluster_size < SECTOR_SIZE || !cluster_size.is_multiple_of(SECTOR_SIZE) {
+        if cluster_size < SECTOR_SIZE || cluster_size % SECTOR_SIZE != 0 {
             return Err(FsError::InvalidInput);
         }
         let fat = ExFatTable::new(info);

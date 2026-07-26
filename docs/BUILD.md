@@ -45,9 +45,11 @@ Prerequisites per port:
 - **netsurf** – `make`, gtk3-dev, libcurl4-openssl-dev, libxml2-dev, …
 - **vscodium** – npm, build toolchain (see `toluene/vscodium/build.sh`)
 
-A port whose build prerequisites are missing emits Cargo warnings directing
-users to the build output for details. You can place a manually‑compiled ELF
-at `target/ports/<name>/app.bin` as well.
+Missing optional port caches are silently skipped during ordinary checks and
+builds, so a clean clone does not pollute `cargo check` with warnings. To
+request source builds and their diagnostics explicitly, set
+`FULLERENE_BUILD_PORTS=1`. You can also place a manually‑compiled ELF at
+`target/ports/<name>/app.bin`.
 
 When the kernel boots, ports are unpacked from the initramfs into
 `/packages/` and launched with `app run <name>`.
@@ -177,6 +179,9 @@ To debug:
 - Use `RUST_LOG=debug cargo run --bin flasks` for more verbose output.
 
 For release builds, use `cargo build --release` to compile with optimizations.
+The workspace release profile uses aborting panics, LTO, one codegen unit, and
+strips debug information from the produced binaries; none of these changes
+alter the runtime ABI or framebuffer behavior.
 
 ## Manual Build Steps
 

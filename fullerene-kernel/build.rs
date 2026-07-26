@@ -378,12 +378,9 @@ fn build_ports_cpio(toluene_dir: &Path, ports_dir: &Path, out_dir: &Path) -> usi
         }
 
         if !allow_source_build {
-            println!(
-                "cargo:warning=ports: {name} has no cached binary – \
-                 skipping (set FULLERENE_BUILD_PORTS=1 to build from source, \
-                 or place a pre-built ELF at {})",
-                cache.display()
-            );
+            // Missing optional ports are the normal state of a clean clone.
+            // Keep `cargo check` quiet; an explicit source-build request
+            // below still reports failures through Cargo diagnostics.
             continue;
         }
 
