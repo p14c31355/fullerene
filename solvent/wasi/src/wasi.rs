@@ -468,10 +468,43 @@ pub fn fd_read(
                         let read_file_range = caller.data().read_file_range;
                         let fetched = match read_file_range(&path, offset, fetch_len) {
                             Ok(bytes) => bytes,
-                            Err(error) => return Ok(map_fs_error(&error)),
+                            Err(error) => {
+                                let errno = map_fs_error(&error);
+                                let message = alloc::format!(
+                                    "[WASI-DIAG] fd_read range error path={} offset={} request={} fs={:?} errno={}\n",
+                                    path,
+                                    offset,
+                                    fetch_len,
+                                    error,
+                                    errno
+                                );
+                                (caller.data().write_stderr)(message.as_bytes());
+                                return Ok(errno);
+                            }
                         };
                         if fetched.is_empty() {
-                            break;
+                            let message = alloc::format!(
+                                "[WASI-DIAG] fd_read short EOF path={} offset={} size={} request={} errno={}\n",
+                                path,
+                                offset,
+                                size,
+                                fetch_len,
+                                EIO
+                            );
+                            (caller.data().write_stderr)(message.as_bytes());
+                            return Ok(EIO);
+                        }
+                        if fetched.len() > fetch_len {
+                            let message = alloc::format!(
+                                "[WASI-DIAG] fd_read invalid host range path={} offset={} request={} returned={} errno={}\n",
+                                path,
+                                offset,
+                                fetch_len,
+                                fetched.len(),
+                                EIO
+                            );
+                            (caller.data().write_stderr)(message.as_bytes());
+                            return Ok(EIO);
                         }
                         let bc = caller.data_mut();
                         let Some(WasiFd::File {

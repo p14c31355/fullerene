@@ -408,32 +408,47 @@ impl VfsContext {
 
     /// Copy a file or directory tree without buffering whole files in the GUI.
     pub fn copy_path(&self, source: &str, destination: &str, is_dir: bool) -> Result<(), FsError> {
-        let destination_suffix = destination.strip_prefix(source);
+        // Keep the context method identical to the free-function/file-manager
+        // surface: `cp file existing-dir` means `existing-dir/file`.
+        // Resolve before checking the relationship so `.` and `..` cannot
+        // bypass the self-copy guard.
+        let source = self.inner.lock().resolve_path(source);
+        let mut destination = self.inner.lock().resolve_path(destination);
+        if self.readdir(&destination).is_ok() {
+            let name = source
+                .trim_end_matches('/')
+                .rsplit('/')
+                .find(|name| !name.is_empty())
+                .ok_or(FsError::InvalidPath)?;
+            destination = join_path(&destination, name);
+        }
+
+        let destination_suffix = destination.strip_prefix(&source);
         if source == destination
             || is_dir && destination_suffix.is_some_and(|suffix| suffix.starts_with('/'))
         {
             return Err(FsError::InvalidPath);
         }
         if is_dir {
-            self.mkdir(destination)?;
-            for entry in self.readdir(source)? {
+            self.mkdir(&destination)?;
+            for entry in self.readdir(&source)? {
                 self.copy_path(
-                    &join_path(source, &entry.name),
-                    &join_path(destination, &entry.name),
+                    &join_path(&source, &entry.name),
+                    &join_path(&destination, &entry.name),
                     entry.is_dir,
                 )?;
             }
             return Ok(());
         }
 
-        let source_fd = self.open(source, 0).ok_or(FsError::FileNotFound)?;
-        if self.exists(destination) {
-            if let Err(error) = self.unlink(destination) {
+        let source_fd = self.open(&source, 0).ok_or(FsError::FileNotFound)?;
+        if self.exists(&destination) {
+            if let Err(error) = self.unlink(&destination) {
                 let _ = self.close(source_fd.fd);
                 return Err(error);
             }
         }
-        let destination_fd = match self.create(destination) {
+        let destination_fd = match self.create(&destination) {
             Ok(descriptor) => descriptor,
             Err(error) => {
                 let _ = self.close(source_fd.fd);
@@ -1087,5 +1102,23 @@ mod tests {
         assert!(context.exists("/moved/nested/file"));
         context.remove_path("/moved", true).unwrap();
         assert!(!context.exists("/moved"));
+    }
+
+    #[test]
+    fn move_file_into_existing_directory_uses_source_basename() {
+        let context = VfsContext::new();
+        context.mkdir("/destination").unwrap();
+        context.replace_file("/source.txt", b"hello").unwrap();
+
+        context
+            .move_path("/source.txt", "/destination", false)
+            .unwrap();
+
+        assert!(!context.exists("/source.txt"));
+        let descriptor = context.open("/destination/source.txt", 0).unwrap();
+        let mut data = [0u8; 5];
+        assert_eq!(context.read(descriptor.fd, &mut data).unwrap(), 5);
+        context.close(descriptor.fd).unwrap();
+        assert_eq!(&data, b"hello");
     }
 }

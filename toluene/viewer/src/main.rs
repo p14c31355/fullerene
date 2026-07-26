@@ -77,6 +77,17 @@ fn main() {
         return;
     }
 
+    // A named image must not be reinterpreted as MP4/audio/archive data when
+    // its decoder fails.  The old fallback hid the original JPEG error and
+    // made a normal image failure look like a parser hang in Klog Live.
+    if is_image_path(path) {
+        if !try_image(path, &bytes) {
+            let title = format!("Image Viewer error: {}", path);
+            present_error(&title, "The image could not be decoded.");
+        }
+        return;
+    }
+
     if try_image(path, &bytes) {
         return;
     }
@@ -120,6 +131,13 @@ fn is_mp4_path(path: &str) -> bool {
 
 fn is_qoi_path(path: &str) -> bool {
     path.to_ascii_lowercase().ends_with(".qoi")
+}
+
+fn is_image_path(path: &str) -> bool {
+    matches!(
+        path.to_ascii_lowercase().rsplit('.').next(),
+        Some("jpg" | "jpeg" | "png" | "bmp" | "gif" | "webp" | "tif" | "tiff")
+    )
 }
 
 fn qoi_header_allowed(data: &[u8]) -> bool {
@@ -1203,7 +1221,7 @@ fn print_hex(path: &str, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{qoi_header_allowed, source_dimensions_allowed};
+    use super::{qoi_header_allowed, source_dimensions_allowed, try_image};
     use image::GenericImageView;
     use image::ImageReader;
     use std::io::Cursor;
@@ -1301,6 +1319,17 @@ mod tests {
         header.extend_from_slice(&[4, 0]);
         header.extend_from_slice(&[0; 8]);
         assert!(!qoi_header_allowed(&header));
+    }
+
+    #[test]
+    fn decodes_jpeg_through_the_bounded_image_path() {
+        let source = image::RgbImage::from_pixel(2, 1, image::Rgb([32, 96, 160]));
+        let mut jpeg = Vec::new();
+        image::DynamicImage::ImageRgb8(source)
+            .write_to(&mut Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+            .unwrap();
+
+        assert!(try_image("sample.jpg", &jpeg));
     }
 
     #[test]

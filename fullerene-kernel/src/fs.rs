@@ -376,8 +376,20 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
     if limit > MAX_RANGE_BYTES {
         return Err(FsError::InvalidInput);
     }
-    let size = file_size(path)?;
+    // Obtain the length from the already-open descriptor.  Looking up the
+    // parent directory first made every WASM cache miss reopen the directory
+    // on removable filesystems; some backends reported that metadata request
+    // as InvalidInput (WASI EINVAL=28) even though the file itself was valid.
+    let mut fd = open_file(path)?;
+    let size = match file_size_for_handle(&fd) {
+        Ok(size) => size,
+        Err(error) => {
+            let _ = close_file(fd);
+            return Err(error);
+        }
+    };
     if offset > size {
+        let _ = close_file(fd);
         return Err(FsError::InvalidSeek);
     }
     let target = (size - offset).min(limit as u64) as usize;
@@ -392,7 +404,6 @@ pub fn read_file_range(path: &str, offset: u64, limit: usize) -> Result<Vec<u8>,
         size,
         target
     );
-    let mut fd = open_file(path)?;
     crate::klog_fmt!("[WASM-DIAG] range open exit path={} fd={}\n", path, fd.fd);
     if let Err(error) = seek_file(&mut fd, offset) {
         let _ = close_file(fd);
@@ -528,14 +539,14 @@ pub fn file_size(path: &str) -> Result<u64, FsError> {
     if trimmed.is_empty() {
         return Ok(0);
     }
-    let (parent, name) = trimmed.rsplit_once('/').unwrap_or((".", trimmed));
-    let parent = if parent.is_empty() { "/" } else { parent };
-    let entries = list_dir(parent)?;
-    entries
-        .iter()
-        .find(|e| e.name == name)
-        .map(|e| e.size)
-        .ok_or(FsError::FileNotFound)
+    // Use the filesystem's open-handle metadata instead of enumerating the
+    // parent directory.  Besides being cheaper for WASM reads, this avoids a
+    // removable filesystem metadata path that can report InvalidInput for a
+    // perfectly valid regular file.
+    let fd = open_file(trimmed)?;
+    let result = file_size_for_handle(&fd);
+    let close_result = close_file(fd);
+    result.and_then(|size| close_result.map(|()| size))
 }
 
 // ── Package management ─────────────────────────────────────
