@@ -821,13 +821,17 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
 /// Stop a user process at a CPU exception boundary and retain its fault
 /// footprint until the normal scheduler cleanup reaps it.
 pub fn mark_faulted(pid: ProcessId, record: FaultRecord) {
-    let _ = SCHEDULER.with_process(pid, |process| {
+    let waiters = SCHEDULER.with_process(pid, |process| {
         process.state = ProcessState::Terminated;
         process.exit_code = Some(128);
         process.fault = Some(record);
+        process.resources.cleanup()
     });
+    for waiter in waiters.unwrap_or_default() {
+        unblock_process(waiter);
+    }
+    unblock_waiting_parents(pid);
 }
-
 /// Idle process loop
 fn idle_loop() {
     loop {
