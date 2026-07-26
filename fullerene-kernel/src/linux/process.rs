@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::PhysAddr;
+use x86_64::registers::control::{Cr3, Cr3Flags};
 use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableFlags, Size4KiB};
 
 pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -14,6 +15,16 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     // Clear child TID if set
     if rt.child_clear_tid != 0 {
         let _ = unsafe { copy_val_to_user(rt.child_clear_tid, &0i32) };
+    }
+    // No more user-memory access is needed. Return to the canonical kernel
+    // address space before touching scheduler-owned heap objects: process
+    // page tables can lack kernel-heap mappings added after they were cloned.
+    let kernel_root = crate::memory_management::kernel_page_table_phys();
+    if kernel_root.as_u64() != 0 {
+        let frame = x86_64::structures::paging::PhysFrame::containing_address(kernel_root);
+        unsafe {
+            Cr3::write(frame, Cr3Flags::empty());
+        }
     }
     if let Some(pid) = process::current_pid() {
         process::terminate_process(pid, code);

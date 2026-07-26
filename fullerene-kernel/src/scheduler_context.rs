@@ -28,8 +28,6 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use heapless::Vec as HeaplessVec;
 use petroleum::common::logging::SystemError;
 use x86_64::VirtAddr;
-use x86_64::registers::control::Cr3;
-use x86_64::structures::paging::PhysFrame;
 
 use crate::context_switch::switch_context;
 use crate::process::{MAX_PROCESSES, Process, ProcessContext, ProcessId, ProcessState};
@@ -394,6 +392,7 @@ impl SchedulerContext {
             .iter()
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| p.page_table_phys_addr)
+            .filter(|address| address.as_u64() != 0)
             .unwrap_or_else(crate::memory_management::kernel_page_table_phys);
         let old_ctx = old_pid
             .and_then(|pid| list.iter_mut().find(|(id, _)| *id == pid))
@@ -401,17 +400,8 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
-            if pt.as_u64() != 0 {
-                let new_frame = PhysFrame::containing_address(pt);
-                let (current_frame, _) = Cr3::read();
-                if new_frame != current_frame {
-                    unsafe {
-                        Cr3::write(new_frame, x86_64::registers::control::Cr3Flags::empty());
-                    }
-                }
-            }
-            let old_ref = old_ctx.map(|ptr| unsafe { &mut *ptr });
-            unsafe { switch_context(old_ref, &*new) };
+            let old = old_ctx.unwrap_or(core::ptr::null_mut());
+            unsafe { switch_context(old, new, pt.as_u64()) };
         }
     }
 

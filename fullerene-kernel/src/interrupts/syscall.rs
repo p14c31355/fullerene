@@ -7,8 +7,14 @@ use x86_64::VirtAddr;
 use x86_64::registers::model_specific::Msr;
 use x86_64::registers::rflags::RFlags;
 
-/// Static kernel stack for syscalls.
-const SYSCALL_STACK_SIZE: usize = 4096;
+/// Kernel stack used while dispatching SYSCALL handlers.
+///
+/// A single page is not enough for Rust syscall handlers: formatting,
+/// user-copy validation, VFS calls, and Linux-personality dispatch can nest
+/// deeply enough to cross 4 KiB. Keep this aligned with ordinary process
+/// kernel stacks so an otherwise valid syscall cannot corrupt neighboring
+/// heap allocations.
+const SYSCALL_STACK_SIZE: usize = crate::heap::KERNEL_STACK_SIZE;
 
 /// Per-CPU syscall entry state addressed through `KERNEL_GS_BASE`.
 ///

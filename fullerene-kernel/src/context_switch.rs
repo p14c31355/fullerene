@@ -2,12 +2,15 @@
 
 /// Save current process context and switch to next
 #[unsafe(naked)]
-pub extern "sysv64" fn switch_context(
-    _old_context: Option<&mut crate::process::ProcessContext>,
-    _new_context: &crate::process::ProcessContext,
+pub unsafe extern "sysv64" fn switch_context(
+    _old_context: *mut crate::process::ProcessContext,
+    _new_context: *const crate::process::ProcessContext,
+    _new_cr3: u64,
 ) {
     core::arch::naked_asm!(
-        // Entry: rdi = old_context, rsi = new_context
+        // Entry: rdi = old_context, rsi = new_context, rdx = new CR3.
+        // Save through the current address space before changing CR3: a
+        // process page table may not yet share late kernel-heap mappings.
         "test rdi, rdi",
         "jz 2f",
         // Save GPRs (regs[0..15])
@@ -46,6 +49,12 @@ pub extern "sysv64" fn switch_context(
         "mov ax, fs; movzx rax, ax; mov [rdi + 176], rax",
         "mov ax, gs; movzx rax, ax; mov [rdi + 184], rax",
         "2:",
+        // Only dereference the new context after entering its address space.
+        "mov rax, cr3",
+        "cmp rax, rdx",
+        "je 4f",
+        "mov cr3, rdx",
+        "4:",
         // Restore: rsi -> rbx (will use as base until last moment)
         "mov rbx, rsi",
         // Push all values we need after GPR restore onto stack

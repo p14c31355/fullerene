@@ -445,6 +445,7 @@ impl Process {
         petroleum::mem_debug!(self.name);
         petroleum::mem_debug!("\n");
 
+        self.context.is_user = self.is_user;
         if self.is_user {
             // For user processes, the context RSP should be the user stack
             self.context.regs[7] = self.user_stack.as_u64(); // rsp
