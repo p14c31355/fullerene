@@ -7,30 +7,27 @@ use x86_64::VirtAddr;
 use x86_64::registers::model_specific::Msr;
 use x86_64::registers::rflags::RFlags;
 
-/// Static kernel stack for syscall to prevent page fault vulnerabilities
+/// Static kernel stack for syscalls.
 const SYSCALL_STACK_SIZE: usize = 4096;
 
-/// # Safety
-/// Written once during `init_syscall_stack()` (boot phase), then read‑only.
-/// Single‑core assumption: no concurrent readers.  Accessed from `syscall_entry`
-/// assembly which runs with interrupts disabled.
-static mut SYSCALL_STACK_PTR: u64 = 0;
-
-/// Kernel CR3 for syscall to access kernel heap
+/// Per-CPU syscall entry state addressed through `KERNEL_GS_BASE`.
 ///
-/// # Safety
-/// Written once during boot via `set_kernel_cr3()`, then read‑only.
-/// Accessed from `syscall_entry` assembly with interrupts disabled.
-/// Single‑core assumption.
-#[unsafe(no_mangle)]
-pub static mut KERNEL_CR3_U64: u64 = 0;
-
-/// Set kernel CR3 for syscall switching
-pub fn set_kernel_cr3(cr3: u64) {
-    unsafe {
-        KERNEL_CR3_U64 = cr3;
-    }
+/// Fullerene is currently single-core, so one entry state is sufficient.
+/// `user_rsp` is only scratch space until it has been copied to the kernel
+/// stack; keeping it here lets the naked entry switch stacks without
+/// clobbering a user register.
+#[repr(C, align(16))]
+struct SyscallEntryState {
+    kernel_stack_top: u64,
+    user_rsp: u64,
+    syscall_number: u64,
 }
+
+static mut SYSCALL_ENTRY_STATE: SyscallEntryState = SyscallEntryState {
+    kernel_stack_top: 0,
+    user_rsp: 0,
+    syscall_number: 0,
+};
 
 /// Initialize syscall kernel stack
 pub fn init_syscall_stack() {
@@ -42,8 +39,9 @@ pub fn init_syscall_stack() {
     mem_debug!("Syscall: stack allocated\n");
     let stack_top = unsafe { ptr.add(SYSCALL_STACK_SIZE) };
     unsafe {
-        SYSCALL_STACK_PTR = stack_top as u64;
+        SYSCALL_ENTRY_STATE.kernel_stack_top = stack_top as u64;
     }
+    crate::gdt::set_ring0_stack(VirtAddr::new(stack_top as u64));
     mem_debug!("Syscall: init_syscall_stack done\n");
 }
 
@@ -51,35 +49,54 @@ pub fn init_syscall_stack() {
 #[unsafe(naked)]
 pub extern "C" fn syscall_entry() {
     core::arch::naked_asm!(
-        // Switch to kernel stack using swapgs
+        // SYSCALL leaves the user stack in RSP.  Save it before switching to
+        // the trusted kernel stack selected through KERNEL_GS_BASE.
         "swapgs",
-        "mov rsp, gs:0",
-        // Save syscall number in RBX and switch CR3 to kernel page table
-        "mov rbx, rax",
-        "mov rax, cr3",
-        "push rax",
-        "lea rax, [rip + KERNEL_CR3_U64]",
-        "mov rax, [rax]",
-        "mov cr3, rax",
-        // Entry: SYSCALL puts RIP in RCX, RFLAGS in R11
+        "mov gs:[16], rax",
+        "mov gs:[8], rsp",
+        "mov rsp, gs:[0]",
+        // Keep the process CR3 active. Process page tables share the kernel
+        // half, including this stack and the kernel heap, while retaining the
+        // user half needed by copy_from_user/copy_to_user.
+        // Save the SYSRET frame and all Linux syscall argument registers.
+        // Linux only documents RAX, RCX, and R11 as clobbered by syscall.
+        "push gs:[8]",
         "push rcx",
         "push r11",
-        // Shuffle arguments: syscall ABI (rdi,rsi,rdx,r10,r8,r9)
-        // to C ABI (rdi,rsi,rdx,rcx,r8,r9)
-        "mov rcx, r10",
-        "mov rdi, rbx",
-        "push rsp",
+        "push rdi",
+        "push rsi",
+        "push rdx",
+        "push r10",
+        "push r8",
+        "push r9",
+        // Shuffle Linux syscall ABI
+        //   rax, rdi, rsi, rdx, r10, r8, r9
+        // into the SysV C ABI used by
+        //   handle_syscall(nr, a1, a2, a3, a4, a5, a6).
+        // The seventh C argument is placed on the stack.  Ten pushes from an
+        // aligned kernel-stack top leave RSP correctly aligned before CALL.
+        "push r9",
+        "mov r9, r8",
+        "mov r8, r10",
+        "mov rcx, rdx",
+        "mov rdx, rsi",
+        "mov rsi, rdi",
+        "mov rdi, gs:[16]",
         "call handle_syscall",
+        // Discard the seventh C argument, restore the user-visible argument
+        // registers, then restore the SYSRET frame.
         "add rsp, 8",
-        // Save return value before popping CR3
-        "mov r12, rax",
-        // Restore user CR3 and RFLAGS/RIP
+        "pop r9",
+        "pop r8",
+        "pop r10",
+        "pop rdx",
+        "pop rsi",
+        "pop rdi",
         "pop r11",
         "pop rcx",
-        "pop rax",
-        "mov cr3, rax",
-        // Restore return value before returning to user
-        "mov rax, r12",
+        "pop qword ptr gs:[8]",
+        // RAX remains the syscall result.
+        "mov rsp, gs:[8]",
         "swapgs",
         "sysretq"
     );
@@ -123,15 +140,15 @@ pub fn setup_syscall() {
     }
     mem_debug!("Syscall: SFMASK written\n");
 
-    // Set KERNEL_GS_BASE to point to the static variable holding the syscall kernel stack top.
+    // Set KERNEL_GS_BASE to the entry state used by the naked assembly.
     use x86_64::registers::model_specific::KernelGsBase;
     mem_debug!("Syscall: writing KernelGsBase\n");
     KernelGsBase::write(VirtAddr::new(
-        &raw const SYSCALL_STACK_PTR as *const _ as u64,
+        &raw const SYSCALL_ENTRY_STATE as *const _ as u64,
     ));
     mem_debug!("Syscall: KernelGsBase written\n");
 
-    let stack_top_addr = unsafe { SYSCALL_STACK_PTR };
+    let stack_top_addr = unsafe { SYSCALL_ENTRY_STATE.kernel_stack_top };
     petroleum::debug_log_no_alloc!("Syscall: initialized. LSTAR: {}", entry_addr);
     petroleum::debug_log_no_alloc!("Syscall: kernel stack: {}", stack_top_addr);
     mem_debug!("Syscall: setup_syscall done\n");

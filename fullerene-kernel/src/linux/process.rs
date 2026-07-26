@@ -15,6 +15,14 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     if rt.child_clear_tid != 0 {
         let _ = unsafe { copy_val_to_user(rt.child_clear_tid, &0i32) };
     }
+    #[cfg(linux_musl_smoke)]
+    if code == 0 {
+        // Flasks installs QEMU's isa-debug-exit device at 0xf4.  Value 0x10
+        // becomes host status 33 and marks the end-to-end smoke test complete.
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x10);
+        }
+    }
     if let Some(pid) = process::current_pid() {
         process::terminate_process(pid, code);
     }

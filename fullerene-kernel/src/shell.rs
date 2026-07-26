@@ -814,6 +814,12 @@ fn nozzle_services() -> nozzle::ShellServices {
                 crate::linux::launch::launch_test_binary(),
                 "Test Linux binary started (PID: {})"
             ),
+            #[cfg(have_linux_musl_hello)]
+            "hello_rust_linux" => launch_cmd!(
+                ctx.terminal,
+                crate::linux::launch::launch_rust_std_hello(),
+                "Rust std/musl Linux process started (PID: {})"
+            ),
             "wasm" => {
                 if ctx.args.len() <= 1 {
                     return tstr!(ctx.terminal, "Usage: wasm <path> [args...]");

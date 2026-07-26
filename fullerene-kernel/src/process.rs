@@ -61,6 +61,12 @@ pub struct ProcessContext {
     pub(crate) is_user: bool,
 }
 
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, regs), 0);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, rflags), 128);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, rip), 136);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, segments), 144);
+static_assertions::const_assert_eq!(core::mem::offset_of!(ProcessContext, is_user), 200);
+
 impl Default for ProcessContext {
     fn default() -> Self {
         Self {
@@ -586,22 +592,11 @@ pub fn create_process(
         process.page_table_phys_addr = PhysAddr::new(page_table_phys);
         process.page_table = Some(Box::new(page_table));
 
-        let mut fa_lock = crate::heap::FRAME_ALLOCATOR.lock();
-        let fa = fa_lock.as_mut().ok_or_else(|| {
-            unsafe {
-                petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
-                petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
-            }
-            if let Some(ref page_table) = process.page_table {
-                if let Some(pml4_frame) = page_table.pml4_frame() {
-                    crate::memory_management::deallocate_process_page_table(pml4_frame);
-                }
-            }
-            petroleum::common::logging::SystemError::InternalError
-        })?;
         let pt: &mut petroleum::page_table::process::ProcessPageTable =
             process.page_table.as_mut().unwrap();
-        let vdso_ref = create_vdso_page(pt, fa, process.id.0).map_err(|_| {
+        let frame_allocator =
+            unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+        let vdso_ref = create_vdso_page(pt, frame_allocator, process.id.0).map_err(|_| {
             unsafe {
                 petroleum::common::memory::deallocate_layout(user_stack_ptr, user_stack_layout);
                 petroleum::common::memory::deallocate_layout(stack_ptr, stack_layout);
@@ -613,7 +608,6 @@ pub fn create_process(
             }
             petroleum::common::logging::SystemError::FrameAllocationFailed
         })?;
-        drop(fa_lock);
         process.vdso_page = Some(vdso_ref);
     } else {
         // Create page table for the process (kernel process, no user stack)

@@ -5,6 +5,11 @@ use x86_64::structures::paging::{
     FrameAllocator as X86FrameAllocator, PhysFrame as X86PhysFrame, Size4KiB,
 };
 
+/// Normal allocations stay above legacy low memory.  Call
+/// `allocate_frame_low` explicitly for hardware that genuinely requires a
+/// sub-1MiB DMA frame.
+const LOW_MEM_SKIP_FRAMES: usize = 16 * 1024 * 1024 / 4096;
+
 pub struct BitmapFrameAllocator {
     bitmap: alloc::vec::Vec<u64>,
     total_frames: usize,
@@ -63,7 +68,6 @@ impl BitmapFrameAllocator {
         //   - DMA-safe buffer must be in conventional RAM, not reserved/firmware areas
         //   - Some QEMU/UEFI configurations leave low memory for legacy compatibility
         // Using 16MB boundary to ensure we're well above all low-memory regions.
-        const LOW_MEM_SKIP_FRAMES: usize = 16 * 1024 * 1024 / 4096; // 4096 frames = 16MB
         let mut start = LOW_MEM_SKIP_FRAMES;
         for i in LOW_MEM_SKIP_FRAMES..self.total_frames {
             if !self.is_frame_available(i) {
@@ -165,11 +169,12 @@ impl BitmapFrameAllocator {
 
 impl FrameAllocator for BitmapFrameAllocator {
     fn allocate(&mut self) -> Result<PhysFrame, crate::page_table::allocator::traits::AllocError> {
-        for i in 0..self.bitmap.len() {
+        let first_word = LOW_MEM_SKIP_FRAMES / 64;
+        for i in first_word..self.bitmap.len() {
             if self.bitmap[i] != u64::MAX {
                 for j in 0..64 {
                     let frame_idx = i * 64 + j;
-                    if frame_idx == 0 {
+                    if frame_idx < LOW_MEM_SKIP_FRAMES {
                         continue;
                     }
                     if frame_idx >= self.total_frames {
@@ -235,11 +240,12 @@ impl FrameAllocatorExt for BitmapFrameAllocator {
 
 unsafe impl X86FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     fn allocate_frame(&mut self) -> Option<X86PhysFrame> {
-        for i in 0..self.bitmap.len() {
+        let first_word = LOW_MEM_SKIP_FRAMES / 64;
+        for i in first_word..self.bitmap.len() {
             if self.bitmap[i] != u64::MAX {
                 for j in 0..64 {
                     let frame_idx = i * 64 + j;
-                    if frame_idx == 0 {
+                    if frame_idx < LOW_MEM_SKIP_FRAMES {
                         continue;
                     }
                     if frame_idx >= self.total_frames {

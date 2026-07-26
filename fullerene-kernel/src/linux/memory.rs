@@ -2,6 +2,7 @@
 use super::numbers::*;
 use super::runtime::{LinuxRuntime, errno_code};
 
+use petroleum::page_table::process::ProcessPageTable;
 use petroleum::page_table::types::PageTableHelper;
 use x86_64::VirtAddr;
 use x86_64::structures::paging::Size4KiB;
@@ -77,33 +78,23 @@ fn tracked_range_overlaps(rt: &LinuxRuntime, addr: u64, size: u64) -> bool {
         .any(|region| ranges_overlap(region.addr, region.size, addr, size))
 }
 
-fn range_is_mapped(
-    mgr: &crate::memory_management::UnifiedMemoryManager,
-    addr: u64,
-    size: u64,
-) -> bool {
+fn range_is_mapped(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
     let pages = (size / PAGE_SIZE) as usize;
     (0..pages).any(|index| {
         let Some(page) = addr.checked_add(index as u64 * PAGE_SIZE) else {
             return true;
         };
-        mgr.page_table_manager()
-            .translate_address(page as usize)
-            .is_ok()
+        page_table.translate_address(page as usize).is_ok()
     })
 }
 
-fn range_is_owned_user_memory(
-    mgr: &crate::memory_management::UnifiedMemoryManager,
-    addr: u64,
-    size: u64,
-) -> bool {
+fn range_is_owned_user_memory(page_table: &ProcessPageTable, addr: u64, size: u64) -> bool {
     let pages = (size / PAGE_SIZE) as usize;
     (0..pages).all(|index| {
         let Some(page) = addr.checked_add(index as u64 * PAGE_SIZE) else {
             return false;
         };
-        let Ok(flags) = mgr.page_table_manager().get_page_flags(page as usize) else {
+        let Ok(flags) = page_table.get_page_flags(page as usize) else {
             return false;
         };
         flags.contains(PageTableFlags::USER_ACCESSIBLE)
@@ -116,7 +107,7 @@ fn overlaps_reserved_user_mapping(addr: u64, size: u64) -> bool {
 
 fn find_free_anon_region(
     rt: &LinuxRuntime,
-    mgr: &crate::memory_management::UnifiedMemoryManager,
+    page_table: &ProcessPageTable,
     size: u64,
     start: u64,
 ) -> u64 {
@@ -140,7 +131,7 @@ fn find_free_anon_region(
             continue;
         }
 
-        if range_is_mapped(mgr, candidate, size) {
+        if range_is_mapped(page_table, candidate, size) {
             // Advance past the first mapped page.  The next iteration also
             // checks tracked ranges, so a collision cannot be bypassed by
             // choosing an address supplied by the caller.
@@ -151,13 +142,45 @@ fn find_free_anon_region(
     }
 }
 
-fn track_region(rt: &mut LinuxRuntime, addr: u64, size: u64, prot: i32, flags: i32) {
-    rt.mmap_regions.push(LinuxMmapRegion {
-        addr,
-        size,
-        prot,
-        flags,
-    });
+fn with_current_page_table<R>(operation: impl FnOnce(&mut ProcessPageTable) -> R) -> Option<R> {
+    let (pml4_frame, _) = x86_64::registers::control::Cr3::read();
+    let physical_offset =
+        VirtAddr::new(petroleum::common::memory::get_physical_memory_offset() as u64);
+    let pml4 = physical_offset + pml4_frame.start_address().as_u64();
+    let mapper = unsafe {
+        x86_64::structures::paging::OffsetPageTable::new(
+            &mut *(pml4.as_mut_ptr::<x86_64::structures::paging::PageTable>()),
+            physical_offset,
+        )
+    };
+    let mut page_table = ProcessPageTable::new_with_frame(pml4_frame);
+    page_table.mapper = Some(mapper);
+    page_table.initialized = true;
+    Some(operation(&mut page_table))
+}
+
+fn unmap_and_free(page_table: &mut ProcessPageTable, virtual_addr: usize) -> Result<(), ()> {
+    let frame = page_table.unmap_page(virtual_addr).map_err(|_| ())?;
+    let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+    frame_alloc.free_frame(frame);
+    Ok(())
+}
+
+fn track_region(
+    rt: &mut LinuxRuntime,
+    addr: u64,
+    size: u64,
+    prot: i32,
+    flags: i32,
+) -> Result<(), i32> {
+    rt.mmap_regions
+        .push(LinuxMmapRegion {
+            addr,
+            size,
+            prot,
+            flags,
+        })
+        .map_err(|_| ENOMEM)
 }
 
 fn remove_region(rt: &mut LinuxRuntime, addr: u64, size: u64) -> bool {
@@ -214,11 +237,6 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         Err(error) => return errno_code(error),
     };
 
-    let mut memory_guard = crate::memory_management::get_memory_manager().lock();
-    let Some(guard) = memory_guard.as_mut() else {
-        return errno_code(ENOMEM);
-    };
-
     let hint = if addr_hint == 0 {
         DEFAULT_MMAP_BASE
     } else {
@@ -230,54 +248,89 @@ pub fn sys_mmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     };
 
-    let addr = find_free_anon_region(rt, guard, aligned_len, hint);
-    if addr == 0 {
-        return errno_code(ENOMEM);
-    }
-
-    let num_pages = (aligned_len / PAGE_SIZE) as usize;
-    let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-    let mut mapped_pages = alloc::vec::Vec::with_capacity(num_pages);
-    let mut page_flags =
-        PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
-    if (prot & PROT_WRITE) != 0 {
-        page_flags |= PageTableFlags::WRITABLE;
-    }
-    if (prot & PROT_EXEC) != 0 {
-        page_flags.remove(PageTableFlags::NO_EXECUTE);
-    }
-
-    for index in 0..num_pages {
-        let page_vaddr = addr + index as u64 * PAGE_SIZE;
-        let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
-            Some(frame) => frame,
-            None => {
-                for mapped in mapped_pages {
-                    let _ = guard.safe_unmap_page(mapped);
-                }
-                return errno_code(ENOMEM);
-            }
-        };
-
-        let mapped = PageTableHelper::map_page(
-            guard.page_table_manager_mut(),
-            page_vaddr as usize,
-            frame.start_address().as_u64() as usize,
-            page_flags,
-            frame_alloc,
-        );
-        if mapped.is_err() {
-            // `map_page` did not take ownership of the frame on failure.
-            frame_alloc.free_frame(frame);
-            for mapped in mapped_pages {
-                let _ = guard.safe_unmap_page(mapped);
-            }
-            return errno_code(ENOMEM);
+    let Some(mapped) = with_current_page_table(|page_table| {
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!("[linux-smoke] mmap page table acquired\n"));
+        let addr = find_free_anon_region(rt, page_table, aligned_len, hint);
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] mmap selected {addr:#x}, length {aligned_len:#x}\n"
+        ));
+        if addr == 0 {
+            return Err(ENOMEM);
         }
-        mapped_pages.push(page_vaddr as usize);
-    }
 
-    track_region(rt, addr, aligned_len, prot, flags);
+        let num_pages = (aligned_len / PAGE_SIZE) as usize;
+        let frame_alloc = unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+        let mut mapped_pages = 0usize;
+        let mut page_flags =
+            PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
+        if (prot & PROT_WRITE) != 0 {
+            page_flags |= PageTableFlags::WRITABLE;
+        }
+        if (prot & PROT_EXEC) != 0 {
+            page_flags.remove(PageTableFlags::NO_EXECUTE);
+        }
+
+        for index in 0..num_pages {
+            let page_vaddr = addr + index as u64 * PAGE_SIZE;
+            #[cfg(linux_musl_smoke)]
+            petroleum::serial::serial_log(format_args!(
+                "[linux-smoke] mmap mapping page {index} at {page_vaddr:#x}\n"
+            ));
+            let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
+                Some(frame) => frame,
+                None => {
+                    for mapped in 0..mapped_pages {
+                        let page = (addr + mapped as u64 * PAGE_SIZE) as usize;
+                        let _ = unmap_and_free(page_table, page);
+                    }
+                    return Err(ENOMEM);
+                }
+            };
+
+            if page_table
+                .map_page(
+                    page_vaddr as usize,
+                    frame.start_address().as_u64() as usize,
+                    page_flags,
+                    frame_alloc,
+                )
+                .is_err()
+            {
+                frame_alloc.free_frame(frame);
+                for mapped in 0..mapped_pages {
+                    let page = (addr + mapped as u64 * PAGE_SIZE) as usize;
+                    let _ = unmap_and_free(page_table, page);
+                }
+                return Err(ENOMEM);
+            }
+            mapped_pages += 1;
+        }
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!("[linux-smoke] mmap mapping done\n"));
+        Ok(addr)
+    }) else {
+        return errno_code(ENOMEM);
+    };
+    let addr = match mapped {
+        Ok(addr) => addr,
+        Err(error) => return errno_code(error),
+    };
+
+    #[cfg(linux_musl_smoke)]
+    petroleum::serial::serial_log(format_args!("[linux-smoke] mmap tracking region\n"));
+    if let Err(error) = track_region(rt, addr, aligned_len, prot, flags) {
+        let _ = with_current_page_table(|page_table| {
+            for index in 0..(aligned_len / PAGE_SIZE) {
+                let page = (addr + index * PAGE_SIZE) as usize;
+                let _ = unmap_and_free(page_table, page);
+            }
+        });
+        return errno_code(error);
+    }
+    #[cfg(linux_musl_smoke)]
+    petroleum::serial::serial_log(format_args!("[linux-smoke] mmap returning {addr:#x}\n"));
     addr
 }
 
@@ -292,20 +345,24 @@ pub fn sys_munmap(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EINVAL);
     }
 
-    let mut guard = crate::memory_management::get_memory_manager().lock();
-    let Some(mgr) = guard.as_mut() else {
+    let Some(result) = with_current_page_table(|page_table| {
+        if !range_is_owned_user_memory(page_table, aligned_addr, aligned_len) {
+            return Err(EINVAL);
+        }
+
+        let pages = (aligned_len / PAGE_SIZE) as usize;
+        for index in 0..pages {
+            let page = aligned_addr + index as u64 * PAGE_SIZE;
+            if unmap_and_free(page_table, page as usize).is_err() {
+                return Err(EINVAL);
+            }
+        }
+        Ok(())
+    }) else {
         return errno_code(ENOMEM);
     };
-    if !range_is_owned_user_memory(mgr, aligned_addr, aligned_len) {
-        return errno_code(EINVAL);
-    }
-
-    let pages = (aligned_len / PAGE_SIZE) as usize;
-    for index in 0..pages {
-        let page = aligned_addr + index as u64 * PAGE_SIZE;
-        if mgr.safe_unmap_page(page as usize).is_err() {
-            return errno_code(EINVAL);
-        }
+    if let Err(error) = result {
+        return errno_code(error);
     }
 
     // Exact-region removal is sufficient for the mappings this layer creates.
@@ -331,26 +388,6 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EINVAL);
     }
 
-    let mut guard = crate::memory_management::get_memory_manager().lock();
-    let Some(mgr) = guard.as_mut() else {
-        return errno_code(ENOMEM);
-    };
-    if !range_is_owned_user_memory(mgr, aligned_addr, aligned_len) {
-        return errno_code(EINVAL);
-    }
-
-    let pages = (aligned_len / PAGE_SIZE) as usize;
-    let ptm = mgr.page_table_manager_mut();
-    let mut original_flags = alloc::vec::Vec::with_capacity(pages);
-    for index in 0..pages {
-        let page = aligned_addr + index as u64 * PAGE_SIZE;
-        let flags = match ptm.get_page_flags(page as usize) {
-            Ok(flags) => flags,
-            Err(_) => return errno_code(EINVAL),
-        };
-        original_flags.push((page as usize, flags));
-    }
-
     let mut page_flags = PageTableFlags::USER_ACCESSIBLE;
     if prot != PROT_NONE {
         page_flags |= PageTableFlags::PRESENT;
@@ -362,13 +399,31 @@ pub fn sys_mprotect(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
     }
 
-    for (index, &(page, _)) in original_flags.iter().enumerate() {
-        if ptm.set_page_flags(page, page_flags).is_err() {
-            for &(rollback_page, rollback_flags) in &original_flags[..index] {
-                let _ = ptm.set_page_flags(rollback_page, rollback_flags);
-            }
-            return errno_code(ENOMEM);
+    let Some(result) = with_current_page_table(|page_table| {
+        if !range_is_owned_user_memory(page_table, aligned_addr, aligned_len) {
+            return Err(EINVAL);
         }
+
+        let pages = (aligned_len / PAGE_SIZE) as usize;
+        for index in 0..pages {
+            let page = aligned_addr + index as u64 * PAGE_SIZE;
+            page_table
+                .get_page_flags(page as usize)
+                .map_err(|_| EINVAL)?;
+        }
+
+        for index in 0..pages {
+            let page = (aligned_addr + index as u64 * PAGE_SIZE) as usize;
+            if page_table.set_page_flags(page, page_flags).is_err() {
+                return Err(ENOMEM);
+            }
+        }
+        Ok(())
+    }) else {
+        return errno_code(ENOMEM);
+    };
+    if let Err(error) = result {
+        return errno_code(error);
     }
 
     // Keep the runtime's metadata in sync when the range is an mmap region.
@@ -405,64 +460,56 @@ pub fn sys_brk(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
         if end_page > start_page {
             let num_pages = ((end_page - start_page) / align) as usize;
-            let mut memory_guard = crate::memory_management::get_memory_manager().lock();
-            let Some(mgr) = memory_guard.as_mut() else {
+            let Some(mapped) = with_current_page_table(|page_table| {
+                let growth = end_page - start_page;
+                if tracked_range_overlaps(rt, start_page, growth)
+                    || range_is_mapped(page_table, start_page, growth)
+                {
+                    return false;
+                }
+
+                let frame_alloc =
+                    unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
+
+                for i in 0..num_pages {
+                    let page_vaddr = start_page + (i as u64) * align;
+                    let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
+                        Some(frame) => frame,
+                        None => {
+                            for j in 0..i {
+                                let page = (start_page + (j as u64) * align) as usize;
+                                let _ = unmap_and_free(page_table, page);
+                            }
+                            return false;
+                        }
+                    };
+                    let page_flags = PageTableFlags::PRESENT
+                        | PageTableFlags::WRITABLE
+                        | PageTableFlags::USER_ACCESSIBLE;
+
+                    if page_table
+                        .map_page(
+                            page_vaddr as usize,
+                            frame.start_address().as_u64() as usize,
+                            page_flags,
+                            frame_alloc,
+                        )
+                        .is_err()
+                    {
+                        frame_alloc.free_frame(frame);
+                        for j in 0..i {
+                            let page = (start_page + (j as u64) * align) as usize;
+                            let _ = unmap_and_free(page_table, page);
+                        }
+                        return false;
+                    }
+                }
+                true
+            }) else {
                 return old_brk;
             };
-            let growth = end_page - start_page;
-            if tracked_range_overlaps(rt, start_page, growth)
-                || range_is_mapped(mgr, start_page, growth)
-            {
+            if !mapped {
                 return old_brk;
-            }
-
-            let frame_alloc =
-                unsafe { petroleum::page_table::constants::get_frame_allocator_mut() };
-
-            for i in 0..num_pages {
-                let page_vaddr = start_page + (i as u64) * align;
-                let frame = match X86FrameAllocator::<Size4KiB>::allocate_frame(frame_alloc) {
-                    Some(f) => f,
-                    None => {
-                        // Rollback previously mapped pages on OOM
-                        for j in 0..i {
-                            let unmap_vaddr = (start_page + (j as u64) * align) as usize;
-                            if mgr
-                                .page_table_manager()
-                                .translate_address(unmap_vaddr)
-                                .is_ok()
-                            {
-                                let _ = mgr.safe_unmap_page(unmap_vaddr);
-                            }
-                        }
-                        return old_brk;
-                    }
-                };
-                let page_flags = PageTableFlags::PRESENT
-                    | PageTableFlags::WRITABLE
-                    | PageTableFlags::USER_ACCESSIBLE;
-
-                // Create ptm in a narrow scope to avoid aliasing with mgr accesses below
-                let map_result = {
-                    let ptm = mgr.page_table_manager_mut() as *mut _;
-                    let ptm = unsafe { &mut *ptm };
-                    PageTableHelper::map_page(
-                        ptm,
-                        page_vaddr as usize,
-                        frame.start_address().as_u64() as usize,
-                        page_flags,
-                        frame_alloc,
-                    )
-                };
-
-                if map_result.is_err() {
-                    frame_alloc.free_frame(frame);
-                    for j in 0..i {
-                        let unmap_vaddr = (start_page + (j as u64) * align) as usize;
-                        let _ = mgr.safe_unmap_page(unmap_vaddr);
-                    }
-                    return old_brk;
-                }
             }
         }
     }

@@ -214,6 +214,36 @@ pub struct LinuxIovec {
     pub iov_len: u64,
 }
 
+/// Linux x86_64 `struct pollfd`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LinuxPollFd {
+    pub fd: i32,
+    pub events: i16,
+    pub revents: i16,
+}
+
+/// Linux x86_64 `stack_t`, used by `sigaltstack`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct LinuxStack {
+    pub ss_sp: u64,
+    pub ss_flags: i32,
+    pub padding: u32,
+    pub ss_size: u64,
+}
+
+impl LinuxStack {
+    pub const fn disabled() -> Self {
+        Self {
+            ss_sp: 0,
+            ss_flags: 2,
+            padding: 0,
+            ss_size: 0,
+        }
+    }
+}
+
 /// Linux struct sysinfo
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]

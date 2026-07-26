@@ -124,6 +124,35 @@ cargo run --bin flasks -- --resolution 1280x720
 cargo run --bin flasks -- --timeout 30
 ```
 
+### Linux-musl Rust `std` smoke test
+
+Install the official static-musl target once:
+
+```bash
+rustup target add --toolchain nightly x86_64-unknown-linux-musl
+```
+
+Then build an ordinary Rust `std` program, embed it at
+`/bin/rust-std-hello`, boot it through Solvent's Linux personality, and stop
+QEMU automatically when the process exits successfully:
+
+```bash
+FULLERENE_LINUX_MUSL_SMOKE=1 \
+  cargo run -p flasks -- --display none --vga none --timeout 70
+```
+
+The end-to-end success marker on the serial console is:
+
+```text
+Hello from Rust std on musl!
+```
+
+Without the smoke environment variable, the same embedded executable can be
+started from the Fullerene shell with `hello_rust_linux`. The source fixture is
+kept in `fullerene-kernel/examples/linux_musl_hello.rs`; it uses the official
+`x86_64-unknown-linux-musl` `std` and does not depend on a Fullerene-specific
+standard library.
+
 Expected output:
 - Serial logs from bootloader: Heap init, GOP init, kernel load.
 - VGA/graphics framebuffer initialization and Lattice compositor startup.

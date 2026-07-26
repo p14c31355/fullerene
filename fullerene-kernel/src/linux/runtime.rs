@@ -10,7 +10,6 @@ use super::time as linux_time;
 use super::types::*;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use petroleum::common::logging::SystemError;
 
 use crate::user_memory::{self, UserCopyError};
@@ -31,6 +30,8 @@ pub struct LinuxRuntime {
     pub signal_handlers: [LinuxSigAction; 64],
     /// Pending signal bitmask
     pub signal_pending: u64,
+    /// Alternate signal stack registered through `sigaltstack`.
+    pub signal_alt_stack: LinuxStack,
     /// Thread-local storage pointer (from ARCH_SET_FS)
     pub tls_ptr: u64,
     /// Current program break (for brk/sbrk)
@@ -50,7 +51,7 @@ pub struct LinuxRuntime {
     /// Umask
     pub umask: u32,
     /// Per-process virtual memory regions tracked for mmap/munmap
-    pub mmap_regions: Vec<LinuxMmapRegion>,
+    pub mmap_regions: heapless::Vec<LinuxMmapRegion, 64>,
 }
 
 impl LinuxRuntime {
@@ -59,6 +60,7 @@ impl LinuxRuntime {
             fd_table: LinuxFdTable::new(),
             signal_handlers: [LinuxSigAction::default(); 64],
             signal_pending: 0,
+            signal_alt_stack: LinuxStack::disabled(),
             tls_ptr: 0,
             program_break: initial_break,
             initial_break,
@@ -68,7 +70,7 @@ impl LinuxRuntime {
             robust_list_len: 0,
             cwd_fd: -100,
             umask: 0o22,
-            mmap_regions: Vec::new(),
+            mmap_regions: heapless::Vec::new(),
         }
     }
 
@@ -82,6 +84,12 @@ impl LinuxRuntime {
 
     /// Dispatch a Linux syscall by number.
     pub fn dispatch(&mut self, syscall_no: u64, args: &[u64; 6]) -> u64 {
+        #[cfg(linux_musl_smoke)]
+        petroleum::serial::serial_log(format_args!(
+            "[linux-smoke] syscall {syscall_no}({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})\n",
+            args[0], args[1], args[2], args[3], args[4], args[5]
+        ));
+
         match syscall_no {
             // File system
             SYS_READ => linux_fs::sys_read(self, args),
@@ -91,6 +99,7 @@ impl LinuxRuntime {
             SYS_STAT => linux_fs::sys_stat(self, args),
             SYS_FSTAT => linux_fs::sys_fstat(self, args),
             SYS_LSTAT => linux_fs::sys_stat(self, args),
+            SYS_POLL => linux_fs::sys_poll(self, args),
             SYS_LSEEK => linux_fs::sys_lseek(self, args),
             SYS_PREAD64 => linux_fs::sys_pread64(self, args),
             SYS_PWRITE64 => linux_fs::sys_pwrite64(self, args),
@@ -156,6 +165,7 @@ impl LinuxRuntime {
             SYS_RT_SIGACTION => linux_signal::sys_rt_sigaction(self, args),
             SYS_RT_SIGPROCMASK => linux_signal::sys_rt_sigprocmask(self, args),
             SYS_RT_SIGRETURN => linux_signal::sys_rt_sigreturn(self, args),
+            SYS_SIGALTSTACK => linux_signal::sys_sigaltstack(self, args),
 
             // Time
             SYS_NANOSLEEP => linux_time::sys_nanosleep(self, args),
@@ -451,6 +461,23 @@ pub unsafe fn copy_val_to_user<T: Copy>(buf: u64, val: &T) -> Result<(), i32> {
         return Err(EFAULT);
     }
     unsafe { user_memory::copy_value_to_user(buf as *mut T, val) }.map_err(linux_user_copy_error)
+}
+
+pub unsafe fn copy_val_from_user<T: Copy>(buf: u64) -> Result<T, i32> {
+    if buf == 0 {
+        return Err(EFAULT);
+    }
+    unsafe { user_memory::copy_value_from_user(buf as *const T) }.map_err(linux_user_copy_error)
+}
+
+pub unsafe fn copy_from_user_into(buf: u64, destination: &mut [u8]) -> Result<(), i32> {
+    if buf == 0 {
+        return Err(EFAULT);
+    }
+    let user = petroleum::common::memory::UserSlice::new(buf as *mut u8, destination.len(), false)
+        .map_err(|error| linux_user_copy_error(UserCopyError::System(error)))?;
+    unsafe { user.copy_from_user(destination) }
+        .map_err(|error| linux_user_copy_error(UserCopyError::System(error)))
 }
 
 #[cfg(test)]

@@ -9,6 +9,12 @@ pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
     launch_linux_from_data(crate::linux::test_binary::HELLO_ELF, "hello-linux")
 }
 
+/// Launch the ordinary Rust `std` example compiled for static musl Linux.
+#[cfg(have_linux_musl_hello)]
+pub fn launch_rust_std_hello() -> Result<ProcessId, LoadError> {
+    launch_linux_binary_named("/bin/rust-std-hello", "rust-std-musl-hello")
+}
+
 /// Launch a Linux ELF binary from the VFS at `path`.
 pub fn launch_linux_binary(path: &str) -> Result<ProcessId, LoadError> {
     // General-purpose callers can provide arbitrary paths, so retain a stable
@@ -87,6 +93,23 @@ pub fn init_initramfs() {
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
+
+    #[cfg(have_linux_musl_hello)]
+    if let Err(error) = crate::fs::write_entire_file(
+        "/bin/rust-std-hello",
+        include_bytes!(concat!(env!("OUT_DIR"), "/linux_musl_hello")),
+    ) {
+        log::warn!(
+            "Initramfs: failed to install /bin/rust-std-hello: {:?}",
+            error
+        );
+    }
+
+    #[cfg(all(have_linux_musl_hello, linux_musl_smoke))]
+    match launch_rust_std_hello() {
+        Ok(pid) => log::info!("Linux musl smoke process queued as PID {}", pid),
+        Err(error) => log::error!("Linux musl smoke launch failed: {:?}", error),
+    }
 
     // Create /apps directory for WASI applications
     let _ = crate::contexts::vfs::mkdir("/apps");

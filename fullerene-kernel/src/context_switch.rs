@@ -2,7 +2,7 @@
 
 /// Save current process context and switch to next
 #[unsafe(naked)]
-pub extern "C" fn switch_context(
+pub extern "sysv64" fn switch_context(
     _old_context: Option<&mut crate::process::ProcessContext>,
     _new_context: &crate::process::ProcessContext,
 ) {
@@ -29,10 +29,10 @@ pub extern "C" fn switch_context(
         "mov [rdi + 120], r15",
         // Save RIP (at [rsp]), RFLAGS
         "mov rax, [rsp]",
-        "mov [rdi + 128], rax", // rip
+        "mov [rdi + 136], rax", // rip
         "pushfq",
         "pop rax",
-        "mov [rdi + 136], rax", // rflags
+        "mov [rdi + 128], rax", // rflags
         // Save Segments
         "mov ax, cs; movzx rax, ax; mov [rdi + 144], rax",
         "mov ax, ss; movzx rax, ax; mov [rdi + 152], rax",
@@ -47,9 +47,9 @@ pub extern "C" fn switch_context(
         // This avoids callee-saved register aliasing with GPR restore
         "mov rax, [rbx + 200]", // rax = is_user (push to stack)
         "push rax",
-        "mov rax, [rbx + 136]", // rax = rflags
+        "mov rax, [rbx + 128]", // rax = rflags
         "push rax",
-        "mov rax, [rbx + 128]", // rax = rip
+        "mov rax, [rbx + 136]", // rax = rip
         "push rax",
         "mov rax, [rbx + 152]", // rax = ss (for user mode)
         "push rax",

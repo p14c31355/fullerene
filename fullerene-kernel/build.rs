@@ -12,7 +12,13 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(have_ports_cpio)");
     println!("cargo::rustc-check-cfg=cfg(have_viewer_wasm)");
     println!("cargo::rustc-check-cfg=cfg(have_emulsion_wasm)");
+    println!("cargo::rustc-check-cfg=cfg(have_linux_musl_hello)");
+    println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
+    println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
+    if env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some() {
+        println!("cargo:rustc-cfg=linux_musl_smoke");
+    }
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────
     let nitrogen_dir = manifest_dir.parent().unwrap().join("nitrogen");
@@ -83,6 +89,46 @@ fn main() {
     // Use the RUSTC from cargo's build environment — it points to the correct
     // toolchain (respecting rust-toolchain.toml). Derive sysroot from it.
     let rustc = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+
+    // ── Build the ordinary Rust std / musl Linux fixture ─────────
+    let linux_musl_src = manifest_dir.join("examples").join("linux_musl_hello.rs");
+    let linux_musl_out = out_dir.join("linux_musl_hello");
+    println!("cargo:rerun-if-changed={}", linux_musl_src.display());
+    match Command::new(&rustc)
+        .args([
+            "--edition=2024",
+            "--target",
+            "x86_64-unknown-linux-musl",
+            "-C",
+            "target-feature=+crt-static",
+            "-C",
+            "relocation-model=static",
+            "-C",
+            "opt-level=2",
+            "-C",
+            "strip=debuginfo",
+            "-o",
+        ])
+        .arg(&linux_musl_out)
+        .arg(&linux_musl_src)
+        .status()
+    {
+        Ok(status) if status.success() => {
+            println!("cargo:rustc-cfg=have_linux_musl_hello");
+        }
+        Ok(_) => {
+            println!(
+                "cargo:warning=Rust std/musl example build failed; install it with: \
+                 rustup target add x86_64-unknown-linux-musl"
+            );
+        }
+        Err(error) => {
+            println!(
+                "cargo:warning=Rust std/musl example compiler could not start: {}",
+                error
+            );
+        }
+    }
 
     let sysroot = String::from_utf8(
         Command::new(&rustc)

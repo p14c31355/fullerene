@@ -128,9 +128,6 @@ pub fn bootstrap_memory(
         x86_64::instructions::tlb::flush_all();
     }
 
-    let kernel_cr3 = x86_64::registers::control::Cr3::read();
-    crate::interrupts::syscall::set_kernel_cr3(kernel_cr3.0.start_address().as_u64());
-
     let heap_phys_start = {
         let memory_map = MEMORY_MAP.lock();
         let memory_map_ref = memory_map.as_ref().expect("Memory map gone");
