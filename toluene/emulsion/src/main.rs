@@ -1,5 +1,4 @@
 use std::fmt::Write as _;
-use std::io::Write as _;
 
 const BUILD_ID: &str = "2026-07-26-screenshot-mvp-3-capped-capture";
 const DEFAULT_OUTPUT: &str = "/tmp/emulsion-screenshot.qoi";
@@ -13,6 +12,14 @@ unsafe extern "C" {
         pixels_len: u32,
         width_ptr: *mut u32,
         height_ptr: *mut u32,
+    ) -> u32;
+    fn write_file_chunk(
+        path_ptr: *const u8,
+        path_len: u32,
+        offset: u64,
+        data_ptr: *const u8,
+        data_len: u32,
+        replace: u32,
     ) -> u32;
     fn show_text(title_ptr: *const u8, title_len: u32, text_ptr: *const u8, text_len: u32) -> u32;
     fn show_error(title_ptr: *const u8, title_len: u32, msg_ptr: *const u8, msg_len: u32) -> u32;
@@ -80,15 +87,12 @@ fn capture(output: &str) -> Result<(), String> {
         .ok_or_else(|| "The desktop dimensions are too large.".to_owned())?;
     println!("Emulsion: capture stream dimensions={width}x{height} bytes={total_bytes}");
 
-    let mut file = std::fs::File::create(output)
-        .map_err(|error| format!("Cannot create screenshot '{output}': {error}"))?;
     let mut header = Vec::with_capacity(14);
     header.extend_from_slice(b"qoif");
     header.extend_from_slice(&width.to_be_bytes());
     header.extend_from_slice(&height.to_be_bytes());
     header.extend_from_slice(&[4, 0]);
-    file.write_all(&header)
-        .map_err(|error| format!("Cannot write QOI header: {error}"))?;
+    write_chunk(output, 0, &header, true)?;
 
     // Keep both the WASM guest allocation and each host callback bounded.
     // The simple QOI RGBA opcode is valid and lets us stream without holding
@@ -123,17 +127,15 @@ fn capture(output: &str) -> Result<(), String> {
             encoded.push(0xFF);
             encoded.extend_from_slice(rgba);
         }
-        file.write_all(&encoded)
-            .map_err(|error| format!("Cannot write QOI pixels: {error}"))?;
+        write_chunk(output, 14 + encoded_offset(offset), &encoded, false)?;
         println!(
             "Emulsion: capture chunk complete offset={} bytes={}",
             offset, chunk_len
         );
         offset += chunk_len;
     }
-    file.write_all(&[0; 7])
-        .and_then(|_| file.write_all(&[1]))
-        .map_err(|error| format!("Cannot write QOI end marker: {error}"))?;
+    write_chunk(output, 14 + encoded_offset(total_bytes), &[0; 7], false)?;
+    write_chunk(output, 14 + encoded_offset(total_bytes) + 7, &[1], false)?;
     println!("Emulsion: qoi stream complete");
     println!("Emulsion: file write complete path={output}");
 
@@ -145,6 +147,30 @@ fn capture(output: &str) -> Result<(), String> {
     present_text("Emulsion", &report);
     println!("{report}");
     Ok(())
+}
+
+fn encoded_offset(rgba_offset: usize) -> u64 {
+    (rgba_offset / 4).saturating_mul(5) as u64
+}
+
+fn write_chunk(path: &str, offset: u64, data: &[u8], replace: bool) -> Result<(), String> {
+    let result = unsafe {
+        write_file_chunk(
+            path.as_ptr(),
+            path.len() as u32,
+            offset,
+            data.as_ptr(),
+            data.len() as u32,
+            replace as u32,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Cannot write screenshot chunk at offset {offset} (host error {result})."
+        ))
+    }
 }
 
 fn present_text(title: &str, message: &str) {

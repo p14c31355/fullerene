@@ -9,7 +9,7 @@ use crate::wasi::{
     fd_seek, fd_write, fullerene_capture_screen, fullerene_capture_screen_chunk,
     fullerene_close_window, fullerene_create_window, fullerene_screen_dimensions,
     fullerene_show_error, fullerene_show_image, fullerene_show_text, fullerene_update_window,
-    path_filestat_get, path_open, proc_exit, random_get,
+    fullerene_write_file_chunk, path_filestat_get, path_open, proc_exit, random_get,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -28,6 +28,7 @@ pub fn run(
     read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
+    write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
     get_monotonic_ns: fn() -> u64,
     screen_dimensions: fn() -> (u32, u32),
     capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
@@ -79,6 +80,7 @@ pub fn run(
         read_file_range,
         read_directory,
         write_file,
+        write_file_chunk,
         get_monotonic_ns,
         screen_dimensions,
         capture_screen,
@@ -198,6 +200,7 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
         "capture_screen_chunk",
         fullerene_capture_screen_chunk,
     )?;
+    linker.func_wrap(fullerene, "write_file_chunk", fullerene_write_file_chunk)?;
     linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
     linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
     linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;

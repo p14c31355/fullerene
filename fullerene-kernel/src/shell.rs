@@ -160,6 +160,29 @@ fn wasm_write_file(path: &str, data: &[u8]) -> Result<(), genome::FsError> {
     crate::fs::write_entire_file(path, data)
 }
 
+fn wasm_write_file_chunk(
+    path: &str,
+    offset: u64,
+    data: &[u8],
+    replace: bool,
+) -> Result<(), genome::FsError> {
+    crate::klog_fmt!(
+        "[WASM-DIAG] file chunk enter path={} offset={} bytes={} replace={}\n",
+        path,
+        offset,
+        data.len(),
+        replace
+    );
+    let result = crate::fs::write_file_chunk(path, offset, data, replace);
+    crate::klog_fmt!(
+        "[WASM-DIAG] file chunk exit path={} offset={} result={:?}\n",
+        path,
+        offset,
+        result
+    );
+    result
+}
+
 fn wasm_read_directory(
     path: &str,
 ) -> Result<alloc::vec::Vec<(alloc::string::String, u8)>, genome::FsError> {
@@ -406,6 +429,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_read_file_range,
         wasm_read_directory,
         wasm_write_file,
+        wasm_write_file_chunk,
         wasm_get_monotonic_ns,
         wasm_screen_dimensions,
         wasm_capture_screen,
@@ -452,8 +476,10 @@ macro_rules! launch_cmd {
                     pid.0
                 );
                 tline!($t, $ok, pid.0);
-                // The terminal input loop yields after this callback returns,
-                // so the process starts with no shell/runtime locks held.
+                // The terminal input loop performs this direct handoff after
+                // the callback returns, so no shell/runtime lock crosses the
+                // context-switch assembly boundary.
+                crate::process::defer_yield_to(pid);
                 crate::klog_fmt!("[LINUX-DIAG] launch command returned pid={} ready\n", pid.0);
             }
             Err(e) => {
@@ -1335,6 +1361,11 @@ pub fn run_linux_musl_smoke() {
         }
 
         fn read_byte(&mut self) -> Option<u8> {
+            // The scripted input is already available, so it would never
+            // enter the normal empty-keyboard yield path. Exercise the same
+            // deferred launch handoff explicitly before consuming the next
+            // command byte.
+            crate::process::yield_from_scheduler_stack();
             self.input.pop_front()
         }
 

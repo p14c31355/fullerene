@@ -103,6 +103,7 @@ pub struct WasiCtx {
     pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
     pub write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
+    pub write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
     pub get_monotonic_ns: fn() -> u64,
     pub screen_dimensions: fn() -> (u32, u32),
     pub capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
@@ -126,6 +127,7 @@ impl WasiCtx {
         read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
         write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
+        write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
         get_monotonic_ns: fn() -> u64,
         screen_dimensions: fn() -> (u32, u32),
         capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
@@ -169,6 +171,7 @@ impl WasiCtx {
             read_file_range,
             read_directory,
             write_file,
+            write_file_chunk,
             get_monotonic_ns,
             screen_dimensions,
             capture_screen,
@@ -1231,6 +1234,39 @@ pub fn fullerene_capture_screen_chunk(
     write_u32(&memory, &mut caller, width_ptr, width)?;
     write_u32(&memory, &mut caller, height_ptr, height)?;
     Ok(ESUCCESS)
+}
+
+/// Write one bounded output chunk directly to the host VFS.  Streaming
+/// writers use this instead of WASI's close-time write buffer, which would
+/// otherwise retain the complete screenshot in the guest heap.
+pub fn fullerene_write_file_chunk(
+    caller: Caller<'_, WasiCtx>,
+    path_ptr: u32,
+    path_len: u32,
+    offset: u64,
+    data_ptr: u32,
+    data_len: u32,
+    replace: u32,
+) -> Result<u32, Error> {
+    let end = offset.saturating_add(data_len as u64);
+    if path_len == 0 || path_len > 4096 || data_len > 512 * 1024 || end > 64 * 1024 * 1024 {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut path_buf = vec![0u8; path_len as usize];
+    memory
+        .read(&caller, path_ptr as usize, &mut path_buf)
+        .map_err(|_| Error::new("write_file_chunk: read path failed"))?;
+    let mut data = vec![0u8; data_len as usize];
+    memory
+        .read(&caller, data_ptr as usize, &mut data)
+        .map_err(|_| Error::new("write_file_chunk: read data failed"))?;
+    let path = str::from_utf8(&path_buf).unwrap_or("");
+    let result = (caller.data().write_file_chunk)(path, offset, &data, replace != 0);
+    Ok(match result {
+        Ok(()) => ESUCCESS,
+        Err(error) => map_fs_error(&error),
+    })
 }
 
 /// Display decoded RGB pixels in a new window.

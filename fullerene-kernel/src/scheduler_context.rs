@@ -439,6 +439,15 @@ impl SchedulerContext {
             .iter()
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| &*p.context as *const ProcessContext);
+        let new_summary = list.iter().find(|(id, _)| *id == new_pid).map(|(_, p)| {
+            (
+                p.context.is_user,
+                p.context.rip,
+                p.context.registers.rsp,
+                p.context.rflags,
+                p.context.kernel_rsp,
+            )
+        });
         let pt = list
             .iter()
             .find(|(id, _)| *id == new_pid)
@@ -460,6 +469,18 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
+            if let Some((is_user, rip, rsp, rflags, kernel_rsp)) = new_summary {
+                crate::klog_fmt!(
+                    "[LINUX-DIAG] switch prepare old={:?} new={} user={} rip={:#x} rsp={:#x} flags={:#x} kernel_rsp={:#x}\n",
+                    old_pid.map(|pid| pid.0),
+                    new_pid.0,
+                    is_user,
+                    rip,
+                    rsp,
+                    rflags,
+                    kernel_rsp
+                );
+            }
             petroleum::serial::serial_log(format_args!(
                 "[LINUX-DIAG] switch prepare old={:?} new={} cr3={:#x} kernel_stack={:#x}\n",
                 old_pid,

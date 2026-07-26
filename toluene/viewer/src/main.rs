@@ -375,7 +375,11 @@ fn try_mp4_file(path: &str) -> bool {
         Ok(reader) => reader,
         Err(error) => {
             println!("viewer: mp4 header failed");
-            present_error("MP4 Viewer error", &format!("MP4 header error: {:?}", error));
+            println!("viewer: mp4 header error={:?}", error);
+            present_error(
+                "MP4 Viewer error",
+                "MP4 header is invalid or unsupported.\n\nThe file was not opened to avoid a parser hang.",
+            );
             return true;
         }
     };

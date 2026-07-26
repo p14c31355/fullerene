@@ -76,6 +76,14 @@ fn safe_halt() -> ! {
 }
 
 fn kernel_fault_halt(frame: &InterruptStackFrame, name: &str, extra: &str) -> ! {
+    crate::klog_fmt!(
+        "[FAULT] {} RIP={:#x} RSP={:#x} CS={:#x} {}\n",
+        name,
+        frame.instruction_pointer.as_u64(),
+        frame.stack_pointer.as_u64(),
+        frame.code_segment.0,
+        extra
+    );
     raw_log!(
         "\n=== KERNEL EXCEPTION: {} ===\n  RIP={:#x} RSP={:#x} CS={:#x}\n  Extra: {}\n",
         name,
@@ -158,6 +166,11 @@ macro_rules! define_no_err_handler {
                     exc_name,
                     frame.instruction_pointer.as_u64()
                 );
+                crate::klog_fmt!(
+                    "[FAULT] {} at user RIP={:#x}\n",
+                    exc_name,
+                    frame.instruction_pointer.as_u64()
+                );
                 terminate_and_recover(&mut frame, exc_name);
             } else {
                 kernel_fault_halt(&frame, exc_name, "");
@@ -174,6 +187,12 @@ macro_rules! define_err_handler {
             if is_user_mode(&frame) {
                 raw_log!(
                     "EXC {} err={:#x} at user RIP={:#x}\n",
+                    exc_name,
+                    error_code,
+                    frame.instruction_pointer.as_u64()
+                );
+                crate::klog_fmt!(
+                    "[FAULT] {} err={:#x} at user RIP={:#x}\n",
                     exc_name,
                     error_code,
                     frame.instruction_pointer.as_u64()

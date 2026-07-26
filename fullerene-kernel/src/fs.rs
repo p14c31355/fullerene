@@ -68,6 +68,43 @@ pub fn create_file(path: &str, data: &[u8]) -> Result<(), FsError> {
     Ok(())
 }
 
+/// Replace or append one bounded file chunk without retaining the complete
+/// output in a guest/WASI buffer.  This is used by streaming WASM producers.
+pub fn write_file_chunk(
+    path: &str,
+    offset: u64,
+    data: &[u8],
+    replace: bool,
+) -> Result<(), FsError> {
+    let descriptor = if replace {
+        if vfs::exists(path) {
+            vfs::unlink(path)?;
+        }
+        vfs::create(path)?
+    } else {
+        match vfs::open(path, 0) {
+            Ok(fd) => fd,
+            Err(FsError::FileNotFound) => vfs::create(path)?,
+            Err(error) => return Err(error),
+        }
+    };
+    let mut file = FileDesc::from(descriptor);
+    let result = (|| {
+        seek_file(&mut file, offset)?;
+        let mut remaining = data;
+        while !remaining.is_empty() {
+            let written = write_file(&mut file, remaining)?;
+            if written == 0 {
+                return Err(FsError::InvalidInput);
+            }
+            remaining = &remaining[written..];
+        }
+        Ok(())
+    })();
+    let close_result = close_file(file);
+    result.and(close_result)
+}
+
 pub fn create_dir(path: &str) -> Result<(), FsError> {
     vfs::mkdir(path)
 }

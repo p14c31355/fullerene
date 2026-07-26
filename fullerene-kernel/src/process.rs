@@ -520,6 +520,11 @@ impl Process {
 /// access `SCHEDULER` directly.
 pub use crate::scheduler_context::SCHEDULER;
 
+/// PID requested by a shell command that just created a process.  The actual
+/// switch is deferred until terminal control has returned to the polling
+/// loop, so no shell/VFS/runtime lock is held across the assembly switch.
+static PENDING_YIELD_TO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 // Use KERNEL_STACK_SIZE from crate::heap
 
 /// Marker used to track whether the idle process has been initialised.
@@ -838,21 +843,35 @@ pub fn yield_current() {
 /// Use the scheduler's `(old, new)` result instead of assuming a non-zero
 /// current PID in that case.
 pub fn yield_from_scheduler_stack() {
-    let (old_pid, new_pid) = SCHEDULER.schedule_next();
+    let target = PENDING_YIELD_TO.swap(0, core::sync::atomic::Ordering::AcqRel);
+    // Terminal input polling calls this callback repeatedly while idle. Only
+    // a launch handoff is a scheduling point here; otherwise an unrelated
+    // Ready task would make Klog Live look like it is continuously streaming.
+    if target == 0 || SCHEDULER.active_count() <= 1 {
+        return;
+    }
+    let old_pid = current_pid();
+    let new_pid = ProcessId(target);
     crate::klog_fmt!(
         "[LINUX-DIAG] scheduler-stack yield old={:?} new={} enter\n",
         old_pid.map(|pid| pid.0),
         new_pid.0
     );
-    if old_pid != Some(new_pid) {
-        unsafe {
-            context_switch(old_pid, new_pid);
-        }
+    if !SCHEDULER.yield_to(new_pid) {
+        crate::klog_fmt!(
+            "[LINUX-DIAG] scheduler-stack yield target={} rejected\n",
+            new_pid.0
+        );
     }
     crate::klog_fmt!(
         "[LINUX-DIAG] scheduler-stack yield returned new={}\n",
         new_pid.0
     );
+}
+
+/// Defer a direct handoff until the shell's current command callback returns.
+pub fn defer_yield_to(pid: ProcessId) {
+    PENDING_YIELD_TO.store(pid.0, core::sync::atomic::Ordering::Release);
 }
 
 /// Cooperatively switch directly to a specific ready process.
