@@ -1253,8 +1253,17 @@ pub fn run_linux_musl_smoke() {
         services,
         Some("linux_run /bin/rust_std_hello"),
     );
-    // Reaching here proves that the Linux process exited and cooperative
-    // scheduling restored the shell context. Flasks maps 0x10 to status 33.
+    // Run a second command after the Linux process exits. Reaching its marker
+    // proves that cooperative scheduling restored a usable shell context, not
+    // merely an instruction address that happened to reach this function.
+    solvent::run_shell_on_with_command(
+        &mut solvent::LatticeTerminal,
+        "fullerene> ",
+        services,
+        Some("echo shell-resumed-after-linux"),
+    );
+    petroleum::serial::serial_log(format_args!("[linux-smoke] shell-resumed-after-linux\n"));
+    // Flasks maps 0x10 to status 33.
     unsafe {
         x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x10);
     }

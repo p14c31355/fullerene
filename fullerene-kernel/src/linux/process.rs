@@ -139,7 +139,8 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         context: {
             let mut ctx = parent_ctx.clone();
             // Child returns 0 from clone
-            ctx.regs[0] = 0;
+            ctx.registers.rax = 0;
+            ctx.kernel_rsp = 0;
             ctx
         },
         page_table_phys_addr: x86_64::PhysAddr::new(cloned_table as u64),
@@ -336,24 +337,23 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 
         // Reset context for the new binary
         p.context.rip = entry;
-        p.context.regs[7] = stack_top_vaddr_default; // RSP
+        p.context.registers.rsp = stack_top_vaddr_default;
 
         if p.is_user {
-            p.context.segments[0] = crate::gdt::user_code()
+            p.context.segments.cs = crate::gdt::user_code()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(1);
-            p.context.segments[1] = crate::gdt::user_data()
+            p.context.segments.ss = crate::gdt::user_data()
                 .as_ref()
                 .map(|s| s.0 as u64)
                 .unwrap_or(2);
         }
 
         // Clear registers
-        for reg in &mut p.context.regs {
-            *reg = 0;
-        }
-        p.context.regs[7] = stack_top_vaddr_default; // RSP
+        p.context.registers = crate::process::GeneralRegisters::default();
+        p.context.registers.rsp = stack_top_vaddr_default;
+        p.context.kernel_rsp = 0;
 
         // Return 0 from execve on the new stack by pushing it
         // Actually, execve doesn't return on success - the new program starts at entry.
@@ -369,7 +369,7 @@ pub fn sys_execve(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         // Set RSP and write initial stack frame (argc, argv, envp)
         let stack_top = stack_top_vaddr_default;
         let rsp = stack_top - 32;
-        p.context.regs[7] = rsp;
+        p.context.registers.rsp = rsp;
 
         // Use the same validated user-copy path as every other Linux ABI
         // output.  Even though this address was selected by the loader, it is

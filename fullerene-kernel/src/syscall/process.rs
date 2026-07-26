@@ -201,8 +201,9 @@ pub(crate) fn syscall_fork() -> SyscallResult {
         resources: process::ProcessResources::new(),
     };
 
-    child_process.context.regs[0] = 0;
-    child_process.context.regs[7] = child_process.user_stack.as_u64();
+    child_process.context.registers.rax = 0;
+    child_process.context.registers.rsp = child_process.user_stack.as_u64();
+    child_process.context.kernel_rsp = 0;
 
     process::SCHEDULER
         .add(Box::new(child_process))

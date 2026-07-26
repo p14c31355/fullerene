@@ -464,7 +464,7 @@ fn load_program_inner(
                 }
 
                 p.user_stack = x86_64::VirtAddr::new(LINUX_STACK_TOP);
-                p.context.regs[7] = rsp;
+                p.context.registers.rsp = rsp;
                 // Linux personality processes are currently cooperative. The
                 // kernel's Rust `x86-interrupt` handlers cannot yet return
                 // reliably to CPL3, so do not expose hardware interrupts

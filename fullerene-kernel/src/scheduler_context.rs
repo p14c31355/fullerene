@@ -249,8 +249,12 @@ impl SchedulerContext {
             #[cfg(linux_musl_smoke)]
             for (pid, process) in list.iter() {
                 petroleum::serial::serial_log(format_args!(
-                    "[linux-smoke] pid={} ctx rip={:#x} rsp={:#x} user={}\n",
-                    pid.0, process.context.rip, process.context.regs[7], process.context.is_user
+                    "[linux-smoke] pid={} entry_rip={:#x} entry_rsp={:#x} kernel_rsp={:#x} user={}\n",
+                    pid.0,
+                    process.context.rip,
+                    process.context.registers.rsp,
+                    process.context.kernel_rsp,
+                    process.context.is_user
                 ));
             }
             if list.is_empty() {
