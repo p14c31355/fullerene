@@ -230,6 +230,19 @@ fn wasm_get_monotonic_ns() -> u64 {
     }
 }
 
+fn wasm_play_pcm(sample_rate: u32, channels: u8, bits_per_sample: u8, pcm: &[u8]) -> i32 {
+    if pcm.is_empty() || pcm.len() > 8 * 1024 * 1024 {
+        return -1;
+    }
+    let played = crate::contexts::kernel::with_kernel_mut(|kernel| {
+        kernel
+            .audio
+            .play_pcm(sample_rate, channels, bits_per_sample, pcm)
+    })
+    .unwrap_or(false);
+    if played { 0 } else { -1 }
+}
+
 fn blit_rgb(window_id: lattice::window::WindowId, width: u32, height: u32, pixels: &[u8]) -> i32 {
     if pixels.len() < 3 {
         return -1;
@@ -464,6 +477,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_create_window,
         wasm_update_window,
         wasm_close_window,
+        wasm_play_pcm,
     );
     if let Err(error) = crate::fs::finish_file_chunk() {
         crate::klog_fmt!("[WASM-DIAG] file stream close error={:?}\n", error);

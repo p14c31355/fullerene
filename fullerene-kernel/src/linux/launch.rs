@@ -172,6 +172,9 @@ pub fn init_initramfs() {
         "/lib",
         "/lib64",
         "/mnt",
+        "/usr/share",
+        "/usr/share/sounds",
+        "/usr/share/sounds/fullerene",
     ];
 
     for dir in &dirs {
@@ -202,6 +205,39 @@ pub fn init_initramfs() {
         include_bytes!(concat!(env!("OUT_DIR"), "/hello.wasm")),
     ) {
         log::warn!("Initramfs: failed to write /apps/hello.wasm: {:?}", e);
+    }
+
+    // Embed the std-based startup sound player and both source encodings.
+    if let Err(e) = crate::fs::write_entire_file(
+        "/apps/startup_sound.wasm",
+        include_bytes!(concat!(env!("OUT_DIR"), "/startup_sound.wasm")),
+    ) {
+        log::warn!(
+            "Initramfs: failed to write /apps/startup_sound.wasm: {:?}",
+            e
+        );
+    }
+    let wav: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/audio/fullerene_startup_sound.wav"
+    ));
+    let mp3: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/assets/audio/fullerene_startup_sound.mp3"
+    ));
+    for (path, data) in [
+        (
+            "/usr/share/sounds/fullerene/fullerene_startup_sound.wav",
+            wav,
+        ),
+        (
+            "/usr/share/sounds/fullerene/fullerene_startup_sound.mp3",
+            mp3,
+        ),
+    ] {
+        if let Err(e) = crate::fs::write_entire_file(path, data) {
+            log::warn!("Initramfs: failed to write {}: {:?}", path, e);
+        }
     }
 
     // Embed the viewer.wasm WASM app (built at compile time by build.rs)

@@ -341,6 +341,13 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[init] Device probe step done\n");
             Ok(())
         }),
+        petroleum::init_step!("audio", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] audio start\n");
+            crate::boot_stage::draw_boot_label(b"AUDIO");
+            crate::contexts::kernel::with_kernel_mut(|kernel| kernel.audio.probe());
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] audio done\n");
+            Ok(())
+        }),
         // draw_step_hint shows the step name at the bottom of the boot
         // screen so we can identify hangs without serial access.
         petroleum::init_step!("PS2 Controller", || {
@@ -441,6 +448,17 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
             crate::boot_stage!(BootStage::GuiReady);
             crate::boot_stage::draw_step_hint(b"gui_ok ");
             petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] gui done\n");
+            Ok(())
+        }),
+        petroleum::init_step!("startup_sound", || {
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] startup sound start\n");
+            crate::boot_stage::draw_boot_label(b"STARTUP SOUND");
+            let args = ["/apps/startup_sound.wasm"];
+            let code = crate::shell::run_wasm_app("/apps/startup_sound.wasm", &args);
+            if code != 0 {
+                log::warn!("Startup sound WASM exited with code {}", code);
+            }
+            petroleum::write_serial_bytes(0x3F8, 0x3FD, b"[step] startup sound done\n");
             Ok(())
         }),
         petroleum::init_step!("task_manager", || {

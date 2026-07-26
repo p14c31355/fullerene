@@ -308,13 +308,22 @@ impl HdaController {
 
         // Find route
         let stream_tag: u8 = 1;
-        if let Some((dac, pin)) =
+        let route_found = if let Some((dac, pin)) =
             unsafe { RouteFinder::find_speaker_route(mmio, &self.corb, &graph) }
         {
             log::info!("HDA: route DAC=0x{:x} → Pin=0x{:x}", dac, pin);
             unsafe { RouteFinder::configure_route(mmio, &self.corb, &graph, dac, pin, stream_tag) };
+            true
         } else {
             log::warn!("HDA: no speaker route found");
+            false
+        };
+
+        // Without a connected DAC/pin route the stream cannot produce a
+        // boundary interrupt. Do not start DMA in that case: callers would
+        // otherwise wait forever for playback progress.
+        if !route_found {
+            return false;
         }
 
         // Init DMA engine
@@ -372,6 +381,12 @@ impl HdaController {
     /// Convenience: write PCM at a specific DMA buffer offset.
     pub fn write_at(&self, offset: u32, samples: &[u8]) -> usize {
         self.dma.write_at(offset, samples)
+    }
+
+    /// Clear a region of the DMA buffer without allocating a temporary
+    /// silence buffer. Used to pad the final playback half.
+    pub fn clear_at(&self, offset: u32, len: usize) -> usize {
+        self.dma.clear_at(offset, len)
     }
 
     /// Convenience: reset LPIB prefill tracking.

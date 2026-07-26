@@ -289,11 +289,15 @@ impl CorbEngine {
 
             mmio_write16(mmio, CORBWP, (next_wp * 4) as u16);
 
-            // Walk RIRB entries incrementally (100 ms deadline).
+            // Walk RIRB entries incrementally. A codec response should be
+            // available within a few milliseconds; keep enumeration from
+            // blocking the boot path when a controller advertises a codec
+            // that does not actually answer verbs (for example, a partial
+            // virtual HDA device).
             let rirb_n: usize = corb_n;
             let rirb_entry_mask = rirb_n - 1;
             let mut rp = curr_rp;
-            let verb_result = crate::timing::poll_timeout_us(100_000, || {
+            let verb_result = crate::timing::poll_timeout_us(5_000, || {
                 Self::tick_vm_exit();
                 let rirb_wp = ((mmio_read16(mmio, RIRBWP) & rirb_byte_mask) / 8) as usize;
                 while rp != rirb_wp {

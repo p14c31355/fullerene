@@ -16,6 +16,18 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
     println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("assets/audio/fullerene_startup_sound.wav")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("assets/audio/fullerene_startup_sound.mp3")
+            .display()
+    );
     let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────
@@ -193,6 +205,36 @@ fn main() {
              Make sure the wasm32-wasip1 target is installed: \
              rustup target add wasm32-wasip1",
             wasm_src.display()
+        );
+    }
+
+    // ── Build the std-based startup sound WASM app ─────────────
+    let startup_sound_src = workspace_root
+        .join("toluene")
+        .join("apps")
+        .join("startup_sound.rs");
+    let startup_sound_out = out_dir.join("startup_sound.wasm");
+    println!("cargo:rerun-if-changed={}", startup_sound_src.display());
+    let status = Command::new(&rustc)
+        .args([
+            "--target",
+            "wasm32-wasip1",
+            "--sysroot",
+            &sysroot,
+            "-C",
+            "opt-level=s",
+            "-C",
+            "lto=yes",
+            "-o",
+        ])
+        .arg(&startup_sound_out)
+        .arg(&startup_sound_src)
+        .status()
+        .expect("Failed to execute rustc for startup sound WASM build");
+    if !status.success() {
+        panic!(
+            "Failed to compile startup sound WASM app from '{}'.",
+            startup_sound_src.display()
         );
     }
 

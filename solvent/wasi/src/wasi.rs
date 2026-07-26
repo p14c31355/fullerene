@@ -88,6 +88,7 @@ const MAX_CAPTURE_CHUNK_BYTES: u32 = 256 * 1024;
 const MAX_WINDOW_TITLE_BYTES: u32 = 1024;
 const MAX_TEXT_BYTES: u32 = 512 * 1024;
 const MAX_ERROR_BYTES: u32 = 64 * 1024;
+const MAX_AUDIO_BYTES: u32 = 8 * 1024 * 1024;
 
 pub struct WasiCtx {
     pub exit_code: Option<u32>,
@@ -115,6 +116,7 @@ pub struct WasiCtx {
     pub create_window: fn(&str, u32, u32) -> i32,
     pub update_window: fn(i32, u32, u32, &[u8]) -> i32,
     pub close_window: fn(i32) -> i32,
+    pub play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
 }
 
 impl WasiCtx {
@@ -140,6 +142,7 @@ impl WasiCtx {
         create_window: fn(&str, u32, u32) -> i32,
         update_window: fn(i32, u32, u32, &[u8]) -> i32,
         close_window: fn(i32) -> i32,
+        play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
     ) -> Self {
         let args_vec: Vec<Vec<u8>> = args
             .iter()
@@ -185,6 +188,7 @@ impl WasiCtx {
             create_window,
             update_window,
             close_window,
+            play_pcm,
         }
     }
 }
@@ -1436,5 +1440,26 @@ pub fn fullerene_update_window(
 /// Close a window previously created with `create_window`.
 pub fn fullerene_close_window(caller: Caller<'_, WasiCtx>, window_id: i32) -> Result<u32, Error> {
     let code = (caller.data().close_window)(window_id);
+    Ok(code as u32)
+}
+
+/// Submit a bounded raw PCM buffer to the kernel audio backend.
+pub fn fullerene_play_pcm(
+    caller: Caller<'_, WasiCtx>,
+    sample_rate: u32,
+    channels: u32,
+    bits_per_sample: u32,
+    data_ptr: u32,
+    data_len: u32,
+) -> Result<u32, Error> {
+    if data_len > MAX_AUDIO_BYTES || channels > u8::MAX as u32 || bits_per_sample > u8::MAX as u32 {
+        return Ok(EINVAL);
+    }
+    let memory = get_memory(&caller)?;
+    let mut data = alloc::vec![0u8; data_len as usize];
+    memory
+        .read(&caller, data_ptr as usize, &mut data)
+        .map_err(|_| Error::new("play_pcm: memory read failed"))?;
+    let code = (caller.data().play_pcm)(sample_rate, channels as u8, bits_per_sample as u8, &data);
     Ok(code as u32)
 }

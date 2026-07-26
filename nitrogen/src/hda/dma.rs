@@ -213,6 +213,22 @@ impl DmaEngine {
         n
     }
 
+    /// Clear a region of the audio ring buffer. Returns bytes cleared.
+    pub fn clear_at(&self, offset: u32, len: usize) -> usize {
+        if self.dma_virt.is_null() {
+            return 0;
+        }
+        let total = self.audio_size as usize;
+        let n = len.min(total.saturating_sub(offset as usize));
+        if n == 0 {
+            return 0;
+        }
+        unsafe {
+            core::ptr::write_bytes(self.dma_virt.add((self.audio_off + offset) as usize), 0, n);
+        }
+        n
+    }
+
     /// Reset LPIB tracking so DMA is assumed to start from half 0
     /// (call after pre‑filling both halves).
     pub fn reset_prefill_tracking(&self) {
