@@ -33,18 +33,29 @@ pub const MAX_DESCRIPTORS: usize = 2048;
 /// The first [`HEAP_SIZE`] bytes serve as the initial heap. The remaining
 /// [`HEAP_EXTEND_MAX`] bytes are exposed lazily by the global allocator.
 ///
-/// This is deliberately not forced into `.data`: because it is zero
-/// initialized, the PE/UEFI image can represent it as a loader-zero-filled
-/// region (BSS).  The pages are still mapped and zeroed by the UEFI image
-/// loader at runtime, but the zero bytes do not occupy space in the ISO.
+/// This is deliberately zero initialized so the PE/UEFI image can represent
+/// it as a loader-zero-filled region (BSS); the bytes do not occupy ISO file
+/// space. The first 12 MiB is committed at boot and the extension backing is
+/// exposed page-by-page as the allocator grows.
 #[repr(align(4096))]
 pub struct TotalHeapBuffer(#[allow(dead_code)] pub(crate) [u8; HEAP_TOTAL]);
 
 /// # Safety
-/// The heap buffer is written once (zeroed at compile time, mapped by UEFI),
-/// and then used by the kernel allocator which serialises access via spinlock.
+/// The heap backing is zero initialized and accessed by the kernel allocator,
+/// which serialises its metadata via spinlock. Extension pages are only
+/// exposed after the bounded growth path has established their range.
 /// Only accessed after single‑core boot init is complete.
 pub static mut TOTAL_HEAP_BUFFER: TotalHeapBuffer = TotalHeapBuffer([0; HEAP_TOTAL]);
+
+/// Return whether an address belongs to the reserved, not-yet-committed
+/// extension backing.  The page-fault handler uses this narrow predicate; it
+/// must never turn an arbitrary kernel pointer into a demand-mapped page.
+pub fn is_reserved_extension_address(address: usize) -> bool {
+    let start = core::ptr::addr_of!(TOTAL_HEAP_BUFFER) as usize;
+    let extension_start = start.saturating_add(HEAP_SIZE);
+    let end = start.saturating_add(HEAP_TOTAL);
+    address >= extension_start && address < end
+}
 
 /// # Safety
 /// Written once during boot by `MemoryDescriptorValidator`, then read-only.
@@ -81,11 +92,9 @@ pub fn configure_heap_extension() {
 
 /// Extend the kernel heap by `additional` bytes.
 ///
-/// The entire [`TOTAL_HEAP_BUFFER`] (including the extend region starting
-/// at offset [`HEAP_SIZE`]) is placed in `.data` and already mapped by
-/// the UEFI PE loader with zeroed physical pages.  Therefore we only need
-/// to call `petroleum::extend_global_heap` — no additional frame
-/// allocation or page-table manipulation is required.
+/// The entire [`TOTAL_HEAP_BUFFER`] is reserved as the backing range. The
+/// allocator exposes the extension transactionally; missing pages in the
+/// idle kernel context are mapped by the page-fault continuation path.
 ///
 /// Returns `Ok(())` if the extension succeeded, or `Err(())` if the
 /// configured extension region is exhausted.
@@ -99,8 +108,7 @@ pub unsafe fn extend_kernel_heap(additional: usize) -> Result<(), ()> {
     let pages = (additional + 4095) / 4096;
     let bytes = pages * 4096;
 
-    // The extension region is already mapped (it is part of the static heap);
-    // the allocator serializes the extension and tracks its limit.
+    // The allocator serializes the extension and tracks its reserved limit.
     unsafe { petroleum::try_extend_global_heap(bytes) }
 }
 

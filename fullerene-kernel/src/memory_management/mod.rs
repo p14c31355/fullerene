@@ -183,6 +183,44 @@ pub fn get_memory_manager() -> &'static Mutex<Option<UnifiedMemoryManager>> {
     &MEMORY_MANAGER
 }
 
+/// Map one page from the statically reserved kernel-heap extension.
+///
+/// This is intentionally a non-blocking, idle-context-only helper for the
+/// page-fault handler.  A heap extension can fault while `Heap::extend()` is
+/// writing its new free-list node; mapping the page and returning from the
+/// exception lets the CPU continue that instruction.  If a manager lock is
+/// already held, or if the current context is not the idle shell context, we
+/// refuse recovery rather than risking an exception-handler deadlock.
+pub fn try_map_kernel_heap_extension_page(address: usize) -> bool {
+    if crate::process::SCHEDULER.current_pid() != 1
+        || !crate::heap::is_reserved_extension_address(address)
+    {
+        return false;
+    }
+
+    let page = address & !0xfff;
+    let offset = petroleum::common::memory::get_physical_memory_offset();
+    let Some(physical) = page.checked_sub(offset) else {
+        return false;
+    };
+    let Some(mut manager) = get_memory_manager().try_lock() else {
+        return false;
+    };
+    let Some(manager) = manager.as_mut() else {
+        return false;
+    };
+
+    manager
+        .safe_map_page(
+            page,
+            physical,
+            x86_64::structures::paging::PageTableFlags::PRESENT
+                | x86_64::structures::paging::PageTableFlags::WRITABLE
+                | x86_64::structures::paging::PageTableFlags::NO_EXECUTE,
+        )
+        .is_ok()
+}
+
 /// Return the physical address of the kernel page table used by the idle
 /// context. Kernel processes have their own cloned page tables, so switching
 /// back to the idle process must explicitly restore this CR3 value.

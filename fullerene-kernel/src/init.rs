@@ -92,13 +92,10 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
 
     #[cfg(all(not(target_os = "uefi"), not(test)))]
     {
-        use core::mem::MaybeUninit;
         let bios_init_steps = [
             petroleum::init_step!("BIOS Heap and GDT", || {
-                static mut HEAP: [MaybeUninit<u8>; crate::heap::HEAP_SIZE] =
-                    [MaybeUninit::uninit(); crate::heap::HEAP_SIZE];
                 unsafe {
-                    let ptr = core::ptr::addr_of_mut!(HEAP) as *mut u8;
+                    let ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
                     petroleum::init_global_heap(ptr, crate::heap::HEAP_SIZE);
                     crate::heap::configure_heap_extension();
                     petroleum::common::memory::set_heap_range(ptr as usize, crate::heap::HEAP_SIZE);
@@ -119,7 +116,10 @@ pub fn init_common(_physical_memory_offset: x86_64::VirtAddr) {
     #[cfg(target_os = "uefi")]
     {
         let heap_ptr = core::ptr::addr_of_mut!(crate::heap::TOTAL_HEAP_BUFFER) as *mut u8;
-        petroleum::common::memory::set_heap_range(heap_ptr as usize, crate::heap::HEAP_TOTAL);
+        // Only the initial region is committed at boot.  The remaining
+        // 128 MiB is reserved for GrowingHeap and is published in HEAP_END
+        // only after a successful, bounded extension transaction.
+        petroleum::common::memory::set_heap_range(heap_ptr as usize, crate::heap::HEAP_SIZE);
     }
 
     // ── Log system initialisation ──────────────────────────────

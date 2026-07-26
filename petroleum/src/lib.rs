@@ -143,8 +143,16 @@ macro_rules! define_alloc_error_handler {
         #[cfg(all(any(target_os = "none", target_os = "uefi"), not(test)))]
         #[alloc_error_handler]
         fn alloc_error_handler(layout: core::alloc::Layout) -> ! {
-            $crate::serial::_print(format_args!("ALLOC ERROR: {:?}\n", layout));
-            loop {}
+            // GlobalAlloc has already performed its bounded extension
+            // transaction.  Re-entering allocation here would hide the real
+            // OOM behind an infinite retry.  Keep this kernel-fatal path
+            // allocation-free and stop the CPU until the fault supervisor can
+            // report/restart the owning domain.
+            $crate::serial::_print(format_args!("ALLOC ERROR (no retry): {:?}\n", layout));
+            loop {
+                x86_64::instructions::interrupts::disable();
+                x86_64::instructions::hlt();
+            }
         }
     };
 }

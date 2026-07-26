@@ -144,6 +144,7 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         entry_point: x86_64::VirtAddr::new(0),
         is_user: true,
         exit_code: None,
+        fault: None,
         parent_id: Some(current_pid),
         task_data: 0,
         vdso_page: child_vdso,

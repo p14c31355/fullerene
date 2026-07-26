@@ -43,6 +43,20 @@ pub enum ProcessState {
     Terminated,
 }
 
+/// Register snapshot kept when a user process is stopped by a CPU fault.
+///
+/// This is the kernel-side "last safe footprint": the faulting instruction
+/// is never resumed, while the scheduler can still report exactly where the
+/// process crossed the boundary before its resources are reaped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FaultRecord {
+    pub reason: &'static str,
+    pub rip: u64,
+    pub rsp: u64,
+    pub address: u64,
+    pub error_code: u64,
+}
+
 /// Named general-purpose register image used for a process's initial entry.
 ///
 /// Suspended kernel continuations are kept on their kernel stack instead of
@@ -446,6 +460,8 @@ pub struct Process {
     pub is_user: bool,
     /// Exit code - used for signaling ChildProcessExited signal
     pub exit_code: Option<i32>,
+    /// CPU fault that caused termination, if any.
+    pub fault: Option<FaultRecord>,
     /// Parent process ID (for wait() and signal propagation)
     pub parent_id: Option<ProcessId>,
     /// Opaque data for async task futures (used by task.rs spawn/entry)
@@ -475,6 +491,7 @@ impl Process {
             entry_point,
             is_user,
             exit_code: None,
+            fault: None,
             parent_id: None, // Will be set by fork
             task_data: 0,
             dispatch_mode: None,
@@ -584,6 +601,7 @@ pub fn init(heap_start: usize, heap_end: usize) {
         entry_point: idle_addr,
         is_user: false,
         exit_code: None,
+        fault: None,
         parent_id: None,
         task_data: 0,
         dispatch_mode: None,
@@ -798,6 +816,16 @@ pub fn terminate_process(pid: ProcessId, exit_code: i32) {
         }
         petroleum::halt_loop();
     }
+}
+
+/// Stop a user process at a CPU exception boundary and retain its fault
+/// footprint until the normal scheduler cleanup reaps it.
+pub fn mark_faulted(pid: ProcessId, record: FaultRecord) {
+    let _ = SCHEDULER.with_process(pid, |process| {
+        process.state = ProcessState::Terminated;
+        process.exit_code = Some(128);
+        process.fault = Some(record);
+    });
 }
 
 /// Idle process loop

@@ -16,6 +16,7 @@ const MAX_SOURCE_IMAGE_WIDTH: u32 = 16_384;
 const MAX_SOURCE_IMAGE_HEIGHT: u32 = 16_384;
 const MAX_SOURCE_IMAGE_PIXELS: u64 = 16 * 1024 * 1024;
 const MAX_IMAGE_ALLOC_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_QOI_PIXELS: u64 = 8 * 1024 * 1024;
 
 #[link(wasm_import_module = "fullerene")]
 unsafe extern "C" {
@@ -54,6 +55,20 @@ fn main() {
         }
     };
     println!("viewer: read complete path={} bytes={}", path, bytes.len());
+
+    // QOI is a single-purpose image format.  Do not let a failed QOI decode
+    // fall through MP4/audio/archive probes; that made one bad screenshot
+    // look like an endless stream of diagnostics in Klog Live.
+    if is_qoi_path(path) {
+        if !qoi_header_allowed(&bytes) {
+            present_error("QOI Viewer error", "Invalid or oversized QOI header.");
+            return;
+        }
+        if !try_image(path, &bytes) {
+            present_error("QOI Viewer error", "The QOI image could not be decoded.");
+        }
+        return;
+    }
 
     // Keep ordinary text on the WASM viewer's text-window path and avoid
     // probing it with binary/media parsers first.
@@ -101,6 +116,25 @@ fn main() {
 
 fn is_mp4_path(path: &str) -> bool {
     path.to_ascii_lowercase().ends_with(".mp4")
+}
+
+fn is_qoi_path(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".qoi")
+}
+
+fn qoi_header_allowed(data: &[u8]) -> bool {
+    if data.len() < 14 || &data[..4] != b"qoif" {
+        return false;
+    }
+    let width = u32::from_be_bytes(data[4..8].try_into().unwrap()) as u64;
+    let height = u32::from_be_bytes(data[8..12].try_into().unwrap()) as u64;
+    let channels = data[12];
+    let pixels = width.checked_mul(height).unwrap_or(u64::MAX);
+    width != 0
+        && height != 0
+        && matches!(channels, 3 | 4)
+        && pixels <= MAX_QOI_PIXELS
+        && data.len() >= 22
 }
 
 fn is_text_path(path: &str) -> bool {
@@ -1169,7 +1203,7 @@ fn print_hex(path: &str, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::source_dimensions_allowed;
+    use super::{qoi_header_allowed, source_dimensions_allowed};
     use image::GenericImageView;
     use image::ImageReader;
     use std::io::Cursor;
@@ -1257,6 +1291,16 @@ mod tests {
             .decode()
             .unwrap();
         assert_eq!(decoded.dimensions(), (2, 1));
+    }
+
+    #[test]
+    fn rejects_qoi_before_falling_through_other_probes() {
+        let mut header = Vec::from(*b"qoif");
+        header.extend_from_slice(&4096u32.to_be_bytes());
+        header.extend_from_slice(&4096u32.to_be_bytes());
+        header.extend_from_slice(&[4, 0]);
+        header.extend_from_slice(&[0; 8]);
+        assert!(!qoi_header_allowed(&header));
     }
 
     #[test]

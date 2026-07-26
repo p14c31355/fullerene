@@ -124,17 +124,28 @@ pub extern "C" fn exception_recovery_trampoline() -> ! {
     safe_halt()
 }
 
-fn terminate_and_recover(frame: &mut InterruptStackFrame, reason: &str) {
+fn terminate_and_recover(
+    frame: &mut InterruptStackFrame,
+    reason: &'static str,
+    address: u64,
+    error_code: u64,
+) {
     raw_log!("EXCEPTION: {} - terminating process\n", reason);
     let current_pid = crate::process::SCHEDULER.current_pid();
     if current_pid == 0 {
         safe_halt();
     }
     let pid = crate::process::ProcessId(current_pid as u64);
-    crate::process::SCHEDULER.with_process(pid, |p| {
-        p.state = crate::process::ProcessState::Terminated;
-        p.exit_code = Some(1);
-    });
+    crate::process::mark_faulted(
+        pid,
+        crate::process::FaultRecord {
+            reason,
+            rip: frame.instruction_pointer.as_u64(),
+            rsp: frame.stack_pointer.as_u64(),
+            address,
+            error_code,
+        },
+    );
     unsafe {
         if let Some(tramp) = SCHEDULE_TRAMPOLINE {
             let new_frame = InterruptStackFrameValue::new(
@@ -171,7 +182,7 @@ macro_rules! define_no_err_handler {
                     exc_name,
                     frame.instruction_pointer.as_u64()
                 );
-                terminate_and_recover(&mut frame, exc_name);
+                terminate_and_recover(&mut frame, exc_name, 0, 0);
             } else {
                 kernel_fault_halt(&frame, exc_name, "");
             }
@@ -197,7 +208,7 @@ macro_rules! define_err_handler {
                     error_code,
                     frame.instruction_pointer.as_u64()
                 );
-                terminate_and_recover(&mut frame, exc_name);
+                terminate_and_recover(&mut frame, exc_name, 0, error_code);
             } else {
                 raw_log!("  Error code: {:#x}\n", error_code);
                 kernel_fault_halt(&frame, exc_name, "kernel exc");
@@ -294,7 +305,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
         Err(_) => {
             raw_log!("PF: CR2 invalid\n");
             if is_user_mode(&frame) {
-                terminate_and_recover(&mut frame, "PF(invalid CR2)");
+                terminate_and_recover(&mut frame, "PF(invalid CR2)", 0, 0);
             } else {
                 kernel_fault_halt(&frame, "Page Fault", "CR2 invalid");
             }
@@ -315,13 +326,34 @@ pub extern "x86-interrupt" fn page_fault_handler(
     );
 
     if !is_user {
+        if !is_present
+            && crate::memory_management::try_map_kernel_heap_extension_page(
+                fault_addr.as_u64() as usize
+            )
+        {
+            raw_log!(
+                "PF: mapped kernel heap extension page @ {:#x}; resuming\n",
+                fault_addr.as_u64() & !0xfff
+            );
+            return;
+        }
         raw_log!("  Fault addr: {:#x}\n", fault_addr.as_u64());
         kernel_fault_halt(&frame, "Page Fault", "kernel PF");
     } else {
         if petroleum::common::memory::is_user_address(fault_addr) || is_present {
-            terminate_and_recover(&mut frame, "Page Fault(user)");
+            terminate_and_recover(
+                &mut frame,
+                "Page Fault(user)",
+                fault_addr.as_u64(),
+                error_code.bits(),
+            );
         } else {
-            terminate_and_recover(&mut frame, "Page Fault(invalid addr)");
+            terminate_and_recover(
+                &mut frame,
+                "Page Fault(invalid addr)",
+                fault_addr.as_u64(),
+                error_code.bits(),
+            );
         }
     }
 }

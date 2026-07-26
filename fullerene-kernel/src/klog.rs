@@ -58,13 +58,6 @@ pub fn write_fmt(args: fmt::Arguments<'_>) {
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
     KLOG_GENERATION.fetch_add(1, Ordering::Release);
-    // If the normal compositor is currently blocked inside a synchronous
-    // shell command, update the already-open Klog Live surface through the
-    // allocation-free framebuffer path. This is triggered only by a new log
-    // write, so it cannot turn an idle shell into a continuous repaint loop.
-    if solvent::is_klog_live_active() {
-        let _ = try_render_live_surface();
-    }
 }
 
 /// Write a raw byte slice to the kernel log buffer.
@@ -93,9 +86,6 @@ pub fn write_bytes(bytes: &[u8]) {
     drop(guard);
     IN_KLOG.store(false, Ordering::Release);
     KLOG_GENERATION.fetch_add(1, Ordering::Release);
-    if solvent::is_klog_live_active() {
-        let _ = try_render_live_surface();
-    }
 }
 
 /// Monotonic change counter used by the timer-driven Klog Live overlay.

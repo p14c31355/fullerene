@@ -77,6 +77,11 @@ impl GrowingHeap {
             .map_or(core::ptr::null_mut(), |allocation| allocation.as_ptr())
     }
 
+    /// Expose one additional contiguous portion of the reserved heap.
+    ///
+    /// This function is deliberately a single transaction.  A failed
+    /// allocation may cause at most one extension attempt and one retry in
+    /// `GlobalAlloc::alloc`; it must never turn into an allocator-side loop.
     fn extend_for(&self, layout: Layout) -> bool {
         const PAGE: usize = 4096;
         const MIN_GROW: usize = 64 * 1024;
@@ -94,13 +99,31 @@ impl GrowingHeap {
         }
 
         // The extension region is immediately adjacent to the original
-        // static heap and is already mapped by the boot loader.
+        // static backing. Its pages are exposed by this bounded transaction;
+        // the kernel PF path may map a missing page and resume the instruction
+        // that touched it.
+        let (old_top, old_size) = {
+            let heap = self.heap.lock();
+            (heap.top() as usize, heap.size())
+        };
         unsafe { self.heap.lock().extend(grow) };
-        extension.used += grow;
+        let (new_top, new_size) = {
+            let heap = self.heap.lock();
+            (heap.top() as usize, heap.size())
+        };
+
+        // `Heap::extend` is unsafe and has no result value.  Verify that it
+        // really advanced before accounting the bytes.  This prevents a
+        // broken mapping/adjacency assumption from becoming an endless
+        // allocate -> extend -> retry cycle.
+        if new_top <= old_top || new_size <= old_size {
+            return false;
+        }
+        let actual_grow = new_size - old_size;
+        extension.used = extension.used.saturating_add(actual_grow);
         let start = crate::common::memory::HEAP_START.load(core::sync::atomic::Ordering::SeqCst);
         if start != 0 {
-            let top = self.heap.lock().top() as usize;
-            crate::common::memory::set_heap_range(start, top.saturating_sub(start));
+            crate::common::memory::set_heap_range(start, new_top.saturating_sub(start));
         }
         true
     }
@@ -135,6 +158,9 @@ impl GrowingHeap {
 
 unsafe impl GlobalAlloc for GrowingHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // Keep this bounded by construction.  The CPU can resume after a
+        // page-fault-based growth, but a GlobalAlloc implementation must not
+        // emulate that by retrying forever inside the allocator.
         let ptr = self.try_alloc(layout);
         if !ptr.is_null() {
             return ptr;
@@ -388,5 +414,18 @@ mod tests {
             GlobalAlloc::dealloc(&heap, allocation, large);
             GlobalAlloc::dealloc(&heap, second, small);
         }
+    }
+
+    #[test]
+    fn exhausted_extension_returns_null_without_retrying() {
+        let mut storage = TestHeap([MaybeUninit::uninit(); 16 * 1024]);
+        let heap = GrowingHeap::empty();
+        unsafe { heap.init(storage.0.as_mut_ptr().cast(), 4096) };
+        heap.configure_extension(0);
+
+        let layout = Layout::from_size_align(8192, 8).unwrap();
+        let allocation = unsafe { GlobalAlloc::alloc(&heap, layout) };
+        assert!(allocation.is_null());
+        assert_eq!(heap.size(), 4096);
     }
 }
