@@ -79,7 +79,7 @@ cargo run -p flasks --bin flasks
 ```
 
 This command:
-1. Builds `fullerene-kernel` and `bellows` for the UEFI target with `x86_64-unknown-uefi`.
+1. Builds optimized `fullerene-kernel` and `bellows` artifacts with the `release` profile for the UEFI target `x86_64-unknown-uefi`.
 2. Creates a FAT image and ISO (`fullerene.iso`) with the bootloader and kernel.
 3. Launches QEMU with:
    - 4GB RAM.
@@ -96,6 +96,8 @@ cargo run -p flasks --bin flasks -- --iso-only
 
 This still rebuilds `fullerene-kernel` and `bellows`, then writes
 `fullerene.iso` and exits before preparing OVMF variables or launching QEMU.
+Use `--debug` when unoptimized development artifacts are needed; this writes
+UEFI outputs under `target/x86_64-unknown-uefi/debug`.
 
 ## QEMU Options
 
@@ -110,6 +112,7 @@ Flasks supports dynamic VGA/display configuration via CLI arguments:
 | `--timeout <seconds>` | none | Timeout for QEMU execution in seconds |
 | `--clone-ovmf` | false | Copy OVMF binaries from system installation to project |
 | `--iso-only` | false | Rebuild `fullerene.iso` and exit without launching QEMU |
+| `--debug` | false | Use Cargo's `dev` profile instead of the default `release` profile |
 
 Examples:
 ```bash

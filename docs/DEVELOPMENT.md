@@ -19,6 +19,8 @@ cargo build -Zbuild-std=core,alloc -p fullerene-kernel --target x86_64-unknown-u
 
 # Run in QEMU
 cargo run -q -p flasks -- --vga std
+# Use the unoptimized UEFI build only when debugging
+cargo run -q -p flasks -- --debug --vga std
 ```
 
 ## Testing

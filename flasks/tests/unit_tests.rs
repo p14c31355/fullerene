@@ -22,7 +22,7 @@ mod tests {
         let target_dir = workspace_root
             .join("target")
             .join("x86_64-unknown-uefi")
-            .join("debug");
+            .join("release");
         let kernel_path = target_dir.join("fullerene-kernel.efi");
         let bellows_path = target_dir.join("bellows.efi");
 
