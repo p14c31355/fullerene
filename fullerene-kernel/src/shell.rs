@@ -115,12 +115,31 @@ fn wasm_read_stdin() -> Option<u8> {
 
 fn wasm_yield_now() {
     if solvent::is_initialized() {
-        // WASM is executed synchronously by the kernel shell. Poll devices
-        // here, but do not re-enter the GUI scheduler from a host callback.
+        // WASM is executed synchronously by the kernel shell. A cooperative
+        // yield is also the repaint point for long-running media playback.
         solvent::poll_mouse_state();
         solvent::poll_keyboard();
+        solvent::runtime_tick_no_fb();
     } else {
         kernel_syscall(22, 0, 0, 0);
+    }
+}
+
+fn wasm_wait_for_ns(duration_ns: u64) {
+    const MAX_WAIT_NS: u64 = 5_000_000_000;
+    let duration_ns = duration_ns.min(MAX_WAIT_NS);
+    let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
+    let ticks = ((duration_ns as u128 * tsc_per_ms as u128) / 1_000_000) as u64;
+    let deadline = unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(ticks);
+    let mut next_tick = 0u64;
+    while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
+        let now = unsafe { core::arch::x86_64::_rdtsc() };
+        if now >= next_tick {
+            solvent::runtime_tick_no_fb();
+            next_tick = now.saturating_add(tsc_per_ms.saturating_mul(4));
+        } else {
+            petroleum::cpu_pause();
+        }
     }
 }
 
@@ -321,7 +340,11 @@ fn wasm_update_window(window_id: i32, width: u32, height: u32, pixels: &[u8]) ->
         return -1;
     }
     let id = lattice::window::WindowId(window_id as u64);
-    blit_rgb(id, width, height, pixels)
+    let result = blit_rgb(id, width, height, pixels);
+    if result == 0 {
+        solvent::runtime_tick_no_fb();
+    }
+    result
 }
 
 fn wasm_close_window(window_id: i32) -> i32 {
@@ -425,6 +448,7 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_write_stderr,
         wasm_read_stdin,
         wasm_yield_now,
+        wasm_wait_for_ns,
         wasm_file_size,
         wasm_read_file_range,
         wasm_read_directory,
@@ -441,6 +465,9 @@ pub fn run_wasm_app(path: &str, args: &[&str]) -> i32 {
         wasm_update_window,
         wasm_close_window,
     );
+    if let Err(error) = crate::fs::finish_file_chunk() {
+        crate::klog_fmt!("[WASM-DIAG] file stream close error={:?}\n", error);
+    }
     if capture_output && let Some(output) = take_wasm_output() {
         solvent::write_terminal(&output);
     }

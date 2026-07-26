@@ -6,6 +6,9 @@ use core::fmt::Write as _;
 use crate::contexts::vfs;
 pub use genome::fs::{DirEntry, FsError, PackageEntry, parse_manifest};
 use genome::io::{FileReader, Read, Seek, SeekFrom};
+use spin::Mutex;
+
+static STREAM_FILE: Mutex<Option<(String, FileDesc)>> = Mutex::new(None);
 
 fn basename(path: &str) -> &str {
     path.trim_end_matches('/')
@@ -76,24 +79,35 @@ pub fn write_file_chunk(
     data: &[u8],
     replace: bool,
 ) -> Result<(), FsError> {
-    let descriptor = if replace {
-        if vfs::exists(path) {
-            vfs::unlink(path)?;
+    let mut stream = STREAM_FILE.lock();
+    let same_path = stream.as_ref().is_some_and(|(current, _)| current == path);
+    if replace || !same_path {
+        if let Some((_, old_file)) = stream.take() {
+            close_file(old_file)?;
         }
-        vfs::create(path)?
-    } else {
-        match vfs::open(path, 0) {
-            Ok(fd) => fd,
-            Err(FsError::FileNotFound) => vfs::create(path)?,
-            Err(error) => return Err(error),
-        }
-    };
-    let mut file = FileDesc::from(descriptor);
+        let descriptor = if replace {
+            if vfs::exists(path) {
+                vfs::unlink(path)?;
+            }
+            vfs::create(path)?
+        } else {
+            match vfs::open(path, 0) {
+                Ok(fd) => fd,
+                Err(FsError::FileNotFound) => vfs::create(path)?,
+                Err(error) => return Err(error),
+            }
+        };
+        stream.replace((path.to_string(), FileDesc::from(descriptor)));
+    }
+
+    let file = &mut stream.as_mut().expect("stream file installed").1;
     let result = (|| {
-        seek_file(&mut file, offset)?;
+        if file.offset != offset {
+            seek_file(file, offset)?;
+        }
         let mut remaining = data;
         while !remaining.is_empty() {
-            let written = write_file(&mut file, remaining)?;
+            let written = write_file(file, remaining)?;
             if written == 0 {
                 return Err(FsError::InvalidInput);
             }
@@ -101,8 +115,15 @@ pub fn write_file_chunk(
         }
         Ok(())
     })();
-    let close_result = close_file(file);
-    result.and(close_result)
+    result
+}
+
+pub fn finish_file_chunk() -> Result<(), FsError> {
+    let mut stream = STREAM_FILE.lock();
+    if let Some((_, file)) = stream.take() {
+        close_file(file)?;
+    }
+    Ok(())
 }
 
 pub fn create_dir(path: &str) -> Result<(), FsError> {

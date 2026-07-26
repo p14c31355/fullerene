@@ -9,7 +9,8 @@ use crate::wasi::{
     fd_seek, fd_write, fullerene_capture_screen, fullerene_capture_screen_chunk,
     fullerene_close_window, fullerene_create_window, fullerene_screen_dimensions,
     fullerene_show_error, fullerene_show_image, fullerene_show_text, fullerene_update_window,
-    fullerene_write_file_chunk, path_filestat_get, path_open, proc_exit, random_get,
+    fullerene_wait_for_ns, fullerene_write_file_chunk, path_filestat_get, path_open, proc_exit,
+    random_get, sched_yield,
 };
 
 /// Run a WASI module with the given binary, arguments, and I/O callbacks.
@@ -24,6 +25,7 @@ pub fn run(
     write_stderr: fn(&[u8]),
     read_stdin: fn() -> Option<u8>,
     yield_now: fn(),
+    wait_for_ns: fn(u64),
     file_size: fn(&str) -> Result<u64, genome::FsError>,
     read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
@@ -76,6 +78,7 @@ pub fn run(
         write_stderr,
         read_stdin,
         yield_now,
+        wait_for_ns,
         file_size,
         read_file_range,
         read_directory,
@@ -188,6 +191,7 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
     wasi_func!("path_open", path_open);
     wasi_func!("path_filestat_get", path_filestat_get);
     wasi_func!("proc_exit", proc_exit);
+    wasi_func!("sched_yield", sched_yield);
     wasi_func!("clock_time_get", clock_time_get);
     wasi_func!("random_get", random_get);
 
@@ -201,6 +205,7 @@ fn create_linker(engine: &Engine) -> Result<Linker<WasiCtx>, wasmi::Error> {
         fullerene_capture_screen_chunk,
     )?;
     linker.func_wrap(fullerene, "write_file_chunk", fullerene_write_file_chunk)?;
+    linker.func_wrap(fullerene, "wait_for_ns", fullerene_wait_for_ns)?;
     linker.func_wrap(fullerene, "show_image", fullerene_show_image)?;
     linker.func_wrap(fullerene, "show_text", fullerene_show_text)?;
     linker.func_wrap(fullerene, "show_error", fullerene_show_error)?;

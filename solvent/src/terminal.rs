@@ -182,9 +182,13 @@ impl carrier::terminal::Terminal for LatticeTerminal {
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
                 return Some(ch);
             }
+            // A launch command arms a one-shot direct handoff. Run it before
+            // the runtime tick so no compositor/runtime lock is reacquired
+            // between command return and the process context switch.
+            crate::yield_scheduler();
             crate::runtime_tick_no_fb();
-            // Yield only after runtime locks have been released. A shell
-            // command may have started a user process just before polling.
+            // The callback is also kept after the tick for ordinary polling;
+            // it is a no-op unless a command has armed a handoff.
             crate::yield_scheduler();
         }
     }

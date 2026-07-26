@@ -99,6 +99,7 @@ pub struct WasiCtx {
     pub write_stderr: fn(&[u8]),
     pub read_stdin: fn() -> Option<u8>,
     pub yield_now: fn(),
+    pub wait_for_ns: fn(u64),
     pub file_size: fn(&str) -> Result<u64, genome::FsError>,
     pub read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
     pub read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
@@ -123,6 +124,7 @@ impl WasiCtx {
         write_stderr: fn(&[u8]),
         read_stdin: fn() -> Option<u8>,
         yield_now: fn(),
+        wait_for_ns: fn(u64),
         file_size: fn(&str) -> Result<u64, genome::FsError>,
         read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
         read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
@@ -167,6 +169,7 @@ impl WasiCtx {
             write_stderr,
             read_stdin,
             yield_now,
+            wait_for_ns,
             file_size,
             read_file_range,
             read_directory,
@@ -996,6 +999,19 @@ pub fn fd_readdir(
 pub fn proc_exit(mut caller: Caller<'_, WasiCtx>, code: u32) -> Result<(), Error> {
     caller.data_mut().exit_code = Some(code);
     Err(Error::new("proc_exit"))
+}
+
+/// Cooperative scheduling point for synchronous WASM applications such as
+/// the MP4 player. The host callback also lets the compositor repaint while
+/// the application remains inside one WASM invocation.
+pub fn sched_yield(caller: Caller<'_, WasiCtx>) -> Result<u32, Error> {
+    (caller.data().yield_now)();
+    Ok(ESUCCESS)
+}
+
+pub fn fullerene_wait_for_ns(caller: Caller<'_, WasiCtx>, duration_ns: u64) -> Result<u32, Error> {
+    (caller.data().wait_for_ns)(duration_ns);
+    Ok(ESUCCESS)
 }
 
 pub fn environ_sizes_get(
