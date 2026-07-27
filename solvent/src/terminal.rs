@@ -214,6 +214,9 @@ impl carrier::terminal::Terminal for LatticeTerminal {
     fn read_byte(&mut self) -> Option<u8> {
         loop {
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
+                if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
+                    runtime.term_buf.reset_scroll();
+                }
                 return Some(ch);
             }
             // A launch command arms a one-shot direct handoff. Run it before

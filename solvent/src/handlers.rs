@@ -106,6 +106,47 @@ impl EventHandler for WmEventHandler {
                 );
                 true
             }
+            Event::Input(InputEvent::MouseWheel { dy, .. }) => {
+                let target = rt
+                    .desktop
+                    .wm
+                    .window_at(rt.desktop.cursor.x, rt.desktop.cursor.y);
+                if target == rt.term_window {
+                    if *dy > 0 {
+                        rt.term_buf.scroll_back((*dy as usize).min(8));
+                    } else if *dy < 0 {
+                        rt.term_buf
+                            .scroll_forward((dy.unsigned_abs() as usize).min(8));
+                    }
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                    return true;
+                }
+                if rt.explorer.as_ref().and_then(|explorer| explorer.window_id) == target {
+                    let visible_rows = rt
+                        .explorer
+                        .as_ref()
+                        .and_then(|explorer| explorer.window_id)
+                        .and_then(|id| {
+                            rt.desktop
+                                .wm
+                                .windows()
+                                .iter()
+                                .find(|window| window.id == id)
+                                .map(|window| {
+                                    crate::explorer::visible_file_rows(window.surface.height())
+                                })
+                        })
+                        .unwrap_or(1);
+                    if let Some(explorer) = rt.explorer.as_mut() {
+                        explorer.scroll_by(-(*dy as isize), visible_rows);
+                        rt.explorer_dirty = true;
+                        rt.frame_due = true;
+                    }
+                    return true;
+                }
+                false
+            }
             Event::Input(InputEvent::MouseDown(btn)) => {
                 let cx = rt.desktop.cursor.x;
                 let cy = rt.desktop.cursor.y;
@@ -493,6 +534,9 @@ impl EventHandler for TerminalInputHandler {
         match event {
             Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
+                    if rt.desktop.wm.windows().last().map(|w| w.id) != rt.term_window {
+                        return false;
+                    }
                     rt.term_buf.scroll_back(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -501,6 +545,9 @@ impl EventHandler for TerminalInputHandler {
             }
             Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
+                    if rt.desktop.wm.windows().last().map(|w| w.id) != rt.term_window {
+                        return false;
+                    }
                     rt.term_buf.scroll_forward(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -509,6 +556,9 @@ impl EventHandler for TerminalInputHandler {
             }
             Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
+                    if rt.desktop.wm.windows().last().map(|w| w.id) != rt.term_window {
+                        return false;
+                    }
                     rt.term_buf.reset_scroll();
                     rt.term_dirty = true;
                     rt.frame_due = true;

@@ -312,6 +312,23 @@ pub fn read_char() -> Option<u8> {
     interrupt_free(|| INPUT_BUFFER.lock().pop_front())
 }
 
+/// Inject an escape sequence or other synthetic bytes into the terminal input
+/// stream. The GUI uses this for non-ASCII keys such as shell arrow history.
+pub fn push_input_bytes(bytes: &[u8]) {
+    if !TERMINAL_INPUT_ALLOWED.load(Ordering::Acquire) {
+        return;
+    }
+    interrupt_free(|| {
+        let mut buffer = INPUT_BUFFER.lock();
+        for &byte in bytes {
+            if buffer.len() >= 256 {
+                break;
+            }
+            buffer.push_back(byte);
+        }
+    });
+}
+
 /// Pop a raw key event (scancode, pressed) from the queue.
 pub fn pop_raw_key() -> Option<(u8, bool)> {
     interrupt_free(|| RAW_KEY_QUEUE.lock().pop_front())

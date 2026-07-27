@@ -39,6 +39,16 @@ pub const STATUSBAR_HEIGHT: u32 = 20;
 pub const ROW_HEIGHT: u32 = 20;
 pub const CONTEXT_MENU_W: u32 = 150;
 
+pub fn visible_file_rows(surface_height: u32) -> usize {
+    surface_height
+        .saturating_sub(TOOLBAR_HEIGHT)
+        .saturating_sub(STATUSBAR_HEIGHT)
+        .saturating_sub(ROW_HEIGHT)
+        .checked_div(ROW_HEIGHT)
+        .unwrap_or(0)
+        .max(1) as usize
+}
+
 // ── Colors ─────────────────────────────────────────────────────
 pub const EXPLORER_BG: u32 = 0x1E1E2E;
 pub const SIDEBAR_BG: u32 = 0x252536;
@@ -309,6 +319,20 @@ impl ExplorerContext {
         let dir = self.current_dir.clone();
         self.navigate_to(&dir);
         self.refresh_sidebar();
+    }
+
+    /// Scroll the file list by rows while keeping the viewport inside its
+    /// entry range. Positive values move toward later entries.
+    pub fn scroll_by(&mut self, delta: isize, visible_rows: usize) {
+        let max_offset = self.entries.len().saturating_sub(visible_rows.max(1));
+        if delta.is_negative() {
+            self.scroll_offset = self.scroll_offset.saturating_sub(delta.unsigned_abs());
+        } else {
+            self.scroll_offset = self
+                .scroll_offset
+                .saturating_add(delta as usize)
+                .min(max_offset);
+        }
     }
 
     /// Refresh sidebar items (re-detect USB drives etc.).

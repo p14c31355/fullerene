@@ -18,11 +18,16 @@ pub static MOUSE: Mutex<Option<Ps2MouseInner>> = Mutex::new(None);
 pub struct MouseState {
     x: i16,
     y: i16,
+    wheel: i8,
 }
 
 impl MouseState {
     pub const fn new() -> Self {
-        Self { x: 0, y: 0 }
+        Self {
+            x: 0,
+            y: 0,
+            wheel: 0,
+        }
     }
 
     pub const fn get_x(self) -> i16 {
@@ -32,20 +37,34 @@ impl MouseState {
     pub const fn get_y(self) -> i16 {
         self.y
     }
+
+    pub const fn get_wheel(self) -> i8 {
+        self.wheel
+    }
 }
 
 /// Three-byte PS/2 packet decoder (kept as a portable fallback).
 #[derive(Debug, Clone, Copy)]
 struct PacketDecoder {
-    packet: [u8; 3],
+    packet: [u8; 4],
     index: usize,
+    packet_len: usize,
 }
 
 impl PacketDecoder {
     const fn new() -> Self {
         Self {
-            packet: [0; 3],
+            packet: [0; 4],
             index: 0,
+            packet_len: 3,
+        }
+    }
+
+    const fn with_packet_len(packet_len: usize) -> Self {
+        Self {
+            packet: [0; 4],
+            index: 0,
+            packet_len,
         }
     }
 
@@ -55,7 +74,7 @@ impl PacketDecoder {
         }
         self.packet[self.index] = byte;
         self.index += 1;
-        if self.index != self.packet.len() {
+        if self.index != self.packet_len {
             return None;
         }
         self.index = 0;
@@ -66,13 +85,27 @@ impl PacketDecoder {
         }
         let x = decode_axis(self.packet[1], status & 0x10 != 0);
         let y = decode_axis(self.packet[2], status & 0x20 != 0);
-        Some((MouseState { x, y }, status & 0x07))
+        let wheel = if self.packet_len == 4 {
+            decode_wheel(self.packet[3])
+        } else {
+            0
+        };
+        Some((MouseState { x, y, wheel }, status & 0x07))
     }
 }
 
 fn decode_axis(low: u8, negative: bool) -> i16 {
     let value = i16::from(low);
     if negative { value - 256 } else { value }
+}
+
+fn decode_wheel(value: u8) -> i8 {
+    let value = value & 0x0F;
+    if value & 0x08 != 0 {
+        value as i8 - 16
+    } else {
+        value as i8
+    }
 }
 
 #[derive(Clone)]
@@ -114,6 +147,13 @@ fn send_mouse_command(
 pub fn init_mouse() -> Result<(), crate::DriverError> {
     if !mouse_port_present() {
         return Err(crate::DriverError::DeviceNotFound);
+    }
+
+    // Prefer the internal decoder so IntelliMouse-compatible four-byte
+    // packets expose their wheel delta to the GUI. Fall back to the external
+    // movement-only driver if a legacy controller rejects initialization.
+    if try_init_internal_backend() {
+        return Ok(());
     }
 
     // ── Attempt 1: external crate ──
@@ -162,6 +202,62 @@ pub fn init_mouse() -> Result<(), crate::DriverError> {
     Ok(())
 }
 
+fn try_init_internal_backend() -> bool {
+    let mut command_port: Port<u8> = Port::new(super::PS2_COMMAND_PORT);
+    let mut data_port: Port<u8> = Port::new(super::PS2_DATA_PORT);
+    let mut status_port: Port<u8> = Port::new(super::PS2_STATUS_PORT);
+    if !super::send_command(
+        &mut command_port,
+        &mut status_port,
+        super::CMD_ENABLE_SECOND_PORT,
+    ) || !send_mouse_command(&mut command_port, &mut data_port, &mut status_port, 0xf6)
+    {
+        return false;
+    }
+
+    let wheel = enable_wheel_mode(&mut command_port, &mut data_port, &mut status_port);
+    if !send_mouse_command(&mut command_port, &mut data_port, &mut status_port, 0xf4) {
+        return false;
+    }
+
+    *DECODER.lock() = if wheel {
+        PacketDecoder::with_packet_len(4)
+    } else {
+        PacketDecoder::new()
+    };
+    *LATEST_STATE.lock() = MouseState::new();
+    *LATEST_STATUS.lock() = 0;
+    *BACKEND.lock() = Some(Backend::Internal);
+    log::info!(
+        "[nitrogen] PS/2 mouse: internal decoder initialized (wheel={})",
+        wheel
+    );
+    true
+}
+
+fn enable_wheel_mode(
+    command_port: &mut Port<u8>,
+    data_port: &mut Port<u8>,
+    status_port: &mut Port<u8>,
+) -> bool {
+    // The IntelliMouse sample-rate sequence switches a standard PS/2 mouse
+    // into wheel mode without requiring a new dependency or heap state.
+    for rate in [200u8, 100, 80] {
+        if !send_mouse_command(command_port, data_port, status_port, 0xf3)
+            || !send_mouse_command(command_port, data_port, status_port, rate)
+        {
+            return false;
+        }
+    }
+    if !super::write_second_port(command_port, data_port, status_port, 0xf2) {
+        return false;
+    }
+    if super::read_data(data_port, status_port) != Some(0xfa) {
+        return false;
+    }
+    super::read_data(data_port, status_port) == Some(3)
+}
+
 /// Feed one byte from IRQ12 into the mouse driver.
 pub fn handle_mouse_data(byte: u8) {
     let backend = BACKEND.lock().clone();
@@ -183,6 +279,7 @@ pub fn handle_mouse_data(byte: u8) {
                 let mut state = LATEST_STATE.lock();
                 state.x = state.x.saturating_add(delta.x);
                 state.y = state.y.saturating_add(delta.y);
+                state.wheel = state.wheel.saturating_add(delta.wheel);
                 *LATEST_STATUS.lock() = buttons;
             }
         }
@@ -216,7 +313,17 @@ mod tests {
         let mut decoder = PacketDecoder::new();
         assert_eq!(decoder.push(0x1b), None);
         assert_eq!(decoder.push(0xfe), None);
-        assert_eq!(decoder.push(0x05), Some((MouseState { x: -2, y: 5 }, 0x03)));
+        assert_eq!(
+            decoder.push(0x05),
+            Some((
+                MouseState {
+                    x: -2,
+                    y: 5,
+                    wheel: 0
+                },
+                0x03
+            ))
+        );
     }
 
     #[test]
@@ -224,13 +331,30 @@ mod tests {
         let mut decoder = PacketDecoder::new();
         decoder.push(0x08);
         decoder.push(0xff);
-        assert_eq!(decoder.push(0x80), Some((MouseState { x: 255, y: 128 }, 0)));
+        assert_eq!(
+            decoder.push(0x80),
+            Some((
+                MouseState {
+                    x: 255,
+                    y: 128,
+                    wheel: 0
+                },
+                0
+            ))
+        );
 
         decoder.push(0x38);
         decoder.push(0x00);
         assert_eq!(
             decoder.push(0x7f),
-            Some((MouseState { x: -256, y: -129 }, 0))
+            Some((
+                MouseState {
+                    x: -256,
+                    y: -129,
+                    wheel: 0
+                },
+                0
+            ))
         );
     }
 
@@ -240,7 +364,17 @@ mod tests {
         assert_eq!(decoder.push(0x01), None);
         assert_eq!(decoder.push(0x28), None);
         assert_eq!(decoder.push(0x01), None);
-        assert_eq!(decoder.push(0xff), Some((MouseState { x: 1, y: -1 }, 0)));
+        assert_eq!(
+            decoder.push(0xff),
+            Some((
+                MouseState {
+                    x: 1,
+                    y: -1,
+                    wheel: 0
+                },
+                0
+            ))
+        );
     }
 
     #[test]
@@ -249,5 +383,24 @@ mod tests {
         decoder.push(0xc9);
         decoder.push(0x7f);
         assert_eq!(decoder.push(0x7f), Some((MouseState::new(), 1)));
+    }
+
+    #[test]
+    fn decodes_four_byte_wheel_packets() {
+        let mut decoder = PacketDecoder::with_packet_len(4);
+        decoder.push(0x28);
+        decoder.push(0x01);
+        decoder.push(0xff);
+        assert_eq!(
+            decoder.push(0x01),
+            Some((
+                MouseState {
+                    x: 1,
+                    y: -1,
+                    wheel: 1
+                },
+                0
+            ))
+        );
     }
 }
