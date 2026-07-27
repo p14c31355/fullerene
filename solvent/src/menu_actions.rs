@@ -296,12 +296,22 @@ pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
 
     let cols = 42u32;
     let rows = 13u32;
+    let (fb_width, fb_height, _) = *FB_DIMS.lock();
+    let fb_width = fb_width.max(640);
+    let fb_height = fb_height.max(480);
+    let work_top = rt.desktop.top_panel_offset();
+    let work_height = rt.desktop.work_area(fb_width, fb_height).1;
+    let window_width = cols * GLYPH_W;
+    let window_height = rows * GLYPH_H;
+    let x = fb_width.saturating_sub(window_width) / 2;
+    let y = work_top + work_height.saturating_sub(window_height) / 2;
+    let surface_color = lattice::style::current().palette.surface;
     let id = rt.desktop.wm.create_titled_window(
-        150,
-        80,
-        cols * GLYPH_W,
-        rows * GLYPH_H,
-        0x0d1a1a,
+        x as i32,
+        y as i32,
+        window_width,
+        window_height,
+        surface_color,
         "Settings",
     );
     rt.desktop.wm.raise_to_top(id);

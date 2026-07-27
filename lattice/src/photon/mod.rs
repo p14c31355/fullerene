@@ -1,4 +1,6 @@
-//! Photon: a light, airy shell with a top menu bar and floating dock.
+//! Photon: the dark, panel-and-dock shell used by the Fullerene reference
+//! desktop. Application surfaces stay bright so windows remain readable over
+//! photographic wallpapers.
 
 use crate::common::{
     FrameButtons, LatticeStyle, Palette, ShellKind, StyleMetrics, StyleSpec, WindowVisualState,
@@ -11,32 +13,32 @@ static SPEC: StyleSpec = StyleSpec {
     name: "Photon",
     kind: ShellKind::Photon,
     palette: Palette {
-        bg: 0xD9E9F5,
-        surface: 0xF3F8FC,
-        primary: 0x0A84FF,
-        active: 0x007AFF,
-        text: 0x10233D,
-        muted: 0x5D7088,
-        border_active: 0x6CB7F5,
-        border_inactive: 0xA8C3D8,
-        title_active: 0xEAF5FF,
-        title_inactive: 0xD5E4F0,
-        accent: 0xFF9F0A,
-        danger: 0xFF453A,
-        taskbar_bg: 0xDCECF7,
-        taskbar_text: 0x17324F,
-        taskbar_active_bg: 0xB9DBF5,
-        taskbar_inactive_bg: 0xC9DCE9,
-        window_shadow: 0x6B8294,
-        menu_bg: 0xF8FBFE,
-        menu_border: 0x9EB8CC,
+        bg: 0x10151B,
+        surface: 0xF5F7FA,
+        primary: 0x62A0EA,
+        active: 0x2BAE66,
+        text: 0x1F2933,
+        muted: 0x6E7781,
+        border_active: 0x6A8FB3,
+        border_inactive: 0x59636E,
+        title_active: 0xF8F9FA,
+        title_inactive: 0xD9DEE5,
+        accent: 0xE5A50A,
+        danger: 0xE01B24,
+        taskbar_bg: 0x252A33,
+        taskbar_text: 0xEDF0F2,
+        taskbar_active_bg: 0x3D6A91,
+        taskbar_inactive_bg: 0x303641,
+        window_shadow: 0x050608,
+        menu_bg: 0x303842,
+        menu_border: 0x65717D,
     },
     metrics: StyleMetrics {
-        title_bar_height: 34,
+        title_bar_height: 32,
         taskbar_height: 78,
-        window_radius: 14,
+        window_radius: 12,
         window_border: 1,
-        top_panel_height: 30,
+        top_panel_height: 0,
         title_buttons_on_left: true,
     },
 };
@@ -71,8 +73,10 @@ impl LatticeStyle for PhotonStyle {
         let height = canvas.height;
         let bar_h = SPEC.metrics.taskbar_height;
         let bar_y = height.saturating_sub(bar_h);
-        let dock_w = (taskbar.entries.len() as u32 * 56 + 24).max(240);
-        let dock_x = width.saturating_sub(dock_w) / 2;
+        let dock_w = ((taskbar.entries.len() + crate::common::PHOTON_LAUNCHER_COUNT) as u32 * 56
+            + 24)
+            .max(320);
+        let dock_x = 16u32;
         let palette = &SPEC.palette;
 
         canvas.draw_shadow(
@@ -93,6 +97,21 @@ impl LatticeStyle for PhotonStyle {
             18,
             palette.taskbar_bg,
         );
+        let launchers = [
+            &crate::icon::ICON_SHELL,
+            &crate::icon::ICON_FILES,
+            &crate::icon::ICON_TERMINAL,
+            &crate::icon::ICON_SETTINGS,
+            &crate::icon::ICON_ABOUT,
+        ];
+        for (index, icon) in launchers.iter().enumerate() {
+            if let Some((x, y, w, h)) =
+                crate::style::launcher_entry_rect(index, taskbar.entries.len(), width, height)
+            {
+                canvas.rounded_rect(x, y, w, h, 12, palette.taskbar_inactive_bg);
+                icon.blit_scaled_into(canvas.fb, width, canvas.stride as usize, x + 6, y + 6, 32);
+            }
+        }
         for (index, entry) in taskbar.entries.iter().enumerate() {
             let Some((x, y, w, h)) =
                 crate::style::taskbar_entry_rect(index, taskbar.entries.len(), width, height)
@@ -104,31 +123,39 @@ impl LatticeStyle for PhotonStyle {
             } else {
                 palette.taskbar_inactive_bg
             };
-            canvas.rounded_rect(x, y, w, h, 14, color);
-            let label = entry.title.chars().next().unwrap_or('W');
-            let mut encoded = [0u8; 4];
-            canvas.draw_text(
-                x + 15,
-                y + 13,
-                label.encode_utf8(&mut encoded),
-                palette.taskbar_text,
-                15.0,
+            canvas.rounded_rect(x, y, w, h, 12, color);
+            crate::common::task_icon(&entry.title).blit_scaled_into(
+                canvas.fb,
+                width,
+                canvas.stride as usize,
+                x + 6,
+                y + 6,
+                32,
             );
         }
+        let tray_x = width.saturating_sub(168);
+        canvas.rounded_rect(
+            tray_x as i32,
+            bar_y as i32 + 15,
+            152,
+            44,
+            14,
+            palette.taskbar_bg,
+        );
         crate::network_menu::render_wifi_icon(
             canvas.fb,
             width,
             height,
-            taskbar.wifi_icon_x(width),
-            bar_y + 20,
+            tray_x + 14,
+            bar_y + 28,
             taskbar.wifi_connected,
             taskbar.wifi_visible,
             taskbar.wifi_signal,
         );
         if !taskbar.clock_text.is_empty() {
             canvas.draw_text(
-                width.saturating_sub(100) as i32,
-                bar_y as i32 + 20,
+                tray_x as i32 + 52,
+                bar_y as i32 + 30,
                 &taskbar.clock_text,
                 palette.taskbar_text,
                 13.0,
@@ -137,6 +164,6 @@ impl LatticeStyle for PhotonStyle {
     }
 
     fn draw_top_panel(&self, canvas: &mut Painter<'_>, panel: &TopPanel) {
-        crate::common::draw_top_panel(canvas, panel, &SPEC);
+        let _ = (canvas, panel);
     }
 }

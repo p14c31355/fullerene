@@ -141,6 +141,11 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     }
     dim_backdrop(fb, fbw, fbh, stride);
 
+    if crate::style::kind() == crate::common::ShellKind::Prism {
+        render_prism_start_panel(fb, fbw, fbh, stride);
+        return;
+    }
+
     // ── App launcher grid ─────────────────────────────────
     struct AppEntry {
         label: &'static str,
@@ -220,6 +225,121 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
         (fbw / 2).saturating_sub(54),
         10,
     );
+}
+
+/// Windows-like Start panel used by Prism. It intentionally uses the same
+/// seven applications as the overlay input handler, so the visual target and
+/// the hit-test geometry cannot drift apart.
+fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
+    let panel_w = 520u32.min(fbw.saturating_sub(48));
+    let panel_h = 500u32.min(fbh.saturating_sub(80));
+    let panel_x = fbw.saturating_sub(panel_w) / 2;
+    let panel_y = fbh.saturating_sub(panel_h) / 2 + 18;
+    let colors = crate::style::current().palette;
+    let mut painter = Painter::new(fb, fbw, fbh);
+    painter.draw_shadow(
+        panel_x as i32,
+        panel_y as i32,
+        panel_w,
+        panel_h,
+        18,
+        2,
+        12,
+        colors.window_shadow,
+    );
+    painter.rounded_rect(
+        panel_x as i32,
+        panel_y as i32,
+        panel_w,
+        panel_h,
+        18,
+        0xFFFFFF,
+    );
+    painter.rounded_rect(
+        panel_x as i32 + 1,
+        panel_y as i32 + 1,
+        panel_w.saturating_sub(2),
+        panel_h.saturating_sub(2),
+        17,
+        0xFFFFFF,
+    );
+    painter.rounded_rect(
+        panel_x as i32 + 24,
+        panel_y as i32 + 22,
+        panel_w.saturating_sub(48),
+        36,
+        8,
+        0xF2F4F7,
+    );
+    painter.draw_text(
+        panel_x as i32 + 38,
+        panel_y as i32 + 33,
+        "Search apps, settings, and documents",
+        0x667085,
+        13.0,
+    );
+    painter.draw_text(
+        panel_x as i32 + 28,
+        panel_y as i32 + 82,
+        "Pinned",
+        0x1F2937,
+        16.0,
+    );
+
+    let apps: &[(&str, &crate::icon::SvgIcon)] = &[
+        ("Shell", &crate::icon::ICON_SHELL),
+        ("Terminal", &crate::icon::ICON_TERMINAL),
+        ("Editor", &crate::icon::ICON_EDITOR),
+        ("Clock", &crate::icon::ICON_CLOCK),
+        ("Settings", &crate::icon::ICON_SETTINGS),
+        ("File Mgr", &crate::icon::ICON_FILES),
+        ("About", &crate::icon::ICON_ABOUT),
+    ];
+    for (index, (label, icon)) in apps.iter().enumerate() {
+        let Some((x, y, _, _)) = app_grid_item_rect(index, fbw, fbh) else {
+            continue;
+        };
+        icon.blit_scaled_into(painter.fb, fbw, stride, x + 12, y + 4, 48);
+        painter.draw_text(x + 8, y + 58, label, 0x344054, 12.0);
+    }
+    painter.draw_text(
+        panel_x as i32 + 28,
+        panel_y as i32 + panel_h as i32 - 30,
+        "All apps  >",
+        colors.primary,
+        13.0,
+    );
+}
+
+/// Return the clickable rectangle for an AppGrid entry in the active shell.
+pub fn app_grid_item_rect(index: usize, fbw: u32, fbh: u32) -> Option<(i32, i32, u32, u32)> {
+    if crate::style::kind() == crate::common::ShellKind::Prism {
+        if index >= 7 {
+            return None;
+        }
+        let panel_w = 520u32.min(fbw.saturating_sub(48));
+        let panel_h = 500u32.min(fbh.saturating_sub(80));
+        let panel_x = fbw.saturating_sub(panel_w) / 2;
+        let panel_y = fbh.saturating_sub(panel_h) / 2 + 18;
+        return Some((
+            panel_x as i32 + 24 + (index % 5) as i32 * 96,
+            panel_y as i32 + 106 + (index / 5) as i32 * 100,
+            72,
+            80,
+        ));
+    }
+
+    let icon_size = 64u32;
+    let pad = 24u32;
+    let columns = (fbw / (icon_size + pad)).max(1);
+    let col = index as u32 % columns;
+    let row = index as u32 / columns;
+    Some((
+        (pad + col * (icon_size + pad)) as i32,
+        (60 + row * (icon_size + 18 + pad)) as i32,
+        icon_size,
+        icon_size + 18,
+    ))
 }
 
 /// Render the timezone selector overlay.

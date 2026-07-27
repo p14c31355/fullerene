@@ -10,6 +10,9 @@ use crate::taskbar::Taskbar;
 use crate::top_panel::TopPanel;
 use crate::window::Window;
 
+pub const PHOTON_LAUNCHER_COUNT: usize = 5;
+pub const PRISM_LAUNCHER_COUNT: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellKind {
     Basalt,
@@ -86,6 +89,35 @@ pub enum ChromeHit {
     Close,
     Minimize,
     Maximize,
+}
+
+/// Map a window/application title to one of the build-time icon assets used
+/// by the Photon dock and Prism taskbar.
+pub fn task_icon(title: &str) -> &'static crate::icon::SvgIcon {
+    let lower = title.as_bytes();
+    if lower
+        .windows(8)
+        .any(|part| part.eq_ignore_ascii_case(b"settings"))
+    {
+        &crate::icon::ICON_SETTINGS
+    } else if lower
+        .windows(4)
+        .any(|part| part.eq_ignore_ascii_case(b"file"))
+    {
+        &crate::icon::ICON_FILES
+    } else if lower
+        .windows(6)
+        .any(|part| part.eq_ignore_ascii_case(b"editor"))
+    {
+        &crate::icon::ICON_EDITOR
+    } else if lower
+        .windows(4)
+        .any(|part| part.eq_ignore_ascii_case(b"shell"))
+    {
+        &crate::icon::ICON_SHELL
+    } else {
+        &crate::icon::ICON_TERMINAL
+    }
 }
 
 pub trait LatticeStyle {
@@ -309,11 +341,15 @@ fn draw_title_button(
         FrameButtons::Capsule => 7,
         FrameButtons::Windows => 4,
     };
-    canvas.rounded_rect(x, y, 14, 14, radius, color);
+    let background = match buttons {
+        FrameButtons::Windows if kind != 0 => 0xE7EBF0,
+        _ => color,
+    };
     let mark = match buttons {
-        FrameButtons::Capsule => 0xFFFFFF,
+        FrameButtons::Windows if kind != 0 => 0x344054,
         _ => 0xFFFFFF,
     };
+    canvas.rounded_rect(x, y, 14, 14, radius, background);
     match kind {
         0 => {
             for offset in 0..6 {

@@ -130,21 +130,57 @@ pub fn taskbar_entry_rect(
             taskbar_height().saturating_sub(6),
         )),
         ShellKind::Photon => {
-            let dock_width = (count as u32 * 56 + 24).max(240);
-            let dock_x = fb_width.saturating_sub(dock_width) / 2;
+            let dock_x = 16;
             Some((
-                dock_x as i32 + 12 + index as i32 * 56,
+                dock_x as i32 + 12 + (crate::common::PHOTON_LAUNCHER_COUNT + index) as i32 * 56,
                 fb_height.saturating_sub(taskbar_height()) as i32 + 15,
                 44,
                 44,
             ))
         }
-        ShellKind::Prism => Some((
-            64 + index as i32 * 132,
-            fb_height.saturating_sub(taskbar_height()) as i32 + 9,
-            124,
-            36,
+        ShellKind::Prism => {
+            let item_width = 52u32;
+            let total = (count + crate::common::PRISM_LAUNCHER_COUNT) as u32 * item_width;
+            let start = fb_width.saturating_sub(total) / 2;
+            Some((
+                start as i32
+                    + (crate::common::PRISM_LAUNCHER_COUNT + index) as i32 * item_width as i32
+                    + 4,
+                fb_height.saturating_sub(taskbar_height()) as i32 + 8,
+                44,
+                36,
+            ))
+        }
+    }
+}
+
+/// Return a static launcher slot for styles that present a persistent dock or
+/// centred launcher cluster. Window entries use [`taskbar_entry_rect`].
+pub fn launcher_entry_rect(
+    index: usize,
+    count: usize,
+    fb_width: u32,
+    fb_height: u32,
+) -> Option<(i32, i32, u32, u32)> {
+    match kind() {
+        ShellKind::Photon if index < crate::common::PHOTON_LAUNCHER_COUNT => Some((
+            16 + 12 + index as i32 * 56,
+            fb_height.saturating_sub(taskbar_height()) as i32 + 15,
+            44,
+            44,
         )),
+        ShellKind::Prism if index < crate::common::PRISM_LAUNCHER_COUNT => {
+            let item_width = 52u32;
+            let total = (count + crate::common::PRISM_LAUNCHER_COUNT) as u32 * item_width;
+            let start = fb_width.saturating_sub(total) / 2;
+            Some((
+                start as i32 + index as i32 * item_width as i32 + 4,
+                fb_height.saturating_sub(taskbar_height()) as i32 + 8,
+                44,
+                36,
+            ))
+        }
+        _ => None,
     }
 }
 

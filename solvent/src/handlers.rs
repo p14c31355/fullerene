@@ -9,6 +9,16 @@ use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
 const DOUBLE_CLICK_TICKS: u64 = 500;
 
+fn style_launcher_hit(rt: &crate::RuntimeState, x: i32, y: i32, index: usize) -> bool {
+    let (width, height, _) = *FB_DIMS.lock();
+    let Some((lx, ly, lw, lh)) =
+        lattice::style::launcher_entry_rect(index, rt.desktop.taskbar.entries.len(), width, height)
+    else {
+        return false;
+    };
+    x >= lx && x < lx + lw as i32 && y >= ly && y < ly + lh as i32
+}
+
 fn apply_mouse_move(
     desktop: &mut lattice::desktop::Desktop,
     cursor_redraw_from: &mut Option<(i32, i32)>,
@@ -117,6 +127,15 @@ impl EventHandler for WmEventHandler {
                     && rt.desktop.wm.window_at(cx, cy) == rt.settings_window
                     && crate::settings_bridge::settings_handle_mouse(rt, cx, cy)
                 {
+                    return true;
+                }
+
+                if *btn == MouseButton::Left
+                    && lattice::style::kind() == lattice::common::ShellKind::Prism
+                    && style_launcher_hit(rt, cx, cy, 0)
+                {
+                    rt.shell_state = ShellState::AppGrid;
+                    rt.frame_due = true;
                     return true;
                 }
 
@@ -345,18 +364,13 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
     let cy = rt.desktop.cursor.y as i32;
     let (fw, _fh, _stride) = *FB_DIMS.lock();
 
-    let icon_size = 64i32;
-    let pad = 24i32;
-    let label_h = 18i32;
-    let columns = ((fw as i32) / (icon_size + pad)).max(1);
-    let start_y = 60i32;
-
     for idx in 0i32..7 {
-        let col = idx % columns;
-        let row = idx / columns;
-        let ax = pad + col * (icon_size + pad);
-        let ay = start_y + row * (icon_size + label_h + pad);
-        if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
+        let Some((ax, ay, aw, ah)) =
+            lattice::shell_overlay::app_grid_item_rect(idx as usize, fw, _fh)
+        else {
+            continue;
+        };
+        if cx >= ax && cx < ax + aw as i32 && cy >= ay && cy < ay + ah as i32 {
             match idx {
                 0 | 1 => {
                     // Shell (0) / Terminal (1) — both launch a shell.

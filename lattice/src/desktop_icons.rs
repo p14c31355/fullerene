@@ -120,7 +120,13 @@ impl DesktopIconLayer {
             // Draw label below the icon using painter text
             let lx = icon.x + 2;
             let ly = icon.y + icon.size as i32 + 6;
-            painter.draw_text(lx, ly, &icon.label, crate::compositor::COLOR_TEXT, 13.0);
+            let label_color = if crate::style::kind() == crate::common::ShellKind::Prism {
+                crate::style::current().palette.text
+            } else {
+                0xF4F7FB
+            };
+            painter.draw_text(lx + 1, ly + 1, &icon.label, 0x10151B, 13.0);
+            painter.draw_text(lx, ly, &icon.label, label_color, 13.0);
         }
     }
 }

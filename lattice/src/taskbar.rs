@@ -31,7 +31,7 @@ pub const TASKBAR_ACTIVE_BG: u32 = 0x3A7BD5;
 pub const TASKBAR_INACTIVE_BG: u32 = 0x333344;
 
 /// A single taskbar entry (represents a window).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskbarEntry {
     /// Window ID for click-to-restore / click-to-focus.
     pub id: crate::window::WindowId,

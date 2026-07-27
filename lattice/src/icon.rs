@@ -64,6 +64,58 @@ impl SvgIcon {
             }
         }
     }
+
+    /// Blit a nearest-neighbour scaled icon without allocating a temporary
+    /// surface. Dock icons are intentionally smaller than desktop icons.
+    pub fn blit_scaled_into(
+        &self,
+        fb: &mut [u32],
+        fbw: u32,
+        stride: usize,
+        x: i32,
+        y: i32,
+        size: u32,
+    ) {
+        if size == 0 || stride == 0 {
+            return;
+        }
+        let width = fbw as i32;
+        let height = (fb.len() / stride) as i32;
+        for row in 0..size as i32 {
+            let dy = y + row;
+            if dy < 0 || dy >= height {
+                continue;
+            }
+            let source_row = (row as u32 * ICON_SIZE / size) as usize;
+            for col in 0..size as i32 {
+                let dx = x + col;
+                if dx < 0 || dx >= width {
+                    continue;
+                }
+                let source_col = (col as u32 * ICON_SIZE / size) as usize;
+                let source = &self.pixels[(source_row * ICON_SIZE as usize + source_col) * 4..];
+                let pixel = rgba_premul_to_u32(&source[..4]);
+                if pixel == 0 {
+                    continue;
+                }
+                let idx = dy as usize * stride + dx as usize;
+                if idx >= fb.len() {
+                    continue;
+                }
+                let alpha = pixel >> 24;
+                if alpha == 255 {
+                    fb[idx] = pixel;
+                } else {
+                    let bg = fb[idx];
+                    let inverse = 255 - alpha;
+                    let r = (((pixel >> 16) & 0xFF) * alpha + ((bg >> 16) & 0xFF) * inverse) / 255;
+                    let g = (((pixel >> 8) & 0xFF) * alpha + ((bg >> 8) & 0xFF) * inverse) / 255;
+                    let b = ((pixel & 0xFF) * alpha + (bg & 0xFF) * inverse) / 255;
+                    fb[idx] = (bg & 0xFF00_0000) | (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
 }
 
 /// Convert 4 premultiplied RGBA bytes to a u32 in 0xAARRGGBB format.

@@ -658,7 +658,7 @@ impl Desktop {
     /// Returns `true` when any visible state changed (entry count,
     /// WiFi status, or signal strength) that requires a taskbar redraw.
     pub fn update_taskbar(&mut self) -> bool {
-        let prev_count = self.taskbar.entries.len();
+        let prev_entries = self.taskbar.entries.clone();
         let prev_wifi = self.taskbar.wifi_connected;
         let prev_wifi_visible = self.taskbar.wifi_visible;
         let prev_wifi_signal = self.taskbar.wifi_signal;
@@ -669,11 +669,10 @@ impl Desktop {
         self.taskbar.wifi_connected = matches!(&self.net_status, NetStatus::Connected(_, _));
         self.taskbar.wifi_visible = self.wifi_networks_visible;
         self.taskbar.wifi_signal = self.wifi_signal;
-        let new_count = self.taskbar.entries.len();
         let wifi_changed = self.taskbar.wifi_connected != prev_wifi
             || self.taskbar.wifi_visible != prev_wifi_visible
             || self.taskbar.wifi_signal != prev_wifi_signal;
-        new_count != prev_count || wifi_changed
+        prev_entries != self.taskbar.entries || wifi_changed
     }
 
     // ── frame preparation ───────────────────────────────────

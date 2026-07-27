@@ -371,6 +371,31 @@ pub fn render_wallpaper(
             }
         }
     }
+
+    // Photon is designed around a dark photographic desktop. Keep the
+    // selected wallpaper recognizable while lowering its luminance so bright
+    // application surfaces and the bottom dock retain the same contrast as
+    // the reference shell.
+    if crate::style::kind() == crate::common::ShellKind::Photon {
+        for row in cy..cy + ch {
+            let start = row as usize * fb_w + cx as usize;
+            let end = (start + cw as usize).min(fb.len());
+            for pixel in &mut fb[start..end] {
+                let r = ((*pixel >> 16) & 0xFF) * 72 / 100;
+                let g = ((*pixel >> 8) & 0xFF) * 76 / 100;
+                let b = (*pixel & 0xFF) * 82 / 100;
+                *pixel = (r << 16) | (g << 8) | b;
+            }
+        }
+    } else if crate::style::kind() == crate::common::ShellKind::Prism {
+        for row in cy..cy + ch {
+            let start = row as usize * fb_w + cx as usize;
+            let end = (start + cw as usize).min(fb.len());
+            for pixel in &mut fb[start..end] {
+                *pixel = blend_over(*pixel, 0xB9D8EE, 58);
+            }
+        }
+    }
 }
 
 fn blend_over(base: u32, top: u32, alpha_pct: u32) -> u32 {
