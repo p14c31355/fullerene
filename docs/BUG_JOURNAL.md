@@ -158,3 +158,28 @@ the final two rows.
 
 The Lattice tests compare incremental and full composition after moving a
 titled window, and verify terminal-cell gap/cursor redraw behavior.
+
+---
+## Entry 004 — Release UEFI jump entered KernelArgs
+
+### Symptoms
+
+The default Release Flasks launch stopped immediately after switching CR3
+with `#UD (Invalid Opcode)`. The reported RIP was inside the physical
+`InitAndJumpArgs`/`KernelArgs` allocation instead of the higher-half kernel
+entry point.
+
+### Root cause and fix
+
+The final inline assembly used independently allocated generic registers for
+the argument-pointer calculation and the jump target. Release register
+allocation allowed the arithmetic scratch register to alias `entry_virt`,
+so the jump target was overwritten with `arg1 + arg2`. The transition paths
+now use explicit, non-overlapping registers and preserve the entry point
+while rearranging arguments.
+
+### Regression coverage
+
+The Release UEFI image was rebuilt and launched with Flasks/QEMU. It reached
+`efi_main_real_logic`, memory-management initialization, GUI initialization,
+and `scheduler_loop` without the invalid-opcode exception.
