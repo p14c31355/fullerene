@@ -62,15 +62,20 @@ pub struct DirtyRect {
     pub x: u32, pub y: u32, pub width: u32, pub height: u32,
 }
 
-pub enum Layer { Background, Windows, Overlay, SystemUi }
-
-pub struct Scene {
-    pub windows: Vec<Window>,
-    pub cursor: Option<Cursor>,
+pub struct Scene<'a> {
+    pub windows: &'a [Window],
+    pub cursor: Option<&'a Cursor>,
     pub bg_color: u32,
-    pub dirty: DirtyRect,
+    pub dirty_rects: &'a [DirtyRect],
 }
 ```
+
+`Scene` is an immutable snapshot. `Compositor::render` accepts a
+`RenderTarget`; with no dirty rectangles it renders the complete target, and
+with dirty rectangles it composes each clipped region independently into the
+persistent target. The return value is the bounding box of the regions that
+were processed and is intended for diagnostics/reporting; callers that own a
+scanout may still copy the original dirty-region list individually.
 
 ---
 
@@ -95,7 +100,8 @@ pub struct Cursor {
 | Type | Role |
 |---|---|
 | `VecFramebuffer` | Vec-backed framebuffer for testing (supports PPM output) |
-| `fn render_scene(scene: &Scene, fb: &mut [u32], stride: usize)` | Render a scene to the framebuffer |
+| `RenderTarget` | Dimensions and mutable pixel-buffer abstraction |
+| `Compositor::render(&Scene, &mut dyn RenderTarget)` | Render a complete or dirty scene |
 
 ---
 

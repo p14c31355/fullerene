@@ -853,6 +853,44 @@ mod tests {
     }
 
     #[test]
+    fn moving_titled_window_repaints_its_shadow() {
+        let window = crate::window::Window::new_with_title(
+            crate::window::WindowId(1),
+            20,
+            20,
+            80,
+            60,
+            0x224466,
+            "Test",
+        );
+        let old_rect = crate::wm::window_dirty_rect(&window);
+        let old_windows = [window];
+        let mut incremental = TestTarget::new(180, 140);
+        let old_scene = Scene::new(&old_windows, None, 0x101010);
+        Compositor::render(&old_scene, &mut incremental);
+
+        let mut window = old_windows.into_iter().next().unwrap();
+        window.x = 90;
+        window.y = 55;
+        let new_rect = crate::wm::window_dirty_rect(&window);
+        let windows = [window];
+        let dirty = [old_rect, new_rect];
+        let dirty_scene = Scene::with_dirty_rects(&windows, None, 0x101010, &dirty);
+        Compositor::render(&dirty_scene, &mut incremental);
+
+        let full_scene = Scene::new(&windows, None, 0x101010);
+        let mut expected = TestTarget::new(180, 140);
+        Compositor::render(&full_scene, &mut expected);
+        let mismatch = incremental
+            .pixels
+            .iter()
+            .zip(&expected.pixels)
+            .enumerate()
+            .find(|(_, (actual, expected))| actual != expected);
+        assert_eq!(mismatch, None);
+    }
+
+    #[test]
     fn test_system_menu() {
         let mut dt = Desktop::new(0x202020);
         dt.show_system_menu();

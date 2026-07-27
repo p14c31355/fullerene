@@ -273,6 +273,10 @@ pub fn default_commands() -> &'static [&'static dyn Command] {
     )
 }
 
+pub fn get_completions(prefix: &str) -> alloc::vec::Vec<alloc::string::String> {
+    carrier::exec::get_completions_for(prefix, default_commands())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,8 +331,4 @@ mod tests {
         assert!(shell.execute_line("hello_rust_linux"));
         assert_eq!(terminal.output, "hello_rust_linux");
     }
-}
-
-pub fn get_completions(prefix: &str) -> alloc::vec::Vec<alloc::string::String> {
-    carrier::exec::get_completions_for(prefix, default_commands())
 }

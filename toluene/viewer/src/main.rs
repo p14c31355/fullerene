@@ -4,7 +4,7 @@ use std::io::{self, Cursor, Read, Seek};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-const VIEWER_BUILD_ID: &str = "2026-07-26-mp4-watchdog-2";
+const VIEWER_BUILD_ID: &str = "2026-07-27-wasm-pipeline-1";
 const MAX_MP4_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MP4_IO_OPERATIONS: usize = 16_384;
 const MAX_MP4_PARSE_TIME: Duration = Duration::from_secs(3);
@@ -147,7 +147,7 @@ fn qoi_header_allowed(data: &[u8]) -> bool {
     let width = u32::from_be_bytes(data[4..8].try_into().unwrap()) as u64;
     let height = u32::from_be_bytes(data[8..12].try_into().unwrap()) as u64;
     let channels = data[12];
-    let pixels = width.checked_mul(height).unwrap_or(u64::MAX);
+    let pixels = width.saturating_mul(height);
     width != 0
         && height != 0
         && matches!(channels, 3 | 4)
@@ -358,7 +358,7 @@ impl<R> BoundedMp4Reader<R> {
 impl<R: Read> Read for BoundedMp4Reader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         self.begin_operation()?;
-        let trace = self.operations <= 32 || self.operations % 128 == 0;
+        let trace = self.operations <= 32 || self.operations.checked_rem(128) == Some(0);
         if trace {
             println!(
                 "viewer: mp4 io read begin op={} bytes={}",
@@ -384,7 +384,7 @@ impl<R: Read> Read for BoundedMp4Reader<R> {
 impl<R: Seek> Seek for BoundedMp4Reader<R> {
     fn seek(&mut self, position: std::io::SeekFrom) -> io::Result<u64> {
         self.begin_operation()?;
-        let trace = self.operations <= 32 || self.operations % 128 == 0;
+        let trace = self.operations <= 32 || self.operations.checked_rem(128) == Some(0);
         if trace {
             println!(
                 "viewer: mp4 io seek begin op={} position={:?}",
@@ -683,7 +683,7 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
                 wait_for_video_time(playback_start, target_ns);
                 if render_video_frame(&mut window_id, &title, &frame) {
                     decoded_frames = decoded_frames.saturating_add(1);
-                    if decoded_frames == 1 || decoded_frames % 30 == 0 {
+                    if decoded_frames == 1 || decoded_frames.checked_rem(30) == Some(0) {
                         println!(
                             "viewer: mp4 playback frame={} sample={} pts_ns={}",
                             decoded_frames, sample_id, target_ns
@@ -771,8 +771,7 @@ fn yuv420_to_rgb(
     if source_width == 0 || source_height == 0 {
         return None;
     }
-    let width = source_width.min(max_width);
-    let height = source_height.min(max_height);
+    let (width, height) = fit_dimensions(source_width, source_height, max_width, max_height)?;
     let y_len = source_width.checked_mul(source_height)?;
     let uv_width = source_width.div_ceil(2);
     let uv_height = source_height.div_ceil(2);
@@ -782,10 +781,14 @@ fn yuv420_to_rgb(
     }
     let rgb_len = width.checked_mul(height)?.checked_mul(3)?;
     let mut rgb = Vec::with_capacity(rgb_len);
-    for y in 0..height {
-        let source_y = y * source_height / height;
-        for x in 0..width {
-            let source_x = x * source_width / width;
+    let x_map: Vec<usize> = (0..width)
+        .map(|x| x * source_width / width)
+        .collect();
+    let y_map: Vec<usize> = (0..height)
+        .map(|y| y * source_height / height)
+        .collect();
+    for &source_y in &y_map {
+        for &source_x in &x_map {
             let yi = source_y * source_width + source_x;
             let ui = (source_y / 2) * uv_width + source_x / 2;
             let yv = frame.y[yi] as i32;
@@ -799,10 +802,37 @@ fn yuv420_to_rgb(
     Some((width as u32, height as u32, rgb))
 }
 
+fn fit_dimensions(
+    source_width: usize,
+    source_height: usize,
+    max_width: usize,
+    max_height: usize,
+) -> Option<(usize, usize)> {
+    if source_width == 0 || source_height == 0 || max_width == 0 || max_height == 0 {
+        return None;
+    }
+    if source_width <= max_width && source_height <= max_height {
+        return Some((source_width, source_height));
+    }
+    if source_width as u64 * max_height as u64 <= source_height as u64 * max_width as u64 {
+        let width = source_width
+            .checked_mul(max_height)?
+            .checked_div(source_height)?
+            .max(1);
+        Some((width.min(max_width), max_height))
+    } else {
+        let height = source_height
+            .checked_mul(max_width)?
+            .checked_div(source_width)?
+            .max(1);
+        Some((max_width, height.min(max_height)))
+    }
+}
+
 // ── MP3 audio ───────────────────────────────────────────────────
 
 fn try_mp3(data: &[u8]) -> bool {
-    if data.len() < 10 || (&data[..3] != b"ID3" && (data[0] & 0xff) != 0xff) {
+    if data.len() < 10 || (&data[..3] != b"ID3" && data[0] != 0xff) {
         return false;
     }
     let id3_size = if data.len() >= 10 && &data[..3] == b"ID3" {
@@ -951,7 +981,7 @@ fn try_zip(data: &[u8]) -> bool {
     println!("Archive: ZIP");
     let mut count = 0u32;
     let mut off = 0usize;
-    while off.checked_add(46).map_or(false, |end| end <= data.len()) {
+    while off.checked_add(46).is_some_and(|end| end <= data.len()) {
         let Some(pos) = data[off..].windows(4).position(|w| w == b"PK\x01\x02") else {
             break;
         };
@@ -995,43 +1025,8 @@ fn try_tar(data: &[u8]) -> bool {
         return false;
     }
     println!("Archive: TAR");
-    let mut off = 0usize;
-    while off + 512 <= data.len() {
-        if data[off] == 0 {
-            break;
-        }
-        let name_end = data[off..off + 100]
-            .iter()
-            .position(|&b| b == 0)
-            .unwrap_or(100);
-        let name = std::str::from_utf8(&data[off..off + name_end]).unwrap_or("(invalid)");
-        let Some(size) = parse_tar_octal(&data[off + 124..off + 136]) else {
-            break;
-        };
-        let kind = match data.get(off + 156) {
-            Some(&b'5') => "dir",
-            Some(&b'2') => "link",
-            _ => "file",
-        };
-        println!("  {} {:>12}  {}", kind, size, name);
-        let Some(blocks) = size
-            .checked_add(511)
-            .and_then(|value| value.checked_div(512))
-            .and_then(|value| value.checked_mul(512))
-        else {
-            break;
-        };
-        let Some(next) = usize::try_from(blocks)
-            .ok()
-            .and_then(|blocks| off.checked_add(512)?.checked_add(blocks))
-        else {
-            break;
-        };
-        if next > data.len() {
-            break;
-        }
-        off = next;
-    }
+    let count = print_tar_entries(data, true);
+    println!("Total entries: {}", count);
     true
 }
 
@@ -1043,7 +1038,7 @@ fn try_gzip(data: &[u8]) -> bool {
     // Try to decompress and show the first entries if it's a .tar.gz
     use std::io::Read;
     const MAX_GZIP_PREVIEW: usize = 16 * 1024 * 1024;
-    let decoder = flate2::read::GzDecoder::new(&data[..]);
+    let decoder = flate2::read::GzDecoder::new(data);
     let mut decompressed = Vec::new();
     let read_ok = decoder
         .take((MAX_GZIP_PREVIEW as u64) + 1)
@@ -1055,7 +1050,7 @@ fn try_gzip(data: &[u8]) -> bool {
     }
     if read_ok && !truncated && decompressed.len() >= 512 && &decompressed[257..262] == b"ustar" {
         println!("  (contains TAR archive)");
-        try_tar_inner(&decompressed);
+        print_tar_entries(&decompressed, false);
     } else {
         if truncated {
             println!(
@@ -1072,8 +1067,9 @@ fn try_gzip(data: &[u8]) -> bool {
     true
 }
 
-fn try_tar_inner(data: &[u8]) {
+fn print_tar_entries(data: &[u8], show_links: bool) -> u32 {
     let mut off = 0usize;
+    let mut count = 0;
     while off + 512 <= data.len() {
         if data[off] == 0 {
             break;
@@ -1088,9 +1084,13 @@ fn try_tar_inner(data: &[u8]) {
         };
         let kind = match data.get(off + 156) {
             Some(&b'5') => "dir",
+            Some(&b'2') if show_links => "link",
             _ => "file",
         };
         println!("  {} {:>12}  {}", kind, size, name);
+        if show_links && !name.ends_with('/') {
+            count += 1;
+        }
         let Some(blocks) = size
             .checked_add(511)
             .and_then(|value| value.checked_div(512))
@@ -1109,6 +1109,7 @@ fn try_tar_inner(data: &[u8]) {
         }
         off = next;
     }
+    count
 }
 
 fn parse_tar_octal(field: &[u8]) -> Option<u64> {
@@ -1243,7 +1244,7 @@ fn print_hex(path: &str, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{mp3_frame, qoi_header_allowed, source_dimensions_allowed, try_image};
+    use super::{fit_dimensions, mp3_frame, qoi_header_allowed, source_dimensions_allowed, try_image};
     use image::GenericImageView;
     use image::ImageReader;
     use std::io::Cursor;
@@ -1366,6 +1367,13 @@ mod tests {
         let header = [0xff, 0xf3, 0x80, 0x64];
         let frame = mp3_frame(&header, 0).unwrap();
         assert_eq!(frame, (0, 64, 22_050, 2, 576, 208));
+    }
+
+    #[test]
+    fn fits_video_dimensions_without_distorting_aspect_ratio() {
+        assert_eq!(fit_dimensions(1920, 1080, 800, 600), Some((800, 450)));
+        assert_eq!(fit_dimensions(1080, 1920, 800, 600), Some((337, 600)));
+        assert_eq!(fit_dimensions(320, 240, 800, 600), Some((320, 240)));
     }
 
     #[test]

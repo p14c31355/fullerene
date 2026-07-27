@@ -273,7 +273,7 @@ impl LineEditor {
         if line.is_empty() {
             return;
         }
-        if self.history.front().map_or(false, |h| h == line) {
+        if self.history.front().is_some_and(|h| h == line) {
             return;
         }
         if self.history.len() >= HISTORY_MAX {
@@ -313,12 +313,14 @@ impl LineEditor {
             (b'[', b'D') => self.do_cursor_left(term),
             (b'[', b'H') | (b'O', b'H') => self.do_home(term),
             (b'[', b'F') | (b'O', b'F') => self.do_end(term),
-            (b'[', b'3') => {
-                if self.read_byte_retry(term) == Some(b'~') {
-                    self.do_delete(term);
-                }
-            }
+            (b'[', b'3') if self.read_byte_retry(term) == Some(b'~') => self.do_delete(term),
             _ => {}
         }
+    }
+}
+
+impl Default for LineEditor {
+    fn default() -> Self {
+        Self::new()
     }
 }

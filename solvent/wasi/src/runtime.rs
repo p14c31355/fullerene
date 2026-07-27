@@ -1,12 +1,10 @@
 use alloc::format;
-use alloc::string::String;
-use alloc::vec::Vec;
 use wasmi::{Engine, Linker, Module, Store};
 
 use crate::wasi::{
-    WasiCtx, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get, fd_close,
-    fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read, fd_readdir,
-    fd_seek, fd_write, fullerene_capture_screen, fullerene_capture_screen_chunk,
+    WasiCtx, WasiHost, args_get, args_sizes_get, clock_time_get, environ_get, environ_sizes_get,
+    fd_close, fd_fdstat_get, fd_filestat_get, fd_prestat_dir_name, fd_prestat_get, fd_read,
+    fd_readdir, fd_seek, fd_write, fullerene_capture_screen, fullerene_capture_screen_chunk,
     fullerene_close_window, fullerene_create_window, fullerene_play_pcm,
     fullerene_screen_dimensions, fullerene_show_error, fullerene_show_image, fullerene_show_text,
     fullerene_update_window, fullerene_wait_for_ns, fullerene_write_file_chunk, path_filestat_get,
@@ -18,31 +16,8 @@ use crate::wasi::{
 ///
 /// Synchronous WASM still has a finite fuel budget so compute-only modules
 /// cannot trap the kernel forever.
-pub fn run(
-    wasm_binary: &[u8],
-    args: &[&str],
-    write_stdout: fn(&[u8]),
-    write_stderr: fn(&[u8]),
-    read_stdin: fn() -> Option<u8>,
-    yield_now: fn(),
-    wait_for_ns: fn(u64),
-    file_size: fn(&str) -> Result<u64, genome::FsError>,
-    read_file_range: fn(&str, u64, usize) -> Result<Vec<u8>, genome::FsError>,
-    read_directory: fn(&str) -> Result<Vec<(String, u8)>, genome::FsError>,
-    write_file: fn(&str, &[u8]) -> Result<(), genome::FsError>,
-    write_file_chunk: fn(&str, u64, &[u8], bool) -> Result<(), genome::FsError>,
-    get_monotonic_ns: fn() -> u64,
-    screen_dimensions: fn() -> (u32, u32),
-    capture_screen: fn() -> Option<(u32, u32, Vec<u8>)>,
-    capture_screen_chunk: fn(u32, &mut [u8]) -> Option<(u32, u32)>,
-    show_image: fn(u32, u32, &[u8]) -> i32,
-    show_text: fn(&str, &str) -> i32,
-    show_error: fn(&str, &str) -> i32,
-    create_window: fn(&str, u32, u32) -> i32,
-    update_window: fn(i32, u32, u32, &[u8]) -> i32,
-    close_window: fn(i32) -> i32,
-    play_pcm: fn(u32, u8, u8, &[u8]) -> i32,
-) -> i32 {
+pub fn run(wasm_binary: &[u8], args: &[&str], host: WasiHost) -> i32 {
+    let write_stderr = host.write_stderr;
     const INITIAL_FUEL: u64 = 100_000_000;
     // The file viewer is synchronous by design. Give it a smaller compute
     // budget so malformed media metadata cannot monopolize the shell while
@@ -83,30 +58,7 @@ pub fn run(
         }
     };
 
-    let ctx = WasiCtx::new(
-        args,
-        write_stdout,
-        write_stderr,
-        read_stdin,
-        yield_now,
-        wait_for_ns,
-        file_size,
-        read_file_range,
-        read_directory,
-        write_file,
-        write_file_chunk,
-        get_monotonic_ns,
-        screen_dimensions,
-        capture_screen,
-        capture_screen_chunk,
-        show_image,
-        show_text,
-        show_error,
-        create_window,
-        update_window,
-        close_window,
-        play_pcm,
-    );
+    let ctx = WasiCtx::new(args, host);
 
     let mut store = Store::new(&engine, ctx);
     if let Err(error) = store.set_fuel(fuel) {

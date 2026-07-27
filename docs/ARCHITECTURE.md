@@ -1,5 +1,42 @@
 # Fullerene Project Rules
 
+## Current implementation snapshot (2026-07-27)
+
+The repository currently implements the context-oriented architecture
+described below across the root workspace members. The main runtime path is:
+
+```text
+UEFI/BIOS boot
+    → Fullerene Kernel (hardware ownership, scheduler, VFS, framebuffer guard)
+    → Solvent (event/frame pacing and service orchestration)
+    → Resonance / Nozzle / Lattice / ChronoLine
+    → Carrier / Genome / Nitrogen mechanisms through explicit callbacks
+```
+
+The kernel's `KernelContext` aggregates boot, memory, PCI, framebuffer, input,
+window, audio, event, VFS, shell, GUI, and settings state. The scheduler is a
+separate `SCHEDULER` lock because interrupts, syscalls, and the scheduler loop
+must access it independently. Solvent similarly uses `RUNTIME_CONTEXT` for
+runtime state and keeps the callback, event, and dispatcher domains separate.
+
+Rendering is headless-capable. `Lattice::Scene` is an immutable snapshot;
+`Compositor` renders either the full target or each clipped dirty region into a
+persistent RAM back buffer. Solvent owns the copy to the hardware scanout and
+has a cursor-only fast path. This is an intentional implementation of the
+dirty-region and deterministic-rendering rules in sections 7 and 8.
+
+The repository also contains the nested `toluene/cargo` third-party source
+tree. It is an application port input, not a Fullerene architecture layer and
+is excluded from workspace-wide source refactors.
+
+WASM applications cross the kernel boundary through `solvent/wasi`. The WASI
+runtime owns execution state, fuel limits, file-descriptor caching, and the
+WASI/custom import linker; the kernel supplies one grouped `WasiHost` callback
+set. The viewer and Emulsion applications are built as separate nested
+workspaces and copied into the kernel build output. Viewer MP4 access is
+seek-based and Emulsion screen capture is chunked, so neither path requires a
+full media or framebuffer-sized temporary buffer in the host runtime.
+
 ## 1. Overall Philosophy (Highest Priority)
 
 - **Fullerene aims to be a safe, readable, maintainable, loosely-coupled no_std operating system.**

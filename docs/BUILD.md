@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Rust nightly toolchain (required for no_std and UEFI targets): Install via `rustup toolchain install nightly`.
+- `wasm32-wasip1` Rust target (required by the kernel's embedded WASM build): Install with `rustup target add wasm32-wasip1`.
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, run with `--clone-ovmf` to copy from system installation or download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
 
@@ -45,9 +46,19 @@ Prerequisites per port:
 - **netsurf** – `make`, gtk3-dev, libcurl4-openssl-dev, libxml2-dev, …
 - **vscodium** – npm, build toolchain (see `toluene/vscodium/build.sh`)
 
-A port whose build prerequisites are missing emits Cargo warnings directing
-users to the build output for details. You can place a manually‑compiled ELF
-at `target/ports/<name>/app.bin` as well.
+Missing optional port caches are silently skipped during ordinary checks and
+builds, so a clean clone does not pollute `cargo check` with warnings. To
+request source builds and their diagnostics explicitly, set
+`FULLERENE_BUILD_PORTS=1`. You can also place a manually‑compiled ELF at
+`target/ports/<name>/app.bin`.
+
+The kernel build also compiles the WASI fixtures and the nested
+`toluene/viewer` and `toluene/emulsion` workspaces for `wasm32-wasip1`. These
+WASM release builds use size optimization, LTO, one codegen unit, and symbol
+stripping; their cached outputs are copied into the kernel `OUT_DIR` before
+the applications are embedded. The normal kernel build and workspace warning-
+free gate include these embedded WASM outputs, so install the target above
+before running them; the optional ELF application ports remain separate.
 
 When the kernel boots, ports are unpacked from the initramfs into
 `/packages/` and launched with `app run <name>`.
@@ -71,7 +82,7 @@ cargo run -p flasks --bin flasks
 ```
 
 This command:
-1. Builds `fullerene-kernel` and `bellows` for the UEFI target with `x86_64-unknown-uefi`.
+1. Builds optimized `fullerene-kernel` and `bellows` artifacts with the `release` profile for the UEFI target `x86_64-unknown-uefi`.
 2. Creates a FAT image and ISO (`fullerene.iso`) with the bootloader and kernel.
 3. Launches QEMU with:
    - 4GB RAM.
@@ -88,6 +99,8 @@ cargo run -p flasks --bin flasks -- --iso-only
 
 This still rebuilds `fullerene-kernel` and `bellows`, then writes
 `fullerene.iso` and exits before preparing OVMF variables or launching QEMU.
+Use `--debug` when unoptimized development artifacts are needed; this writes
+UEFI outputs under `target/x86_64-unknown-uefi/debug`.
 
 ## QEMU Options
 
@@ -102,6 +115,7 @@ Flasks supports dynamic VGA/display configuration via CLI arguments:
 | `--timeout <seconds>` | none | Timeout for QEMU execution in seconds |
 | `--clone-ovmf` | false | Copy OVMF binaries from system installation to project |
 | `--iso-only` | false | Rebuild `fullerene.iso` and exit without launching QEMU |
+| `--debug` | false | Use Cargo's `dev` profile instead of the default `release` profile |
 
 Examples:
 ```bash
@@ -177,6 +191,9 @@ To debug:
 - Use `RUST_LOG=debug cargo run --bin flasks` for more verbose output.
 
 For release builds, use `cargo build --release` to compile with optimizations.
+The workspace release profile uses aborting panics, LTO, one codegen unit, and
+strips debug information from the produced binaries; none of these changes
+alter the runtime ABI or framebuffer behavior.
 
 ## Manual Build Steps
 

@@ -1,7 +1,6 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::iter;
 use core::ops::Range;
 
 /// A software pixel surface.
@@ -42,7 +41,7 @@ impl Surface {
         Self {
             width,
             height,
-            pixels: iter::repeat(color).take(area).collect(),
+            pixels: alloc::vec![color; area],
         }
     }
 

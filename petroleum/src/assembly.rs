@@ -64,9 +64,21 @@ pub unsafe extern "C" fn jump_to_kernel_with_stack(
 ) -> ! {
     unsafe {
         core::arch::asm!(
-            "mov rdi, {0}", "mov rsi, {1}", "mov rdx, {2}", "mov rcx, {3}", "mov r8, {4}",
-            "jmp {3}",
-            in(reg) args_ptr, in(reg) stack_top, in(reg) l4_phys, in(reg) entry, in(reg) phys_offset,
+            // Preserve the jump target while rearranging the arguments.
+            // Using generic operands directly in the final `jmp` allows
+            // release register allocation to overwrite the target.
+            "mov r10, rdx",
+            "mov r11, rdi",
+            "mov rdi, rsi",
+            "mov rsi, r11",
+            "mov rdx, rcx",
+            "mov rcx, r10",
+            "jmp r10",
+            in("rdi") stack_top,
+            in("rsi") args_ptr,
+            in("rdx") entry,
+            in("rcx") l4_phys,
+            in("r8") phys_offset,
             options(noreturn)
         );
     }
@@ -113,13 +125,14 @@ pub unsafe extern "C" fn jump_to_kernel(
     unsafe {
         prepare_for_kernel_jump();
         core::arch::asm!(
-            "mov rax, {e}",
-            "mov rdi, {a}",
-            "mov rsi, {p}",
-            "jmp rax",
-            e = in(reg) entry,
-            a = in(reg) args,
-            p = in(reg) phys_offset,
+            // Save the target before moving the SysV arguments into place.
+            "mov r11, rdi",
+            "mov rdi, rsi",
+            "mov rsi, rdx",
+            "jmp r11",
+            in("rdi") entry,
+            in("rsi") args,
+            in("rdx") phys_offset,
             options(noreturn),
         );
     }

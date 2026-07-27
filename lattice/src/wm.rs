@@ -61,17 +61,25 @@ const RESIZE_HANDLE_SIZE: u32 = 16;
 const MIN_WINDOW_W: u32 = 80;
 const MIN_WINDOW_H: u32 = 40;
 
-/// TITLE_BAR_HEIGHT from compositor — kept in sync manually.
-const TITLE_BAR_H: u32 = 20;
-const BORDER: u32 = 2;
+// `Painter::draw_shadow` uses a 2px offset and 3px blur around the decorated
+// window. Keep a small conservative margin so moving or closing a window also
+// repaints the complete shadow footprint.
+const SHADOW_MARGIN: i32 = 8;
 
 /// Build a dirty rect for the full decorated area of a window.
 pub(crate) fn window_dirty_rect(w: &Window) -> DirtyRect {
-    let x0 = w.x.saturating_sub(BORDER as i32).max(0) as u32;
-    let y0 = w.y.saturating_sub(BORDER as i32).max(0) as u32;
-    let ww = w.width + BORDER * 2;
-    let wh = w.height + TITLE_BAR_H + BORDER * 2;
-    DirtyRect::new(x0, y0, ww, wh)
+    let x0 = w.x.saturating_sub(SHADOW_MARGIN).max(0) as u32;
+    let y0 = w.y.saturating_sub(SHADOW_MARGIN).max(0) as u32;
+    let x1 =
+        w.x.saturating_add(w.width as i32)
+            .saturating_add(SHADOW_MARGIN)
+            .max(x0 as i32) as u32;
+    let y1 =
+        w.y.saturating_add(w.height as i32)
+            .saturating_add(crate::compositor::TITLE_BAR_HEIGHT as i32)
+            .saturating_add(SHADOW_MARGIN)
+            .max(y0 as i32) as u32;
+    DirtyRect::new(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
 }
 
 impl WindowManager {

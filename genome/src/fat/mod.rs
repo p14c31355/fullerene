@@ -17,9 +17,9 @@ pub use partition::{PartitionBlockDevice, find_fat_partition};
 
 use block_device::read_boot_sector;
 
-pub fn mount_device(
-    mut device: Box<dyn BlockDevice>,
-) -> Result<Box<dyn FileSystem>, (FsError, Option<Box<dyn BlockDevice>>)> {
+pub type MountFailure = (FsError, Option<Box<dyn BlockDevice>>);
+
+pub fn mount_device(mut device: Box<dyn BlockDevice>) -> Result<Box<dyn FileSystem>, MountFailure> {
     let info = match find_fat_partition(&mut *device) {
         Ok(info) => info,
         Err(error) => return Err((error, Some(device))),

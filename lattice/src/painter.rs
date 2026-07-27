@@ -50,12 +50,20 @@ impl<'a> Painter<'a> {
     pub fn clip_rect(&mut self, x: i32, y: i32, w: u32, h: u32) {
         let x = x.max(0) as u32;
         let y = y.max(0) as u32;
-        let xe = (x + w).min(self.width);
-        let ye = (y + h).min(self.height);
+        let xe = x.saturating_add(w).min(self.width);
+        let ye = y.saturating_add(h).min(self.height);
         let cx = self.clip_x.max(x);
         let cy = self.clip_y.max(y);
-        let cw = (self.clip_x + self.clip_w).min(xe).saturating_sub(cx);
-        let ch = (self.clip_y + self.clip_h).min(ye).saturating_sub(cy);
+        let cw = self
+            .clip_x
+            .saturating_add(self.clip_w)
+            .min(xe)
+            .saturating_sub(cx);
+        let ch = self
+            .clip_y
+            .saturating_add(self.clip_h)
+            .min(ye)
+            .saturating_sub(cy);
         self.clip_x = cx;
         self.clip_y = cy;
         self.clip_w = cw;
@@ -65,6 +73,16 @@ impl<'a> Painter<'a> {
     #[inline]
     fn idx(&self, x: u32, y: u32) -> usize {
         (y as usize) * (self.stride as usize) + (x as usize)
+    }
+
+    #[inline]
+    fn contains(&self, x: u32, y: u32) -> bool {
+        x < self.width
+            && y < self.height
+            && x >= self.clip_x
+            && x - self.clip_x < self.clip_w
+            && y >= self.clip_y
+            && y - self.clip_y < self.clip_h
     }
 
     /// Clip a rectangle to framebuffer bounds and the painter clip rect, returning `(x, y, w, h)` or `None`.
@@ -89,8 +107,8 @@ impl<'a> Painter<'a> {
         // Intersect with painter clip rect
         let cxe = self.clip_x.saturating_add(self.clip_w);
         let cye = self.clip_y.saturating_add(self.clip_h);
-        let xe = (x + w).min(cxe);
-        let ye = (y + h).min(cye);
+        let xe = x.saturating_add(w).min(cxe);
+        let ye = y.saturating_add(h).min(cye);
         let x = x.max(self.clip_x);
         let y = y.max(self.clip_y);
         w = xe.saturating_sub(x);
@@ -110,10 +128,10 @@ impl<'a> Painter<'a> {
             Some(r) => r,
             None => return,
         };
-        let w = self.width as usize;
+        let stride = self.stride as usize;
         for row in cy..cy + ch {
-            let start = (row as usize) * w + cx as usize;
-            let end = (row as usize) * w + (cx + cw) as usize;
+            let start = (row as usize) * stride + cx as usize;
+            let end = start + cw as usize;
             self.fb[start..end].fill(color);
         }
     }
@@ -157,7 +175,7 @@ impl<'a> Painter<'a> {
 
     #[inline]
     pub fn set_pixel(&mut self, x: u32, y: u32, color: u32) {
-        if x < self.width && y < self.height {
+        if self.contains(x, y) {
             self.fb[self.idx(x, y)] = color;
         }
     }
@@ -175,7 +193,7 @@ impl<'a> Painter<'a> {
 
     /// Alpha-blend a source RGBA pixel over the destination.
     pub fn blend_pixel(&mut self, x: u32, y: u32, src: u32) {
-        if x >= self.width || y >= self.height {
+        if !self.contains(x, y) {
             return;
         }
         let idx = self.idx(x, y);
@@ -203,8 +221,14 @@ impl<'a> Painter<'a> {
         let sh = src.height() as i32;
         let sx_s = 0i32.max(-dx);
         let sy_s = 0i32.max(-dy);
-        let sx_e = sw.min(self.width as i32 - dx);
-        let sy_e = sh.min(self.height as i32 - dy);
+        let sx_e = sw
+            .min(self.width as i32 - dx)
+            .min(self.clip_x.saturating_add(self.clip_w).min(self.width) as i32 - dx);
+        let sy_e = sh
+            .min(self.height as i32 - dy)
+            .min(self.clip_y.saturating_add(self.clip_h).min(self.height) as i32 - dy);
+        let sx_s = sx_s.max(self.clip_x as i32 - dx);
+        let sy_s = sy_s.max(self.clip_y as i32 - dy);
         if sx_s >= sx_e || sy_s >= sy_e {
             return;
         }

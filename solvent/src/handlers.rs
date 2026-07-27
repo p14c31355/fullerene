@@ -19,7 +19,14 @@ fn apply_mouse_move(
     let previous = (desktop.cursor.x, desktop.cursor.y);
     desktop.mouse_move(x, y);
     cursor_redraw_from.get_or_insert(previous);
-    *frame_due = true;
+
+    // Moving the pointer only changes the cursor pixels.  A full scene
+    // render for every PS/2 packet makes a maximised terminal feel frozen
+    // on real hardware.  Window moves/resizes still need a full render
+    // because WindowManager::on_mouse_move dirties the window bounds.
+    if !matches!(desktop.wm.drag_state(), lattice::wm::DragState::None) {
+        *frame_due = true;
+    }
 }
 
 pub(crate) struct WmEventHandler;
@@ -139,7 +146,7 @@ mod tests {
     use lattice::desktop::Desktop;
 
     #[test]
-    fn mouse_input_transitions_cursor_state_and_marks_frame_dirty() {
+    fn mouse_input_transitions_cursor_state_and_queues_cursor_redraw() {
         let mut desktop = Desktop::new(0);
         let previous = (desktop.cursor.x, desktop.cursor.y);
         let mut cursor_redraw_from = None;
@@ -155,7 +162,9 @@ mod tests {
 
         assert_eq!((desktop.cursor.x, desktop.cursor.y), (23, 41));
         assert_eq!(cursor_redraw_from, Some(previous));
-        assert!(frame_due);
+        // A plain pointer move is handled by the cursor-only renderer. A
+        // full frame is reserved for window dragging or other scene changes.
+        assert!(!frame_due);
     }
 }
 

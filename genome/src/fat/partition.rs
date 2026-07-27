@@ -73,7 +73,7 @@ pub fn find_fat_partition(device: &mut dyn BlockDevice) -> Result<PartitionInfo,
         if is_fat
             && (best
                 .as_ref()
-                .map_or(true, |b| sector_count > b.total_sectors as u32))
+                .is_none_or(|b| sector_count > b.total_sectors as u32))
         {
             best = Some(PartitionInfo {
                 start_lba: lba_start as u64,

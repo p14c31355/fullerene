@@ -11,6 +11,7 @@ pub mod input;
 pub mod syscall;
 
 use core::sync::atomic::AtomicU64;
+#[cfg(debug_assertions)]
 use x86_64::instructions::interrupts;
 
 // Global tick counter for timing (lock-free atomic)

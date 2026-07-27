@@ -182,61 +182,20 @@ fn main() {
     .trim()
     .to_string();
 
-    let status = Command::new(&rustc)
-        .args([
-            "--target",
-            "wasm32-wasip1",
-            "--sysroot",
-            &sysroot,
-            "-C",
-            "opt-level=s",
-            "-C",
-            "lto=yes",
-            "-o",
-        ])
-        .arg(&wasm_out)
-        .arg(&wasm_src)
-        .status()
-        .expect("Failed to execute rustc for WASM build");
-
-    if !status.success() {
-        panic!(
-            "Failed to compile WASI test app from '{}'. \
-             Make sure the wasm32-wasip1 target is installed: \
-             rustup target add wasm32-wasip1",
-            wasm_src.display()
-        );
-    }
-
-    // ── Build the std-based startup sound WASM app ─────────────
     let startup_sound_src = workspace_root
         .join("toluene")
         .join("apps")
         .join("startup_sound.rs");
     let startup_sound_out = out_dir.join("startup_sound.wasm");
     println!("cargo:rerun-if-changed={}", startup_sound_src.display());
-    let status = Command::new(&rustc)
-        .args([
-            "--target",
-            "wasm32-wasip1",
-            "--sysroot",
-            &sysroot,
-            "-C",
-            "opt-level=s",
-            "-C",
-            "lto=yes",
-            "-o",
-        ])
-        .arg(&startup_sound_out)
-        .arg(&startup_sound_src)
-        .status()
-        .expect("Failed to execute rustc for startup sound WASM build");
-    if !status.success() {
-        panic!(
-            "Failed to compile startup sound WASM app from '{}'.",
-            startup_sound_src.display()
-        );
-    }
+    build_standalone_wasm(&rustc, &sysroot, &wasm_src, &wasm_out, "WASI test app");
+    build_standalone_wasm(
+        &rustc,
+        &sysroot,
+        &startup_sound_src,
+        &startup_sound_out,
+        "startup sound WASM app",
+    );
 
     // ── Build WASM viewer app (with cargo for dependencies) ──
     let viewer_dir = workspace_root.join("toluene").join("viewer");
@@ -260,34 +219,14 @@ fn main() {
     );
 
     let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let viewer_built = match Command::new(&cargo)
-        .args([
-            "build",
-            "--target",
-            "wasm32-wasip1",
-            "--release",
-            "--target-dir",
-        ])
-        .arg(&viewer_target_dir)
-        .current_dir(&viewer_dir)
-        // Do not leak the kernel's target flags into the nested WASM build.
-        .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .status()
-    {
-        Ok(status) if status.success() => true,
-        Ok(_) => {
-            println!("cargo:warning=WASM viewer build failed (will continue without it)");
-            viewer_cache.exists()
-        }
-        Err(error) => {
-            println!("cargo:warning=WASM viewer build could not start: {}", error);
-            viewer_cache.exists()
-        }
-    };
-    if viewer_built && viewer_cache.exists() {
-        fs::copy(&viewer_cache, &viewer_out)
-            .unwrap_or_else(|e| panic!("Failed to copy WASM viewer binary: {}", e));
+    if build_nested_wasm(
+        &cargo,
+        &viewer_dir,
+        &viewer_target_dir,
+        &viewer_cache,
+        &viewer_out,
+        "viewer",
+    ) {
         println!("cargo:rustc-cfg=have_viewer_wasm");
     }
 
@@ -307,7 +246,57 @@ fn main() {
         "cargo:rerun-if-changed={}",
         emulsion_dir.join("Cargo.toml").display()
     );
-    let emulsion_built = match Command::new(&cargo)
+    if build_nested_wasm(
+        &cargo,
+        &emulsion_dir,
+        &emulsion_target_dir,
+        &emulsion_cache,
+        &emulsion_out,
+        "Emulsion",
+    ) {
+        println!("cargo:rustc-cfg=have_emulsion_wasm");
+    }
+}
+
+fn build_standalone_wasm(rustc: &str, sysroot: &str, source: &Path, output: &Path, label: &str) {
+    let status = Command::new(rustc)
+        .args([
+            "--target",
+            "wasm32-wasip1",
+            "--sysroot",
+            sysroot,
+            "-C",
+            "opt-level=s",
+            "-C",
+            "lto=yes",
+            "-C",
+            "codegen-units=1",
+            "-C",
+            "strip=symbols",
+            "-o",
+        ])
+        .arg(output)
+        .arg(source)
+        .status()
+        .unwrap_or_else(|error| panic!("Failed to execute rustc for {label}: {error}"));
+    if !status.success() {
+        panic!(
+            "Failed to compile {label} from '{}'. Make sure the wasm32-wasip1 target is installed: \
+             rustup target add wasm32-wasip1",
+            source.display()
+        );
+    }
+}
+
+fn build_nested_wasm(
+    cargo: &str,
+    manifest_dir: &Path,
+    target_dir: &Path,
+    cache: &Path,
+    output: &Path,
+    label: &str,
+) -> bool {
+    let status = Command::new(cargo)
         .args([
             "build",
             "--target",
@@ -315,30 +304,28 @@ fn main() {
             "--release",
             "--target-dir",
         ])
-        .arg(&emulsion_target_dir)
-        .current_dir(&emulsion_dir)
+        .arg(target_dir)
+        .current_dir(manifest_dir)
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .status()
-    {
+        .status();
+    let build_succeeded = match status {
         Ok(status) if status.success() => true,
         Ok(_) => {
-            println!("cargo:warning=WASM Emulsion build failed (will continue without it)");
-            emulsion_cache.exists()
+            println!("cargo:warning=WASM {label} build failed (will continue without it)");
+            false
         }
         Err(error) => {
-            println!(
-                "cargo:warning=WASM Emulsion build could not start: {}",
-                error
-            );
-            emulsion_cache.exists()
+            println!("cargo:warning=WASM {label} build could not start: {error}");
+            false
         }
     };
-    if emulsion_built && emulsion_cache.exists() {
-        fs::copy(&emulsion_cache, &emulsion_out)
-            .unwrap_or_else(|e| panic!("Failed to copy WASM Emulsion binary: {}", e));
-        println!("cargo:rustc-cfg=have_emulsion_wasm");
+    if build_succeeded && cache.exists() {
+        fs::copy(cache, output)
+            .unwrap_or_else(|error| panic!("Failed to copy WASM {label} binary: {error}"));
+        return true;
     }
+    false
 }
 
 /// Build application ports from submodule sources and package into CPIO.
@@ -378,12 +365,9 @@ fn build_ports_cpio(toluene_dir: &Path, ports_dir: &Path, out_dir: &Path) -> usi
         }
 
         if !allow_source_build {
-            println!(
-                "cargo:warning=ports: {name} has no cached binary – \
-                 skipping (set FULLERENE_BUILD_PORTS=1 to build from source, \
-                 or place a pre-built ELF at {})",
-                cache.display()
-            );
+            // Missing optional ports are the normal state of a clean clone.
+            // Keep `cargo check` quiet; an explicit source-build request
+            // below still reports failures through Cargo diagnostics.
             continue;
         }
 

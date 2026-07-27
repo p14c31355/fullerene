@@ -12,7 +12,7 @@ use spin::Mutex;
 
 // ── Constants ────────────────────────────────────────────────
 const GLYPH_W: u32 = 8;
-const GLYPH_H: u32 = 16;
+const GLYPH_H: u32 = terminal_surface::CELL_HEIGHT;
 
 /// Render the terminal window into its surface, then invalidate it.
 ///

@@ -173,6 +173,7 @@ pub fn init() {
 /// progress callback so `solvent::render` doesn't keep drawing labels
 /// over the desktop on every frame.
 static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
+static FRAMEBUFFER_UNAVAILABLE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Signal present and flush GPU after rendering.
 fn finish_frame() {
@@ -194,16 +195,24 @@ pub fn render() {
         // Disable the progress callback: subsequent labels drawn from within
         // solvent::render() would race with the &mut [u32] in FramebufferGuard.
         solvent::set_render_progress_fn(|_| {});
+
+        // Hand the scanout to the desktop before taking the framebuffer
+        // guard.  Timer/diagnostic callbacks can run on real hardware while
+        // the first frame is being composed; leaving the boot screen active
+        // until after the frame allowed them to paint boot text over it.
+        crate::boot_stage::disable_boot_screen();
     }
 
     let framebuffer_available =
         crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_some();
     if !framebuffer_available {
-        crate::boot_stage::draw_boot_label(b"RENDER: framebuffer unavailable");
+        if !FRAMEBUFFER_UNAVAILABLE_LOGGED.swap(true, Ordering::Relaxed) {
+            petroleum::serial::serial_log(format_args!(
+                "Desktop render skipped: framebuffer unavailable\n"
+            ));
+        }
     } else {
-        // From this point on the desktop compositor owns the scanout. Any
-        // late boot-stage or diagnostic callback must not repaint the splash.
-        crate::boot_stage::disable_boot_screen();
+        FRAMEBUFFER_UNAVAILABLE_LOGGED.store(false, Ordering::Relaxed);
     }
 
     BOOT_PROGRESS_DONE.store(true, Ordering::Release);

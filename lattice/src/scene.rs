@@ -30,16 +30,22 @@ impl DirtyRect {
         }
     }
     pub fn intersects(&self, other: &DirtyRect) -> bool {
-        self.x < other.x + other.width
-            && self.x + self.width > other.x
-            && self.y < other.y + other.height
-            && self.y + self.height > other.y
+        self.x < other.x.saturating_add(other.width)
+            && other.x < self.x.saturating_add(self.width)
+            && self.y < other.y.saturating_add(other.height)
+            && other.y < self.y.saturating_add(self.height)
     }
     pub fn merge(&mut self, other: &DirtyRect) {
         let x1 = self.x.min(other.x);
         let y1 = self.y.min(other.y);
-        let x2 = (self.x + self.width).max(other.x + other.width);
-        let y2 = (self.y + self.height).max(other.y + other.height);
+        let x2 = self
+            .x
+            .saturating_add(self.width)
+            .max(other.x.saturating_add(other.width));
+        let y2 = self
+            .y
+            .saturating_add(self.height)
+            .max(other.y.saturating_add(other.height));
         self.x = x1;
         self.y = y1;
         self.width = x2 - x1;

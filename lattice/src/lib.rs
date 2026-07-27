@@ -28,6 +28,7 @@ pub mod wm;
 mod tests {
     use crate::compositor::Compositor;
     use crate::cursor::Cursor;
+    use crate::painter::Painter;
     use crate::renderer::VecFramebuffer;
     use crate::scene::{DirtyRect, Scene};
     use crate::window::{Window, WindowId};
@@ -77,6 +78,32 @@ mod tests {
         let scene = Scene::new(&[], None, 0x1a1a2e);
         assert!(scene.windows.is_empty());
         assert!(scene.cursor.is_none());
+    }
+
+    #[test]
+    fn compositor_keeps_pixels_between_disjoint_dirty_regions() {
+        let dirty = [DirtyRect::new(0, 0, 2, 2), DirtyRect::new(8, 8, 2, 2)];
+        let scene = Scene::with_dirty_rects(&[], None, 0x112233, &dirty);
+        let mut target = VecFramebuffer::new(10, 10);
+        target.pixels.fill(0xDEADBE);
+
+        Compositor::render(&scene, &mut target);
+
+        assert_eq!(target.pixels[0], 0x112233);
+        assert_eq!(target.pixels[9 * 10 + 9], 0x112233);
+        assert_eq!(target.pixels[5 * 10 + 5], 0xDEADBE);
+    }
+
+    #[test]
+    fn painter_respects_hardware_stride_and_clip() {
+        let mut pixels = [0xDEADBE; 12];
+        let mut painter = Painter::new_with_stride(&mut pixels, 3, 2, 6);
+        painter.fill_rect(0, 0, 3, 2, 0x112233);
+
+        assert_eq!(&pixels[..3], &[0x112233; 3]);
+        assert_eq!(&pixels[6..9], &[0x112233; 3]);
+        assert_eq!(&pixels[3..6], &[0xDEADBE; 3]);
+        assert_eq!(&pixels[9..], &[0xDEADBE; 3]);
     }
 
     #[test]

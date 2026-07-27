@@ -191,17 +191,13 @@ pub fn cmd_cd(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Usage: cd <directory>\n");
         return true;
     }
-    crate::fs_hooks::change_directory(ctx, &ctx.args[1]);
+    crate::fs_hooks::change_directory(ctx, ctx.args[1]);
     true
 }
 
 /// `tree` — display a directory tree
 pub fn cmd_tree(ctx: &mut CommandContext) -> bool {
-    let path = if ctx.args.len() > 1 {
-        &ctx.args[1]
-    } else {
-        "."
-    };
+    let path = if ctx.args.len() > 1 { ctx.args[1] } else { "." };
     crate::fs_hooks::tree_directory(ctx, path);
     true
 }
@@ -213,7 +209,7 @@ pub fn cmd_find(ctx: &mut CommandContext) -> bool {
             .write_str("Usage: find <directory> <pattern>\n");
         return true;
     }
-    crate::fs_hooks::find_files(ctx, &ctx.args[1], &ctx.args[2]);
+    crate::fs_hooks::find_files(ctx, ctx.args[1], ctx.args[2]);
     true
 }
 
@@ -223,7 +219,7 @@ pub fn cmd_cp(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Usage: cp <source> <destination>\n");
         return true;
     }
-    crate::fs_hooks::copy_file(ctx, &ctx.args[1], &ctx.args[2]);
+    crate::fs_hooks::copy_file(ctx, ctx.args[1], ctx.args[2]);
     true
 }
 
@@ -233,7 +229,7 @@ pub fn cmd_mv(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Usage: mv <source> <destination>\n");
         return true;
     }
-    crate::fs_hooks::move_file(ctx, &ctx.args[1], &ctx.args[2]);
+    crate::fs_hooks::move_file(ctx, ctx.args[1], ctx.args[2]);
     true
 }
 
@@ -243,7 +239,7 @@ pub fn cmd_write(ctx: &mut CommandContext) -> bool {
         ctx.terminal.write_str("Usage: write <path> <content>\n");
         return true;
     }
-    crate::fs_hooks::write_file(ctx, &ctx.args[1], &ctx.args[2]);
+    crate::fs_hooks::write_file(ctx, ctx.args[1], ctx.args[2]);
     true
 }
 

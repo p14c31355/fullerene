@@ -34,3 +34,15 @@ statics are re-exported from the crate root for compatibility.
 This split does not change singleton ownership. Moving `SOLVENT_CALLBACKS`,
 runtime state, the event queue, and the dispatcher into an explicit owned
 `RuntimeContext` is a separate lifecycle change.
+
+## WASM boundary
+
+`solvent/wasi` is a separate workspace crate, not a private module of the
+`solvent` crate. Its crate-level API is the `wasi_runtime` execution boundary:
+`wasi_runtime::runtime::run` receives a single `WasiHost` callback bundle.
+This keeps kernel/VFS/framebuffer/audio dependencies out of the WASI state
+object while preserving the existing WASI import ABI. File reads use a
+bounded lazy range cache; screen capture and screenshot writes have chunked
+imports for large outputs. The nested `toluene/viewer` and
+`toluene/emulsion` workspaces are compiled by the kernel build and are not
+root workspace members.

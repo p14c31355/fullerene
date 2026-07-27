@@ -37,6 +37,10 @@ pub enum SeekFrom {
 
 pub trait FileReader: Read + Seek {
     fn len(&mut self) -> Result<u64, FsError>;
+
+    fn is_empty(&mut self) -> Result<bool, FsError> {
+        Ok(self.len()? == 0)
+    }
 }
 
 /// Read a stream into memory while enforcing a hard upper bound.

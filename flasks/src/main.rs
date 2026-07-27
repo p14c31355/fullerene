@@ -23,6 +23,10 @@ struct Args {
     #[arg(long)]
     iso_only: bool,
 
+    /// Use the unoptimized development profile for UEFI artifacts
+    #[arg(long)]
+    debug: bool,
+
     /// VGA device type: virtio-gpu, std, qxl, cirrus, none (default: virtio-gpu)
     #[arg(long, default_value = "virtio-gpu")]
     vga: String,
@@ -36,10 +40,37 @@ struct Args {
     resolution: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BuildProfile {
+    Release,
+    Debug,
+}
+
+impl BuildProfile {
+    fn from_debug(debug: bool) -> Self {
+        if debug { Self::Debug } else { Self::Release }
+    }
+
+    fn cargo_name(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Debug => "dev",
+        }
+    }
+
+    fn artifact_directory(self) -> &'static str {
+        match self {
+            Self::Release => "release",
+            Self::Debug => "debug",
+        }
+    }
+}
+
 fn main() -> io::Result<()> {
     // Initialize env_logger - it will respect RUST_LOG environment variable for filtering
     env_logger::init();
     let args = Args::parse();
+    let profile = BuildProfile::from_debug(args.debug);
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("Failed to get workspace root")
@@ -51,12 +82,12 @@ fn main() -> io::Result<()> {
     }
 
     if args.iso_only {
-        let iso_path = create_iso(&workspace_root)?;
+        let iso_path = create_iso(&workspace_root, profile)?;
         println!("ISO rebuilt at {}", iso_path.display());
         return Ok(());
     }
 
-    run_qemu(&workspace_root, &args)?;
+    run_qemu(&workspace_root, &args, profile)?;
     Ok(())
 }
 
@@ -105,6 +136,7 @@ fn build_uefi_package(
     workspace_root: &PathBuf,
     package: &str,
     features: Option<&str>,
+    profile: BuildProfile,
 ) -> io::Result<()> {
     let mut args: Vec<&str> = vec![
         "+nightly",
@@ -116,7 +148,7 @@ fn build_uefi_package(
         "--target",
         "x86_64-unknown-uefi",
         "--profile",
-        "dev",
+        profile.cargo_name(),
     ];
     if let Some(feats) = features {
         args.extend(["--features", feats]);
@@ -144,14 +176,14 @@ menuentry "Fullerene OS" {
     .to_string()
 }
 
-fn create_iso(workspace_root: &PathBuf) -> io::Result<PathBuf> {
+fn create_iso(workspace_root: &PathBuf, profile: BuildProfile) -> io::Result<PathBuf> {
     // --- 1. Build fullerene-kernel (no_std) ---
-    build_uefi_package(workspace_root, "fullerene-kernel", None)?;
+    build_uefi_package(workspace_root, "fullerene-kernel", None, profile)?;
 
     let target_dir = workspace_root
         .join("target")
         .join("x86_64-unknown-uefi")
-        .join("debug");
+        .join(profile.artifact_directory());
     let kernel_path = target_dir.join("fullerene-kernel.efi");
     log::info!(
         "Kernel EFI at {} (size: {})",
@@ -177,7 +209,7 @@ fn create_iso(workspace_root: &PathBuf) -> io::Result<PathBuf> {
             "--target",
             "x86_64-unknown-uefi",
             "--profile",
-            "dev",
+            profile.cargo_name(),
             "--features",
             "debug_loader",
         ])
@@ -219,8 +251,9 @@ fn create_iso(workspace_root: &PathBuf) -> io::Result<PathBuf> {
 
 fn create_iso_and_setup(
     workspace_root: &PathBuf,
+    profile: BuildProfile,
 ) -> io::Result<(PathBuf, PathBuf, PathBuf, tempfile::NamedTempFile)> {
-    let iso_path = create_iso(workspace_root)?;
+    let iso_path = create_iso(workspace_root, profile)?;
 
     let ovmf_fd_path = workspace_root
         .join("flasks")
@@ -242,10 +275,10 @@ fn create_iso_and_setup(
     Ok((iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd))
 }
 
-fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
+fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io::Result<()> {
     log::info!("Starting QEMU...");
     let (iso_path, ovmf_fd_path, ovmf_vars_fd_path, temp_ovmf_vars_fd) =
-        create_iso_and_setup(&workspace_root)?;
+        create_iso_and_setup(&workspace_root, profile)?;
 
     // --- 4. Run QEMU with the created ISO ---
 
@@ -435,4 +468,23 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildProfile;
+
+    #[test]
+    fn release_is_the_default_profile() {
+        let profile = BuildProfile::from_debug(false);
+        assert_eq!(profile.cargo_name(), "release");
+        assert_eq!(profile.artifact_directory(), "release");
+    }
+
+    #[test]
+    fn debug_profile_keeps_dev_artifact_layout() {
+        let profile = BuildProfile::from_debug(true);
+        assert_eq!(profile.cargo_name(), "dev");
+        assert_eq!(profile.artifact_directory(), "debug");
+    }
 }

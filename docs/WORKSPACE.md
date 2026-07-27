@@ -6,7 +6,9 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`fullerene-kernel`**: The core kernel. Handles hardware-policy integration, process scheduling via `SchedulerContext` (`SCHEDULER` singleton), VDSO read-only metadata pages, GUI integration, and enters the main shell loop. Its device registry leases block devices to Genome while retaining stable `/dev` identities.
 
-- **`fullerene-abi`**: A dependency-free no_std leaf crate defining typed native syscall numbers, error codes, stable `#[repr(C)]` DTOs, ABI versioning, and capability bits. Both the kernel and Toluene SDK depend on this contract directly.
+- **`fullerene-abi`**: A dependency-free `no_std` leaf crate defining the native syscall numbers, error codes, stable `#[repr(C)]` data-transfer types, ABI version, and capability bits shared by the kernel, Petroleum, and Toluene.
+
+- **`vdso`** (`fullerene-kernel/vdso`): A standalone `no_std` VDSO-layout/helper crate used by the kernel-side VDSO implementation and its tests.
 
 - **`flasks`**: The build and task runner. Builds the kernel and bootloader, creates a bootable ISO, and launches QEMU for emulation.
 
@@ -32,4 +34,10 @@ The project is structured as a Cargo workspace with the following crates:
 
 - **`toluene`**: The user-space SDK and example binary. Its typed syscall wrappers consume the shared `fullerene-abi` contract directly.
 
-- **`rle_player`** (toluene/rle_player): An RLE-encoded video player that decodes and renders animation frames, used for the Bad Apple demo.
+- **`toluene/apps`**: Standalone WASI application sources embedded by the kernel build (`hello_wasi.rs` and `startup_sound.rs`). `toluene/viewer` and `toluene/emulsion` are separate nested application workspaces built by `fullerene-kernel/build.rs`, not members of the root workspace.
+
+The root workspace currently has 18 members. The `default-members` list omits
+the bootloader, ABI/VDSO helper crates, and `solvent/wasi` only to keep the
+usual host development commands focused; `cargo check --workspace` includes
+all members. `toluene/cargo` is a vendored third-party Cargo source tree and is
+not a root-workspace member.

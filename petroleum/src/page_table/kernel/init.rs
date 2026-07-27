@@ -566,17 +566,20 @@ pub unsafe extern "C" fn init_and_jump(
         // Reconstruct the actual KernelArgs pointer: RDI = arg1 + arg2
         // RSI = physical_memory_offset (second argument to kernel)
         core::arch::asm!(
-            "mov rsp, {stack}",
-            "mov rax, {a1}",
-            "add rax, {a2}",
+            // Keep the jump target in a register that is never used as an
+            // arithmetic scratch register. Generic `in(reg)` operands may
+            // otherwise alias: release builds used to overwrite `entry`
+            // while calculating `arg1 + arg2`, then jump into KernelArgs.
+            "mov rsp, rcx",
+            "add rax, r10",
             "mov rdi, rax",
-            "mov rsi, {offset}",
-            "jmp {entry}",
-            stack = in(reg) stack_top,
-            a1 = in(reg) arg1,
-            a2 = in(reg) arg2,
-            offset = in(reg) physical_memory_offset.as_u64(),
-            entry = in(reg) entry_virt,
+            "mov rsi, rdx",
+            "jmp r11",
+            in("rax") arg1,
+            in("r10") arg2,
+            in("rcx") stack_top,
+            in("rdx") physical_memory_offset.as_u64(),
+            in("r11") entry_virt,
             options(noreturn),
         );
     }
