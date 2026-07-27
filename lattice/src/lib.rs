@@ -112,6 +112,27 @@ mod tests {
     }
 
     #[test]
+    fn painter_antialiases_rounded_corners_and_preserves_outline_interior() {
+        let mut pixels = alloc::vec![0x112233; 20 * 20];
+        let mut painter = Painter::new(&mut pixels, 20, 20);
+        painter.rounded_rect(0, 0, 20, 20, 8, 0xFFFFFF);
+        drop(painter);
+        assert_eq!(pixels[0], 0x112233);
+        assert_eq!(pixels[10 * 20 + 10], 0xFFFFFF);
+        assert!(
+            pixels
+                .iter()
+                .any(|&pixel| pixel != 0x112233 && pixel != 0xFFFFFF)
+        );
+
+        pixels.fill(0x445566);
+        let mut painter = Painter::new(&mut pixels, 20, 20);
+        painter.rounded_rect_outline(0, 0, 20, 20, 8, 1, 0xFFFFFF);
+        drop(painter);
+        assert_eq!(pixels[10 * 20 + 10], 0x445566);
+    }
+
+    #[test]
     fn test_vec_framebuffer_creation() {
         let fb = VecFramebuffer::new(64, 48);
         assert_eq!(fb.width, 64);

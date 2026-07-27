@@ -500,18 +500,6 @@ impl Compositor {
         cw: u32,
         ch: u32,
     ) {
-        if win.title.is_some() {
-            let mut painter = crate::painter::Painter::new(fb, fbw, fbh);
-            painter.clip_rect(cx as i32, cy as i32, cw, ch);
-            crate::style::style_for(crate::style::variant()).draw_window_frame(
-                &mut painter,
-                win,
-                crate::common::WindowVisualState {
-                    focused: win.focused,
-                    maximized: win.maximized,
-                },
-            );
-        }
         let src = &win.surface;
         let to = if win.title.is_some() {
             crate::style::title_bar_height() as i32
@@ -536,6 +524,7 @@ impl Compositor {
             .min((fbh as i64).saturating_sub(wdy as i64))
             .max(0) as i32;
         if sxs >= sxe || sys >= sye {
+            Self::draw_window_frame_clipped(fb, fbw, fbh, win, cx, cy, cw, ch);
             return;
         }
         let cex = (cx + cw) as i32;
@@ -546,7 +535,12 @@ impl Compositor {
         // covers almost the entire work area. The general path performs
         // several bounds checks and a focus colour branch for every pixel;
         // copy complete rows directly in this common case.
-        if win.focused && wdx >= 0 && wdy >= 0 && sw >= win.width as i32 && sh >= win.height as i32
+        if win.focused
+            && wdx >= 0
+            && wdy >= 0
+            && sw >= win.width as i32
+            && sh >= win.height as i32
+            && (win.title.is_none() || crate::style::window_radius() == 0)
         {
             let x0 = (cx as i32).max(wdx) as u32;
             let x1 = cex.min(wdx + win.width as i32).min(fbw as i32) as u32;
@@ -561,6 +555,7 @@ impl Compositor {
                     fb[dest_start..dest_start + copy_width]
                         .copy_from_slice(&sp[source_start..source_start + copy_width]);
                 }
+                Self::draw_window_frame_clipped(fb, fbw, fbh, win, cx, cy, cw, ch);
                 return;
             }
         }
@@ -582,6 +577,9 @@ impl Compositor {
                 if dc < cx as i32 || dc >= cex {
                     continue;
                 }
+                if !Self::client_pixel_inside_frame(win, dc, dr) {
+                    continue;
+                }
                 let color = if in_surface_row && sc < sw {
                     sp[sb + sc as usize]
                 } else {
@@ -590,5 +588,55 @@ impl Compositor {
                 fb[db + dc as usize] = if win.focused { color } else { dim_color(color) };
             }
         }
+        Self::draw_window_frame_clipped(fb, fbw, fbh, win, cx, cy, cw, ch);
+    }
+
+    fn client_pixel_inside_frame(win: &Window, x: i32, y: i32) -> bool {
+        if win.title.is_none() || crate::style::window_radius() == 0 {
+            return true;
+        }
+        let title_h = crate::style::title_bar_height() as i32;
+        let radius = crate::style::window_radius().saturating_sub(1) as i32;
+        if radius == 0 {
+            return true;
+        }
+        let right = win.x + win.width as i32;
+        let bottom = win.y + title_h + win.height as i32;
+        if y < bottom - radius || (x >= win.x + radius && x < right - radius) {
+            return true;
+        }
+        let (center_x, center_y) = if x < win.x + radius {
+            (win.x + radius, bottom - radius)
+        } else {
+            (right - radius, bottom - radius)
+        };
+        let dx = x - center_x;
+        let dy = y - center_y;
+        dx * dx + dy * dy <= radius * radius
+    }
+
+    fn draw_window_frame_clipped(
+        fb: &mut [u32],
+        fbw: u32,
+        fbh: u32,
+        win: &Window,
+        cx: u32,
+        cy: u32,
+        cw: u32,
+        ch: u32,
+    ) {
+        if win.title.is_none() {
+            return;
+        }
+        let mut painter = crate::painter::Painter::new(fb, fbw, fbh);
+        painter.clip_rect(cx as i32, cy as i32, cw, ch);
+        crate::style::style_for(crate::style::variant()).draw_window_frame(
+            &mut painter,
+            win,
+            crate::common::WindowVisualState {
+                focused: win.focused,
+                maximized: win.maximized,
+            },
+        );
     }
 }

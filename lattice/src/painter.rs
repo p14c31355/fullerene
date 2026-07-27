@@ -146,29 +146,163 @@ impl<'a> Painter<'a> {
         self.fill_rect(x, y + r, w, h.saturating_sub(r as u32 * 2), color);
         // Fill top/middle/bottom bars between corners
         self.fill_rect(x + r, y, w.saturating_sub(r as u32 * 2), h, color);
-        // Four corners
-        for dy in 0..r {
-            for dx in 0..r {
-                if dx * dx + dy * dy <= r * r {
-                    self.set_pixel(
-                        (x + w as i32 - r + dx - 1) as u32,
-                        (y + r - dy - 1) as u32,
-                        color,
-                    );
-                    self.set_pixel((x + r - dx - 1) as u32, (y + r - dy - 1) as u32, color);
-                    self.set_pixel(
-                        (x + w as i32 - r + dx - 1) as u32,
-                        (y + h as i32 - r + dy) as u32,
-                        color,
-                    );
-                    self.set_pixel(
-                        (x + r - dx - 1) as u32,
-                        (y + h as i32 - r + dy) as u32,
-                        color,
+        // Four 4x4-supersampled corners. The old integer circle test left
+        // stair-stepped one-pixel wedges on every window and button.
+        self.fill_rounded_corner(x, y, x + r, y + r, r, color);
+        self.fill_rounded_corner(x + w as i32 - r, y, x + w as i32 - r, y + r, r, color);
+        self.fill_rounded_corner(x, y + h as i32 - r, x + r, y + h as i32 - r, r, color);
+        self.fill_rounded_corner(
+            x + w as i32 - r,
+            y + h as i32 - r,
+            x + w as i32 - r,
+            y + h as i32 - r,
+            r,
+            color,
+        );
+    }
+
+    /// Draw only the antialiased outline of a rounded rectangle. This keeps
+    /// the client surface intact while making the outer frame continuous.
+    pub fn rounded_rect_outline(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: u32,
+        h: u32,
+        r: u32,
+        thickness: u32,
+        color: u32,
+    ) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        let r = r.min(w / 2).min(h / 2) as i32;
+        let t = thickness.max(1).min(r.max(1) as u32) as i32;
+        if r == 0 {
+            self.fill_rect(x, y, w, t as u32, color);
+            self.fill_rect(x, y + h as i32 - t, w, t as u32, color);
+            self.fill_rect(x, y, t as u32, h, color);
+            self.fill_rect(x + w as i32 - t, y, t as u32, h, color);
+            return;
+        }
+
+        self.fill_rect(x + r, y, w.saturating_sub(r as u32 * 2), t as u32, color);
+        self.fill_rect(
+            x + r,
+            y + h as i32 - t,
+            w.saturating_sub(r as u32 * 2),
+            t as u32,
+            color,
+        );
+        self.fill_rect(x, y + r, t as u32, h.saturating_sub(r as u32 * 2), color);
+        self.fill_rect(
+            x + w as i32 - t,
+            y + r,
+            t as u32,
+            h.saturating_sub(r as u32 * 2),
+            color,
+        );
+
+        self.outline_rounded_corner(x, y, x + r, y + r, r, t, color);
+        self.outline_rounded_corner(x + w as i32 - r, y, x + w as i32 - r, y + r, r, t, color);
+        self.outline_rounded_corner(x, y + h as i32 - r, x + r, y + h as i32 - r, r, t, color);
+        self.outline_rounded_corner(
+            x + w as i32 - r,
+            y + h as i32 - r,
+            x + w as i32 - r,
+            y + h as i32 - r,
+            r,
+            t,
+            color,
+        );
+    }
+
+    fn fill_rounded_corner(
+        &mut self,
+        x: i32,
+        y: i32,
+        center_x: i32,
+        center_y: i32,
+        radius: i32,
+        color: u32,
+    ) {
+        for py in y..y + radius {
+            for px in x..x + radius {
+                if px < 0 || py < 0 {
+                    continue;
+                }
+                let coverage = self.circle_coverage(px, py, center_x, center_y, radius, false);
+                if coverage == 16 {
+                    self.set_pixel(px as u32, py as u32, color);
+                } else if coverage > 0 {
+                    self.blend_pixel(
+                        px as u32,
+                        py as u32,
+                        (color & 0x00FF_FFFF) | ((coverage * 255 / 16) << 24),
                     );
                 }
             }
         }
+    }
+
+    fn outline_rounded_corner(
+        &mut self,
+        x: i32,
+        y: i32,
+        center_x: i32,
+        center_y: i32,
+        radius: i32,
+        thickness: i32,
+        color: u32,
+    ) {
+        for py in y..y + radius {
+            for px in x..x + radius {
+                if px < 0 || py < 0 {
+                    continue;
+                }
+                let coverage = self.circle_coverage(px, py, center_x, center_y, radius, true);
+                let inner_radius = (radius - thickness).max(0);
+                let inner = self.circle_coverage(px, py, center_x, center_y, inner_radius, false);
+                let coverage = coverage.saturating_sub(inner);
+                if coverage == 16 {
+                    self.set_pixel(px as u32, py as u32, color);
+                } else if coverage > 0 {
+                    self.blend_pixel(
+                        px as u32,
+                        py as u32,
+                        (color & 0x00FF_FFFF) | ((coverage * 255 / 16) << 24),
+                    );
+                }
+            }
+        }
+    }
+
+    fn circle_coverage(
+        &self,
+        px: i32,
+        py: i32,
+        center_x: i32,
+        center_y: i32,
+        radius: i32,
+        _outer: bool,
+    ) -> u32 {
+        if radius <= 0 {
+            return 0;
+        }
+        let mut inside = 0u32;
+        let radius = radius * 8;
+        let center_x = center_x * 8;
+        let center_y = center_y * 8;
+        for sample_y in [1i32, 3, 5, 7] {
+            for sample_x in [1i32, 3, 5, 7] {
+                let dx = px * 8 + sample_x - center_x;
+                let dy = py * 8 + sample_y - center_y;
+                if dx * dx + dy * dy <= radius * radius {
+                    inside += 1;
+                }
+            }
+        }
+        inside
     }
 
     // ── Pixel ────────────────────────────────────────────────
@@ -307,6 +441,13 @@ impl<'a> Painter<'a> {
                 } else {
                     0
                 };
+                // The shadow is an exterior effect. The previous formula
+                // also blended the shadow across the entire window interior,
+                // which became visible once frames were drawn after client
+                // surfaces to keep rounded corners connected.
+                if xd == 0 && yd == 0 {
+                    continue;
+                }
                 let dist_sq = xd * xd + yd * yd;
                 if dist_sq >= b_sq {
                     continue;
@@ -395,11 +536,22 @@ impl<'a> Painter<'a> {
         } else {
             theme.title_inactive
         };
-        // Title bar background (rounded top)
-        self.rounded_rect(x, y, w, title_h + 2, radius, title_color);
-        // Bottom body background (to cover the rounded corner gap)
-        self.fill_rect(x, y + radius as i32, w, h - radius, border_color);
-        // Thin border line
+        self.rounded_rect_outline(x, y, w, h, radius, 1, border_color);
+        let inner_radius = radius.saturating_sub(1);
+        self.fill_rect(
+            x + inner_radius as i32,
+            y,
+            w.saturating_sub(inner_radius * 2),
+            title_h + 2,
+            title_color,
+        );
+        self.fill_rect(
+            x,
+            y + inner_radius as i32,
+            w,
+            (title_h + 2).saturating_sub(inner_radius),
+            title_color,
+        );
         self.fill_rect(x, y + title_h as i32 + 2, w, 1, border_color);
     }
 }

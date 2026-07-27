@@ -142,7 +142,10 @@ impl Window {
 
     /// Hit-test the minimize button (leftmost title bar button).
     pub fn hit_minimize_button(&self, px: i32, py: i32) -> bool {
-        if self.title.is_none() || self.minimized {
+        if self.title.is_none()
+            || self.minimized
+            || crate::style::kind() == crate::common::ShellKind::Photon
+        {
             return false;
         }
         let idx = if crate::style::current().metrics.title_buttons_on_left {
@@ -157,7 +160,10 @@ impl Window {
 
     /// Hit-test the maximize button (middle title bar button).
     pub fn hit_maximize_button(&self, px: i32, py: i32) -> bool {
-        if self.title.is_none() || self.minimized {
+        if self.title.is_none()
+            || self.minimized
+            || crate::style::kind() == crate::common::ShellKind::Photon
+        {
             return false;
         }
         let idx = if crate::style::current().metrics.title_buttons_on_left {

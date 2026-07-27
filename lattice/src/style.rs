@@ -97,7 +97,9 @@ pub fn window_radius() -> u32 {
 }
 
 pub fn title_button_x(window_x: i32, window_width: u32, button: u32) -> i32 {
-    if current().metrics.title_buttons_on_left {
+    if kind() == ShellKind::Photon {
+        window_x + window_width as i32 - 22 - button as i32 * 20
+    } else if current().metrics.title_buttons_on_left {
         window_x + 12 + button as i32 * 20
     } else {
         // Keep the historical hit-test geometry used by Basalt.  The close
@@ -196,8 +198,8 @@ mod tests {
 
         assert_ne!(basalt.metrics.taskbar_height, photon.metrics.taskbar_height);
         assert_ne!(
-            photon.metrics.title_buttons_on_left,
-            prism.metrics.title_buttons_on_left
+            photon.metrics.title_bar_height,
+            prism.metrics.title_bar_height
         );
         assert_ne!(basalt.palette.bg, photon.palette.bg);
         assert_eq!(LatticeVariant::Basalt.next(true), LatticeVariant::Photon);

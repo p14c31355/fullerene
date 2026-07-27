@@ -308,6 +308,7 @@ pub enum FrameButtons {
     Square,
     Capsule,
     Windows,
+    Gtk,
 }
 
 /// Shared frame geometry. The three styles select different button language,
@@ -359,17 +360,37 @@ pub fn draw_window_frame(
             FrameButtons::Capsule => 7,
             FrameButtons::Windows => 6,
             FrameButtons::Square => 3,
+            FrameButtons::Gtk => 5,
         },
         palette.window_shadow,
     );
-    canvas.rounded_rect(x, y, width, height, radius, border_color);
-    canvas.fill_rect(window.x, window.y, window.width, title_h, title_color);
+    // The client surface is already painted by the compositor. Drawing an
+    // outline here instead of refilling the whole rounded rectangle keeps the
+    // client corners connected and lets the antialiased edge blend with the
+    // actual wallpaper/surface underneath.
+    canvas.rounded_rect_outline(
+        x,
+        y,
+        width,
+        height,
+        radius,
+        spec.metrics.window_border,
+        border_color,
+    );
+    let inner_radius = radius.saturating_sub(spec.metrics.window_border);
+    canvas.fill_rect(
+        window.x + inner_radius as i32,
+        window.y,
+        window.width.saturating_sub(inner_radius * 2),
+        title_h,
+        title_color,
+    );
     canvas.fill_rect(
         window.x,
-        window.y + title_h as i32,
+        window.y + inner_radius as i32,
         window.width,
-        window.height,
-        palette.surface,
+        title_h.saturating_sub(inner_radius),
+        title_color,
     );
 
     let separator = if state.focused {
@@ -385,43 +406,64 @@ pub fn draw_window_frame(
         separator,
     );
 
-    let close_idx = 0;
-    let maximize_idx = if spec.metrics.title_buttons_on_left {
-        2
-    } else {
-        1
-    };
-    let minimize_idx = if spec.metrics.title_buttons_on_left {
-        1
-    } else {
-        2
-    };
     let button_y = window.y + (title_h as i32 - 14) / 2;
-    draw_title_button(
-        canvas,
-        crate::style::title_button_x(window.x, window.width, close_idx),
-        button_y,
-        palette.danger,
-        0,
-        buttons,
-    );
-    draw_title_button(
-        canvas,
-        crate::style::title_button_x(window.x, window.width, maximize_idx),
-        button_y,
-        palette.active,
-        1,
-        buttons,
-    );
-    draw_title_button(
-        canvas,
-        crate::style::title_button_x(window.x, window.width, minimize_idx),
-        button_y,
-        palette.accent,
-        2,
-        buttons,
-    );
-    let title_x = crate::style::title_text_x(window.x);
+    let title_x = if matches!(buttons, FrameButtons::Gtk) {
+        task_icon(title).blit_scaled_into(
+            canvas.fb,
+            canvas.width,
+            canvas.stride as usize,
+            window.x + 7,
+            window.y + 4,
+            24,
+        );
+        draw_title_button(
+            canvas,
+            window.x + window.width as i32 - 22,
+            button_y,
+            title_color,
+            0,
+            buttons,
+        );
+        let title_width = title.len() as i32 * 8;
+        window.x + ((window.width as i32 - title_width) / 2).max(8)
+    } else {
+        let close_idx = 0;
+        let maximize_idx = if spec.metrics.title_buttons_on_left {
+            2
+        } else {
+            1
+        };
+        let minimize_idx = if spec.metrics.title_buttons_on_left {
+            1
+        } else {
+            2
+        };
+        draw_title_button(
+            canvas,
+            crate::style::title_button_x(window.x, window.width, close_idx),
+            button_y,
+            palette.danger,
+            0,
+            buttons,
+        );
+        draw_title_button(
+            canvas,
+            crate::style::title_button_x(window.x, window.width, maximize_idx),
+            button_y,
+            palette.active,
+            1,
+            buttons,
+        );
+        draw_title_button(
+            canvas,
+            crate::style::title_button_x(window.x, window.width, minimize_idx),
+            button_y,
+            palette.accent,
+            2,
+            buttons,
+        );
+        crate::style::title_text_x(window.x)
+    };
     let title_y = window.y + (title_h as i32 - 14) / 2;
     canvas.draw_text(title_x, title_y, title, palette.text, 14.0);
 }
@@ -438,13 +480,16 @@ fn draw_title_button(
         FrameButtons::Square => 2,
         FrameButtons::Capsule => 7,
         FrameButtons::Windows => 4,
+        FrameButtons::Gtk => 4,
     };
     let background = match buttons {
         FrameButtons::Windows if kind != 0 => 0xE7EBF0,
+        FrameButtons::Gtk => 0xD9DEE3,
         _ => color,
     };
     let mark = match buttons {
         FrameButtons::Windows if kind != 0 => 0x344054,
+        FrameButtons::Gtk => 0x5E6670,
         _ => 0xFFFFFF,
     };
     canvas.rounded_rect(x, y, 14, 14, radius, background);

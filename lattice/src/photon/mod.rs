@@ -14,15 +14,15 @@ static SPEC: StyleSpec = StyleSpec {
     kind: ShellKind::Photon,
     palette: Palette {
         bg: 0x10151B,
-        surface: 0xF5F7FA,
+        surface: 0xF6F7F8,
         primary: 0x62A0EA,
         active: 0x2BAE66,
-        text: 0x1F2933,
-        muted: 0x6E7781,
-        border_active: 0x6A8FB3,
-        border_inactive: 0x59636E,
-        title_active: 0xF8F9FA,
-        title_inactive: 0xD9DEE5,
+        text: 0x2E3436,
+        muted: 0x5E6670,
+        border_active: 0x7A8792,
+        border_inactive: 0x98A1A8,
+        title_active: 0xE5E7E9,
+        title_inactive: 0xD7DADD,
         accent: 0xE5A50A,
         danger: 0xE01B24,
         taskbar_bg: 0x252A33,
@@ -39,7 +39,7 @@ static SPEC: StyleSpec = StyleSpec {
         window_radius: 12,
         window_border: 1,
         top_panel_height: 0,
-        title_buttons_on_left: true,
+        title_buttons_on_left: false,
     },
 };
 
@@ -61,7 +61,7 @@ impl LatticeStyle for PhotonStyle {
         window: &Window,
         state: WindowVisualState,
     ) {
-        crate::common::draw_window_frame(canvas, window, state, &SPEC, FrameButtons::Capsule);
+        crate::common::draw_window_frame(canvas, window, state, &SPEC, FrameButtons::Gtk);
     }
 
     fn draw_menu(&self, canvas: &mut Painter<'_>, menu: &PopupMenu) {

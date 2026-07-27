@@ -109,6 +109,17 @@ pub fn poll_keyboard() {
             continue;
         }
 
+        // Super is a desktop-global shortcut. It must bypass focused-window
+        // routing (Settings, Editor, Explorer, and Terminal) so the shell
+        // state machine always receives both key-down and key-up events.
+        if matches!(
+            scancode_to_resonance_keycode(scancode),
+            resonance::KeyCode::SuperLeft | resonance::KeyCode::SuperRight
+        ) {
+            push_keyboard_event(scancode, pressed);
+            continue;
+        }
+
         let mut launch_path: Option<String> = None;
         let mut explorer_handled = false;
         {
