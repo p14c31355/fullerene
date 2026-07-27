@@ -364,10 +364,21 @@ pub fn draw_window_frame(
         },
         palette.window_shadow,
     );
-    // The client surface is already painted by the compositor. Drawing an
-    // outline here instead of refilling the whole rounded rectangle keeps the
-    // client corners connected and lets the antialiased edge blend with the
-    // actual wallpaper/surface underneath.
+    // Paint the title bar over the complete outer top shape. Filling only the
+    // inner rectangle leaves the outside corner pixel as wallpaper, which is
+    // especially visible as a black notch on Photon white title bars.
+    let outer_title_height = title_h.saturating_add(spec.metrics.window_border);
+    canvas.rounded_rect(x, y, width, outer_title_height, radius, title_color);
+    canvas.fill_rect(
+        x,
+        y + radius as i32,
+        width,
+        outer_title_height.saturating_sub(radius),
+        title_color,
+    );
+    // The client surface is already painted by the compositor. Drawing only
+    // one antialiased outline here keeps the client corners connected without
+    // adding a second dark halo around the window.
     canvas.rounded_rect_outline(
         x,
         y,

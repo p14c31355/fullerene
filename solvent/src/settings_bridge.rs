@@ -223,7 +223,10 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
     );
 
     let cols = 42u32;
-    let total = cols as usize * 12;
+    // Keep the final cell row covered as well. The window surface is 13 rows
+    // high; leaving the last row untouched exposed its creation colour as a
+    // dark strip at the bottom of the light Photon settings window.
+    let total = cols as usize * 13;
     let colors = lattice::theme::current_colors();
     let mut cells = vec![
         LatticeCell {
