@@ -35,7 +35,7 @@ static SPEC: StyleSpec = StyleSpec {
     },
     metrics: StyleMetrics {
         title_bar_height: 32,
-        taskbar_height: 78,
+        taskbar_height: 64,
         window_radius: 12,
         window_border: 1,
         top_panel_height: 0,
@@ -73,9 +73,9 @@ impl LatticeStyle for PhotonStyle {
         let height = canvas.height;
         let bar_h = SPEC.metrics.taskbar_height;
         let bar_y = height.saturating_sub(bar_h);
-        let dock_w = ((taskbar.entries.len() + crate::common::PHOTON_LAUNCHER_COUNT) as u32 * 56
+        let dock_w = ((taskbar.entries.len() + crate::common::PHOTON_LAUNCHER_COUNT) as u32 * 48
             + 24)
-            .max(320);
+            .max(360);
         let dock_x = 16u32;
         let palette = &SPEC.palette;
 
@@ -83,7 +83,7 @@ impl LatticeStyle for PhotonStyle {
             dock_x as i32,
             bar_y as i32 + 7,
             dock_w,
-            64,
+            50,
             18,
             0,
             7,
@@ -93,23 +93,29 @@ impl LatticeStyle for PhotonStyle {
             dock_x as i32,
             bar_y as i32 + 7,
             dock_w,
-            64,
+            50,
             18,
             palette.taskbar_bg,
         );
-        let launchers = [
-            &crate::icon::ICON_SHELL,
-            &crate::icon::ICON_FILES,
-            &crate::icon::ICON_TERMINAL,
-            &crate::icon::ICON_SETTINGS,
-            &crate::icon::ICON_ABOUT,
-        ];
-        for (index, icon) in launchers.iter().enumerate() {
+        for (index, route) in crate::common::PHOTON_LAUNCHER_ROUTES
+            .iter()
+            .copied()
+            .enumerate()
+        {
             if let Some((x, y, w, h)) =
                 crate::style::launcher_entry_rect(index, taskbar.entries.len(), width, height)
             {
-                canvas.rounded_rect(x, y, w, h, 12, palette.taskbar_inactive_bg);
-                icon.blit_scaled_into(canvas.fb, width, canvas.stride as usize, x + 6, y + 6, 32);
+                if index == 0 {
+                    canvas.rounded_rect(x, y, w, h, 8, palette.taskbar_inactive_bg);
+                }
+                crate::common::icon_for_route(route).blit_scaled_into(
+                    canvas.fb,
+                    width,
+                    canvas.stride as usize,
+                    x + 4,
+                    y + 4,
+                    32,
+                );
             }
         }
         for (index, entry) in taskbar.entries.iter().enumerate() {
@@ -123,23 +129,25 @@ impl LatticeStyle for PhotonStyle {
             } else {
                 palette.taskbar_inactive_bg
             };
-            canvas.rounded_rect(x, y, w, h, 12, color);
+            if entry.focused {
+                canvas.rounded_rect(x, y, w, h, 8, color);
+            }
             crate::common::task_icon(&entry.title).blit_scaled_into(
                 canvas.fb,
                 width,
                 canvas.stride as usize,
-                x + 6,
-                y + 6,
+                x + 4,
+                y + 4,
                 32,
             );
         }
         let tray_x = width.saturating_sub(168);
         canvas.rounded_rect(
             tray_x as i32,
-            bar_y as i32 + 15,
+            bar_y as i32 + 12,
             152,
-            44,
-            14,
+            40,
+            12,
             palette.taskbar_bg,
         );
         crate::network_menu::render_wifi_icon(
@@ -147,7 +155,7 @@ impl LatticeStyle for PhotonStyle {
             width,
             height,
             tray_x + 14,
-            bar_y + 28,
+            bar_y + 22,
             taskbar.wifi_connected,
             taskbar.wifi_visible,
             taskbar.wifi_signal,
@@ -155,7 +163,7 @@ impl LatticeStyle for PhotonStyle {
         if !taskbar.clock_text.is_empty() {
             canvas.draw_text(
                 tray_x as i32 + 52,
-                bar_y as i32 + 30,
+                bar_y as i32 + 25,
                 &taskbar.clock_text,
                 palette.taskbar_text,
                 13.0,

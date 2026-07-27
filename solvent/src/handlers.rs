@@ -9,14 +9,56 @@ use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
 const DOUBLE_CLICK_TICKS: u64 = 500;
 
-fn style_launcher_hit(rt: &crate::RuntimeState, x: i32, y: i32, index: usize) -> bool {
+fn style_launcher_at(rt: &crate::RuntimeState, x: i32, y: i32) -> Option<usize> {
+    let count = rt.desktop.taskbar.entries.len();
     let (width, height, _) = *FB_DIMS.lock();
-    let Some((lx, ly, lw, lh)) =
-        lattice::style::launcher_entry_rect(index, rt.desktop.taskbar.entries.len(), width, height)
-    else {
+    let max = match lattice::style::kind() {
+        lattice::common::ShellKind::Photon => lattice::common::PHOTON_LAUNCHER_ROUTES.len(),
+        lattice::common::ShellKind::Prism => lattice::common::PRISM_LAUNCHER_ROUTES.len(),
+        lattice::common::ShellKind::Basalt => 0,
+    };
+    (0..max).find(|&index| {
+        lattice::style::launcher_entry_rect(index, count, width, height).is_some_and(
+            |(lx, ly, lw, lh)| x >= lx && x < lx + lw as i32 && y >= ly && y < ly + lh as i32,
+        )
+    })
+}
+
+fn route_style_launcher(rt: &mut crate::RuntimeState, index: usize) -> bool {
+    if lattice::style::kind() == lattice::common::ShellKind::Prism && index == 0 {
+        rt.shell_state = ShellState::AppGrid;
+        rt.frame_due = true;
+        return true;
+    }
+    let route = match lattice::style::kind() {
+        lattice::common::ShellKind::Photon => lattice::common::PHOTON_LAUNCHER_ROUTES.get(index),
+        lattice::common::ShellKind::Prism => lattice::common::PRISM_LAUNCHER_ROUTES.get(index),
+        lattice::common::ShellKind::Basalt => None,
+    };
+    let Some(route) = route.copied() else {
         return false;
     };
-    x >= lx && x < lx + lw as i32 && y >= ly && y < ly + lh as i32
+    match route {
+        lattice::common::AppRoute::Shell => rt.shell_launch_pending = true,
+        lattice::common::AppRoute::Terminal => crate::menu_actions::dispatch_menu_action(
+            rt,
+            &lattice::desktop::DesktopAction::NewTerminal,
+        ),
+        lattice::common::AppRoute::Files => {
+            crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::FileManager)
+        }
+        lattice::common::AppRoute::Settings => crate::menu_actions::open_settings_window(rt),
+        lattice::common::AppRoute::About => {
+            crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::About)
+        }
+        lattice::common::AppRoute::Editor => rt.editor_launch_pending = true,
+        lattice::common::AppRoute::Clock => {
+            crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::SystemInfo)
+        }
+        lattice::common::AppRoute::Unknown => return false,
+    }
+    rt.frame_due = true;
+    true
 }
 
 fn apply_mouse_move(
@@ -68,12 +110,20 @@ impl EventHandler for WmEventHandler {
                 let cx = rt.desktop.cursor.x;
                 let cy = rt.desktop.cursor.y;
 
+                if *btn == MouseButton::Left
+                    && let Some(index) = style_launcher_at(rt, cx, cy)
+                    && route_style_launcher(rt, index)
+                {
+                    return true;
+                }
+
                 // Check desktop icon clicks (left button only)
                 if *btn == MouseButton::Left {
                     if let Some(icon_idx) = rt.desktop.desktop_icons.hit_test(cx, cy) {
                         if let Some(icon) = rt.desktop.desktop_icons.icons.get(icon_idx) {
-                            match icon.label.as_str() {
-                                "Shell" => {
+                            match lattice::desktop_icons::DesktopIconLayer::route(icon) {
+                                lattice::common::AppRoute::Shell
+                                | lattice::common::AppRoute::Terminal => {
                                     // Defer shell launch — cannot call
                                     // ensure_terminal_window() or launch_shell()
                                     // while holding the runtime-state lock (deadlock).
@@ -81,7 +131,7 @@ impl EventHandler for WmEventHandler {
                                     rt.frame_due = true;
                                     return true;
                                 }
-                                "Files" => {
+                                lattice::common::AppRoute::Files => {
                                     crate::menu_actions::open_info_window(
                                         rt,
                                         crate::menu_actions::InfoWindow::FileManager,
@@ -89,12 +139,12 @@ impl EventHandler for WmEventHandler {
                                     rt.frame_due = true;
                                     return true;
                                 }
-                                "Settings" => {
+                                lattice::common::AppRoute::Settings => {
                                     crate::menu_actions::open_settings_window(rt);
                                     rt.frame_due = true;
                                     return true;
                                 }
-                                "About" => {
+                                lattice::common::AppRoute::About => {
                                     crate::menu_actions::open_info_window(
                                         rt,
                                         crate::menu_actions::InfoWindow::About,
@@ -127,15 +177,6 @@ impl EventHandler for WmEventHandler {
                     && rt.desktop.wm.window_at(cx, cy) == rt.settings_window
                     && crate::settings_bridge::settings_handle_mouse(rt, cx, cy)
                 {
-                    return true;
-                }
-
-                if *btn == MouseButton::Left
-                    && lattice::style::kind() == lattice::common::ShellKind::Prism
-                    && style_launcher_hit(rt, cx, cy, 0)
-                {
-                    rt.shell_state = ShellState::AppGrid;
-                    rt.frame_due = true;
                     return true;
                 }
 
@@ -371,22 +412,31 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
             continue;
         };
         if cx >= ax && cx < ax + aw as i32 && cy >= ay && cy < ay + ah as i32 {
-            match idx {
-                0 | 1 => {
-                    // Shell (0) / Terminal (1) — both launch a shell.
+            match lattice::common::app_grid_route(idx as usize) {
+                Some(lattice::common::AppRoute::Shell) => {
+                    // Shell launches the interactive shell session.
                     rt.shell_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
-                2 => {
+                Some(lattice::common::AppRoute::Terminal) => {
+                    crate::menu_actions::dispatch_menu_action(
+                        rt,
+                        &lattice::desktop::DesktopAction::NewTerminal,
+                    );
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                Some(lattice::common::AppRoute::Editor) => {
                     // Editor
                     rt.editor_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
-                3 => {
+                Some(lattice::common::AppRoute::Clock) => {
                     // Clock — show system info
                     crate::menu_actions::open_info_window(
                         rt,
@@ -396,14 +446,14 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                     rt.frame_due = true;
                     return true;
                 }
-                4 => {
+                Some(lattice::common::AppRoute::Settings) => {
                     // Settings
                     crate::menu_actions::open_settings_window(rt);
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
-                5 => {
+                Some(lattice::common::AppRoute::Files) => {
                     // File Manager
                     crate::menu_actions::open_info_window(
                         rt,
@@ -413,7 +463,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                     rt.frame_due = true;
                     return true;
                 }
-                6 => {
+                Some(lattice::common::AppRoute::About) => {
                     // About
                     crate::menu_actions::open_info_window(
                         rt,

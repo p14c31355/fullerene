@@ -10,7 +10,7 @@ use crate::taskbar::Taskbar;
 use crate::top_panel::TopPanel;
 use crate::window::Window;
 
-pub const PHOTON_LAUNCHER_COUNT: usize = 5;
+pub const PHOTON_LAUNCHER_COUNT: usize = 7;
 pub const PRISM_LAUNCHER_COUNT: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,33 +91,131 @@ pub enum ChromeHit {
     Maximize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppRoute {
+    Shell,
+    Files,
+    Terminal,
+    Editor,
+    Clock,
+    Settings,
+    About,
+    Unknown,
+}
+
+pub const APP_GRID_ROUTES: [AppRoute; 7] = [
+    AppRoute::Shell,
+    AppRoute::Terminal,
+    AppRoute::Editor,
+    AppRoute::Clock,
+    AppRoute::Settings,
+    AppRoute::Files,
+    AppRoute::About,
+];
+
+pub const PHOTON_LAUNCHER_ROUTES: [AppRoute; PHOTON_LAUNCHER_COUNT] = [
+    AppRoute::Shell,
+    AppRoute::Files,
+    AppRoute::Terminal,
+    AppRoute::Editor,
+    AppRoute::Clock,
+    AppRoute::Settings,
+    AppRoute::About,
+];
+
+pub const PRISM_LAUNCHER_ROUTES: [AppRoute; PRISM_LAUNCHER_COUNT] = [
+    AppRoute::Shell,
+    AppRoute::Files,
+    AppRoute::Terminal,
+    AppRoute::Settings,
+];
+
+pub const fn route_label(route: AppRoute) -> &'static str {
+    match route {
+        AppRoute::Shell => "Shell",
+        AppRoute::Files => "File Mgr",
+        AppRoute::Terminal => "Terminal",
+        AppRoute::Editor => "Editor",
+        AppRoute::Clock => "Clock",
+        AppRoute::Settings => "Settings",
+        AppRoute::About => "About",
+        AppRoute::Unknown => "Unknown",
+    }
+}
+
+pub fn app_grid_route(index: usize) -> Option<AppRoute> {
+    APP_GRID_ROUTES.get(index).copied()
+}
+
+pub fn route_for_name(name: &str) -> AppRoute {
+    match name {
+        "Shell" => AppRoute::Shell,
+        "Files" | "File Mgr" | "File Manager" => AppRoute::Files,
+        "Terminal" => AppRoute::Terminal,
+        "Editor" => AppRoute::Editor,
+        "Clock" => AppRoute::Clock,
+        "Settings" => AppRoute::Settings,
+        "About" => AppRoute::About,
+        _ => AppRoute::Unknown,
+    }
+}
+
+pub fn icon_for_route(route: AppRoute) -> &'static crate::icon::SvgIcon {
+    match route {
+        AppRoute::Shell => &crate::icon::ICON_SHELL,
+        AppRoute::Files => &crate::icon::ICON_FILES,
+        AppRoute::Terminal => &crate::icon::ICON_TERMINAL,
+        AppRoute::Editor => &crate::icon::ICON_EDITOR,
+        AppRoute::Clock => &crate::icon::ICON_CLOCK,
+        AppRoute::Settings => &crate::icon::ICON_SETTINGS,
+        AppRoute::About => &crate::icon::ICON_ABOUT,
+        AppRoute::Unknown => &crate::icon::ICON_TERMINAL,
+    }
+}
+
 /// Map a window/application title to one of the build-time icon assets used
 /// by the Photon dock and Prism taskbar.
 pub fn task_icon(title: &str) -> &'static crate::icon::SvgIcon {
-    let lower = title.as_bytes();
-    if lower
-        .windows(8)
-        .any(|part| part.eq_ignore_ascii_case(b"settings"))
-    {
-        &crate::icon::ICON_SETTINGS
-    } else if lower
-        .windows(4)
-        .any(|part| part.eq_ignore_ascii_case(b"file"))
-    {
-        &crate::icon::ICON_FILES
-    } else if lower
-        .windows(6)
-        .any(|part| part.eq_ignore_ascii_case(b"editor"))
-    {
-        &crate::icon::ICON_EDITOR
-    } else if lower
-        .windows(4)
-        .any(|part| part.eq_ignore_ascii_case(b"shell"))
-    {
-        &crate::icon::ICON_SHELL
-    } else {
-        &crate::icon::ICON_TERMINAL
-    }
+    let route = match route_for_name(title) {
+        AppRoute::Unknown => {
+            let lower = title.as_bytes();
+            if lower
+                .windows(8)
+                .any(|part| part.eq_ignore_ascii_case(b"settings"))
+            {
+                AppRoute::Settings
+            } else if lower
+                .windows(4)
+                .any(|part| part.eq_ignore_ascii_case(b"file"))
+            {
+                AppRoute::Files
+            } else if lower
+                .windows(6)
+                .any(|part| part.eq_ignore_ascii_case(b"editor"))
+            {
+                AppRoute::Editor
+            } else if lower
+                .windows(4)
+                .any(|part| part.eq_ignore_ascii_case(b"shell"))
+            {
+                AppRoute::Shell
+            } else if lower
+                .windows(5)
+                .any(|part| part.eq_ignore_ascii_case(b"about"))
+            {
+                AppRoute::About
+            } else if lower
+                .windows(5)
+                .any(|part| part.eq_ignore_ascii_case(b"clock"))
+            {
+                AppRoute::Clock
+            } else {
+                AppRoute::Terminal
+            }
+        }
+        route => route,
+    };
+    icon_for_route(route)
 }
 
 pub trait LatticeStyle {
@@ -474,5 +572,23 @@ pub fn draw_top_panel(canvas: &mut Painter<'_>, panel: &TopPanel, spec: &StyleSp
             palette.taskbar_text,
             13.0,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_routes_and_icons_share_the_same_mapping() {
+        assert_eq!(route_for_name("Settings"), AppRoute::Settings);
+        assert_eq!(route_for_name("File Mgr"), AppRoute::Files);
+        assert_eq!(route_for_name("About Fullerene"), AppRoute::Unknown);
+        assert!(core::ptr::eq(
+            task_icon("About Fullerene"),
+            &crate::icon::ICON_ABOUT
+        ));
+        assert_eq!(app_grid_route(4), Some(AppRoute::Settings));
+        assert_eq!(app_grid_route(7), None);
     }
 }

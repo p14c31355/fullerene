@@ -76,13 +76,11 @@ impl LatticeStyle for PrismStyle {
         canvas.fill_rect(0, bar_y as i32, width, bar_h, palette.taskbar_bg);
         canvas.fill_rect(0, bar_y as i32, width, 1, palette.border_inactive);
 
-        let launcher_icons = [
-            &crate::icon::ICON_SHELL,
-            &crate::icon::ICON_FILES,
-            &crate::icon::ICON_TERMINAL,
-            &crate::icon::ICON_SETTINGS,
-        ];
-        for (index, icon) in launcher_icons.iter().enumerate() {
+        for (index, route) in crate::common::PRISM_LAUNCHER_ROUTES
+            .iter()
+            .copied()
+            .enumerate()
+        {
             if let Some((x, y, w, h)) =
                 crate::style::launcher_entry_rect(index, taskbar.entries.len(), width, height)
             {
@@ -92,7 +90,14 @@ impl LatticeStyle for PrismStyle {
                     palette.taskbar_inactive_bg
                 };
                 canvas.rounded_rect(x, y, w, h, 8, bg);
-                icon.blit_scaled_into(canvas.fb, width, canvas.stride as usize, x + 6, y + 2, 32);
+                crate::common::icon_for_route(route).blit_scaled_into(
+                    canvas.fb,
+                    width,
+                    canvas.stride as usize,
+                    x + 6,
+                    y + 2,
+                    32,
+                );
             }
         }
         for (index, entry) in taskbar.entries.iter().enumerate() {

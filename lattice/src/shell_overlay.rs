@@ -147,49 +147,13 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     }
 
     // ── App launcher grid ─────────────────────────────────
-    struct AppEntry {
-        label: &'static str,
-        icon: &'static crate::icon::SvgIcon,
-    }
-
-    let apps: &[AppEntry] = &[
-        AppEntry {
-            label: "Shell",
-            icon: &crate::icon::ICON_SHELL,
-        },
-        AppEntry {
-            label: "Terminal",
-            icon: &crate::icon::ICON_TERMINAL,
-        },
-        AppEntry {
-            label: "Editor",
-            icon: &crate::icon::ICON_EDITOR,
-        },
-        AppEntry {
-            label: "Clock",
-            icon: &crate::icon::ICON_CLOCK,
-        },
-        AppEntry {
-            label: "Settings",
-            icon: &crate::icon::ICON_SETTINGS,
-        },
-        AppEntry {
-            label: "File Mgr",
-            icon: &crate::icon::ICON_FILES,
-        },
-        AppEntry {
-            label: "About",
-            icon: &crate::icon::ICON_ABOUT,
-        },
-    ];
-
     let icon_size = 64u32;
     let pad = 24u32;
     let label_h = 18u32;
     let columns = (fbw / (icon_size + pad)).max(1);
     let start_y = 60u32;
 
-    for (i, app) in apps.iter().enumerate() {
+    for (i, route) in crate::common::APP_GRID_ROUTES.iter().copied().enumerate() {
         let col = (i as u32) % columns;
         let row = (i as u32) / columns;
         let ax = (pad + col * (icon_size + pad)) as i32;
@@ -200,7 +164,7 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
         }
 
         // SVG icon (direct framebuffer blit, no heap allocation)
-        app.icon.blit_into(fb, fbw, stride, ax, ay);
+        crate::common::icon_for_route(route).blit_into(fb, fbw, stride, ax, ay);
 
         // App label below icon
         render_text(
@@ -208,7 +172,7 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
             fbw,
             fbh,
             stride,
-            app.label,
+            crate::common::route_label(route),
             (ax + 2) as u32,
             (ay + icon_size as i32 + 2) as u32,
             COLOR_TEXT,
@@ -286,21 +250,25 @@ fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
         16.0,
     );
 
-    let apps: &[(&str, &crate::icon::SvgIcon)] = &[
-        ("Shell", &crate::icon::ICON_SHELL),
-        ("Terminal", &crate::icon::ICON_TERMINAL),
-        ("Editor", &crate::icon::ICON_EDITOR),
-        ("Clock", &crate::icon::ICON_CLOCK),
-        ("Settings", &crate::icon::ICON_SETTINGS),
-        ("File Mgr", &crate::icon::ICON_FILES),
-        ("About", &crate::icon::ICON_ABOUT),
-    ];
-    for (index, (label, icon)) in apps.iter().enumerate() {
+    for (index, route) in crate::common::APP_GRID_ROUTES.iter().copied().enumerate() {
         let Some((x, y, _, _)) = app_grid_item_rect(index, fbw, fbh) else {
             continue;
         };
-        icon.blit_scaled_into(painter.fb, fbw, stride, x + 12, y + 4, 48);
-        painter.draw_text(x + 8, y + 58, label, 0x344054, 12.0);
+        crate::common::icon_for_route(route).blit_scaled_into(
+            painter.fb,
+            fbw,
+            stride,
+            x + 12,
+            y + 4,
+            48,
+        );
+        painter.draw_text(
+            x + 8,
+            y + 58,
+            crate::common::route_label(route),
+            0x344054,
+            12.0,
+        );
     }
     painter.draw_text(
         panel_x as i32 + 28,

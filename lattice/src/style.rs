@@ -132,10 +132,10 @@ pub fn taskbar_entry_rect(
         ShellKind::Photon => {
             let dock_x = 16;
             Some((
-                dock_x as i32 + 12 + (crate::common::PHOTON_LAUNCHER_COUNT + index) as i32 * 56,
-                fb_height.saturating_sub(taskbar_height()) as i32 + 15,
-                44,
-                44,
+                dock_x as i32 + 12 + (crate::common::PHOTON_LAUNCHER_COUNT + index) as i32 * 48,
+                fb_height.saturating_sub(taskbar_height()) as i32 + 10,
+                40,
+                40,
             ))
         }
         ShellKind::Prism => {
@@ -164,10 +164,10 @@ pub fn launcher_entry_rect(
 ) -> Option<(i32, i32, u32, u32)> {
     match kind() {
         ShellKind::Photon if index < crate::common::PHOTON_LAUNCHER_COUNT => Some((
-            16 + 12 + index as i32 * 56,
-            fb_height.saturating_sub(taskbar_height()) as i32 + 15,
-            44,
-            44,
+            16 + 12 + index as i32 * 48,
+            fb_height.saturating_sub(taskbar_height()) as i32 + 10,
+            40,
+            40,
         )),
         ShellKind::Prism if index < crate::common::PRISM_LAUNCHER_COUNT => {
             let item_width = 52u32;

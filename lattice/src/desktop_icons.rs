@@ -67,14 +67,15 @@ impl DesktopIconLayer {
         }
     }
 
-    /// Get the pre-rendered SVG icon surface for a desktop icon index.
-    fn icon_surface(idx: usize) -> Option<crate::surface::Surface> {
-        match idx {
-            0 => Some(crate::icon::ICON_SHELL.surface()),
-            1 => Some(crate::icon::ICON_FILES.surface()),
-            2 => Some(crate::icon::ICON_SETTINGS.surface()),
-            3 => Some(crate::icon::ICON_ABOUT.surface()),
-            _ => None,
+    pub fn route(icon: &DesktopIcon) -> crate::common::AppRoute {
+        crate::common::route_for_name(&icon.label)
+    }
+
+    /// Get the pre-rendered SVG icon surface for a desktop icon route.
+    fn icon_surface(icon: &DesktopIcon) -> Option<crate::surface::Surface> {
+        match Self::route(icon) {
+            crate::common::AppRoute::Unknown => None,
+            route => Some(crate::common::icon_for_route(route).surface()),
         }
     }
 
@@ -109,9 +110,9 @@ impl DesktopIconLayer {
     ) {
         let mut painter = Painter::new(fb, fb_width, fb_height);
         painter.clip_rect(clip_x as i32, clip_y as i32, clip_w, clip_h);
-        for (idx, icon) in self.icons.iter().enumerate() {
+        for icon in &self.icons {
             // Draw SVG icon if available, else fall back to rounded color box
-            if let Some(svg_surface) = Self::icon_surface(idx) {
+            if let Some(svg_surface) = Self::icon_surface(icon) {
                 painter.blit_surface(&svg_surface, icon.x, icon.y);
             } else {
                 painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
