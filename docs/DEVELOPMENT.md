@@ -3,6 +3,9 @@
 ## Toolchain
 
 Use `rust-toolchain.toml` for pinning nightly (currently `nightly-2026-06-01`).
+Install the embedded application target once with
+`rustup target add wasm32-wasip1`; the kernel build script compiles the nested
+WASM applications as part of the normal build.
 
 ## Panic Policy
 
@@ -36,8 +39,10 @@ cargo check --workspace --all-targets
 cargo test --workspace
 ```
 
-The optional port binaries are not required for this gate. Build them only
-when testing the packaged application path with `FULLERENE_BUILD_PORTS=1`.
+The embedded `toluene/viewer` and `toluene/emulsion` WASM outputs are included
+in this gate and require the `wasm32-wasip1` target. The optional Linux ELF
+port binaries are not required for this gate; build them only when testing the
+packaged application path with `FULLERENE_BUILD_PORTS=1`.
 
 For rendering changes, the reusable host example compares the compositor's
 pixel output and can be run with:

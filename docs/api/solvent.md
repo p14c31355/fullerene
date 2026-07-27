@@ -25,7 +25,6 @@ without changing the public entry points.
 | `window_api` | Window lifecycle, redraw control, and file launching |
 | `callbacks` | Kernel callbacks and boundary transfer types |
 | `services` | Service registration, action queues, and UI snapshots |
-| `solvent/wasi` | WASI execution, bounded file/cache access, and Fullerene host imports |
 
 The modules are private implementation details. Public functions, types, and
 statics are re-exported from the crate root for compatibility.
@@ -38,9 +37,12 @@ runtime state, the event queue, and the dispatcher into an explicit owned
 
 ## WASM boundary
 
-`wasi_runtime::runtime::run` receives a single `WasiHost` callback bundle. This
-keeps kernel/VFS/framebuffer/audio dependencies out of the WASI state object
-while preserving the existing WASI import ABI. File reads use a bounded lazy
-range cache; screen capture and screenshot writes have chunked imports for
-large outputs. The nested `toluene/viewer` and `toluene/emulsion` workspaces
-are compiled by the kernel build and are not root workspace members.
+`solvent/wasi` is a separate workspace crate, not a private module of the
+`solvent` crate. Its crate-level API is the `wasi_runtime` execution boundary:
+`wasi_runtime::runtime::run` receives a single `WasiHost` callback bundle.
+This keeps kernel/VFS/framebuffer/audio dependencies out of the WASI state
+object while preserving the existing WASI import ABI. File reads use a
+bounded lazy range cache; screen capture and screenshot writes have chunked
+imports for large outputs. The nested `toluene/viewer` and
+`toluene/emulsion` workspaces are compiled by the kernel build and are not
+root workspace members.

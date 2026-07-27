@@ -309,7 +309,7 @@ fn build_nested_wasm(
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .status();
-    let _ = match status {
+    let build_succeeded = match status {
         Ok(status) if status.success() => true,
         Ok(_) => {
             println!("cargo:warning=WASM {label} build failed (will continue without it)");
@@ -320,7 +320,7 @@ fn build_nested_wasm(
             false
         }
     };
-    if cache.exists() {
+    if build_succeeded && cache.exists() {
         fs::copy(cache, output)
             .unwrap_or_else(|error| panic!("Failed to copy WASM {label} binary: {error}"));
         return true;

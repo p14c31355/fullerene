@@ -62,8 +62,6 @@ pub struct DirtyRect {
     pub x: u32, pub y: u32, pub width: u32, pub height: u32,
 }
 
-pub enum Layer { Desktop, Window, Overlay, System }
-
 pub struct Scene<'a> {
     pub windows: &'a [Window],
     pub cursor: Option<&'a Cursor>,

@@ -173,6 +173,7 @@ pub fn init() {
 /// progress callback so `solvent::render` doesn't keep drawing labels
 /// over the desktop on every frame.
 static BOOT_PROGRESS_DONE: AtomicBool = AtomicBool::new(false);
+static FRAMEBUFFER_UNAVAILABLE_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Signal present and flush GPU after rendering.
 fn finish_frame() {
@@ -205,9 +206,13 @@ pub fn render() {
     let framebuffer_available =
         crate::contexts::framebuffer::with_framebuffer(|fb| solvent::render(fb)).is_some();
     if !framebuffer_available {
-        petroleum::serial::serial_log(format_args!(
-            "Desktop render skipped: framebuffer unavailable\n"
-        ));
+        if !FRAMEBUFFER_UNAVAILABLE_LOGGED.swap(true, Ordering::Relaxed) {
+            petroleum::serial::serial_log(format_args!(
+                "Desktop render skipped: framebuffer unavailable\n"
+            ));
+        }
+    } else {
+        FRAMEBUFFER_UNAVAILABLE_LOGGED.store(false, Ordering::Relaxed);
     }
 
     BOOT_PROGRESS_DONE.store(true, Ordering::Release);

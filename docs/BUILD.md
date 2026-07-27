@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - Rust nightly toolchain (required for no_std and UEFI targets): Install via `rustup toolchain install nightly`.
+- `wasm32-wasip1` Rust target (required by the kernel's embedded WASM build): Install with `rustup target add wasm32-wasip1`.
 - QEMU: Install on Linux/macOS via package manager (e.g., `apt install qemu-system-x86` on Ubuntu).
 - OVMF (UEFI firmware): Included in `flasks/ovmf/` (RELEASEX64 files). If missing, run with `--clone-ovmf` to copy from system installation or download from [TianoCore releases](https://github.com/tianocore/edk2/releases).
 
@@ -55,7 +56,9 @@ The kernel build also compiles the WASI fixtures and the nested
 `toluene/viewer` and `toluene/emulsion` workspaces for `wasm32-wasip1`. These
 WASM release builds use size optimization, LTO, one codegen unit, and symbol
 stripping; their cached outputs are copied into the kernel `OUT_DIR` before
-the applications are embedded.
+the applications are embedded. The normal kernel build and workspace warning-
+free gate include these embedded WASM outputs, so install the target above
+before running them; the optional ELF application ports remain separate.
 
 When the kernel boots, ports are unpacked from the initramfs into
 `/packages/` and launched with `app run <name>`.
