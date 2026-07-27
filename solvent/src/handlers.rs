@@ -113,6 +113,13 @@ impl EventHandler for WmEventHandler {
                     return true;
                 }
 
+                if *btn == MouseButton::Left
+                    && rt.desktop.wm.window_at(cx, cy) == rt.settings_window
+                    && crate::settings_bridge::settings_handle_mouse(rt, cx, cy)
+                {
+                    return true;
+                }
+
                 rt.desktop.set_cursor(cx, cy);
                 let (fw, fh, _stride) = *FB_DIMS.lock();
                 rt.desktop.mouse_down(fw, fh);
@@ -188,7 +195,7 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
         return;
     }
     let rel_x = cx - window.x;
-    let rel_y = cy - window.y - lattice::compositor::TITLE_BAR_HEIGHT as i32;
+    let rel_y = cy - window.y - lattice::style::title_bar_height() as i32;
 
     // If context menu is open, handle clicks on it first
     if explorer.context_menu.open {

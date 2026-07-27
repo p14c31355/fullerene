@@ -608,7 +608,7 @@ fn render_menu_text(
 
 /// Check if a point is within the WiFi icon area in the taskbar.
 pub fn hit_wifi_icon(px: i32, py: i32, _fb_width: u32, fb_height: u32, icon_x: u32) -> bool {
-    let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT) as i32;
+    let bar_y = fb_height.saturating_sub(crate::style::taskbar_height()) as i32;
     if py < bar_y {
         return false;
     }

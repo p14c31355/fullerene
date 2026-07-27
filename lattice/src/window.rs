@@ -93,7 +93,7 @@ impl Window {
     /// this window's **client area** (excluding title bar if present).
     pub fn contains(&self, px: i32, py: i32) -> bool {
         let title_h = if self.title.is_some() {
-            crate::compositor::TITLE_BAR_HEIGHT as i32
+            crate::style::title_bar_height() as i32
         } else {
             0i32
         };
@@ -108,7 +108,7 @@ impl Window {
         if self.title.is_none() {
             return false;
         }
-        let title_h = crate::compositor::TITLE_BAR_HEIGHT as i32;
+        let title_h = crate::style::title_bar_height() as i32;
         px >= self.x && py >= self.y && px < self.x + self.width as i32 && py < self.y + title_h
     }
 
@@ -124,7 +124,7 @@ impl Window {
     /// Total decorated height (client area + title bar + borders).
     pub fn decorated_height(&self) -> u32 {
         if self.title.is_some() {
-            self.height + crate::compositor::TITLE_BAR_HEIGHT + crate::compositor::WINDOW_BORDER * 2
+            self.height + crate::style::title_bar_height() + crate::compositor::WINDOW_BORDER * 2
         } else {
             self.height
         }
@@ -135,7 +135,7 @@ impl Window {
         if self.title.is_none() || self.minimized {
             return false;
         }
-        let bx = self.x + self.width as i32 - 18;
+        let bx = crate::style::title_button_x(self.x, self.width, 0);
         let by = self.y + 3;
         px >= bx && px < bx + 14 && py >= by && py < by + 14
     }
@@ -145,7 +145,12 @@ impl Window {
         if self.title.is_none() || self.minimized {
             return false;
         }
-        let bx = self.x + self.width as i32 - 58;
+        let idx = if crate::style::current().metrics.title_buttons_on_left {
+            1
+        } else {
+            2
+        };
+        let bx = crate::style::title_button_x(self.x, self.width, idx);
         let by = self.y + 3;
         px >= bx && px < bx + 14 && py >= by && py < by + 14
     }
@@ -155,7 +160,12 @@ impl Window {
         if self.title.is_none() || self.minimized {
             return false;
         }
-        let bx = self.x + self.width as i32 - 38;
+        let idx = if crate::style::current().metrics.title_buttons_on_left {
+            2
+        } else {
+            1
+        };
+        let bx = crate::style::title_button_x(self.x, self.width, idx);
         let by = self.y + 3;
         px >= bx && px < bx + 14 && py >= by && py < by + 14
     }

@@ -294,8 +294,8 @@ pub(crate) fn open_settings_window(rt: &mut RuntimeState) {
         }
     }
 
-    let cols = 38u32;
-    let rows = 10u32;
+    let cols = 42u32;
+    let rows = 13u32;
     let id = rt.desktop.wm.create_titled_window(
         150,
         80,
@@ -369,7 +369,7 @@ pub(crate) fn render_text_into_surface(
 fn publish_klog_live_geometry(window: &lattice::window::Window) {
     crate::runtime_context::publish_klog_live_surface(
         window.x,
-        window.y + lattice::compositor::TITLE_BAR_HEIGHT as i32,
+        window.y + lattice::style::title_bar_height() as i32,
         window.surface.width(),
         window.surface.height(),
     );

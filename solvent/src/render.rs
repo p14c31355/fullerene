@@ -304,7 +304,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         rt.desktop.push_dirty_rect(region);
     }
 
-    let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
+    let bar_h = lattice::style::taskbar_height();
     if rt.clock_changed || tb_changed || debug_changed {
         rt.desktop.push_dirty_rect(lattice::scene::DirtyRect::new(
             0,
@@ -319,7 +319,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 0,
                 0,
                 fb_width,
-                lattice::top_panel::TOP_PANEL_HEIGHT,
+                lattice::style::top_panel_height(),
             ));
         }
     }
@@ -383,12 +383,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 }
                 ShellState::Desktop => {}
             }
-            let top_panel_rect = lattice::scene::DirtyRect::new(
-                0,
-                0,
-                fb_width,
-                lattice::top_panel::TOP_PANEL_HEIGHT,
-            );
+            let top_panel_rect =
+                lattice::scene::DirtyRect::new(0, 0, fb_width, lattice::style::top_panel_height());
             let top_panel_dirty = was_transition
                 || scene
                     .dirty_rects

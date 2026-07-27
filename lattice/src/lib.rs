@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+pub mod basalt;
+pub mod common;
 pub mod compositor;
 pub mod cursor;
 pub mod desktop;
@@ -12,9 +14,12 @@ pub mod icon;
 pub mod menu;
 pub mod network_menu;
 pub mod painter;
+pub mod photon;
+pub mod prism;
 pub mod renderer;
 pub mod scene;
 pub mod shell_overlay;
+pub mod style;
 pub mod surface;
 pub mod taskbar;
 pub mod terminal_surface;

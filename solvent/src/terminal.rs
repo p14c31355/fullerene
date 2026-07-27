@@ -112,7 +112,7 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
     let client_x = window.x;
     let client_y = window.y
         + if window.title.is_some() {
-            lattice::compositor::TITLE_BAR_HEIGHT as i32
+            lattice::style::title_bar_height() as i32
         } else {
             0
         };
