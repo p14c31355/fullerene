@@ -30,8 +30,10 @@ static SPEC: StyleSpec = StyleSpec {
         taskbar_active_bg: 0x3D6A91,
         taskbar_inactive_bg: 0x303641,
         window_shadow: 0x050608,
-        menu_bg: 0x303842,
-        menu_border: 0x65717D,
+        // Photon popup menus follow its GTK-like light surfaces rather than
+        // reusing the dark desktop/dock background.
+        menu_bg: 0xF6F7F8,
+        menu_border: 0xC2C7CC,
     },
     metrics: StyleMetrics {
         title_bar_height: 32,

@@ -526,6 +526,16 @@ pub fn draw_menu(canvas: &mut Painter<'_>, menu: &PopupMenu, spec: &StyleSpec) {
         return;
     }
     let palette = &spec.palette;
+    canvas.draw_shadow(
+        menu.x as i32,
+        menu.y as i32,
+        menu.width,
+        menu.height,
+        8,
+        1,
+        5,
+        palette.window_shadow,
+    );
     canvas.rounded_rect(
         menu.x as i32,
         menu.y as i32,

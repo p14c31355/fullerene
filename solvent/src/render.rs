@@ -81,6 +81,27 @@ fn blit_region(
     framebuffer_stride: usize,
     region: lattice::scene::DirtyRect,
 ) {
+    let brightness = crate::DISPLAY_BRIGHTNESS_X100
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .clamp(10, 100);
+    blit_region_with_brightness(
+        back,
+        back_width,
+        framebuffer,
+        framebuffer_stride,
+        region,
+        brightness,
+    );
+}
+
+fn blit_region_with_brightness(
+    back: &[u32],
+    back_width: usize,
+    framebuffer: &mut [u32],
+    framebuffer_stride: usize,
+    region: lattice::scene::DirtyRect,
+    brightness: u32,
+) {
     for row in region.y as usize..(region.y + region.height) as usize {
         let src = row * back_width + region.x as usize;
         let dst = row * framebuffer_stride + region.x as usize;
@@ -99,6 +120,7 @@ fn blit_region(
         // inside the framebuffer. Volatile stores are required for GOP MMIO.
         let destination = unsafe { framebuffer.as_mut_ptr().add(dst) };
         for (column, &pixel) in source.iter().enumerate() {
+            let pixel = lattice::compositor::apply_brightness(pixel, brightness);
             unsafe { core::ptr::write_volatile(destination.add(column), pixel) };
         }
     }
@@ -131,6 +153,9 @@ fn draw_cursor_strided(
     let left = cursor.x - Cursor::HOTSPOT_X;
     let top = cursor.y - Cursor::HOTSPOT_Y;
     let size = Cursor::SIZE as i32;
+    let brightness = crate::DISPLAY_BRIGHTNESS_X100
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .clamp(10, 100);
     for row in 0..size {
         let y = top + row;
         if y < 0 || y >= height as i32 {
@@ -141,7 +166,9 @@ fn draw_cursor_strided(
             if x < 0 || x >= width as i32 {
                 continue;
             }
-            let pixel = Cursor::shape()[(row * size + column) as usize];
+            let source = Cursor::shape()[(row * size + column) as usize];
+            let pixel = (source & 0xFF00_0000)
+                | lattice::compositor::apply_brightness(source & 0x00FF_FFFF, brightness);
             if pixel == 0 {
                 continue;
             }
@@ -453,6 +480,21 @@ mod tests {
         );
 
         assert_eq!(framebuffer, [0, 2, 3, 0, 0, 5, 6, 0]);
+    }
+
+    #[test]
+    fn blit_applies_display_brightness_at_scanout_boundary() {
+        let back = [0xC08040];
+        let mut framebuffer = [0];
+        blit_region_with_brightness(
+            &back,
+            1,
+            &mut framebuffer,
+            1,
+            lattice::scene::DirtyRect::full(1, 1),
+            50,
+        );
+        assert_eq!(framebuffer, [0x604020]);
     }
 
     #[test]
