@@ -511,13 +511,13 @@ fn draw_title_button(
                 canvas.set_pixel((x + 9 - offset) as u32, (y + 4 + offset) as u32, mark);
             }
         }
-        1 => canvas.fill_rect(x + 4, y + 7, 6, 1, mark),
-        _ => {
+        1 => {
             canvas.fill_rect(x + 4, y + 4, 6, 1, mark);
             canvas.fill_rect(x + 4, y + 9, 6, 1, mark);
             canvas.fill_rect(x + 4, y + 4, 1, 6, mark);
             canvas.fill_rect(x + 9, y + 4, 1, 6, mark);
         }
+        _ => canvas.fill_rect(x + 4, y + 7, 6, 1, mark),
     }
 }
 
