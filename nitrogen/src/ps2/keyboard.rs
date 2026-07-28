@@ -32,6 +32,16 @@ pub fn set_terminal_input_allowed(allowed: bool) {
     }
 }
 
+/// Change the foreground-terminal gate without flushing decoded bytes.
+///
+/// Solvent uses this while a process terminal is focused: keyboard IRQs may
+/// already have decoded bytes into `INPUT_BUFFER`, and the GUI must route
+/// those bytes to the focused process before handling the corresponding raw
+/// key events.
+pub fn set_terminal_input_allowed_preserve(allowed: bool) {
+    TERMINAL_INPUT_ALLOWED.store(allowed, Ordering::Release);
+}
+
 /// Raw key event buffer for non-ASCII key events (e.g. Super, arrows).
 /// Each entry is a (scancode, pressed) tuple.
 pub static RAW_KEY_QUEUE: Mutex<VecDeque<(u8, bool)>> = Mutex::new(VecDeque::new());

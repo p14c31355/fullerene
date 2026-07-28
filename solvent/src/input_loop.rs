@@ -110,7 +110,12 @@ pub fn poll_keyboard() {
                 && !rt.desktop.pwd_dialog_open
         });
         drop(runtime_guard);
-        set_terminal_input_allowed(allowed);
+        if focused_process_terminal.is_some() {
+            use nitrogen::ps2::keyboard::set_terminal_input_allowed_preserve;
+            set_terminal_input_allowed_preserve(false);
+        } else {
+            set_terminal_input_allowed(allowed);
+        }
         // Key repeat is produced by the low-level driver without a new raw
         // queue entry. Drain those decoded bytes into the focused process
         // terminal before the normal raw-key loop handles fresh events.

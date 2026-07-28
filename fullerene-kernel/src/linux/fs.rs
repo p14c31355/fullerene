@@ -60,6 +60,8 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             // while waiting for keyboard input; the scheduler path polls PS/2
             // between attempts and this avoids making `busybox sh` exit
             // immediately when launched before the first keystroke.
+            #[cfg(linux_busybox_smoke)]
+            crate::linux::launch::observe_busybox_wait(rt.tid);
             crate::process::yield_current();
         }
     }
@@ -250,6 +252,8 @@ pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         }
         // A negative timeout means wait indefinitely. For a positive timeout,
         // the deadline above limits the same cooperative wait.
+        #[cfg(linux_busybox_smoke)]
+        crate::linux::launch::observe_busybox_wait(rt.tid);
         crate::process::yield_current();
     }
 }
@@ -936,7 +940,7 @@ pub fn sys_fcntl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_ioctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
     let request = args[1];
     let arg = args[2];
@@ -963,8 +967,11 @@ pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 0
             }
             TIOCGPGRP => {
-                // Return foreground process group (same as pid, or 0)
-                let value = 0i32;
+                // The GUI terminal has the launched Linux process as its
+                // foreground process group. Returning zero makes BusyBox ash
+                // believe it is running in the background and retry terminal
+                // setup indefinitely.
+                let value = rt.terminal_owner_tid as i32;
                 if unsafe { copy_val_to_user(arg, &value) }.is_err() {
                     errno_code(EFAULT)
                 } else {

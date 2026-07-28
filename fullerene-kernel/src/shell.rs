@@ -1477,6 +1477,16 @@ pub fn run_busybox_smoke() {
         }
 
         fn read_byte(&mut self) -> Option<u8> {
+            // Do not let the scripted Nozzle `exit` terminate the harness
+            // while the interactive BusyBox fixture is still waiting for its
+            // second command. This makes shell resumption observable.
+            while self.input.front() == Some(&b'e')
+                && !crate::linux::launch::busybox_smoke_verified()
+            {
+                solvent::runtime_tick_no_fb();
+                crate::process::yield_from_scheduler_stack();
+            }
+            solvent::runtime_tick_no_fb();
             crate::process::yield_from_scheduler_stack();
             self.input.pop_front()
         }

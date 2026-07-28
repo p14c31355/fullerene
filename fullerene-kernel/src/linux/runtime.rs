@@ -160,6 +160,7 @@ impl LinuxRuntime {
             SYS_GETPID => linux_proc::sys_getpid(self, args),
             SYS_GETPPID => linux_proc::sys_getppid(self, args),
             SYS_GETPGRP => linux_proc::sys_getpgrp(self, args),
+            SYS_SETPGID => linux_proc::sys_setpgid(self, args),
             SYS_GETTID => linux_proc::sys_gettid(self, args),
             SYS_CLONE => linux_proc::sys_clone(self, args),
             SYS_FORK => linux_proc::sys_fork(self, args),
@@ -178,6 +179,7 @@ impl LinuxRuntime {
             // Time
             SYS_NANOSLEEP => linux_time::sys_nanosleep(self, args),
             SYS_CLOCK_GETTIME => linux_time::sys_clock_gettime(self, args),
+            SYS_CLOCK_NANOSLEEP => linux_time::sys_clock_nanosleep(self, args),
             SYS_GETTIMEOFDAY => linux_time::sys_gettimeofday(self, args),
             SYS_TIME => linux_time::sys_time(self, args),
 

@@ -74,6 +74,11 @@ pub fn sys_getpgrp(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     process::current_pid().map(|pid| pid.0).unwrap_or(0)
 }
 
+/// Fullerene currently gives each Linux process its own process group.
+pub fn sys_setpgid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+    0
+}
+
 pub fn sys_gettid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     sys_getpid(rt, args)
 }

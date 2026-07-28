@@ -206,8 +206,9 @@ terminal remains available. The shell receives a minimal Linux environment
 (`PATH`, `HOME`, `SHELL`, and `TERM`) and remains a normal Linux ELF process
 under the shared Linux personality layer.
 
-For a headless end-to-end check that exercises the Nozzle command, BusyBox
-`sh`, stdout, exit status, and shell resumption:
+For a headless end-to-end check that exercises the Nozzle command, interactive
+BusyBox `sh`, terminal stdin/stdout, blocking input wait, exit status,
+scheduler handoff, and shell resumption:
 
 ```bash
 FULLERENE_BUSYBOX=/path/to/busybox-static \

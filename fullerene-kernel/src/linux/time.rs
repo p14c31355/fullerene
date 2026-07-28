@@ -46,6 +46,13 @@ pub fn sys_nanosleep(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     0
 }
 
+/// `clock_nanosleep` uses the same timespec layout as `nanosleep`; the clock
+/// ID and absolute-time flag are currently treated as the monotonic relative
+/// sleep path used by Fullerene.
+pub fn sys_clock_nanosleep(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    sys_nanosleep(rt, &[args[2], args[3], 0, 0, 0, 0])
+}
+
 pub fn sys_clock_gettime(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let _clk_id = args[0] as i32;
     let tp = args[1];
