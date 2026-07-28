@@ -223,7 +223,8 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
             && desc.get_page_count() >= HEAP_PAGES
             && start >= 0x100000 // Avoid first 1MB reserved region
             && start < 0x4000000 // within first 64MB
-            && crate::common::utils::calculate_region_end(start, desc.get_page_count()) <= 0x4000000
+            && crate::common::utils::calculate_region_end(start, desc.get_page_count())
+                .is_some_and(|end| end <= 0x4000000)
         // ensure entire region fits
         {
             crate::debug_log_no_alloc!("find_heap_start: Found suitable region at 0x{:x}", start);

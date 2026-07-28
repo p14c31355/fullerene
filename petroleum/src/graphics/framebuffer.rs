@@ -311,7 +311,13 @@ impl<T: PixelType> OriginDimensions for FramebufferWriter<T> {
 }
 
 impl<T: PixelType> FramebufferWriter<T> {
-    pub fn new(info: FramebufferInfo) -> Self {
+    /// Construct a writer for a directly mapped framebuffer.
+    ///
+    /// # Safety
+    ///
+    /// `info.address..info.address + info.stride * info.height` must be a
+    /// mapped, writable framebuffer for the lifetime of the returned writer.
+    pub unsafe fn new(info: FramebufferInfo) -> Self {
         let framebuffer_size = (info.stride as usize)
             .checked_mul(info.height as usize)
             .expect("framebuffer size overflow");
@@ -450,6 +456,9 @@ impl<T: PixelType + VolatileRead> FramebufferLike for FramebufferWriter<T> {
         }
         let x_end = x.saturating_add(width).min(self.info.width);
         let y_end = y.saturating_add(height).min(self.info.height);
+        if x >= x_end || y >= y_end {
+            return;
+        }
         let pixel_val = T::from_u32(color);
         let bpp = core::mem::size_of::<T>() as u32;
         for row in y..y_end {
@@ -464,13 +473,13 @@ impl<T: PixelType + VolatileRead> FramebufferLike for FramebufferWriter<T> {
     }
 
     fn clear_screen(&self) {
-        unsafe {
-            clear_buffer_pixels::<T>(
-                self.info.address,
-                self.info.width_or_stride(),
-                self.info.height,
-                T::from_u32(self.info.colors.bg),
-            );
+        let bpp = core::mem::size_of::<T>();
+        let count = (self.info.stride as usize / bpp).saturating_mul(self.info.height as usize);
+        let value = T::from_u32(self.info.colors.bg);
+        for index in 0..count {
+            let _ = self
+                .framebuffer
+                .write_volatile_at(index.saturating_mul(bpp), value);
         }
     }
 
@@ -497,13 +506,26 @@ impl<T: PixelType + VolatileRead> FramebufferLike for FramebufferWriter<T> {
     }
 
     fn scroll_up(&self) {
-        unsafe {
-            scroll_buffer_pixels::<T>(
-                self.info.address,
-                self.info.width_or_stride(),
-                self.info.height,
-                T::from_u32(self.info.colors.bg),
-            );
+        let bpp = core::mem::size_of::<T>();
+        let pixels_per_line = self.info.stride as usize / bpp;
+        let shift_pixels = 10usize.saturating_mul(pixels_per_line);
+        let total_pixels = pixels_per_line.saturating_mul(self.info.height as usize);
+        for index in 0..total_pixels.saturating_sub(shift_pixels) {
+            let source = (shift_pixels + index).saturating_mul(bpp);
+            let destination = index.saturating_mul(bpp);
+            let value = self
+                .framebuffer
+                .read_volatile_at(source)
+                .unwrap_or(T::from_u32(self.info.colors.bg));
+            let _ = self.framebuffer.write_volatile_at(destination, value);
+        }
+        let clear_start = self.info.height.saturating_sub(8) as usize * pixels_per_line;
+        let clear_count = 8usize.saturating_mul(pixels_per_line);
+        let value = T::from_u32(self.info.colors.bg);
+        for index in 0..clear_count {
+            let _ = self
+                .framebuffer
+                .write_volatile_at((clear_start + index).saturating_mul(bpp), value);
         }
     }
 

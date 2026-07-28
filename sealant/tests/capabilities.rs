@@ -3,6 +3,13 @@ use sealant::{
 };
 
 #[test]
+fn secure_zero_erases_secret_bytes() {
+    let mut secret = *b"private material";
+    sealant::secure_zero(&mut secret);
+    assert_eq!(secret, [0; 16]);
+}
+
+#[test]
 fn read_capability_checks_bounds_and_alignment() {
     let values = [10_u32, 20, 30];
     let region = RamRegion::from_slice(&values).unwrap();

@@ -46,12 +46,12 @@ impl MemoryMapDescriptor {
         unsafe { core::ptr::read_unaligned((self.address + 24) as *const u64) }
     }
 
-    pub fn attribute(&self) -> u64 {
-        unsafe {
-            core::ptr::read_unaligned(
-                (self.address + self.descriptor_size.saturating_sub(8)) as *const u64,
-            )
-        }
+    pub fn attribute(&self) -> Option<u64> {
+        let offset = self
+            .descriptor_size
+            .checked_sub(core::mem::size_of::<u64>())?;
+        let address = self.address.checked_add(offset)?;
+        Some(unsafe { core::ptr::read_unaligned(address as *const u64) })
     }
 }
 

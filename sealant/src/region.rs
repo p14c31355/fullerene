@@ -187,6 +187,18 @@ impl<'a> MemoryRegion<'a> {
         Ok(unsafe { NonNull::new_unchecked(ptr as *mut T) })
     }
 
+    fn check_at<T>(
+        &self,
+        offset: usize,
+        permission: Permissions,
+    ) -> Result<NonNull<T>, PointerError> {
+        let address = self
+            .start
+            .checked_add(offset)
+            .ok_or(PointerError::AddressOverflow)?;
+        self.check(address as *const T, size_of::<T>(), permission)
+    }
+
     fn check_slice<T>(
         &self,
         ptr: *const T,
@@ -522,22 +534,20 @@ impl<'a> MmioRegion<'a> {
 
     /// Check a volatile read at a byte offset within this region.
     pub fn check_read_at<T>(&self, offset: usize) -> Result<MmioPtr<'_, T>, PointerError> {
-        let address = self
-            .0
-            .start
-            .checked_add(offset)
-            .ok_or(PointerError::AddressOverflow)?;
-        self.check_read(address as *const T)
+        Ok(MmioPtr {
+            ptr: self.0.check_at(offset, Permissions::READ)?,
+            region: self.0.clone(),
+            _lifetime: PhantomData,
+        })
     }
 
     /// Check a volatile write at a byte offset within this region.
     pub fn check_write_at<T>(&self, offset: usize) -> Result<MmioWritePtr<'_, T>, PointerError> {
-        let address = self
-            .0
-            .start
-            .checked_add(offset)
-            .ok_or(PointerError::AddressOverflow)?;
-        self.check_write(address as *mut T)
+        Ok(MmioWritePtr {
+            ptr: self.0.check_at(offset, Permissions::WRITE)?,
+            region: self.0.clone(),
+            _lifetime: PhantomData,
+        })
     }
 
     /// Read a primitive register value at a byte offset.
@@ -599,28 +609,14 @@ impl<'a> FramebufferRegion<'a> {
 
     /// Write one framebuffer value using a volatile store.
     pub fn write_volatile_at<T: Copy>(&self, offset: usize, value: T) -> Result<(), PointerError> {
-        let address = self
-            .0
-            .start
-            .checked_add(offset)
-            .ok_or(PointerError::AddressOverflow)?;
-        let ptr = self
-            .0
-            .check(address as *mut T, size_of::<T>(), Permissions::WRITE)?;
+        let ptr: NonNull<T> = self.0.check_at(offset, Permissions::WRITE)?;
         unsafe { ptr.as_ptr().write_volatile(value) };
         Ok(())
     }
 
     /// Read one primitive framebuffer value using a volatile load.
     pub fn read_volatile_at<T: VolatileRead>(&self, offset: usize) -> Result<T, PointerError> {
-        let address = self
-            .0
-            .start
-            .checked_add(offset)
-            .ok_or(PointerError::AddressOverflow)?;
-        let ptr = self
-            .0
-            .check(address as *const T, size_of::<T>(), Permissions::READ)?;
+        let ptr: NonNull<T> = self.0.check_at(offset, Permissions::READ)?;
         Ok(unsafe { ptr.as_ptr().read_volatile() })
     }
 

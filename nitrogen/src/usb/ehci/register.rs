@@ -31,8 +31,13 @@ pub trait RegisterBackend {
 pub struct EhciOperationalRegisters(MemRegion);
 
 impl EhciOperationalRegisters {
-    pub unsafe fn new(base: usize) -> Self {
-        Self(unsafe { MemRegion::new(base, crate::usb::HOST_CONTROLLER_BAR_SIZE) })
+    /// Create an operational-register view over a validated BAR sub-window.
+    ///
+    /// # Safety
+    ///
+    /// `base..base + size` must be a live, readable and writable MMIO mapping.
+    pub unsafe fn new(base: usize, size: usize) -> Self {
+        Self(unsafe { MemRegion::new(base, size) })
     }
 
     pub fn read(&self, off: usize) -> u32 {
@@ -120,6 +125,12 @@ pub struct EhciRegisterContext {
 }
 
 impl EhciRegisterContext {
+    /// Read the EHCI capability header and construct its operational view.
+    ///
+    /// # Safety
+    ///
+    /// `mmio_base` must identify a live, readable and writable EHCI BAR
+    /// mapping of at least `HOST_CONTROLLER_BAR_SIZE` bytes.
     pub unsafe fn new(mmio_base: usize) -> Option<Self> {
         crate::debug::hint(b"eh_cap");
         let region = unsafe { MemRegion::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
@@ -133,11 +144,12 @@ impl EhciRegisterContext {
             return None;
         }
         let op_base = mmio_base.checked_add(caplength as usize)?;
+        let op_size = crate::usb::HOST_CONTROLLER_BAR_SIZE.checked_sub(caplength as usize)?;
         Some(Self {
             mmio_base,
             caplength,
             hcs_params,
-            op: unsafe { EhciOperationalRegisters::new(op_base) },
+            op: unsafe { EhciOperationalRegisters::new(op_base, op_size) },
         })
     }
 }

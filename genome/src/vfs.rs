@@ -393,7 +393,6 @@ impl Vfs {
     /// Resolve a path to its mount index and remaining path without borrowing
     /// the filesystem.  The caller can then use `find_fs()` or an indexed
     /// operation to access the filesystem without holding a VFS lock.
-    /// access the filesystem without holding the VFS lock.
     pub fn find_fs_for_path(&self, path: &str) -> Option<(usize, String)> {
         let absolute = self.resolve_path(path);
         let index = self.find_fs_index_for_absolute_path(&absolute)?;

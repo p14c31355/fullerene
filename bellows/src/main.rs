@@ -53,7 +53,7 @@ pub unsafe extern "efiapi" fn efi_main(
                 config.width,
                 config.height
             );
-            if let Some(framebuffer) = BootFramebuffer::from_config(config) {
+            if let Some(framebuffer) = unsafe { BootFramebuffer::from_config(config) } {
                 unsafe {
                     framebuffer.draw_stage(0, KERNEL_STAGE_COUNT, b"LOADING KERNEL");
                 }
@@ -96,7 +96,9 @@ pub unsafe extern "efiapi" fn efi_main(
     };
     petroleum::println!("Bellows: EFI image loaded.");
     petroleum::println!("Bellows: Kernel loaded from embedded binary.");
-    if let Some(config) = boot_framebuffer.and_then(BootFramebuffer::from_config) {
+    if let Some(config) =
+        boot_framebuffer.and_then(|config| unsafe { BootFramebuffer::from_config(config) })
+    {
         unsafe {
             config.draw_stage(0, KERNEL_STAGE_COUNT, b"ENTERING KERNEL");
         }

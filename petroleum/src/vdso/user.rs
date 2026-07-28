@@ -5,7 +5,6 @@ use crate::vdso::layout::*;
 /// Global VDSO page pointer, set once during process initialization.
 /// In user-space processes, this points to `VDSO_USER_BASE`.
 /// In kernel processes, this is set by the kernel during boot.
-#[allow(static_mut_refs)]
 static VDSO_PAGE: AtomicUsize = AtomicUsize::new(0);
 
 /// Initialize the VDSO pointer.

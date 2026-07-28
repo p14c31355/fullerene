@@ -136,9 +136,10 @@ pub enum SafeReadResult<T> {
 /// `addr` must be aligned, mapped, and valid for a volatile `u32` load.
 #[inline(never)]
 pub unsafe fn checked_read_u32(addr: usize, health: Option<&PciHealth>) -> SafeReadResult<u32> {
-    let region = unsafe {
+    let Ok(region) = (unsafe {
         SealantMmioRegion::from_address(addr, core::mem::size_of::<u32>(), Permissions::READ)
-            .expect("invalid MMIO address")
+    }) else {
+        return SafeReadResult::MasterAbort;
     };
     checked_read_value(|| region.read_volatile_at(0), health)
 }
@@ -190,7 +191,10 @@ pub unsafe fn checked_read_u64(addr: usize, health: Option<&PciHealth>) -> SafeR
             };
         }
     };
-    let hi = match unsafe { checked_read_u32(addr + core::mem::size_of::<u32>(), health) } {
+    let Some(hi_addr) = addr.checked_add(core::mem::size_of::<u32>()) else {
+        return SafeReadResult::MasterAbort;
+    };
+    let hi = match unsafe { checked_read_u32(hi_addr, health) } {
         SafeReadResult::Value(v) => v,
         e => {
             return match e {

@@ -14,8 +14,8 @@ pub fn calculate_descriptor_address(base: usize, index: usize, size: usize) -> O
 }
 
 /// Calculates the end address of a memory region given start address and page count.
-pub fn calculate_region_end(start: u64, pages: u64) -> u64 {
-    start + (pages * 4096)
+pub fn calculate_region_end(start: u64, pages: u64) -> Option<u64> {
+    start.checked_add(pages.checked_mul(4096)?)
 }
 
 /// Calculates the address of metadata appended at the end of a buffer.

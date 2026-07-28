@@ -23,7 +23,12 @@ pub struct BootFramebuffer {
 
 impl BootFramebuffer {
     /// Validate raw framebuffer parameters and construct a boot renderer.
-    pub fn new(
+    ///
+    /// # Safety
+    ///
+    /// `address..address + stride_bytes * height` must be a mapped, writable
+    /// framebuffer for the lifetime of the returned renderer.
+    pub unsafe fn new(
         address: u64,
         width: u32,
         height: u32,
@@ -73,15 +78,22 @@ impl BootFramebuffer {
         self.stride_pixels
     }
 
-    pub fn from_config(config: FullereneFramebufferConfig) -> Option<Self> {
-        Self::new(
-            config.address,
-            config.width,
-            config.height,
-            config.stride,
-            config.bpp,
-            config.pixel_format as u32,
-        )
+    /// Construct a renderer from a firmware framebuffer configuration.
+    ///
+    /// # Safety
+    ///
+    /// The configuration's framebuffer range must remain mapped and writable.
+    pub unsafe fn from_config(config: FullereneFramebufferConfig) -> Option<Self> {
+        unsafe {
+            Self::new(
+                config.address,
+                config.width,
+                config.height,
+                config.stride,
+                config.bpp,
+                config.pixel_format as u32,
+            )
+        }
     }
 
     /// Draw the splash panel and the current initialization stage.
@@ -486,8 +498,8 @@ mod tests {
 
     #[test]
     fn converts_both_gop_pixel_orders() {
-        let rgb = BootFramebuffer::new(1, 320, 200, 1280, 32, 0).unwrap();
-        let bgr = BootFramebuffer::new(1, 320, 200, 1280, 32, 1).unwrap();
+        let rgb = unsafe { BootFramebuffer::new(1, 320, 200, 1280, 32, 0) }.unwrap();
+        let bgr = unsafe { BootFramebuffer::new(1, 320, 200, 1280, 32, 1) }.unwrap();
         assert_eq!(rgb.rgb(0x12, 0x34, 0x56), 0x0056_3412);
         assert_eq!(bgr.rgb(0x12, 0x34, 0x56), 0x0012_3456);
     }
@@ -496,7 +508,8 @@ mod tests {
     fn draws_panel_text_and_all_progress_segments() {
         let mut pixels = std::vec![0u32; 320 * 200];
         let fb =
-            BootFramebuffer::new(pixels.as_mut_ptr() as u64, 320, 200, 320 * 4, 32, 1).unwrap();
+            unsafe { BootFramebuffer::new(pixels.as_mut_ptr() as u64, 320, 200, 320 * 4, 32, 1) }
+                .unwrap();
         unsafe { fb.draw_stage(KERNEL_STAGE_COUNT, KERNEL_STAGE_COUNT, b"GRAPHICS READY") };
         assert!(pixels.iter().filter(|&&pixel| pixel != 0).count() > 10_000);
         assert!(pixels.contains(&fb.rgb(233, 69, 96)));

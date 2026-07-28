@@ -18,6 +18,8 @@ impl fmt::Display for RegionError {
     }
 }
 
+impl core::error::Error for RegionError {}
+
 /// Errors returned when converting a raw pointer into a checked capability.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerError {
@@ -50,3 +52,5 @@ impl fmt::Display for PointerError {
         }
     }
 }
+
+impl core::error::Error for PointerError {}

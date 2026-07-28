@@ -185,7 +185,8 @@ impl FramebufferContext {
             pixel_format: Some(self.fb_pixel_format),
             colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
         };
-        let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info);
+        let writer =
+            unsafe { petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(info) };
         self.renderer = Some(UefiFramebufferWriter::Uefi32(writer));
         true
     }

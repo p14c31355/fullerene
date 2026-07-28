@@ -259,13 +259,26 @@ pub fn exit_boot_services_and_jump(
 
     // Prepare memory map descriptors
     let descriptor_size_val = descriptor_size;
+    if descriptor_size_val == 0 {
+        return Err(BellowsError::InvalidState(
+            "UEFI returned a zero-sized memory descriptor.",
+        ));
+    }
     let descriptors_ptr = map_ptr as *const u8;
     let num_descriptors = map_size.checked_div(descriptor_size_val).unwrap_or(0);
 
     let memory_map_descriptors = if num_descriptors > 0 && !descriptors_ptr.is_null() {
         let mut descriptors = alloc::vec::Vec::with_capacity(num_descriptors);
         for i in 0..num_descriptors {
-            let desc_address = descriptors_ptr as usize + i.saturating_mul(descriptor_size_val);
+            let Some(desc_address) = petroleum::common::utils::calculate_descriptor_address(
+                descriptors_ptr as usize,
+                i,
+                descriptor_size_val,
+            ) else {
+                return Err(BellowsError::InvalidState(
+                    "UEFI memory descriptor address overflow.",
+                ));
+            };
             descriptors.push(petroleum::page_table::memory_map::MemoryMapDescriptor::new(
                 desc_address,
                 descriptor_size_val,

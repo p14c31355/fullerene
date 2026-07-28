@@ -89,7 +89,8 @@ impl VgaTextWriter {
                     }
                 }
                 let idx = self.row * VGA_WIDTH + self.col;
-                let _ = self.region().write_volatile_at(
+                let region = self.region();
+                let _ = region.write_volatile_at(
                     idx * core::mem::size_of::<u16>(),
                     (self.color as u16) << 8 | c as u16,
                 );
@@ -99,11 +100,11 @@ impl VgaTextWriter {
     }
 
     fn scroll(&mut self) {
+        let region = self.region();
         for row in 1..VGA_HEIGHT {
             for col in 0..VGA_WIDTH {
                 let src = row * VGA_WIDTH + col;
                 let dst = (row - 1) * VGA_WIDTH + col;
-                let region = self.region();
                 let val = region
                     .read_volatile_at::<u16>(src * core::mem::size_of::<u16>())
                     .unwrap_or(0);
@@ -113,9 +114,7 @@ impl VgaTextWriter {
         let blank = (self.color as u16) << 8 | b' ' as u16;
         for col in 0..VGA_WIDTH {
             let idx = (VGA_HEIGHT - 1) * VGA_WIDTH + col;
-            let _ = self
-                .region()
-                .write_volatile_at(idx * core::mem::size_of::<u16>(), blank);
+            let _ = region.write_volatile_at(idx * core::mem::size_of::<u16>(), blank);
         }
         self.row = VGA_HEIGHT - 1;
         self.col = 0;
