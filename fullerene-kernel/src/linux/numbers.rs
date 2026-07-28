@@ -76,6 +76,7 @@ pub const SYS_GETGID: u64 = 104;
 pub const SYS_GETEUID: u64 = 107;
 pub const SYS_GETEGID: u64 = 108;
 pub const SYS_GETPPID: u64 = 110;
+pub const SYS_GETPGRP: u64 = 111;
 pub const SYS_CAPGET: u64 = 125;
 pub const SYS_CAPSET: u64 = 126;
 pub const SYS_SIGALTSTACK: u64 = 131;
@@ -113,6 +114,7 @@ pub const SYS_PIPE2: u64 = 293;
 pub const SYS_PRLIMIT64: u64 = 302;
 pub const SYS_GETRANDOM: u64 = 318;
 pub const SYS_STATX: u64 = 332;
+pub const SYS_RSEQ: u64 = 334;
 
 // Linux errno values
 pub const EPERM: i32 = 1;

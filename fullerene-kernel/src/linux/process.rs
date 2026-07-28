@@ -35,6 +35,8 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         ));
         #[cfg(linux_musl_smoke)]
         crate::linux::launch::observe_smoke_exit(pid, code);
+        #[cfg(linux_busybox_smoke)]
+        crate::linux::launch::observe_busybox_exit(pid, code);
         process::terminate_process(pid, code);
     }
     loop {
@@ -55,6 +57,16 @@ pub fn sys_getppid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     process::SCHEDULER
         .with_process(pid, |p| p.parent_id.map(|id| id.0).unwrap_or(0))
         .unwrap_or(0)
+}
+
+/// Return the foreground process group for the current Linux process.
+///
+/// Fullerene does not yet expose independent Linux process-group/session
+/// objects, so a process is its own group until that model is added. This is
+/// sufficient for BusyBox shell startup and keeps the result stable and
+/// nonzero for terminal-control queries.
+pub fn sys_getpgrp(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+    process::current_pid().map(|pid| pid.0).unwrap_or(0)
 }
 
 pub fn sys_gettid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {

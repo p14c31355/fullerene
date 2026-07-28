@@ -4,7 +4,9 @@ use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 #[cfg(linux_musl_smoke)]
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
+#[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(linux_musl_smoke)]
 static MUSL_SMOKE_PID: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -17,6 +19,15 @@ static MUSL_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(linux_musl_smoke)]
 const MUSL_SMOKE_OUTPUT: &[u8] = b"Hello from Rust std on musl!";
+
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_OUTPUT_SEEN: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_EXIT_OK: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
@@ -123,7 +134,84 @@ pub fn smoke_verified() -> bool {
 
 /// Launch a Linux ELF binary from raw bytes.
 pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<ProcessId, LoadError> {
-    crate::loader::load_program_with_runtime(data, name, true)
+    let argv = [name];
+    crate::loader::load_program_with_runtime_args(data, name, &argv, &[], true)
+}
+
+fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
+    let data = crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound)?;
+    #[cfg(linux_busybox_smoke)]
+    let argv = [
+        "busybox",
+        "sh",
+        "-c",
+        "echo Fullerene BusyBox is running; exit 0",
+    ];
+    #[cfg(not(linux_busybox_smoke))]
+    let argv = ["busybox", "sh"];
+    let envp = [
+        "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+        "HOME=/root",
+        "SHELL=/bin/sh",
+        "TERM=xterm",
+    ];
+    let pid = crate::loader::load_program_with_runtime_args(
+        data.as_slice(),
+        "busybox",
+        &argv,
+        &envp,
+        true,
+    )?;
+    #[cfg(linux_busybox_smoke)]
+    {
+        BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_PID.store(pid.0, Ordering::Release);
+        petroleum::serial::serial_log(format_args!(
+            "[busybox-smoke] fixture launched as PID {}\n",
+            pid.0
+        ));
+    }
+    Ok(pid)
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn observe_busybox_output(pid: u64, bytes: &[u8]) {
+    if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) != pid {
+        return;
+    }
+    let mut matched = 0usize;
+    for &byte in bytes {
+        matched = if byte == BUSYBOX_SMOKE_OUTPUT[matched] {
+            matched + 1
+        } else if byte == BUSYBOX_SMOKE_OUTPUT[0] {
+            1
+        } else {
+            0
+        };
+        if matched == BUSYBOX_SMOKE_OUTPUT.len() {
+            BUSYBOX_SMOKE_OUTPUT_SEEN.store(true, Ordering::Release);
+            return;
+        }
+    }
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
+    if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) == pid.0
+        && code == 0
+        && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
+    {
+        BUSYBOX_SMOKE_EXIT_OK.store(true, Ordering::Release);
+        petroleum::serial::serial_log(format_args!(
+            "[busybox-smoke] verified output and exit status\n"
+        ));
+    }
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn busybox_smoke_verified() -> bool {
+    BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
 }
 
 /// Launch BusyBox shell from embedded initramfs data.
@@ -141,7 +229,7 @@ pub fn launch_busybox() -> Result<ProcessId, LoadError> {
     for path in &locations {
         if crate::contexts::vfs::exists(path) {
             log::info!("Found BusyBox at {}", path);
-            return launch_linux_binary(path);
+            return launch_busybox_with_args(path);
         }
     }
 
@@ -185,6 +273,14 @@ pub fn init_initramfs() {
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
+
+    #[cfg(have_busybox)]
+    {
+        let busybox = include_bytes!(concat!(env!("OUT_DIR"), "/busybox"));
+        if let Err(error) = crate::fs::write_entire_file("/bin/busybox", busybox) {
+            log::warn!("Initramfs: failed to install /bin/busybox: {:?}", error);
+        }
+    }
 
     #[cfg(have_linux_musl_hello)]
     {

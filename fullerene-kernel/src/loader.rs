@@ -364,11 +364,12 @@ fn load_elf_segments_transaction(
 
 fn initialize_linux_stack(
     page_table: &mut ProcessPageTable,
-    program_name: &str,
+    argv: &[&str],
+    envp: &[&str],
     layout: LinuxImageLayout,
 ) -> Result<u64, LoadError> {
     let mut changes = Vec::new();
-    let result = initialize_linux_stack_transaction(page_table, program_name, layout, &mut changes);
+    let result = initialize_linux_stack_transaction(page_table, argv, envp, layout, &mut changes);
     if result.is_err() {
         rollback_page_changes(page_table, &changes);
     }
@@ -430,10 +431,15 @@ fn linux_stack_random() -> [u8; 16] {
 
 fn initialize_linux_stack_transaction(
     page_table: &mut ProcessPageTable,
-    program_name: &str,
+    argv: &[&str],
+    envp: &[&str],
     layout: LinuxImageLayout,
     changes: &mut Vec<PageChange>,
 ) -> Result<u64, LoadError> {
+    if argv.is_empty() {
+        return Err(LoadError::InvalidFormat);
+    }
+
     let stack_bottom = LINUX_STACK_TOP
         .checked_sub(LINUX_STACK_SIZE)
         .ok_or(LoadError::InvalidFormat)?;
@@ -455,13 +461,36 @@ fn initialize_linux_stack_transaction(
     }
 
     let mut cursor = LINUX_STACK_TOP;
-    let name_bytes = program_name.as_bytes();
-    cursor = cursor
-        .checked_sub(name_bytes.len() as u64 + 1)
-        .ok_or(LoadError::InvalidFormat)?;
-    let argv0 = cursor;
-    write_process_bytes(page_table, argv0, name_bytes)?;
-    write_process_bytes(page_table, argv0 + name_bytes.len() as u64, &[0])?;
+    // Place argument and environment strings at the top of the stack.  Keep
+    // their user addresses so the pointer vectors below can be emitted after
+    // the auxiliary vector, exactly as a normal Linux process expects.
+    let mut argv_addresses = Vec::new();
+    for value in argv.iter().rev() {
+        let bytes = value.as_bytes();
+        cursor = cursor
+            .checked_sub(bytes.len() as u64 + 1)
+            .ok_or(LoadError::InvalidFormat)?;
+        let address = cursor;
+        write_process_bytes(page_table, address, bytes)?;
+        write_process_bytes(page_table, address + bytes.len() as u64, &[0])?;
+        argv_addresses.push(address);
+    }
+    argv_addresses.reverse();
+
+    let mut env_addresses = Vec::new();
+    for value in envp.iter().rev() {
+        let bytes = value.as_bytes();
+        cursor = cursor
+            .checked_sub(bytes.len() as u64 + 1)
+            .ok_or(LoadError::InvalidFormat)?;
+        let address = cursor;
+        write_process_bytes(page_table, address, bytes)?;
+        write_process_bytes(page_table, address + bytes.len() as u64, &[0])?;
+        env_addresses.push(address);
+    }
+    env_addresses.reverse();
+
+    let argv0 = argv_addresses[0];
 
     cursor = cursor.checked_sub(16).ok_or(LoadError::InvalidFormat)?;
     let random_address = cursor;
@@ -486,11 +515,13 @@ fn initialize_linux_stack_transaction(
     const AT_RANDOM: u64 = 25;
     const AT_EXECFN: u64 = 31;
 
-    let words = [
-        1,
-        argv0,
-        0,
-        0,
+    let mut words = Vec::with_capacity(1 + argv_addresses.len() + 1 + env_addresses.len() + 1 + 18);
+    words.push(argv_addresses.len() as u64);
+    words.extend_from_slice(&argv_addresses);
+    words.push(0);
+    words.extend_from_slice(&env_addresses);
+    words.push(0);
+    words.extend_from_slice(&[
         AT_PHDR,
         layout.phdr,
         AT_PHENT,
@@ -523,7 +554,7 @@ fn initialize_linux_stack_transaction(
         argv0,
         AT_NULL,
         0,
-    ];
+    ]);
     let words_size = (words.len() * core::mem::size_of::<u64>()) as u64;
     let rsp = cursor
         .checked_sub(words_size)
@@ -541,7 +572,7 @@ pub fn load_program(
     image_data: &[u8],
     name: &'static str,
 ) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, false)
+    load_program_inner(image_data, name, &[], &[], false)
 }
 
 /// Load a program, optionally with Linux ABI emulation.
@@ -550,12 +581,26 @@ pub fn load_program_with_runtime(
     name: &'static str,
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
-    load_program_inner(image_data, name, is_linux)
+    let argv = [name];
+    load_program_with_runtime_args(image_data, name, &argv, &[], is_linux)
+}
+
+/// Load a program with an explicit Linux argv/envp stack.
+pub fn load_program_with_runtime_args(
+    image_data: &[u8],
+    name: &'static str,
+    argv: &[&str],
+    envp: &[&str],
+    is_linux: bool,
+) -> Result<process::ProcessId, LoadError> {
+    load_program_inner(image_data, name, argv, envp, is_linux)
 }
 
 fn load_program_inner(
     image_data: &[u8],
     name: &'static str,
+    argv: &[&str],
+    envp: &[&str],
     is_linux: bool,
 ) -> Result<process::ProcessId, LoadError> {
     crate::klog_fmt!(
@@ -618,7 +663,7 @@ fn load_program_inner(
                     let process_page_table =
                         p.page_table.as_mut().ok_or(LoadError::InvalidFormat)?;
                     crate::klog_fmt!("[LINUX-DIAG] stack begin pid={}\n", pid.0);
-                    initialize_linux_stack(process_page_table, name, loaded.layout)
+                    initialize_linux_stack(process_page_table, argv, envp, loaded.layout)
                 };
                 let rsp = match stack_result {
                     Ok(rsp) => rsp,

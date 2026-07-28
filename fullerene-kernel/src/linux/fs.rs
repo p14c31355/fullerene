@@ -15,29 +15,38 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
     // Stdin: read from keyboard
     if fd == 0 {
-        if buf == 0 {
-            return errno_code(EFAULT);
-        }
-        let count_min = count.min(512);
-        // Single byte reads are most common for terminal input
-        if count == 1 {
-            if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
-                if unsafe { copy_to_user(buf, &[ch]) }.is_err() {
-                    return errno_code(EFAULT);
-                }
-                return 1;
-            }
-            return 0;
-        }
-        // Multi-byte: drain line buffer into a kernel buffer, then copy to user
-        let mut kernel_buf = [0u8; 512];
-        let n = nitrogen::ps2::keyboard::drain_line_buffer(&mut kernel_buf[..count_min]);
-        if n > 0 {
-            if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_err() {
+        loop {
+            if buf == 0 {
                 return errno_code(EFAULT);
             }
+            let count_min = count.min(512);
+            // Single byte reads are most common for terminal input
+            if count == 1 {
+                if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
+                    if unsafe { copy_to_user(buf, &[ch]) }.is_err() {
+                        return errno_code(EFAULT);
+                    }
+                    return 1;
+                }
+            } else {
+                // Multi-byte reads consume the line buffer, matching the
+                // terminal semantics used by the native shell.
+                let mut kernel_buf = [0u8; 512];
+                let n = nitrogen::ps2::keyboard::drain_line_buffer(&mut kernel_buf[..count_min]);
+                if n > 0 {
+                    if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_err() {
+                        return errno_code(EFAULT);
+                    }
+                    return n as u64;
+                }
+            }
+
+            // A terminal has no EOF state.  Keep the Linux process runnable
+            // while waiting for keyboard input; the scheduler path polls PS/2
+            // between attempts and this avoids making `busybox sh` exit
+            // immediately when launched before the first keystroke.
+            crate::process::yield_current();
         }
-        return n as u64;
     }
     // Stdout/stderr: write to serial
     if fd == 1 || fd == 2 {
@@ -104,6 +113,8 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
             #[cfg(linux_musl_smoke)]
             crate::linux::launch::observe_smoke_output(rt.tid, &chunk[..chunk_len]);
+            #[cfg(linux_busybox_smoke)]
+            crate::linux::launch::observe_busybox_output(rt.tid, &chunk[..chunk_len]);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &chunk[..chunk_len]);
             // Linux stdout/stderr belongs on the interactive terminal too.
             // Keep the serial mirror for headless diagnostics and smoke

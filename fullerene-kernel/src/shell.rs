@@ -1456,6 +1456,54 @@ pub fn run_linux_musl_smoke() {
     }
 }
 
+/// Run the static BusyBox shell through the real Nozzle command path.
+#[cfg(linux_busybox_smoke)]
+pub fn run_busybox_smoke() {
+    struct ScriptedTerminal {
+        input: alloc::collections::VecDeque<u8>,
+    }
+
+    impl ScriptedTerminal {
+        fn new(script: &str) -> Self {
+            Self {
+                input: script.bytes().collect(),
+            }
+        }
+    }
+
+    impl nozzle::Terminal for ScriptedTerminal {
+        fn write_str(&mut self, text: &str) {
+            solvent::write_terminal(text);
+        }
+
+        fn read_byte(&mut self) -> Option<u8> {
+            crate::process::yield_from_scheduler_stack();
+            self.input.pop_front()
+        }
+
+        fn input_available(&self) -> bool {
+            !self.input.is_empty()
+        }
+    }
+
+    let services = nozzle_services();
+    let mut terminal = ScriptedTerminal::new("run_busybox\nexit\n");
+    solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
+    if crate::linux::launch::busybox_smoke_verified() {
+        petroleum::serial::serial_log(format_args!(
+            "[busybox-smoke] PASS: output observed, exit=0, shell resumed\n"
+        ));
+        unsafe {
+            x86_64::instructions::port::PortWriteOnly::<u32>::new(0xf4).write(0x11);
+        }
+    } else {
+        petroleum::serial::serial_log(format_args!(
+            "[busybox-smoke] FAIL: output or successful exit was not observed\n"
+        ));
+        petroleum::halt_loop();
+    }
+}
+
 // ── Kernel terminal ─────────────────────────────────────────────────
 
 struct KernelTerminal {
