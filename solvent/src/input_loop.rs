@@ -36,6 +36,10 @@ macro_rules! mouse_edge {
 }
 
 pub fn poll_mouse_state() {
+    // IRQ12 is the normal delivery path. Drain AUX bytes as a fallback for
+    // QEMU/firmware configurations where the legacy mouse route is not wired
+    // through the I/O APIC.
+    nitrogen::ps2::mouse::poll_input();
     let ps2_state = nitrogen::ps2::mouse::consume_state();
     let dx = ps2_state.get_x();
     let dy = ps2_state.get_y();
