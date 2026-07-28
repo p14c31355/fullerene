@@ -1,32 +1,29 @@
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::vdso::layout::*;
 
 /// Global VDSO page pointer, set once during process initialization.
 /// In user-space processes, this points to `VDSO_USER_BASE`.
 /// In kernel processes, this is set by the kernel during boot.
-#[allow(static_mut_refs)]
-static mut VDSO_PAGE: *const VdsoPage = core::ptr::null();
+static VDSO_PAGE: AtomicUsize = AtomicUsize::new(0);
 
 /// Initialize the VDSO pointer.
 /// Must be called once at process start.
 pub unsafe fn init_vdso(page: *const VdsoPage) {
-    unsafe {
-        VDSO_PAGE = page;
-    }
+    VDSO_PAGE.store(page as usize, Ordering::Release);
 }
 
 /// Check whether the VDSO pointer has been initialized.
 pub fn vdso_ptr_initialized() -> bool {
-    !unsafe { VDSO_PAGE }.is_null()
+    VDSO_PAGE.load(Ordering::Acquire) != 0
 }
 
 fn vdso() -> Option<&'static VdsoPage> {
-    let ptr = unsafe { VDSO_PAGE };
-    if ptr.is_null() {
+    let address = VDSO_PAGE.load(Ordering::Acquire);
+    if address == 0 {
         None
     } else {
-        Some(unsafe { &*ptr })
+        Some(unsafe { &*(address as *const VdsoPage) })
     }
 }
 

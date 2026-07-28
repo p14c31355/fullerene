@@ -27,7 +27,7 @@ pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
 /// Panic handler implementation that can be used by binaries
 pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
-        let st_ref = unsafe { &*st_ptr.0 };
+        let st_ref = unsafe { &*st_ptr.as_ptr() };
         crate::serial::UEFI_WRITER.lock().init(st_ref.con_out);
 
         // Use write_string_heapless for panic messages to avoid heap allocation initially
@@ -223,7 +223,8 @@ pub fn find_heap_start(descriptors: &[impl MemoryDescriptorValidator]) -> PhysAd
             && desc.get_page_count() >= HEAP_PAGES
             && start >= 0x100000 // Avoid first 1MB reserved region
             && start < 0x4000000 // within first 64MB
-            && crate::common::utils::calculate_region_end(start, desc.get_page_count()) <= 0x4000000
+            && crate::common::utils::calculate_region_end(start, desc.get_page_count())
+                .is_some_and(|end| end <= 0x4000000)
         // ensure entire region fits
         {
             crate::debug_log_no_alloc!("find_heap_start: Found suitable region at 0x{:x}", start);

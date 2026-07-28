@@ -457,9 +457,24 @@ impl WindowManager {
         work_width: u32,
         work_height: u32,
     ) -> bool {
-        let Some(w) = self.windows.iter_mut().find(|w| w.id == id) else {
+        let Some(old_rect) = self
+            .windows
+            .iter()
+            .find(|w| w.id == id)
+            .map(window_dirty_rect)
+        else {
             return false;
         };
+        // The old decorated bounds must be repainted as well.  This is
+        // especially important when restoring from maximized state: the
+        // previous maximized shadow/border otherwise remains on the scanout.
+        self.dirty_rects.push(old_rect);
+
+        let w = self
+            .windows
+            .iter_mut()
+            .find(|w| w.id == id)
+            .expect("window was present when its dirty rect was captured");
         match w.maximized {
             false => {
                 w.restore_rect = Some((w.x, w.y, w.width, w.height));
@@ -740,5 +755,23 @@ mod tests {
         let rects = wm.consume_dirty_rects();
         assert!(!rects.is_empty());
         assert!(wm.consume_dirty_rects().is_empty());
+    }
+
+    #[test]
+    fn maximize_restore_invalidates_old_and_new_decorated_bounds() {
+        let mut wm = WindowManager::new();
+        let id = wm.create_titled_window(100, 120, 240, 160, 0xFF0000, "Settings");
+        let _ = wm.consume_dirty_rects();
+
+        assert!(wm.toggle_maximize(id, 0, 24, 1280, 720));
+        let maximized_rect = window_dirty_rect(wm.windows.iter().find(|w| w.id == id).unwrap());
+        let _ = wm.consume_dirty_rects();
+
+        assert!(wm.toggle_maximize(id, 0, 24, 1280, 720));
+        let restored_rect = window_dirty_rect(wm.windows.iter().find(|w| w.id == id).unwrap());
+        let dirty = wm.consume_dirty_rects();
+
+        assert!(dirty.contains(&maximized_rect));
+        assert!(dirty.contains(&restored_rect));
     }
 }

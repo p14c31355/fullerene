@@ -45,7 +45,7 @@ pub unsafe extern "C" fn efi_main_stage2(
 
         // Store args_ptr (may already be corrupted from world-switch,
         // but we keep it as a best-effort reference).
-        petroleum::early::transition::KERNEL_ARGS = args_ptr;
+        petroleum::early::transition::KERNEL_ARGS = args_ptr as usize;
 
         // Do NOT re-store framebuffer parameters here.
         // efi_main_real_logic already saved the correct values to .data

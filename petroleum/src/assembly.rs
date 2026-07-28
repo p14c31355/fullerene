@@ -1,14 +1,12 @@
-use crate::page_table::constants::BootInfoFrameAllocator;
-
 #[repr(C)]
 pub struct TransitionArgs {
-    pub load_gdt: *const (),
-    pub load_idt: *const (),
+    pub load_gdt: usize,
+    pub load_idt: usize,
     pub phys_offset: u64,
     pub l4_frame: u64,
-    pub allocator: *mut BootInfoFrameAllocator,
+    pub allocator: usize,
     pub kernel_entry: usize,
-    pub kernel_args: *const KernelArgs,
+    pub kernel_args: usize,
 }
 
 #[repr(C, align(16))]
@@ -117,11 +115,7 @@ pub unsafe extern "sysv64" fn landing_zone(_frame: *const TransitionFrame) {
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub unsafe extern "C" fn jump_to_kernel(
-    entry: usize,
-    args: *const KernelArgs,
-    phys_offset: u64,
-) -> ! {
+pub unsafe extern "C" fn jump_to_kernel(entry: usize, args: usize, phys_offset: u64) -> ! {
     unsafe {
         prepare_for_kernel_jump();
         core::arch::asm!(

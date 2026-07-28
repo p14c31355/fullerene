@@ -15,7 +15,7 @@
 
 use crate::apic::{ApicFlags, ApicOffsets};
 use crate::ioapic::IoApicRedirectionEntry;
-use core::ptr::{read_volatile, write_volatile};
+use crate::mmio::MemRegion;
 use x86_64::instructions::port::Port;
 
 // ── Legacy PIC constants (moved from pic.rs to keep PIC logic together) ──
@@ -31,7 +31,6 @@ const ICW4_8086: u8 = 0x01;
 // ── I/O APIC register offsets ──
 
 const IOAPIC_REG_WINDOW: u64 = 0x10;
-const IOAPIC_VER: u8 = 0x01;
 const IOAPIC_REDTBL_START: u8 = 0x10;
 
 // ── ApicController ─────────────────────────────────────────────────────
@@ -44,10 +43,10 @@ const IOAPIC_REDTBL_START: u8 = 0x10;
 #[repr(C)]
 pub struct ApicController {
     /// Virtual base address of the Local APIC MMIO region.
-    lapic_base: u64,
+    lapic: MemRegion,
 
     /// Virtual base address of the I/O APIC MMIO region.
-    ioapic_base: u64,
+    ioapic: MemRegion,
 
     /// Cached Local APIC ID (read from LAPIC register at construction).
     local_apic_id: u8,
@@ -75,17 +74,18 @@ impl ApicController {
     /// version — it must be called **after** the MMIO regions have been mapped.
     pub unsafe fn new(lapic_virt_base: u64, ioapic_virt_base: u64) -> Self {
         // Cache LAPIC ID
-        let lapic_id_reg = (lapic_virt_base + ApicOffsets::ID as u64) as *const u32;
-        let id_raw = unsafe { read_volatile(lapic_id_reg) };
+        let lapic = unsafe { MemRegion::new(lapic_virt_base as usize, 0x1000) };
+        let ioapic = unsafe { MemRegion::new(ioapic_virt_base as usize, 0x1000) };
+        let id_raw = lapic.read32(ApicOffsets::ID as usize);
         let local_apic_id = (id_raw >> 24) as u8;
 
         // Cache I/O APIC version
-        let ioapic_version = unsafe { Self::ioapic_read_raw(ioapic_virt_base, IOAPIC_VER) };
+        let ioapic_version = ioapic.read32(0x10);
         let max_redirection_entry = ((ioapic_version >> 16) & 0xFF) as u8;
 
         Self {
-            lapic_base: lapic_virt_base,
-            ioapic_base: ioapic_virt_base,
+            lapic,
+            ioapic,
             local_apic_id,
             ioapic_version,
             max_redirection_entry,
@@ -100,15 +100,13 @@ impl ApicController {
     /// `ApicOffsets::SPURIOUS_VECTOR`).
     #[inline]
     pub fn lapic_read(&self, offset: u32) -> u32 {
-        let addr = (self.lapic_base + offset as u64) as *const u32;
-        unsafe { read_volatile(addr) }
+        self.lapic.read32(offset as usize)
     }
 
     /// Write a 32‑bit value to a Local APIC register.
     #[inline]
     pub fn lapic_write(&self, offset: u32, value: u32) {
-        let addr = (self.lapic_base + offset as u64) as *mut u32;
-        unsafe { write_volatile(addr, value) }
+        self.lapic.write32(offset as usize, value)
     }
 
     // ── Local APIC — control ────────────────────────────────────────
@@ -169,7 +167,7 @@ impl ApicController {
 
     /// Return the Local APIC virtual base address.
     pub fn lapic_base(&self) -> u64 {
-        self.lapic_base
+        self.lapic.base() as u64
     }
 
     fn wait_for_ipi_delivery(&self) -> Result<(), crate::DriverError> {
@@ -213,36 +211,18 @@ impl ApicController {
 
     // ── I/O APIC — low‑level register access (private) ──────────────
 
-    /// Raw I/O APIC register read (static helper used during construction).
-    unsafe fn ioapic_read_raw(base: u64, reg: u8) -> u32 {
-        unsafe {
-            let select = base as *mut u32;
-            let window = (base + IOAPIC_REG_WINDOW) as *mut u32;
-            write_volatile(select, reg as u32);
-            read_volatile(window)
-        }
-    }
-
-    /// Raw I/O APIC register write (static helper used during construction).
-    unsafe fn ioapic_write_raw(base: u64, reg: u8, value: u32) {
-        unsafe {
-            let select = base as *mut u32;
-            let window = (base + IOAPIC_REG_WINDOW) as *mut u32;
-            write_volatile(select, reg as u32);
-            write_volatile(window, value);
-        }
-    }
-
     /// Read an I/O APIC register (instance method).
     #[inline]
     fn ioapic_read(&self, reg: u8) -> u32 {
-        unsafe { Self::ioapic_read_raw(self.ioapic_base, reg) }
+        self.ioapic.write32(0, reg as u32);
+        self.ioapic.read32(IOAPIC_REG_WINDOW as usize)
     }
 
     /// Write an I/O APIC register (instance method).
     #[inline]
     fn ioapic_write(&self, reg: u8, value: u32) {
-        unsafe { Self::ioapic_write_raw(self.ioapic_base, reg, value) }
+        self.ioapic.write32(0, reg as u32);
+        self.ioapic.write32(IOAPIC_REG_WINDOW as usize, value);
     }
 
     // ── I/O APIC — public API ───────────────────────────────────────

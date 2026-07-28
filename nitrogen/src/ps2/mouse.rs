@@ -287,6 +287,31 @@ pub fn handle_mouse_data(byte: u8) {
     }
 }
 
+/// Drain mouse bytes which are waiting in the PS/2 controller output buffer.
+///
+/// Normally IRQ12 delivers these bytes to [`handle_mouse_data`].  Some QEMU
+/// configurations and firmware APIC setups do not route the legacy mouse IRQ
+/// reliably, so the kernel's idle loop also calls this function as a fallback.
+/// The AUX status bit is checked before every read; keyboard bytes therefore
+/// remain in the controller buffer for the keyboard handler.
+pub fn poll_input() {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let mut status_port: Port<u8> = Port::new(super::PS2_STATUS_PORT);
+        let mut data_port: Port<u8> = Port::new(super::PS2_DATA_PORT);
+
+        // Bound the drain so a malfunctioning controller cannot monopolize
+        // the scheduler between two timer ticks.
+        for _ in 0..32 {
+            let status = unsafe { status_port.read() };
+            if status & 0x21 != 0x21 {
+                break;
+            }
+            let byte = unsafe { data_port.read() };
+            handle_mouse_data(byte);
+        }
+    });
+}
+
 /// Return the current accumulated mouse state without consuming it.
 pub fn latest_state() -> MouseState {
     x86_64::instructions::interrupts::without_interrupts(|| *LATEST_STATE.lock())

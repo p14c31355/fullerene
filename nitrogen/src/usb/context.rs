@@ -248,7 +248,9 @@ impl ControllerManager {
                         dev.function
                     );
                     crate::debug::hint(b"eh_new");
-                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx, health) } {
+                    if let Some(mut hc) =
+                        unsafe { EhciContext::new(mmio_virt as usize, ctx, health) }
+                    {
                         if hc.initialize().is_ok() {
                             log::info!("USB: EHCI init OK, {} ports", hc.n_ports());
                             self.ehci.push(Box::new(hc));
@@ -276,7 +278,9 @@ impl ControllerManager {
                         dev.device,
                         dev.function
                     );
-                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx, health) } {
+                    if let Some(mut hc) =
+                        unsafe { XhciContext::new(mmio_virt as usize, ctx, health) }
+                    {
                         if hc.init().is_ok() {
                             log::info!("USB: xHCI init OK, {} ports", hc.n_ports());
                             self.xhci.push(Box::new(hc));

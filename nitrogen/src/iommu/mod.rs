@@ -236,9 +236,9 @@ pub fn init(rsdp_phys: u64) -> Result<(), crate::DriverError> {
         // Map VT-d MMIO region as uncached (required by VT-d spec)
         let virt = (cbs.map_mmio)(mmio_base as usize, 4096)
             .map_err(|_| crate::DriverError::MmioMappingFailed)?;
-        virt as *mut u8
+        virt
     };
-    let regs = VtdRegisters::new(mmio_virt);
+    let regs = unsafe { VtdRegisters::new(mmio_virt) };
     let ver = regs.version();
     let cap = regs.cap();
     let ecap = regs.ecap();

@@ -6,6 +6,7 @@ use crate::common::{
     EfiStatus, EfiSystemTable, FullereneFramebufferConfig,
 };
 use core::{ffi::c_void, ptr};
+use sealant::{FramebufferRegion, Permissions};
 use spin::Mutex;
 
 macro_rules! log_uefi {
@@ -61,9 +62,18 @@ fn install(config: FullereneFramebufferConfig) {
         .ok()
         .and_then(|stride| stride.checked_mul(config.height as usize))
         .unwrap_or(0);
-    let base = config.address as *mut u32;
+    let region = unsafe {
+        FramebufferRegion::from_address(
+            config.address as usize,
+            (config.stride as usize)
+                .checked_mul(config.height as usize)
+                .unwrap_or(0),
+            Permissions::READ_WRITE,
+        )
+    };
+    let Ok(region) = region else { return };
     for index in 0..pixels {
-        unsafe { base.add(index).write_volatile(GRAY) };
+        let _ = region.write_volatile_at(index * 4, GRAY);
     }
 }
 

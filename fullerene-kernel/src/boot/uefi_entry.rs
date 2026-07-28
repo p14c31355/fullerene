@@ -182,11 +182,11 @@ pub unsafe extern "sysv64" fn efi_main_real_logic(
         .with_phys_offset(physical_memory_offset)
         .with_stack(kernel_stack_top_virt)
         .with_entry(VirtAddr::new(efi_main_stage2 as *const () as u64))
-        .with_args(captured_args_ptr)
-        .with_gdt(core::ptr::null()) // GDT already loaded by gdt::load(), no need to reload during transition
-        .with_idt(core::ptr::null()) // IDT is not yet available during transition
+        .with_args(captured_args_ptr as usize)
+        .with_gdt(0) // GDT already loaded by gdt::load(), no need to reload during transition
+        .with_idt(0) // IDT is not yet available during transition
         .with_page_table(l4_frame)
-        .with_allocator(allocator_ptr)
+        .with_allocator(allocator_ptr as usize)
         .build()
         .expect("Failed to build WorldSwitch");
 

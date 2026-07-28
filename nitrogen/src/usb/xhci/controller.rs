@@ -1,8 +1,5 @@
 //! xHCI controller construction, startup, recovery, and root-port lifecycle.
 
-use alloc::vec::Vec;
-use core::ptr;
-
 use super::context::XhciContext;
 use super::device::DeviceContextSet;
 use super::interrupt::InterruptContext;
@@ -17,6 +14,8 @@ use super::ring::{ErstEntry, RingContext};
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
 use crate::usb::UsbDevice;
+use alloc::vec::Vec;
+use core::ptr;
 
 impl XhciContext {
     /// Create a new xHCI context from the MMIO base address.
@@ -29,14 +28,15 @@ impl XhciContext {
     /// `mmio_base` must reference a mapped xHCI register BAR for the lifetime
     /// of the returned controller.
     pub unsafe fn new(
-        mmio_base: *mut u8,
+        mmio_base: usize,
         ctx: &'static dyn DriverContext,
         health: PciHealth,
     ) -> Option<Self> {
         crate::timing::delay_us(100);
 
         crate::debug::hint(b"xh_cap");
-        let Some(cap_regs) = (unsafe { CapabilityRegisters::read(mmio_base) }) else {
+        let bar_size = crate::usb::HOST_CONTROLLER_BAR_SIZE;
+        let Some(cap_regs) = (unsafe { CapabilityRegisters::read(mmio_base, bar_size) }) else {
             log::warn!("xHCI: invalid or inaccessible capability header");
             return None;
         };
@@ -57,7 +57,6 @@ impl XhciContext {
             return None;
         }
 
-        let bar_size = crate::usb::HOST_CONTROLLER_BAR_SIZE;
         let in_bar =
             |offset: usize, len: usize| offset.checked_add(len).is_some_and(|end| end <= bar_size);
         let op_len = OP_PORTSC_BASE
@@ -101,15 +100,18 @@ impl XhciContext {
         };
         crate::debug::hint(b"xh_legok");
 
-        let op_base = unsafe { mmio_base.add(op_off) };
-        let rt_base = unsafe { mmio_base.add(rt_off) };
-        let db_base = unsafe { mmio_base.add(db_off) };
+        let op_base = mmio_base.checked_add(op_off)?;
+        let rt_base = mmio_base.checked_add(rt_off)?;
+        let db_base = mmio_base.checked_add(db_off)?;
+        let op_size = bar_size.checked_sub(op_off)?;
+        let rt_size = bar_size.checked_sub(rt_off)?;
+        let db_size = bar_size.checked_sub(db_off)?;
         let registers = RegisterContext {
             mmio_base,
             cap: cap_regs,
-            op: unsafe { OperationalRegisters::new(op_base) },
-            runtime: unsafe { RuntimeRegisters::new(rt_base) },
-            doorbell: unsafe { DoorbellRegisters::new(db_base) },
+            op: unsafe { OperationalRegisters::new(op_base, op_size) },
+            runtime: unsafe { RuntimeRegisters::new(rt_base, rt_size) },
+            doorbell: unsafe { DoorbellRegisters::new(db_base, db_size) },
         };
 
         crate::debug::hint(b"xh_dma");

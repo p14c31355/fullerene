@@ -140,14 +140,16 @@ pub fn direct_boot_framebuffer() -> Option<BootFramebuffer> {
     }
     let direct_map_offset = petroleum::common::memory::get_physical_memory_offset() as u64;
     let direct_map_address = params.phys.checked_add(direct_map_offset)?;
-    BootFramebuffer::new(
-        direct_map_address,
-        params.width,
-        params.height,
-        params.stride,
-        params.bpp,
-        params.pixel_format,
-    )
+    unsafe {
+        BootFramebuffer::new(
+            direct_map_address,
+            params.width,
+            params.height,
+            params.stride,
+            params.bpp,
+            params.pixel_format,
+        )
+    }
 }
 
 /// Discovery engine — tries each probe strategy in order.

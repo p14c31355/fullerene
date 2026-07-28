@@ -1,0 +1,18 @@
+[package]
+name = "sealant"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Checked capability types for raw memory access in Fullerene"
+keywords = ["no-std", "memory", "kernel", "raw-pointer"]
+categories = ["no-std", "embedded", "os"]
+
+[lib]
+name = "sealant"
+path = "src/lib.rs"
+
+[features]
+default = []

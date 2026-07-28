@@ -14,40 +14,44 @@ pub struct EfiMemoryDescriptor {
 
 #[derive(Clone, Copy)]
 pub struct MemoryMapDescriptor {
-    pub ptr: *const u8,
+    pub address: usize,
     pub descriptor_size: usize,
 }
 
 impl MemoryMapDescriptor {
-    pub fn new(ptr: *const u8, descriptor_size: usize) -> Self {
+    pub const fn new(address: usize, descriptor_size: usize) -> Self {
         Self {
-            ptr,
+            address,
             descriptor_size,
         }
     }
 
     pub fn type_(&self) -> u32 {
-        unsafe { core::ptr::read_unaligned(self.ptr as *const u32) }
+        unsafe { core::ptr::read_unaligned(self.address as *const u32) }
     }
 
     pub fn padding(&self) -> u32 {
-        unsafe { core::ptr::read_unaligned(self.ptr.add(4) as *const u32) }
+        unsafe { core::ptr::read_unaligned((self.address + 4) as *const u32) }
     }
 
     pub fn physical_start(&self) -> u64 {
-        unsafe { core::ptr::read_unaligned(self.ptr.add(8) as *const u64) }
+        unsafe { core::ptr::read_unaligned((self.address + 8) as *const u64) }
     }
 
     pub fn virtual_start(&self) -> u64 {
-        unsafe { core::ptr::read_unaligned(self.ptr.add(16) as *const u64) }
+        unsafe { core::ptr::read_unaligned((self.address + 16) as *const u64) }
     }
 
     pub fn number_of_pages(&self) -> u64 {
-        unsafe { core::ptr::read_unaligned(self.ptr.add(24) as *const u64) }
+        unsafe { core::ptr::read_unaligned((self.address + 24) as *const u64) }
     }
 
-    pub fn attribute(&self) -> u64 {
-        unsafe { core::ptr::read_unaligned(self.ptr.add(self.descriptor_size - 8) as *const u64) }
+    pub fn attribute(&self) -> Option<u64> {
+        let offset = self
+            .descriptor_size
+            .checked_sub(core::mem::size_of::<u64>())?;
+        let address = self.address.checked_add(offset)?;
+        Some(unsafe { core::ptr::read_unaligned(address as *const u64) })
     }
 }
 

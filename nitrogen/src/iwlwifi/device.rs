@@ -128,7 +128,7 @@ impl IwlWifiDevice {
     #[inline]
     pub(super) fn safe_read32(&self, reg: u32) -> Option<u32> {
         let addr = unsafe { self.mmio.add(reg as usize) } as *const u32;
-        match unsafe { mmio::checked_read_u32(addr, Some(&self.health)) } {
+        match unsafe { mmio::checked_read_u32(addr as usize, Some(&self.health)) } {
             SafeReadResult::Value(v) => Some(v),
             _ => None,
         }
@@ -209,11 +209,12 @@ impl IwlWifiDevice {
             .pre_mmio_access()
             .map_err(|_| IwlError::BarNotAvailable)?;
 
-        let hw_rev_raw =
-            match unsafe { mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize), Some(&health)) } {
-                mmio::SafeReadResult::Value(v) => v,
-                _ => return Err(IwlError::BarNotAvailable),
-            };
+        let hw_rev_raw = match unsafe {
+            mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize) as usize, Some(&health))
+        } {
+            mmio::SafeReadResult::Value(v) => v,
+            _ => return Err(IwlError::BarNotAvailable),
+        };
         let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
         log::info!("iwlwifi: HW_REV={:#06x}", hw_rev);
 
@@ -287,7 +288,7 @@ impl IwlWifiDevice {
                     (*rx_virt.add(i)).addr_lo = dma as u32;
                     (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
                     (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
-                    mmio::cache_flush(rx_virt.add(i) as *const u8);
+                    mmio::cache_flush(rx_virt.add(i) as usize);
                 }
                 rx_bufs.push(buf);
             }
@@ -460,7 +461,7 @@ impl IwlWifiDevice {
                     (*rx_virt.add(i)).addr_lo = dma as u32;
                     (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
                     (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
-                    mmio::cache_flush(rx_virt.add(i) as *const u8);
+                    mmio::cache_flush(rx_virt.add(i) as usize);
                 }
                 rx_bufs.push(buf);
             }
@@ -546,7 +547,7 @@ impl IwlWifiDevice {
     pub fn read_mac(mmio: *mut u32, health: Option<&PciHealth>) -> [u8; 6] {
         let checked_read = |reg: u32| -> Option<u32> {
             let addr = unsafe { mmio.add(reg as usize) } as *const u32;
-            match unsafe { mmio::checked_read_u32(addr, health) } {
+            match unsafe { mmio::checked_read_u32(addr as usize, health) } {
                 SafeReadResult::Value(v) => Some(v),
                 _ => None,
             }

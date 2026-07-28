@@ -4,7 +4,7 @@
 //! [`Mmio`], [`OperationalRegisters`], [`RuntimeRegisters`],
 //! and [`DoorbellRegisters`].
 
-use core::ptr;
+use crate::mmio::MemRegion;
 
 // ══════════════════════════════════════════════════════════════
 //  Register Offsets
@@ -87,12 +87,15 @@ pub const CRCR_CRR: u32 = 1 << 3;
 //  Mmio — shared MMIO accessor
 // ══════════════════════════════════════════════════════════════
 
-struct Mmio(*mut u8);
+struct Mmio(MemRegion);
 
 impl Mmio {
+    unsafe fn new(base: usize, size: usize) -> Self {
+        Self(unsafe { MemRegion::new(base, size) })
+    }
+
     fn read32(&self, off: usize) -> u32 {
-        let p = unsafe { self.0.add(off) as *const u32 };
-        let value = unsafe { ptr::read_volatile(p) };
+        let value = self.0.read32(off);
         if value == u32::MAX {
             log::warn!(
                 "xHCI: MMIO read at offset {:#x} completed with all ones",
@@ -103,8 +106,7 @@ impl Mmio {
     }
 
     fn write32(&self, off: usize, val: u32) {
-        let p = unsafe { self.0.add(off) as *mut u32 };
-        unsafe { ptr::write_volatile(p, val) };
+        self.0.write32(off, val);
     }
 
     fn read64(&self, off: usize) -> u64 {
@@ -184,8 +186,14 @@ pub struct HccParams1 {
 }
 
 impl CapabilityRegisters {
-    pub unsafe fn read(mmio: *mut u8) -> Option<Self> {
-        let registers = Mmio(mmio);
+    /// Read the capability window from a mapped xHCI BAR.
+    ///
+    /// # Safety
+    ///
+    /// `mmio` must identify a live, readable MMIO mapping of at least `size`
+    /// bytes for the duration of this operation.
+    pub unsafe fn read(mmio: usize, size: usize) -> Option<Self> {
+        let registers = unsafe { Mmio::new(mmio, size) };
         let header = registers.read32(CAP_CAPLENGTH);
         let caplength = header as u8;
         if header == u32::MAX || caplength < 0x20 || caplength & 3 != 0 {
@@ -289,8 +297,13 @@ impl PortSc {
 pub struct OperationalRegisters(Mmio);
 
 impl OperationalRegisters {
-    pub unsafe fn new(base: *mut u8) -> Self {
-        Self(Mmio(base))
+    /// Create an operational-register view over a validated BAR sub-window.
+    ///
+    /// # Safety
+    ///
+    /// `base..base + size` must be a live, readable and writable MMIO mapping.
+    pub unsafe fn new(base: usize, size: usize) -> Self {
+        Self(unsafe { Mmio::new(base, size) })
     }
 
     pub fn read(&self, off: usize) -> u32 {
@@ -371,8 +384,13 @@ impl OperationalRegisters {
 pub struct RuntimeRegisters(Mmio);
 
 impl RuntimeRegisters {
-    pub unsafe fn new(base: *mut u8) -> Self {
-        Self(Mmio(base))
+    /// Create a runtime-register view over a validated BAR sub-window.
+    ///
+    /// # Safety
+    ///
+    /// `base..base + size` must be a live, readable and writable MMIO mapping.
+    pub unsafe fn new(base: usize, size: usize) -> Self {
+        Self(unsafe { Mmio::new(base, size) })
     }
 
     reg32!(iman, set_iman, RT_IMAN);
@@ -389,8 +407,13 @@ impl RuntimeRegisters {
 pub struct DoorbellRegisters(Mmio);
 
 impl DoorbellRegisters {
-    pub unsafe fn new(base: *mut u8) -> Self {
-        Self(Mmio(base))
+    /// Create a doorbell-register view over a validated BAR sub-window.
+    ///
+    /// # Safety
+    ///
+    /// `base..base + size` must be a live, readable and writable MMIO mapping.
+    pub unsafe fn new(base: usize, size: usize) -> Self {
+        Self(unsafe { Mmio::new(base, size) })
     }
 
     pub fn ring(&self, slot: u32, target: u32) {
@@ -406,7 +429,7 @@ impl DoorbellRegisters {
 // ══════════════════════════════════════════════════════════════
 
 pub struct RegisterContext {
-    pub mmio_base: *mut u8,
+    pub mmio_base: usize,
     pub cap: CapabilityRegisters,
     pub op: OperationalRegisters,
     pub runtime: RuntimeRegisters,
@@ -431,8 +454,8 @@ fn next_extended_cap(offset: usize, next: u8) -> Option<usize> {
         .flatten()
 }
 
-pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
-    let m = Mmio(mmio_base);
+pub fn dump_extended_capabilities(mmio_base: usize, ext_cap_ptr: u16) {
+    let m = unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
     while extended_cap_in_bounds(off, 12) {
@@ -481,11 +504,11 @@ pub fn dump_extended_capabilities(mmio_base: *mut u8, ext_cap_ptr: u16) {
 }
 
 pub fn parse_port_protocols(
-    mmio_base: *mut u8,
+    mmio_base: usize,
     ext_cap_ptr: u16,
     n_ports: u32,
 ) -> alloc::vec::Vec<u32> {
-    let m = Mmio(mmio_base);
+    let m = unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
     let n_words = ((n_ports + 31) / 32).max(1) as usize;
     // Unknown ports conservatively default to USB2. Issuing WPR to an
     // unclassified USB2 port can wedge its PHY.
@@ -537,17 +560,14 @@ pub fn parse_port_protocols(
     bitmap
 }
 
-pub fn try_legacy_handoff(
-    mmio_base: *mut u8,
-    ext_cap_ptr: u16,
-) -> Result<bool, crate::DriverError> {
+pub fn try_legacy_handoff(mmio_base: usize, ext_cap_ptr: u16) -> Result<bool, crate::DriverError> {
     const BIOS_OWNED: u32 = 1 << 16;
     const OS_OWNED: u32 = 1 << 24;
     // Preserve reserved fields, disable SMI enables, and clear RW1C events.
     const LEGACY_DISABLE_SMI: u32 = (0x7 << 1) | (0xFF << 5) | (0x7 << 17);
     const LEGACY_SMI_EVENTS: u32 = 0x7 << 29;
 
-    let m = Mmio(mmio_base);
+    let m = unsafe { Mmio::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
     let mut off = ext_cap_ptr as usize;
     let mut iters = 0;
     while extended_cap_in_bounds(off, 8) {
@@ -678,8 +698,8 @@ mod tests {
             Self { mem }
         }
 
-        fn base(&self) -> *mut u8 {
-            self.mem.as_ptr() as *mut u8
+        fn base(&self) -> usize {
+            self.mem.as_ptr() as usize
         }
 
         // Simulate a write that might trigger HW auto-response
@@ -730,7 +750,7 @@ mod tests {
     fn test_register_read_write() {
         let op_base = 0x20usize;
         let sim = SimHc::new(2);
-        let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+        let regs = unsafe { OperationalRegisters::new(sim.base() + op_base, MMIO_SIZE - op_base) };
 
         // USBCMD read/write
         assert_eq!(regs.usbcmd(), 0);
@@ -754,7 +774,7 @@ mod tests {
     fn test_portsc_power_and_ccs() {
         let op_base = 0x20usize;
         let mut sim = SimHc::new(2);
-        let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+        let regs = unsafe { OperationalRegisters::new(sim.base() + op_base, MMIO_SIZE - op_base) };
 
         // Initial state: PP=1, PLS=RxDetect(5), CCS=0
         let ps = regs.portsc(0);
@@ -779,7 +799,7 @@ mod tests {
     #[test]
     fn test_capability_registers_read() {
         let sim = SimHc::new(4);
-        let cap = unsafe { CapabilityRegisters::read(sim.base()) }.unwrap();
+        let cap = unsafe { CapabilityRegisters::read(sim.base(), MMIO_SIZE) }.unwrap();
         assert_eq!(cap.caplength, 0x20);
         assert_eq!(cap.hci_version, 0x0110);
         assert_eq!(cap.db_offset, 0x2000);
@@ -810,7 +830,7 @@ mod tests {
         let initial = PORTSC_PP | PORTSC_CSC | PORTSC_PEC;
         sim.write_hw(port_off, initial);
 
-        let regs = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+        let regs = unsafe { OperationalRegisters::new(sim.base() + op_base, MMIO_SIZE - op_base) };
         regs.update_portsc(0, PORTSC_PED, PORTSC_PP); // set PED, clear PP
 
         // A memory-backed fake cannot emulate write-1-to-clear semantics. Verify
@@ -855,7 +875,7 @@ mod tests {
     fn test_runtime_registers() {
         let rt_base = 0x1000usize;
         let sim = SimHc::new(2);
-        let rt = unsafe { RuntimeRegisters::new(sim.base().add(rt_base)) };
+        let rt = unsafe { RuntimeRegisters::new(sim.base() + rt_base, MMIO_SIZE - rt_base) };
 
         // Initially 0
         assert_eq!(rt.iman(), 0);
@@ -878,15 +898,16 @@ mod tests {
     fn test_doorbell_ring() {
         let db_base = 0x2000usize;
         let sim = SimHc::new(2);
-        let db = unsafe { DoorbellRegisters::new(sim.base().add(db_base)) };
+        let db = unsafe { DoorbellRegisters::new(sim.base() + db_base, MMIO_SIZE - db_base) };
 
         db.ring(0, 0);
-        let val = unsafe { ptr::read_volatile(sim.base().add(db_base) as *const u32) };
+        let region = unsafe { MemRegion::new(sim.base(), MMIO_SIZE) };
+        let val = region.read32(db_base);
         assert_eq!(val, 0);
 
         // Ring doorbell for slot 5, DCI=1 (EP0): DB Target in bits [7:0]
         db.ring(5, 1);
-        let val = unsafe { ptr::read_volatile(sim.base().add(db_base + 5 * 4) as *const u32) };
+        let val = region.read32(db_base + 5 * 4);
         assert_eq!(val, 1); // DB Target=1, stream ID=0
     }
 
@@ -896,7 +917,7 @@ mod tests {
         //   write PP → hardware sets CCS → RxDetect kick
         let op_base = 0x20usize;
         let mut sim = SimHc::new(2);
-        let op = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+        let op = unsafe { OperationalRegisters::new(sim.base() + op_base, MMIO_SIZE - op_base) };
 
         // Step 1: Simulate what init_ports does — write PORTSC with PP
         for p in 0..2 {
@@ -947,7 +968,7 @@ mod tests {
     fn test_usbsts_halted_transition() {
         let op_base = 0x20usize;
         let mut sim = SimHc::new(1);
-        let op = unsafe { OperationalRegisters::new(sim.base().add(op_base)) };
+        let op = unsafe { OperationalRegisters::new(sim.base() + op_base, MMIO_SIZE - op_base) };
 
         // Initially halted
         assert_ne!(op.usbsts() & USBSTS_HCH, 0);

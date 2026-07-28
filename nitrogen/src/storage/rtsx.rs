@@ -1101,7 +1101,7 @@ pub fn init(context: &dyn DriverContext) {
             PciHealth::new(&device).with_upstream_bridge(bridge.bus, bridge.device, bridge.function)
         },
     );
-    let mmio = unsafe { MemRegion::new(virtual_address as *mut u8, 0x1000) };
+    let mmio = unsafe { MemRegion::new(virtual_address, 0x1000) };
     let device_id =
         (u16::from(device.bus) << 8) | (u16::from(device.device) << 3) | u16::from(device.function);
     let allocate_dma = |size| {

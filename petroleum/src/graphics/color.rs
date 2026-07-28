@@ -1,12 +1,11 @@
 use embedded_graphics::pixelcolor::Rgb888;
 use embedded_graphics::prelude::*;
 
-use core::marker::{Send, Sync};
-use core::ptr::{read_volatile, write_volatile};
-
 #[cfg(target_os = "uefi")]
 use crate::common::uefi::FullereneFramebufferConfig;
 use crate::common::{EfiGraphicsPixelFormat, VgaFramebufferConfig};
+use core::marker::{Send, Sync};
+use sealant::{FramebufferRegion, Permissions};
 use spin::Once;
 
 // --- FramebufferInfo ---
@@ -187,7 +186,7 @@ static SIMPLE_FRAMEBUFFER_CONFIG: Once<SimpleFramebufferConfig> = Once::new();
 pub fn get_simple_framebuffer() -> Option<SimpleFramebuffer> {
     SIMPLE_FRAMEBUFFER_CONFIG
         .get()
-        .map(|cfg| SimpleFramebuffer::new(*cfg))
+        .map(|cfg| unsafe { SimpleFramebuffer::new(*cfg) })
 }
 
 pub fn init_simple_framebuffer_config(config: SimpleFramebufferConfig) {
@@ -196,7 +195,8 @@ pub fn init_simple_framebuffer_config(config: SimpleFramebufferConfig) {
 
 /// Simple Framebuffer struct for direct MMIO pixel manipulation (Redox vesad-style)
 pub struct SimpleFramebuffer {
-    pub base: usize, // Use usize instead of raw pointer to avoid Send/Sync issues
+    framebuffer: FramebufferRegion<'static>,
+    pub base: usize,
     pub width: usize,
     pub height: usize,
     pub stride: usize, // bytes per row
@@ -208,8 +208,22 @@ pub struct SimpleFramebuffer {
 
 impl SimpleFramebuffer {
     /// Create a new framebuffer from GOP config
-    pub fn new(config: SimpleFramebufferConfig) -> Self {
+    /// Create a framebuffer writer from an already mapped framebuffer.
+    ///
+    /// # Safety
+    /// `config.base_addr..base_addr + height * stride` must be a live,
+    /// writable framebuffer mapping.
+    pub unsafe fn new(config: SimpleFramebufferConfig) -> Self {
+        let len = config
+            .height
+            .checked_mul(config.stride)
+            .expect("framebuffer size overflow");
+        let framebuffer = unsafe {
+            FramebufferRegion::from_address(config.base_addr, len, Permissions::READ_WRITE)
+                .expect("invalid framebuffer mapping")
+        };
         Self {
+            framebuffer,
             base: config.base_addr,
             width: config.width,
             height: config.height,
@@ -226,22 +240,13 @@ impl SimpleFramebuffer {
             let row_base = self.base + y * self.stride;
             for x in 0..self.width {
                 let offset = x * self.bytes_per_pixel;
-                let pixel_addr = (row_base + offset) as *mut u8;
-
-                // Check that the calculated pixel_addr is within the valid framebuffer memory region
-                let pixel_addr_usize = pixel_addr as usize;
-                if pixel_addr_usize < self.base
-                    || (pixel_addr_usize + self.bytes_per_pixel)
-                        > (self.base + self.height * self.stride)
-                {
-                    continue;
-                }
-
-                unsafe {
-                    for i in 0..self.bytes_per_pixel {
-                        if i < color_bytes.len() {
-                            write_volatile(pixel_addr.add(i), color_bytes[i]);
-                        }
+                for i in 0..self.bytes_per_pixel.min(color_bytes.len()) {
+                    if self
+                        .framebuffer
+                        .write_volatile_at(row_base - self.base + offset + i, color_bytes[i])
+                        .is_err()
+                    {
+                        continue;
                     }
                 }
             }
@@ -259,40 +264,39 @@ impl SimpleFramebuffer {
         }
         let row_base = self.base + y * self.stride;
         let offset = x * self.bytes_per_pixel;
-        let pixel_addr = (row_base + offset) as *mut u8;
-
-        // Check that the calculated pixel_addr is within the valid framebuffer memory region
-        let pixel_addr_usize = pixel_addr as usize;
-        if pixel_addr_usize < self.base
-            || (pixel_addr_usize + self.bytes_per_pixel) > (self.base + self.height * self.stride)
-        {
-            return;
-        }
-
-        unsafe {
-            match (self.bytes_per_pixel, self.pixel_format) {
-                // 32 bpp BGRA → LE bytes naturally [B, G, R, A] from `0x00RRGGBB`
-                (4, Some(crate::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor))
-                | (4, None) => {
-                    write_volatile(pixel_addr as *mut u32, color);
-                }
-                // 32 bpp RGBA → LE should be [R, G, B, A]; swap R↔B in the u32 value
-                (4, Some(crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor)) => {
-                    let swapped = (color & 0xFF00FF00)
-                        | ((color & 0x00FF0000) >> 16)
-                        | ((color & 0x000000FF) << 16);
-                    write_volatile(pixel_addr as *mut u32, swapped);
-                }
-                // 8 bpp VGA (indexed) – use low byte
-                (1, _) => {
-                    write_volatile(pixel_addr, (color & 0xFF) as u8);
-                }
-                // fallback: byte-by-byte (type-agnostic)
-                _ => {
-                    let color_bytes = color.to_le_bytes();
-                    for i in 0..self.bytes_per_pixel.min(4) {
-                        write_volatile(pixel_addr.add(i), color_bytes[i]);
-                    }
+        let offset = row_base - self.base + offset;
+        match (self.bytes_per_pixel, self.pixel_format) {
+            // 32 bpp BGRA → LE bytes naturally [B, G, R, A] from `0x00RRGGBB`
+            (
+                4,
+                Some(crate::common::EfiGraphicsPixelFormat::PixelBlueGreenRedReserved8BitPerColor),
+            )
+            | (4, None) => {
+                let _ = self.framebuffer.write_volatile_at(offset, color);
+            }
+            // 32 bpp RGBA → LE should be [R, G, B, A]; swap R↔B in the u32 value
+            (
+                4,
+                Some(crate::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor),
+            ) => {
+                let swapped = (color & 0xFF00FF00)
+                    | ((color & 0x00FF0000) >> 16)
+                    | ((color & 0x000000FF) << 16);
+                let _ = self.framebuffer.write_volatile_at(offset, swapped);
+            }
+            // 8 bpp VGA (indexed) – use low byte
+            (1, _) => {
+                let _ = self
+                    .framebuffer
+                    .write_volatile_at(offset, (color & 0xFF) as u8);
+            }
+            // fallback: byte-by-byte (type-agnostic)
+            _ => {
+                let color_bytes = color.to_le_bytes();
+                for i in 0..self.bytes_per_pixel.min(4) {
+                    let _ = self
+                        .framebuffer
+                        .write_volatile_at(offset + i, color_bytes[i]);
                 }
             }
         }
@@ -320,8 +324,12 @@ impl SimpleFramebuffer {
         }
         let row_base = self.base + y * self.stride;
         let offset = x * self.bytes_per_pixel;
-        let pixel_addr = (row_base + offset) as *const u32;
-        unsafe { read_volatile(pixel_addr) }
+        let offset = row_base - self.base + offset;
+        if self.bytes_per_pixel >= 4 {
+            self.framebuffer.read_volatile_at(offset).unwrap_or(0)
+        } else {
+            u32::from(self.framebuffer.read_volatile_at(offset).unwrap_or(0u8))
+        }
     }
 
     /// Get framebuffer dimensions

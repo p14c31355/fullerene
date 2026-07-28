@@ -19,6 +19,7 @@
 //! The runtime kernel should use `graphics::PRIMARY_RENDERER` instead.
 
 use core::fmt::{self, Write};
+use sealant::{FramebufferRegion, Permissions};
 use spin::Mutex;
 
 // ── Serial port constants ──────────────────────────────────────────────
@@ -46,12 +47,13 @@ unsafe fn write_serial_raw(bytes: &[u8]) {
 }
 
 // ── VGA text buffer ────────────────────────────────────────────────────
-const VGA_ADDRESS: *mut u16 = 0xB8000 as *mut u16;
+const VGA_ADDRESS: usize = 0xB8000;
 const VGA_WIDTH: usize = 80;
 const VGA_HEIGHT: usize = 25;
 
 /// VGA text-mode writer used by the early console.
 struct VgaTextWriter {
+    framebuffer: usize,
     row: usize,
     col: usize,
     color: u8, // high nibble = bg, low nibble = fg
@@ -60,6 +62,7 @@ struct VgaTextWriter {
 impl VgaTextWriter {
     const fn new() -> Self {
         Self {
+            framebuffer: VGA_ADDRESS,
             row: 0,
             col: 0,
             color: 0x0F, // white on black
@@ -86,36 +89,46 @@ impl VgaTextWriter {
                     }
                 }
                 let idx = self.row * VGA_WIDTH + self.col;
-                unsafe {
-                    VGA_ADDRESS
-                        .add(idx)
-                        .write_volatile((self.color as u16) << 8 | c as u16);
-                }
+                let region = self.region();
+                let _ = region.write_volatile_at(
+                    idx * core::mem::size_of::<u16>(),
+                    (self.color as u16) << 8 | c as u16,
+                );
                 self.col += 1;
             }
         }
     }
 
     fn scroll(&mut self) {
+        let region = self.region();
         for row in 1..VGA_HEIGHT {
             for col in 0..VGA_WIDTH {
                 let src = row * VGA_WIDTH + col;
                 let dst = (row - 1) * VGA_WIDTH + col;
-                unsafe {
-                    let val = VGA_ADDRESS.add(src).read_volatile();
-                    VGA_ADDRESS.add(dst).write_volatile(val);
-                }
+                let val = region
+                    .read_volatile_at::<u16>(src * core::mem::size_of::<u16>())
+                    .unwrap_or(0);
+                let _ = region.write_volatile_at(dst * core::mem::size_of::<u16>(), val);
             }
         }
         let blank = (self.color as u16) << 8 | b' ' as u16;
         for col in 0..VGA_WIDTH {
             let idx = (VGA_HEIGHT - 1) * VGA_WIDTH + col;
-            unsafe {
-                VGA_ADDRESS.add(idx).write_volatile(blank);
-            }
+            let _ = region.write_volatile_at(idx * core::mem::size_of::<u16>(), blank);
         }
         self.row = VGA_HEIGHT - 1;
         self.col = 0;
+    }
+
+    fn region(&self) -> FramebufferRegion<'static> {
+        unsafe {
+            FramebufferRegion::from_address(
+                self.framebuffer,
+                VGA_WIDTH * VGA_HEIGHT * core::mem::size_of::<u16>(),
+                Permissions::READ_WRITE,
+            )
+            .expect("invalid VGA framebuffer region")
+        }
     }
 }
 

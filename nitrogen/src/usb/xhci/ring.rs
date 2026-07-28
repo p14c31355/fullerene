@@ -157,7 +157,7 @@ impl Ring {
         }
         // Flush the TRB from cache so the xHC sees the latest data via DMA.
         let trb_addr = &entries[enq_idx] as *const Trb as *const u8;
-        mmio::cache_flush(trb_addr);
+        mmio::cache_flush(trb_addr as usize);
 
         self.enq += 1;
         if self.enq >= self.len - 1 {
@@ -169,7 +169,7 @@ impl Ring {
                 );
             }
             let link_addr = &entries[link].flags as *const u32 as *const u8;
-            mmio::cache_flush(link_addr);
+            mmio::cache_flush(link_addr as usize);
             self.enq = 0;
             self.cycle ^= 1;
         }

@@ -52,7 +52,7 @@ pub static FRAMEBUFFER_BIOS: Mutex<Option<petroleum::FramebufferWriter<u8>>> = M
 pub fn init_vga(config: &VgaFramebufferConfig) {
     init_vga_graphics(); // Use petroleum function
 
-    let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config));
+    let writer = unsafe { FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(config)) };
     writer.clear_screen();
 
     #[cfg(target_os = "uefi")]
@@ -121,7 +121,9 @@ pub fn init_fallback_graphics() -> Result<(), petroleum::SystemError> {
             height: 200,
             bpp: 8,
         };
-        let writer = FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(&vga_config));
+        let writer = unsafe {
+            FramebufferWriter::<u8>::new(FramebufferInfo::new_vga(&vga_config))
+        };
 
         unsafe {
             WRITER_UEFI = Some(petroleum::UefiFramebufferWriter::Vga8(writer.clone()));

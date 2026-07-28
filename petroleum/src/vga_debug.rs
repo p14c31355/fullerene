@@ -2,6 +2,17 @@
 //! Writes directly to the VGA text buffer at 0xB8000.
 //! Does NOT depend on any UEFI services, heap, or alloc.
 
+use sealant::{FramebufferRegion, Permissions};
+
+const VGA_ADDRESS: usize = 0xB8000;
+
+fn vga_region() -> FramebufferRegion<'static> {
+    unsafe {
+        FramebufferRegion::from_address(VGA_ADDRESS, 80 * 25 * 2, Permissions::READ_WRITE)
+            .expect("invalid VGA framebuffer region")
+    }
+}
+
 /// Write a single ASCII character to the VGA text buffer at position (row, col).
 /// Row 0-24, col 0-79.  White-on-black attribute.
 #[inline]
@@ -9,10 +20,10 @@ pub fn vga_putc(row: usize, col: usize, c: u8) {
     if row >= 25 || col >= 80 {
         return;
     }
-    let vga = 0xB8000usize as *mut u16;
-    unsafe {
-        vga.add(row * 80 + col).write_volatile((c as u16) | 0x0F00);
-    }
+    let _ = vga_region().write_volatile_at(
+        (row * 80 + col) * core::mem::size_of::<u16>(),
+        (c as u16) | 0x0F00,
+    );
 }
 
 /// Write a byte string to the VGA text buffer starting at position (row, col).

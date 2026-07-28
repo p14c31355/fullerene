@@ -200,6 +200,10 @@ impl UefiInitContext {
         };
         let desc_sz = self.descriptor_size;
         let raw_size = self.memory_map_size;
+        if desc_sz == 0 {
+            debug_serial(b"Invalid zero-sized UEFI descriptor\n");
+            return;
+        }
         let actual_bytes = (raw_size / desc_sz) * desc_sz;
         let max = actual_bytes / desc_sz;
 
@@ -207,11 +211,22 @@ impl UefiInitContext {
             let mut count = 0;
             let limit = crate::heap::MAX_DESCRIPTORS.min(max);
             for i in 0..limit {
-                let offset = i * desc_sz;
+                let Some(offset) = i.checked_mul(desc_sz) else {
+                    debug_serial(b"UEFI descriptor offset overflow\n");
+                    return;
+                };
                 if offset >= actual_bytes {
                     break;
                 }
-                let desc = MemoryMapDescriptor::new(base_ptr.add(offset), desc_sz);
+                let Some(desc_address) = petroleum::common::utils::calculate_descriptor_address(
+                    base_ptr as usize,
+                    i,
+                    desc_sz,
+                ) else {
+                    debug_serial(b"UEFI descriptor address overflow\n");
+                    return;
+                };
+                let desc = MemoryMapDescriptor::new(desc_address, desc_sz);
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
                     continue;
                 }

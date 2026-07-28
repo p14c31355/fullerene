@@ -280,7 +280,9 @@ pub fn try_init_wifi_device_step() {
             let mac_acquired = {
                 let ctx = WIFI_INIT_CTX.lock();
                 let health = ctx.health.as_ref();
-                match unsafe { mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize), health) } {
+                match unsafe {
+                    mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize) as usize, health)
+                } {
                     mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
                     mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
                         mmio::disarm_mmio_watchdog();
@@ -315,7 +317,10 @@ pub fn try_init_wifi_device_step() {
                                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                                 }
                                 let clock_ready = match unsafe {
-                                    mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize), health)
+                                    mmio::checked_read_u32(
+                                        mmio.add(CSR_GP_CNTRL as usize) as usize,
+                                        health,
+                                    )
                                 } {
                                     mmio::SafeReadResult::Value(v)
                                         if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
@@ -469,7 +474,7 @@ pub fn try_init_wifi_device_step() {
                         (*rx_virt.add(i)).addr_lo = dma as u32;
                         (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
                         (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
-                        mmio::cache_flush(rx_virt.add(i) as *const u8);
+                        mmio::cache_flush(rx_virt.add(i) as usize);
                     }
                     rx_bufs.push(buf);
                 }

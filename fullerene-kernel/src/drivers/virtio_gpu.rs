@@ -91,7 +91,8 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
         pixel_format: Some(fb_config.pixel_format),
         colors: petroleum::graphics::color::ColorScheme::UEFI_GREEN_ON_BLACK,
     };
-    let writer = petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info);
+    let writer =
+        unsafe { petroleum::graphics::framebuffer::FramebufferWriter::<u32>::new(fb_info) };
     let renderer = petroleum::graphics::framebuffer::UefiFramebufferWriter::Uefi32(writer);
 
     log::info!(

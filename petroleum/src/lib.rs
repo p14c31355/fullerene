@@ -29,6 +29,7 @@ pub use error::MemoryError;
 pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;
+pub use sealant;
 
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     buffer: &mut B,
@@ -71,16 +72,21 @@ pub static FULLERENE_FRAMEBUFFER_CONFIG: Once<Mutex<Option<FullereneFramebufferC
     Once::new();
 
 #[derive(Clone, Copy)]
-pub struct UefiSystemTablePtr(pub *mut EfiSystemTable);
-unsafe impl Send for UefiSystemTablePtr {}
-unsafe impl Sync for UefiSystemTablePtr {}
+pub struct UefiSystemTablePtr(pub usize);
+
+impl UefiSystemTablePtr {
+    /// Return the firmware pointer at the narrow UEFI boundary.
+    pub unsafe fn as_ptr(self) -> *mut EfiSystemTable {
+        self.0 as *mut EfiSystemTable
+    }
+}
 
 pub static UEFI_SYSTEM_TABLE: Mutex<Option<UefiSystemTablePtr>> = Mutex::new(None);
 
 pub fn init_uefi_system_table(system_table: *mut EfiSystemTable) {
     let _ = UEFI_SYSTEM_TABLE
         .lock()
-        .insert(UefiSystemTablePtr(system_table));
+        .insert(UefiSystemTablePtr(system_table as usize));
 }
 
 pub fn halt_loop() -> ! {
