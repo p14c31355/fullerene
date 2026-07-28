@@ -217,8 +217,26 @@ destructive BAR policy.
 Formatting, `cargo check -p nitrogen`, and dependent kernel/runtime checks
 pass after this change; the Nitrogen test suite also passes (74 tests). The
 current development host exposes only Intel Ethernet `8086:15b8`, not one of
-the supported iwlwifi IDs, so the target machine must still be booted with
-serial logging to confirm that the
-probe advances through `pci_probe_enter`, `probe_scan_done`, and
-`probe_pci_only done`; until then this entry is a code-level resolution with
-physical validation pending.
+the supported iwlwifi IDs. The affected target machine subsequently advanced
+past PCI probe and reached `step: mmio_poll_mac`, confirming that the original
+PCI-probe hang was resolved; the next MMIO power-up stage then exposed a
+follow-up issue.
+
+### Follow-up — MAC clock did not become ready
+
+The initial MMIO sequence wrote only `MAC_ACCESS_REQ` after software reset.
+Linux's iwlwifi CSR definition specifies that `MAC_CLOCK_READY` remains zero
+after reset until the host sets `INIT_DONE`; the timeout fallback also wrote
+the wrong bit (`1 << 1`). The sequence now sets the named
+`MAC_ACCESS_REQ | INIT_DONE` bits both on entry and during recovery. The
+incremental path additionally reports `mmio_mac_clock_wait`, so a subsequent
+machine run distinguishes a completed CSR read with an unready clock from a
+PCI master-abort/device-gone result. `PciHealth` is copied out of the global
+initialization lock before MMIO reads, preventing a stalled transaction from
+holding the state lock needed by watchdog recovery.
+
+Formatting, workspace checks, and the Nitrogen test suite (74 tests) pass.
+The target machine still needs to boot this follow-up build. Success is
+`mmio_read_mac` (and then DMA allocation); a continued
+`mmio_mac_clock_wait` indicates that the remaining issue is device power,
+link, or an omitted 7265-specific APM sequence rather than PCI discovery.

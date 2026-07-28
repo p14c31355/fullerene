@@ -221,7 +221,10 @@ impl IwlWifiDevice {
         Self::reset_device(mmio);
 
         unsafe {
-            core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
+            core::ptr::write_volatile(
+                mmio.add(CSR_GP_CNTRL as usize),
+                CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
         }
         mmio::write_barrier();
         if !health.is_device_present() {
@@ -384,7 +387,10 @@ impl IwlWifiDevice {
 
         debug::print("iwlwifi", "mac_clock_req");
         unsafe {
-            core::ptr::write_volatile(mmio.add(CSR_GP_CNTRL as usize), CSR_GP_CNTRL_MAC_ACCESS_REQ);
+            core::ptr::write_volatile(
+                mmio.add(CSR_GP_CNTRL as usize),
+                CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
         }
         mmio::write_barrier();
         if !health.is_device_present() {

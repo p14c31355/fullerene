@@ -31,6 +31,7 @@ pub const CSR_RESET_BIT_SW: u32 = 1 << 7;
 pub const CSR_RESET_BIT_MASTER_DISABLED: u32 = 1 << 8;
 pub const CSR_RESET_BIT_STOP_MASTER: u32 = 1 << 9;
 pub const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3;
+pub const CSR_GP_CNTRL_INIT_DONE: u32 = 1 << 2;
 pub const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
 
 /// FH register for RX ring base address (BADR).

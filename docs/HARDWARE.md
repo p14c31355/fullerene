@@ -70,11 +70,15 @@ the affected hardware. The upstream bridge is taken from the same scan rather
 than triggering a second full bus walk. PCI config-lock acquisition is bounded
 so an abandoned transaction cannot permanently spin the CPU.
 
-This is a code-level fix for the `step: start pci_probe` hang path. Physical
-validation on the target machine is still required; until that test is done,
-the support level remains Alpha. If the target still stops, capture the next
-`iwlwifi`/`pci` phase marker and the serial log so the remaining failure can be
-distinguished between PCI discovery, MMIO, DMA, and firmware alive.
+The affected real machine has now been observed to advance past
+`step: start pci_probe` and reach `step: mmio_poll_mac`, confirming that the
+non-destructive PCI/BAR probe fixes the original hang. The post-reset CSR
+sequence sets both `MAC_ACCESS_REQ` and `INIT_DONE`, as required before
+`MAC_CLOCK_READY` can become set; the recovery path uses the same bits. The
+diagnostic marker `mmio_mac_clock_wait` means the CSR read completed but the
+clock was not ready, while `mmio_read_mac` confirms that this stage passed.
+Physical validation of the follow-up build is still required, so the support
+level remains Alpha.
 
 The Realtek RTS5249 reader (`10ec:5249`) is matched by vendor/device identity,
 because PCI class `0xff` is a real vendor-specific class rather than a driver

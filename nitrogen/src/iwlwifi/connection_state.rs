@@ -232,7 +232,7 @@ pub fn try_init_wifi_device_step() {
             unsafe {
                 core::ptr::write_volatile(
                     mmio.add(CSR_GP_CNTRL as usize),
-                    CSR_GP_CNTRL_MAC_ACCESS_REQ,
+                    CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
                 );
             }
             mmio::write_barrier();
@@ -277,66 +277,65 @@ pub fn try_init_wifi_device_step() {
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }
-            let mac_acquired = {
-                let ctx = WIFI_INIT_CTX.lock();
-                let health = ctx.health.as_ref();
-                match unsafe {
-                    mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize) as usize, health)
-                } {
-                    mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
-                    mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
-                        mmio::disarm_mmio_watchdog();
-                        debug::print("iwlwifi", "step: ERR mac_abort_or_gone");
-                        set_init_phase(WifiInitPhase::Failed);
-                        return;
-                    }
-                    _ => {
-                        mmio::disarm_mmio_watchdog();
-                        if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc)
-                            >= TIMEOUT_CYCLES
-                        {
-                            debug::print("iwlwifi", "step: mmio_force_mac");
-                            unsafe {
-                                core::ptr::write_volatile(
-                                    mmio.add(CSR_GP_CNTRL as usize),
-                                    CSR_GP_CNTRL_MAC_ACCESS_REQ | (1 << 1),
-                                );
-                            }
-                            mmio::write_barrier();
-                            crate::timing::delay_us(10_000);
+            let health = { WIFI_INIT_CTX.lock().health };
+            let mac_acquired = match unsafe {
+                mmio::checked_read_u32(mmio.add(CSR_GP_CNTRL as usize) as usize, health.as_ref())
+            } {
+                mmio::SafeReadResult::Value(v) if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 => true,
+                mmio::SafeReadResult::Value(_) => {
+                    mmio::disarm_mmio_watchdog();
+                    debug::print("iwlwifi", "step: mmio_mac_clock_wait");
+                    if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start_tsc)
+                        >= TIMEOUT_CYCLES
+                    {
+                        debug::print("iwlwifi", "step: mmio_force_mac");
+                        unsafe {
+                            core::ptr::write_volatile(
+                                mmio.add(CSR_GP_CNTRL as usize),
+                                CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+                            );
+                        }
+                        mmio::write_barrier();
+                        crate::timing::delay_us(10_000);
+                        let recovery_ok = {
                             let mut ctx = WIFI_INIT_CTX.lock();
-                            let recovery_ok = match ctx.health.as_mut() {
+                            match ctx.health.as_mut() {
                                 Some(h) => h.recover().is_ok(),
                                 None => false,
-                            };
-                            if !recovery_ok {
-                                false
-                            } else {
-                                let health = ctx.health.as_ref();
-                                if let Some((pci_bdf, bridge_bdf)) = bdf_info {
-                                    mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
-                                }
-                                let clock_ready = match unsafe {
-                                    mmio::checked_read_u32(
-                                        mmio.add(CSR_GP_CNTRL as usize) as usize,
-                                        health,
-                                    )
-                                } {
-                                    mmio::SafeReadResult::Value(v)
-                                        if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
-                                    {
-                                        true
-                                    }
-                                    _ => false,
-                                };
-                                mmio::disarm_mmio_watchdog();
-                                drop(ctx);
-                                clock_ready
                             }
+                        };
+                        if !recovery_ok {
+                            false
                         } else {
-                            return;
+                            let health = { WIFI_INIT_CTX.lock().health };
+                            if let Some((pci_bdf, bridge_bdf)) = bdf_info {
+                                mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
+                            }
+                            let clock_ready = match unsafe {
+                                mmio::checked_read_u32(
+                                    mmio.add(CSR_GP_CNTRL as usize) as usize,
+                                    health.as_ref(),
+                                )
+                            } {
+                                mmio::SafeReadResult::Value(v)
+                                    if v & CSR_GP_CNTRL_MAC_CLOCK_READY != 0 =>
+                                {
+                                    true
+                                }
+                                _ => false,
+                            };
+                            mmio::disarm_mmio_watchdog();
+                            clock_ready
                         }
+                    } else {
+                        return;
                     }
+                }
+                mmio::SafeReadResult::MasterAbort | mmio::SafeReadResult::DeviceGone => {
+                    mmio::disarm_mmio_watchdog();
+                    debug::print("iwlwifi", "step: ERR mac_abort_or_gone");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
                 }
             };
             if !mac_acquired {
@@ -349,9 +348,8 @@ pub fn try_init_wifi_device_step() {
                 if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                     mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
                 }
-                let ctx = WIFI_INIT_CTX.lock();
-                let health = ctx.health.as_ref();
-                let mac = IwlWifiDevice::read_mac(mmio, health);
+                let health = { WIFI_INIT_CTX.lock().health };
+                let mac = IwlWifiDevice::read_mac(mmio, health.as_ref());
                 mmio::disarm_mmio_watchdog();
                 mac
             };
