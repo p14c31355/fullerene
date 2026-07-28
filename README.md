@@ -4,11 +4,11 @@
 
 ---
 
-![Fullerene desktop screenshot](docs/history/fullerene_202607141006_desktop.png)
+![Fullerene desktop screenshot](docs/history/fullerene_202607282001_desktop.png)
 
 [development_history](docs/history)
 
-[Discord Community](https://discord.gg/FfAbRaUA26)
+[Discord Community](https://discord.gg/FfAbRaUA26)  
 The community is still new, but we welcome you!
 
 ---
