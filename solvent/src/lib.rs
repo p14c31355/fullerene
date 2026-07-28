@@ -63,8 +63,8 @@ pub use input_loop::{MOUSE_STATE, MouseState, poll_keyboard, poll_mouse_state};
 pub use render::{render, render_cursor_fast, set_render_progress_fn};
 pub use runtime_context::{
     DISPLAY_BRIGHTNESS_X100, HEAP_EXTEND_RESERVE, KLOG_SAVE_ENABLED, MOUSE_SENSITIVITY,
-    RUNTIME_CONTEXT, RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms, init,
-    is_initialized, set_tsc_per_ms, settings_snapshot,
+    ProcessTerminal, RUNTIME_CONTEXT, RuntimeContext, RuntimeState, apply_settings, get_tsc_per_ms,
+    init, is_initialized, set_tsc_per_ms, settings_snapshot,
 };
 #[cfg(not(nitrogen_no_iwlwifi))]
 pub use services::register_wifi_service;
@@ -72,7 +72,11 @@ pub use services::{
     NETWORK_SNAPSHOT, NetworkSnapshot, Service, WIFI_ACTION_QUEUE, WifiAction, register_service,
 };
 pub use settings_bridge::settings_handle_key;
-pub use terminal::{LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, render_terminal};
+pub use terminal::{
+    LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, close_process_terminal, create_process_terminal,
+    process_terminal_exists, push_process_terminal_input, read_process_terminal,
+    render_process_terminals, render_terminal, write_process_terminal,
+};
 pub use viewer::show_text_window;
 pub use window_api::{
     capture_screen, capture_screen_chunk, capture_screen_scaled, close_window, create_window,

@@ -278,6 +278,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
     }
 
     crate::terminal::render_terminal(rt, rt.term_window);
+    crate::terminal::render_process_terminals(rt);
 
     if !rt.editor_dirty {
         if let Some(editor_id) = rt.editor_window {

@@ -199,9 +199,12 @@ FULLERENE_BUSYBOX=/path/to/busybox-static \
   cargo run -p flasks -- --display none --vga none
 ```
 
-Then enter `run_busybox` in the Fullerene shell. The BusyBox shell receives a
-minimal Linux environment (`PATH`, `HOME`, `SHELL`, and `TERM`) and remains a
-normal Linux ELF process under the shared Linux personality layer.
+Then enter `run_busybox` in the Nozzle shell. Fullerene opens a focused
+`BusyBox` window and attaches the Linux process's stdin/stdout/stderr to that
+window, so typing there is delivered to `busybox sh` while the original Nozzle
+terminal remains available. The shell receives a minimal Linux environment
+(`PATH`, `HOME`, `SHELL`, and `TERM`) and remains a normal Linux ELF process
+under the shared Linux personality layer.
 
 For a headless end-to-end check that exercises the Nozzle command, BusyBox
 `sh`, stdout, exit status, and shell resumption:

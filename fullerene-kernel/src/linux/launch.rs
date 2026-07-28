@@ -140,6 +140,7 @@ pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<Process
 
 fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     let data = crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound)?;
+    let terminal_window = solvent::create_process_terminal("BusyBox");
     #[cfg(linux_busybox_smoke)]
     let argv = [
         "busybox",
@@ -155,13 +156,29 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         "SHELL=/bin/sh",
         "TERM=xterm",
     ];
-    let pid = crate::loader::load_program_with_runtime_args(
+    let pid = match crate::loader::load_program_with_runtime_args(
         data.as_slice(),
         "busybox",
         &argv,
         &envp,
         true,
-    )?;
+    ) {
+        Ok(pid) => pid,
+        Err(error) => {
+            if let Some(window_id) = terminal_window {
+                solvent::close_process_terminal(window_id);
+            }
+            return Err(error);
+        }
+    };
+    if let Some(window_id) = terminal_window {
+        let _ = crate::process::SCHEDULER.with_process(pid, |process| {
+            if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut()
+            {
+                runtime.terminal_window = Some(window_id);
+            }
+        });
+    }
     #[cfg(linux_busybox_smoke)]
     {
         BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);

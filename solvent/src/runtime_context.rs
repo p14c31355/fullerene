@@ -141,6 +141,8 @@ pub struct RuntimeState {
     /// Cursor state at the last terminal-surface paint.
     pub term_rendered_cursor: Option<(u32, u32, bool)>,
     pub term_dirty: bool,
+    /// Terminal sessions owned by GUI processes such as Linux BusyBox.
+    pub process_terminals: Vec<ProcessTerminal>,
     /// Command history owned by this terminal session (newest first).
     pub command_history: VecDeque<String>,
     pub shell_state: ShellState,
@@ -160,6 +162,29 @@ pub struct RuntimeState {
     /// Earliest cursor position still drawn on the framebuffer while a redraw
     /// is pending. The full and lightweight render paths both consume it.
     pub(crate) cursor_redraw_from: Option<(i32, i32)>,
+}
+
+/// State for a terminal attached to a process window.
+pub struct ProcessTerminal {
+    pub(crate) window_id: WindowId,
+    pub(crate) buf: TerminalBuffer,
+    pub(crate) cells: Vec<LatticeCell>,
+    pub(crate) rendered_cursor: Option<(u32, u32, bool)>,
+    pub(crate) dirty: bool,
+    pub(crate) input: VecDeque<u8>,
+}
+
+impl ProcessTerminal {
+    pub(crate) fn new(window_id: WindowId, cols: u32, rows: u32) -> Self {
+        Self {
+            window_id,
+            buf: TerminalBuffer::new(cols.max(1), rows.max(1)),
+            cells: Vec::new(),
+            rendered_cursor: None,
+            dirty: true,
+            input: VecDeque::new(),
+        }
+    }
 }
 
 impl RuntimeState {
@@ -211,6 +236,7 @@ pub fn init() {
         term_cells: Vec::new(),
         term_rendered_cursor: None,
         term_dirty: true,
+        process_terminals: Vec::new(),
         command_history: VecDeque::with_capacity(128),
         shell_state: ShellState::Desktop,
         shell_launch_pending: false,

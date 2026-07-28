@@ -12,6 +12,11 @@ use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableF
 
 pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let code = args[0] as i32;
+    if rt.terminal_window.is_some() && rt.tid == rt.terminal_owner_tid {
+        if let Some(window_id) = rt.terminal_window.take() {
+            solvent::close_process_terminal(window_id);
+        }
+    }
     // Clear child TID if set
     if rt.child_clear_tid != 0 {
         let _ = unsafe { copy_val_to_user(rt.child_clear_tid, &0i32) };
@@ -169,6 +174,8 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         dispatch_mode: {
             let mut child_rt = super::runtime::LinuxRuntime::new(child_pid.0, rt.initial_break);
             child_rt.fd_table.entries = rt.fd_table.entries.clone();
+            child_rt.terminal_window = rt.terminal_window;
+            child_rt.terminal_owner_tid = rt.terminal_owner_tid;
             Some(super::runtime::DispatchMode::Linux(alloc::boxed::Box::new(
                 child_rt,
             )))

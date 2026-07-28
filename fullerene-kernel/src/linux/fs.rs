@@ -15,6 +15,11 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
     // Stdin: read from keyboard
     if fd == 0 {
+        if let Some(window_id) = rt.terminal_window
+            && !solvent::process_terminal_exists(window_id)
+        {
+            return 0;
+        }
         loop {
             if buf == 0 {
                 return errno_code(EFAULT);
@@ -22,7 +27,13 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             let count_min = count.min(512);
             // Single byte reads are most common for terminal input
             if count == 1 {
-                if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
+                let ch = if let Some(window_id) = rt.terminal_window {
+                    let mut byte = [0u8; 1];
+                    (solvent::read_process_terminal(window_id, &mut byte) == 1).then_some(byte[0])
+                } else {
+                    nitrogen::ps2::keyboard::read_char()
+                };
+                if let Some(ch) = ch {
                     if unsafe { copy_to_user(buf, &[ch]) }.is_err() {
                         return errno_code(EFAULT);
                     }
@@ -32,7 +43,11 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 // Multi-byte reads consume the line buffer, matching the
                 // terminal semantics used by the native shell.
                 let mut kernel_buf = [0u8; 512];
-                let n = nitrogen::ps2::keyboard::drain_line_buffer(&mut kernel_buf[..count_min]);
+                let n = if let Some(window_id) = rt.terminal_window {
+                    solvent::read_process_terminal(window_id, &mut kernel_buf[..count_min])
+                } else {
+                    nitrogen::ps2::keyboard::drain_line_buffer(&mut kernel_buf[..count_min])
+                };
                 if n > 0 {
                     if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_err() {
                         return errno_code(EFAULT);
@@ -121,7 +136,11 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             // tests, while forwarding textual output to Solvent's terminal.
             let text = alloc::string::String::from_utf8_lossy(&chunk[..chunk_len]);
             crate::klog_fmt!("[LINUX-STDOUT] {}", text);
-            solvent::write_terminal(&text);
+            if let Some(window_id) = rt.terminal_window {
+                solvent::write_process_terminal(window_id, &text);
+            } else {
+                solvent::write_terminal(&text);
+            }
             written += chunk_len;
         }
         return written as u64;

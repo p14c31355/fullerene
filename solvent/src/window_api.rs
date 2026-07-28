@@ -129,6 +129,11 @@ pub fn close_window(id: WindowId) -> bool {
         return false;
     };
     let closed = runtime.desktop.wm.close_window(id);
+    if closed {
+        runtime
+            .process_terminals
+            .retain(|terminal| terminal.window_id != id);
+    }
     if closed && runtime.klog_live_window == Some(id) {
         runtime.klog_live_window = None;
         crate::runtime_context::clear_klog_live_surface();

@@ -180,6 +180,175 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
     rt.term_dirty = false;
 }
 
+/// Render all process-owned terminal windows.
+///
+/// These terminals intentionally have independent screen and input buffers:
+/// the Nozzle shell remains usable while a Linux process owns the foreground
+/// of its own window.
+pub fn render_process_terminals(rt: &mut crate::RuntimeState) {
+    let mut terminals = core::mem::take(&mut rt.process_terminals);
+    for terminal in &mut terminals {
+        if !terminal.dirty {
+            continue;
+        }
+        let Some(window) = rt
+            .desktop
+            .wm
+            .windows_mut()
+            .iter_mut()
+            .find(|window| window.id == terminal.window_id)
+        else {
+            continue;
+        };
+
+        let cols = (window.width / GLYPH_W).max(1);
+        let rows = (window.height / GLYPH_H).max(1);
+        if terminal.buf.cols() != cols || terminal.buf.rows() != rows {
+            terminal.buf = TerminalBuffer::new(cols, rows);
+            terminal.cells.clear();
+            terminal.rendered_cursor = None;
+            window.surface = lattice::surface::Surface::new(
+                cols * GLYPH_W,
+                rows * GLYPH_H,
+                window.surface.get_pixel(0, 0).unwrap_or(0x000000),
+            );
+        }
+
+        for (index, source) in terminal.buf.visible_cells().iter().enumerate() {
+            let cell = LatticeCell {
+                ch: source.ch,
+                fg: source.fg,
+                bg: source.bg,
+            };
+            let col = (index as u32) % cols;
+            let row = (index as u32) / cols;
+            terminal_surface::render_cell(
+                &mut window.surface,
+                cell,
+                col,
+                row,
+                rt.cursor_visible
+                    && (col, row) == (terminal.buf.cursor_col(), terminal.buf.cursor_row()),
+            );
+        }
+        terminal.cells = terminal
+            .buf
+            .visible_cells()
+            .iter()
+            .map(|source| LatticeCell {
+                ch: source.ch,
+                fg: source.fg,
+                bg: source.bg,
+            })
+            .collect();
+        terminal.rendered_cursor = Some((
+            terminal.buf.cursor_col(),
+            terminal.buf.cursor_row(),
+            rt.cursor_visible,
+        ));
+        terminal.dirty = false;
+        let window_id = terminal.window_id;
+        rt.desktop.invalidate_window(window_id);
+    }
+    rt.process_terminals = terminals;
+}
+
+/// Create and focus a terminal window attached to a process.
+pub fn create_process_terminal(title: &str) -> Option<WindowId> {
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let runtime = runtime.as_mut()?;
+    let width = 800;
+    let height = 480;
+    let id = runtime
+        .desktop
+        .wm
+        .create_titled_window(100, 80, width, height, 0x000000, title);
+    runtime.process_terminals.push(crate::ProcessTerminal::new(
+        id,
+        (width / GLYPH_W).max(1),
+        (height / GLYPH_H).max(1),
+    ));
+    runtime.desktop.force_full_redraw();
+    runtime.frame_due = true;
+    Some(id)
+}
+
+pub fn write_process_terminal(window_id: WindowId, text: &str) {
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = runtime.as_mut() else {
+        return;
+    };
+    if let Some(terminal) = runtime
+        .process_terminals
+        .iter_mut()
+        .find(|terminal| terminal.window_id == window_id)
+    {
+        terminal.buf.put_str(text);
+        terminal.dirty = true;
+        runtime.frame_due = true;
+    }
+}
+
+pub fn push_process_terminal_input(window_id: WindowId, bytes: &[u8]) {
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = runtime.as_mut() else {
+        return;
+    };
+    if let Some(terminal) = runtime
+        .process_terminals
+        .iter_mut()
+        .find(|terminal| terminal.window_id == window_id)
+    {
+        terminal.input.extend(bytes.iter().copied());
+        runtime.frame_due = true;
+    }
+}
+
+pub fn read_process_terminal(window_id: WindowId, output: &mut [u8]) -> usize {
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = runtime.as_mut() else {
+        return 0;
+    };
+    let Some(terminal) = runtime
+        .process_terminals
+        .iter_mut()
+        .find(|terminal| terminal.window_id == window_id)
+    else {
+        return 0;
+    };
+    let mut count = 0;
+    while count < output.len() {
+        let Some(byte) = terminal.input.pop_front() else {
+            break;
+        };
+        output[count] = byte;
+        count += 1;
+    }
+    count
+}
+
+pub fn process_terminal_exists(window_id: WindowId) -> bool {
+    RUNTIME_CONTEXT.runtime().as_ref().is_some_and(|runtime| {
+        runtime
+            .process_terminals
+            .iter()
+            .any(|terminal| terminal.window_id == window_id)
+    })
+}
+
+pub fn close_process_terminal(window_id: WindowId) {
+    let mut runtime = RUNTIME_CONTEXT.runtime();
+    let Some(runtime) = runtime.as_mut() else {
+        return;
+    };
+    runtime
+        .process_terminals
+        .retain(|terminal| terminal.window_id != window_id);
+    runtime.desktop.wm.close_window(window_id);
+    runtime.desktop.force_full_redraw();
+    runtime.frame_due = true;
+}
+
 // ── LatticeTerminal ──────────────────────────────────────────
 
 pub struct LatticeTerminal;
@@ -219,13 +388,15 @@ impl carrier::terminal::Terminal for LatticeTerminal {
                 }
                 return Some(ch);
             }
-            // A launch command arms a one-shot direct handoff. Run it before
-            // the runtime tick so no compositor/runtime lock is reacquired
-            // between command return and the process context switch.
-            crate::yield_scheduler();
+            // A launch command arms a one-shot direct handoff. Paint once
+            // before switching away: an interactive Linux process may block
+            // in read(0), so handing it the CPU first would leave its newly
+            // created window invisible until the process eventually yields.
             crate::runtime_tick_no_fb();
+            crate::yield_scheduler();
             // The callback is also kept after the tick for ordinary polling;
             // it is a no-op unless a command has armed a handoff.
+            crate::runtime_tick_no_fb();
             crate::yield_scheduler();
         }
     }

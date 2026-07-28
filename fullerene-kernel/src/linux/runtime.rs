@@ -40,6 +40,11 @@ pub struct LinuxRuntime {
     pub initial_break: u64,
     /// Thread ID (same as PID for main thread)
     pub tid: u64,
+    /// GUI terminal attached to this Linux process, when launched by Nozzle.
+    pub terminal_window: Option<lattice::window::WindowId>,
+    /// Main Linux thread that owns the GUI terminal. Forked children share it
+    /// but must not close the window when they exit.
+    pub terminal_owner_tid: u64,
     /// Child TID to clear on exit (from set_tid_address / CLONE_CHILD_CLEARTID)
     pub child_clear_tid: u64,
     /// Robust list head (from set_robust_list)
@@ -65,6 +70,8 @@ impl LinuxRuntime {
             program_break: initial_break,
             initial_break,
             tid,
+            terminal_window: None,
+            terminal_owner_tid: tid,
             child_clear_tid: 0,
             robust_list_head: 0,
             robust_list_len: 0,

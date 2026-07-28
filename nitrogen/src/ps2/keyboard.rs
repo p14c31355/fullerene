@@ -312,6 +312,14 @@ pub fn read_char() -> Option<u8> {
     interrupt_free(|| INPUT_BUFFER.lock().pop_front())
 }
 
+/// Pop a decoded byte without consulting the foreground-terminal gate.
+///
+/// Solvent uses this only while dispatching a raw key event to a focused
+/// process terminal. The normal shell path must continue to use `read_char`.
+pub fn pop_input_char_unchecked() -> Option<u8> {
+    interrupt_free(|| INPUT_BUFFER.lock().pop_front())
+}
+
 /// Inject an escape sequence or other synthetic bytes into the terminal input
 /// stream. The GUI uses this for non-ASCII keys such as shell arrow history.
 pub fn push_input_bytes(bytes: &[u8]) {

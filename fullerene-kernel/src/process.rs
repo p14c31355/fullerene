@@ -868,19 +868,18 @@ pub fn yield_current() {
     }
 }
 
-/// Yield from code that may be running on the idle scheduler stack.
+/// Yield from the interactive shell's scheduler handoff callback.
 ///
-/// The interactive desktop shell is currently entered directly by the idle
-/// loop, so it has no process PID even though it can launch a user process.
-/// Use the scheduler's `(old, new)` result instead of assuming a non-zero
-/// current PID in that case.
+/// The callback is used both for the first launch handoff and while Nozzle is
+/// waiting for another command. Once a Linux process blocks in `read(0)`, the
+/// shell must continue round-robin scheduling it; otherwise keyboard input can
+/// be queued forever without the process getting another timeslice.
 pub fn yield_from_scheduler_stack() {
     let target = PENDING_YIELD_TO.swap(0, core::sync::atomic::Ordering::AcqRel);
-    // Terminal input polling calls this callback repeatedly while idle. Only
-    // an explicit launch handoff is a scheduling point here.  Do not gate it
-    // on a racy active-count snapshot: the target PID itself is authoritative,
-    // and `yield_to` verifies that it is still Ready.
     if target == 0 {
+        if SCHEDULER.active_count() > 1 && current_pid().is_some() {
+            yield_current();
+        }
         return;
     }
     let old_pid = current_pid();
