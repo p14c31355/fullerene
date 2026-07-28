@@ -188,6 +188,11 @@ pub mod init;
 pub mod initramfs;
 pub mod interrupts;
 pub mod klog;
+// Keep the Linux compatibility layer next to the Solvent runtime sources while
+// compiling it as part of the kernel crate.  This preserves the dependency
+// direction (the layer still uses kernel internals) without creating a crate
+// cycle between `fullerene-kernel` and `solvent`.
+#[path = "../../solvent/linux/mod.rs"]
 pub mod linux;
 pub mod loader;
 pub mod memory_management;

@@ -882,32 +882,12 @@ pub fn yield_from_scheduler_stack() {
         }
         return;
     }
-    let old_pid = current_pid();
     let new_pid = ProcessId(target);
-    crate::klog_fmt!(
-        "[LINUX-DIAG] scheduler-stack yield old={:?} new={} enter\n",
-        old_pid.map(|pid| pid.0),
-        new_pid.0
-    );
-    if !SCHEDULER.yield_to(new_pid) {
-        crate::klog_fmt!(
-            "[LINUX-DIAG] scheduler-stack yield target={} rejected\n",
-            new_pid.0
-        );
-    }
-    crate::klog_fmt!(
-        "[LINUX-DIAG] scheduler-stack yield returned new={}\n",
-        new_pid.0
-    );
+    let _ = SCHEDULER.yield_to(new_pid);
 }
 
 /// Defer a direct handoff until the shell's current command callback returns.
 pub fn defer_yield_to(pid: ProcessId) {
-    crate::klog_fmt!("[LINUX-DIAG] defer yield target={} armed\n", pid.0);
-    petroleum::serial::serial_log(format_args!(
-        "[LINUX-DIAG] defer yield target={} armed\n",
-        pid.0
-    ));
     PENDING_YIELD_TO.store(pid.0, core::sync::atomic::Ordering::Release);
 }
 
