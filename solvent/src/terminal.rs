@@ -112,7 +112,7 @@ pub fn render_terminal(rt: &mut crate::RuntimeState, term_window: Option<WindowI
     let client_x = window.x;
     let client_y = window.y
         + if window.title.is_some() {
-            lattice::compositor::TITLE_BAR_HEIGHT as i32
+            lattice::style::title_bar_height() as i32
         } else {
             0
         };
@@ -214,6 +214,9 @@ impl carrier::terminal::Terminal for LatticeTerminal {
     fn read_byte(&mut self) -> Option<u8> {
         loop {
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
+                if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
+                    runtime.term_buf.reset_scroll();
+                }
                 return Some(ch);
             }
             // A launch command arms a one-shot direct handoff. Run it before

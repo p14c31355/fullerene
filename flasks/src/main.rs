@@ -35,8 +35,10 @@ struct Args {
     #[arg(long)]
     display: Option<String>,
 
-    /// Screen resolution in WxH format (e.g., 1024x768). Only effective with virtio-gpu/qxl
-    #[arg(long, default_value = "1024x768")]
+    /// Screen resolution in WxH format. Only effective with virtio-gpu/qxl.
+    /// 1920x1080 keeps the desktop at the same density as the Photon quality
+    /// reference instead of making every curve and glyph look pixel-doubled.
+    #[arg(long, default_value = "1920x1080")]
     resolution: String,
 }
 
@@ -315,7 +317,7 @@ fn run_qemu(workspace_root: &PathBuf, args: &Args, profile: BuildProfile) -> io:
             let (w, h) = if res_parts.len() == 2 {
                 (res_parts[0], res_parts[1])
             } else {
-                ("1024", "768")
+                ("1920", "1080")
             };
             qemu_args.push("-device".to_string());
             qemu_args.push(format!(

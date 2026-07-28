@@ -1,11 +1,8 @@
-//! Theme system for Lattice compositor.
+//! Legacy colour compatibility view for Lattice.
 //!
-//! Two style axes:
-//!   **Style**: Classic or Modern (visual appearance)
-//!   **Variant**: Dark or Light (brightness)
-//!
-//! All colour constants are stored here and consumed by the compositor,
-//! taskbar, and shell overlay renderers.
+//! Complete desktop implementations are selected through [`crate::style`].
+//! The `ThemeColors` API remains because older widgets and kernel commands
+//! still use it as a convenient palette-shaped view.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -156,13 +153,27 @@ pub fn current_theme_variant() -> ThemeVariant {
 
 /// Get the currently active theme colours.
 pub fn current_colors() -> ThemeColors {
-    let style = current_style();
-    let variant = current_theme_variant();
-    match (style, variant) {
-        (ThemeStyle::Classic, ThemeVariant::Dark) => CLASSIC_DARK_THEME,
-        (ThemeStyle::Classic, ThemeVariant::Light) => CLASSIC_LIGHT_THEME,
-        (ThemeStyle::Modern, ThemeVariant::Dark) => MODERN_DARK_THEME,
-        (ThemeStyle::Modern, ThemeVariant::Light) => MODERN_LIGHT_THEME,
+    // Lattice variants are complete desktop implementations, not colour
+    // overlays.  Keep ThemeColors as the compatibility view consumed by
+    // older widgets while sourcing the active palette from the shell.
+    let p = crate::style::current().palette;
+    ThemeColors {
+        bg: p.bg,
+        surface: p.surface,
+        primary: p.primary,
+        active: p.active,
+        text: p.text,
+        muted: p.muted,
+        border_active: p.border_active,
+        border_inactive: p.border_inactive,
+        title_active: p.title_active,
+        title_inactive: p.title_inactive,
+        accent: p.accent,
+        danger: p.danger,
+        taskbar_bg: p.taskbar_bg,
+        taskbar_text: p.taskbar_text,
+        taskbar_active_bg: p.taskbar_active_bg,
+        taskbar_inactive_bg: p.taskbar_inactive_bg,
     }
 }
 

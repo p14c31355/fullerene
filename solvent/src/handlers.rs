@@ -9,6 +9,58 @@ use resonance::{Event, EventHandler, InputEvent, KeyCode, MouseButton};
 
 const DOUBLE_CLICK_TICKS: u64 = 500;
 
+fn style_launcher_at(rt: &crate::RuntimeState, x: i32, y: i32) -> Option<usize> {
+    let count = rt.desktop.taskbar.entries.len();
+    let (width, height, _) = *FB_DIMS.lock();
+    let max = match lattice::style::kind() {
+        lattice::common::ShellKind::Photon => lattice::common::PHOTON_LAUNCHER_ROUTES.len(),
+        lattice::common::ShellKind::Prism => lattice::common::PRISM_LAUNCHER_ROUTES.len(),
+        lattice::common::ShellKind::Basalt => 0,
+    };
+    (0..max).find(|&index| {
+        lattice::style::launcher_entry_rect(index, count, width, height).is_some_and(
+            |(lx, ly, lw, lh)| x >= lx && x < lx + lw as i32 && y >= ly && y < ly + lh as i32,
+        )
+    })
+}
+
+fn route_style_launcher(rt: &mut crate::RuntimeState, index: usize) -> bool {
+    if lattice::style::kind() == lattice::common::ShellKind::Prism && index == 0 {
+        rt.shell_state = ShellState::AppGrid;
+        rt.frame_due = true;
+        return true;
+    }
+    let route = match lattice::style::kind() {
+        lattice::common::ShellKind::Photon => lattice::common::PHOTON_LAUNCHER_ROUTES.get(index),
+        lattice::common::ShellKind::Prism => lattice::common::PRISM_LAUNCHER_ROUTES.get(index),
+        lattice::common::ShellKind::Basalt => None,
+    };
+    let Some(route) = route.copied() else {
+        return false;
+    };
+    match route {
+        lattice::common::AppRoute::Shell => rt.shell_launch_pending = true,
+        lattice::common::AppRoute::Terminal => crate::menu_actions::dispatch_menu_action(
+            rt,
+            &lattice::desktop::DesktopAction::NewTerminal,
+        ),
+        lattice::common::AppRoute::Files => {
+            crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::FileManager)
+        }
+        lattice::common::AppRoute::Settings => crate::menu_actions::open_settings_window(rt),
+        lattice::common::AppRoute::About => {
+            crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::About)
+        }
+        lattice::common::AppRoute::Editor => rt.editor_launch_pending = true,
+        lattice::common::AppRoute::Clock => {
+            crate::menu_actions::open_info_window(rt, crate::menu_actions::InfoWindow::SystemInfo)
+        }
+        lattice::common::AppRoute::Unknown => return false,
+    }
+    rt.frame_due = true;
+    true
+}
+
 fn apply_mouse_move(
     desktop: &mut lattice::desktop::Desktop,
     cursor_redraw_from: &mut Option<(i32, i32)>,
@@ -54,16 +106,64 @@ impl EventHandler for WmEventHandler {
                 );
                 true
             }
+            Event::Input(InputEvent::MouseWheel { dy, .. }) => {
+                let target = rt
+                    .desktop
+                    .wm
+                    .window_at(rt.desktop.cursor.x, rt.desktop.cursor.y);
+                if rt.term_window.is_some() && target == rt.term_window {
+                    if *dy > 0 {
+                        rt.term_buf.scroll_back((*dy as usize).min(8));
+                    } else if *dy < 0 {
+                        rt.term_buf
+                            .scroll_forward((dy.unsigned_abs() as usize).min(8));
+                    }
+                    rt.term_dirty = true;
+                    rt.frame_due = true;
+                    return true;
+                }
+                if rt.explorer.as_ref().and_then(|explorer| explorer.window_id) == target {
+                    let visible_rows = rt
+                        .explorer
+                        .as_ref()
+                        .and_then(|explorer| explorer.window_id)
+                        .and_then(|id| {
+                            rt.desktop
+                                .wm
+                                .windows()
+                                .iter()
+                                .find(|window| window.id == id)
+                                .map(|window| {
+                                    crate::explorer::visible_file_rows(window.surface.height())
+                                })
+                        })
+                        .unwrap_or(1);
+                    if let Some(explorer) = rt.explorer.as_mut() {
+                        explorer.scroll_by(-(*dy as isize), visible_rows);
+                        rt.explorer_dirty = true;
+                        rt.frame_due = true;
+                    }
+                    return true;
+                }
+                false
+            }
             Event::Input(InputEvent::MouseDown(btn)) => {
                 let cx = rt.desktop.cursor.x;
                 let cy = rt.desktop.cursor.y;
+
+                if *btn == MouseButton::Left
+                    && let Some(index) = style_launcher_at(rt, cx, cy)
+                    && route_style_launcher(rt, index)
+                {
+                    return true;
+                }
 
                 // Check desktop icon clicks (left button only)
                 if *btn == MouseButton::Left {
                     if let Some(icon_idx) = rt.desktop.desktop_icons.hit_test(cx, cy) {
                         if let Some(icon) = rt.desktop.desktop_icons.icons.get(icon_idx) {
-                            match icon.label.as_str() {
-                                "Shell" => {
+                            match lattice::desktop_icons::DesktopIconLayer::route(icon) {
+                                lattice::common::AppRoute::Shell => {
                                     // Defer shell launch — cannot call
                                     // ensure_terminal_window() or launch_shell()
                                     // while holding the runtime-state lock (deadlock).
@@ -71,7 +171,15 @@ impl EventHandler for WmEventHandler {
                                     rt.frame_due = true;
                                     return true;
                                 }
-                                "Files" => {
+                                lattice::common::AppRoute::Terminal => {
+                                    crate::menu_actions::dispatch_menu_action(
+                                        rt,
+                                        &lattice::desktop::DesktopAction::NewTerminal,
+                                    );
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                lattice::common::AppRoute::Files => {
                                     crate::menu_actions::open_info_window(
                                         rt,
                                         crate::menu_actions::InfoWindow::FileManager,
@@ -79,12 +187,12 @@ impl EventHandler for WmEventHandler {
                                     rt.frame_due = true;
                                     return true;
                                 }
-                                "Settings" => {
+                                lattice::common::AppRoute::Settings => {
                                     crate::menu_actions::open_settings_window(rt);
                                     rt.frame_due = true;
                                     return true;
                                 }
-                                "About" => {
+                                lattice::common::AppRoute::About => {
                                     crate::menu_actions::open_info_window(
                                         rt,
                                         crate::menu_actions::InfoWindow::About,
@@ -110,6 +218,14 @@ impl EventHandler for WmEventHandler {
                 if rt.desktop.top_panel.hit_activities_button(cx, cy) {
                     rt.shell_state = ShellState::TaskOverview;
                     rt.frame_due = true;
+                    return true;
+                }
+
+                if *btn == MouseButton::Left
+                    && rt.settings_window.is_some()
+                    && rt.desktop.wm.window_at(cx, cy) == rt.settings_window
+                    && crate::settings_bridge::settings_handle_mouse(rt, cx, cy)
+                {
                     return true;
                 }
 
@@ -188,7 +304,7 @@ fn handle_explorer_click(rt: &mut crate::RuntimeState, btn: MouseButton, cx: i32
         return;
     }
     let rel_x = cx - window.x;
-    let rel_y = cy - window.y - lattice::compositor::TITLE_BAR_HEIGHT as i32;
+    let rel_y = cy - window.y - lattice::style::title_bar_height() as i32;
 
     // If context menu is open, handle clicks on it first
     if explorer.context_menu.open {
@@ -338,34 +454,37 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
     let cy = rt.desktop.cursor.y as i32;
     let (fw, _fh, _stride) = *FB_DIMS.lock();
 
-    let icon_size = 64i32;
-    let pad = 24i32;
-    let label_h = 18i32;
-    let columns = ((fw as i32) / (icon_size + pad)).max(1);
-    let start_y = 60i32;
-
-    for idx in 0i32..7 {
-        let col = idx % columns;
-        let row = idx / columns;
-        let ax = pad + col * (icon_size + pad);
-        let ay = start_y + row * (icon_size + label_h + pad);
-        if cx >= ax && cx < ax + icon_size && cy >= ay && cy < ay + icon_size + label_h {
-            match idx {
-                0 | 1 => {
-                    // Shell (0) / Terminal (1) — both launch a shell.
+    for idx in 0..lattice::common::APP_GRID_ROUTES.len() {
+        let Some((ax, ay, aw, ah)) = lattice::shell_overlay::app_grid_item_rect(idx, fw, _fh)
+        else {
+            continue;
+        };
+        if cx >= ax && cx < ax + aw as i32 && cy >= ay && cy < ay + ah as i32 {
+            match lattice::common::app_grid_route(idx) {
+                Some(lattice::common::AppRoute::Shell) => {
+                    // Shell launches the interactive shell session.
                     rt.shell_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
-                2 => {
+                Some(lattice::common::AppRoute::Terminal) => {
+                    crate::menu_actions::dispatch_menu_action(
+                        rt,
+                        &lattice::desktop::DesktopAction::NewTerminal,
+                    );
+                    rt.shell_state = ShellState::Desktop;
+                    rt.frame_due = true;
+                    return true;
+                }
+                Some(lattice::common::AppRoute::Editor) => {
                     // Editor
                     rt.editor_launch_pending = true;
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
-                3 => {
+                Some(lattice::common::AppRoute::Clock) => {
                     // Clock — show system info
                     crate::menu_actions::open_info_window(
                         rt,
@@ -375,14 +494,14 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                     rt.frame_due = true;
                     return true;
                 }
-                4 => {
+                Some(lattice::common::AppRoute::Settings) => {
                     // Settings
                     crate::menu_actions::open_settings_window(rt);
                     rt.shell_state = ShellState::Desktop;
                     rt.frame_due = true;
                     return true;
                 }
-                5 => {
+                Some(lattice::common::AppRoute::Files) => {
                     // File Manager
                     crate::menu_actions::open_info_window(
                         rt,
@@ -392,7 +511,7 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
                     rt.frame_due = true;
                     return true;
                 }
-                6 => {
+                Some(lattice::common::AppRoute::About) => {
                     // About
                     crate::menu_actions::open_info_window(
                         rt,
@@ -422,6 +541,12 @@ impl EventHandler for TerminalInputHandler {
         match event {
             Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
+                    if !matches!(
+                        rt.desktop.wm.windows().last().map(|w| w.id),
+                        Some(id) if Some(id) == rt.term_window
+                    ) {
+                        return false;
+                    }
                     rt.term_buf.scroll_back(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -430,6 +555,12 @@ impl EventHandler for TerminalInputHandler {
             }
             Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
+                    if !matches!(
+                        rt.desktop.wm.windows().last().map(|w| w.id),
+                        Some(id) if Some(id) == rt.term_window
+                    ) {
+                        return false;
+                    }
                     rt.term_buf.scroll_forward(1);
                     rt.term_dirty = true;
                     rt.frame_due = true;
@@ -438,6 +569,12 @@ impl EventHandler for TerminalInputHandler {
             }
             Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
+                    if !matches!(
+                        rt.desktop.wm.windows().last().map(|w| w.id),
+                        Some(id) if Some(id) == rt.term_window
+                    ) {
+                        return false;
+                    }
                     rt.term_buf.reset_scroll();
                     rt.term_dirty = true;
                     rt.frame_due = true;

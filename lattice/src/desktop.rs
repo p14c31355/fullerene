@@ -201,23 +201,28 @@ impl Desktop {
 
     /// Return the usable work area (screen minus taskbar and top panel if visible).
     pub fn work_area(&self, fb_width: u32, fb_height: u32) -> (u32, u32) {
-        let bar_h = crate::taskbar::TASKBAR_HEIGHT;
-        let panel_h = if crate::top_panel::is_top_panel_enabled() {
-            crate::top_panel::TOP_PANEL_HEIGHT
-        } else {
-            0
-        };
-        let total_h = fb_height.saturating_sub(bar_h).saturating_sub(panel_h);
-        (fb_width, total_h)
+        let area = crate::style::style_for(crate::style::variant()).layout_work_area(
+            crate::common::Rect {
+                x: 0,
+                y: 0,
+                width: fb_width,
+                height: fb_height,
+            },
+        );
+        (area.width, area.height)
     }
 
     /// Offset from top edge due to top panel.
     pub fn top_panel_offset(&self) -> u32 {
-        if crate::top_panel::is_top_panel_enabled() {
-            crate::top_panel::TOP_PANEL_HEIGHT
-        } else {
-            0
-        }
+        crate::style::style_for(crate::style::variant())
+            .layout_work_area(crate::common::Rect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            })
+            .y
+            .max(0) as u32
     }
 
     // ── convenience delegates ───────────────────────────────
@@ -386,7 +391,9 @@ impl Desktop {
         }
 
         // Check taskbar clicks first — restore minimized windows or focus.
-        if let Some(tb_id) = self.taskbar_window_at(self.cursor.x, self.cursor.y, fb_height) {
+        if let Some(tb_id) =
+            self.taskbar_window_at(self.cursor.x, self.cursor.y, fb_width, fb_height)
+        {
             // Find the window. If minimized, restore it. Otherwise just focus.
             if let Some(w) = self.wm.windows().iter().find(|w| w.id == tb_id) {
                 if w.minimized {
@@ -399,40 +406,46 @@ impl Desktop {
         }
 
         // Check title bar buttons first (topmost window with title bar hit)
+        let style = crate::style::style_for(crate::style::variant());
         for window in self.wm.windows().iter().rev() {
             if window.minimized {
                 continue;
             }
             let id = window.id;
-            if window.hit_close_button(self.cursor.x, self.cursor.y) {
-                self.wm.close_window(id);
-                // Push a dirty rect for the entire taskbar area so the
-                // compositor redraws the taskbar (removing the stale button).
-                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
-                    0,
-                    fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT),
-                    fb_width,
-                    crate::taskbar::TASKBAR_HEIGHT,
-                ));
-                return;
-            }
-            if window.hit_minimize_button(self.cursor.x, self.cursor.y) {
-                self.wm.minimize_window(id);
-                // Push a dirty rect for the entire taskbar area so the
-                // compositor redraws the taskbar (updating button states).
-                self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
-                    0,
-                    fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT),
-                    fb_width,
-                    crate::taskbar::TASKBAR_HEIGHT,
-                ));
-                return;
-            }
-            if window.hit_maximize_button(self.cursor.x, self.cursor.y) {
-                let (ww, wh) = self.work_area(fb_width, fb_height);
-                let wy = self.top_panel_offset() as i32;
-                self.wm.toggle_maximize(id, 0, wy, ww, wh);
-                return;
+            match style.hit_test_chrome(
+                window,
+                crate::common::Point {
+                    x: self.cursor.x,
+                    y: self.cursor.y,
+                },
+            ) {
+                crate::common::ChromeHit::Close => {
+                    self.wm.close_window(id);
+                    self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
+                        0,
+                        fb_height.saturating_sub(crate::style::taskbar_height()),
+                        fb_width,
+                        crate::style::taskbar_height(),
+                    ));
+                    return;
+                }
+                crate::common::ChromeHit::Minimize => {
+                    self.wm.minimize_window(id);
+                    self.wm.dirty_rects.push(crate::scene::DirtyRect::new(
+                        0,
+                        fb_height.saturating_sub(crate::style::taskbar_height()),
+                        fb_width,
+                        crate::style::taskbar_height(),
+                    ));
+                    return;
+                }
+                crate::common::ChromeHit::Maximize => {
+                    let (ww, wh) = self.work_area(fb_width, fb_height);
+                    let wy = self.top_panel_offset() as i32;
+                    self.wm.toggle_maximize(id, 0, wy, ww, wh);
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -450,7 +463,7 @@ impl Desktop {
     /// Show the system menu (triggered from taskbar).
     pub fn show_system_menu(&mut self) {
         let items = crate::menu::system_menu_items();
-        let bar_y = 800u32.saturating_sub(crate::taskbar::TASKBAR_HEIGHT); // approximate
+        let bar_y = 800u32.saturating_sub(crate::style::taskbar_height()); // approximate
         self.active_menu = Some(PopupMenu::new(
             4,
             bar_y.saturating_sub(items.len() as u32 * crate::menu::ITEM_HEIGHT + 4),
@@ -481,7 +494,7 @@ impl Desktop {
         };
         let menu_h = 4 + (self.ap_list.len() + 1) as u32 * network_menu::NET_MENU_ITEM_HEIGHT;
         self.net_menu_y = fb_height
-            .saturating_sub(crate::taskbar::TASKBAR_HEIGHT)
+            .saturating_sub(crate::style::taskbar_height())
             .saturating_sub(menu_h);
 
         self.push_dirty_rect(crate::scene::DirtyRect::new(
@@ -530,25 +543,49 @@ impl Desktop {
     ///
     /// Returns the `WindowId` of the taskbar entry whose button
     /// contains the point, or `None`.
-    pub fn taskbar_window_at(&self, px: i32, py: i32, fb_height: u32) -> Option<WindowId> {
-        let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT) as i32;
+    pub fn taskbar_window_at(
+        &self,
+        px: i32,
+        py: i32,
+        fb_width: u32,
+        fb_height: u32,
+    ) -> Option<WindowId> {
+        let bar_y = fb_height.saturating_sub(crate::style::taskbar_height()) as i32;
         if py < bar_y {
             return None;
         }
         // Simple linear scan matching the taskbar render layout.
-        let btn_w = 120i32;
-        let btn_h = (crate::taskbar::TASKBAR_HEIGHT - 6) as i32;
-        let btn_y = bar_y + 3;
-        if py < btn_y || py >= btn_y + btn_h {
+        if crate::style::kind() != crate::common::ShellKind::Basalt {
+            for (index, entry) in self.taskbar.entries.iter().enumerate() {
+                if let Some((x, y, w, h)) = crate::style::taskbar_entry_rect(
+                    index,
+                    self.taskbar.entries.len(),
+                    fb_width,
+                    fb_height,
+                ) && px >= x
+                    && px < x + w as i32
+                    && py >= y
+                    && py < y + h as i32
+                {
+                    return Some(entry.id);
+                }
+            }
             return None;
         }
-        let mut btn_x = 4i32;
-        for entry in self.taskbar.entries.iter() {
+        for (index, entry) in self.taskbar.entries.iter().enumerate() {
+            let Some((btn_x, btn_y, btn_w, btn_h)) = crate::style::taskbar_entry_rect(
+                index,
+                self.taskbar.entries.len(),
+                fb_width,
+                fb_height,
+            ) else {
+                continue;
+            };
             let bx_end = btn_x + btn_w as i32;
-            if px >= btn_x && px < bx_end {
+            let by_end = btn_y + btn_h as i32;
+            if px >= btn_x && px < bx_end && py >= btn_y && py < by_end {
                 return Some(entry.id);
             }
-            btn_x = bx_end + 4;
         }
         None
     }
@@ -617,22 +654,20 @@ impl Desktop {
     /// Returns `true` when any visible state changed (entry count,
     /// WiFi status, or signal strength) that requires a taskbar redraw.
     pub fn update_taskbar(&mut self) -> bool {
-        let prev_count = self.taskbar.entries.len();
         let prev_wifi = self.taskbar.wifi_connected;
         let prev_wifi_visible = self.taskbar.wifi_visible;
         let prev_wifi_signal = self.taskbar.wifi_signal;
-        self.taskbar.update_from_windows(self.wm.windows());
+        let entries_changed = self.taskbar.update_from_windows(self.wm.windows());
         // Update clock text on taskbar
         self.taskbar.clock_text = self.clock_text.clone();
         // Update WiFi state on taskbar
         self.taskbar.wifi_connected = matches!(&self.net_status, NetStatus::Connected(_, _));
         self.taskbar.wifi_visible = self.wifi_networks_visible;
         self.taskbar.wifi_signal = self.wifi_signal;
-        let new_count = self.taskbar.entries.len();
         let wifi_changed = self.taskbar.wifi_connected != prev_wifi
             || self.taskbar.wifi_visible != prev_wifi_visible
             || self.taskbar.wifi_signal != prev_wifi_signal;
-        new_count != prev_count || wifi_changed
+        entries_changed || wifi_changed
     }
 
     // ── frame preparation ───────────────────────────────────
@@ -720,9 +755,9 @@ impl Desktop {
             let wifi_icon_x = self.taskbar.wifi_icon_x(fb_width);
             self.dirty_cache.push(DirtyRect::new(
                 wifi_icon_x,
-                fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT),
+                fb_height.saturating_sub(crate::style::taskbar_height()),
                 network_menu::NET_ICON_WIDTH,
-                crate::taskbar::TASKBAR_HEIGHT,
+                crate::style::taskbar_height(),
             ));
         }
 

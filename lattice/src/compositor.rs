@@ -96,92 +96,6 @@ macro_rules! alpha_blend {
     }};
 }
 
-// ── Title bar button caches ─────────────────────────────────
-/// Pre‑rendered 14×14 close button (red background + white X).
-static CLOSE_BUTTON_CACHE: [u32; 14 * 14] = build_close_button();
-/// Pre‑rendered 14×14 maximize button (green background + white square).
-static MAXIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_maximize_button();
-/// Pre‑rendered 14×14 minimize button (amber background + white line).
-static MINIMIZE_BUTTON_CACHE: [u32; 14 * 14] = build_minimize_button();
-
-/// Fill a 14x14 buffer with a solid colour.
-const fn fill_14x14(buf: &mut [u32; 14 * 14], color: u32) {
-    let mut i = 0;
-    while i < 14 * 14 {
-        buf[i] = color;
-        i += 1;
-    }
-}
-
-const fn build_close_button() -> [u32; 14 * 14] {
-    let mut buf = [0u32; 14 * 14];
-    fill_14x14(&mut buf, COLOR_DANGER);
-    let mut o = 0;
-    while o < 8 {
-        buf[(3 + o) * 14 + (3 + o)] = 0xFFFFFF;
-        buf[(10 - o) * 14 + (3 + o)] = 0xFFFFFF;
-        o += 1;
-    }
-    buf
-}
-
-const fn build_maximize_button() -> [u32; 14 * 14] {
-    let mut buf = [0u32; 14 * 14];
-    fill_14x14(&mut buf, 0x338833);
-    let mut r = 3;
-    while r < 11 {
-        let mut c = 3;
-        while c < 11 {
-            if r == 3 || r == 10 || c == 3 || c == 10 {
-                buf[r * 14 + c] = 0xFFFFFF;
-            }
-            c += 1;
-        }
-        r += 1;
-    }
-    buf
-}
-
-const fn build_minimize_button() -> [u32; 14 * 14] {
-    let mut buf = [0u32; 14 * 14];
-    fill_14x14(&mut buf, COLOR_ACCENT);
-    let mut c = 3;
-    while c < 11 {
-        buf[10 * 14 + c] = 0xFFFFFF;
-        c += 1;
-    }
-    buf
-}
-
-/// Blit a 14×14 cached button onto the framebuffer at (bx, by).
-#[inline]
-fn blit_button(fb: &mut [u32], fbw: u32, cache: &[u32; 14 * 14], bx: i32, by: i32) {
-    let fb_w = fbw as usize;
-    let fb_len = fb.len();
-    let fbh = (fb_len / fb_w) as i32;
-    if fbh == 0 {
-        return;
-    }
-    let fbw_i32 = fbw as i32;
-    for row in 0..14 {
-        let da = by + row;
-        if da < 0 || da >= fbh {
-            continue;
-        }
-        let row_base = (da as usize) * fb_w;
-        for col in 0..14 {
-            let dxa = bx + col;
-            if dxa < 0 || dxa >= fbw_i32 {
-                continue;
-            }
-            let idx = row_base + dxa as usize;
-            if idx < fb_len {
-                fb[idx] = cache[(row as usize) * 14 + col as usize];
-            }
-        }
-    }
-}
-
 /// Blend the cursor into a RAM-backed render target within `clip`.
 pub fn render_cursor(fb: &mut [u32], fbw: u32, fbh: u32, cur: &Cursor, clip: DirtyRect) {
     let DirtyRect {
@@ -420,7 +334,14 @@ impl Compositor {
         if let Some(menu) = scene.active_menu {
             let menu_rect = DirtyRect::new(menu.x, menu.y, menu.width, menu.height);
             if menu_rect.intersects(&region) {
-                menu.render_text(framebuffer, fb_width, fb_height, fb_width);
+                let mut painter = crate::painter::Painter::new(framebuffer, fb_width, fb_height);
+                painter.clip_rect(
+                    region.x as i32,
+                    region.y as i32,
+                    region.width,
+                    region.height,
+                );
+                crate::style::style_for(crate::style::variant()).draw_menu(&mut painter, menu);
                 inc_draw_calls();
             }
         }
@@ -473,8 +394,9 @@ impl Compositor {
 
         // ── Layer 3: System UI ───────────────────────────
         if let Some(tb) = scene.taskbar {
-            let bar_y = fb_height.saturating_sub(crate::taskbar::TASKBAR_HEIGHT);
-            let bar_rect = DirtyRect::new(0, bar_y, fb_width, crate::taskbar::TASKBAR_HEIGHT);
+            let bar_height = crate::style::taskbar_height();
+            let bar_y = fb_height.saturating_sub(bar_height);
+            let bar_rect = DirtyRect::new(0, bar_y, fb_width, bar_height);
             if bar_rect.intersects(&region) {
                 tb.render(framebuffer, fb_width, fb_height);
             }
@@ -578,15 +500,10 @@ impl Compositor {
         cw: u32,
         ch: u32,
     ) {
-        if win.title.is_some() {
-            Self::draw_title_bar(fb, fbw, fbh, win, cx, cy, cw, ch);
-        }
         let src = &win.surface;
-        let to = if win.title.is_some() {
-            TITLE_BAR_HEIGHT as i32
-        } else {
-            0
-        };
+        let title_h = crate::style::title_bar_height() as i32;
+        let radius = crate::style::window_radius().saturating_sub(1) as i32;
+        let to = if win.title.is_some() { title_h } else { 0 };
         let wdx = win.x;
         let wdy = win.y + to;
         // Draw the surface (client area).  The window may be larger
@@ -605,6 +522,7 @@ impl Compositor {
             .min((fbh as i64).saturating_sub(wdy as i64))
             .max(0) as i32;
         if sxs >= sxe || sys >= sye {
+            Self::draw_window_frame_clipped(fb, fbw, fbh, win, cx, cy, cw, ch);
             return;
         }
         let cex = (cx + cw) as i32;
@@ -615,7 +533,12 @@ impl Compositor {
         // covers almost the entire work area. The general path performs
         // several bounds checks and a focus colour branch for every pixel;
         // copy complete rows directly in this common case.
-        if win.focused && wdx >= 0 && wdy >= 0 && sw >= win.width as i32 && sh >= win.height as i32
+        if win.focused
+            && wdx >= 0
+            && wdy >= 0
+            && sw >= win.width as i32
+            && sh >= win.height as i32
+            && (win.title.is_none() || radius == 0)
         {
             let x0 = (cx as i32).max(wdx) as u32;
             let x1 = cex.min(wdx + win.width as i32).min(fbw as i32) as u32;
@@ -630,6 +553,7 @@ impl Compositor {
                     fb[dest_start..dest_start + copy_width]
                         .copy_from_slice(&sp[source_start..source_start + copy_width]);
                 }
+                Self::draw_window_frame_clipped(fb, fbw, fbh, win, cx, cy, cw, ch);
                 return;
             }
         }
@@ -651,6 +575,9 @@ impl Compositor {
                 if dc < cx as i32 || dc >= cex {
                     continue;
                 }
+                if !Self::client_pixel_inside_frame(win, dc, dr, title_h, radius) {
+                    continue;
+                }
                 let color = if in_surface_row && sc < sw {
                     sp[sb + sc as usize]
                 } else {
@@ -659,11 +586,32 @@ impl Compositor {
                 fb[db + dc as usize] = if win.focused { color } else { dim_color(color) };
             }
         }
+        Self::draw_window_frame_clipped(fb, fbw, fbh, win, cx, cy, cw, ch);
     }
 
-    // ── Title bar drawing (with padding) ──────────────────
+    fn client_pixel_inside_frame(win: &Window, x: i32, y: i32, title_h: i32, radius: i32) -> bool {
+        if win.title.is_none() {
+            return true;
+        }
+        if radius == 0 {
+            return true;
+        }
+        let right = win.x + win.width as i32;
+        let bottom = win.y + title_h + win.height as i32;
+        if y < bottom - radius || (x >= win.x + radius && x < right - radius) {
+            return true;
+        }
+        let (center_x, center_y) = if x < win.x + radius {
+            (win.x + radius, bottom - radius)
+        } else {
+            (right - radius, bottom - radius)
+        };
+        let dx = x - center_x;
+        let dy = y - center_y;
+        dx * dx + dy * dy <= radius * radius
+    }
 
-    fn draw_title_bar(
+    fn draw_window_frame_clipped(
         fb: &mut [u32],
         fbw: u32,
         fbh: u32,
@@ -673,100 +621,18 @@ impl Compositor {
         cw: u32,
         ch: u32,
     ) {
-        let title = win.title.as_ref().map(|t| t.as_str()).unwrap_or("");
-        let colors = crate::theme::current_colors();
-        let mut p = crate::painter::Painter::new(fb, fbw, fbh);
-        let bw = WINDOW_BORDER as i32;
-        let ww = (win.width + WINDOW_BORDER * 2) as i32;
-        let wh = (win.height + TITLE_BAR_HEIGHT + WINDOW_BORDER * 2) as i32;
-        let radius = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
-        let wx = win.x - bw;
-        let wy = win.y - bw;
-
-        // Skip if the title-bar bounding box doesn't intersect the dirty rect
-        let cex = (cx + cw) as i32;
-        let cey = (cy + ch) as i32;
-        let ww_u = ww as u32;
-        let wh_u = wh as u32;
-        if wx + ww as i32 <= cx as i32 || wy + wh as i32 <= cy as i32 || wx >= cex || wy >= cey {
+        if win.title.is_none() {
             return;
         }
-
-        // Restrict painter to the intersection of framebuffer and dirty rect
-        p.clip_rect(cx as i32, cy as i32, cw, ch);
-
-        // Shadow via painter
-        p.draw_shadow(wx, wy, ww_u, wh_u, radius, 2, 3, 0x000000);
-
-        // Pre-fill corner squares with background so outside-the-arc pixels
-        // don't stay black.
-        let bg = colors.bg;
-        let r32 = radius as i32;
-        p.fill_rect(wx, wy, radius, radius, bg);
-        p.fill_rect(wx + ww as i32 - r32, wy, radius, radius, bg);
-        p.fill_rect(wx, wy + wh as i32 - r32, radius, radius, bg);
-        p.fill_rect(
-            wx + ww as i32 - r32,
-            wy + wh as i32 - r32,
-            radius,
-            radius,
-            bg,
+        let mut painter = crate::painter::Painter::new(fb, fbw, fbh);
+        painter.clip_rect(cx as i32, cy as i32, cw, ch);
+        crate::style::style_for(crate::style::variant()).draw_window_frame(
+            &mut painter,
+            win,
+            crate::common::WindowVisualState {
+                focused: win.focused,
+                maximized: win.maximized,
+            },
         );
-
-        // Window body with rounded rect — 4 corners rounded
-        let border_col = if win.focused {
-            colors.border_active
-        } else {
-            colors.border_inactive
-        };
-        let title_col = if win.focused {
-            colors.title_active
-        } else {
-            colors.title_inactive
-        };
-        p.rounded_rect(wx, wy, ww_u, wh_u, radius, border_col);
-
-        // Title bar background — plain rect (no extra rounding; top corners
-        // already handled by the border rounded_rect).
-        p.fill_rect(win.x, win.y, win.width, TITLE_BAR_HEIGHT, title_col);
-
-        // Separator line below title
-        let sep_y = win.y + TITLE_BAR_HEIGHT as i32;
-        p.fill_rect(
-            win.x + r32,
-            sep_y,
-            win.width.saturating_sub(radius * 2),
-            1,
-            border_col,
-        );
-
-        // ── Title bar buttons (slightly smaller, right-aligned) ──
-        let btn_y = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
-        blit_button(
-            p.fb,
-            p.width,
-            &CLOSE_BUTTON_CACHE,
-            win.x + win.width as i32 - 22,
-            btn_y,
-        );
-        blit_button(
-            p.fb,
-            p.width,
-            &MAXIMIZE_BUTTON_CACHE,
-            win.x + win.width as i32 - 42,
-            btn_y,
-        );
-        blit_button(
-            p.fb,
-            p.width,
-            &MINIMIZE_BUTTON_CACHE,
-            win.x + win.width as i32 - 62,
-            btn_y,
-        );
-
-        // Title text — centered vertically, left-aligned with padding
-        let tx = win.x + 12;
-        let ty = win.y + (TITLE_BAR_HEIGHT as i32 - 14) / 2;
-        p.draw_text(tx, ty, title, colors.text, 15.0);
     }
 }

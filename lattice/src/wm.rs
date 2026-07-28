@@ -76,7 +76,7 @@ pub(crate) fn window_dirty_rect(w: &Window) -> DirtyRect {
             .max(x0 as i32) as u32;
     let y1 =
         w.y.saturating_add(w.height as i32)
-            .saturating_add(crate::compositor::TITLE_BAR_HEIGHT as i32)
+            .saturating_add(crate::style::title_bar_height() as i32)
             .saturating_add(SHADOW_MARGIN)
             .max(y0 as i32) as u32;
     DirtyRect::new(x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))

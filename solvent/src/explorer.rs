@@ -39,6 +39,16 @@ pub const STATUSBAR_HEIGHT: u32 = 20;
 pub const ROW_HEIGHT: u32 = 20;
 pub const CONTEXT_MENU_W: u32 = 150;
 
+pub fn visible_file_rows(surface_height: u32) -> usize {
+    surface_height
+        .saturating_sub(TOOLBAR_HEIGHT)
+        .saturating_sub(STATUSBAR_HEIGHT)
+        .saturating_sub(ROW_HEIGHT)
+        .checked_div(ROW_HEIGHT)
+        .unwrap_or(0)
+        .max(1) as usize
+}
+
 // ── Colors ─────────────────────────────────────────────────────
 pub const EXPLORER_BG: u32 = 0x1E1E2E;
 pub const SIDEBAR_BG: u32 = 0x252536;
@@ -309,6 +319,20 @@ impl ExplorerContext {
         let dir = self.current_dir.clone();
         self.navigate_to(&dir);
         self.refresh_sidebar();
+    }
+
+    /// Scroll the file list by rows while keeping the viewport inside its
+    /// entry range. Positive values move toward later entries.
+    pub fn scroll_by(&mut self, delta: isize, visible_rows: usize) {
+        let max_offset = self.entries.len().saturating_sub(visible_rows.max(1));
+        if delta.is_negative() {
+            self.scroll_offset = self.scroll_offset.saturating_sub(delta.unsigned_abs());
+        } else {
+            self.scroll_offset = self
+                .scroll_offset
+                .saturating_add(delta as usize)
+                .min(max_offset);
+        }
     }
 
     /// Refresh sidebar items (re-detect USB drives etc.).
@@ -1127,5 +1151,44 @@ mod tests {
             explorer.activate_entry(1).as_deref(),
             Some("/mnt/Bootlog.txt")
         );
+    }
+
+    fn explorer_with_entries(count: usize) -> ExplorerContext {
+        let mut explorer = ExplorerContext::new();
+        explorer.finish_navigation(
+            String::from("/tmp"),
+            Ok((0..count)
+                .map(|index| VfsEntry {
+                    name: alloc::format!("entry-{index}"),
+                    size: index as u64,
+                    is_dir: false,
+                })
+                .collect()),
+        );
+        explorer
+    }
+
+    #[test]
+    fn scroll_by_handles_empty_and_visible_row_clamping() {
+        let mut empty = explorer_with_entries(0);
+        empty.scroll_by(isize::MAX, 20);
+        assert_eq!(empty.scroll_offset, 0);
+
+        let mut explorer = explorer_with_entries(5);
+        explorer.scroll_by(1, 0);
+        assert_eq!(explorer.scroll_offset, 1);
+        explorer.scroll_by(isize::MAX, 2);
+        assert_eq!(explorer.scroll_offset, 3);
+    }
+
+    #[test]
+    fn scroll_by_floors_negative_deltas_and_caps_large_positive_deltas() {
+        let mut explorer = explorer_with_entries(8);
+        explorer.scroll_by(isize::MAX, 3);
+        assert_eq!(explorer.scroll_offset, 5);
+        explorer.scroll_by(-isize::MAX, 3);
+        assert_eq!(explorer.scroll_offset, 0);
+        explorer.scroll_by(-1, 3);
+        assert_eq!(explorer.scroll_offset, 0);
     }
 }

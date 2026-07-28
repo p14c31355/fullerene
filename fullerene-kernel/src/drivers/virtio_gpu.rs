@@ -31,9 +31,9 @@ pub fn init() -> Option<(Box<VirtioGpu>, UefiFramebufferWriter)> {
             .and_then(|m| m.lock().clone());
         opt.unwrap_or(petroleum::common::FullereneFramebufferConfig {
             address: 0x40000000,
-            width: 1024,
-            height: 768,
-            stride: 1024,
+            width: 1920,
+            height: 1080,
+            stride: 1920,
             pixel_format:
                 petroleum::common::EfiGraphicsPixelFormat::PixelRedGreenBlueReserved8BitPerColor,
             bpp: 32,

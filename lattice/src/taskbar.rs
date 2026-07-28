@@ -11,6 +11,13 @@
 /// Taskbar height in pixels.
 pub const TASKBAR_HEIGHT: u32 = 28;
 
+/// Active shell taskbar height.  `TASKBAR_HEIGHT` remains as a compatibility
+/// constant for external callers that only support Basalt.
+#[inline]
+pub fn height() -> u32 {
+    crate::style::taskbar_height()
+}
+
 /// Taskbar background colour.
 pub const TASKBAR_BG: u32 = 0x0F0F1A;
 
@@ -24,7 +31,7 @@ pub const TASKBAR_ACTIVE_BG: u32 = 0x3A7BD5;
 pub const TASKBAR_INACTIVE_BG: u32 = 0x333344;
 
 /// A single taskbar entry (represents a window).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskbarEntry {
     /// Window ID for click-to-restore / click-to-focus.
     pub id: crate::window::WindowId,
@@ -75,7 +82,19 @@ impl Taskbar {
     }
 
     /// Update entries from window list.
-    pub fn update_from_windows(&mut self, windows: &[crate::window::Window]) {
+    pub fn update_from_windows(&mut self, windows: &[crate::window::Window]) -> bool {
+        let changed = self.entries.len() != windows.len()
+            || self
+                .entries
+                .iter()
+                .zip(windows.iter().rev())
+                .any(|(entry, window)| {
+                    let title = window.title.as_deref().unwrap_or("Window");
+                    entry.id != window.id || entry.title != title || entry.focused != window.focused
+                });
+        if !changed {
+            return false;
+        }
         self.entries.clear();
         for w in windows.iter().rev() {
             let title = w
@@ -89,6 +108,7 @@ impl Taskbar {
                 focused: w.focused,
             });
         }
+        true
     }
 
     /// Render the taskbar onto a surface (intended to overlay the framebuffer).
@@ -96,106 +116,7 @@ impl Taskbar {
     /// The surface should be the full framebuffer dimensions; the taskbar
     /// is drawn at the bottom.
     pub fn render(&self, fb: &mut [u32], fb_width: u32, fb_height: u32) {
-        let colors = crate::theme::current_colors();
-        let bar_y = fb_height.saturating_sub(TASKBAR_HEIGHT);
-        let fb_w = fb_width as usize;
         let mut painter = crate::painter::Painter::new(fb, fb_width, fb_height);
-
-        // Fill bar background
-        for row in 0..TASKBAR_HEIGHT {
-            let y = bar_y + row;
-            if y >= fb_height {
-                break;
-            }
-            let row_start = (y as usize) * fb_w;
-            painter.fb[row_start..row_start + fb_w].fill(colors.taskbar_bg);
-        }
-
-        // WiFi icon X position (used both for icon and as right bound for debug text)
-        let wifi_icon_x = self.wifi_icon_x(fb_width);
-
-        // Draw WiFi indicator icon (right side, before clock)
-        crate::network_menu::render_wifi_icon(
-            painter.fb,
-            fb_width,
-            fb_height,
-            wifi_icon_x,
-            bar_y + 6,
-            self.wifi_connected,
-            self.wifi_visible,
-            self.wifi_signal,
-        );
-
-        // Draw window buttons (from left)
-        let mut btn_x = 4i32;
-        let btn_w = 120u32;
-        let btn_h = TASKBAR_HEIGHT - 6;
-        let btn_y = bar_y + 3;
-
-        for entry in &self.entries {
-            if btn_x as u32 + btn_w > fb_width {
-                break;
-            }
-            let bg = if entry.focused {
-                colors.taskbar_active_bg
-            } else {
-                colors.taskbar_inactive_bg
-            };
-            // Button background
-            for row in 0..btn_h {
-                let y = btn_y + row;
-                let rs = (y as usize) * fb_w + btn_x as usize;
-                painter.fb[rs..rs + btn_w as usize].fill(bg);
-            }
-            // Button text - truncate safely at char boundary
-            let mut char_count = 0;
-            let mut byte_index = entry.title.len();
-            for (idx, _) in entry.title.char_indices() {
-                if char_count >= 14 {
-                    byte_index = idx;
-                    break;
-                }
-                char_count += 1;
-            }
-            let label = if entry.title.len() > byte_index {
-                &entry.title[..byte_index]
-            } else {
-                &entry.title
-            };
-            painter.draw_text(
-                btn_x + 4,
-                btn_y as i32 + 3,
-                label,
-                colors.taskbar_text,
-                13.0,
-            );
-            btn_x += btn_w as i32 + 4;
-        }
-
-        // Draw debug status messages (between window buttons and WiFi icon)
-        if !self.debug_msgs.is_empty() {
-            let (last_source, last_msg) = &self.debug_msgs[self.debug_msgs.len() - 1];
-            let debug_text = if last_source.is_empty() {
-                alloc::format!("[{}]", last_msg)
-            } else {
-                alloc::format!("{}: {}", last_source, last_msg)
-            };
-            let dx = btn_x + 4;
-            let dy = (btn_y + 3) as i32;
-            painter.draw_text(dx, dy, &debug_text, colors.taskbar_text, 13.0);
-        }
-
-        // Draw clock on the right
-        if !self.clock_text.is_empty() {
-            let clock_y = (btn_y + 3) as i32;
-            let clock_x = (fb_width as i32).saturating_sub(100);
-            painter.draw_text(
-                clock_x,
-                clock_y,
-                &self.clock_text,
-                colors.taskbar_text,
-                13.0,
-            );
-        }
+        crate::style::style_for(crate::style::variant()).draw_taskbar(&mut painter, self);
     }
 }

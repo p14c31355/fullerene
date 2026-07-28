@@ -141,50 +141,19 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     }
     dim_backdrop(fb, fbw, fbh, stride);
 
-    // ── App launcher grid ─────────────────────────────────
-    struct AppEntry {
-        label: &'static str,
-        icon: &'static crate::icon::SvgIcon,
+    if crate::style::kind() == crate::common::ShellKind::Prism {
+        render_prism_start_panel(fb, fbw, fbh, stride);
+        return;
     }
 
-    let apps: &[AppEntry] = &[
-        AppEntry {
-            label: "Shell",
-            icon: &crate::icon::ICON_SHELL,
-        },
-        AppEntry {
-            label: "Terminal",
-            icon: &crate::icon::ICON_TERMINAL,
-        },
-        AppEntry {
-            label: "Editor",
-            icon: &crate::icon::ICON_EDITOR,
-        },
-        AppEntry {
-            label: "Clock",
-            icon: &crate::icon::ICON_CLOCK,
-        },
-        AppEntry {
-            label: "Settings",
-            icon: &crate::icon::ICON_SETTINGS,
-        },
-        AppEntry {
-            label: "File Mgr",
-            icon: &crate::icon::ICON_FILES,
-        },
-        AppEntry {
-            label: "About",
-            icon: &crate::icon::ICON_ABOUT,
-        },
-    ];
-
+    // ── App launcher grid ─────────────────────────────────
     let icon_size = 64u32;
     let pad = 24u32;
     let label_h = 18u32;
     let columns = (fbw / (icon_size + pad)).max(1);
     let start_y = 60u32;
 
-    for (i, app) in apps.iter().enumerate() {
+    for (i, route) in crate::common::APP_GRID_ROUTES.iter().copied().enumerate() {
         let col = (i as u32) % columns;
         let row = (i as u32) / columns;
         let ax = (pad + col * (icon_size + pad)) as i32;
@@ -195,7 +164,7 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
         }
 
         // SVG icon (direct framebuffer blit, no heap allocation)
-        app.icon.blit_into(fb, fbw, stride, ax, ay);
+        crate::common::icon_for_route(route).blit_into(fb, fbw, stride, ax, ay);
 
         // App label below icon
         render_text(
@@ -203,7 +172,7 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
             fbw,
             fbh,
             stride,
-            app.label,
+            crate::common::route_label(route),
             (ax + 2) as u32,
             (ay + icon_size as i32 + 2) as u32,
             COLOR_TEXT,
@@ -220,6 +189,122 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
         (fbw / 2).saturating_sub(54),
         10,
     );
+}
+
+fn prism_panel_rect(fbw: u32, fbh: u32) -> (u32, u32, u32, u32) {
+    let w = 520u32.min(fbw.saturating_sub(48));
+    let h = 500u32.min(fbh.saturating_sub(80));
+    (
+        fbw.saturating_sub(w) / 2,
+        fbh.saturating_sub(h) / 2 + 18,
+        w,
+        h,
+    )
+}
+
+/// Windows-like Start panel used by Prism. It intentionally uses the same
+/// applications as the overlay input handler, so the visual target and the
+/// hit-test geometry cannot drift apart.
+fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
+    let (panel_x, panel_y, panel_w, panel_h) = prism_panel_rect(fbw, fbh);
+    let colors = crate::style::current().palette;
+    let mut painter = Painter::new(fb, fbw, fbh);
+    painter.draw_shadow(
+        panel_x as i32,
+        panel_y as i32,
+        panel_w,
+        panel_h,
+        18,
+        2,
+        12,
+        colors.window_shadow,
+    );
+    painter.rounded_rect(
+        panel_x as i32,
+        panel_y as i32,
+        panel_w,
+        panel_h,
+        18,
+        colors.surface,
+    );
+    painter.rounded_rect(
+        panel_x as i32 + 24,
+        panel_y as i32 + 22,
+        panel_w.saturating_sub(48),
+        36,
+        8,
+        colors.title_inactive,
+    );
+    painter.draw_text(
+        panel_x as i32 + 38,
+        panel_y as i32 + 33,
+        "Search apps, settings, and documents",
+        colors.muted,
+        13.0,
+    );
+    painter.draw_text(
+        panel_x as i32 + 28,
+        panel_y as i32 + 82,
+        "Pinned",
+        colors.text,
+        16.0,
+    );
+
+    for (index, route) in crate::common::APP_GRID_ROUTES.iter().copied().enumerate() {
+        let Some((x, y, _, _)) = app_grid_item_rect(index, fbw, fbh) else {
+            continue;
+        };
+        crate::common::icon_for_route(route).blit_scaled_into(
+            painter.fb,
+            fbw,
+            stride,
+            x + 12,
+            y + 4,
+            48,
+        );
+        painter.draw_text(
+            x + 8,
+            y + 58,
+            crate::common::route_label(route),
+            colors.taskbar_text,
+            12.0,
+        );
+    }
+    painter.draw_text(
+        panel_x as i32 + 28,
+        panel_y as i32 + panel_h as i32 - 30,
+        "All apps  >",
+        colors.primary,
+        13.0,
+    );
+}
+
+/// Return the clickable rectangle for an AppGrid entry in the active shell.
+pub fn app_grid_item_rect(index: usize, fbw: u32, fbh: u32) -> Option<(i32, i32, u32, u32)> {
+    if crate::style::kind() == crate::common::ShellKind::Prism {
+        if index >= crate::common::APP_GRID_ROUTES.len() {
+            return None;
+        }
+        let (panel_x, panel_y, _panel_w, _panel_h) = prism_panel_rect(fbw, fbh);
+        return Some((
+            panel_x as i32 + 24 + (index % 5) as i32 * 96,
+            panel_y as i32 + 106 + (index / 5) as i32 * 100,
+            72,
+            80,
+        ));
+    }
+
+    let icon_size = 64u32;
+    let pad = 24u32;
+    let columns = (fbw / (icon_size + pad)).max(1);
+    let col = index as u32 % columns;
+    let row = index as u32 / columns;
+    Some((
+        (pad + col * (icon_size + pad)) as i32,
+        (60 + row * (icon_size + 18 + pad)) as i32,
+        icon_size,
+        icon_size + 18,
+    ))
 }
 
 /// Render the timezone selector overlay.

@@ -74,12 +74,37 @@ fn clip_region(
         .filter(|region| region.width != 0 && region.height != 0)
 }
 
+#[inline]
+fn current_brightness() -> u32 {
+    crate::DISPLAY_BRIGHTNESS_X100
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .clamp(10, 100)
+}
+
 fn blit_region(
     back: &[u32],
     back_width: usize,
     framebuffer: &mut [u32],
     framebuffer_stride: usize,
     region: lattice::scene::DirtyRect,
+) {
+    blit_region_with_brightness(
+        back,
+        back_width,
+        framebuffer,
+        framebuffer_stride,
+        region,
+        current_brightness(),
+    );
+}
+
+fn blit_region_with_brightness(
+    back: &[u32],
+    back_width: usize,
+    framebuffer: &mut [u32],
+    framebuffer_stride: usize,
+    region: lattice::scene::DirtyRect,
+    brightness: u32,
 ) {
     for row in region.y as usize..(region.y + region.height) as usize {
         let src = row * back_width + region.x as usize;
@@ -99,6 +124,7 @@ fn blit_region(
         // inside the framebuffer. Volatile stores are required for GOP MMIO.
         let destination = unsafe { framebuffer.as_mut_ptr().add(dst) };
         for (column, &pixel) in source.iter().enumerate() {
+            let pixel = lattice::compositor::apply_brightness(pixel, brightness);
             unsafe { core::ptr::write_volatile(destination.add(column), pixel) };
         }
     }
@@ -131,6 +157,7 @@ fn draw_cursor_strided(
     let left = cursor.x - Cursor::HOTSPOT_X;
     let top = cursor.y - Cursor::HOTSPOT_Y;
     let size = Cursor::SIZE as i32;
+    let brightness = current_brightness();
     for row in 0..size {
         let y = top + row;
         if y < 0 || y >= height as i32 {
@@ -141,7 +168,9 @@ fn draw_cursor_strided(
             if x < 0 || x >= width as i32 {
                 continue;
             }
-            let pixel = Cursor::shape()[(row * size + column) as usize];
+            let source = Cursor::shape()[(row * size + column) as usize];
+            let pixel = (source & 0xFF00_0000)
+                | lattice::compositor::apply_brightness(source & 0x00FF_FFFF, brightness);
             if pixel == 0 {
                 continue;
             }
@@ -304,7 +333,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
         rt.desktop.push_dirty_rect(region);
     }
 
-    let bar_h = lattice::taskbar::TASKBAR_HEIGHT;
+    let bar_h = lattice::style::taskbar_height();
     if rt.clock_changed || tb_changed || debug_changed {
         rt.desktop.push_dirty_rect(lattice::scene::DirtyRect::new(
             0,
@@ -319,7 +348,7 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 0,
                 0,
                 fb_width,
-                lattice::top_panel::TOP_PANEL_HEIGHT,
+                lattice::style::top_panel_height(),
             ));
         }
     }
@@ -383,12 +412,8 @@ pub fn render(fb: &mut petroleum::graphics::FramebufferGuard) {
                 }
                 ShellState::Desktop => {}
             }
-            let top_panel_rect = lattice::scene::DirtyRect::new(
-                0,
-                0,
-                fb_width,
-                lattice::top_panel::TOP_PANEL_HEIGHT,
-            );
+            let top_panel_rect =
+                lattice::scene::DirtyRect::new(0, 0, fb_width, lattice::style::top_panel_height());
             let top_panel_dirty = was_transition
                 || scene
                     .dirty_rects
@@ -457,6 +482,21 @@ mod tests {
         );
 
         assert_eq!(framebuffer, [0, 2, 3, 0, 0, 5, 6, 0]);
+    }
+
+    #[test]
+    fn blit_applies_display_brightness_at_scanout_boundary() {
+        let back = [0xC08040];
+        let mut framebuffer = [0];
+        blit_region_with_brightness(
+            &back,
+            1,
+            &mut framebuffer,
+            1,
+            lattice::scene::DirtyRect::full(1, 1),
+            50,
+        );
+        assert_eq!(framebuffer, [0x604020]);
     }
 
     #[test]

@@ -101,7 +101,7 @@ impl PopupMenu {
             y: self.y,
             width: self.width,
             height: self.height,
-            color: MENU_BG,
+            color: crate::style::current().palette.menu_bg,
         });
 
         // Items
@@ -113,7 +113,7 @@ impl PopupMenu {
                 y: item_y,
                 width: self.width - MENU_BORDER * 2,
                 height: ITEM_HEIGHT,
-                color: MENU_BG,
+                color: crate::style::current().palette.menu_bg,
             });
         }
 
@@ -124,16 +124,8 @@ impl PopupMenu {
     ///
     /// Uses the Painter's TTF renderer (with bitmap fallback) for crisper text.
     pub fn render_text(&self, fb: &mut [u32], fbw: u32, fbh: u32, _fb_stride: u32) {
-        if !self.visible {
-            return;
-        }
         let mut painter = crate::painter::Painter::new(fb, fbw, fbh);
-        for (i, item) in self.items.iter().enumerate() {
-            let item_y = self.y + MENU_BORDER + i as u32 * ITEM_HEIGHT;
-            let tx = (self.x + MENU_BORDER + 4) as i32;
-            let ty = (item_y + 4) as i32;
-            painter.draw_text(tx, ty, &item.label, crate::compositor::COLOR_TEXT, 13.0);
-        }
+        crate::style::style_for(crate::style::variant()).draw_menu(&mut painter, self);
     }
 }
 

@@ -39,6 +39,7 @@ pub fn poll_mouse_state() {
     let ps2_state = nitrogen::ps2::mouse::consume_state();
     let dx = ps2_state.get_x();
     let dy = ps2_state.get_y();
+    let wheel = ps2_state.get_wheel();
     let buttons = nitrogen::ps2::mouse::mouse_buttons();
     let mut mouse = MOUSE_STATE.lock();
     let old_x = mouse.x;
@@ -58,6 +59,17 @@ pub fn poll_mouse_state() {
         queue.push(Event::Input(InputEvent::MouseMove {
             x: cursor_x,
             y: cursor_y,
+        }));
+    }
+    if wheel != 0
+        && let Some(queue) = RUNTIME_CONTEXT.event_queue().as_mut()
+    {
+        queue.push(Event::Input(InputEvent::MouseWheel {
+            dx: 0,
+            // PS/2 reports positive wheel ticks for the physical upward
+            // direction. Resonance uses the usual screen convention where
+            // positive Y means scrolling down.
+            dy: -i32::from(wheel),
         }));
     }
 
@@ -81,7 +93,7 @@ pub fn poll_keyboard() {
         let runtime_guard = crate::RUNTIME_CONTEXT.runtime();
         let allowed = runtime_guard.as_ref().map_or(true, |rt| {
             let top = rt.desktop.wm.windows().last().map(|w| w.id);
-            top == rt.term_window && !rt.desktop.pwd_dialog_open
+            rt.term_window.is_some() && top == rt.term_window && !rt.desktop.pwd_dialog_open
         });
         drop(runtime_guard);
         set_terminal_input_allowed(allowed);
@@ -109,6 +121,17 @@ pub fn poll_keyboard() {
             continue;
         }
 
+        // Super is a desktop-global shortcut. It must bypass focused-window
+        // routing (Settings, Editor, Explorer, and Terminal) so the shell
+        // state machine always receives both key-down and key-up events.
+        if matches!(
+            scancode_to_resonance_keycode(scancode),
+            resonance::KeyCode::SuperLeft | resonance::KeyCode::SuperRight
+        ) {
+            push_keyboard_event(scancode, pressed);
+            continue;
+        }
+
         let mut launch_path: Option<String> = None;
         let mut explorer_handled = false;
         {
@@ -120,6 +143,18 @@ pub fn poll_keyboard() {
                 }
 
                 let top_id = runtime.desktop.wm.windows().last().map(|window| window.id);
+                if runtime.term_window.is_some() && top_id == runtime.term_window && pressed {
+                    let key = scancode_to_resonance_keycode(scancode);
+                    let sequence = match key {
+                        resonance::KeyCode::Up => Some(b"\x1b[A".as_slice()),
+                        resonance::KeyCode::Down => Some(b"\x1b[B".as_slice()),
+                        _ => None,
+                    };
+                    if let Some(sequence) = sequence {
+                        nitrogen::ps2::keyboard::push_input_bytes(sequence);
+                        continue;
+                    }
+                }
                 if top_id.is_some() && runtime.editor_window == top_id {
                     drop(runtime_guard);
                     editor_bridge::editor_handle_key(scancode, pressed);
@@ -285,8 +320,56 @@ fn explorer_handle_key(runtime: &mut RuntimeState, scancode: u8, pressed: bool) 
     }
 
     let key = scancode_to_resonance_keycode(scancode);
-    let visible_rows = 20usize;
+    let surface_height = runtime
+        .explorer
+        .as_ref()
+        .and_then(|explorer| explorer.window_id)
+        .and_then(|id| {
+            runtime
+                .desktop
+                .wm
+                .windows()
+                .iter()
+                .find(|window| window.id == id)
+                .map(|window| window.surface.height())
+        })
+        .unwrap_or(400);
+    let visible_rows = crate::explorer::visible_file_rows(surface_height);
     match key {
+        resonance::KeyCode::PageUp => {
+            if let Some(explorer) = runtime.explorer.as_mut() {
+                explorer.scroll_by(-(visible_rows as isize), visible_rows);
+                runtime.explorer_dirty = true;
+                runtime.frame_due = true;
+            }
+            None
+        }
+        resonance::KeyCode::PageDown => {
+            if let Some(explorer) = runtime.explorer.as_mut() {
+                explorer.scroll_by(visible_rows as isize, visible_rows);
+                runtime.explorer_dirty = true;
+                runtime.frame_due = true;
+            }
+            None
+        }
+        resonance::KeyCode::Home => {
+            if let Some(explorer) = runtime.explorer.as_mut() {
+                explorer.scroll_offset = 0;
+                explorer.selected_index = None;
+                runtime.explorer_dirty = true;
+                runtime.frame_due = true;
+            }
+            None
+        }
+        resonance::KeyCode::End => {
+            if let Some(explorer) = runtime.explorer.as_mut() {
+                explorer.scroll_by(isize::MAX, visible_rows);
+                explorer.selected_index = None;
+                runtime.explorer_dirty = true;
+                runtime.frame_due = true;
+            }
+            None
+        }
         resonance::KeyCode::Up => {
             let explorer = match runtime.explorer.as_mut() {
                 Some(explorer) => explorer,

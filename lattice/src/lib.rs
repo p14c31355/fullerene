@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+pub mod basalt;
+pub mod common;
 pub mod compositor;
 pub mod cursor;
 pub mod desktop;
@@ -12,9 +14,12 @@ pub mod icon;
 pub mod menu;
 pub mod network_menu;
 pub mod painter;
+pub mod photon;
+pub mod prism;
 pub mod renderer;
 pub mod scene;
 pub mod shell_overlay;
+pub mod style;
 pub mod surface;
 pub mod taskbar;
 pub mod terminal_surface;
@@ -104,6 +109,27 @@ mod tests {
         assert_eq!(&pixels[6..9], &[0x112233; 3]);
         assert_eq!(&pixels[3..6], &[0xDEADBE; 3]);
         assert_eq!(&pixels[9..], &[0xDEADBE; 3]);
+    }
+
+    #[test]
+    fn painter_antialiases_rounded_corners_and_preserves_outline_interior() {
+        let mut pixels = alloc::vec![0x112233; 20 * 20];
+        let mut painter = Painter::new(&mut pixels, 20, 20);
+        painter.rounded_rect(0, 0, 20, 20, 8, 0xFFFFFF);
+        drop(painter);
+        assert_eq!(pixels[0], 0x112233);
+        assert_eq!(pixels[10 * 20 + 10], 0xFFFFFF);
+        assert!(
+            pixels
+                .iter()
+                .any(|&pixel| pixel != 0x112233 && pixel != 0xFFFFFF)
+        );
+
+        pixels.fill(0x445566);
+        let mut painter = Painter::new(&mut pixels, 20, 20);
+        painter.rounded_rect_outline(0, 0, 20, 20, 8, 1, 0xFFFFFF);
+        drop(painter);
+        assert_eq!(pixels[10 * 20 + 10], 0x445566);
     }
 
     #[test]

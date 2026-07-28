@@ -22,6 +22,26 @@ pub fn settings_handle_key(scancode: u8, pressed: bool) {
     }
 }
 
+/// Select a settings row from the rendered settings window. Value changes
+/// remain keyboard-driven so a click cannot accidentally alter a setting.
+pub(crate) fn settings_handle_mouse(rt: &mut crate::RuntimeState, x: i32, y: i32) -> bool {
+    let Some(settings_id) = rt.settings_window else {
+        return false;
+    };
+    let Some(window) = rt.desktop.wm.windows().iter().find(|w| w.id == settings_id) else {
+        return false;
+    };
+    let relative_y = y - window.y - lattice::style::title_bar_height() as i32;
+    let line = relative_y.div_euclid(crate::GLYPH_H as i32);
+    if !(2..=8).contains(&line) || x < window.x || x >= window.x + window.width as i32 {
+        return false;
+    }
+    *SETTINGS_SELECTED.lock() = (line - 2) as u32;
+    rt.settings_dirty = true;
+    rt.frame_due = true;
+    true
+}
+
 pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: u8, pressed: bool) {
     let key = crate::scancode_to_resonance_keycode(scancode);
     if !pressed {
@@ -30,7 +50,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
 
     let mut sel = SETTINGS_SELECTED.lock();
 
-    const ROWS: u32 = 6;
+    const ROWS: u32 = 7;
     match key {
         KeyCode::Up => {
             *sel = sel.saturating_sub(1).min(ROWS - 1);
@@ -42,6 +62,14 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
             let dec = key == KeyCode::Left;
             match *sel {
                 0 => {
+                    let next = lattice::style::variant().next(!dec);
+                    lattice::style::set_variant(next);
+                    let (fw, fh, _) = *FB_DIMS.lock();
+                    rt.desktop.relayout_maximized_windows(fw, fh);
+                    rt.desktop.force_full_redraw();
+                    persist_settings();
+                }
+                1 => {
                     let cur = (MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed)
                         as f32)
                         / 6.0;
@@ -56,7 +84,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
                     );
                     persist_settings();
                 }
-                1 => {
+                2 => {
                     let cur =
                         DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed) as i32;
                     let new_val = if dec {
@@ -69,21 +97,21 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
-                2 => {
+                3 => {
                     lattice::top_panel::toggle_top_panel();
                     let (fw, fh, _) = *FB_DIMS.lock();
                     rt.desktop.relayout_maximized_windows(fw, fh);
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
-                3 => {
+                4 => {
                     let cur = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
                     let new_val = if cur == 0 { 8 } else { 0 };
                     WINDOW_CORNER_RADIUS.store(new_val, core::sync::atomic::Ordering::Relaxed);
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
-                4 => {
+                5 => {
                     let modes = wallpaper::wallpaper_modes();
                     let cur = wallpaper::get_wallpaper();
                     let cur_idx = modes.iter().position(|(_, m)| *m == cur).unwrap_or(0);
@@ -96,7 +124,7 @@ pub(crate) fn settings_handle_key_inner(rt: &mut crate::RuntimeState, scancode: 
                     rt.desktop.force_full_redraw();
                     persist_settings();
                 }
-                5 => {
+                6 => {
                     let new_val = !KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed);
                     KLOG_SAVE_ENABLED.store(new_val, core::sync::atomic::Ordering::Relaxed);
                     persist_settings();
@@ -151,6 +179,7 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
     let bright = DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed);
     let top_panel = lattice::top_panel::is_top_panel_enabled();
     let corner = WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed);
+    let lattice_variant = lattice::style::variant().name();
     let sel = *SETTINGS_SELECTED.lock();
 
     let wp_mode = wallpaper::get_wallpaper();
@@ -168,6 +197,7 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
     let info = alloc::format!(
         "{}Settings\n\
          \n\
+         {}Lattice: {}\n\
          {}Mouse Sensitivity: {:.2}\n\
          {}Display Brightness: {}.{:02}\n\
          {}Top Panel: {}\n\
@@ -176,27 +206,33 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
          {}SD Klog Save: {}",
         highlight(sel, 99),
         highlight(sel, 0),
-        sens,
+        lattice_variant,
         highlight(sel, 1),
+        sens,
+        highlight(sel, 2),
         bright / 100,
         bright % 100,
-        highlight(sel, 2),
-        if top_panel { "ON " } else { "OFF" },
         highlight(sel, 3),
-        if corner > 0 { "Rounded" } else { "Square " },
+        if top_panel { "ON " } else { "OFF" },
         highlight(sel, 4),
-        wp_name,
+        if corner > 0 { "Rounded" } else { "Square " },
         highlight(sel, 5),
+        wp_name,
+        highlight(sel, 6),
         if klog_save { "ON " } else { "OFF" },
     );
 
-    let cols = 38u32;
-    let total = cols as usize * 11;
+    let cols = 42u32;
+    // Keep the final cell row covered as well. The window surface is 13 rows
+    // high; leaving the last row untouched exposed its creation colour as a
+    // dark strip at the bottom of the light Photon settings window.
+    let total = cols as usize * 13;
+    let colors = lattice::theme::current_colors();
     let mut cells = vec![
         LatticeCell {
             ch: b' ',
-            fg: 0xCCFFFF,
-            bg: 0x0d1a1a
+            fg: colors.text,
+            bg: colors.surface
         };
         total
     ];
@@ -208,8 +244,8 @@ pub(crate) fn render_settings(rt: &mut crate::RuntimeState) {
                 if idx < total {
                     cells[idx] = LatticeCell {
                         ch,
-                        fg: 0xCCFFFF,
-                        bg: 0x0d1a1a,
+                        fg: colors.text,
+                        bg: colors.surface,
                     };
                 }
             }

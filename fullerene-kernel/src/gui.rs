@@ -47,6 +47,20 @@ fn close_runtime_file(handle: solvent::VfsHandle) -> Result<(), genome::FsError>
     crate::contexts::vfs::close(handle)
 }
 
+fn save_runtime_settings() {
+    let (sensitivity, brightness, top_panel, corner, klog_save, variant) =
+        solvent::settings_snapshot();
+    let data = crate::contexts::settings_persist::format_settings_toml(
+        sensitivity,
+        brightness,
+        top_panel,
+        corner,
+        klog_save,
+        variant,
+    );
+    let _ = crate::contexts::vfs::replace_file("/etc/settings.toml", data.as_bytes());
+}
+
 // Re-export solvent types used by other kernel modules
 pub use solvent::{
     LatticeTerminal, MOUSE_STATE, MouseState, chrono_tick, consume_frame_due, cursor_update_due,
@@ -136,13 +150,23 @@ pub fn init() {
         launch_shell: Some(|| {
             crate::scheduler::request_shell_launch();
         }),
-        settings_save: None,
+        settings_save: Some(save_runtime_settings),
         kernel_log: Some(|| {
             alloc::string::String::from_utf8_lossy(&crate::klog::snapshot()).into_owned()
         }),
         metrics: Some(crate::metrics::format_snapshot),
     }
     .install();
+
+    let (sensitivity, brightness, top_panel, corner, klog_save, variant) =
+        crate::contexts::settings_persist::load_settings(crate::fs::read_entire_file);
+    lattice::style::set_variant(variant);
+    solvent::apply_settings(sensitivity, brightness, top_panel);
+    lattice::compositor::WINDOW_CORNER_RADIUS.store(
+        if corner { 8 } else { 0 },
+        core::sync::atomic::Ordering::Relaxed,
+    );
+    solvent::KLOG_SAVE_ENABLED.store(klog_save, core::sync::atomic::Ordering::Relaxed);
 
     // Calibrate TSC ticks per millisecond using the PIT (8254).
     // PIT channel 2 is free‑running and connected to the speaker
