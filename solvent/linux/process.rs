@@ -12,6 +12,11 @@ use x86_64::structures::paging::{FrameAllocator as X86FrameAllocator, PageTableF
 
 pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let code = args[0] as i32;
+    if rt.terminal_window.is_some() && rt.tid == rt.terminal_owner_tid {
+        if let Some(window_id) = rt.terminal_window.take() {
+            solvent::close_process_terminal(window_id);
+        }
+    }
     // Clear child TID if set
     if rt.child_clear_tid != 0 {
         let _ = unsafe { copy_val_to_user(rt.child_clear_tid, &0i32) };
@@ -35,6 +40,8 @@ pub fn sys_exit(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         ));
         #[cfg(linux_musl_smoke)]
         crate::linux::launch::observe_smoke_exit(pid, code);
+        #[cfg(linux_busybox_smoke)]
+        crate::linux::launch::observe_busybox_exit(pid, code);
         process::terminate_process(pid, code);
     }
     loop {
@@ -55,6 +62,21 @@ pub fn sys_getppid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
     process::SCHEDULER
         .with_process(pid, |p| p.parent_id.map(|id| id.0).unwrap_or(0))
         .unwrap_or(0)
+}
+
+/// Return the foreground process group for the current Linux process.
+///
+/// Fullerene does not yet expose independent Linux process-group/session
+/// objects, so a process is its own group until that model is added. This is
+/// sufficient for BusyBox shell startup and keeps the result stable and
+/// nonzero for terminal-control queries.
+pub fn sys_getpgrp(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+    process::current_pid().map(|pid| pid.0).unwrap_or(0)
+}
+
+/// Fullerene currently gives each Linux process its own process group.
+pub fn sys_setpgid(_rt: &mut LinuxRuntime, _args: &[u64; 6]) -> u64 {
+    0
 }
 
 pub fn sys_gettid(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -157,6 +179,8 @@ pub fn sys_clone(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         dispatch_mode: {
             let mut child_rt = super::runtime::LinuxRuntime::new(child_pid.0, rt.initial_break);
             child_rt.fd_table.entries = rt.fd_table.entries.clone();
+            child_rt.terminal_window = rt.terminal_window;
+            child_rt.terminal_owner_tid = rt.terminal_owner_tid;
             Some(super::runtime::DispatchMode::Linux(alloc::boxed::Box::new(
                 child_rt,
             )))

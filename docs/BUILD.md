@@ -186,6 +186,36 @@ Expected output:
 - Shell interface becomes available after scheduler starts running processes (via GUI terminal or serial).
 - System runs multi-tasking kernel with shell interaction available.
 
+### Static BusyBox
+
+`run_busybox` launches a statically linked x86_64 BusyBox as `busybox sh`.
+The kernel build validates and embeds BusyBox from `FULLERENE_BUSYBOX`; when
+that variable is omitted, `/usr/bin/busybox` and `/bin/busybox` are tried for
+developer convenience. Dynamic ELF binaries and non-x86_64 binaries are
+rejected, so a static build is required:
+
+```bash
+FULLERENE_BUSYBOX=/path/to/busybox-static \
+  cargo run -p flasks -- --display none --vga none
+```
+
+Then enter `run_busybox` in the Nozzle shell. Fullerene opens a focused
+`BusyBox` window and attaches the Linux process's stdin/stdout/stderr to that
+window, so typing there is delivered to `busybox sh` while the original Nozzle
+terminal remains available. The shell receives a minimal Linux environment
+(`PATH`, `HOME`, `SHELL`, and `TERM`) and remains a normal Linux ELF process
+under the shared Linux personality layer.
+
+For a headless end-to-end check that exercises the Nozzle command, interactive
+BusyBox `sh`, terminal stdin/stdout, blocking input wait, exit status,
+scheduler handoff, and shell resumption:
+
+```bash
+FULLERENE_BUSYBOX=/path/to/busybox-static \
+FULLERENE_BUSYBOX_SMOKE=1 \
+  cargo run -p flasks -- --display none --vga none --timeout 70
+```
+
 To debug:
 - QEMU logs are written to `qemu_log.txt` (interrupts and other debug info).
 - Use `RUST_LOG=debug cargo run --bin flasks` for more verbose output.

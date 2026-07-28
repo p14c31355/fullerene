@@ -234,6 +234,7 @@ pub fn sys_umask(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 linux_stub!(sys_capget, 0);
+linux_stub_errno!(sys_rseq, ENOSYS);
 
 pub fn sys_sysinfo(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let info = args[0];

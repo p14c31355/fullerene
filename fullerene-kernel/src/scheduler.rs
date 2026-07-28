@@ -110,6 +110,8 @@ pub fn scheduler_loop() -> ! {
     // cooperative scheduling path used by an interactive invocation.
     #[cfg(linux_musl_smoke)]
     crate::shell::run_linux_musl_smoke();
+    #[cfg(linux_busybox_smoke)]
+    crate::shell::run_busybox_smoke();
 
     // Register NMI recovery restart context with a dedicated stack.
     let recovery_rsp = {

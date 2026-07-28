@@ -95,12 +95,35 @@ pub fn poll_keyboard() {
     {
         use nitrogen::ps2::keyboard::set_terminal_input_allowed;
         let runtime_guard = crate::RUNTIME_CONTEXT.runtime();
+        let focused_process_terminal = runtime_guard.as_ref().and_then(|rt| {
+            let top = rt.desktop.wm.windows().last().map(|w| w.id);
+            rt.process_terminals
+                .iter()
+                .find(|terminal| Some(terminal.window_id) == top)
+                .map(|terminal| terminal.window_id)
+        });
         let allowed = runtime_guard.as_ref().map_or(true, |rt| {
             let top = rt.desktop.wm.windows().last().map(|w| w.id);
-            rt.term_window.is_some() && top == rt.term_window && !rt.desktop.pwd_dialog_open
+            focused_process_terminal.is_none()
+                && rt.term_window.is_some()
+                && top == rt.term_window
+                && !rt.desktop.pwd_dialog_open
         });
         drop(runtime_guard);
-        set_terminal_input_allowed(allowed);
+        if focused_process_terminal.is_some() {
+            use nitrogen::ps2::keyboard::set_terminal_input_allowed_preserve;
+            set_terminal_input_allowed_preserve(false);
+        } else {
+            set_terminal_input_allowed(allowed);
+        }
+        // Key repeat is produced by the low-level driver without a new raw
+        // queue entry. Drain those decoded bytes into the focused process
+        // terminal before the normal raw-key loop handles fresh events.
+        if let Some(window_id) = focused_process_terminal {
+            while let Some(byte) = nitrogen::ps2::keyboard::pop_input_char_unchecked() {
+                crate::terminal::push_process_terminal_input(window_id, &[byte]);
+            }
+        }
     }
 
     while nitrogen::ps2::keyboard::raw_key_available() {
@@ -147,6 +170,28 @@ pub fn poll_keyboard() {
                 }
 
                 let top_id = runtime.desktop.wm.windows().last().map(|window| window.id);
+                let process_terminal_id = runtime
+                    .process_terminals
+                    .iter()
+                    .find(|terminal| Some(terminal.window_id) == top_id)
+                    .map(|terminal| terminal.window_id);
+                if let Some(process_terminal_id) = process_terminal_id {
+                    let key = scancode_to_resonance_keycode(scancode);
+                    let sequence = match key {
+                        resonance::KeyCode::Up if pressed => Some(b"\x1b[A".as_slice()),
+                        resonance::KeyCode::Down if pressed => Some(b"\x1b[B".as_slice()),
+                        _ => None,
+                    };
+                    drop(runtime_guard);
+                    if let Some(sequence) = sequence {
+                        crate::terminal::push_process_terminal_input(process_terminal_id, sequence);
+                    } else if pressed
+                        && let Some(byte) = nitrogen::ps2::keyboard::pop_input_char_unchecked()
+                    {
+                        crate::terminal::push_process_terminal_input(process_terminal_id, &[byte]);
+                    }
+                    continue;
+                }
                 if runtime.term_window.is_some() && top_id == runtime.term_window && pressed {
                     let key = scancode_to_resonance_keycode(scancode);
                     let sequence = match key {

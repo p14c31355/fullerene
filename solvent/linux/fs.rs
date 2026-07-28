@@ -15,29 +15,55 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
     // Stdin: read from keyboard
     if fd == 0 {
-        if buf == 0 {
-            return errno_code(EFAULT);
-        }
-        let count_min = count.min(512);
-        // Single byte reads are most common for terminal input
-        if count == 1 {
-            if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
-                if unsafe { copy_to_user(buf, &[ch]) }.is_err() {
-                    return errno_code(EFAULT);
-                }
-                return 1;
-            }
+        if let Some(window_id) = rt.terminal_window
+            && !solvent::process_terminal_exists(window_id)
+        {
             return 0;
         }
-        // Multi-byte: drain line buffer into a kernel buffer, then copy to user
-        let mut kernel_buf = [0u8; 512];
-        let n = nitrogen::ps2::keyboard::drain_line_buffer(&mut kernel_buf[..count_min]);
-        if n > 0 {
-            if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_err() {
+        loop {
+            if buf == 0 {
                 return errno_code(EFAULT);
             }
+            let count_min = count.min(512);
+            // Single byte reads are most common for terminal input
+            if count == 1 {
+                let ch = if let Some(window_id) = rt.terminal_window {
+                    let mut byte = [0u8; 1];
+                    (solvent::read_process_terminal(window_id, &mut byte) == 1).then_some(byte[0])
+                } else {
+                    nitrogen::ps2::keyboard::read_char()
+                };
+                if let Some(ch) = ch {
+                    if unsafe { copy_to_user(buf, &[ch]) }.is_err() {
+                        return errno_code(EFAULT);
+                    }
+                    return 1;
+                }
+            } else {
+                // Multi-byte reads consume the line buffer, matching the
+                // terminal semantics used by the native shell.
+                let mut kernel_buf = [0u8; 512];
+                let n = if let Some(window_id) = rt.terminal_window {
+                    solvent::read_process_terminal(window_id, &mut kernel_buf[..count_min])
+                } else {
+                    nitrogen::ps2::keyboard::drain_line_buffer(&mut kernel_buf[..count_min])
+                };
+                if n > 0 {
+                    if unsafe { copy_to_user(buf, &kernel_buf[..n]) }.is_err() {
+                        return errno_code(EFAULT);
+                    }
+                    return n as u64;
+                }
+            }
+
+            // A terminal has no EOF state.  Keep the Linux process runnable
+            // while waiting for keyboard input; the scheduler path polls PS/2
+            // between attempts and this avoids making `busybox sh` exit
+            // immediately when launched before the first keystroke.
+            #[cfg(linux_busybox_smoke)]
+            crate::linux::launch::observe_busybox_wait(rt.tid);
+            crate::process::yield_current();
         }
-        return n as u64;
     }
     // Stdout/stderr: write to serial
     if fd == 1 || fd == 2 {
@@ -104,13 +130,19 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             }
             #[cfg(linux_musl_smoke)]
             crate::linux::launch::observe_smoke_output(rt.tid, &chunk[..chunk_len]);
+            #[cfg(linux_busybox_smoke)]
+            crate::linux::launch::observe_busybox_output(rt.tid, &chunk[..chunk_len]);
             petroleum::write_serial_bytes(0x3F8, 0x3FD, &chunk[..chunk_len]);
             // Linux stdout/stderr belongs on the interactive terminal too.
             // Keep the serial mirror for headless diagnostics and smoke
             // tests, while forwarding textual output to Solvent's terminal.
             let text = alloc::string::String::from_utf8_lossy(&chunk[..chunk_len]);
             crate::klog_fmt!("[LINUX-STDOUT] {}", text);
-            solvent::write_terminal(&text);
+            if let Some(window_id) = rt.terminal_window {
+                solvent::write_process_terminal(window_id, &text);
+            } else {
+                solvent::write_terminal(&text);
+            }
             written += chunk_len;
         }
         return written as u64;
@@ -140,9 +172,19 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    const POLLIN: i16 = 0x0001;
     const POLLOUT: i16 = 0x0004;
     const POLLNVAL: i16 = 0x0020;
     const MAX_POLL_FDS: usize = 1024;
+    let timeout_ms = args[2] as i32;
+    let deadline = if timeout_ms > 0 {
+        let ticks = solvent::get_tsc_per_ms()
+            .max(1)
+            .saturating_mul(timeout_ms as u64);
+        Some(unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(ticks))
+    } else {
+        None
+    };
 
     let fds = args[0];
     let nfds = match usize::try_from(args[1]) {
@@ -156,39 +198,64 @@ pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
 
-    let mut ready = 0u64;
-    for index in 0..nfds {
-        let offset = match index.checked_mul(core::mem::size_of::<LinuxPollFd>()) {
-            Some(offset) => offset as u64,
-            None => return errno_code(EFAULT),
-        };
-        let address = match fds.checked_add(offset) {
-            Some(address) => address,
-            None => return errno_code(EFAULT),
-        };
-        let data = match unsafe { copy_from_user(address, core::mem::size_of::<LinuxPollFd>()) } {
-            Ok(data) => data,
-            Err(_) => return errno_code(EFAULT),
-        };
-        let mut pollfd = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const LinuxPollFd) };
-        pollfd.revents = 0;
+    loop {
+        let mut ready = 0u64;
+        for index in 0..nfds {
+            let offset = match index.checked_mul(core::mem::size_of::<LinuxPollFd>()) {
+                Some(offset) => offset as u64,
+                None => return errno_code(EFAULT),
+            };
+            let address = match fds.checked_add(offset) {
+                Some(address) => address,
+                None => return errno_code(EFAULT),
+            };
+            let data = match unsafe { copy_from_user(address, core::mem::size_of::<LinuxPollFd>()) }
+            {
+                Ok(data) => data,
+                Err(_) => return errno_code(EFAULT),
+            };
+            let mut pollfd =
+                unsafe { core::ptr::read_unaligned(data.as_ptr() as *const LinuxPollFd) };
+            pollfd.revents = 0;
 
-        if pollfd.fd >= 0 {
-            let valid = LinuxRuntime::is_std_fd(pollfd.fd) || rt.fd_table.contains(pollfd.fd);
-            if !valid {
-                pollfd.revents = POLLNVAL;
-            } else if matches!(pollfd.fd, 1 | 2) && (pollfd.events & POLLOUT) != 0 {
-                pollfd.revents = POLLOUT;
+            if pollfd.fd >= 0 {
+                let valid = LinuxRuntime::is_std_fd(pollfd.fd) || rt.fd_table.contains(pollfd.fd);
+                if !valid {
+                    pollfd.revents = POLLNVAL;
+                } else if matches!(pollfd.fd, 1 | 2) && (pollfd.events & POLLOUT) != 0 {
+                    pollfd.revents = POLLOUT;
+                } else if pollfd.fd == 0 && (pollfd.events & POLLIN) != 0 {
+                    let has_input = rt.terminal_window.map_or_else(
+                        || nitrogen::ps2::keyboard::input_available(),
+                        |window_id| solvent::process_terminal_has_input(window_id),
+                    );
+                    if has_input {
+                        pollfd.revents = POLLIN;
+                    }
+                }
+            }
+            if pollfd.revents != 0 {
+                ready += 1;
+            }
+            if unsafe { copy_val_to_user(address, &pollfd) }.is_err() {
+                return errno_code(EFAULT);
             }
         }
-        if pollfd.revents != 0 {
-            ready += 1;
+
+        if ready != 0 || timeout_ms == 0 {
+            return ready;
         }
-        if unsafe { copy_val_to_user(address, &pollfd) }.is_err() {
-            return errno_code(EFAULT);
+        if let Some(deadline) = deadline
+            && unsafe { core::arch::x86_64::_rdtsc() } >= deadline
+        {
+            return 0;
         }
+        // A negative timeout means wait indefinitely. For a positive timeout,
+        // the deadline above limits the same cooperative wait.
+        #[cfg(linux_busybox_smoke)]
+        crate::linux::launch::observe_busybox_wait(rt.tid);
+        crate::process::yield_current();
     }
-    ready
 }
 
 pub fn sys_open(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -873,7 +940,7 @@ pub fn sys_fcntl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     }
 }
 
-pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+pub fn sys_ioctl(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
     let fd = args[0] as i32;
     let request = args[1];
     let arg = args[2];
@@ -883,6 +950,9 @@ pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 // Return a reasonable termios (all zeros is usually fine)
                 let termios: [u8; 36] = [0; 36];
                 unsafe { copy_to_user(arg, &termios) }.ok();
+                0
+            }
+            TCSETS | 0x5403 /* TCSETSW */ | 0x5404 /* TCSETSF */ => {
                 0
             }
             TIOCGWINSZ => {
@@ -897,8 +967,11 @@ pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 0
             }
             TIOCGPGRP => {
-                // Return foreground process group (same as pid, or 0)
-                let value = 0i32;
+                // The GUI terminal has the launched Linux process as its
+                // foreground process group. Returning zero makes BusyBox ash
+                // believe it is running in the background and retry terminal
+                // setup indefinitely.
+                let value = rt.terminal_owner_tid as i32;
                 if unsafe { copy_val_to_user(arg, &value) }.is_err() {
                     errno_code(EFAULT)
                 } else {

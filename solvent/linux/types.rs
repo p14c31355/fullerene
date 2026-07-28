@@ -1,6 +1,4 @@
 // Linux ABI data structures
-#![allow(dead_code)]
-
 use core::fmt;
 
 /// Linux struct stat (x86_64)

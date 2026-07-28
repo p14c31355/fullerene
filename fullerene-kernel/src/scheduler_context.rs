@@ -257,8 +257,6 @@ impl SchedulerContext {
     /// Select the next ready process and update global state.
     /// Returns `(old_pid, new_pid)`.
     pub fn schedule_next(&self) -> (Option<ProcessId>, ProcessId) {
-        petroleum::scheduler_log!("Starting process scheduling");
-
         #[cfg(linux_musl_smoke)]
         petroleum::serial::serial_log(format_args!(
             "[linux-smoke] scheduler lock currently held={}\n",
@@ -421,10 +419,6 @@ impl SchedulerContext {
         });
 
         if selected {
-            petroleum::serial::serial_log(format_args!(
-                "[LINUX-DIAG] yield_to old={} new={} selected\n",
-                old_pid.0, new_pid.0
-            ));
             unsafe {
                 self.context_switch(Some(old_pid), new_pid);
             }
@@ -463,15 +457,6 @@ impl SchedulerContext {
             .iter()
             .find(|(id, _)| *id == new_pid)
             .map(|(_, p)| &*p.context as *const ProcessContext);
-        let new_summary = list.iter().find(|(id, _)| *id == new_pid).map(|(_, p)| {
-            (
-                p.context.is_user,
-                p.context.rip,
-                p.context.registers.rsp,
-                p.context.rflags,
-                p.context.kernel_rsp,
-            )
-        });
         let pt = list
             .iter()
             .find(|(id, _)| *id == new_pid)
@@ -493,34 +478,11 @@ impl SchedulerContext {
         drop(guard);
 
         if let Some(new) = new_ctx {
-            if let Some((is_user, rip, rsp, rflags, kernel_rsp)) = new_summary {
-                crate::klog_fmt!(
-                    "[LINUX-DIAG] switch prepare old={:?} new={} user={} rip={:#x} rsp={:#x} flags={:#x} kernel_rsp={:#x}\n",
-                    old_pid.map(|pid| pid.0),
-                    new_pid.0,
-                    is_user,
-                    rip,
-                    rsp,
-                    rflags,
-                    kernel_rsp
-                );
-            }
-            petroleum::serial::serial_log(format_args!(
-                "[LINUX-DIAG] switch prepare old={:?} new={} cr3={:#x} kernel_stack={:#x}\n",
-                old_pid,
-                new_pid.0,
-                pt.as_u64(),
-                new_kernel_stack.map_or(0, |stack| stack.as_u64())
-            ));
             if let Some(kernel_stack) = new_kernel_stack {
                 crate::interrupts::syscall::set_process_kernel_stack(kernel_stack);
             }
             let old = old_ctx.unwrap_or(core::ptr::null_mut());
             unsafe { switch_context(old, new, pt.as_u64()) };
-            petroleum::serial::serial_log(format_args!(
-                "[LINUX-DIAG] switch resumed old={:?} new={}\n",
-                old_pid, new_pid.0
-            ));
         }
     }
 

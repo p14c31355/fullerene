@@ -14,8 +14,12 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(have_emulsion_wasm)");
     println!("cargo::rustc-check-cfg=cfg(have_linux_musl_hello)");
     println!("cargo::rustc-check-cfg=cfg(linux_musl_smoke)");
+    println!("cargo::rustc-check-cfg=cfg(have_busybox)");
+    println!("cargo::rustc-check-cfg=cfg(linux_busybox_smoke)");
     println!("cargo:rerun-if-env-changed=FULLERENE_BUILD_PORTS");
     println!("cargo:rerun-if-env-changed=FULLERENE_LINUX_MUSL_SMOKE");
+    println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX");
+    println!("cargo:rerun-if-env-changed=FULLERENE_BUSYBOX_SMOKE");
     println!(
         "cargo:rerun-if-changed={}",
         manifest_dir
@@ -29,6 +33,15 @@ fn main() {
             .display()
     );
     let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
+
+    let have_busybox = embed_busybox(&out_dir);
+    if env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
+        assert!(
+            have_busybox,
+            "FULLERENE_BUSYBOX_SMOKE requires a static BusyBox; set FULLERENE_BUSYBOX"
+        );
+        println!("cargo:rustc-cfg=linux_busybox_smoke");
+    }
 
     // ── Propagate .driverignore cfg flags from Nitrogen ──────────
     let nitrogen_dir = manifest_dir.parent().unwrap().join("nitrogen");
@@ -256,6 +269,84 @@ fn main() {
     ) {
         println!("cargo:rustc-cfg=have_emulsion_wasm");
     }
+}
+
+/// Validate and stage a static x86_64 BusyBox binary for the initramfs.
+///
+/// The binary is deliberately supplied by the build environment instead of
+/// being checked into the Rust workspace.  This keeps the source tree Rust
+/// only and lets a release build choose its BusyBox configuration/version.
+fn embed_busybox(out_dir: &Path) -> bool {
+    let explicit = env::var_os("FULLERENE_BUSYBOX").map(PathBuf::from);
+    let candidates = explicit.clone().into_iter().chain(
+        [
+            PathBuf::from("/usr/bin/busybox"),
+            PathBuf::from("/bin/busybox"),
+        ]
+        .into_iter(),
+    );
+
+    for path in candidates {
+        println!("cargo:rerun-if-changed={}", path.display());
+        let Ok(data) = fs::read(&path) else {
+            continue;
+        };
+        if !is_static_x86_64_elf(&data) {
+            if explicit.as_ref().is_some_and(|wanted| wanted == &path) {
+                panic!(
+                    "FULLERENE_BUSYBOX must point to a static x86_64 ELF: {}",
+                    path.display()
+                );
+            }
+            continue;
+        }
+        fs::write(out_dir.join("busybox"), data).unwrap_or_else(|error| {
+            panic!("cannot stage BusyBox in {}: {error}", out_dir.display())
+        });
+        println!("cargo:rustc-cfg=have_busybox");
+        println!(
+            "cargo:warning=Embedded static BusyBox from {}",
+            path.display()
+        );
+        return true;
+    }
+
+    if let Some(path) = explicit {
+        panic!("FULLERENE_BUSYBOX was not found: {}", path.display());
+    }
+    println!(
+        "cargo:warning=BusyBox not embedded; set FULLERENE_BUSYBOX to a static x86_64 BusyBox binary"
+    );
+    false
+}
+
+fn is_static_x86_64_elf(data: &[u8]) -> bool {
+    if !is_valid_elf(data) || data.get(16..18) != Some(&[2, 0]) {
+        return false;
+    }
+    let e_phoff = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8])) as usize;
+    let e_phentsize = u16::from_le_bytes([data[54], data[55]]) as usize;
+    let e_phnum = u16::from_le_bytes([data[56], data[57]]) as usize;
+    if e_phentsize < 4 {
+        return false;
+    }
+    for index in 0..e_phnum {
+        let Some(offset) =
+            e_phoff.checked_add(index.checked_mul(e_phentsize).unwrap_or(usize::MAX))
+        else {
+            return false;
+        };
+        let Some(entry_end) = offset.checked_add(4) else {
+            return false;
+        };
+        let Some(entry) = data.get(offset..entry_end) else {
+            return false;
+        };
+        if entry == [3, 0, 0, 0] {
+            return false;
+        }
+    }
+    true
 }
 
 fn build_standalone_wasm(rustc: &str, sysroot: &str, source: &Path, output: &Path, label: &str) {

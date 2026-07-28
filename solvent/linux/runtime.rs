@@ -40,6 +40,11 @@ pub struct LinuxRuntime {
     pub initial_break: u64,
     /// Thread ID (same as PID for main thread)
     pub tid: u64,
+    /// GUI terminal attached to this Linux process, when launched by Nozzle.
+    pub terminal_window: Option<lattice::window::WindowId>,
+    /// Main Linux thread that owns the GUI terminal. Forked children share it
+    /// but must not close the window when they exit.
+    pub terminal_owner_tid: u64,
     /// Child TID to clear on exit (from set_tid_address / CLONE_CHILD_CLEARTID)
     pub child_clear_tid: u64,
     /// Robust list head (from set_robust_list)
@@ -65,6 +70,8 @@ impl LinuxRuntime {
             program_break: initial_break,
             initial_break,
             tid,
+            terminal_window: None,
+            terminal_owner_tid: tid,
             child_clear_tid: 0,
             robust_list_head: 0,
             robust_list_len: 0,
@@ -152,6 +159,8 @@ impl LinuxRuntime {
             SYS_EXIT_GROUP => linux_proc::sys_exit_group(self, args),
             SYS_GETPID => linux_proc::sys_getpid(self, args),
             SYS_GETPPID => linux_proc::sys_getppid(self, args),
+            SYS_GETPGRP => linux_proc::sys_getpgrp(self, args),
+            SYS_SETPGID => linux_proc::sys_setpgid(self, args),
             SYS_GETTID => linux_proc::sys_gettid(self, args),
             SYS_CLONE => linux_proc::sys_clone(self, args),
             SYS_FORK => linux_proc::sys_fork(self, args),
@@ -170,6 +179,7 @@ impl LinuxRuntime {
             // Time
             SYS_NANOSLEEP => linux_time::sys_nanosleep(self, args),
             SYS_CLOCK_GETTIME => linux_time::sys_clock_gettime(self, args),
+            SYS_CLOCK_NANOSLEEP => linux_time::sys_clock_nanosleep(self, args),
             SYS_GETTIMEOFDAY => linux_time::sys_gettimeofday(self, args),
             SYS_TIME => linux_time::sys_time(self, args),
 
@@ -180,6 +190,7 @@ impl LinuxRuntime {
             SYS_SET_ROBUST_LIST => linux_misc::sys_set_robust_list(self, args),
             SYS_GET_ROBUST_LIST => linux_misc::sys_get_robust_list(self, args),
             SYS_GETRANDOM => linux_misc::sys_getrandom(self, args),
+            SYS_RSEQ => linux_misc::sys_rseq(self, args),
             SYS_PRLIMIT64 => linux_misc::sys_prlimit64(self, args),
             SYS_GETRLIMIT => linux_misc::sys_getrlimit(self, args),
             SYS_SETRLIMIT => linux_misc::sys_setrlimit(self, args),

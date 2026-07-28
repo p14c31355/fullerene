@@ -21,12 +21,14 @@ pub mod fs;
 pub mod launch;
 pub mod memory;
 pub mod misc;
+#[allow(dead_code)]
 pub mod numbers;
 pub mod process;
 pub mod runtime;
 pub mod signal;
 pub mod test_binary;
 pub mod time;
+#[allow(dead_code)]
 pub mod types;
 
 pub use numbers::*;

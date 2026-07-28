@@ -868,47 +868,26 @@ pub fn yield_current() {
     }
 }
 
-/// Yield from code that may be running on the idle scheduler stack.
+/// Yield from the interactive shell's scheduler handoff callback.
 ///
-/// The interactive desktop shell is currently entered directly by the idle
-/// loop, so it has no process PID even though it can launch a user process.
-/// Use the scheduler's `(old, new)` result instead of assuming a non-zero
-/// current PID in that case.
+/// The callback is used both for the first launch handoff and while Nozzle is
+/// waiting for another command. Once a Linux process blocks in `read(0)`, the
+/// shell must continue round-robin scheduling it; otherwise keyboard input can
+/// be queued forever without the process getting another timeslice.
 pub fn yield_from_scheduler_stack() {
     let target = PENDING_YIELD_TO.swap(0, core::sync::atomic::Ordering::AcqRel);
-    // Terminal input polling calls this callback repeatedly while idle. Only
-    // an explicit launch handoff is a scheduling point here.  Do not gate it
-    // on a racy active-count snapshot: the target PID itself is authoritative,
-    // and `yield_to` verifies that it is still Ready.
     if target == 0 {
+        if SCHEDULER.active_count() > 1 && current_pid().is_some() {
+            yield_current();
+        }
         return;
     }
-    let old_pid = current_pid();
     let new_pid = ProcessId(target);
-    crate::klog_fmt!(
-        "[LINUX-DIAG] scheduler-stack yield old={:?} new={} enter\n",
-        old_pid.map(|pid| pid.0),
-        new_pid.0
-    );
-    if !SCHEDULER.yield_to(new_pid) {
-        crate::klog_fmt!(
-            "[LINUX-DIAG] scheduler-stack yield target={} rejected\n",
-            new_pid.0
-        );
-    }
-    crate::klog_fmt!(
-        "[LINUX-DIAG] scheduler-stack yield returned new={}\n",
-        new_pid.0
-    );
+    let _ = SCHEDULER.yield_to(new_pid);
 }
 
 /// Defer a direct handoff until the shell's current command callback returns.
 pub fn defer_yield_to(pid: ProcessId) {
-    crate::klog_fmt!("[LINUX-DIAG] defer yield target={} armed\n", pid.0);
-    petroleum::serial::serial_log(format_args!(
-        "[LINUX-DIAG] defer yield target={} armed\n",
-        pid.0
-    ));
     PENDING_YIELD_TO.store(pid.0, core::sync::atomic::Ordering::Release);
 }
 

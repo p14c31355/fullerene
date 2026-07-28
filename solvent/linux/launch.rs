@@ -4,7 +4,9 @@ use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
 #[cfg(linux_musl_smoke)]
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::AtomicUsize;
+#[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(linux_musl_smoke)]
 static MUSL_SMOKE_PID: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -17,6 +19,21 @@ static MUSL_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(linux_musl_smoke)]
 const MUSL_SMOKE_OUTPUT: &[u8] = b"Hello from Rust std on musl!";
+
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_PID: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_OUTPUT_SEEN: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_EXIT_OK: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_WINDOW: AtomicU64 = AtomicU64::new(u64::MAX);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_WAITING: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
 
 /// Launch the built-in test binary ("Hello from Linux!") to verify ABI.
 pub fn launch_test_binary() -> Result<ProcessId, LoadError> {
@@ -123,7 +140,134 @@ pub fn smoke_verified() -> bool {
 
 /// Launch a Linux ELF binary from raw bytes.
 pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<ProcessId, LoadError> {
-    crate::loader::load_program_with_runtime(data, name, true)
+    let argv = [name];
+    crate::loader::load_program_with_runtime_args(data, name, &argv, &[], true)
+}
+
+fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
+    let data = crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound)?;
+    let terminal_window = solvent::create_process_terminal("BusyBox");
+    #[cfg(linux_busybox_smoke)]
+    let argv = ["busybox", "sh"];
+    #[cfg(not(linux_busybox_smoke))]
+    let argv = ["busybox", "sh"];
+    let envp = [
+        "PATH=/bin:/sbin:/usr/bin:/usr/sbin",
+        "HOME=/root",
+        "SHELL=/bin/sh",
+        "TERM=xterm",
+    ];
+    let pid = match crate::loader::load_program_with_runtime_args(
+        data.as_slice(),
+        "busybox",
+        &argv,
+        &envp,
+        true,
+    ) {
+        Ok(pid) => pid,
+        Err(error) => {
+            if let Some(window_id) = terminal_window {
+                solvent::close_process_terminal(window_id);
+            }
+            return Err(error);
+        }
+    };
+    if let Some(window_id) = terminal_window {
+        let _ = crate::process::SCHEDULER.with_process(pid, |process| {
+            if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut()
+            {
+                runtime.terminal_window = Some(window_id);
+            }
+        });
+    }
+    #[cfg(linux_busybox_smoke)]
+    {
+        BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
+        if let Some(window_id) = terminal_window {
+            BUSYBOX_SMOKE_WINDOW.store(window_id.0, Ordering::Release);
+            // Feed only the first command. The exit command is injected after
+            // BusyBox has reached a real no-input wait.
+            solvent::push_process_terminal_input(window_id, b"echo Fullerene BusyBox is running\n");
+        }
+        BUSYBOX_SMOKE_PID.store(pid.0, Ordering::Release);
+        petroleum::serial::serial_log(format_args!(
+            "[busybox-smoke] fixture launched as PID {}\n",
+            pid.0
+        ));
+    }
+    Ok(pid)
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn observe_busybox_output(pid: u64, bytes: &[u8]) {
+    if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) != pid {
+        return;
+    }
+    let mut matched = 0usize;
+    for &byte in bytes {
+        matched = if byte == BUSYBOX_SMOKE_OUTPUT[matched] {
+            matched + 1
+        } else if byte == BUSYBOX_SMOKE_OUTPUT[0] {
+            1
+        } else {
+            0
+        };
+        if matched == BUSYBOX_SMOKE_OUTPUT.len() {
+            BUSYBOX_SMOKE_OUTPUT_SEEN.store(true, Ordering::Release);
+            BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
+            BUSYBOX_SMOKE_WAITING.store(true, Ordering::Release);
+            return;
+        }
+    }
+}
+
+/// Advance the interactive smoke only after BusyBox has entered a real
+/// no-input wait. This deliberately keeps the second command out of the
+/// terminal queue until the blocking poll/read path has yielded a few times.
+#[cfg(linux_busybox_smoke)]
+pub fn observe_busybox_wait(pid: u64) {
+    if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) != pid
+        || !BUSYBOX_SMOKE_WAITING.load(Ordering::Acquire)
+    {
+        return;
+    }
+    let waits = BUSYBOX_SMOKE_WAIT_COUNT.fetch_add(1, Ordering::AcqRel) + 1;
+    if waits < 3 {
+        return;
+    }
+    BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
+    let window_id = BUSYBOX_SMOKE_WINDOW.load(Ordering::Acquire);
+    if window_id != u64::MAX {
+        // Inject the second command as real PS/2 scancodes. The focused GUI
+        // terminal must route these decoded bytes from Nitrogen into the
+        // process terminal; writing directly to its queue would not test the
+        // user-facing keyboard path.
+        for scancode in [0x12, 0x2d, 0x17, 0x14, 0x1c] {
+            nitrogen::ps2::keyboard::handle_keyboard_scancode(scancode);
+            nitrogen::ps2::keyboard::handle_keyboard_scancode(scancode | 0x80);
+        }
+    }
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
+    if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) == pid.0
+        && code == 0
+        && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
+    {
+        BUSYBOX_SMOKE_EXIT_OK.store(true, Ordering::Release);
+        petroleum::serial::serial_log(format_args!(
+            "[busybox-smoke] verified output and exit status\n"
+        ));
+    }
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn busybox_smoke_verified() -> bool {
+    BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
 }
 
 /// Launch BusyBox shell from embedded initramfs data.
@@ -141,7 +285,7 @@ pub fn launch_busybox() -> Result<ProcessId, LoadError> {
     for path in &locations {
         if crate::contexts::vfs::exists(path) {
             log::info!("Found BusyBox at {}", path);
-            return launch_linux_binary(path);
+            return launch_busybox_with_args(path);
         }
     }
 
@@ -185,6 +329,14 @@ pub fn init_initramfs() {
 
     // Create a simple /etc/hostname
     let _ = crate::fs::write_entire_file("/etc/hostname", b"fullerene\n");
+
+    #[cfg(have_busybox)]
+    {
+        let busybox = include_bytes!(concat!(env!("OUT_DIR"), "/busybox"));
+        if let Err(error) = crate::fs::write_entire_file("/bin/busybox", busybox) {
+            log::warn!("Initramfs: failed to install /bin/busybox: {:?}", error);
+        }
+    }
 
     #[cfg(have_linux_musl_hello)]
     {

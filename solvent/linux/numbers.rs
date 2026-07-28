@@ -1,6 +1,4 @@
 // Linux x86_64 syscall numbers
-#![allow(dead_code)]
-
 pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_OPEN: u64 = 2;
@@ -75,7 +73,9 @@ pub const SYS_GETUID: u64 = 102;
 pub const SYS_GETGID: u64 = 104;
 pub const SYS_GETEUID: u64 = 107;
 pub const SYS_GETEGID: u64 = 108;
+pub const SYS_SETPGID: u64 = 109;
 pub const SYS_GETPPID: u64 = 110;
+pub const SYS_GETPGRP: u64 = 111;
 pub const SYS_CAPGET: u64 = 125;
 pub const SYS_CAPSET: u64 = 126;
 pub const SYS_SIGALTSTACK: u64 = 131;
@@ -96,6 +96,7 @@ pub const SYS_SCHED_GETAFFINITY: u64 = 204;
 pub const SYS_GETDENTS64: u64 = 217;
 pub const SYS_SET_TID_ADDRESS: u64 = 218;
 pub const SYS_CLOCK_GETTIME: u64 = 228;
+pub const SYS_CLOCK_NANOSLEEP: u64 = 230;
 pub const SYS_EXIT_GROUP: u64 = 231;
 pub const SYS_TGKILL: u64 = 234;
 pub const SYS_OPENAT: u64 = 257;
@@ -113,6 +114,7 @@ pub const SYS_PIPE2: u64 = 293;
 pub const SYS_PRLIMIT64: u64 = 302;
 pub const SYS_GETRANDOM: u64 = 318;
 pub const SYS_STATX: u64 = 332;
+pub const SYS_RSEQ: u64 = 334;
 
 // Linux errno values
 pub const EPERM: i32 = 1;
