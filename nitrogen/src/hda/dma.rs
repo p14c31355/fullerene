@@ -115,7 +115,7 @@ impl DmaEngine {
                 flags: 0x01, // IOC
             });
             // TP may select non-snooped DMA traffic on some controllers.
-            crate::mmio::cache_flush_range(dma_region.virt, bdl_sz as usize);
+            crate::mmio::cache_flush_range(dma_region.virt as usize, bdl_sz as usize);
         }
 
         let sd = self.sd_offset;
@@ -211,7 +211,7 @@ impl DmaEngine {
         unsafe {
             let dst = self.dma_virt.add((self.audio_off + offset) as usize);
             core::ptr::copy_nonoverlapping(samples.as_ptr(), dst, n);
-            crate::mmio::cache_flush_range(dst, n);
+            crate::mmio::cache_flush_range(dst as usize, n);
         }
         n
     }
@@ -229,7 +229,7 @@ impl DmaEngine {
         unsafe {
             let dst = self.dma_virt.add((self.audio_off + offset) as usize);
             core::ptr::write_bytes(dst, 0, n);
-            crate::mmio::cache_flush_range(dst, n);
+            crate::mmio::cache_flush_range(dst as usize, n);
         }
         n
     }
@@ -290,7 +290,7 @@ impl DmaEngine {
             if n < write_max {
                 core::ptr::write_bytes(dst.add(n), 0, write_max - n);
             }
-            crate::mmio::cache_flush_range(dst, write_max);
+            crate::mmio::cache_flush_range(dst as usize, write_max);
             n
         }
     }

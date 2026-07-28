@@ -17,7 +17,7 @@ pub const MAX_DESCRIPTORS: usize = 2048;
 /// Buffer for memory map descriptors to avoid heap allocation during init
 pub static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {
-        ptr: core::ptr::null(),
+        address: 0,
         descriptor_size: 0,
     }
 }; MAX_DESCRIPTORS];

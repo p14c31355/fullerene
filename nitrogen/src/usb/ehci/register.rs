@@ -1,6 +1,6 @@
 //! EHCI register context — structured MMIO access layer.
 
-use core::ptr;
+use crate::mmio::MemRegion;
 
 pub const OP_USBCMD: usize = 0x00;
 pub const OP_USBSTS: usize = 0x04;
@@ -28,16 +28,15 @@ pub trait RegisterBackend {
     fn write_register(&mut self, offset: usize, value: u32);
 }
 
-pub struct EhciOperationalRegisters(*mut u8);
+pub struct EhciOperationalRegisters(MemRegion);
 
 impl EhciOperationalRegisters {
-    pub unsafe fn new(base: *mut u8) -> Self {
-        Self(base)
+    pub unsafe fn new(base: usize) -> Self {
+        Self(unsafe { MemRegion::new(base, crate::usb::HOST_CONTROLLER_BAR_SIZE) })
     }
 
     pub fn read(&self, off: usize) -> u32 {
-        let p = unsafe { self.0.add(off) as *const u32 };
-        let value = unsafe { ptr::read_volatile(p) };
+        let value = self.0.read32(off);
         if value == u32::MAX {
             log::warn!(
                 "EHCI: MMIO read at offset {:#x} completed with all ones",
@@ -47,9 +46,7 @@ impl EhciOperationalRegisters {
         value
     }
     pub fn write(&self, off: usize, val: u32) {
-        unsafe {
-            ptr::write_volatile(self.0.add(off) as *mut u32, val);
-        }
+        self.0.write32(off, val);
     }
 
     pub fn usbcmd(&self) -> u32 {
@@ -116,32 +113,32 @@ impl<'a, B: RegisterBackend> EhciStateMachine<'a, B> {
 }
 
 pub struct EhciRegisterContext {
-    pub mmio_base: *mut u8,
+    pub mmio_base: usize,
     pub caplength: u8,
     pub hcs_params: u32,
     pub op: EhciOperationalRegisters,
 }
 
 impl EhciRegisterContext {
-    pub unsafe fn new(mmio_base: *mut u8) -> Option<Self> {
-        unsafe {
-            crate::debug::hint(b"eh_cap");
-            let header = ptr::read_volatile(mmio_base as *const u32);
-            let caplength = header as u8;
-            if header == u32::MAX || caplength < 0x10 || caplength & 3 != 0 {
-                return None;
-            }
-            let hcs_params = ptr::read_volatile(mmio_base.add(4) as *const u32);
-            if hcs_params == u32::MAX || hcs_params & 0x0f == 0 {
-                return None;
-            }
-            Some(Self {
-                mmio_base,
-                caplength,
-                hcs_params,
-                op: EhciOperationalRegisters::new(mmio_base.add(caplength as usize)),
-            })
+    pub unsafe fn new(mmio_base: usize) -> Option<Self> {
+        crate::debug::hint(b"eh_cap");
+        let region = unsafe { MemRegion::new(mmio_base, crate::usb::HOST_CONTROLLER_BAR_SIZE) };
+        let header = region.read32(0);
+        let caplength = header as u8;
+        if header == u32::MAX || caplength < 0x10 || caplength & 3 != 0 {
+            return None;
         }
+        let hcs_params = region.read32(4);
+        if hcs_params == u32::MAX || hcs_params & 0x0f == 0 {
+            return None;
+        }
+        let op_base = mmio_base.checked_add(caplength as usize)?;
+        Some(Self {
+            mmio_base,
+            caplength,
+            hcs_params,
+            op: unsafe { EhciOperationalRegisters::new(op_base) },
+        })
     }
 }
 

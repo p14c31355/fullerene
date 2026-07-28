@@ -28,8 +28,8 @@ mod tests_with_std {
     #[test]
     fn test_uefi_system_table_ptr_creation() {
         // Test that we can create basic structures without panicking
-        let ptr = petroleum::UefiSystemTablePtr(core::ptr::null_mut());
-        assert!(ptr.0.is_null());
+        let ptr = petroleum::UefiSystemTablePtr(0);
+        assert_eq!(ptr.0, 0);
     }
 }
 

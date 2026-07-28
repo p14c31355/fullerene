@@ -5,6 +5,7 @@
 use crate::common::logging::{SystemError, SystemResult};
 use core::alloc::Layout;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use sealant::{Permissions as SealantPermissions, UserRegion as SealantUserRegion};
 use x86_64::VirtAddr;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::{PageTable, PageTableFlags};
@@ -212,32 +213,60 @@ pub unsafe fn deallocate_layout(ptr: *mut u8, layout: Layout) {
 /// the user address range with proper page-level permissions.  Access is
 /// performed through explicit copy operations rather than returning
 /// borrowed slices, so the kernel always owns its copies of user data.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct UserPtr<T> {
-    ptr: *const T,
+    address: usize,
+    region: SealantUserRegion<'static>,
+    _type: core::marker::PhantomData<T>,
 }
 
 impl<T> UserPtr<T> {
-    /// Create a `UserPtr` from a raw pointer, validating the address is
-    /// in user space and the page is present + user-accessible.
-    pub fn new(ptr: *const T) -> SystemResult<Self> {
-        if ptr.is_null() {
+    /// Create a validated user pointer from an address value.
+    pub fn from_address(address: usize) -> SystemResult<Self> {
+        if address == 0 {
             return Err(SystemError::InvalidArgument);
         }
         let len = core::mem::size_of::<T>();
-        validate_user_range(ptr as *const u8, len, false)?;
-        Ok(Self { ptr })
+        validate_user_range(address as *const u8, len, false)?;
+        let region = unsafe {
+            SealantUserRegion::from_address(address, len, SealantPermissions::READ)
+                .map_err(|_| SystemError::InvalidArgument)?
+        };
+        Ok(Self {
+            address,
+            region,
+            _type: core::marker::PhantomData,
+        })
+    }
+
+    /// Create a `UserPtr` from a raw pointer, validating the address is
+    /// in user space and the page is present + user-accessible.
+    pub fn new(ptr: *const T) -> SystemResult<Self> {
+        Self::from_address(ptr as usize)
     }
 
     /// Create a `UserPtr` from a raw mutable pointer, also validating
     /// the page is writable.
     pub fn new_mut(ptr: *mut T) -> SystemResult<Self> {
-        if ptr.is_null() {
+        Self::from_mut_address(ptr as usize)
+    }
+
+    /// Create a validated writable user pointer from an address value.
+    pub fn from_mut_address(address: usize) -> SystemResult<Self> {
+        if address == 0 {
             return Err(SystemError::InvalidArgument);
         }
         let len = core::mem::size_of::<T>();
-        validate_user_range(ptr as *const u8, len, true)?;
-        Ok(Self { ptr })
+        validate_user_range(address as *const u8, len, true)?;
+        let region = unsafe {
+            SealantUserRegion::from_address(address, len, SealantPermissions::READ_WRITE)
+                .map_err(|_| SystemError::InvalidArgument)?
+        };
+        Ok(Self {
+            address,
+            region,
+            _type: core::marker::PhantomData,
+        })
     }
 
     /// Copy a value from user space into kernel-owned memory.
@@ -246,7 +275,19 @@ impl<T> UserPtr<T> {
     ///
     /// The caller must ensure that `T` is valid for the memory at the pointer.
     pub unsafe fn copy_from_user(&self) -> Result<T, SystemError> {
-        unsafe { Ok(core::ptr::read_unaligned(self.ptr)) }
+        let mut bytes = core::mem::MaybeUninit::<T>::uninit();
+        let destination = unsafe {
+            core::slice::from_raw_parts_mut(
+                bytes.as_mut_ptr() as *mut u8,
+                core::mem::size_of::<T>(),
+            )
+        };
+        unsafe {
+            self.region
+                .copy_from_at(0, destination)
+                .map_err(|_| SystemError::InvalidArgument)?;
+            Ok(bytes.assume_init())
+        }
     }
 
     /// Copy a value into user space.
@@ -256,15 +297,19 @@ impl<T> UserPtr<T> {
     /// The caller must ensure that `T` is valid for the memory at the pointer
     /// and that the user buffer is writable.
     pub unsafe fn copy_to_user(&self, val: T) -> SystemResult<()> {
+        let source = unsafe {
+            core::slice::from_raw_parts(&val as *const T as *const u8, core::mem::size_of::<T>())
+        };
         unsafe {
-            core::ptr::write_unaligned(self.ptr as *mut T, val);
+            self.region
+                .copy_to_at(0, source)
+                .map_err(|_| SystemError::InvalidArgument)
         }
-        Ok(())
     }
 
     /// Get the raw pointer (for use in syscall ABI where needed).
-    pub fn as_raw_ptr(&self) -> *const T {
-        self.ptr
+    pub fn address(&self) -> usize {
+        self.address
     }
 }
 
@@ -273,14 +318,58 @@ impl<T> UserPtr<T> {
 /// `UserSlice` performs page-level validation at construction (via
 /// `validate_user_range`) and only provides explicit copy-in/copy-out
 /// operations, ensuring the kernel always owns its data copies.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct UserSlice {
-    ptr: *mut u8,
+    region: SealantUserRegion<'static>,
     len: usize,
     writable: bool,
 }
 
 impl UserSlice {
+    /// Validate a user-space buffer range from an address value.
+    pub fn from_address(address: usize, len: usize, writable: bool) -> SystemResult<Self> {
+        if len == 0 {
+            let region = unsafe {
+                SealantUserRegion::from_address(
+                    address,
+                    0,
+                    if writable {
+                        SealantPermissions::READ_WRITE
+                    } else {
+                        SealantPermissions::READ
+                    },
+                )
+                .map_err(|_| SystemError::InvalidArgument)?
+            };
+            return Ok(Self {
+                region,
+                len: 0,
+                writable,
+            });
+        }
+        if address == 0 {
+            return Err(SystemError::InvalidArgument);
+        }
+        validate_user_range(address as *const u8, len, writable)?;
+        let region = unsafe {
+            SealantUserRegion::from_address(
+                address,
+                len,
+                if writable {
+                    SealantPermissions::READ_WRITE
+                } else {
+                    SealantPermissions::READ
+                },
+            )
+            .map_err(|_| SystemError::InvalidArgument)?
+        };
+        Ok(Self {
+            region,
+            len,
+            writable,
+        })
+    }
+
     /// Validate a user-space buffer range and create a `UserSlice`.
     ///
     /// Checks:
@@ -288,19 +377,7 @@ impl UserSlice {
     /// - Entire range is in user space
     /// - Page-level validation: present, user-accessible, and (if writable) writable
     pub fn new(ptr: *mut u8, len: usize, writable: bool) -> SystemResult<Self> {
-        if len == 0 {
-            return Ok(Self {
-                ptr,
-                len: 0,
-                writable,
-            });
-        }
-        if ptr.is_null() {
-            return Err(SystemError::InvalidArgument);
-        }
-        // Page-level validation
-        validate_user_range(ptr as *const u8, len, writable)?;
-        Ok(Self { ptr, len, writable })
+        Self::from_address(ptr as usize, len, writable)
     }
 
     /// Return the length of the slice.
@@ -330,10 +407,8 @@ impl UserSlice {
         if count == 0 {
             return Ok(());
         }
-        unsafe {
-            core::ptr::copy_nonoverlapping(self.ptr, buf.as_mut_ptr(), count);
-        }
-        Ok(())
+        unsafe { self.region.copy_from_at(0, &mut buf[..count]) }
+            .map_err(|_| SystemError::InvalidArgument)
     }
 
     /// Copy data FROM a kernel-owned buffer INTO user space.
@@ -347,10 +422,8 @@ impl UserSlice {
         if count == 0 {
             return Ok(());
         }
-        unsafe {
-            core::ptr::copy_nonoverlapping(buf.as_ptr(), self.ptr, count);
-        }
-        Ok(())
+        unsafe { self.region.copy_to_at(0, &buf[..count]) }
+            .map_err(|_| SystemError::InvalidArgument)
     }
 
     /// Create a `UserSlice` from a raw pointer and length (no validation).
@@ -362,7 +435,23 @@ impl UserSlice {
         if len > 0 && ptr.is_null() {
             return Err(SystemError::InvalidArgument);
         }
-        Ok(Self { ptr, len, writable })
+        let region = unsafe {
+            SealantUserRegion::from_address(
+                ptr as usize,
+                len,
+                if writable {
+                    SealantPermissions::READ_WRITE
+                } else {
+                    SealantPermissions::READ
+                },
+            )
+        }
+        .map_err(|_| SystemError::InvalidArgument)?;
+        Ok(Self {
+            region,
+            len,
+            writable,
+        })
     }
 }
 

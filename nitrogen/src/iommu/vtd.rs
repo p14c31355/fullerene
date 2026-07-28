@@ -1,4 +1,4 @@
-use core::ptr::{read_volatile, write_volatile};
+use crate::mmio::MemRegion;
 
 pub const VER: usize = 0x000;
 pub const CAP: usize = 0x008;
@@ -64,7 +64,7 @@ pub fn ecap_ir(ecap: u64) -> bool {
 }
 
 pub struct VtdRegisters {
-    base: *mut u8,
+    region: MemRegion,
 }
 
 unsafe impl Send for VtdRegisters {}
@@ -73,52 +73,54 @@ unsafe impl Sync for VtdRegisters {}
 impl VtdRegisters {
     pub const WAIT_TIMEOUT: u32 = 100_000_000;
 
-    pub const fn new(base: *mut u8) -> Self {
-        Self { base }
+    pub unsafe fn new(base: usize) -> Self {
+        Self {
+            region: unsafe { MemRegion::new(base, 0x1000) },
+        }
     }
 
-    unsafe fn r32(&self, off: usize) -> u32 {
-        unsafe { read_volatile(self.base.add(off) as *const u32) }
+    fn r32(&self, off: usize) -> u32 {
+        self.region.read32(off)
     }
 
-    unsafe fn w32(&self, off: usize, val: u32) {
-        unsafe { write_volatile(self.base.add(off) as *mut u32, val) };
+    fn w32(&self, off: usize, val: u32) {
+        self.region.write32(off, val);
     }
 
-    unsafe fn r64(&self, off: usize) -> u64 {
-        unsafe { read_volatile(self.base.add(off) as *const u64) }
+    fn r64(&self, off: usize) -> u64 {
+        self.region.read64(off)
     }
 
-    unsafe fn w64(&self, off: usize, val: u64) {
-        unsafe { write_volatile(self.base.add(off) as *mut u64, val) };
+    fn w64(&self, off: usize, val: u64) {
+        self.region.write64(off, val);
     }
 
     pub fn version(&self) -> u32 {
-        unsafe { self.r32(VER) }
+        self.r32(VER)
     }
 
     pub fn cap(&self) -> u64 {
-        unsafe { self.r64(CAP) }
+        self.r64(CAP)
     }
 
     pub fn ecap(&self) -> u64 {
-        unsafe { self.r64(ECAP) }
+        self.r64(ECAP)
     }
 
     pub fn gcmd(&self) -> u32 {
-        unsafe { self.r32(GCMD) }
+        self.r32(GCMD)
     }
 
     pub fn set_gcmd(&self, val: u32) {
-        unsafe { self.w32(GCMD, val) }
+        self.w32(GCMD, val)
     }
 
     pub fn gsts(&self) -> u32 {
-        unsafe { self.r32(GSTS) }
+        self.r32(GSTS)
     }
 
     pub fn set_rtaddr(&self, phys: u64) {
-        unsafe { self.w64(RTADDR, phys) }
+        self.w64(RTADDR, phys)
     }
 
     pub fn set_root_table_ptr(&self) {
@@ -179,9 +181,9 @@ impl VtdRegisters {
 
     pub fn iotlb_global_invalidate(&self) -> bool {
         // IOTLB invalidation: IVT=1 (bit 0 set), IIRG=00 (global)
-        unsafe { self.w64(IOTLB, 1) }
+        self.w64(IOTLB, 1);
         for _ in 0..Self::WAIT_TIMEOUT {
-            let val = unsafe { self.r64(IOTLB) };
+            let val = self.r64(IOTLB);
             if val & 1 == 0 {
                 return true;
             }
@@ -194,9 +196,9 @@ impl VtdRegisters {
     pub fn iotlb_domain_invalidate(&self, domain_id: u16) -> bool {
         // IOTLB invalidation: IVT=1, IIRG=01 (domain), DID=domain_id
         let val = 1u64 | (1u64 << 2) | ((domain_id as u64) << 32);
-        unsafe { self.w64(IOTLB, val) }
+        self.w64(IOTLB, val);
         for _ in 0..Self::WAIT_TIMEOUT {
-            let val = unsafe { self.r64(IOTLB) };
+            let val = self.r64(IOTLB);
             if val & 1 == 0 {
                 return true;
             }
@@ -209,9 +211,9 @@ impl VtdRegisters {
     pub fn context_cache_invalidate_all(&self) -> bool {
         // CCMD: IVT=1 (bit 63), CIRG=00 (global)
         let val = 1u64 << 63;
-        unsafe { self.w64(CCMD, val) }
+        self.w64(CCMD, val);
         for _ in 0..Self::WAIT_TIMEOUT {
-            let val = unsafe { self.r64(CCMD) };
+            let val = self.r64(CCMD);
             if val & (1u64 << 63) == 0 {
                 return true;
             }
@@ -224,9 +226,9 @@ impl VtdRegisters {
     pub fn context_cache_invalidate_domain(&self, domain_id: u16) -> bool {
         // CCMD: IVT=1 (bit 63), CIRG=01 (domain), DID=domain_id
         let val = (1u64 << 63) | (1u64 << 61) | ((domain_id as u64) << 32);
-        unsafe { self.w64(CCMD, val) }
+        self.w64(CCMD, val);
         for _ in 0..Self::WAIT_TIMEOUT {
-            let val = unsafe { self.r64(CCMD) };
+            let val = self.r64(CCMD);
             if val & (1u64 << 63) == 0 {
                 return true;
             }
@@ -240,9 +242,9 @@ impl VtdRegisters {
         // CCMD: IVT=1 (bit 63), CIRG=10 (device), SID=sid, FM=function_mask
         let val =
             (1u64 << 63) | (2u64 << 61) | ((sid as u64) << 16) | ((function_mask as u64) << 8);
-        unsafe { self.w64(CCMD, val) }
+        self.w64(CCMD, val);
         for _ in 0..Self::WAIT_TIMEOUT {
-            let val = unsafe { self.r64(CCMD) };
+            let val = self.r64(CCMD);
             if val & (1u64 << 63) == 0 {
                 return true;
             }

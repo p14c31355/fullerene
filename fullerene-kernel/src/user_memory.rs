@@ -54,25 +54,27 @@ fn decode_c_string(mut bytes: Vec<u8>) -> Result<String, UserCopyError> {
 /// duration of the copy.  In particular, the referenced pages must not be
 /// concurrently unmapped after validation.
 pub(crate) unsafe fn copy_c_string(
-    ptr: *const u8,
+    address: usize,
     max_len: usize,
 ) -> Result<String, UserCopyError> {
-    if ptr.is_null() || max_len == 0 {
+    if address == 0 || max_len == 0 {
         return Err(UserCopyError::System(SystemError::InvalidArgument));
     }
 
     let mut bytes = Vec::new();
     let mut offset = 0;
     while offset < max_len {
-        let current = ptr.wrapping_add(offset);
-        let chunk_len = (max_len - offset).min(bytes_until_page_end(current as usize));
+        let current = address
+            .checked_add(offset)
+            .ok_or(UserCopyError::System(SystemError::InvalidArgument))?;
+        let chunk_len = (max_len - offset).min(bytes_until_page_end(current));
         bytes
             .try_reserve_exact(chunk_len)
             .map_err(|_| UserCopyError::System(SystemError::MemOutOfMemory))?;
 
         let chunk_start = bytes.len();
         bytes.resize(chunk_start + chunk_len, 0);
-        let user = UserSlice::new(current as *mut u8, chunk_len, false)?;
+        let user = UserSlice::from_address(current, chunk_len, false)?;
         unsafe { user.copy_from_user(&mut bytes[chunk_start..])? };
 
         if let Some(nul_idx) = bytes[chunk_start..].iter().position(|&b| b == 0) {
@@ -92,7 +94,7 @@ pub(crate) unsafe fn copy_c_string(
 /// The caller must keep the current process address space stable for the
 /// duration of the copy.
 pub(crate) unsafe fn copy_bytes_from_user(
-    ptr: *const u8,
+    address: usize,
     len: usize,
 ) -> Result<Vec<u8>, UserCopyError> {
     let mut bytes = Vec::new();
@@ -101,7 +103,7 @@ pub(crate) unsafe fn copy_bytes_from_user(
         .map_err(|_| UserCopyError::System(SystemError::MemOutOfMemory))?;
     bytes.resize(len, 0);
 
-    let user = UserSlice::new(ptr as *mut u8, len, false)?;
+    let user = UserSlice::from_address(address, len, false)?;
     unsafe { user.copy_from_user(&mut bytes)? };
     Ok(bytes)
 }
@@ -112,8 +114,8 @@ pub(crate) unsafe fn copy_bytes_from_user(
 ///
 /// The caller must keep the current process address space stable for the
 /// duration of the copy.
-pub(crate) unsafe fn copy_bytes_to_user(ptr: *mut u8, bytes: &[u8]) -> Result<(), UserCopyError> {
-    let user = UserSlice::new(ptr, bytes.len(), true)?;
+pub(crate) unsafe fn copy_bytes_to_user(address: usize, bytes: &[u8]) -> Result<(), UserCopyError> {
+    let user = UserSlice::from_address(address, bytes.len(), true)?;
     unsafe { user.copy_to_user(bytes)? };
     Ok(())
 }
@@ -125,10 +127,10 @@ pub(crate) unsafe fn copy_bytes_to_user(ptr: *mut u8, bytes: &[u8]) -> Result<()
 /// The caller must keep the current process address space stable for the
 /// duration of the copy.
 pub(crate) unsafe fn copy_value_to_user<T: Copy>(
-    ptr: *mut T,
+    address: usize,
     value: &T,
 ) -> Result<(), UserCopyError> {
-    let user = UserPtr::new_mut(ptr)?;
+    let user = UserPtr::from_mut_address(address)?;
     unsafe { user.copy_to_user(*value)? };
     Ok(())
 }
@@ -139,8 +141,8 @@ pub(crate) unsafe fn copy_value_to_user<T: Copy>(
 ///
 /// The caller must keep the current process address space stable for the
 /// duration of the copy.
-pub(crate) unsafe fn copy_value_from_user<T: Copy>(ptr: *const T) -> Result<T, UserCopyError> {
-    let user = UserPtr::new(ptr)?;
+pub(crate) unsafe fn copy_value_from_user<T: Copy>(address: usize) -> Result<T, UserCopyError> {
+    let user = UserPtr::from_address(address)?;
     unsafe { user.copy_from_user() }.map_err(UserCopyError::from)
 }
 

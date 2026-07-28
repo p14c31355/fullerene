@@ -6,6 +6,7 @@ use embedded_graphics::{
     prelude::*,
     text::Text,
 };
+use sealant::{FramebufferRegion, Permissions, VolatileRead};
 
 // Helper macro for delegate calls to reduce duplication
 macro_rules! delegate_call {
@@ -273,13 +274,14 @@ impl FramebufferLike for UefiFramebuffer {
 #[derive(Clone)]
 pub struct FramebufferWriter<T: PixelType> {
     pub info: FramebufferInfo,
+    framebuffer: FramebufferRegion<'static>,
     x_pos: u32,
     y_pos: u32,
     pub current_color: u32,
     _phantom: core::marker::PhantomData<T>,
 }
 
-impl<T: PixelType> DrawTarget for FramebufferWriter<T> {
+impl<T: PixelType + VolatileRead> DrawTarget for FramebufferWriter<T> {
     type Color = Rgb888;
 
     type Error = core::convert::Infallible;
@@ -310,9 +312,21 @@ impl<T: PixelType> OriginDimensions for FramebufferWriter<T> {
 
 impl<T: PixelType> FramebufferWriter<T> {
     pub fn new(info: FramebufferInfo) -> Self {
+        let framebuffer_size = (info.stride as usize)
+            .checked_mul(info.height as usize)
+            .expect("framebuffer size overflow");
+        let framebuffer = unsafe {
+            FramebufferRegion::from_address(
+                info.address as usize,
+                framebuffer_size,
+                Permissions::READ_WRITE,
+            )
+            .expect("invalid framebuffer region")
+        };
         Self {
             current_color: info.colors.fg,
             info,
+            framebuffer,
             x_pos: 0,
             y_pos: 0,
             _phantom: core::marker::PhantomData,
@@ -408,26 +422,24 @@ fn write_text<W: FramebufferLike>(writer: &mut W, s: &str) -> core::fmt::Result 
     Ok(())
 }
 
-impl<T: PixelType> core::fmt::Write for FramebufferWriter<T> {
+impl<T: PixelType + VolatileRead> core::fmt::Write for FramebufferWriter<T> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         write_text(self, s)
     }
 }
 
-impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
+impl<T: PixelType + VolatileRead> FramebufferLike for FramebufferWriter<T> {
     fn put_pixel(&self, x: u32, y: u32, color: u32) {
         if x >= self.info.width || y >= self.info.height {
             return;
         }
 
         let offset = self.info.calculate_offset(x, y);
-        unsafe {
-            let fb_ptr = self.info.address as *mut u8;
-            let pixel_ptr = fb_ptr.add(offset) as *mut T;
-            core::ptr::write_volatile(pixel_ptr, T::from_u32(color));
-            // Force memory barrier to ensure write is visible to the display controller
-            core::arch::x86_64::_mm_sfence();
-        }
+        let _ = self
+            .framebuffer
+            .write_volatile_at(offset, T::from_u32(color));
+        // Force memory barrier to ensure write is visible to the display controller
+        unsafe { core::arch::x86_64::_mm_sfence() };
     }
 
     /// Optimised bulk fill: writes `color` into every pixel of the rectangle
@@ -440,16 +452,13 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
         let y_end = y.saturating_add(height).min(self.info.height);
         let pixel_val = T::from_u32(color);
         let bpp = core::mem::size_of::<T>() as u32;
-        unsafe {
-            for row in y..y_end {
-                let row_base = (self.info.address as usize)
-                    + (row as usize * self.info.stride as usize)
-                    + (x as usize * bpp as usize);
-                let row_ptr = row_base as *mut T;
-                let count = (x_end - x) as usize;
-                for col in 0..count {
-                    core::ptr::write_volatile(row_ptr.add(col), pixel_val);
-                }
+        for row in y..y_end {
+            let row_base = (row as usize * self.info.stride as usize) + (x as usize * bpp as usize);
+            let count = (x_end - x) as usize;
+            for col in 0..count {
+                let _ = self
+                    .framebuffer
+                    .write_volatile_at(row_base + col * bpp as usize, pixel_val);
             }
         }
     }
@@ -509,14 +518,19 @@ impl<T: PixelType> FramebufferLike for FramebufferWriter<T> {
 
 /// Generic framebuffer buffer clear operation
 pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    unsafe {
-        let fb_ptr = address as *mut T;
-        let bytes_per_pixel = core::mem::size_of::<T>() as u32;
-        let elements_per_line = (stride / bytes_per_pixel) as usize;
-        let count = elements_per_line * height as usize;
-        for i in 0..count {
-            core::ptr::write_volatile(fb_ptr.add(i), bg_color);
-        }
+    let bytes_per_pixel = core::mem::size_of::<T>() as u32;
+    let elements_per_line = (stride / bytes_per_pixel) as usize;
+    let count = elements_per_line * height as usize;
+    let region = unsafe {
+        FramebufferRegion::from_address(
+            address as usize,
+            (stride as usize) * (height as usize),
+            Permissions::READ_WRITE,
+        )
+        .expect("invalid framebuffer region")
+    };
+    for i in 0..count {
+        let _ = region.write_volatile_at(i * core::mem::size_of::<T>(), bg_color);
     }
 }
 
@@ -525,27 +539,37 @@ pub unsafe fn clear_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u3
 /// Shifts the entire framebuffer up by 8 scan lines using `T`-sized
 /// volatile accesses (much fewer operations than byte-by-byte).
 /// The last 8 scan lines are filled with `bg_color`.
-pub unsafe fn scroll_buffer_pixels<T: Copy>(address: u64, stride: u32, height: u32, bg_color: T) {
-    unsafe {
-        let bpp = core::mem::size_of::<T>() as u32;
-        let pixels_per_line = (stride / bpp) as usize;
-        let shift_pixels = 10 * pixels_per_line;
-        let total_pixels = pixels_per_line * height as usize;
+pub unsafe fn scroll_buffer_pixels<T: Copy + VolatileRead>(
+    address: u64,
+    stride: u32,
+    height: u32,
+    bg_color: T,
+) {
+    let bpp = core::mem::size_of::<T>() as u32;
+    let pixels_per_line = (stride / bpp) as usize;
+    let shift_pixels = 10 * pixels_per_line;
+    let total_pixels = pixels_per_line * height as usize;
+    let region = unsafe {
+        FramebufferRegion::from_address(
+            address as usize,
+            (stride as usize) * (height as usize),
+            Permissions::READ_WRITE,
+        )
+        .expect("invalid framebuffer region")
+    };
 
-        let fb_ptr = address as *mut T;
+    // Use volatile copy for MMIO (wider T reduces loop count)
+    for i in 0..(total_pixels.saturating_sub(shift_pixels)) {
+        let value: T = region
+            .read_volatile_at((shift_pixels + i) * core::mem::size_of::<T>())
+            .expect("invalid framebuffer read");
+        let _ = region.write_volatile_at(i * core::mem::size_of::<T>(), value);
+    }
 
-        // Use volatile copy for MMIO (wider T reduces loop count)
-        for i in 0..(total_pixels.saturating_sub(shift_pixels)) {
-            let src = fb_ptr.add(shift_pixels + i);
-            let dst = fb_ptr.add(i);
-            core::ptr::write_volatile(dst, core::ptr::read_volatile(src));
-        }
-
-        // Clear last 8 lines
-        let clear_start = (height.saturating_sub(8) as usize) * pixels_per_line;
-        let clear_count = 8 * pixels_per_line;
-        for i in 0..clear_count {
-            core::ptr::write_volatile(fb_ptr.add(clear_start + i), bg_color);
-        }
+    // Clear last 8 lines
+    let clear_start = (height.saturating_sub(8) as usize) * pixels_per_line;
+    let clear_count = 8 * pixels_per_line;
+    for i in 0..clear_count {
+        let _ = region.write_volatile_at((clear_start + i) * core::mem::size_of::<T>(), bg_color);
     }
 }

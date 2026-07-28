@@ -64,7 +64,7 @@ pub fn is_reserved_extension_address(address: usize) -> bool {
 #[unsafe(link_section = ".data")]
 pub(crate) static mut MEMORY_MAP_BUFFER: [MemoryMapDescriptor; MAX_DESCRIPTORS] = [const {
     MemoryMapDescriptor {
-        ptr: core::ptr::null(),
+        address: 0,
         descriptor_size: 0,
     }
 };

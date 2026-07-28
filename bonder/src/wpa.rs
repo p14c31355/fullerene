@@ -93,11 +93,7 @@ impl Drop for WpaSupplicant {
         // Passwords and derived keys must not remain in freed heap pages.
         // Volatile writes plus a compiler fence prevent this cleanup from
         // being optimized away.
-        unsafe {
-            for byte in self.passphrase.as_mut_vec().iter_mut() {
-                core::ptr::write_volatile(byte, 0);
-            }
-        }
+        unsafe { sealant::secure_zero(self.passphrase.as_mut_vec()) };
         for bytes in [
             &mut self.pmk[..],
             &mut self.ptk[..],
@@ -105,11 +101,8 @@ impl Drop for WpaSupplicant {
             &mut self.anonce[..],
             &mut self.snonce[..],
         ] {
-            for byte in bytes.iter_mut() {
-                unsafe { core::ptr::write_volatile(byte, 0) };
-            }
+            sealant::secure_zero(bytes);
         }
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
     }
 }
 

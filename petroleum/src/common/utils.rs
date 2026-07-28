@@ -8,13 +8,9 @@ pub fn calculate_offset_address(base: u64, i: u64) -> u64 {
     base + (i * 4096)
 }
 
-/// Calculates the pointer to the i-th descriptor.
-///
-/// # Safety
-///
-/// The caller must ensure that the resulting pointer is within the bounds of the allocated object.
-pub unsafe fn calculate_descriptor_ptr(ptr: *const u8, index: usize, size: usize) -> *const u8 {
-    unsafe { ptr.add(index * size) }
+/// Calculates the address of the i-th descriptor.
+pub fn calculate_descriptor_address(base: usize, index: usize, size: usize) -> Option<usize> {
+    base.checked_add(index.checked_mul(size)?)
 }
 
 /// Calculates the end address of a memory region given start address and page count.
@@ -22,17 +18,13 @@ pub fn calculate_region_end(start: u64, pages: u64) -> u64 {
     start + (pages * 4096)
 }
 
-/// Calculates the pointer to metadata appended at the end of a buffer.
-///
-/// # Safety
-///
-/// The caller must ensure that the resulting pointer is within the bounds of the allocated object.
-pub unsafe fn calculate_metadata_ptr(
-    base: *const u8,
+/// Calculates the address of metadata appended at the end of a buffer.
+pub fn calculate_metadata_address(
+    base: usize,
     total_size: usize,
     metadata_size: usize,
-) -> *const u8 {
-    unsafe { base.add(total_size - metadata_size) }
+) -> Option<usize> {
+    base.checked_add(total_size.checked_sub(metadata_size)?)
 }
 
 /// Calculates the number of pages needed to cover a given size, rounding up.

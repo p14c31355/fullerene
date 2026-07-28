@@ -211,7 +211,7 @@ impl UefiInitContext {
                 if offset >= actual_bytes {
                     break;
                 }
-                let desc = MemoryMapDescriptor::new(base_ptr.add(offset), desc_sz);
+                let desc = MemoryMapDescriptor::new(base_ptr as usize + offset, desc_sz);
                 if !petroleum::page_table::MemoryDescriptorValidator::is_valid(&desc) {
                     continue;
                 }

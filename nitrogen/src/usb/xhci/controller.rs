@@ -1,8 +1,5 @@
 //! xHCI controller construction, startup, recovery, and root-port lifecycle.
 
-use alloc::vec::Vec;
-use core::ptr;
-
 use super::context::XhciContext;
 use super::device::DeviceContextSet;
 use super::interrupt::InterruptContext;
@@ -17,6 +14,8 @@ use super::ring::{ErstEntry, RingContext};
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
 use crate::usb::UsbDevice;
+use alloc::vec::Vec;
+use core::ptr;
 
 impl XhciContext {
     /// Create a new xHCI context from the MMIO base address.
@@ -29,7 +28,7 @@ impl XhciContext {
     /// `mmio_base` must reference a mapped xHCI register BAR for the lifetime
     /// of the returned controller.
     pub unsafe fn new(
-        mmio_base: *mut u8,
+        mmio_base: usize,
         ctx: &'static dyn DriverContext,
         health: PciHealth,
     ) -> Option<Self> {
@@ -101,9 +100,9 @@ impl XhciContext {
         };
         crate::debug::hint(b"xh_legok");
 
-        let op_base = unsafe { mmio_base.add(op_off) };
-        let rt_base = unsafe { mmio_base.add(rt_off) };
-        let db_base = unsafe { mmio_base.add(db_off) };
+        let op_base = mmio_base.checked_add(op_off)?;
+        let rt_base = mmio_base.checked_add(rt_off)?;
+        let db_base = mmio_base.checked_add(db_off)?;
         let registers = RegisterContext {
             mmio_base,
             cap: cap_regs,

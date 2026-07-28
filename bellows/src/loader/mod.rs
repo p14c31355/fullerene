@@ -265,17 +265,11 @@ pub fn exit_boot_services_and_jump(
     let memory_map_descriptors = if num_descriptors > 0 && !descriptors_ptr.is_null() {
         let mut descriptors = alloc::vec::Vec::with_capacity(num_descriptors);
         for i in 0..num_descriptors {
-            unsafe {
-                let desc_ptr = petroleum::common::utils::calculate_descriptor_ptr(
-                    descriptors_ptr,
-                    i,
-                    descriptor_size_val,
-                );
-                descriptors.push(petroleum::page_table::memory_map::MemoryMapDescriptor::new(
-                    desc_ptr,
-                    descriptor_size_val,
-                ));
-            }
+            let desc_address = descriptors_ptr as usize + i.saturating_mul(descriptor_size_val);
+            descriptors.push(petroleum::page_table::memory_map::MemoryMapDescriptor::new(
+                desc_address,
+                descriptor_size_val,
+            ));
         }
         descriptors
     } else {

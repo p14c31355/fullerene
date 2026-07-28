@@ -69,21 +69,21 @@ pub static mut TRANSITION_GDT: TransitionGdt = TransitionGdt {
 };
 
 #[unsafe(no_mangle)]
-pub static mut KERNEL_ARGS: *const KernelArgs = core::ptr::null();
+pub static mut KERNEL_ARGS: usize = 0;
 
 #[unsafe(no_mangle)]
 pub static mut TRANSITION_KERNEL_ENTRY: usize = 0;
 
 #[repr(C)]
 pub struct WorldSwitch {
-    pub load_gdt: *const (),
-    pub load_idt: *const (),
+    pub load_gdt: usize,
+    pub load_idt: usize,
     pub page_table: PhysFrame,
     pub phys_offset: VirtAddr,
     pub stack_top: VirtAddr,
     pub entry_point: VirtAddr,
-    pub kernel_args: *const KernelArgs,
-    pub allocator: *mut BootInfoFrameAllocator,
+    pub kernel_args: usize,
+    pub allocator: usize,
 }
 
 impl WorldSwitch {
@@ -131,9 +131,9 @@ unsafe fn write_serial_hex(val: u64) {
 
 #[unsafe(no_mangle)]
 #[inline(never)]
-pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
+pub unsafe extern "sysv64" fn landing_zone_logic(ctx: usize) {
     unsafe {
-        let args = &*ctx;
+        let args = &*(ctx as *const TransitionArgs);
 
         let actual_kernel_entry = if args.kernel_entry == 0 {
             TRANSITION_KERNEL_ENTRY
@@ -141,7 +141,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
             args.kernel_entry
         };
 
-        let actual_kernel_args = if args.kernel_args.is_null() {
+        let actual_kernel_args = if args.kernel_args == 0 {
             KERNEL_ARGS
         } else {
             args.kernel_args
@@ -149,13 +149,13 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
 
         crate::write_serial_bytes(0x3F8, 0x3FD, b"Logic: Start\n");
 
-        if !args.load_idt.is_null() {
+        if args.load_idt != 0 {
             let load_idt: fn() = core::mem::transmute(args.load_idt);
             load_idt();
             crate::write_serial_bytes(0x3F8, 0x3FD, b"Logic: IDT Loaded\n");
         }
 
-        if !args.load_gdt.is_null() {
+        if args.load_gdt != 0 {
             let load_gdt: fn() = core::mem::transmute(args.load_gdt);
             load_gdt();
             crate::write_serial_bytes(0x3F8, 0x3FD, b"Logic: GDT Loaded\n");
@@ -164,7 +164,7 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
         let l4_phys = args.l4_frame;
         let sign_extended_offset = crate::common::utils::sign_extend_virt_addr(args.phys_offset);
         let local_phys_offset = VirtAddr::new(sign_extended_offset);
-        let local_frame_allocator = args.allocator;
+        let local_frame_allocator = args.allocator as *mut BootInfoFrameAllocator;
 
         crate::write_serial_bytes(0x3F8, 0x3FD, b"LZ: reached\n");
 
@@ -319,21 +319,21 @@ pub unsafe extern "sysv64" fn landing_zone_logic(ctx: *const TransitionArgs) {
 
         crate::assembly::jump_to_kernel(
             kernel_entry_virt as usize,
-            actual_kernel_args_virt as *const KernelArgs,
+            actual_kernel_args_virt as usize,
             local_phys_offset.as_u64(),
         );
     }
 }
 
 pub struct WorldSwitchBuilder {
-    load_gdt: Option<*const ()>,
-    load_idt: Option<*const ()>,
+    load_gdt: Option<usize>,
+    load_idt: Option<usize>,
     page_table: Option<PhysFrame>,
     phys_offset: Option<VirtAddr>,
     stack_top: Option<VirtAddr>,
     entry_point: Option<VirtAddr>,
-    kernel_args: Option<*const KernelArgs>,
-    allocator: Option<*mut BootInfoFrameAllocator>,
+    kernel_args: Option<usize>,
+    allocator: Option<usize>,
 }
 
 impl Default for WorldSwitchBuilder {
@@ -352,11 +352,11 @@ impl Default for WorldSwitchBuilder {
 }
 
 impl WorldSwitchBuilder {
-    pub fn with_gdt(mut self, gdt: *const ()) -> Self {
+    pub fn with_gdt(mut self, gdt: usize) -> Self {
         self.load_gdt = Some(gdt);
         self
     }
-    pub fn with_idt(mut self, idt: *const ()) -> Self {
+    pub fn with_idt(mut self, idt: usize) -> Self {
         self.load_idt = Some(idt);
         self
     }
@@ -376,11 +376,11 @@ impl WorldSwitchBuilder {
         self.entry_point = Some(entry);
         self
     }
-    pub fn with_args(mut self, args: *const KernelArgs) -> Self {
+    pub fn with_args(mut self, args: usize) -> Self {
         self.kernel_args = Some(args);
         self
     }
-    pub fn with_allocator(mut self, allocator: *mut BootInfoFrameAllocator) -> Self {
+    pub fn with_allocator(mut self, allocator: usize) -> Self {
         self.allocator = Some(allocator);
         self
     }

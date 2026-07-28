@@ -454,14 +454,18 @@ impl UsbBus {
             );
             match prog_if {
                 0x20 => {
-                    if let Some(mut hc) = unsafe { EhciContext::new(mmio_virt, ctx, health) } {
+                    if let Some(mut hc) =
+                        unsafe { EhciContext::new(mmio_virt as usize, ctx, health) }
+                    {
                         if hc.initialize().is_ok() {
                             self.ehci.push(Box::new(hc));
                         }
                     }
                 }
                 0x30 => {
-                    if let Some(mut hc) = unsafe { XhciContext::new(mmio_virt, ctx, health) } {
+                    if let Some(mut hc) =
+                        unsafe { XhciContext::new(mmio_virt as usize, ctx, health) }
+                    {
                         if hc.init().is_ok() {
                             self.xhci.push(Box::new(hc));
                         }

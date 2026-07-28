@@ -22,7 +22,19 @@ mod region;
 pub use error::{PointerError, RegionError};
 pub use physical::{PhysPtr, PhysicalAddress};
 pub use region::{
-    CheckedMut, DmaPtr, DmaRegion, DmaWritePtr, ExclusiveRamRegion, MemoryRegion, MmioPtr,
-    MmioRegion, MmioWritePtr, Permissions, RamPtr, RamRegion, RamWritePtr, RegionKind, SlicePtr,
-    UserPtr, UserPtrMut, UserRegion,
+    CheckedMut, DmaPtr, DmaRegion, DmaWritePtr, ExclusiveRamRegion, FramebufferRegion,
+    MemoryRegion, MmioPtr, MmioRegion, MmioWritePtr, Permissions, RamPtr, RamRegion, RamWritePtr,
+    RegionKind, SlicePtr, UserPtr, UserPtrMut, UserRegion, VolatileRead,
 };
+
+/// Erase secret bytes with volatile stores and a compiler fence.
+///
+/// The mutable slice proves that the caller owns the bytes for the duration
+/// of the operation; volatile stores prevent the optimizer from removing the
+/// wipe as dead code.
+pub fn secure_zero(bytes: &mut [u8]) {
+    for byte in bytes {
+        unsafe { core::ptr::write_volatile(byte, 0) };
+    }
+    core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+}

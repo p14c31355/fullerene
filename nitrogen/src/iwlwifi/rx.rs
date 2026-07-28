@@ -338,7 +338,7 @@ impl IwlWifiDevice {
 
             let desc = self.rx_desc_mut(desc_idx);
             desc.len = MAX_FRAME_SIZE as u16;
-            mmio::cache_flush(desc as *const RxDmaDesc as *const u8);
+            mmio::cache_flush(desc as *const RxDmaDesc as usize);
             self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
         }
 

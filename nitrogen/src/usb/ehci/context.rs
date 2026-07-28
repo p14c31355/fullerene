@@ -19,12 +19,11 @@
 //! ehci.poll_ports();
 //! ```
 
-use alloc::vec::Vec;
-use core::ptr;
-
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
 use crate::usb::{UsbDevice, UsbDirection, UsbSetupPacket, UsbSpeed};
+use alloc::vec::Vec;
+use core::ptr;
 
 // ── Import sub-contexts from sibling modules ──────────────────
 use super::async_queue::*;
@@ -118,7 +117,7 @@ impl EhciContext {
     /// `mmio_base` must reference a mapped EHCI register BAR for the lifetime
     /// of the returned controller.
     pub unsafe fn new(
-        mmio_base: *mut u8,
+        mmio_base: usize,
         ctx: &'static dyn DriverContext,
         health: PciHealth,
     ) -> Option<Self> {

@@ -469,7 +469,7 @@ pub fn try_init_wifi_device_step() {
                         (*rx_virt.add(i)).addr_lo = dma as u32;
                         (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
                         (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
-                        mmio::cache_flush(rx_virt.add(i) as *const u8);
+                        mmio::cache_flush(rx_virt.add(i) as usize);
                     }
                     rx_bufs.push(buf);
                 }

@@ -460,8 +460,31 @@ impl<T> SlicePtr<'_, T> {
 }
 
 /// Region restricted to volatile device-register access.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MmioRegion<'a>(MemoryRegion<'a>);
+
+/// Primitive register values for which every bit pattern is a valid value.
+///
+/// This is sealed so a downstream crate cannot accidentally make a type with
+/// invalid bit patterns readable through a safe volatile load.
+pub trait VolatileRead: Copy + sealed::Sealed {}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+macro_rules! impl_volatile_read {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl sealed::Sealed for $ty {}
+            impl VolatileRead for $ty {}
+        )*
+    };
+}
+
+impl_volatile_read!(
+    u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize
+);
 
 impl<'a> MmioRegion<'a> {
     /// Create a device-register region from a mapped address range.
@@ -478,6 +501,55 @@ impl<'a> MmioRegion<'a> {
         Ok(Self(unsafe {
             MemoryRegion::from_raw_parts(start, len, permissions, RegionKind::Mmio)?
         }))
+    }
+
+    /// Create a device-register region from an address value.
+    ///
+    /// This is the address-based counterpart of [`Self::from_raw_parts`].
+    /// Keeping addresses as integers prevents driver structs from storing or
+    /// incrementing raw pointers.
+    ///
+    /// # Safety
+    ///
+    /// The address range must be a live MMIO mapping for `'a`.
+    pub unsafe fn from_address(
+        start: usize,
+        len: usize,
+        permissions: Permissions,
+    ) -> Result<Self, RegionError> {
+        unsafe { Self::from_raw_parts(start, len, permissions) }
+    }
+
+    /// Check a volatile read at a byte offset within this region.
+    pub fn check_read_at<T>(&self, offset: usize) -> Result<MmioPtr<'_, T>, PointerError> {
+        let address = self
+            .0
+            .start
+            .checked_add(offset)
+            .ok_or(PointerError::AddressOverflow)?;
+        self.check_read(address as *const T)
+    }
+
+    /// Check a volatile write at a byte offset within this region.
+    pub fn check_write_at<T>(&self, offset: usize) -> Result<MmioWritePtr<'_, T>, PointerError> {
+        let address = self
+            .0
+            .start
+            .checked_add(offset)
+            .ok_or(PointerError::AddressOverflow)?;
+        self.check_write(address as *mut T)
+    }
+
+    /// Read a primitive register value at a byte offset.
+    pub fn read_volatile_at<T: VolatileRead>(&self, offset: usize) -> Result<T, PointerError> {
+        self.check_read_at(offset).map(|ptr| ptr.read_volatile())
+    }
+
+    /// Write a value to a register at a byte offset.
+    pub fn write_volatile_at<T: Copy>(&self, offset: usize, value: T) -> Result<(), PointerError> {
+        self.check_write_at(offset).map(|ptr| {
+            ptr.write_volatile(value);
+        })
     }
 
     /// Check a volatile read capability.
@@ -504,6 +576,88 @@ impl<'a> MmioRegion<'a> {
     }
 }
 
+/// Region restricted to volatile framebuffer access.
+#[derive(Clone, Debug)]
+pub struct FramebufferRegion<'a>(MemoryRegion<'a>);
+
+impl<'a> FramebufferRegion<'a> {
+    /// Create a framebuffer region from a mapped virtual address range.
+    ///
+    /// # Safety
+    ///
+    /// The range must be mapped to the framebuffer for `'a`, and its size
+    /// must cover every access made through the returned region.
+    pub unsafe fn from_address(
+        start: usize,
+        len: usize,
+        permissions: Permissions,
+    ) -> Result<Self, RegionError> {
+        Ok(Self(unsafe {
+            MemoryRegion::from_raw_parts(start, len, permissions, RegionKind::Framebuffer)?
+        }))
+    }
+
+    /// Write one framebuffer value using a volatile store.
+    pub fn write_volatile_at<T: Copy>(&self, offset: usize, value: T) -> Result<(), PointerError> {
+        let address = self
+            .0
+            .start
+            .checked_add(offset)
+            .ok_or(PointerError::AddressOverflow)?;
+        let ptr = self
+            .0
+            .check(address as *mut T, size_of::<T>(), Permissions::WRITE)?;
+        unsafe { ptr.as_ptr().write_volatile(value) };
+        Ok(())
+    }
+
+    /// Read one primitive framebuffer value using a volatile load.
+    pub fn read_volatile_at<T: VolatileRead>(&self, offset: usize) -> Result<T, PointerError> {
+        let address = self
+            .0
+            .start
+            .checked_add(offset)
+            .ok_or(PointerError::AddressOverflow)?;
+        let ptr = self
+            .0
+            .check(address as *const T, size_of::<T>(), Permissions::READ)?;
+        Ok(unsafe { ptr.as_ptr().read_volatile() })
+    }
+
+    /// Return the mapped framebuffer base address as an integer.
+    pub const fn start(&self) -> usize {
+        self.0.start
+    }
+
+    /// Return the mapped framebuffer size in bytes.
+    pub const fn len(&self) -> usize {
+        self.0.len
+    }
+
+    /// Return whether the mapped framebuffer contains no bytes.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Borrow the framebuffer as a mutable slice for a tightly audited bulk
+    /// operation.
+    ///
+    /// # Safety
+    ///
+    /// The caller must guarantee that the region is exclusively owned and
+    /// contains initialized `T` values for the requested length.
+    pub unsafe fn as_mut_slice<T>(&mut self, len: usize) -> Result<&mut [T], PointerError> {
+        let bytes = len
+            .checked_mul(size_of::<T>())
+            .ok_or(PointerError::LengthOverflow)?;
+        let ptr = self
+            .0
+            .check(self.0.start as *mut T, bytes, Permissions::WRITE)?;
+        Ok(unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), len) })
+    }
+}
+
 /// A checked volatile MMIO read capability.
 #[derive(Debug)]
 pub struct MmioPtr<'a, T> {
@@ -519,9 +673,9 @@ impl<T> MmioPtr<'_, T> {
     ///
     /// The device must permit a volatile read of `T` at this register, and the
     /// mapping must remain live for the operation.
-    pub unsafe fn read_volatile(&self) -> T
+    pub fn read_volatile(&self) -> T
     where
-        T: Copy,
+        T: VolatileRead,
     {
         unsafe { self.ptr.as_ptr().read_volatile() }
     }
@@ -554,7 +708,7 @@ impl<T> MmioWritePtr<'_, T> {
     ///
     /// The device must permit a volatile write of `T` at this register, and
     /// the mapping must remain live for the operation.
-    pub unsafe fn write_volatile(&self, value: T) {
+    pub fn write_volatile(&self, value: T) {
         unsafe { self.ptr.as_ptr().write_volatile(value) }
     }
 
@@ -572,7 +726,7 @@ impl<T> MmioWritePtr<'_, T> {
 }
 
 /// Region restricted to explicit user-memory copy operations.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct UserRegion<'a>(MemoryRegion<'a>);
 
 impl<'a> UserRegion<'a> {
@@ -591,6 +745,67 @@ impl<'a> UserRegion<'a> {
         Ok(Self(unsafe {
             MemoryRegion::from_raw_parts(start, len, permissions, RegionKind::User)?
         }))
+    }
+
+    /// Create a user-memory region from an address value.
+    ///
+    /// # Safety
+    ///
+    /// The address range must already have been validated by the owning
+    /// address-space manager and remain mapped for `'a`.
+    pub unsafe fn from_address(
+        start: usize,
+        len: usize,
+        permissions: Permissions,
+    ) -> Result<Self, RegionError> {
+        unsafe { Self::from_raw_parts(start, len, permissions) }
+    }
+
+    /// Copy bytes from the user region into kernel-owned storage.
+    ///
+    /// # Safety
+    ///
+    /// The user mapping must remain present and stable during the copy.
+    pub unsafe fn copy_from_at(
+        &self,
+        offset: usize,
+        destination: &mut [u8],
+    ) -> Result<(), PointerError> {
+        let address = self
+            .0
+            .start
+            .checked_add(offset)
+            .ok_or(PointerError::AddressOverflow)?;
+        let ptr = self
+            .0
+            .check(address as *const u8, destination.len(), Permissions::READ)?;
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                ptr.as_ptr(),
+                destination.as_mut_ptr(),
+                destination.len(),
+            )
+        };
+        Ok(())
+    }
+
+    /// Copy kernel-owned bytes into the user region.
+    ///
+    /// # Safety
+    ///
+    /// The user mapping must remain present and writable during the copy, and
+    /// no conflicting access may occur.
+    pub unsafe fn copy_to_at(&self, offset: usize, source: &[u8]) -> Result<(), PointerError> {
+        let address = self
+            .0
+            .start
+            .checked_add(offset)
+            .ok_or(PointerError::AddressOverflow)?;
+        let ptr = self
+            .0
+            .check(address as *mut u8, source.len(), Permissions::WRITE)?;
+        unsafe { core::ptr::copy_nonoverlapping(source.as_ptr(), ptr.as_ptr(), source.len()) };
+        Ok(())
     }
 
     /// Check a user-space read capability.

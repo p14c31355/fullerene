@@ -391,20 +391,14 @@ pub struct Vfs {
 
 impl Vfs {
     /// Resolve a path to its mount index and remaining path without borrowing
-    /// the filesystem.  The caller can then use `fs_at()` or `fs_ptr_at()` to
+    /// the filesystem.  The caller can then use `find_fs()` or an indexed
+    /// operation to access the filesystem without holding a VFS lock.
     /// access the filesystem without holding the VFS lock.
     pub fn find_fs_for_path(&self, path: &str) -> Option<(usize, String)> {
         let absolute = self.resolve_path(path);
         let index = self.find_fs_index_for_absolute_path(&absolute)?;
         let remaining = relative_to_mount(&absolute, &self.mounts[index].mount_point)?.to_string();
         Some((index, remaining))
-    }
-
-    /// Return a raw pointer to the filesystem at the given mount index.
-    /// The caller must ensure no aliasing violations — this exists solely for
-    /// callers that need to drop the VFS lock before issuing I/O.
-    pub fn fs_ptr_at(&mut self, index: usize) -> *mut Box<dyn FileSystem> {
-        &mut self.mounts[index].fs
     }
 
     pub fn new(root_fs: Box<dyn FileSystem>) -> Self {

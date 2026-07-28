@@ -397,7 +397,7 @@ pub fn fs_errno_result(err: &genome::fs::FsError) -> u64 {
 /// The current process address space must remain stable while the string is
 /// validated and copied.
 pub unsafe fn copy_user_string(ptr: u64, max_len: usize) -> Result<alloc::string::String, i32> {
-    unsafe { user_memory::copy_c_string(ptr as *const u8, max_len) }.map_err(linux_user_copy_error)
+    unsafe { user_memory::copy_c_string(ptr as usize, max_len) }.map_err(linux_user_copy_error)
 }
 
 fn linux_user_copy_error(error: UserCopyError) -> i32 {
@@ -435,8 +435,7 @@ pub unsafe fn copy_from_user(buf: u64, count: usize) -> Result<alloc::vec::Vec<u
         return Err(EFAULT);
     }
     let len = checked_user_copy_len(count)?;
-    unsafe { user_memory::copy_bytes_from_user(buf as *const u8, len) }
-        .map_err(linux_user_copy_error)
+    unsafe { user_memory::copy_bytes_from_user(buf as usize, len) }.map_err(linux_user_copy_error)
 }
 
 /// Copy data to user space.
@@ -449,7 +448,7 @@ pub unsafe fn copy_to_user(buf: u64, data: &[u8]) -> Result<(), i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    unsafe { user_memory::copy_bytes_to_user(buf as *mut u8, data) }.map_err(linux_user_copy_error)
+    unsafe { user_memory::copy_bytes_to_user(buf as usize, data) }.map_err(linux_user_copy_error)
 }
 
 /// Copy an arbitrary sized value to user space.
@@ -462,14 +461,14 @@ pub unsafe fn copy_val_to_user<T: Copy>(buf: u64, val: &T) -> Result<(), i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    unsafe { user_memory::copy_value_to_user(buf as *mut T, val) }.map_err(linux_user_copy_error)
+    unsafe { user_memory::copy_value_to_user(buf as usize, val) }.map_err(linux_user_copy_error)
 }
 
 pub unsafe fn copy_val_from_user<T: Copy>(buf: u64) -> Result<T, i32> {
     if buf == 0 {
         return Err(EFAULT);
     }
-    unsafe { user_memory::copy_value_from_user(buf as *const T) }.map_err(linux_user_copy_error)
+    unsafe { user_memory::copy_value_from_user(buf as usize) }.map_err(linux_user_copy_error)
 }
 
 pub unsafe fn copy_from_user_into(buf: u64, destination: &mut [u8]) -> Result<(), i32> {

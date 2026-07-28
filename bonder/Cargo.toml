@@ -13,6 +13,7 @@ categories = ["embedded", "network", "no-std", "os"]
 
 [dependencies]
 log = { workspace = true }
+sealant = { path = "../sealant" }
 spin = { workspace = true, features = ["spin_mutex"] }
 
 [lib]

@@ -5,13 +5,15 @@
 //! cache-incoherent aliases for scan-out memory on physical machines.
 
 use crate::common::{EfiGraphicsPixelFormat, FullereneFramebufferConfig};
+use sealant::{FramebufferRegion, Permissions};
 
 /// Number of kernel initialization stages shown in the progress bar.
 pub const KERNEL_STAGE_COUNT: u8 = 15;
 
 /// A validated, directly accessible 32-bpp GOP framebuffer.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct BootFramebuffer {
+    framebuffer: FramebufferRegion<'static>,
     address: u64,
     width: u32,
     height: u32,
@@ -44,8 +46,12 @@ impl BootFramebuffer {
             _ => return None,
         };
         let stride_pixels = stride_bytes / 4;
-        let _ = stride_pixels.checked_mul(height)?;
+        let len = (stride_bytes as usize).checked_mul(height as usize)?;
+        let framebuffer = unsafe {
+            FramebufferRegion::from_address(address as usize, len, Permissions::READ_WRITE).ok()?
+        };
         Some(Self {
+            framebuffer,
             address,
             width,
             height,
@@ -105,7 +111,7 @@ impl BootFramebuffer {
         let blue = self.rgb(54, 132, 246);
         let magenta = self.rgb(210, 71, 198);
 
-        unsafe {
+        {
             self.fill_rect(panel_x, panel_y, panel_width, panel_height, border);
             self.fill_rect(
                 panel_x + 2,
@@ -181,37 +187,36 @@ impl BootFramebuffer {
         }
     }
 
-    unsafe fn fill_rect(&self, x: u32, y: u32, width: u32, height: u32, color: u32) {
+    fn fill_rect(&self, x: u32, y: u32, width: u32, height: u32, color: u32) {
         let x_end = x.saturating_add(width).min(self.width);
         let y_end = y.saturating_add(height).min(self.height);
-        let base = self.address as *mut u32;
         for py in y..y_end {
             let row = py as usize * self.stride_pixels as usize;
             for px in x..x_end {
-                unsafe { core::ptr::write_volatile(base.add(row + px as usize), color) };
+                let _ = self
+                    .framebuffer
+                    .write_volatile_at((row + px as usize) * 4, color);
             }
         }
     }
 
-    unsafe fn draw_text_centered(&self, text: &[u8], y: u32, scale: u32, color: u32) {
+    fn draw_text_centered(&self, text: &[u8], y: u32, scale: u32, color: u32) {
         let width = text_width(text, scale);
         let x = self.width.saturating_sub(width) / 2;
-        unsafe { self.draw_text(x, y, text, scale, color) };
+        self.draw_text(x, y, text, scale, color);
     }
 
-    pub unsafe fn draw_text(&self, mut x: u32, y: u32, text: &[u8], scale: u32, color: u32) {
+    pub fn draw_text(&self, mut x: u32, y: u32, text: &[u8], scale: u32, color: u32) {
         for &byte in text {
             let rows = glyph(byte.to_ascii_uppercase());
             for (gy, bits) in rows.iter().copied().enumerate() {
                 for gx in 0..5u32 {
                     if bits & (1 << (4 - gx)) != 0 {
-                        unsafe {
-                            let rx = x.saturating_add(gx.saturating_mul(scale));
-                            let ry = y.saturating_add((gy as u32).saturating_mul(scale));
-                            if rx < self.width && ry < self.height {
-                                self.fill_rect(rx, ry, scale, scale, color);
-                            }
-                        };
+                        let rx = x.saturating_add(gx.saturating_mul(scale));
+                        let ry = y.saturating_add((gy as u32).saturating_mul(scale));
+                        if rx < self.width && ry < self.height {
+                            self.fill_rect(rx, ry, scale, scale, color);
+                        }
                     }
                 }
             }
@@ -249,15 +254,13 @@ impl BootFramebuffer {
                             y.saturating_add((gy as u32 + 1).saturating_mul(scale_num) / scale_den);
 
                         if rx < self.width && ry < self.height {
-                            unsafe {
-                                self.fill_rect(
-                                    rx,
-                                    ry,
-                                    rx_next.saturating_sub(rx).max(1),
-                                    ry_next.saturating_sub(ry).max(1),
-                                    color,
-                                );
-                            }
+                            self.fill_rect(
+                                rx,
+                                ry,
+                                rx_next.saturating_sub(rx).max(1),
+                                ry_next.saturating_sub(ry).max(1),
+                                color,
+                            );
                         }
                     }
                 }
@@ -294,7 +297,7 @@ impl BootFramebuffer {
 
         let panel = self.rgb(13, 13, 20);
         let body_fg = self.rgb(170, 221, 255);
-        unsafe { self.fill_rect(x, y, width, height, panel) };
+        self.fill_rect(x, y, width, height, panel);
 
         // The fallback uses a compact 5x7 glyph. Use a fixed-point 3/2 scale
         // so the interrupt overlay is easier to read without the earlier 2x

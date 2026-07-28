@@ -121,7 +121,7 @@ impl IwlWifiDevice {
         desc.addr_hi = (dma_addr >> 32) as u32;
         desc.len = total_len as u16;
         desc.flags = 0;
-        mmio::cache_flush(desc as *const TxDmaDesc as *const u8);
+        mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
         self.tx_head = self.tx_head.wrapping_add(1);
         mmio::write_barrier();
@@ -381,7 +381,7 @@ impl IwlWifiDevice {
             desc.addr_hi = (dma_addr >> 32) as u32;
             desc.len = tx_frame.len() as u16;
             desc.flags = 0;
-            mmio::cache_flush(desc as *const TxDmaDesc as *const u8);
+            mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
             self.tx_head = self.tx_head.wrapping_add(1);
             mmio::write_barrier();

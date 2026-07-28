@@ -27,7 +27,7 @@ pub fn u32_to_str_heapless(n: u32, buffer: &mut [u8]) -> &str {
 /// Panic handler implementation that can be used by binaries
 pub fn handle_panic(info: &core::panic::PanicInfo) -> ! {
     if let Some(st_ptr) = UEFI_SYSTEM_TABLE.lock().as_ref() {
-        let st_ref = unsafe { &*st_ptr.0 };
+        let st_ref = unsafe { &*st_ptr.as_ptr() };
         crate::serial::UEFI_WRITER.lock().init(st_ref.con_out);
 
         // Use write_string_heapless for panic messages to avoid heap allocation initially

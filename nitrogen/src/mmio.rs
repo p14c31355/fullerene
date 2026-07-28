@@ -29,9 +29,11 @@
 
 use crate::DriverContext;
 use crate::pci_health::PciHealth;
+use core::marker::PhantomData;
 use core::ops::{BitAnd, BitOr, Not};
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use sealant::{MmioRegion as SealantMmioRegion, Permissions, VolatileRead};
 
 // ============================================================================
 //  Cache management
@@ -43,7 +45,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 /// respect to other `clflush` instructions but NOT with respect to
 /// writes — use `mfence` after the last `clflush` when ordering matters.
 #[inline]
-pub fn cache_flush(addr: *const u8) {
+pub fn cache_flush(addr: usize) {
     unsafe {
         core::arch::asm!("clflush [{}]", in(reg) addr, options(nostack, preserves_flags));
     }
@@ -51,7 +53,7 @@ pub fn cache_flush(addr: *const u8) {
 
 /// Flush a range of cache lines and issue a memory fence afterwards.
 /// This ensures all prior writes are visible to DMA before a doorbell.
-pub fn cache_flush_range(base: *const u8, len: usize) {
+pub fn cache_flush_range(base: usize, len: usize) {
     if len == 0 {
         return;
     }
@@ -61,7 +63,7 @@ pub fn cache_flush_range(base: *const u8, len: usize) {
         .expect("cache flush range overflow");
     let mut addr = base_addr & !0x3F; // align to cache line
     while addr < end {
-        cache_flush(addr as *const u8);
+        cache_flush(addr);
         addr = addr.checked_add(64).expect("cache flush address overflow");
     }
     write_barrier();
@@ -133,8 +135,16 @@ pub enum SafeReadResult<T> {
 ///
 /// `addr` must be aligned, mapped, and valid for a volatile `u32` load.
 #[inline(never)]
-pub unsafe fn checked_read_u32(
-    addr: *const u32,
+pub unsafe fn checked_read_u32(addr: usize, health: Option<&PciHealth>) -> SafeReadResult<u32> {
+    let region = unsafe {
+        SealantMmioRegion::from_address(addr, core::mem::size_of::<u32>(), Permissions::READ)
+            .expect("invalid MMIO address")
+    };
+    checked_read_value(|| region.read_volatile_at(0), health)
+}
+
+fn checked_read_value(
+    read: impl FnOnce() -> Result<u32, sealant::PointerError>,
     health: Option<&PciHealth>,
 ) -> SafeReadResult<u32> {
     if let Some(h) = health
@@ -143,27 +153,24 @@ pub unsafe fn checked_read_u32(
         return SafeReadResult::DeviceGone;
     }
 
-    // If watchdog is armed but not yet active, activate it for this read.
-    // If already active, keep it active (multi-read protection).
     let was_active = MMIO_WATCHDOG_ACTIVE.load(Ordering::Relaxed);
     if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) && !was_active {
         MMIO_WATCHDOG_ACTIVE.store(true, Ordering::Release);
         arm_watchdog_timer();
     }
 
-    let val = unsafe { core::ptr::read_volatile(addr) };
+    let value = read().unwrap_or(0xFFFF_FFFF);
 
-    // Only disarm if we activated it (single-read case).
-    // Multi-read callers must explicitly call disarm_mmio_watchdog().
     if MMIO_WATCHDOG_ARMED.load(Ordering::Relaxed) && !was_active {
         MMIO_WATCHDOG_ACTIVE.store(false, Ordering::Release);
         disarm_mmio_watchdog();
     }
 
-    if val == 0xFFFF_FFFF {
-        return SafeReadResult::MasterAbort;
+    if value == 0xFFFF_FFFF {
+        SafeReadResult::MasterAbort
+    } else {
+        SafeReadResult::Value(value)
     }
-    SafeReadResult::Value(val)
 }
 
 /// Convenience wrapper: read two consecutive u32 registers with safety checks.
@@ -172,10 +179,7 @@ pub unsafe fn checked_read_u32(
 ///
 /// `addr` must be aligned, mapped, and valid for two volatile `u32` loads.
 #[inline]
-pub unsafe fn checked_read_u64(
-    addr: *const u32,
-    health: Option<&PciHealth>,
-) -> SafeReadResult<u64> {
+pub unsafe fn checked_read_u64(addr: usize, health: Option<&PciHealth>) -> SafeReadResult<u64> {
     let lo = match unsafe { checked_read_u32(addr, health) } {
         SafeReadResult::Value(v) => v,
         e => {
@@ -186,7 +190,7 @@ pub unsafe fn checked_read_u64(
             };
         }
     };
-    let hi = match unsafe { checked_read_u32(addr.add(1), health) } {
+    let hi = match unsafe { checked_read_u32(addr + core::mem::size_of::<u32>(), health) } {
         SafeReadResult::Value(v) => v,
         e => {
             return match e {
@@ -209,7 +213,7 @@ pub unsafe fn checked_read_u64(
 /// between a batch of writes and a subsequent read to enforce PCIe
 /// ordering (posted writes before non-posted read).
 pub struct MemRegion {
-    base: *mut u8,
+    region: SealantMmioRegion<'static>,
     size: usize,
 }
 
@@ -220,12 +224,16 @@ impl MemRegion {
     ///
     /// `base` must point to a valid UC-mapped MMIO region of at least `size` bytes.
     /// The caller must have mapped this region via `DriverContext::map_mmio_region`.
-    pub unsafe fn new(base: *mut u8, size: usize) -> Self {
-        Self { base, size }
+    pub unsafe fn new(base: usize, size: usize) -> Self {
+        let region = unsafe {
+            SealantMmioRegion::from_address(base, size, Permissions::READ_WRITE)
+                .expect("invalid MMIO region")
+        };
+        Self { region, size }
     }
 
-    pub fn base(&self) -> *mut u8 {
-        self.base
+    pub fn base(&self) -> usize {
+        self.region.region().start()
     }
 
     pub fn size(&self) -> usize {
@@ -235,7 +243,7 @@ impl MemRegion {
     /// Create a pointer to a register of type T at the given offset,
     /// with unconditional alignment and bounds checks.
     #[inline]
-    fn reg_ptr<T>(&self, offset: usize) -> *mut T {
+    fn check_offset<T>(&self, offset: usize) {
         let width = core::mem::size_of::<T>();
         assert!(
             offset % core::mem::align_of::<T>() == 0,
@@ -243,13 +251,15 @@ impl MemRegion {
         );
         let end = offset.checked_add(width).expect("MMIO offset overflow");
         assert!(end <= self.size, "MMIO access out of bounds");
-        unsafe { self.base.add(offset) as *mut T }
     }
 
     /// Read a u32 from an offset within this region.
     #[inline]
     pub fn read32(&self, offset: usize) -> u32 {
-        unsafe { ptr::read_volatile(self.reg_ptr::<u32>(offset) as *const u32) }
+        self.check_offset::<u32>(offset);
+        self.region
+            .read_volatile_at(offset)
+            .expect("invalid MMIO read")
     }
 
     /// Read a u64 from an offset within this region.
@@ -265,7 +275,8 @@ impl MemRegion {
     /// See [`checked_read_u32`] for the safety mechanism.
     #[inline]
     pub fn checked_read32(&self, offset: usize, health: Option<&PciHealth>) -> SafeReadResult<u32> {
-        unsafe { checked_read_u32(self.reg_ptr::<u32>(offset) as *const u32, health) }
+        self.check_offset::<u32>(offset);
+        checked_read_value(|| self.region.read_volatile_at(offset), health)
     }
 
     /// Read a u64 from an offset with PCIe hang-safety checks.
@@ -287,7 +298,10 @@ impl MemRegion {
     /// Write a u32 to an offset within this region.
     #[inline]
     pub fn write32(&self, offset: usize, val: u32) {
-        unsafe { ptr::write_volatile(self.reg_ptr::<u32>(offset), val) };
+        self.check_offset::<u32>(offset);
+        self.region
+            .write_volatile_at(offset, val)
+            .expect("invalid MMIO write");
     }
 
     /// Write a u64 to an offset within this region.
@@ -323,7 +337,7 @@ impl MemRegion {
 /// # Safety
 /// Types implementing this trait must be plain-old-data with no padding,
 /// and `size_of::<T>()` must equal the hardware register width.
-pub unsafe trait MmioSafe: Copy + 'static {}
+pub unsafe trait MmioSafe: Copy + 'static + VolatileRead {}
 
 unsafe impl MmioSafe for u8 {}
 unsafe impl MmioSafe for u16 {}
@@ -365,7 +379,9 @@ impl MmioOps for u64 {}
 /// let status = ctrl.read();         // volatile read + lfence
 /// ```
 pub struct Mmio<T: MmioSafe> {
-    ptr: *mut T,
+    region: SealantMmioRegion<'static>,
+    offset: usize,
+    _type: PhantomData<T>,
 }
 
 impl<T: MmioSafe> Mmio<T> {
@@ -376,20 +392,35 @@ impl<T: MmioSafe> Mmio<T> {
     /// `size_of::<T>()` bytes.  The caller is responsible for lifetime
     /// and alignment guarantees.
     #[inline]
-    pub unsafe fn new(ptr: *mut T) -> Self {
-        Self { ptr }
+    pub unsafe fn new(address: usize) -> Self {
+        let region = unsafe {
+            SealantMmioRegion::from_address(
+                address,
+                core::mem::size_of::<T>(),
+                Permissions::READ_WRITE,
+            )
+            .expect("invalid MMIO register")
+        };
+        Self {
+            region,
+            offset: 0,
+            _type: PhantomData,
+        }
     }
 
-    /// Return the raw pointer.
+    /// Return the register address.
     #[inline]
-    pub fn ptr(&self) -> *mut T {
-        self.ptr
+    pub fn address(&self) -> usize {
+        self.region.region().start() + self.offset
     }
 
     /// Volatile read with a read barrier (`lfence`).
     #[inline]
     pub fn read(&self) -> T {
-        let val = unsafe { ptr::read_volatile(self.ptr) };
+        let val = self
+            .region
+            .read_volatile_at(self.offset)
+            .expect("invalid MMIO read");
         read_barrier();
         val
     }
@@ -398,13 +429,17 @@ impl<T: MmioSafe> Mmio<T> {
     /// explicitly after the last write before a read or doorbell).
     #[inline]
     pub fn write(&self, val: T) {
-        unsafe { ptr::write_volatile(self.ptr, val) };
+        self.region
+            .write_volatile_at(self.offset, val)
+            .expect("invalid MMIO write");
     }
 
     /// Raw volatile read without an `lfence`.
     #[inline]
     pub fn read_raw(&self) -> T {
-        unsafe { ptr::read_volatile(self.ptr) }
+        self.region
+            .read_volatile_at(self.offset)
+            .expect("invalid MMIO read")
     }
 
     /// Read-modify-write: clear bits in `clear_mask`, then set bits in `set_mask`.
@@ -438,8 +473,12 @@ impl MemRegion {
     /// if the offset is not aligned to `align_of::<T>()`.
     #[inline]
     pub fn at<T: MmioSafe>(&self, offset: usize) -> Mmio<T> {
-        let ptr = self.reg_ptr::<T>(offset);
-        unsafe { Mmio::new(ptr) }
+        self.check_offset::<T>(offset);
+        Mmio {
+            region: self.region.clone(),
+            offset,
+            _type: PhantomData,
+        }
     }
 }
 
@@ -455,7 +494,7 @@ impl MemRegion {
 /// them (or after the device writes them), cache lines must be flushed
 /// or invalidated to maintain coherency.
 pub struct DmaRegion {
-    virt: *mut u8,
+    virt: usize,
     phys: u64,
     len: usize,
     dma_iova: u64,
@@ -472,10 +511,8 @@ impl DmaRegion {
         let pages = size.checked_add(4095)? / 4096;
         let alloc_len = pages.checked_mul(4096)?;
         let phys = ctx.allocate_contiguous_frames(pages).ok()?;
-        let virt = ctx.phys_to_virt(phys) as *mut u8;
-        unsafe {
-            core::ptr::write_bytes(virt, 0, alloc_len);
-        }
+        let virt = ctx.phys_to_virt(phys);
+        unsafe { core::ptr::write_bytes(virt as *mut u8, 0, alloc_len) };
         cache_flush_range(virt, alloc_len);
         crate::metrics::dma_allocated(alloc_len);
         Some(Self {
@@ -487,7 +524,7 @@ impl DmaRegion {
         })
     }
 
-    pub fn virt(&self) -> *mut u8 {
+    pub fn virt(&self) -> usize {
         self.virt
     }
 
@@ -507,19 +544,19 @@ impl DmaRegion {
 
     /// As a slice for reading.
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.virt, self.len) }
+        unsafe { core::slice::from_raw_parts(self.virt as *const u8, self.len) }
     }
 
     /// As a mutable slice for writing.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { core::slice::from_raw_parts_mut(self.virt, self.len) }
+        unsafe { core::slice::from_raw_parts_mut(self.virt as *mut u8, self.len) }
     }
 
     /// Copy data into this buffer and flush cache for DMA read by device.
     pub fn write_from(&mut self, src: &[u8]) {
         let len = self.len.min(src.len());
         unsafe {
-            ptr::copy_nonoverlapping(src.as_ptr(), self.virt, len);
+            ptr::copy_nonoverlapping(src.as_ptr(), self.virt as *mut u8, len);
         }
         self.flush_for_device();
     }
@@ -531,7 +568,7 @@ impl DmaRegion {
         self.flush_for_cpu();
         let len = self.len.min(dst.len());
         unsafe {
-            ptr::copy_nonoverlapping(self.virt, dst.as_mut_ptr(), len);
+            ptr::copy_nonoverlapping(self.virt as *const u8, dst.as_mut_ptr(), len);
         }
     }
 
@@ -583,7 +620,7 @@ impl DmaRegion {
         let alloc_len = pages * 4096;
         ctx.free_contiguous_frames(self.phys, pages);
         crate::metrics::dma_released(alloc_len);
-        self.virt = core::ptr::null_mut();
+        self.virt = 0;
         self.phys = 0;
         self.len = 0;
         self.dma_iova = 0;

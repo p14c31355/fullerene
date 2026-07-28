@@ -239,7 +239,7 @@ pub(crate) fn copy_versioned_dto_to_user(
 /// The caller must ensure the user pages are mapped.  Page faults during
 /// copy are caught by the kernel's page fault handler.
 pub unsafe fn copy_user_string(ptr: *const u8, max_len: usize) -> Result<String, SyscallError> {
-    unsafe { user_memory::copy_c_string(ptr, max_len) }.map_err(|error| match error {
+    unsafe { user_memory::copy_c_string(ptr as usize, max_len) }.map_err(|error| match error {
         UserCopyError::System(SystemError::MemOutOfMemory | SystemError::SyscallOutOfMemory) => {
             SyscallError::OutOfMemory
         }
