@@ -1,0 +1,3 @@
+# Source lives in fullerene-kernel/src/linux (symlinked here).
+# Prevents RA from analyzing these as orphan solvent files.
+/solvent/linux/

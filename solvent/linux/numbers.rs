@@ -1,6 +1,4 @@
 // Linux x86_64 syscall numbers
-#![allow(dead_code)]
-
 pub const SYS_READ: u64 = 0;
 pub const SYS_WRITE: u64 = 1;
 pub const SYS_OPEN: u64 = 2;
