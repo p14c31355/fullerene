@@ -170,9 +170,19 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    const POLLIN: i16 = 0x0001;
     const POLLOUT: i16 = 0x0004;
     const POLLNVAL: i16 = 0x0020;
     const MAX_POLL_FDS: usize = 1024;
+    let timeout_ms = args[2] as i32;
+    let deadline = if timeout_ms > 0 {
+        let ticks = solvent::get_tsc_per_ms()
+            .max(1)
+            .saturating_mul(timeout_ms as u64);
+        Some(unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(ticks))
+    } else {
+        None
+    };
 
     let fds = args[0];
     let nfds = match usize::try_from(args[1]) {
@@ -186,39 +196,62 @@ pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         return errno_code(EFAULT);
     }
 
-    let mut ready = 0u64;
-    for index in 0..nfds {
-        let offset = match index.checked_mul(core::mem::size_of::<LinuxPollFd>()) {
-            Some(offset) => offset as u64,
-            None => return errno_code(EFAULT),
-        };
-        let address = match fds.checked_add(offset) {
-            Some(address) => address,
-            None => return errno_code(EFAULT),
-        };
-        let data = match unsafe { copy_from_user(address, core::mem::size_of::<LinuxPollFd>()) } {
-            Ok(data) => data,
-            Err(_) => return errno_code(EFAULT),
-        };
-        let mut pollfd = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const LinuxPollFd) };
-        pollfd.revents = 0;
+    loop {
+        let mut ready = 0u64;
+        for index in 0..nfds {
+            let offset = match index.checked_mul(core::mem::size_of::<LinuxPollFd>()) {
+                Some(offset) => offset as u64,
+                None => return errno_code(EFAULT),
+            };
+            let address = match fds.checked_add(offset) {
+                Some(address) => address,
+                None => return errno_code(EFAULT),
+            };
+            let data = match unsafe { copy_from_user(address, core::mem::size_of::<LinuxPollFd>()) }
+            {
+                Ok(data) => data,
+                Err(_) => return errno_code(EFAULT),
+            };
+            let mut pollfd =
+                unsafe { core::ptr::read_unaligned(data.as_ptr() as *const LinuxPollFd) };
+            pollfd.revents = 0;
 
-        if pollfd.fd >= 0 {
-            let valid = LinuxRuntime::is_std_fd(pollfd.fd) || rt.fd_table.contains(pollfd.fd);
-            if !valid {
-                pollfd.revents = POLLNVAL;
-            } else if matches!(pollfd.fd, 1 | 2) && (pollfd.events & POLLOUT) != 0 {
-                pollfd.revents = POLLOUT;
+            if pollfd.fd >= 0 {
+                let valid = LinuxRuntime::is_std_fd(pollfd.fd) || rt.fd_table.contains(pollfd.fd);
+                if !valid {
+                    pollfd.revents = POLLNVAL;
+                } else if matches!(pollfd.fd, 1 | 2) && (pollfd.events & POLLOUT) != 0 {
+                    pollfd.revents = POLLOUT;
+                } else if pollfd.fd == 0 && (pollfd.events & POLLIN) != 0 {
+                    let has_input = rt.terminal_window.map_or_else(
+                        || nitrogen::ps2::keyboard::input_available(),
+                        |window_id| solvent::process_terminal_has_input(window_id),
+                    );
+                    if has_input {
+                        pollfd.revents = POLLIN;
+                    }
+                }
+            }
+            if pollfd.revents != 0 {
+                ready += 1;
+            }
+            if unsafe { copy_val_to_user(address, &pollfd) }.is_err() {
+                return errno_code(EFAULT);
             }
         }
-        if pollfd.revents != 0 {
-            ready += 1;
+
+        if ready != 0 || timeout_ms == 0 {
+            return ready;
         }
-        if unsafe { copy_val_to_user(address, &pollfd) }.is_err() {
-            return errno_code(EFAULT);
+        if let Some(deadline) = deadline
+            && unsafe { core::arch::x86_64::_rdtsc() } >= deadline
+        {
+            return 0;
         }
+        // A negative timeout means wait indefinitely. For a positive timeout,
+        // the deadline above limits the same cooperative wait.
+        crate::process::yield_current();
     }
-    ready
 }
 
 pub fn sys_open(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
@@ -913,6 +946,9 @@ pub fn sys_ioctl(_rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
                 // Return a reasonable termios (all zeros is usually fine)
                 let termios: [u8; 36] = [0; 36];
                 unsafe { copy_to_user(arg, &termios) }.ok();
+                0
+            }
+            TCSETS | 0x5403 /* TCSETSW */ | 0x5404 /* TCSETSF */ => {
                 0
             }
             TIOCGWINSZ => {

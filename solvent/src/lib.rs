@@ -74,8 +74,8 @@ pub use services::{
 pub use settings_bridge::settings_handle_key;
 pub use terminal::{
     LatticeTerminal, PIPE_STDIN, PIPE_STDOUT, close_process_terminal, create_process_terminal,
-    process_terminal_exists, push_process_terminal_input, read_process_terminal,
-    render_process_terminals, render_terminal, write_process_terminal,
+    process_terminal_exists, process_terminal_has_input, push_process_terminal_input,
+    read_process_terminal, render_process_terminals, render_terminal, write_process_terminal,
 };
 pub use viewer::show_text_window;
 pub use window_api::{

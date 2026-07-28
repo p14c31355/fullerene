@@ -336,6 +336,15 @@ pub fn process_terminal_exists(window_id: WindowId) -> bool {
     })
 }
 
+pub fn process_terminal_has_input(window_id: WindowId) -> bool {
+    RUNTIME_CONTEXT.runtime().as_ref().is_some_and(|runtime| {
+        runtime
+            .process_terminals
+            .iter()
+            .any(|terminal| terminal.window_id == window_id && !terminal.input.is_empty())
+    })
+}
+
 pub fn close_process_terminal(window_id: WindowId) {
     let mut runtime = RUNTIME_CONTEXT.runtime();
     let Some(runtime) = runtime.as_mut() else {
@@ -382,18 +391,20 @@ impl carrier::terminal::Terminal for LatticeTerminal {
     }
     fn read_byte(&mut self) -> Option<u8> {
         loop {
+            // Poll keyboard first so that poll_keyboard() can route
+            // keystrokes to a focused process terminal (e.g. BusyBox).
+            // read_char() clears the PS/2 input buffer when the shell
+            // terminal is not the focused window, so it must run after
+            // the routing step to avoid discarding keystrokes meant for
+            // a foreground process.
+            crate::runtime_tick_no_fb();
+            crate::yield_scheduler();
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
                 if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
                     runtime.term_buf.reset_scroll();
                 }
                 return Some(ch);
             }
-            // A launch command arms a one-shot direct handoff. Paint once
-            // before switching away: an interactive Linux process may block
-            // in read(0), so handing it the CPU first would leave its newly
-            // created window invisible until the process eventually yields.
-            crate::runtime_tick_no_fb();
-            crate::yield_scheduler();
             // The callback is also kept after the tick for ordinary polling;
             // it is a no-op unless a command has armed a handoff.
             crate::runtime_tick_no_fb();
