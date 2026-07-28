@@ -638,6 +638,20 @@ impl IwlWifiDevice {
 
         self.fw_state = FwState::Loading;
 
+        // Clear stale interrupts and the host-side RF-kill/CMD_BLOCKED
+        // handshake before loading a new runtime image.  GP1 is a mailbox:
+        // bit 0 is a firmware-owned MAC_SLEEP status bit, so it must not be
+        // written directly by the host.
+        unsafe {
+            core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), 0xFFFF_FFFF);
+            core::ptr::write_volatile(self.mmio.add(CSR_FH_INT as usize), 0xFFFF_FFFF);
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_UCODE_GP1_CLR as usize),
+                CSR_UCODE_SW_BIT_RFKILL | CSR_UCODE_GP1_BIT_CMD_BLOCKED,
+            );
+            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0);
+        }
+
         let gp = self
             .safe_read32(CSR_GP_CNTRL)
             .ok_or(crate::DriverError::DeviceNotFound)?;
@@ -697,7 +711,11 @@ impl IwlWifiDevice {
             }
 
             match tlv_type {
-                TLV_INST | TLV_DATA | TLV_INIT | TLV_INIT_DATA => {
+                // A regular boot uses only SEC_RT.  SEC_INIT, SEC_WOWLAN,
+                // and DEF_CALIB belong to other firmware images/metadata;
+                // writing them into runtime SRAM prevents the CPU from
+                // reaching the alive notification.
+                TLV_SEC_RT => {
                     if tlv_len < 4 {
                         off = tlv_end;
                         continue;
@@ -705,6 +723,12 @@ impl IwlWifiDevice {
                     let target: u32 = unsafe {
                         core::ptr::read_unaligned(fw_ptr.add(tlv_data_off) as *const u32)
                     };
+                    if target == FW_CPU1_CPU2_SEPARATOR_SECTION
+                        || target == FW_PAGING_SEPARATOR_SECTION
+                    {
+                        off = tlv_end;
+                        continue;
+                    }
                     let data_size = tlv_len - 4;
                     if data_size > 0 {
                         let section_data =
@@ -721,7 +745,7 @@ impl IwlWifiDevice {
                 }
                 _ => {}
             }
-            off = tlv_end;
+            off = tlv_end.saturating_add(3) & !3;
         }
 
         if section_count == 0 {
@@ -731,18 +755,17 @@ impl IwlWifiDevice {
         debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
 
-        let _pending = self.safe_read32(CSR_INT).unwrap_or(0);
         unsafe {
-            core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), _pending);
-        }
-
-        unsafe {
+            core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), 0xFFFF_FFFF);
             core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
         }
         crate::timing::delay_us(10_000);
 
         unsafe {
-            core::ptr::write_volatile(self.mmio.add(CSR_UCODE_GP1 as usize), 0x00000001);
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_UCODE_GP1_CLR as usize),
+                CSR_UCODE_SW_BIT_RFKILL | CSR_UCODE_GP1_BIT_CMD_BLOCKED,
+            );
         }
 
         let gp = self
@@ -751,12 +774,15 @@ impl IwlWifiDevice {
         unsafe {
             core::ptr::write_volatile(
                 self.mmio.add(CSR_GP_CNTRL as usize),
-                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | 0x04,
+                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
             );
         }
 
         unsafe {
-            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), !(1u32 << 0));
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_INT_MASK as usize),
+                CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX,
+            );
         }
 
         Ok(())
@@ -831,7 +857,7 @@ impl IwlWifiDevice {
     /// Wait for the firmware "alive" response with a TSC-based timeout.
     fn wait_for_alive(&mut self) -> Result<(), crate::DriverError> {
         let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        let timeout_tsc: u64 = 5_000_000_000;
+        let timeout_tsc = crate::timing::ticks_per_us().saturating_mul(5_000_000);
         let mut last_pci_check: u64 = 0;
         let pci_check_interval: u64 = 100_000_000;
 
@@ -854,14 +880,14 @@ impl IwlWifiDevice {
                 None => return Err(crate::DriverError::DeviceNotFound),
             };
             if int_cause != 0 {
-                if (int_cause & 0x01) != 0 {
+                if (int_cause & CSR_INT_BIT_ALIVE) != 0 {
                     unsafe {
                         core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
                     }
                     self.fw_state = FwState::Alive;
                     return Ok(());
                 }
-                if (int_cause & (1 << 25)) != 0 {
+                if (int_cause & CSR_INT_BIT_SW_ERR) != 0 {
                     unsafe {
                         core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
                     }
@@ -870,15 +896,6 @@ impl IwlWifiDevice {
                 unsafe {
                     core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
                 }
-            }
-
-            let ucode_gp1 = match self.safe_read32(CSR_UCODE_GP1) {
-                Some(v) => v,
-                None => return Err(crate::DriverError::DeviceNotFound),
-            };
-            if (ucode_gp1 & 0x01) == 0 {
-                self.fw_state = FwState::Alive;
-                return Ok(());
             }
 
             core::hint::spin_loop();
@@ -915,9 +932,21 @@ impl IwlWifiDevice {
     ) -> Result<bool, crate::DriverError> {
         let now = unsafe { core::arch::x86_64::_rdtsc() };
         let elapsed = now.wrapping_sub(start_tsc);
-        const TIMEOUT_TSC: u64 = 5_000_000_000;
+        let timeout_tsc = crate::timing::ticks_per_us().saturating_mul(5_000_000);
 
-        if elapsed >= TIMEOUT_TSC {
+        if elapsed >= timeout_tsc {
+            let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+            let csr_gp = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
+            let csr_ucode = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
+            let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
+            log::warn!(
+                "iwlwifi: firmware alive timeout: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x}",
+                csr_int,
+                csr_gp,
+                csr_ucode,
+                csr_reset
+            );
+            debug::print("iwlwifi", "fw: alive_timeout");
             self.fw_state = FwState::Error;
             return Err(crate::DriverError::TimedOut);
         }
@@ -931,7 +960,7 @@ impl IwlWifiDevice {
             Some(v) => v,
             None => return Err(crate::DriverError::DeviceNotFound),
         };
-        if (int_cause & (1 << 0)) != 0 {
+        if (int_cause & CSR_INT_BIT_ALIVE) != 0 {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
                 core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
@@ -940,7 +969,7 @@ impl IwlWifiDevice {
             debug::print("iwlwifi", "fw: alive_ok");
             return Ok(true);
         }
-        if (int_cause & (1 << 25)) != 0 {
+        if (int_cause & CSR_INT_BIT_SW_ERR) != 0 {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
@@ -951,19 +980,6 @@ impl IwlWifiDevice {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
-        }
-
-        let ucode_gp1 = match self.safe_read32(CSR_UCODE_GP1) {
-            Some(v) => v,
-            None => return Err(crate::DriverError::DeviceNotFound),
-        };
-        if (ucode_gp1 & 0x01) == 0 {
-            unsafe {
-                core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
-            }
-            self.fw_state = FwState::Alive;
-            debug::print("iwlwifi", "fw: alive_ok");
-            return Ok(true);
         }
 
         Ok(false)

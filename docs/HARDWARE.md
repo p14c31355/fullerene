@@ -77,8 +77,13 @@ sequence sets both `MAC_ACCESS_REQ` and `INIT_DONE`, as required before
 `MAC_CLOCK_READY` can become set; the recovery path uses the same bits. The
 diagnostic marker `mmio_mac_clock_wait` means the CSR read completed but the
 clock was not ready, while `mmio_read_mac` confirms that this stage passed.
-Physical validation of the follow-up build is still required, so the support
-level remains Alpha.
+The target has now advanced beyond this stage to firmware upload, but the
+outer runtime timeout previously stopped it while waiting for firmware alive.
+The runtime loader now selects only the `SEC_RT` image sections, skips the
+firmware section separator, follows the GP1 mailbox clear protocol, and gives
+the bounded firmware-candidate sequence enough time to finish. Physical
+validation of this follow-up build is still required, so the support level
+remains Alpha.
 
 The Realtek RTS5249 reader (`10ec:5249`) is matched by vendor/device identity,
 because PCI class `0xff` is a real vendor-specific class rather than a driver

@@ -240,3 +240,20 @@ The target machine still needs to boot this follow-up build. Success is
 `mmio_read_mac` (and then DMA allocation); a continued
 `mmio_mac_clock_wait` indicates that the remaining issue is device power,
 link, or an omitted 7265-specific APM sequence rather than PCI discovery.
+
+### Follow-up — firmware alive timeout
+
+The target then reached firmware upload, but the outer Solvent timeout
+reported `force_init_failed(timeout)` while waiting for the alive signal. The
+outer limit was only 600 scheduler ticks (about 1.35 seconds), shorter than
+the driver's 5-second per-candidate alive wait. In addition, the parser was
+loading `SEC_INIT`, `SEC_WOWLAN`, and calibration TLVs into the runtime image,
+including the `0xffffcccc` section separator. The loader now selects only
+`SEC_RT`, skips the separator, clears stale CSR/FH interrupts, uses the GP1
+CLR mailbox for RF-kill/CMD_BLOCKED bits, and enables the ALIVE/RX interrupt
+causes before polling. The outer timeout is now 12,000 ticks to allow all
+four 7265 firmware candidates to complete their bounded attempts.
+
+The next physical run should show `fw: alive_ok` or, on failure,
+`fw: alive_timeout` with CSR register values rather than being terminated by
+the outer timeout first.

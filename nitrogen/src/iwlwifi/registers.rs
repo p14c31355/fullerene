@@ -12,6 +12,8 @@ pub const CSR_HW_REV: u32 = 0x028 / 4;
 pub const CSR_HW_RF_ID: u32 = 0x034 / 4;
 pub const CSR_GIO: u32 = 0x03C / 4;
 pub const CSR_UCODE_GP1: u32 = 0x054 / 4;
+pub const CSR_UCODE_GP1_SET: u32 = 0x058 / 4;
+pub const CSR_UCODE_GP1_CLR: u32 = 0x05C / 4;
 pub const CSR_GP_DRIVER: u32 = 0x098 / 4;
 pub const CSR_LED_REG: u32 = 0x094 / 4;
 pub const CSR_DRAM_INT_TBL: u32 = 0x0A0 / 4;
@@ -33,6 +35,12 @@ pub const CSR_RESET_BIT_STOP_MASTER: u32 = 1 << 9;
 pub const CSR_GP_CNTRL_MAC_ACCESS_REQ: u32 = 1 << 3;
 pub const CSR_GP_CNTRL_INIT_DONE: u32 = 1 << 2;
 pub const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
+pub const CSR_INT_BIT_ALIVE: u32 = 1 << 0;
+pub const CSR_INT_BIT_SW_ERR: u32 = 1 << 25;
+pub const CSR_INT_BIT_FH_TX: u32 = 1 << 27;
+pub const CSR_INT_BIT_FH_RX: u32 = 1 << 31;
+pub const CSR_UCODE_SW_BIT_RFKILL: u32 = 1 << 1;
+pub const CSR_UCODE_GP1_BIT_CMD_BLOCKED: u32 = 1 << 2;
 
 /// FH register for RX ring base address (BADR).
 pub const FH_RSCSR_CHNL0_RBDCB_BASE: u32 = 0x0B8 / 4;
@@ -57,12 +65,12 @@ pub const IWL_FW_MAGIC: u32 = 0x0a4c5749;
 pub const FW_HEADER_SIZE: usize = 88;
 
 /// TLV entry type (modern iwlwifi firmware format).
-pub const TLV_INST: u32 = 19;
-pub const TLV_DATA: u32 = 20;
-pub const TLV_INIT: u32 = 21;
-pub const TLV_INIT_DATA: u32 = 22;
-pub const TLV_SECDER: u32 = 29;
-pub const TLV_SECDER_USNIFFER: u32 = 30;
+pub const TLV_SEC_RT: u32 = 19;
+pub const TLV_SEC_INIT: u32 = 20;
+pub const TLV_SEC_WOWLAN: u32 = 21;
+pub const TLV_DEF_CALIB: u32 = 22;
+pub const FW_CPU1_CPU2_SEPARATOR_SECTION: u32 = 0xFFFF_CCCC;
+pub const FW_PAGING_SEPARATOR_SECTION: u32 = 0xAAAA_BBBB;
 
 // ── HBUS register offsets ──────────
 
