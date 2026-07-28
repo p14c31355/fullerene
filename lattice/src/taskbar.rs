@@ -82,7 +82,19 @@ impl Taskbar {
     }
 
     /// Update entries from window list.
-    pub fn update_from_windows(&mut self, windows: &[crate::window::Window]) {
+    pub fn update_from_windows(&mut self, windows: &[crate::window::Window]) -> bool {
+        let changed = self.entries.len() != windows.len()
+            || self
+                .entries
+                .iter()
+                .zip(windows.iter().rev())
+                .any(|(entry, window)| {
+                    let title = window.title.as_deref().unwrap_or("Window");
+                    entry.id != window.id || entry.title != title || entry.focused != window.focused
+                });
+        if !changed {
+            return false;
+        }
         self.entries.clear();
         for w in windows.iter().rev() {
             let title = w
@@ -96,6 +108,7 @@ impl Taskbar {
                 focused: w.focused,
             });
         }
+        true
     }
 
     /// Render the taskbar onto a surface (intended to overlay the framebuffer).

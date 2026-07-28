@@ -555,8 +555,6 @@ impl Desktop {
             return None;
         }
         // Simple linear scan matching the taskbar render layout.
-        let btn_h = (crate::style::taskbar_height() - 6) as i32;
-        let btn_y = bar_y + 3;
         if crate::style::kind() != crate::common::ShellKind::Basalt {
             for (index, entry) in self.taskbar.entries.iter().enumerate() {
                 if let Some((x, y, w, h)) = crate::style::taskbar_entry_rect(
@@ -574,11 +572,8 @@ impl Desktop {
             }
             return None;
         }
-        if py < btn_y || py >= btn_y + btn_h {
-            return None;
-        }
         for (index, entry) in self.taskbar.entries.iter().enumerate() {
-            let Some((btn_x, _, btn_w, _)) = crate::style::taskbar_entry_rect(
+            let Some((btn_x, btn_y, btn_w, btn_h)) = crate::style::taskbar_entry_rect(
                 index,
                 self.taskbar.entries.len(),
                 fb_width,
@@ -587,7 +582,8 @@ impl Desktop {
                 continue;
             };
             let bx_end = btn_x + btn_w as i32;
-            if px >= btn_x && px < bx_end {
+            let by_end = btn_y + btn_h as i32;
+            if px >= btn_x && px < bx_end && py >= btn_y && py < by_end {
                 return Some(entry.id);
             }
         }
@@ -658,11 +654,10 @@ impl Desktop {
     /// Returns `true` when any visible state changed (entry count,
     /// WiFi status, or signal strength) that requires a taskbar redraw.
     pub fn update_taskbar(&mut self) -> bool {
-        let prev_entries = self.taskbar.entries.clone();
         let prev_wifi = self.taskbar.wifi_connected;
         let prev_wifi_visible = self.taskbar.wifi_visible;
         let prev_wifi_signal = self.taskbar.wifi_signal;
-        self.taskbar.update_from_windows(self.wm.windows());
+        let entries_changed = self.taskbar.update_from_windows(self.wm.windows());
         // Update clock text on taskbar
         self.taskbar.clock_text = self.clock_text.clone();
         // Update WiFi state on taskbar
@@ -672,7 +667,7 @@ impl Desktop {
         let wifi_changed = self.taskbar.wifi_connected != prev_wifi
             || self.taskbar.wifi_visible != prev_wifi_visible
             || self.taskbar.wifi_signal != prev_wifi_signal;
-        prev_entries != self.taskbar.entries || wifi_changed
+        entries_changed || wifi_changed
     }
 
     // ── frame preparation ───────────────────────────────────

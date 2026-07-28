@@ -1152,4 +1152,43 @@ mod tests {
             Some("/mnt/Bootlog.txt")
         );
     }
+
+    fn explorer_with_entries(count: usize) -> ExplorerContext {
+        let mut explorer = ExplorerContext::new();
+        explorer.finish_navigation(
+            String::from("/tmp"),
+            Ok((0..count)
+                .map(|index| VfsEntry {
+                    name: alloc::format!("entry-{index}"),
+                    size: index as u64,
+                    is_dir: false,
+                })
+                .collect()),
+        );
+        explorer
+    }
+
+    #[test]
+    fn scroll_by_handles_empty_and_visible_row_clamping() {
+        let mut empty = explorer_with_entries(0);
+        empty.scroll_by(isize::MAX, 20);
+        assert_eq!(empty.scroll_offset, 0);
+
+        let mut explorer = explorer_with_entries(5);
+        explorer.scroll_by(1, 0);
+        assert_eq!(explorer.scroll_offset, 1);
+        explorer.scroll_by(isize::MAX, 2);
+        assert_eq!(explorer.scroll_offset, 3);
+    }
+
+    #[test]
+    fn scroll_by_floors_negative_deltas_and_caps_large_positive_deltas() {
+        let mut explorer = explorer_with_entries(8);
+        explorer.scroll_by(isize::MAX, 3);
+        assert_eq!(explorer.scroll_offset, 5);
+        explorer.scroll_by(-isize::MAX, 3);
+        assert_eq!(explorer.scroll_offset, 0);
+        explorer.scroll_by(-1, 3);
+        assert_eq!(explorer.scroll_offset, 0);
+    }
 }

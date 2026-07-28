@@ -75,20 +75,38 @@ fn parse_bool(s: &str) -> Option<bool> {
 /// Load settings from `/etc/settings.toml` via VFS and apply them.
 ///
 /// Returns
-/// `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded, klog_save)`
+/// `(sensitivity, brightness_x100, top_panel_enabled, window_corner_rounded, klog_save, lattice_variant)`
 /// so the caller can sync to solvent.
 #[allow(unused)]
 pub fn load_settings<E>(
     read_fn: impl FnOnce(&str) -> Result<Vec<u8>, E>,
-) -> (f32, u32, bool, bool, bool) {
+) -> (f32, u32, bool, bool, bool, lattice::style::LatticeVariant) {
     let data = match read_fn("/etc/settings.toml") {
         Ok(data) => data,
-        Err(_) => return (1.0, 100, true, true, false),
+        Err(_) => {
+            return (
+                1.0,
+                100,
+                true,
+                true,
+                false,
+                lattice::style::LatticeVariant::Basalt,
+            );
+        }
     };
 
     let text = match core::str::from_utf8(&data) {
         Ok(s) => s,
-        Err(_) => return (1.0, 100, true, true, false),
+        Err(_) => {
+            return (
+                1.0,
+                100,
+                true,
+                true,
+                false,
+                lattice::style::LatticeVariant::Basalt,
+            );
+        }
     };
 
     let mut section: Option<&str> = None;
@@ -97,6 +115,7 @@ pub fn load_settings<E>(
     let mut top_panel: bool = true;
     let mut window_corner: bool = true; // rounded by default
     let mut klog_save: bool = false;
+    let mut lattice_variant = lattice::style::LatticeVariant::Basalt;
 
     for line in text.lines() {
         let trimmed = line.trim();
@@ -129,6 +148,13 @@ pub fn load_settings<E>(
                         window_corner = v;
                     }
                 }
+                (Some("display"), "lattice_variant") => {
+                    lattice_variant = match value.trim_matches('"') {
+                        "Photon" => lattice::style::LatticeVariant::Photon,
+                        "Prism" => lattice::style::LatticeVariant::Prism,
+                        _ => lattice::style::LatticeVariant::Basalt,
+                    };
+                }
                 (Some("debug"), "klog_save") => {
                     if let Some(v) = parse_bool(value) {
                         klog_save = v;
@@ -146,6 +172,7 @@ pub fn load_settings<E>(
         top_panel,
         window_corner,
         klog_save,
+        lattice_variant,
     )
 }
 
@@ -156,6 +183,7 @@ pub fn format_settings_toml(
     top_panel: bool,
     corner_rounded: bool,
     klog_save: bool,
+    lattice_variant: lattice::style::LatticeVariant,
 ) -> String {
     alloc::format!(
         "# Fullerene Settings\n\
@@ -169,6 +197,7 @@ pub fn format_settings_toml(
          brightness = {:.2}\n\
          top_panel_enabled = {}\n\
          window_corner = {}\n\
+         lattice_variant = \"{}\"\n\
          \n\
          [debug]\n\
          klog_save = {}\n",
@@ -176,6 +205,28 @@ pub fn format_settings_toml(
         brightness_x100 as f32 / 100.0,
         top_panel,
         corner_rounded,
+        lattice_variant.name(),
         klog_save,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lattice_variant_round_trips_through_settings_toml() {
+        let text = format_settings_toml(
+            1.0,
+            85,
+            true,
+            false,
+            false,
+            lattice::style::LatticeVariant::Prism,
+        );
+        let loaded = load_settings(|_| Ok::<_, ()>(text.into_bytes()));
+        assert_eq!(loaded.1, 85);
+        assert_eq!(loaded.3, false);
+        assert_eq!(loaded.5, lattice::style::LatticeVariant::Prism);
+    }
 }

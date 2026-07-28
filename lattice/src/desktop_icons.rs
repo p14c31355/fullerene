@@ -71,14 +71,6 @@ impl DesktopIconLayer {
         crate::common::route_for_name(&icon.label)
     }
 
-    /// Get the pre-rendered SVG icon surface for a desktop icon route.
-    fn icon_surface(icon: &DesktopIcon) -> Option<crate::surface::Surface> {
-        match Self::route(icon) {
-            crate::common::AppRoute::Unknown => None,
-            route => Some(crate::common::icon_for_route(route).surface()),
-        }
-    }
-
     /// Find an icon at the given screen position.
     /// Returns the index in `self.icons` or `None`.
     pub fn hit_test(&self, px: i32, py: i32) -> Option<usize> {
@@ -112,10 +104,17 @@ impl DesktopIconLayer {
         painter.clip_rect(clip_x as i32, clip_y as i32, clip_w, clip_h);
         for icon in &self.icons {
             // Draw SVG icon if available, else fall back to rounded color box
-            if let Some(svg_surface) = Self::icon_surface(icon) {
-                painter.blit_surface(&svg_surface, icon.x, icon.y);
-            } else {
-                painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
+            match Self::route(icon) {
+                crate::common::AppRoute::Unknown => {
+                    painter.rounded_rect(icon.x, icon.y, icon.size, icon.size, 8, icon.color);
+                }
+                route => crate::common::icon_for_route(route).blit_into(
+                    painter.fb,
+                    fb_width,
+                    painter.stride as usize,
+                    icon.x,
+                    icon.y,
+                ),
             }
 
             // Draw label below the icon using painter text

@@ -501,11 +501,9 @@ impl Compositor {
         ch: u32,
     ) {
         let src = &win.surface;
-        let to = if win.title.is_some() {
-            crate::style::title_bar_height() as i32
-        } else {
-            0
-        };
+        let title_h = crate::style::title_bar_height() as i32;
+        let radius = crate::style::window_radius().saturating_sub(1) as i32;
+        let to = if win.title.is_some() { title_h } else { 0 };
         let wdx = win.x;
         let wdy = win.y + to;
         // Draw the surface (client area).  The window may be larger
@@ -540,7 +538,7 @@ impl Compositor {
             && wdy >= 0
             && sw >= win.width as i32
             && sh >= win.height as i32
-            && (win.title.is_none() || crate::style::window_radius() == 0)
+            && (win.title.is_none() || radius == 0)
         {
             let x0 = (cx as i32).max(wdx) as u32;
             let x1 = cex.min(wdx + win.width as i32).min(fbw as i32) as u32;
@@ -577,7 +575,7 @@ impl Compositor {
                 if dc < cx as i32 || dc >= cex {
                     continue;
                 }
-                if !Self::client_pixel_inside_frame(win, dc, dr) {
+                if !Self::client_pixel_inside_frame(win, dc, dr, title_h, radius) {
                     continue;
                 }
                 let color = if in_surface_row && sc < sw {
@@ -591,12 +589,10 @@ impl Compositor {
         Self::draw_window_frame_clipped(fb, fbw, fbh, win, cx, cy, cw, ch);
     }
 
-    fn client_pixel_inside_frame(win: &Window, x: i32, y: i32) -> bool {
-        if win.title.is_none() || crate::style::window_radius() == 0 {
+    fn client_pixel_inside_frame(win: &Window, x: i32, y: i32, title_h: i32, radius: i32) -> bool {
+        if win.title.is_none() {
             return true;
         }
-        let title_h = crate::style::title_bar_height() as i32;
-        let radius = crate::style::window_radius().saturating_sub(1) as i32;
         if radius == 0 {
             return true;
         }

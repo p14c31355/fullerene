@@ -191,14 +191,22 @@ pub fn render_app_grid(fb: &mut [u32], fbw: u32, fbh: u32, fb_stride: u32) {
     );
 }
 
+fn prism_panel_rect(fbw: u32, fbh: u32) -> (u32, u32, u32, u32) {
+    let w = 520u32.min(fbw.saturating_sub(48));
+    let h = 500u32.min(fbh.saturating_sub(80));
+    (
+        fbw.saturating_sub(w) / 2,
+        fbh.saturating_sub(h) / 2 + 18,
+        w,
+        h,
+    )
+}
+
 /// Windows-like Start panel used by Prism. It intentionally uses the same
-/// seven applications as the overlay input handler, so the visual target and
-/// the hit-test geometry cannot drift apart.
+/// applications as the overlay input handler, so the visual target and the
+/// hit-test geometry cannot drift apart.
 fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
-    let panel_w = 520u32.min(fbw.saturating_sub(48));
-    let panel_h = 500u32.min(fbh.saturating_sub(80));
-    let panel_x = fbw.saturating_sub(panel_w) / 2;
-    let panel_y = fbh.saturating_sub(panel_h) / 2 + 18;
+    let (panel_x, panel_y, panel_w, panel_h) = prism_panel_rect(fbw, fbh);
     let colors = crate::style::current().palette;
     let mut painter = Painter::new(fb, fbw, fbh);
     painter.draw_shadow(
@@ -217,15 +225,7 @@ fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
         panel_w,
         panel_h,
         18,
-        0xFFFFFF,
-    );
-    painter.rounded_rect(
-        panel_x as i32 + 1,
-        panel_y as i32 + 1,
-        panel_w.saturating_sub(2),
-        panel_h.saturating_sub(2),
-        17,
-        0xFFFFFF,
+        colors.surface,
     );
     painter.rounded_rect(
         panel_x as i32 + 24,
@@ -233,20 +233,20 @@ fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
         panel_w.saturating_sub(48),
         36,
         8,
-        0xF2F4F7,
+        colors.title_inactive,
     );
     painter.draw_text(
         panel_x as i32 + 38,
         panel_y as i32 + 33,
         "Search apps, settings, and documents",
-        0x667085,
+        colors.muted,
         13.0,
     );
     painter.draw_text(
         panel_x as i32 + 28,
         panel_y as i32 + 82,
         "Pinned",
-        0x1F2937,
+        colors.text,
         16.0,
     );
 
@@ -266,7 +266,7 @@ fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
             x + 8,
             y + 58,
             crate::common::route_label(route),
-            0x344054,
+            colors.taskbar_text,
             12.0,
         );
     }
@@ -282,13 +282,10 @@ fn render_prism_start_panel(fb: &mut [u32], fbw: u32, fbh: u32, stride: usize) {
 /// Return the clickable rectangle for an AppGrid entry in the active shell.
 pub fn app_grid_item_rect(index: usize, fbw: u32, fbh: u32) -> Option<(i32, i32, u32, u32)> {
     if crate::style::kind() == crate::common::ShellKind::Prism {
-        if index >= 7 {
+        if index >= crate::common::APP_GRID_ROUTES.len() {
             return None;
         }
-        let panel_w = 520u32.min(fbw.saturating_sub(48));
-        let panel_h = 500u32.min(fbh.saturating_sub(80));
-        let panel_x = fbw.saturating_sub(panel_w) / 2;
-        let panel_y = fbh.saturating_sub(panel_h) / 2 + 18;
+        let (panel_x, panel_y, _panel_w, _panel_h) = prism_panel_rect(fbw, fbh);
         return Some((
             panel_x as i32 + 24 + (index % 5) as i32 * 96,
             panel_y as i32 + 106 + (index / 5) as i32 * 100,

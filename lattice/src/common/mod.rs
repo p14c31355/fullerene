@@ -195,7 +195,7 @@ pub fn task_icon(title: &str) -> &'static crate::icon::SvgIcon {
             {
                 AppRoute::Editor
             } else if lower
-                .windows(4)
+                .windows(5)
                 .any(|part| part.eq_ignore_ascii_case(b"shell"))
             {
                 AppRoute::Shell
@@ -571,22 +571,19 @@ pub fn draw_basalt_taskbar(canvas: &mut Painter<'_>, taskbar: &Taskbar, spec: &S
     let bar_y = height.saturating_sub(bar_h);
     let palette = &spec.palette;
     canvas.fill_rect(0, bar_y as i32, width, bar_h, palette.taskbar_bg);
-    let mut x = 4i32;
-    for entry in &taskbar.entries {
+    for (index, entry) in taskbar.entries.iter().enumerate() {
+        let Some((x, y, w, h)) =
+            crate::style::taskbar_entry_rect(index, taskbar.entries.len(), width, height)
+        else {
+            continue;
+        };
         let button = if entry.focused {
             palette.taskbar_active_bg
         } else {
             palette.taskbar_inactive_bg
         };
-        canvas.fill_rect(x, bar_y as i32 + 3, 120, bar_h.saturating_sub(6), button);
-        canvas.draw_text(
-            x + 6,
-            bar_y as i32 + 7,
-            &entry.title,
-            palette.taskbar_text,
-            13.0,
-        );
-        x += 124;
+        canvas.fill_rect(x, y, w, h, button);
+        canvas.draw_text(x + 6, y + 4, &entry.title, palette.taskbar_text, 13.0);
     }
     crate::network_menu::render_wifi_icon(
         canvas.fb,
@@ -604,7 +601,14 @@ pub fn draw_basalt_taskbar(canvas: &mut Painter<'_>, taskbar: &Taskbar, spec: &S
         } else {
             alloc::format!("{}: {}", source, message)
         };
-        canvas.draw_text(x + 4, bar_y as i32 + 7, &text, palette.taskbar_text, 13.0);
+        let debug_x = 4 + taskbar.entries.len() as i32 * 124;
+        canvas.draw_text(
+            debug_x + 4,
+            bar_y as i32 + 7,
+            &text,
+            palette.taskbar_text,
+            13.0,
+        );
     }
     if !taskbar.clock_text.is_empty() {
         canvas.draw_text(

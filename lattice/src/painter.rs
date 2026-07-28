@@ -231,7 +231,7 @@ impl<'a> Painter<'a> {
                 if px < 0 || py < 0 {
                     continue;
                 }
-                let coverage = self.circle_coverage(px, py, center_x, center_y, radius, false);
+                let coverage = self.circle_coverage(px, py, center_x, center_y, radius);
                 if coverage == 16 {
                     self.set_pixel(px as u32, py as u32, color);
                 } else if coverage > 0 {
@@ -260,9 +260,9 @@ impl<'a> Painter<'a> {
                 if px < 0 || py < 0 {
                     continue;
                 }
-                let coverage = self.circle_coverage(px, py, center_x, center_y, radius, true);
+                let coverage = self.circle_coverage(px, py, center_x, center_y, radius);
                 let inner_radius = (radius - thickness).max(0);
-                let inner = self.circle_coverage(px, py, center_x, center_y, inner_radius, false);
+                let inner = self.circle_coverage(px, py, center_x, center_y, inner_radius);
                 let coverage = coverage.saturating_sub(inner);
                 if coverage == 16 {
                     self.set_pixel(px as u32, py as u32, color);
@@ -277,15 +277,7 @@ impl<'a> Painter<'a> {
         }
     }
 
-    fn circle_coverage(
-        &self,
-        px: i32,
-        py: i32,
-        center_x: i32,
-        center_y: i32,
-        radius: i32,
-        _outer: bool,
-    ) -> u32 {
+    fn circle_coverage(&self, px: i32, py: i32, center_x: i32, center_y: i32, radius: i32) -> u32 {
         if radius <= 0 {
             return 0;
         }
@@ -546,9 +538,9 @@ impl<'a> Painter<'a> {
             title_color,
         );
         self.fill_rect(
-            x,
+            x + 1,
             y + inner_radius as i32,
-            w,
+            w.saturating_sub(2),
             (title_h + 2).saturating_sub(inner_radius),
             title_color,
         );

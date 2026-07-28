@@ -74,6 +74,13 @@ fn clip_region(
         .filter(|region| region.width != 0 && region.height != 0)
 }
 
+#[inline]
+fn current_brightness() -> u32 {
+    crate::DISPLAY_BRIGHTNESS_X100
+        .load(core::sync::atomic::Ordering::Relaxed)
+        .clamp(10, 100)
+}
+
 fn blit_region(
     back: &[u32],
     back_width: usize,
@@ -81,16 +88,13 @@ fn blit_region(
     framebuffer_stride: usize,
     region: lattice::scene::DirtyRect,
 ) {
-    let brightness = crate::DISPLAY_BRIGHTNESS_X100
-        .load(core::sync::atomic::Ordering::Relaxed)
-        .clamp(10, 100);
     blit_region_with_brightness(
         back,
         back_width,
         framebuffer,
         framebuffer_stride,
         region,
-        brightness,
+        current_brightness(),
     );
 }
 
@@ -153,9 +157,7 @@ fn draw_cursor_strided(
     let left = cursor.x - Cursor::HOTSPOT_X;
     let top = cursor.y - Cursor::HOTSPOT_Y;
     let size = Cursor::SIZE as i32;
-    let brightness = crate::DISPLAY_BRIGHTNESS_X100
-        .load(core::sync::atomic::Ordering::Relaxed)
-        .clamp(10, 100);
+    let brightness = current_brightness();
     for row in 0..size {
         let y = top + row;
         if y < 0 || y >= height as i32 {

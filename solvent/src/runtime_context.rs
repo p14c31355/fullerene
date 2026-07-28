@@ -244,6 +244,18 @@ pub fn apply_settings(sensitivity: f32, brightness_x100: u32, top_panel_enabled:
     crate::force_desktop_redraw();
 }
 
+/// Return the settings values needed by the kernel persistence callback.
+pub fn settings_snapshot() -> (f32, u32, bool, bool, bool, lattice::style::LatticeVariant) {
+    (
+        MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed) as f32 / 6.0,
+        DISPLAY_BRIGHTNESS_X100.load(core::sync::atomic::Ordering::Relaxed),
+        lattice::top_panel::is_top_panel_enabled(),
+        lattice::compositor::WINDOW_CORNER_RADIUS.load(core::sync::atomic::Ordering::Relaxed) > 0,
+        KLOG_SAVE_ENABLED.load(core::sync::atomic::Ordering::Relaxed),
+        lattice::style::variant(),
+    )
+}
+
 pub fn set_tsc_per_ms(value: u64) {
     TSC_PER_MS.store(value, core::sync::atomic::Ordering::Relaxed);
 }

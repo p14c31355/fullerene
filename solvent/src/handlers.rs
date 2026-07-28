@@ -111,7 +111,7 @@ impl EventHandler for WmEventHandler {
                     .desktop
                     .wm
                     .window_at(rt.desktop.cursor.x, rt.desktop.cursor.y);
-                if target == rt.term_window {
+                if rt.term_window.is_some() && target == rt.term_window {
                     if *dy > 0 {
                         rt.term_buf.scroll_back((*dy as usize).min(8));
                     } else if *dy < 0 {
@@ -163,12 +163,19 @@ impl EventHandler for WmEventHandler {
                     if let Some(icon_idx) = rt.desktop.desktop_icons.hit_test(cx, cy) {
                         if let Some(icon) = rt.desktop.desktop_icons.icons.get(icon_idx) {
                             match lattice::desktop_icons::DesktopIconLayer::route(icon) {
-                                lattice::common::AppRoute::Shell
-                                | lattice::common::AppRoute::Terminal => {
+                                lattice::common::AppRoute::Shell => {
                                     // Defer shell launch — cannot call
                                     // ensure_terminal_window() or launch_shell()
                                     // while holding the runtime-state lock (deadlock).
                                     rt.shell_launch_pending = true;
+                                    rt.frame_due = true;
+                                    return true;
+                                }
+                                lattice::common::AppRoute::Terminal => {
+                                    crate::menu_actions::dispatch_menu_action(
+                                        rt,
+                                        &lattice::desktop::DesktopAction::NewTerminal,
+                                    );
                                     rt.frame_due = true;
                                     return true;
                                 }
@@ -215,6 +222,7 @@ impl EventHandler for WmEventHandler {
                 }
 
                 if *btn == MouseButton::Left
+                    && rt.settings_window.is_some()
                     && rt.desktop.wm.window_at(cx, cy) == rt.settings_window
                     && crate::settings_bridge::settings_handle_mouse(rt, cx, cy)
                 {
@@ -446,14 +454,13 @@ fn handle_appgrid_click(rt: &mut crate::RuntimeState) -> bool {
     let cy = rt.desktop.cursor.y as i32;
     let (fw, _fh, _stride) = *FB_DIMS.lock();
 
-    for idx in 0i32..7 {
-        let Some((ax, ay, aw, ah)) =
-            lattice::shell_overlay::app_grid_item_rect(idx as usize, fw, _fh)
+    for idx in 0..lattice::common::APP_GRID_ROUTES.len() {
+        let Some((ax, ay, aw, ah)) = lattice::shell_overlay::app_grid_item_rect(idx, fw, _fh)
         else {
             continue;
         };
         if cx >= ax && cx < ax + aw as i32 && cy >= ay && cy < ay + ah as i32 {
-            match lattice::common::app_grid_route(idx as usize) {
+            match lattice::common::app_grid_route(idx) {
                 Some(lattice::common::AppRoute::Shell) => {
                     // Shell launches the interactive shell session.
                     rt.shell_launch_pending = true;
@@ -534,7 +541,10 @@ impl EventHandler for TerminalInputHandler {
         match event {
             Event::Input(InputEvent::KeyDown(KeyCode::PageUp)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
-                    if rt.desktop.wm.windows().last().map(|w| w.id) != rt.term_window {
+                    if !matches!(
+                        rt.desktop.wm.windows().last().map(|w| w.id),
+                        Some(id) if Some(id) == rt.term_window
+                    ) {
                         return false;
                     }
                     rt.term_buf.scroll_back(1);
@@ -545,7 +555,10 @@ impl EventHandler for TerminalInputHandler {
             }
             Event::Input(InputEvent::KeyDown(KeyCode::PageDown)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
-                    if rt.desktop.wm.windows().last().map(|w| w.id) != rt.term_window {
+                    if !matches!(
+                        rt.desktop.wm.windows().last().map(|w| w.id),
+                        Some(id) if Some(id) == rt.term_window
+                    ) {
                         return false;
                     }
                     rt.term_buf.scroll_forward(1);
@@ -556,7 +569,10 @@ impl EventHandler for TerminalInputHandler {
             }
             Event::Input(InputEvent::KeyDown(KeyCode::Home)) => {
                 if let Some(ref mut rt) = *RUNTIME_CONTEXT.runtime() {
-                    if rt.desktop.wm.windows().last().map(|w| w.id) != rt.term_window {
+                    if !matches!(
+                        rt.desktop.wm.windows().last().map(|w| w.id),
+                        Some(id) if Some(id) == rt.term_window
+                    ) {
                         return false;
                     }
                     rt.term_buf.reset_scroll();

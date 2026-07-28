@@ -320,12 +320,10 @@ pub fn push_input_bytes(bytes: &[u8]) {
     }
     interrupt_free(|| {
         let mut buffer = INPUT_BUFFER.lock();
-        for &byte in bytes {
-            if buffer.len() >= 256 {
-                break;
-            }
-            buffer.push_back(byte);
+        if bytes.len() > 256 - buffer.len() {
+            return;
         }
+        buffer.extend(bytes.iter().copied());
     });
 }
 

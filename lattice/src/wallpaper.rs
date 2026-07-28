@@ -158,6 +158,7 @@ pub fn render_wallpaper(
     let cy = clipped_y0;
     let cw = clipped_x1 - clipped_x0;
     let ch = clipped_y1 - clipped_y0;
+    let shell_kind = crate::style::kind();
 
     match mode {
         WallpaperMode::Preset(idx) => {
@@ -180,7 +181,8 @@ pub fn render_wallpaper(
                                 continue;
                             }
                             let src_x = (x % preset.width) as usize;
-                            fb[rs + x as usize] = pixels[src_row_start + src_x];
+                            fb[rs + x as usize] =
+                                style_wallpaper_color(pixels[src_row_start + src_x], shell_kind);
                         }
                     }
                 } else {
@@ -221,7 +223,8 @@ pub fn render_wallpaper(
                                     let br = pixels[src_y_i1 * (pw as usize) + src_x_i1];
                                     let top = blend(tl, tr, fx);
                                     let bot = blend(bl, br, fx);
-                                    fb[rs + x as usize] = blend(top, bot, fy);
+                                    fb[rs + x as usize] =
+                                        style_wallpaper_color(blend(top, bot, fy), shell_kind);
                                 }
                             }
                         } else {
@@ -253,7 +256,8 @@ pub fn render_wallpaper(
                                     let br = pixels[src_y_i1 * (pw as usize) + src_x_i1];
                                     let top = blend(tl, tr, fx);
                                     let bot = blend(bl, br, fx);
-                                    fb[rs + x as usize] = blend(top, bot, fy);
+                                    fb[rs + x as usize] =
+                                        style_wallpaper_color(blend(top, bot, fy), shell_kind);
                                 }
                             }
                         }
@@ -276,7 +280,10 @@ pub fn render_wallpaper(
                                     }
                                     let src_x =
                                         ((x as u64 * pw / fw) as usize).min(pw as usize - 1);
-                                    fb[rs + x as usize] = pixels[src_row_start + src_x];
+                                    fb[rs + x as usize] = style_wallpaper_color(
+                                        pixels[src_row_start + src_x],
+                                        shell_kind,
+                                    );
                                 }
                             }
                         } else {
@@ -296,7 +303,10 @@ pub fn render_wallpaper(
                                     }
                                     let src_x =
                                         (((x as u64 + ox) * ph / fh) as usize).min(pw as usize - 1);
-                                    fb[rs + x as usize] = pixels[src_row_start + src_x];
+                                    fb[rs + x as usize] = style_wallpaper_color(
+                                        pixels[src_row_start + src_x],
+                                        shell_kind,
+                                    );
                                 }
                             }
                         }
@@ -307,7 +317,7 @@ pub fn render_wallpaper(
                     let rs = (row as usize) * fb_w;
                     let start = rs + cx as usize;
                     let end = (rs + (cx + cw) as usize).min(fb.len());
-                    fb[start..end].fill(colors.bg);
+                    fb[start..end].fill(style_wallpaper_color(colors.bg, shell_kind));
                 }
             }
         }
@@ -320,13 +330,15 @@ pub fn render_wallpaper(
                 let rs = (y as usize) * fb_w;
                 let start = rs + cx as usize;
                 let end = (rs + (cx + cw) as usize).min(fb.len());
-                fb[start..end].fill(colors.bg);
+                fb[start..end].fill(style_wallpaper_color(colors.bg, shell_kind));
             }
         }
         WallpaperMode::GridPattern => {
             let grid_spacing = 64;
             let grid_thickness = 2;
-            let grid_color = blend_over(colors.bg, colors.surface, 30);
+            let grid_color =
+                style_wallpaper_color(blend_over(colors.bg, colors.surface, 30), shell_kind);
+            let background = style_wallpaper_color(colors.bg, shell_kind);
             for row in cy..cy + ch {
                 let y = row;
                 if y >= fb_height {
@@ -341,7 +353,7 @@ pub fn render_wallpaper(
                 } else {
                     let start = rs + cx as usize;
                     let end = (rs + (cx + cw) as usize).min(fb.len());
-                    fb[start..end].fill(colors.bg);
+                    fb[start..end].fill(background);
                     let first_col = ((cx + grid_spacing - 1) / grid_spacing) * grid_spacing;
                     let row_max = (rs + (cx + cw) as usize).min(fb.len());
                     let mut gx = first_col;
@@ -363,7 +375,7 @@ pub fn render_wallpaper(
                     continue;
                 }
                 let t = (y as u64 * 256 / fb_height as u64).min(255) as u32;
-                let color = blend(from, to, t as u8);
+                let color = style_wallpaper_color(blend(from, to, t as u8), shell_kind);
                 let rs = (y as usize) * fb_w;
                 let start = rs + cx as usize;
                 let end = (rs + (cx + cw) as usize).min(fb.len());
@@ -371,30 +383,19 @@ pub fn render_wallpaper(
             }
         }
     }
+}
 
-    // Photon is designed around a dark photographic desktop. Keep the
-    // selected wallpaper recognizable while lowering its luminance so bright
-    // application surfaces and the bottom dock retain the same contrast as
-    // the reference shell.
-    if crate::style::kind() == crate::common::ShellKind::Photon {
-        for row in cy..cy + ch {
-            let start = row as usize * fb_w + cx as usize;
-            let end = (start + cw as usize).min(fb.len());
-            for pixel in &mut fb[start..end] {
-                let r = ((*pixel >> 16) & 0xFF) * 72 / 100;
-                let g = ((*pixel >> 8) & 0xFF) * 76 / 100;
-                let b = (*pixel & 0xFF) * 82 / 100;
-                *pixel = (r << 16) | (g << 8) | b;
-            }
+#[inline]
+fn style_wallpaper_color(color: u32, kind: crate::common::ShellKind) -> u32 {
+    match kind {
+        crate::common::ShellKind::Photon => {
+            let r = ((color >> 16) & 0xFF) * 72 / 100;
+            let g = ((color >> 8) & 0xFF) * 76 / 100;
+            let b = (color & 0xFF) * 82 / 100;
+            (r << 16) | (g << 8) | b
         }
-    } else if crate::style::kind() == crate::common::ShellKind::Prism {
-        for row in cy..cy + ch {
-            let start = row as usize * fb_w + cx as usize;
-            let end = (start + cw as usize).min(fb.len());
-            for pixel in &mut fb[start..end] {
-                *pixel = blend_over(*pixel, 0xB9D8EE, 58);
-            }
-        }
+        crate::common::ShellKind::Prism => blend_over(color, 0xB9D8EE, 58),
+        crate::common::ShellKind::Basalt => color,
     }
 }
 

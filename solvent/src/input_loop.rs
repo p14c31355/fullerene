@@ -93,7 +93,7 @@ pub fn poll_keyboard() {
         let runtime_guard = crate::RUNTIME_CONTEXT.runtime();
         let allowed = runtime_guard.as_ref().map_or(true, |rt| {
             let top = rt.desktop.wm.windows().last().map(|w| w.id);
-            top == rt.term_window && !rt.desktop.pwd_dialog_open
+            rt.term_window.is_some() && top == rt.term_window && !rt.desktop.pwd_dialog_open
         });
         drop(runtime_guard);
         set_terminal_input_allowed(allowed);
@@ -143,7 +143,7 @@ pub fn poll_keyboard() {
                 }
 
                 let top_id = runtime.desktop.wm.windows().last().map(|window| window.id);
-                if top_id == runtime.term_window && pressed {
+                if runtime.term_window.is_some() && top_id == runtime.term_window && pressed {
                     let key = scancode_to_resonance_keycode(scancode);
                     let sequence = match key {
                         resonance::KeyCode::Up => Some(b"\x1b[A".as_slice()),
