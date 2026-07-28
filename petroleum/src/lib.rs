@@ -29,6 +29,7 @@ pub use error::MemoryError;
 pub use graphics::framebuffer_mapper::{CacheMode, FramebufferMapper};
 pub use graphics::uefi::*;
 pub use graphics::*;
+pub use sealant;
 
 pub fn clear_line_range<B: TextBufferOperations + ?Sized>(
     buffer: &mut B,

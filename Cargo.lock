@@ -1067,6 +1067,7 @@ dependencies = [
  "log",
  "once_cell",
  "paste",
+ "sealant",
  "spin 0.12.0",
  "static_assertions",
  "volatile 0.6.1",
@@ -1347,6 +1348,10 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "sealant"
+version = "0.1.0"
 
 [[package]]
 name = "serde"

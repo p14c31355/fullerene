@@ -15,6 +15,7 @@ debug_pf = []
 
 [dependencies]
 fullerene-abi = { path = "../fullerene-kernel/abi" }
+sealant = { path = "../sealant" }
 spin = { workspace = true, features = [
   "once",
   "mutex",
