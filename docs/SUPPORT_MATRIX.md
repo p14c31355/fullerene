@@ -93,7 +93,7 @@
 | xHCI | ✅ Full | 🟡 Partial | Beta |
 | eHCI | ✅ Full | ❌ Not supported | Alpha |
 | RTSX | ❌ Not supported | ✅ Full | Alpha |
-| IWL WiFi | ❌ Not supported | 🟡 Partial | Alpha |
+| IWL WiFi | ❌ Not supported | 🟡 Code fix pending physical validation | Alpha; deferred phased probe |
 | VirtIO GPU | ✅ Full | ❌ Not supported | Beta |
 | HDA Audio | 🟡 Partial | 🟡 Partial | Alpha |
 | IOMMU | ✅ Full | 🟡 Partial | Alpha |

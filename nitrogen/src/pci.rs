@@ -22,13 +22,21 @@ use crate::port::PortWriter;
 static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
 
 #[inline]
-fn pci_config_lock_acquire() {
-    while PCI_CONFIG_LOCK
-        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
+fn pci_config_lock_acquire() -> bool {
+    // A transaction can be abandoned by the MMIO/NMI recovery path. Never
+    // turn a stale lock into a permanent CPU spin; callers treat failure as
+    // an absent/unavailable config read and continue their probe safely.
+    const MAX_SPINS: usize = 100_000;
+    for _ in 0..MAX_SPINS {
+        if PCI_CONFIG_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return true;
+        }
         core::hint::spin_loop();
     }
+    false
 }
 
 /// Release the PCI config space lock.
@@ -232,7 +240,9 @@ impl PciConfigSpace {
     }
 
     pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return u32::MAX;
+        }
         let value = Self::read_config_dword_unlocked(bus, device, function, offset);
         pci_config_lock_release();
         value
@@ -300,7 +310,9 @@ impl PciConfigSpace {
     ///
     /// Serializes CF8/CFC access with all other configuration transactions.
     pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return;
+        }
         Self::write_config_word_unlocked(bus, device, function, offset, value);
         pci_config_lock_release();
     }
@@ -312,7 +324,9 @@ impl PciConfigSpace {
     ///
     /// Serializes CF8/CFC access with all other configuration transactions.
     pub fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return;
+        }
         Self::write_config_dword_unlocked(bus, device, function, offset, value);
         pci_config_lock_release();
     }
@@ -622,7 +636,9 @@ impl PciDevice {
             return 0;
         }
         let offset = 0x10 + (bar_index * 4);
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return 0;
+        }
         let original_value = PciConfigSpace::read_config_dword_unlocked(
             self.bus,
             self.device,

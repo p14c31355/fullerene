@@ -125,6 +125,7 @@ You may close them using the "Development" section of the PR, or create new issu
 
 ### P1-9. REAL HARDWARE ISSUE
 - [x] filesystem: Issue where opening mounted external storage containing two or more files causes a hang.
+- [x] iwlwifi: remove destructive BAR0 size probing, duplicate PCI scans, and unbounded PCI-config lock spinning from the `step: start pci_probe` path; physical validation remains pending.
 
 ### P1-10. Extension support using external crates
 - [x] mp4: use `shiguredo_mp4` ([#294](https://github.com/p14c31355/fullerene/issues/294))

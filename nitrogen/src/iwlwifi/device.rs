@@ -187,10 +187,10 @@ impl IwlWifiDevice {
         let bar0_addr = device.read_bar(0).ok_or(IwlError::BarNotAvailable)?;
         let mmio_virt = ctx.phys_to_virt(bar0_addr);
 
-        let bar0_size = device
-            .get_bar_info(0)
-            .map(|info| info.size as usize)
-            .unwrap_or(0x1000);
+        // BAR0 is firmware-assigned. Avoid a destructive all-ones BAR size
+        // probe on a live Wi-Fi endpoint; the CSR/FH register block fits in
+        // the first page.
+        let bar0_size = 0x1000;
         log::info!(
             "iwlwifi: mapping BAR0 {:#x} -> virt {:#p} ({} bytes)",
             bar0_addr,

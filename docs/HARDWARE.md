@@ -55,6 +55,27 @@ recovery remains a platform mechanism, not a replacement read primitive.
 Real-hardware validation is still required for the complete controller reset,
 port enumeration, and mass-storage path on this machine.
 
+## Intel iwlwifi 7265-family PCI probe
+
+The supported Intel IDs are `8086:095b`, `8086:095a`, `8086:08b1`, and
+`8086:08b2`. Wi-Fi initialization is deferred to Solvent's service tick, so a
+driver probe cannot block the kernel's boot sequence indefinitely. The phases
+are PCI discovery, MMIO setup, DMA allocation, firmware upload/alive polling,
+and post-alive initialization commands.
+
+The PCI probe now preserves the firmware-assigned BAR0. It uses
+`read_bar_info()` and maps a 4 KiB register window; it does not use
+`get_bar_info()`, whose all-ones BAR size probe is unsafe for a live endpoint on
+the affected hardware. The upstream bridge is taken from the same scan rather
+than triggering a second full bus walk. PCI config-lock acquisition is bounded
+so an abandoned transaction cannot permanently spin the CPU.
+
+This is a code-level fix for the `step: start pci_probe` hang path. Physical
+validation on the target machine is still required; until that test is done,
+the support level remains Alpha. If the target still stops, capture the next
+`iwlwifi`/`pci` phase marker and the serial log so the remaining failure can be
+distinguished between PCI discovery, MMIO, DMA, and firmware alive.
+
 The Realtek RTS5249 reader (`10ec:5249`) is matched by vendor/device identity,
 because PCI class `0xff` is a real vendor-specific class rather than a driver
 wildcard. Boot registers the reader without accessing its device registers.

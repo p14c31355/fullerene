@@ -183,3 +183,42 @@ while rearranging arguments.
 The Release UEFI image was rebuilt and launched with Flasks/QEMU. It reached
 `efi_main_real_logic`, memory-management initialization, GUI initialization,
 and `scheduler_loop` without the invalid-opcode exception.
+
+---
+
+## Entry 005 — iwlwifi stopped at `step: start pci_probe`
+
+### Symptoms
+
+On the affected real machine, Wi-Fi initialization could stop after entering
+the deferred PCI probe phase. The path was especially risky because it ran
+against a live firmware-configured PCIe endpoint while the rest of the system
+was already servicing the desktop.
+
+### Root cause found by code inspection
+
+`WifiRegistry::probe()` called `PciDevice::get_bar_info(0)`. That API sizes a
+BAR by temporarily writing `0xffffffff` to the configuration register. This is
+not safe for every firmware-initialized endpoint and contradicted the PCI
+allocator's rule to preserve non-zero BARs. The Wi-Fi path also performed a
+second complete PCI bus scan to rediscover the upstream bridge, and PCI config
+lock acquisition could spin forever if a transaction had been abandoned by
+recovery.
+
+### Fix
+
+The Wi-Fi probe now reads the existing BAR only, maps a 4 KiB register window,
+reuses the bridge found during the original scan, and bounds PCI config-lock
+acquisition. The normal iwlwifi initialization path uses the same non-
+destructive BAR policy.
+
+### Validation status
+
+Formatting, `cargo check -p nitrogen`, and dependent kernel/runtime checks
+pass after this change; the Nitrogen test suite also passes (74 tests). The
+current development host exposes only Intel Ethernet `8086:15b8`, not one of
+the supported iwlwifi IDs, so the target machine must still be booted with
+serial logging to confirm that the
+probe advances through `pci_probe_enter`, `probe_scan_done`, and
+`probe_pci_only done`; until then this entry is a code-level resolution with
+physical validation pending.
