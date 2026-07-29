@@ -292,6 +292,13 @@ mailbox as the immediate failure point. The loader now enables the 7000-series
 APMG DMA clock and L1-Active workaround before submitting the service-channel
 transfer, and records CSR/FH/TCSR state plus the DMA address on timeout.
 
+The next retest reached repeated scan completion, but reported zero APs. The
+RX path had been checking obsolete bit positions (`1 << 18` and `1 << 15`) rather
+than the 7265 CSR FH-RX/FH-TX causes (`bit 31` and `bit 27`). Those checks now
+use the named CSR constants. Scan completion is also delayed long enough for
+the four requested channels to finish their dwell time instead of ending after
+13 scheduler ticks.
+
 ### Follow-up — GUI cursor disappears after shell launch
 
 The GUI input path accepted out-of-framebuffer cursor coordinates. A malformed

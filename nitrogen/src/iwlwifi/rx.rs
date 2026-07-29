@@ -299,14 +299,17 @@ impl IwlWifiDevice {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
-            if int_cause & (1 << 18) != 0 {
+            // CSR_INT reports the aggregate FH RX cause at bit 31. The
+            // per-channel bits live in CSR_FH_INT; bit 18 is not the host RX
+            // interrupt and caused received scan frames to be ignored.
+            if int_cause & CSR_INT_BIT_FH_RX != 0 {
                 let raw_rx_head = match self.safe_read32(FH_RSCSR_CHNL0_RBDCB_RPTR_REG) {
                     Some(value) => value,
                     None => return,
                 };
                 self.rx_head = raw_rx_head as usize % RX_QUEUE_SIZE;
             }
-            if int_cause & (1 << 15) != 0 {
+            if int_cause & CSR_INT_BIT_FH_TX != 0 {
                 let hardware_tail = match self.safe_read32(FH_TX_CHNL0_WPTR) {
                     Some(value) => value,
                     None => return,
@@ -344,7 +347,7 @@ impl IwlWifiDevice {
 
         if self.scan_pending {
             self.scan_channel += 1;
-            if self.scan_channel > 13 {
+            if self.scan_channel > 100 {
                 self.scan_pending = false;
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;

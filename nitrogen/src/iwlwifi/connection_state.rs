@@ -920,7 +920,11 @@ impl IwlWifiDevice {
 
         self.wifi_conn.start_scan();
         self.scan_results.clear();
-        self.scan_channel = 1;
+        // This field is used as a bounded scan wait counter. The firmware
+        // scans four channels with dwell time; completing after 13 scheduler
+        // ticks (~13 ms) almost always discarded the scan before beacons
+        // reached the RX path.
+        self.scan_channel = 0;
         self.scan_pending = true;
         self.iwl_state = IwlState::Scanning;
 
