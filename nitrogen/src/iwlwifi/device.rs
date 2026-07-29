@@ -188,9 +188,9 @@ impl IwlWifiDevice {
         let mmio_virt = ctx.phys_to_virt(bar0_addr);
 
         // BAR0 is firmware-assigned. Avoid a destructive all-ones BAR size
-        // probe on a live Wi-Fi endpoint; the CSR/FH register block fits in
-        // the first page.
-        let bar0_size = 0x1000;
+        // probe on a live Wi-Fi endpoint; the CSR/FH register window used by
+        // firmware boot fits in the first two pages.
+        let bar0_size = 0x2000;
         log::info!(
             "iwlwifi: mapping BAR0 {:#x} -> virt {:#p} ({} bytes)",
             bar0_addr,
@@ -695,6 +695,11 @@ impl IwlWifiDevice {
 
         let mut off = FW_HEADER_SIZE;
         let mut section_count = 0u32;
+        // Linux encodes the sections loaded into CPU1 as a growing mask in
+        // FH_UCODE_LOAD_STATUS (1, 3, 7, ...), then writes 0xffff when the
+        // CPU1 image is complete. The 7265 firmware checks this mailbox
+        // before it emits the alive interrupt.
+        let mut section_status = 1u32;
 
         while off + 8 <= fw_data.len() {
             let tlv_type: u32 = unsafe { core::ptr::read_unaligned(fw_ptr.add(off) as *const u32) };
@@ -735,6 +740,14 @@ impl IwlWifiDevice {
                             &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
                         self.upload_section(target, section_data)?;
                         section_count += 1;
+                        let previous_status = self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(0);
+                        unsafe {
+                            core::ptr::write_volatile(
+                                self.mmio.add(FH_UCODE_LOAD_STATUS as usize),
+                                previous_status | section_status,
+                            );
+                        }
+                        section_status = (section_status << 1) | 1;
                         log::info!(
                             "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
                             section_count,
@@ -751,6 +764,14 @@ impl IwlWifiDevice {
         if section_count == 0 {
             return Err(crate::DriverError::Protocol);
         }
+
+        unsafe {
+            core::ptr::write_volatile(self.mmio.add(FH_UCODE_LOAD_STATUS as usize), 0xFFFF);
+        }
+        log::info!(
+            "iwlwifi: firmware sections ready: FH_UCODE_LOAD_STATUS={:#010x}",
+            self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(!0)
+        );
 
         debug::print("iwlwifi", "fw: upload_done");
         log::info!("iwlwifi: firmware upload complete, starting CPU...");
@@ -799,12 +820,14 @@ impl IwlWifiDevice {
             let csr_gp = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
             let csr_ucode = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
             let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
+            let fh_load = self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(!0);
             log::info!(
-                "iwlwifi: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x}",
+                "iwlwifi: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x} FH_LOAD={:#010x}",
                 csr_int,
                 csr_gp,
                 csr_ucode,
-                csr_reset
+                csr_reset,
+                fh_load
             );
         }
         alive?;
@@ -939,12 +962,14 @@ impl IwlWifiDevice {
             let csr_gp = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
             let csr_ucode = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
             let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
+            let fh_load = self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(!0);
             log::warn!(
-                "iwlwifi: firmware alive timeout: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x}",
+                "iwlwifi: firmware alive timeout: CSR_INT={:#010x} CSR_GP={:#010x} UCODE_GP1={:#010x} RESET={:#010x} FH_LOAD={:#010x}",
                 csr_int,
                 csr_gp,
                 csr_ucode,
-                csr_reset
+                csr_reset,
+                fh_load
             );
             debug::print("iwlwifi", "fw: alive_timeout");
             self.fw_state = FwState::Error;

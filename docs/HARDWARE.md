@@ -64,7 +64,7 @@ are PCI discovery, MMIO setup, DMA allocation, firmware upload/alive polling,
 and post-alive initialization commands.
 
 The PCI probe now preserves the firmware-assigned BAR0. It uses
-`read_bar_info()` and maps a 4 KiB register window; it does not use
+`read_bar_info()` and maps an 8 KiB register window; it does not use
 `get_bar_info()`, whose all-ones BAR size probe is unsafe for a live endpoint on
 the affected hardware. The upstream bridge is taken from the same scan rather
 than triggering a second full bus walk. PCI config-lock acquisition is bounded
@@ -80,8 +80,9 @@ clock was not ready, while `mmio_read_mac` confirms that this stage passed.
 The target has now advanced beyond this stage to firmware upload, but the
 outer runtime timeout previously stopped it while waiting for firmware alive.
 The runtime loader now selects only the `SEC_RT` image sections, skips the
-firmware section separator, follows the GP1 mailbox clear protocol, and gives
-the bounded firmware-candidate sequence enough time to finish. Physical
+firmware section separator, reports each loaded section through
+`FH_UCODE_LOAD_STATUS`, follows the GP1 mailbox clear protocol, and gives the
+bounded firmware-candidate sequence enough time to finish. Physical
 validation of this follow-up build is still required, so the support level
 remains Alpha.
 

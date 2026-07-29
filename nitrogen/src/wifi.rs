@@ -188,12 +188,13 @@ impl WifiRegistry {
                 // Read the firmware-programmed BAR only. Do not call
                 // `get_bar_info()` here: it writes all ones to the BAR to
                 // size it, which can strand a live PCIe endpoint on real
-                // hardware. The CSR/FH register block fits in the first page.
+                // hardware. The firmware boot status register at 0x1af0 is
+                // in the second page, so map the small two-page window.
                 let Some(bar) = device.read_bar_info(0) else {
                     continue;
                 };
                 let phys = bar.address;
-                const IWL_BAR0_MAP_SIZE: usize = 0x1000;
+                const IWL_BAR0_MAP_SIZE: usize = 0x2000;
 
                 // Read subsystem IDs
                 let subsys = crate::pci::PciConfigSpace::read_config_dword(

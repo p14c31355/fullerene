@@ -254,6 +254,12 @@ CLR mailbox for RF-kill/CMD_BLOCKED bits, and enables the ALIVE/RX interrupt
 causes before polling. The outer timeout is now 12,000 ticks to allow all
 four 7265 firmware candidates to complete their bounded attempts.
 
+The firmware boot path now also updates the direct `FH_UCODE_LOAD_STATUS`
+mailbox after every runtime section (`1`, `3`, …) and writes `0xffff` before
+releasing CPU reset, matching the 7265 PCIe transport sequence. The MMIO
+window is 8 KiB so that the 0x1af0 register is mapped. The physical log now
+includes `FH_LOAD` in the alive-timeout diagnostic.
+
 The next physical run should show `fw: alive_ok` or, on failure,
 `fw: alive_timeout` with CSR register values rather than being terminated by
 the outer timeout first.

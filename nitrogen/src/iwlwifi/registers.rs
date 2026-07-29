@@ -48,6 +48,8 @@ pub const FH_RSCSR_CHNL0_RBDCB_BASE: u32 = 0x0B8 / 4;
 pub const FH_RSCSR_CHNL0_RBDCB_RPTR_REG: u32 = 0x0C0 / 4;
 /// FH register for TX ring head index (written by hardware on completion).
 pub const FH_TX_CHNL0_WPTR: u32 = 0x0A0 / 4;
+/// Firmware-written boot section status consumed before releasing the CPU.
+pub const FH_UCODE_LOAD_STATUS: u32 = 0x1AF0 / 4;
 
 // ── Firmware constants ─────────────
 
