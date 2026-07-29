@@ -1,5 +1,6 @@
 //! PS/2 input polling and translation into desktop or Resonance events.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use lattice::desktop::DesktopAction;
 use resonance::{Event, InputEvent, MouseButton};
 use spin::Mutex;
@@ -31,6 +32,8 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
 // resumes. The rest is intentionally discarded: it is stale motion, not a
 // new pointer position that the user is still trying to reach.
 const MAX_MOUSE_STEP_PX: i32 = 96;
+const MOUSE_STALE_AFTER_MS: u64 = 50;
+static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
 
 fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
     (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
@@ -52,8 +55,17 @@ pub fn poll_mouse_state() {
     // through the I/O APIC.
     nitrogen::ps2::mouse::poll_input();
     let ps2_state = nitrogen::ps2::mouse::consume_state();
-    let dx = ps2_state.get_x();
-    let dy = ps2_state.get_y();
+    let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let previous_poll = LAST_MOUSE_POLL_TSC.swap(now_tsc, Ordering::Relaxed);
+    let tsc_per_ms = crate::TSC_PER_MS.load(Ordering::Relaxed);
+    let stale = previous_poll != 0
+        && tsc_per_ms != 0
+        && now_tsc.wrapping_sub(previous_poll) > tsc_per_ms.saturating_mul(MOUSE_STALE_AFTER_MS);
+    // A long gap means the relative packets describe motion that happened
+    // while the desktop was blocked (for example during Wi-Fi firmware I/O),
+    // not a reliable current pointer position. Consume and discard it.
+    let dx = if stale { 0 } else { ps2_state.get_x() };
+    let dy = if stale { 0 } else { ps2_state.get_y() };
     let wheel = ps2_state.get_wheel();
     let buttons = nitrogen::ps2::mouse::mouse_buttons();
     let mut mouse = MOUSE_STATE.lock();

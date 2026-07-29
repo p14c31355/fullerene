@@ -281,3 +281,6 @@ PS/2 poll. Relative packets that arrive during that interval were then
 consumed as one large movement. The scheduler also polled input before calling
 `tick_core`, which polled it again. Input polling is now owned by `tick_core`,
 and each resumed poll caps stale accumulated motion to a bounded screen step.
+The IRQ handlers also verify the PS/2 controller's AUX/keyboard status before
+consuming `0x60`, and a poll gap over 50 ms discards the stale relative packet
+backlog entirely.
