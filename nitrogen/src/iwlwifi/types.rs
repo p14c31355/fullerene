@@ -67,16 +67,18 @@ pub enum GroupId {
 #[repr(u8)]
 pub enum LegacyCmd {
     AddStaKey = 0x17,
-    ScanRequest = 0x18,
-    ScanAbort = 0x19,
+    /// LMAC scan request for the 7265 firmware API (SCAN_OFFLOAD_REQUEST_CMD).
+    /// 0x18 is ADD_STA, not a scan request.
+    ScanRequest = 0x51,
+    ScanAbort = 0x52,
     ScanResults = 0x83,
     Auth = 0x1A,
     Assoc = 0x1B,
     Disassoc = 0x1C,
     Deauth = 0x1D,
     AddSta = 0x18 | 0x40,
-    Rxon = 0x1E,
-    TxAntConfig = 0x0C,
+    MacContext = 0x28,
+    TxAntConfig = 0x98,
     RxonAssoc = 0x20,
     PowerDown = 0x26,
     PowerUp = 0x27,
@@ -100,12 +102,100 @@ pub struct AddStaKeyCmd {
 }
 
 #[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MacAcQos {
+    pub cw_min: u16,
+    pub cw_max: u16,
+    pub aifsn: u8,
+    pub fifos_mask: u8,
+    pub edca_txop: u16,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MacDataSta {
+    pub is_assoc: u32,
+    pub dtim_time: u32,
+    pub dtim_tsf: u64,
+    pub beacon_interval: u32,
+    pub reserved1: u32,
+    pub dtim_interval: u32,
+    pub data_policy: u32,
+    pub listen_interval: u32,
+    pub assoc_id: u32,
+    pub assoc_beacon_arrive_time: u32,
+}
+
+#[repr(C, packed)]
+pub struct MacContextCmd {
+    pub id_and_color: u32,
+    pub action: u32,
+    pub mac_type: u32,
+    pub tsf_id: u32,
+    pub node_addr: [u8; 6],
+    pub reserved_for_node_addr: u16,
+    pub bssid_addr: [u8; 6],
+    pub reserved_for_bssid_addr: u16,
+    pub cck_rates: u32,
+    pub ofdm_rates: u32,
+    pub protection_flags: u32,
+    pub cck_short_preamble: u32,
+    pub short_slot: u32,
+    pub filter_flags: u32,
+    pub qos_flags: u32,
+    pub ac: [MacAcQos; 5],
+    pub sta: MacDataSta,
+}
+
+impl MacContextCmd {
+    pub fn station(mac: [u8; 6]) -> Self {
+        Self {
+            id_and_color: 0,
+            action: 1,
+            // FW_MAC_TYPE_BSS_STA
+            mac_type: 5,
+            tsf_id: 0,
+            node_addr: mac,
+            reserved_for_node_addr: 0,
+            bssid_addr: [0xff; 6],
+            reserved_for_bssid_addr: 0,
+            cck_rates: 0x0000_000f,
+            ofdm_rates: 0x0000_00ff,
+            protection_flags: 0,
+            cck_short_preamble: 0x20,
+            short_slot: 0x10,
+            // MAC_FILTER_ACCEPT_GRP | MAC_FILTER_IN_BEACON
+            filter_flags: (1 << 2) | (1 << 6),
+            qos_flags: 0,
+            ac: [MacAcQos {
+                cw_min: 3,
+                cw_max: 1023,
+                aifsn: 2,
+                fifos_mask: 0,
+                edca_txop: 0,
+            }; 5],
+            sta: MacDataSta {
+                is_assoc: 0,
+                dtim_time: 0,
+                dtim_tsf: 0,
+                beacon_interval: 100,
+                reserved1: 0,
+                dtim_interval: 100,
+                data_policy: 0,
+                listen_interval: 10,
+                assoc_id: 0,
+                assoc_beacon_arrive_time: 0,
+            },
+        }
+    }
+}
+
+#[repr(C, packed)]
 pub struct HcmdHeader {
     pub opcode: u8,
     pub group_id: u8,
-    pub length: u16,
-    pub flags: u16,
-    pub reserved: u16,
+    /// Queue and TFD sequence. The legacy header is exactly 4 bytes.
+    pub sequence: u16,
 }
 
 #[repr(C, packed)]
@@ -116,20 +206,193 @@ pub struct HcmdResp {
 
 // ── Scan command structures ────────
 
+const SCAN_CHANNEL_COUNT: usize = 23;
+const SCAN_DIRECT_SSID_COUNT: usize = 20;
+const SCAN_SSID_MAX_LEN: usize = 32;
+const SCAN_PROBE_BUFFER_SIZE: usize = 512;
+
 #[repr(C, packed)]
-pub struct ScanChannel {
-    pub channel: u8,
-    pub tx_power: u8,
-    pub reserved: u16,
+#[derive(Clone, Copy)]
+pub struct ScanReqTxCmd {
+    pub tx_flags: u32,
+    pub rate_n_flags: u32,
+    pub sta_id: u8,
+    pub reserved: [u8; 3],
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanSsidIe {
+    pub id: u8,
+    pub len: u8,
+    pub ssid: [u8; SCAN_SSID_MAX_LEN],
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanScheduleLmac {
+    pub delay: u16,
+    pub iterations: u8,
+    pub full_scan_mul: u8,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanChannelOpt {
+    pub flags: u16,
+    pub non_ebs_ratio: u16,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanChannelCfgLmac {
+    pub flags: u32,
+    pub channel_num: u16,
+    pub iter_count: u16,
+    pub iter_interval: u32,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanProbeSegment {
+    pub offset: u16,
+    pub len: u16,
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanProbeReqV1 {
+    pub mac_header: ScanProbeSegment,
+    pub band_data: [ScanProbeSegment; 2],
+    pub common_data: ScanProbeSegment,
+    pub buf: [u8; SCAN_PROBE_BUFFER_SIZE],
 }
 
 #[repr(C, packed)]
 pub struct ScanRequestCmd {
-    pub beacon_interval: u16,
-    pub flags: u16,
-    pub num_channels: u8,
-    pub reserved: [u8; 3],
-    pub channels: [ScanChannel; 4],
+    pub reserved1: u32,
+    pub n_channels: u8,
+    pub active_dwell: u8,
+    pub passive_dwell: u8,
+    pub fragmented_dwell: u8,
+    pub extended_dwell: u8,
+    pub reserved2: u8,
+    pub rx_chain_select: u16,
+    pub scan_flags: u32,
+    pub max_out_time: u32,
+    pub suspend_time: u32,
+    pub flags: u32,
+    pub filter_flags: u32,
+    pub tx_cmd: [ScanReqTxCmd; 2],
+    pub direct_scan: [ScanSsidIe; SCAN_DIRECT_SSID_COUNT],
+    pub scan_prio: u32,
+    pub iter_num: u32,
+    pub delay: u32,
+    pub schedule: [ScanScheduleLmac; 2],
+    pub channel_opt: [ScanChannelOpt; 2],
+    pub channels: [ScanChannelCfgLmac; SCAN_CHANNEL_COUNT],
+    pub probe_req: ScanProbeReqV1,
+}
+
+impl ScanRequestCmd {
+    pub fn new(mac: [u8; 6]) -> Self {
+        let channel_numbers: [u16; SCAN_CHANNEL_COUNT] = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
+        ];
+        let mut channels = [ScanChannelCfgLmac {
+            flags: 1 << 28,
+            channel_num: 0,
+            iter_count: 1,
+            iter_interval: 0,
+        }; SCAN_CHANNEL_COUNT];
+        for (channel, number) in channels.iter_mut().zip(channel_numbers) {
+            channel.channel_num = number;
+        }
+
+        let mut probe = ScanProbeReqV1 {
+            mac_header: ScanProbeSegment { offset: 0, len: 26 },
+            band_data: [
+                ScanProbeSegment { offset: 26, len: 0 },
+                ScanProbeSegment { offset: 26, len: 0 },
+            ],
+            common_data: ScanProbeSegment { offset: 26, len: 0 },
+            buf: [0; SCAN_PROBE_BUFFER_SIZE],
+        };
+        // Wildcard probe request. It is not transmitted for this passive
+        // scan, but the LMAC API still requires a valid probe descriptor.
+        probe.buf[0..2].copy_from_slice(&0x0040u16.to_le_bytes());
+        probe.buf[4..10].fill(0xff);
+        probe.buf[10..16].copy_from_slice(&mac);
+        probe.buf[16..22].fill(0xff);
+        probe.buf[24..26].fill(0);
+
+        Self {
+            reserved1: 0,
+            n_channels: SCAN_CHANNEL_COUNT as u8,
+            active_dwell: 10,
+            passive_dwell: 110,
+            fragmented_dwell: 44,
+            extended_dwell: 90,
+            reserved2: 0,
+            // Two valid RX chains, selected/forced in the same way as Linux.
+            rx_chain_select: 0x01b7,
+            scan_flags: (1 << 0) | (1 << 1) | (1 << 3) | (1 << 7),
+            // Regular (wild) scans use the 120-TU associated-channel
+            // budget. 37 TU is the fast-balance budget and can terminate a
+            // passive dwell before a beacon is delivered.
+            max_out_time: 120,
+            suspend_time: 30,
+            // PHY_BAND_24 and MAC_FILTER_ACCEPT_GRP|MAC_FILTER_IN_BEACON.
+            flags: 1,
+            filter_flags: (1 << 2) | (1 << 6),
+            tx_cmd: [
+                ScanReqTxCmd {
+                    tx_flags: 0,
+                    rate_n_flags: 0,
+                    sta_id: 0xff,
+                    reserved: [0; 3],
+                },
+                ScanReqTxCmd {
+                    tx_flags: 0,
+                    rate_n_flags: 0,
+                    sta_id: 0xff,
+                    reserved: [0; 3],
+                },
+            ],
+            direct_scan: [ScanSsidIe {
+                id: 0,
+                len: 0,
+                ssid: [0; SCAN_SSID_MAX_LEN],
+            }; SCAN_DIRECT_SSID_COUNT],
+            scan_prio: 2,
+            iter_num: 1,
+            delay: 0,
+            schedule: [
+                ScanScheduleLmac {
+                    delay: 0,
+                    iterations: 1,
+                    full_scan_mul: 1,
+                },
+                ScanScheduleLmac {
+                    delay: 0,
+                    iterations: 0,
+                    full_scan_mul: 1,
+                },
+            ],
+            channel_opt: [
+                ScanChannelOpt {
+                    flags: 0,
+                    non_ebs_ratio: 1,
+                },
+                ScanChannelOpt {
+                    flags: 0,
+                    non_ebs_ratio: 1,
+                },
+            ],
+            channels,
+            probe_req: probe,
+        }
+    }
 }
 
 #[repr(C, packed)]
@@ -149,28 +412,53 @@ pub struct ScanNotification {
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-pub struct TxDmaDesc {
+pub struct TxDmaTb {
     pub addr_lo: u32,
-    pub addr_hi: u32,
-    pub len: u16,
-    pub flags: u16,
-    pub reserved: [u32; 2],
+    /// Bits 3:0 are the high DMA address nibble; bits 15:4 are length.
+    pub hi_n_len: u16,
 }
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-pub struct RxDmaDesc {
-    pub addr_lo: u32,
-    pub addr_hi: u32,
-    pub len: u16,
-    pub flags: u16,
+pub struct TxDmaDesc {
+    pub reserved: [u8; 3],
+    pub num_tbs: u8,
+    pub tbs: [TxDmaTb; 20],
+    pub pad: u32,
 }
 
-/// RX descriptor status bit set by firmware when the protected 802.11 frame
-/// was successfully decrypted and authenticated.  Firmware may clear the
-/// 802.11 Protected bit before handing the plaintext up to the driver, so this
-/// status is tracked separately from the frame header.
-pub const RX_DESC_FLAG_DECRYPTED: u16 = 1 << 0;
+/// Legacy 7265 receive-buffer descriptor. The FH RBD circular buffer is a
+/// table of one dword entries containing RB physical address bits [35:8].
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct RxDmaDesc {
+    pub addr: u32,
+}
+
+/// Hardware-written status for the legacy receive ring.
+#[repr(C, packed)]
+#[derive(Clone, Copy, Default)]
+pub struct RxDmaStatus {
+    pub closed_rb_num: u16,
+    pub closed_fr_num: u16,
+    pub finished_rb_num: u16,
+    pub finished_fr_num: u16,
+    pub spare: u32,
+}
+
+impl TxDmaDesc {
+    pub const fn zeroed() -> Self {
+        Self {
+            reserved: [0; 3],
+            num_tbs: 0,
+            tbs: [TxDmaTb {
+                addr_lo: 0,
+                hi_n_len: 0,
+            }; 20],
+            pad: 0,
+        }
+    }
+}
 
 #[repr(C, packed)]
 pub struct RxPktStatus {

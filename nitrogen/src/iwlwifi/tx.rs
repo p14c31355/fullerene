@@ -8,6 +8,56 @@ use super::registers::*;
 use super::types::*;
 
 impl IwlWifiDevice {
+    fn init_tx_cmd_queue(&mut self) {
+        let ring_phys = self.tx_dma_ring.dma_iova();
+
+        // The command queue is FIFO mode on gen1 hardware and still needs the
+        // scheduler context/active FIFO setup after firmware alive.
+        if let Some(scd_base) = self.read_prph(SCD_SRAM_BASE_ADDR) {
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
+        }
+        self.write_prph(SCD_QUEUE_RDPTR_CMD, 0);
+        self.write_prph(
+            SCD_QUEUE_STATUS_CMD,
+            SCD_QUEUE_STTS_ACTIVE
+                | SCD_QUEUE_STTS_WSL
+                | SCD_QUEUE_STTS_FIFO_COMMAND
+                | SCD_QUEUE_STTS_MASK,
+        );
+        self.write_prph(SCD_TXFACT, 0xFF);
+        self.write_prph(SCD_EN_CTRL, 1 << IWL_CMD_QUEUE);
+
+        unsafe {
+            // The 7265 uses a gen1 128-byte TFD and queue 4 for HCMDs. The
+            // previous code rang 0x0bc, which is not HBUS_TARG_WRPTR on this
+            // device and therefore never submitted the scan command.
+            core::ptr::write_volatile(
+                self.mmio.add(FH_MEM_CBBC_CMD_QUEUE as usize),
+                (ring_phys >> 8) as u32,
+            );
+            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
+            for channel in 0..8 {
+                core::ptr::write_volatile(
+                    self.mmio
+                        .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),
+                    FH_TCSR_TX_CONFIG_DMA_ENABLE | FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE,
+                );
+            }
+            let chicken = core::ptr::read_volatile(self.mmio.add(FH_TX_CHICKEN_BITS as usize));
+            core::ptr::write_volatile(
+                self.mmio.add(FH_TX_CHICKEN_BITS as usize),
+                chicken | FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN,
+            );
+        }
+        mmio::write_barrier();
+        log::info!(
+            "iwlwifi: legacy TX command queue configured: q={} tfd={:#018x}",
+            IWL_CMD_QUEUE,
+            ring_phys
+        );
+    }
+
     /// Queue WPA2-PSK CCMP pairwise and group key installation commands.
     ///
     /// iwlwifi performs CCMP in the NIC/firmware.  Keeping the keys only in
@@ -92,9 +142,7 @@ impl IwlWifiDevice {
         let hcmd_header = HcmdHeader {
             opcode,
             group_id: group,
-            length: data.len() as u16,
-            flags: 0,
-            reserved: 0,
+            sequence: ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff),
         };
 
         let used = self.tx_head.wrapping_sub(self.tx_tail);
@@ -117,23 +165,31 @@ impl IwlWifiDevice {
 
         let dma_addr = cmd_buf.dma_iova();
         let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
-        desc.addr_lo = dma_addr as u32;
-        desc.addr_hi = (dma_addr >> 32) as u32;
-        desc.len = total_len as u16;
-        desc.flags = 0;
+        *desc = TxDmaDesc::zeroed();
+        desc.num_tbs = 1;
+        desc.tbs[0].addr_lo = dma_addr as u32;
+        desc.tbs[0].hi_n_len = ((total_len as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
         mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
         self.tx_head = self.tx_head.wrapping_add(1);
         mmio::write_barrier();
         unsafe {
-            core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
+            core::ptr::write_volatile(
+                self.mmio.add(HBUS_TARG_WRPTR as usize),
+                (self.tx_head as u32 & 0xff) | (IWL_CMD_QUEUE << 8),
+            );
         }
         mmio::write_barrier();
         Ok(())
     }
 
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
-        let ant_cfg: [u8; 8] = [0x03, 0x03, 0, 0, 0, 0, 0, 0];
+        self.init_tx_cmd_queue();
+        self.init_rx_dma();
+
+        // The 7265 modules used here expose two RF chains. Keep the valid TX
+        // mask aligned with the two-chain RX scan selection.
+        let ant_cfg: [u8; 4] = [0x03, 0, 0, 0];
         self.send_hcmd(
             LegacyCmd::TxAntConfig as u8,
             GroupId::Legacy as u8,
@@ -141,13 +197,19 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: TX antenna config sent");
 
-        let mut rxon = [0u8; 36];
-        rxon[0] = 0x42;
-        rxon[1] = 0x00;
-        rxon[12..18].copy_from_slice(&self.mac);
-        rxon[22] = 100;
-        self.send_hcmd(LegacyCmd::Rxon as u8, GroupId::Legacy as u8, &rxon)?;
-        log::info!("iwlwifi: RXON config sent");
+        let mac_context = MacContextCmd::station(self.mac);
+        let mac_context_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &mac_context as *const MacContextCmd as *const u8,
+                core::mem::size_of::<MacContextCmd>(),
+            )
+        };
+        self.send_hcmd(
+            LegacyCmd::MacContext as u8,
+            GroupId::Legacy as u8,
+            mac_context_bytes,
+        )?;
+        log::info!("iwlwifi: station MAC context sent");
 
         self.fw_state = FwState::Ready;
         log::info!("iwlwifi: init commands complete, device operational");
@@ -377,16 +439,20 @@ impl IwlWifiDevice {
 
             let dma_addr = buf.dma_iova();
             let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
-            desc.addr_lo = dma_addr as u32;
-            desc.addr_hi = (dma_addr >> 32) as u32;
-            desc.len = tx_frame.len() as u16;
-            desc.flags = 0;
+            *desc = TxDmaDesc::zeroed();
+            desc.num_tbs = 1;
+            desc.tbs[0].addr_lo = dma_addr as u32;
+            desc.tbs[0].hi_n_len =
+                ((tx_frame.len() as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
             self.tx_head = self.tx_head.wrapping_add(1);
             mmio::write_barrier();
             unsafe {
-                core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
+                core::ptr::write_volatile(
+                    self.mmio.add(HBUS_TARG_WRPTR as usize),
+                    (self.tx_head as u32 & 0xff) | (IWL_CMD_QUEUE << 8),
+                );
             }
             mmio::write_barrier();
         }

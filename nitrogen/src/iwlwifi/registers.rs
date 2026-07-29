@@ -6,6 +6,11 @@
 pub const IWL_PCI_VENDOR: u16 = 0x8086;
 pub const IWL_DEVICE_IDS: &[u16] = &[0x095b, 0x095a, 0x08b1, 0x08b2];
 
+/// PCI requester ID format consumed by the VT-d context-table lookup.
+pub const fn pci_dma_device_id(bus: u8, device: u8, function: u8) -> u16 {
+    ((bus as u16) << 8) | ((device as u16) << 3) | function as u16
+}
+
 // ── CSR registers ──────────────────
 
 pub const CSR_HW_REV: u32 = 0x028 / 4;
@@ -46,6 +51,9 @@ pub const CSR_INT_BIT_SW_ERR: u32 = 1 << 25;
 pub const CSR_INT_BIT_FH_TX: u32 = 1 << 27;
 pub const CSR_INT_BIT_FH_RX: u32 = 1 << 31;
 pub const CSR_FH_INT_BIT_TX_CHNL0: u32 = 1 << 0;
+pub const CSR_FH_INT_BIT_RX_CHNL0: u32 = 1 << 16;
+pub const CSR_FH_INT_RX_MASK: u32 = 1 << 16;
+pub const CSR_FH_INT_TX_MASK: u32 = 1 << 0;
 pub const CSR_UCODE_SW_BIT_RFKILL: u32 = 1 << 1;
 pub const CSR_UCODE_GP1_BIT_CMD_BLOCKED: u32 = 1 << 2;
 pub const CSR_HW_IF_CONFIG_HAP_WAKE: u32 = 0x0008_0000;
@@ -53,12 +61,42 @@ pub const CSR_GIO_CHICKEN_L1A_NO_L0S_RX: u32 = 0x0080_0000;
 pub const CSR_GIO_CHICKEN_DIS_L0S_EXIT_TIMER: u32 = 0x2000_0000;
 pub const CSR_DBG_HPET_MEM_VAL: u32 = 0xFFFF_0000;
 
-/// FH register for RX ring base address (BADR).
-pub const FH_RSCSR_CHNL0_RBDCB_BASE: u32 = 0x0B8 / 4;
-/// FH register for RX ring read pointer (head index, updated by hardware).
-pub const FH_RSCSR_CHNL0_RBDCB_RPTR_REG: u32 = 0x0C0 / 4;
-/// FH register for TX ring head index (written by hardware on completion).
-pub const FH_TX_CHNL0_WPTR: u32 = 0x0A0 / 4;
+/// Legacy 7265 RX status/RBD registers. The old 0x0b8/0x0c0 offsets are not
+/// RX-ring registers on this generation.
+pub const FH_RSCSR_CHNL0_STTS_WPTR_REG: u32 = (0x1000 + 0xBC0) / 4;
+pub const FH_RSCSR_CHNL0_RBDCB_BASE_REG: u32 = (0x1000 + 0xBC4) / 4;
+pub const FH_RSCSR_CHNL0_RBDCB_WPTR_REG: u32 = (0x1000 + 0xBC8) / 4;
+pub const FH_RSCSR_CHNL0_RDPTR_REG: u32 = (0x1000 + 0xBCC) / 4;
+pub const FH_MEM_RCSR_CHNL0_CONFIG_REG: u32 = (0x1000 + 0xC00) / 4;
+pub const FH_MEM_RCSR_CHNL0_RBDCB_WPTR: u32 = (0x1000 + 0xC08) / 4;
+pub const FH_MEM_RCSR_CHNL0_FLUSH_RB_REQ: u32 = (0x1000 + 0xC10) / 4;
+pub const FH_RCSR_RX_CONFIG_CHNL_EN_ENABLE_VAL: u32 = 0x8000_0000;
+pub const FH_RCSR_CHNL0_RX_IGNORE_RXF_EMPTY: u32 = 0x0000_0004;
+pub const FH_RCSR_CHNL0_RX_CONFIG_IRQ_DEST_INT_HOST_VAL: u32 = 0x0000_1000;
+pub const FH_RCSR_RX_CONFIG_REG_IRQ_RBTH_POS: u32 = 4;
+pub const FH_RCSR_RX_CONFIG_RBDCB_SIZE_POS: u32 = 20;
+pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
+
+/// Legacy TX queue 4 (the host-command queue) registers.
+pub const IWL_CMD_QUEUE: u32 = 4;
+pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
+pub const FH_MEM_CBBC_CMD_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_CMD_QUEUE;
+pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
+pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
+pub const FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE: u32 = 0x0000_0008;
+pub const FH_TX_CHICKEN_BITS: u32 = (0x1000 + 0xE98) / 4;
+pub const FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN: u32 = 0x0000_0002;
+pub const SCD_BASE: u32 = 0xA02C00;
+pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
+pub const SCD_TXFACT: u32 = SCD_BASE + 0x10;
+pub const SCD_EN_CTRL: u32 = SCD_BASE + 0x254;
+pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
+pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
+pub const SCD_CONTEXT_QUEUE_CMD: u32 = 0x600 + IWL_CMD_QUEUE * 8;
+pub const SCD_QUEUE_STTS_ACTIVE: u32 = 1 << 3;
+pub const SCD_QUEUE_STTS_WSL: u32 = 1 << 4;
+pub const SCD_QUEUE_STTS_FIFO_COMMAND: u32 = 7;
+pub const SCD_QUEUE_STTS_MASK: u32 = 0x017F_0000;
 /// Firmware-written boot section status consumed before releasing the CPU.
 pub const FH_UCODE_LOAD_STATUS: u32 = 0x1AF0 / 4;
 
@@ -95,6 +133,8 @@ pub const IWL_FW_MAX_SECTIONS: usize = 32;
 /// TX queue configuration.
 pub const TX_QUEUE_SIZE: usize = 256;
 pub const RX_QUEUE_SIZE: usize = 256;
+/// Gen1 FH RX is configured for 4 KiB receive buffers.
+pub const RX_BUFFER_SIZE: usize = 4096;
 pub const MAX_FRAME_SIZE: usize = 2346;
 
 // ── Firmware image ─────────────────

@@ -436,14 +436,21 @@ pub fn try_init_wifi_device_step() {
                         return;
                     }
                 };
-                if tx_dma_ring.dma_map(driver_ctx, pci_dev.device_id).is_err() {
+                if tx_dma_ring
+                    .dma_map(
+                        driver_ctx,
+                        pci_dma_device_id(pci_dev.bus, pci_dev.device, pci_dev.function),
+                    )
+                    .is_err()
+                {
                     tx_dma_ring.free(driver_ctx);
                     set_init_phase(WifiInitPhase::Failed);
                     return;
                 }
                 let mut rx_dma_ring = match DmaRegion::alloc(
                     driver_ctx,
-                    core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE,
+                    core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE
+                        + core::mem::size_of::<RxDmaStatus>(),
                 ) {
                     Some(r) => r,
                     None => {
@@ -452,7 +459,13 @@ pub fn try_init_wifi_device_step() {
                         return;
                     }
                 };
-                if rx_dma_ring.dma_map(driver_ctx, pci_dev.device_id).is_err() {
+                if rx_dma_ring
+                    .dma_map(
+                        driver_ctx,
+                        pci_dma_device_id(pci_dev.bus, pci_dev.device, pci_dev.function),
+                    )
+                    .is_err()
+                {
                     rx_dma_ring.free(driver_ctx);
                     tx_dma_ring.free(driver_ctx);
                     set_init_phase(WifiInitPhase::Failed);
@@ -466,7 +479,13 @@ pub fn try_init_wifi_device_step() {
                             break;
                         }
                     };
-                    if buf.dma_map(driver_ctx, pci_dev.device_id).is_err() {
+                    if buf
+                        .dma_map(
+                            driver_ctx,
+                            pci_dma_device_id(pci_dev.bus, pci_dev.device, pci_dev.function),
+                        )
+                        .is_err()
+                    {
                         buf.free(driver_ctx);
                         break;
                     }
@@ -484,13 +503,16 @@ pub fn try_init_wifi_device_step() {
                 let mut rx_bufs: Vec<DmaRegion> = Vec::new();
                 let rx_virt = rx_dma_ring.virt() as *mut RxDmaDesc;
                 for i in 0..RX_QUEUE_SIZE {
-                    let mut buf = match DmaRegion::alloc(driver_ctx, MAX_FRAME_SIZE) {
+                    let mut buf = match DmaRegion::alloc(driver_ctx, RX_BUFFER_SIZE) {
                         Some(b) => b,
                         None => {
                             break;
                         }
                     };
-                    let dma = match buf.dma_map(driver_ctx, pci_dev.device_id) {
+                    let dma = match buf.dma_map(
+                        driver_ctx,
+                        pci_dma_device_id(pci_dev.bus, pci_dev.device, pci_dev.function),
+                    ) {
                         Ok(d) => d,
                         Err(_) => {
                             buf.free(driver_ctx);
@@ -498,9 +520,7 @@ pub fn try_init_wifi_device_step() {
                         }
                     };
                     unsafe {
-                        (*rx_virt.add(i)).addr_lo = dma as u32;
-                        (*rx_virt.add(i)).addr_hi = (dma >> 32) as u32;
-                        (*rx_virt.add(i)).len = MAX_FRAME_SIZE as u16;
+                        (*rx_virt.add(i)).addr = (dma >> 8) as u32;
                         mmio::cache_flush(rx_virt.add(i) as usize);
                     }
                     rx_bufs.push(buf);
@@ -530,15 +550,9 @@ pub fn try_init_wifi_device_step() {
                     rx_bufs,
                 )
             };
-            let rx_phys = rx_dma.dma_iova();
-            unsafe {
-                core::ptr::write_volatile(mmio.add(FH_TX_CHNL0_WPTR as usize), 0);
-                core::ptr::write_volatile(
-                    mmio.add(FH_RSCSR_CHNL0_RBDCB_BASE as usize),
-                    rx_phys as u32,
-                );
-                core::ptr::write_volatile(mmio.add(FH_RSCSR_CHNL0_RBDCB_RPTR_REG as usize), 0);
-            }
+            // FH RX setup is deferred until firmware reports alive; the
+            // firmware reset sequence can overwrite the FH registers.
+            debug::print("iwlwifi", "rx_dma_deferred_until_alive");
             let device = IwlWifiDevice {
                 mac,
                 _pci_dev: pci_dev,
@@ -920,42 +934,14 @@ impl IwlWifiDevice {
 
         self.wifi_conn.start_scan();
         self.scan_results.clear();
-        // This field is used as a bounded scan wait counter. The firmware
-        // scans four channels with dwell time; completing after 13 scheduler
-        // ticks (~13 ms) almost always discarded the scan before beacons
-        // reached the RX path.
+        // This field is a bounded scan wait counter. The LMAC request covers
+        // the 2.4/5 GHz channel set and uses passive dwell times, so the host
+        // must leave several seconds for firmware completion and RX delivery.
         self.scan_channel = 0;
         self.scan_pending = true;
         self.iwl_state = IwlState::Scanning;
 
-        let scan_cmd = ScanRequestCmd {
-            beacon_interval: 100,
-            flags: 0,
-            num_channels: 4,
-            reserved: [0u8; 3],
-            channels: [
-                ScanChannel {
-                    channel: 1,
-                    tx_power: 0,
-                    reserved: 0,
-                },
-                ScanChannel {
-                    channel: 6,
-                    tx_power: 0,
-                    reserved: 0,
-                },
-                ScanChannel {
-                    channel: 11,
-                    tx_power: 0,
-                    reserved: 0,
-                },
-                ScanChannel {
-                    channel: 36,
-                    tx_power: 0,
-                    reserved: 0,
-                },
-            ],
-        };
+        let scan_cmd = ScanRequestCmd::new(self.mac);
         let cmd_data = unsafe {
             core::slice::from_raw_parts(
                 &scan_cmd as *const ScanRequestCmd as *const u8,
@@ -968,7 +954,11 @@ impl IwlWifiDevice {
             cmd_data,
         )?;
 
-        log::info!("iwlwifi: scan started");
+        log::info!(
+            "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={}",
+            23,
+            core::mem::size_of::<ScanRequestCmd>()
+        );
         Ok(())
     }
 

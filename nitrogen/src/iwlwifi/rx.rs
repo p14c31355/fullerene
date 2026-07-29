@@ -299,18 +299,47 @@ impl IwlWifiDevice {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
+            let fh_cause = self.safe_read32(CSR_FH_INT).unwrap_or(0);
+            if int_cause & CSR_INT_BIT_FH_RX != 0 {
+                unsafe {
+                    core::ptr::write_volatile(
+                        self.mmio.add(CSR_FH_INT as usize),
+                        fh_cause & CSR_FH_INT_RX_MASK,
+                    );
+                }
+            }
+            if int_cause & CSR_INT_BIT_FH_TX != 0 {
+                unsafe {
+                    core::ptr::write_volatile(
+                        self.mmio.add(CSR_FH_INT as usize),
+                        fh_cause & CSR_FH_INT_TX_MASK,
+                    );
+                }
+            }
             // CSR_INT reports the aggregate FH RX cause at bit 31. The
             // per-channel bits live in CSR_FH_INT; bit 18 is not the host RX
             // interrupt and caused received scan frames to be ignored.
             if int_cause & CSR_INT_BIT_FH_RX != 0 {
-                let raw_rx_head = match self.safe_read32(FH_RSCSR_CHNL0_RBDCB_RPTR_REG) {
-                    Some(value) => value,
-                    None => return,
-                };
-                self.rx_head = raw_rx_head as usize % RX_QUEUE_SIZE;
+                // Gen1 hardware reports the completed RBD in host memory;
+                // the old MMIO read-pointer offsets used here previously are
+                // not the legacy RX status registers.
+                mmio::cache_flush_range(
+                    self.rx_status() as *const RxDmaStatus as usize,
+                    core::mem::size_of::<RxDmaStatus>(),
+                );
+                let closed_rb = (self.rx_status().closed_rb_num as usize) & (RX_QUEUE_SIZE - 1);
+                // closed_rb_num is the next RBD boundary: firmware has
+                // filled entries [rx_tail, closed_rb_num). This matches the
+                // Linux gen1_2 receive loop, which processes while read != r.
+                self.rx_head = closed_rb;
+                log::info!(
+                    "iwlwifi: RX DMA progress closed_rbd={} process_until={}",
+                    closed_rb,
+                    self.rx_head
+                );
             }
             if int_cause & CSR_INT_BIT_FH_TX != 0 {
-                let hardware_tail = match self.safe_read32(FH_TX_CHNL0_WPTR) {
+                let hardware_tail = match self.read_prph(SCD_QUEUE_RDPTR_CMD) {
                     Some(value) => value,
                     None => return,
                 } as usize;
@@ -321,40 +350,161 @@ impl IwlWifiDevice {
 
         self.finish_pending_wpa_keys();
 
+        let rx_tail_before = self.rx_tail;
         mmio::cache_flush_range(
             self.rx_dma_ring.virt(),
             core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE,
         );
         while self.rx_tail != self.rx_head {
             let desc_idx = self.rx_tail;
-            let (desc_len, rx_decrypted) = {
-                let desc = self.rx_desc(desc_idx);
-                (desc.len, desc.flags & RX_DESC_FLAG_DECRYPTED != 0)
-            };
-            if desc_len > 0 && desc_idx < self.rx_bufs.len() {
+            if desc_idx < self.rx_bufs.len() {
                 let buf = &self.rx_bufs[desc_idx];
-                let frame_len = (desc_len as usize).min(buf.len());
+                // Legacy FH does not put a length in the RBD. The firmware
+                // packet header contains the useful length; inspect the full
+                // 4K RB and let the packet decoder locate the 802.11 body.
+                let frame_len = buf.len();
                 let mut frame_data = alloc::vec![0; frame_len];
                 buf.read_into(&mut frame_data);
-                self.process_rx_frame(&frame_data, rx_decrypted);
+                self.process_rx_buffer(&frame_data);
             }
 
-            let desc = self.rx_desc_mut(desc_idx);
-            desc.len = MAX_FRAME_SIZE as u16;
-            mmio::cache_flush(desc as *const RxDmaDesc as usize);
             self.rx_tail = (self.rx_tail + 1) % RX_QUEUE_SIZE;
+        }
+
+        if self.rx_tail != rx_tail_before {
+            // The hardware write index is the next RBD made available and
+            // must advance in groups of eight on this generation.
+            unsafe {
+                core::ptr::write_volatile(
+                    self.mmio.add(FH_RSCSR_CHNL0_RBDCB_WPTR_REG as usize),
+                    (self.rx_tail as u32) & !7,
+                );
+            }
+            mmio::write_barrier();
         }
 
         if self.scan_pending {
             self.scan_channel += 1;
-            if self.scan_channel > 100 {
+            if self.scan_channel > 4000 {
                 self.scan_pending = false;
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;
-                log::info!(
-                    "iwlwifi: scan complete ({} APs found)",
+                log::warn!(
+                    "iwlwifi: scan watchdog expired without firmware completion notification ({} APs found)",
                     self.scan_results.len()
                 );
+                log::info!(
+                    "iwlwifi: scan complete by host watchdog ({} APs found)",
+                    self.scan_results.len()
+                );
+            }
+        }
+    }
+
+    /// Decode a legacy iwlwifi RX buffer. Runtime notifications carry an
+    /// iwl_rx_packet header before their payload. The first four bytes are
+    /// len_n_flags; the four-byte command header follows it. Some firmware
+    /// paths expose the 802.11 MPDU directly, so retain a bounded fallback.
+    fn process_rx_buffer(&mut self, data: &[u8]) {
+        // FH_RSCSR_FRAME_SIZE_MSK covers the low 14 bits of len_n_flags. The
+        // packet length includes len_n_flags and the command header.
+        let packet_len = if data.len() >= 8 {
+            let reported =
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize & 0x3fff;
+            if reported >= 8 && reported <= data.len() {
+                reported
+            } else {
+                data.len()
+            }
+        } else {
+            data.len()
+        };
+
+        if packet_len >= 8 {
+            let command = data[4];
+            let group = data[5];
+            let sequence = u16::from_le_bytes([data[6], data[7]]);
+            if command == 0xe7 || command == 0x6d {
+                let payload = &data[8..packet_len];
+                log::info!(
+                    "iwlwifi: firmware scan complete notification cmd=0x{:02x} status={} scanned_channels={}",
+                    command,
+                    payload.get(1).copied().unwrap_or(0),
+                    payload.first().copied().unwrap_or(0),
+                );
+                if self.scan_pending {
+                    self.scan_pending = false;
+                    self.wifi_conn.finish_scan();
+                    self.iwl_state = IwlState::Disconnected;
+                    log::info!(
+                        "iwlwifi: scan complete ({} APs found)",
+                        self.scan_results.len()
+                    );
+                }
+                return;
+            }
+
+            // REPLY_RX_MPDU_CMD (0xc1) has iwl_rx_mpdu_res_start
+            // (byte_count, assist) at payload offset 0, followed by the raw
+            // 802.11 MPDU. The packet's 4-byte length header is not part of
+            // the command payload.
+            if command == 0xc1 && packet_len >= 12 {
+                let payload = &data[8..packet_len];
+                let byte_count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
+                let frame_end = 12usize.saturating_add(byte_count).min(packet_len);
+                log::info!(
+                    "iwlwifi: RX MPDU notification group=0x{:02x} seq=0x{:04x} bytes={} frame_bytes={}",
+                    group,
+                    sequence,
+                    byte_count,
+                    frame_end.saturating_sub(12)
+                );
+                if frame_end >= 36 {
+                    self.process_rx_frame(&data[12..frame_end], false);
+                }
+                return;
+            }
+
+            // REPLY_ERROR payload layout is error_type:u32, cmd_id:u8,
+            // reserved:u8, bad_cmd_seq:u16, error_service:u32.
+            if command == LegacyCmd::ReplyError as u8 && packet_len >= 20 {
+                let payload = &data[8..packet_len];
+                let error_type =
+                    u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]);
+                let bad_cmd = payload[4];
+                let bad_seq = u16::from_le_bytes([payload[6], payload[7]]);
+                let service =
+                    u32::from_le_bytes([payload[8], payload[9], payload[10], payload[11]]);
+                log::warn!(
+                    "iwlwifi: firmware command error type={:#010x} cmd=0x{:02x} seq=0x{:04x} service={:#010x}",
+                    error_type,
+                    bad_cmd,
+                    bad_seq,
+                    service,
+                );
+                return;
+            }
+
+            log::info!(
+                "iwlwifi: RX firmware notification cmd=0x{:02x} group=0x{:02x} seq=0x{:04x} packet_len={}",
+                command,
+                group,
+                sequence,
+                packet_len,
+            );
+        }
+
+        let scan_end = core::cmp::min(packet_len.saturating_sub(24), 128);
+        for offset in 0..=scan_end {
+            let fc = data[offset];
+            let frame_type = (fc & 0x0C) >> 2;
+            let subtype = (fc >> 4) & 0x0F;
+            if frame_type == 0 && (subtype == 5 || subtype == 8) {
+                let candidate = &data[offset..];
+                if candidate.len() >= 24 {
+                    self.process_rx_frame(candidate, false);
+                    return;
+                }
             }
         }
     }
