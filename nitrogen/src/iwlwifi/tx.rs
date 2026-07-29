@@ -202,7 +202,8 @@ impl IwlWifiDevice {
         *desc = TxDmaDesc::zeroed();
         desc.num_tbs = 1;
         desc.tbs[0].addr_lo = dma_addr as u32;
-        desc.tbs[0].hi_n_len = ((total_len as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+        let hi_n_len = ((total_len as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+        desc.tbs[0].hi_n_len = hi_n_len;
         mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
         self.tx_head = self.tx_head.wrapping_add(1);
@@ -215,12 +216,15 @@ impl IwlWifiDevice {
         }
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: HCMD submitted: q={} index={} opcode=0x{:02x} group=0x{:02x} bytes={} wrptr={}",
+            "iwlwifi: HCMD submitted: q={} index={} opcode=0x{:02x} group=0x{:02x} bytes={} dma={:#018x} tfd_addr={:#010x} tfd_hi_n_len={:#06x} wrptr={}",
             IWL_CMD_QUEUE,
             desc_idx,
             opcode,
             group,
             total_len,
+            dma_addr,
+            dma_addr as u32,
+            hi_n_len,
             self.tx_head & 0xff,
         );
         Ok(())
@@ -254,12 +258,28 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: station MAC context sent");
 
-        // Keep one small command between the fixed-size init commands and the
-        // large LMAC scan request. This is a transport probe: if SCD advances
-        // over ECHO but stops at SCAN_OFFLOAD_REQUEST_CMD, the DMA ring is
-        // healthy and the remaining failure is in scan prerequisites/payload.
-        self.send_hcmd(LegacyCmd::Echo as u8, GroupId::Legacy as u8, &[])?;
-        log::info!("iwlwifi: command transport echo sent");
+        let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
+        let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
+        log::info!(
+            "iwlwifi: command transport before optional echo probe: CSR_INT={:#010x} FH_INT={:#010x}",
+            csr_int_before_echo,
+            csr_fh_int_before_echo,
+        );
+        if csr_int_before_echo & CSR_INT_BIT_HW_ERR != 0 {
+            log::error!(
+                "iwlwifi: HW_ERR was already set before ECHO; first two HCMD submissions triggered the failure"
+            );
+            self.fw_state = FwState::Error;
+            return Err(crate::DriverError::Protocol);
+        }
+
+        // ECHO is a valid legacy command in the general firmware API, but on
+        // this 7265-17 target it causes CSR_INT_BIT_HW_ERR immediately after
+        // the two required init commands. Do not issue this diagnostic probe
+        // in the production init path; continue to the real scan command so
+        // we can distinguish an ECHO-specific firmware failure from a general
+        // TX/SCD failure.
+        log::info!("iwlwifi: command transport echo probe skipped");
 
         self.fw_state = FwState::Ready;
         log::info!("iwlwifi: init commands complete, device operational");

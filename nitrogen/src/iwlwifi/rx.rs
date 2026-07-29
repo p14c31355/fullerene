@@ -342,13 +342,21 @@ impl IwlWifiDevice {
             let tx_cfg = self
                 .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
                 .unwrap_or(!0);
+            let csr_gp1 = self.safe_read32(CSR_UCODE_GP1).unwrap_or(!0);
+            let csr_gp_driver = self.safe_read32(CSR_GP_DRIVER).unwrap_or(!0);
+            let csr_reset = self.safe_read32(CSR_RESET).unwrap_or(!0);
+            let csr_gp_cntrl = self.safe_read32(CSR_GP_CNTRL).unwrap_or(!0);
             let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
             let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
             log::error!(
-                "iwlwifi: FH hardware error: CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} TSSR_STATUS={:#010x} TSSR_ERROR={:#010x} TX_TRB={:#010x} TX_CFG={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
+                "iwlwifi: FH hardware error: CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} UCODE_GP1={:#010x} GP_DRIVER={:#010x} RESET={:#010x} GP_CNTRL={:#010x} TSSR_STATUS={:#010x} TSSR_ERROR={:#010x} TX_TRB={:#010x} TX_CFG={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
                 int_cause,
                 int_mask,
                 fh_cause,
+                csr_gp1,
+                csr_gp_driver,
+                csr_reset,
+                csr_gp_cntrl,
                 tx_status,
                 tx_error,
                 tx_trb,
