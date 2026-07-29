@@ -66,6 +66,7 @@ pub enum GroupId {
 
 #[repr(u8)]
 pub enum LegacyCmd {
+    Echo = 0x03,
     AddStaKey = 0x17,
     /// LMAC scan request for the 7265 firmware API (SCAN_OFFLOAD_REQUEST_CMD).
     /// 0x18 is ADD_STA, not a scan request.

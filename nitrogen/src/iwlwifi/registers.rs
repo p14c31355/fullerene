@@ -47,9 +47,31 @@ pub const CSR_GP_CNTRL_MAC_CLOCK_READY: u32 = 1 << 0;
 pub const CSR_HW_REV_TYPE_MASK: u16 = 0x0FFF;
 pub const CSR_HW_REV_TYPE_7265D: u16 = 0x0210;
 pub const CSR_INT_BIT_ALIVE: u32 = 1 << 0;
+pub const CSR_INT_BIT_RESET_DONE: u32 = 1 << 2;
+pub const CSR_INT_BIT_SW_RX: u32 = 1 << 3;
+pub const CSR_INT_BIT_RF_KILL: u32 = 1 << 7;
+pub const CSR_INT_BIT_WAKEUP: u32 = 1 << 1;
+pub const CSR_INT_BIT_RX_PERIODIC: u32 = 1 << 28;
+pub const CSR_INT_BIT_HW_ERR: u32 = 1 << 29;
+pub const CSR_INT_BIT_SCD: u32 = 1 << 26;
 pub const CSR_INT_BIT_SW_ERR: u32 = 1 << 25;
 pub const CSR_INT_BIT_FH_TX: u32 = 1 << 27;
 pub const CSR_INT_BIT_FH_RX: u32 = 1 << 31;
+/// Runtime interrupt set used by the legacy 7000-series transport.
+///
+/// Command responses are reported through SW_RX as well as the FH RX
+/// aggregate. Keep the mask aligned with the upstream gen1 transport instead
+/// of enabling reserved CSR bits with 0xffff_ffff.
+pub const CSR_INI_SET_MASK: u32 = CSR_INT_BIT_FH_RX
+    | CSR_INT_BIT_HW_ERR
+    | CSR_INT_BIT_FH_TX
+    | CSR_INT_BIT_SW_ERR
+    | CSR_INT_BIT_RF_KILL
+    | CSR_INT_BIT_SW_RX
+    | CSR_INT_BIT_WAKEUP
+    | CSR_INT_BIT_RESET_DONE
+    | CSR_INT_BIT_ALIVE
+    | CSR_INT_BIT_RX_PERIODIC;
 pub const CSR_FH_INT_BIT_TX_CHNL0: u32 = 1 << 0;
 pub const CSR_FH_INT_BIT_RX_CHNL0: u32 = 1 << 16;
 pub const CSR_FH_INT_RX_MASK: u32 = 1 << 16;

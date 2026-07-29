@@ -382,7 +382,7 @@ pub fn try_init_wifi_device_step() {
             };
             debug::print("iwlwifi", "step: mmio_mask_ints");
             unsafe {
-                core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
+                core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), CSR_INI_SET_MASK);
             }
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
@@ -945,11 +945,16 @@ impl IwlWifiDevice {
                 core::mem::size_of::<ScanRequestCmd>(),
             )
         };
-        self.send_hcmd(
+        if let Err(error) = self.send_hcmd(
             LegacyCmd::ScanRequest as u8,
             GroupId::Legacy as u8,
             cmd_data,
-        )?;
+        ) {
+            self.scan_pending = false;
+            self.iwl_state = IwlState::Disconnected;
+            self.wifi_conn.finish_scan();
+            return Err(error);
+        }
 
         log::info!(
             "iwlwifi: LMAC scan request queued: opcode=0x51 channels={} bytes={}",

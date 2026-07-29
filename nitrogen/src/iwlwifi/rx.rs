@@ -291,6 +291,32 @@ impl IwlWifiDevice {
             return;
         }
 
+        // CSR_INT is an interrupt cause register, not a reliable completion
+        // poll result. On this legacy transport a completion can be reflected
+        // in the scheduler/RBD pointers without presenting a cause bit to the
+        // host (for example while the interrupt is coalesced or masked). Poll
+        // both shared-memory pointers so queue accounting does not remain
+        // stuck at the last interrupt.
+        let polled_tx_tail = if self.fw_state == FwState::Ready {
+            self.read_prph(SCD_QUEUE_RDPTR_CMD)
+                .map(|value| value as usize)
+        } else {
+            None
+        };
+        let tx_tail_before_poll = self.tx_tail;
+        if let Some(hardware_tail) = polled_tx_tail {
+            self.update_tx_tail(hardware_tail);
+            if self.tx_tail != tx_tail_before_poll {
+                log::info!(
+                    "iwlwifi: TX completion progress scd_rptr={} tx_tail={} tx_head={}",
+                    hardware_tail & (TX_QUEUE_SIZE - 1),
+                    self.tx_tail & (TX_QUEUE_SIZE - 1),
+                    self.tx_head & (TX_QUEUE_SIZE - 1),
+                );
+                self.process_tx_queue();
+            }
+        }
+
         let int_cause = match self.safe_read32(CSR_INT) {
             Some(value) => value,
             None => return,
@@ -300,7 +326,7 @@ impl IwlWifiDevice {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
             let fh_cause = self.safe_read32(CSR_FH_INT).unwrap_or(0);
-            if int_cause & CSR_INT_BIT_FH_RX != 0 {
+            if int_cause & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX) != 0 {
                 unsafe {
                     core::ptr::write_volatile(
                         self.mmio.add(CSR_FH_INT as usize),
@@ -319,7 +345,7 @@ impl IwlWifiDevice {
             // CSR_INT reports the aggregate FH RX cause at bit 31. The
             // per-channel bits live in CSR_FH_INT; bit 18 is not the host RX
             // interrupt and caused received scan frames to be ignored.
-            if int_cause & CSR_INT_BIT_FH_RX != 0 {
+            if int_cause & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX) != 0 {
                 // Gen1 hardware reports the completed RBD in host memory;
                 // the old MMIO read-pointer offsets used here previously are
                 // not the legacy RX status registers.
@@ -339,12 +365,32 @@ impl IwlWifiDevice {
                 );
             }
             if int_cause & CSR_INT_BIT_FH_TX != 0 {
-                let hardware_tail = match self.read_prph(SCD_QUEUE_RDPTR_CMD) {
-                    Some(value) => value,
-                    None => return,
-                } as usize;
-                self.update_tx_tail(hardware_tail);
+                // The pointer was polled above. Re-read only when an actual
+                // FH_TX cause is present, since the interrupt and the SCD
+                // pointer are independent on this generation.
+                if let Some(hardware_tail) = self.read_prph(SCD_QUEUE_RDPTR_CMD) {
+                    self.update_tx_tail(hardware_tail as usize);
+                }
                 self.process_tx_queue();
+            }
+        }
+
+        // Also consume RX buffers when the shared status advanced without a
+        // corresponding CSR_INT bit. This is the RX equivalent of the TX
+        // pointer polling above.
+        if self.fw_state == FwState::Ready {
+            mmio::cache_flush_range(
+                self.rx_status() as *const RxDmaStatus as usize,
+                core::mem::size_of::<RxDmaStatus>(),
+            );
+            let closed_rb = (self.rx_status().closed_rb_num as usize) & (RX_QUEUE_SIZE - 1);
+            if closed_rb != self.rx_head {
+                self.rx_head = closed_rb;
+                log::info!(
+                    "iwlwifi: RX DMA progress polled closed_rbd={} process_until={}",
+                    closed_rb,
+                    self.rx_head
+                );
             }
         }
 
@@ -389,9 +435,25 @@ impl IwlWifiDevice {
                 self.scan_pending = false;
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;
+                let tx_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+                let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+                let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+                let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
+                let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(!0);
+                let tx_cfg = self
+                    .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
+                    .unwrap_or(!0);
                 log::warn!(
-                    "iwlwifi: scan watchdog expired without firmware completion notification ({} APs found)",
-                    self.scan_results.len()
+                    "iwlwifi: scan watchdog expired without firmware completion notification ({} APs found): tx_head={} tx_tail={} scd_rptr={} scd_status={:#010x} CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} TX_CFG={:#010x}",
+                    self.scan_results.len(),
+                    self.tx_head & 0xff,
+                    self.tx_tail & 0xff,
+                    tx_rptr,
+                    scd_status,
+                    csr_int,
+                    int_mask,
+                    fh_int,
+                    tx_cfg,
                 );
                 log::info!(
                     "iwlwifi: scan complete by host watchdog ({} APs found)",

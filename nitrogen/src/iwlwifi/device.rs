@@ -949,7 +949,7 @@ impl IwlWifiDevice {
 
         debug::print("iwlwifi", "fw: alive_ok");
         unsafe {
-            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
+            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), CSR_INI_SET_MASK);
         }
 
         self.fw_state = FwState::Ready;
@@ -1268,7 +1268,7 @@ impl IwlWifiDevice {
         if (int_cause & CSR_INT_BIT_ALIVE) != 0 {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
-                core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
+                core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), CSR_INI_SET_MASK);
             }
             self.fw_state = FwState::Alive;
             debug::print("iwlwifi", "fw: alive_ok");

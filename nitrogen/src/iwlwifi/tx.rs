@@ -248,6 +248,13 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: station MAC context sent");
 
+        // Keep one small command between the fixed-size init commands and the
+        // large LMAC scan request. This is a transport probe: if SCD advances
+        // over ECHO but stops at SCAN_OFFLOAD_REQUEST_CMD, the DMA ring is
+        // healthy and the remaining failure is in scan prerequisites/payload.
+        self.send_hcmd(LegacyCmd::Echo as u8, GroupId::Legacy as u8, &[])?;
+        log::info!("iwlwifi: command transport echo sent");
+
         self.fw_state = FwState::Ready;
         log::info!("iwlwifi: init commands complete, device operational");
         Ok(())
