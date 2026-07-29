@@ -198,9 +198,16 @@ impl PhyContextCmdV1 {
 /// still arrive because they are command responses, but beacons travel
 /// the REPLY_RX_MPDU_CMD data path which requires an active MAC context.
 ///
-/// The layout follows Linux's `iwl_mac_ctx_cmd` (API v1).
+/// The layout follows Linux's `iwl_mac_ctx_cmd` (API v1).  Like every
+/// firmware context command, the first 8 bytes are the common
+/// `id_and_color` / `action` header.
 #[repr(C, packed)]
 pub struct MacContextCmd {
+    /// Context ID and colour (MAC id = 0, colour = 0).
+    pub id_and_color: u32,
+    /// Action: 0 = modify, 1 = add.  Use ADD when first establishing the
+    /// MAC context.
+    pub action: u32,
     /// MAC type: 0 = AUX, 1 = STA, 2 = P2P_DEVICE, 3 = P2P_CLIENT, 4 = P2P_GO, 5 = MONITOR
     pub mac_type: u32,
     /// MAC flags (0 for minimal STA).
@@ -225,10 +232,12 @@ impl MacContextCmd {
     /// Create a minimal STA MAC context that accepts beacons and multicast
     /// frames — enough for passive scanning.
     pub fn sta(mac: [u8; 6]) -> Self {
-        // MAC_FILTER_ACCEPT_GRP | MAC_FILTER_IN_BEACON
-        const FILTER_FLAGS: u32 = (1 << 2) | (1 << 6);
+        // Linux: MAC_FILTER_ACCEPT_GRP = BIT(3), MAC_FILTER_IN_BEACON = BIT(7)
+        const FILTER_FLAGS: u32 = (1 << 3) | (1 << 7);
         Self {
-            mac_type: 1, // IWL_MAC_TYPE_STA
+            id_and_color: 0, // MAC id 0, colour 0
+            action: 1,       // FW_CTXT_ACTION_ADD
+            mac_type: 1,     // IWL_MAC_TYPE_STA
             mac_flags: 0,
             tsf_id: 0,
             color: 0,

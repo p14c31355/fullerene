@@ -350,7 +350,7 @@ impl IwlWifiDevice {
         };
         self.send_hcmd(
             LegacyCmd::MacContext as u8,
-            GroupId::Legacy as u8,
+            GroupId::Long as u8,
             mac_ctx_bytes,
         )?;
         log::info!(

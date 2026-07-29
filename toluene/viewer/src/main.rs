@@ -689,6 +689,14 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
                     "NAL unit is too large",
                 );
             }
+            // Yield to the host before each NAL decode so the event loop
+            // can pump input and render even when decode_nal takes a long
+            // time.  decode_nal itself is pure WASM compute and cannot
+            // call the host, so this is the finest-grained yield point
+            // available.
+            unsafe {
+                wait_for_ns(0);
+            }
             if let Ok(Some(frame)) = decoder.decode_nal(nal) {
                 wait_for_video_time(playback_start, target_ns);
                 if render_video_frame(&mut window_id, &title, &frame) {
