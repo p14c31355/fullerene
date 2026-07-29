@@ -10,13 +10,26 @@ use super::types::*;
 impl IwlWifiDevice {
     fn init_tx_cmd_queue(&mut self) {
         let ring_phys = self.tx_dma_ring.dma_iova();
+        let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
+        let scd_bc_phys = ring_phys + TX_SCD_BC_OFFSET as u64;
 
         // The command queue is FIFO mode on gen1 hardware and still needs the
         // scheduler context/active FIFO setup after firmware alive.
+        self.write_prph(SCD_TXFACT, 0);
+        self.write_prph(SCD_EN_CTRL, 0);
         if let Some(scd_base) = self.read_prph(SCD_SRAM_BASE_ADDR) {
+            // Linux resets the scheduler's host-memory backing pointer after
+            // alive. The table is also needed by the legacy scheduler even
+            // though the command queue itself is non-aggregated.
+            self.write_prph(SCD_DRAM_BASE_ADDR, (scd_bc_phys >> 10) as u32);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
         }
+        // Linux enables automatic queue activation before publishing the
+        // queue status. Otherwise the SCD can retain the post-reset inactive
+        // state even though the status register looks active.
+        let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(0);
+        self.write_prph(SCD_GP_CTRL, scd_gp | SCD_GP_CTRL_AUTO_ACTIVE_MODE);
         self.write_prph(SCD_QUEUE_RDPTR_CMD, 0);
         self.write_prph(
             SCD_QUEUE_STATUS_CMD,
@@ -29,6 +42,13 @@ impl IwlWifiDevice {
         self.write_prph(SCD_EN_CTRL, 1 << IWL_CMD_QUEUE);
 
         unsafe {
+            // The keep-warm buffer must be a separate 4 KiB-aligned DMA
+            // region. It occupies the page immediately after the TFD ring in
+            // the single contiguous allocation.
+            core::ptr::write_volatile(
+                self.mmio.add(FH_KW_MEM_ADDR_REG as usize),
+                (keep_warm_phys >> 4) as u32,
+            );
             // The 7265 uses a gen1 128-byte TFD and queue 4 for HCMDs. The
             // previous code rang 0x0bc, which is not HBUS_TARG_WRPTR on this
             // device and therefore never submitted the scan command.
@@ -51,10 +71,18 @@ impl IwlWifiDevice {
             );
         }
         mmio::write_barrier();
+        let fh_config = self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4));
+        let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD);
+        let scd_active = self.read_prph(SCD_EN_CTRL);
         log::info!(
-            "iwlwifi: legacy TX command queue configured: q={} tfd={:#018x}",
+            "iwlwifi: legacy TX command queue configured: q={} tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} scd_en={:#010x}",
             IWL_CMD_QUEUE,
-            ring_phys
+            ring_phys,
+            keep_warm_phys,
+            scd_bc_phys,
+            fh_config.unwrap_or(!0),
+            scd_status.unwrap_or(!0),
+            scd_active.unwrap_or(!0)
         );
     }
 
@@ -180,6 +208,15 @@ impl IwlWifiDevice {
             );
         }
         mmio::write_barrier();
+        log::info!(
+            "iwlwifi: HCMD submitted: q={} index={} opcode=0x{:02x} group=0x{:02x} bytes={} wrptr={}",
+            IWL_CMD_QUEUE,
+            desc_idx,
+            opcode,
+            group,
+            total_len,
+            self.tx_head & 0xff,
+        );
         Ok(())
     }
 

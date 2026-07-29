@@ -171,10 +171,24 @@ impl IwlWifiDevice {
             );
         }
         mmio::write_barrier();
+        let rx_config = self.safe_read32(FH_MEM_RCSR_CHNL0_CONFIG_REG).unwrap_or(!0);
+        let rx_rbd_base = self
+            .safe_read32(FH_RSCSR_CHNL0_RBDCB_BASE_REG)
+            .unwrap_or(!0);
+        let rx_status_ptr = self.safe_read32(FH_RSCSR_CHNL0_STTS_WPTR_REG).unwrap_or(!0);
+        let rx_wptr = self
+            .safe_read32(FH_RSCSR_CHNL0_RBDCB_WPTR_REG)
+            .unwrap_or(!0);
+        let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(!0);
         log::info!(
-            "iwlwifi: legacy RX DMA enabled: rbd={:#018x} status={:#018x}",
+            "iwlwifi: legacy RX DMA enabled: rbd={:#018x} status={:#018x} cfg={:#010x} rbd_base={:#010x} status_ptr={:#010x} wptr={:#010x} int_mask={:#010x}",
             rx_phys,
-            status_phys
+            status_phys,
+            rx_config,
+            rx_rbd_base,
+            rx_status_ptr,
+            rx_wptr,
+            int_mask,
         );
     }
 
@@ -294,20 +308,19 @@ impl IwlWifiDevice {
             core::ptr::write_volatile(mmio.add(CSR_INT_MASK as usize), 0xFFFFFFFFu32);
         }
 
-        let mut tx_dma_ring =
-            DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
-                .ok_or(IwlError::DmaAllocFailed)
-                .and_then(|mut r| {
-                    r.dma_map(
-                        ctx,
-                        pci_dma_device_id(device.bus, device.device, device.function),
-                    )
-                    .map_err(|_| {
-                        r.free(ctx);
-                        IwlError::DmaAllocFailed
-                    })
-                    .map(|_| r)
-                })?;
+        let mut tx_dma_ring = DmaRegion::alloc(ctx, TX_DMA_ALLOCATION_BYTES)
+            .ok_or(IwlError::DmaAllocFailed)
+            .and_then(|mut r| {
+                r.dma_map(
+                    ctx,
+                    pci_dma_device_id(device.bus, device.device, device.function),
+                )
+                .map_err(|_| {
+                    r.free(ctx);
+                    IwlError::DmaAllocFailed
+                })
+                .map(|_| r)
+            })?;
         let mut rx_dma_ring = match DmaRegion::alloc(
             ctx,
             core::mem::size_of::<RxDmaDesc>() * RX_QUEUE_SIZE + core::mem::size_of::<RxDmaStatus>(),
@@ -489,20 +502,19 @@ impl IwlWifiDevice {
         }
 
         debug::print("iwlwifi", "alloc_tx_ring");
-        let mut tx_dma_ring =
-            DmaRegion::alloc(ctx, core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE)
-                .ok_or(IwlError::DmaAllocFailed)
-                .and_then(|mut r| {
-                    r.dma_map(
-                        ctx,
-                        pci_dma_device_id(device.bus, device.device, device.function),
-                    )
-                    .map_err(|_| {
-                        r.free(ctx);
-                        IwlError::DmaAllocFailed
-                    })
-                    .map(|_| r)
-                })?;
+        let mut tx_dma_ring = DmaRegion::alloc(ctx, TX_DMA_ALLOCATION_BYTES)
+            .ok_or(IwlError::DmaAllocFailed)
+            .and_then(|mut r| {
+                r.dma_map(
+                    ctx,
+                    pci_dma_device_id(device.bus, device.device, device.function),
+                )
+                .map_err(|_| {
+                    r.free(ctx);
+                    IwlError::DmaAllocFailed
+                })
+                .map(|_| r)
+            })?;
         debug::print("iwlwifi", "alloc_rx_ring");
         let mut rx_dma_ring = match DmaRegion::alloc(
             ctx,

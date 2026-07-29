@@ -426,10 +426,7 @@ pub fn try_init_wifi_device_step() {
                     }
                 };
                 let hw_rev = ctx.hw_rev;
-                let mut tx_dma_ring = match DmaRegion::alloc(
-                    driver_ctx,
-                    core::mem::size_of::<TxDmaDesc>() * TX_QUEUE_SIZE,
-                ) {
+                let mut tx_dma_ring = match DmaRegion::alloc(driver_ctx, TX_DMA_ALLOCATION_BYTES) {
                     Some(r) => r,
                     None => {
                         set_init_phase(WifiInitPhase::Failed);

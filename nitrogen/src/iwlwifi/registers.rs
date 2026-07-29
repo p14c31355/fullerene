@@ -81,6 +81,7 @@ pub const FH_RCSR_RX_RB_TIMEOUT: u32 = 0x11;
 pub const IWL_CMD_QUEUE: u32 = 4;
 pub const FH_MEM_CBBC_0_15_LOWER_BOUND: u32 = (0x1000 + 0x9D0) / 4;
 pub const FH_MEM_CBBC_CMD_QUEUE: u32 = FH_MEM_CBBC_0_15_LOWER_BOUND + IWL_CMD_QUEUE;
+pub const FH_KW_MEM_ADDR_REG: u32 = (0x1000 + 0x97C) / 4;
 pub const HBUS_TARG_WRPTR: u32 = (0x400 + 0x060) / 4;
 pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
 pub const FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE: u32 = 0x0000_0008;
@@ -88,7 +89,9 @@ pub const FH_TX_CHICKEN_BITS: u32 = (0x1000 + 0xE98) / 4;
 pub const FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN: u32 = 0x0000_0002;
 pub const SCD_BASE: u32 = 0xA02C00;
 pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
+pub const SCD_DRAM_BASE_ADDR: u32 = SCD_BASE + 0x08;
 pub const SCD_TXFACT: u32 = SCD_BASE + 0x10;
+pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;
 pub const SCD_EN_CTRL: u32 = SCD_BASE + 0x254;
 pub const SCD_QUEUE_RDPTR_CMD: u32 = SCD_BASE + 0x68 + IWL_CMD_QUEUE * 4;
 pub const SCD_QUEUE_STATUS_CMD: u32 = SCD_BASE + 0x10C + IWL_CMD_QUEUE * 4;
@@ -97,6 +100,18 @@ pub const SCD_QUEUE_STTS_ACTIVE: u32 = 1 << 3;
 pub const SCD_QUEUE_STTS_WSL: u32 = 1 << 4;
 pub const SCD_QUEUE_STTS_FIFO_COMMAND: u32 = 7;
 pub const SCD_QUEUE_STTS_MASK: u32 = 0x017F_0000;
+pub const SCD_GP_CTRL_AUTO_ACTIVE_MODE: u32 = 1 << 18;
+
+// The legacy SCD byte-count table has one 16-bit entry for each of 256 TFDs
+// plus 64 duplicate entries, for each of the 32 possible queues. Keep it in
+// the same contiguous DMA allocation as the command TFD ring, but outside the
+// ring and keep-warm areas.
+pub const TX_TFD_RING_BYTES: usize = 128 * TX_QUEUE_SIZE;
+pub const TX_KEEP_WARM_OFFSET: usize = TX_TFD_RING_BYTES;
+pub const TX_KEEP_WARM_BYTES: usize = 0x1000;
+pub const TX_SCD_BC_OFFSET: usize = TX_KEEP_WARM_OFFSET + TX_KEEP_WARM_BYTES;
+pub const TX_SCD_BC_BYTES: usize = 32 * (256 + 64) * 2;
+pub const TX_DMA_ALLOCATION_BYTES: usize = TX_SCD_BC_OFFSET + TX_SCD_BC_BYTES;
 /// Firmware-written boot section status consumed before releasing the CPU.
 pub const FH_UCODE_LOAD_STATUS: u32 = 0x1AF0 / 4;
 
