@@ -273,3 +273,11 @@ or sign-wrapped PS/2 relative delta could therefore move the software cursor
 outside the visible screen; opening the shell then made it appear to vanish
 until a later movement. Mouse events are now clamped to the current
 framebuffer bounds before desktop hit-testing and cursor redraw.
+
+### Follow-up — cursor jumps when Wi-Fi is enabled
+
+Wi-Fi firmware/MMIO work runs from the service tick and can delay the next
+PS/2 poll. Relative packets that arrive during that interval were then
+consumed as one large movement. The scheduler also polled input before calling
+`tick_core`, which polled it again. Input polling is now owned by `tick_core`,
+and each resumed poll caps stale accumulated motion to a bounded screen step.

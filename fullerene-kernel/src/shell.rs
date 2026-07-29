@@ -117,8 +117,8 @@ fn wasm_yield_now() {
     if solvent::is_initialized() {
         // WASM is executed synchronously by the kernel shell. A cooperative
         // yield is also the repaint point for long-running media playback.
-        solvent::poll_mouse_state();
-        solvent::poll_keyboard();
+        // runtime_tick_no_fb owns input polling so each yield consumes the
+        // PS/2 stream exactly once.
         solvent::runtime_tick_no_fb();
     } else {
         kernel_syscall(22, 0, 0, 0);

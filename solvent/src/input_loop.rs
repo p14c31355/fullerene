@@ -25,6 +25,17 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
     buttons: 0,
 });
 
+// Relative PS/2 packets can accumulate while a service performs bounded but
+// comparatively long hardware I/O (notably Wi-Fi firmware/MMIO work). Do not
+// turn that backlog into a single teleport across the desktop when polling
+// resumes. The rest is intentionally discarded: it is stale motion, not a
+// new pointer position that the user is still trying to reach.
+const MAX_MOUSE_STEP_PX: i32 = 96;
+
+fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
+    (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
+}
+
 macro_rules! mouse_edge {
     ($queue:expr, $buttons:expr, $prev:expr, $bit:expr, $btn:ident) => {
         if ($buttons & $bit) != 0 && ($prev & $bit) == 0 {
@@ -49,8 +60,8 @@ pub fn poll_mouse_state() {
     let old_x = mouse.x;
     let old_y = mouse.y;
     let sensitivity = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
-    let next_x = i32::from(mouse.x) + i32::from(dx) * i32::from(sensitivity);
-    let next_y = i32::from(mouse.y) - i32::from(dy) * i32::from(sensitivity);
+    let next_x = i32::from(mouse.x) + scaled_mouse_delta(dx, sensitivity);
+    let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
     let (fb_width, fb_height, _) = *FB_DIMS.lock();
     mouse.x = if fb_width == 0 {
         next_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
@@ -96,6 +107,18 @@ pub fn poll_mouse_state() {
         mouse_edge!(queue, buttons, previous, 0x04, Middle);
     }
     *previous_buttons = buttons;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_MOUSE_STEP_PX, scaled_mouse_delta};
+
+    #[test]
+    fn caps_stale_accumulated_motion() {
+        assert_eq!(scaled_mouse_delta(127, 6), MAX_MOUSE_STEP_PX);
+        assert_eq!(scaled_mouse_delta(-127, 6), -MAX_MOUSE_STEP_PX);
+        assert_eq!(scaled_mouse_delta(4, 6), 24);
+    }
 }
 
 pub fn poll_keyboard() {

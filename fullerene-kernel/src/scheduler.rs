@@ -9,8 +9,7 @@
 //! ```text
 //! scheduler_loop()
 //!   ├── update_vdso_all()       — publish time to every process's VDSO page
-//!   ├── solvent::poll_*()       — poll input devices (no interrupt path)
-//!   ├── gui::runtime_tick()     — solvent tick_core + framebuffer render
+//!   ├── gui::runtime_tick()     — input polling, tick_core + framebuffer render
 //!   ├── shell launch check      — via KERNEL lock (independent of SCHEDULER)
 //!   ├── advance_tick()
 //!   └── hlt()
@@ -139,13 +138,6 @@ pub fn scheduler_loop() -> ! {
         let wall_us = read_rtc_us().unwrap_or(uptime_us);
 
         SCHEDULER.update_vdso_all(uptime_us, wall_us);
-
-        // Poll input devices before the runtime tick so that even
-        // without interrupt delivery (some firmware / VM configs) the
-        // desktop remains responsive and doesn't hang after the first
-        // rendered frame.
-        solvent::poll_mouse_state();
-        solvent::poll_keyboard();
 
         gui::runtime_tick(SCHEDULER.current_tick());
 
