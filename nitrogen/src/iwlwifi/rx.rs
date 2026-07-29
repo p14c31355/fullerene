@@ -321,11 +321,45 @@ impl IwlWifiDevice {
             Some(value) => value,
             None => return,
         };
+        // Read FH_INT before acknowledging CSR_INT.  Once the aggregate
+        // interrupt is acknowledged, the per-channel error cause may no
+        // longer be observable.  HW_ERR is fatal for this transport; leave a
+        // complete snapshot in the log instead of allowing the scan watchdog
+        // to obscure the first DMA failure.
+        let fh_cause = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
+        if int_cause & CSR_INT_BIT_HW_ERR != 0 {
+            let tx_status = self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0);
+            let tx_error = self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0);
+            let tx_trb = self.safe_read32(FH_TX_TRB_CHNL0).unwrap_or(!0);
+            let tx_cfg = self
+                .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
+                .unwrap_or(!0);
+            let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
+            let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
+            log::error!(
+                "iwlwifi: FH hardware error: CSR_INT={:#010x} FH_INT={:#010x} TSSR_STATUS={:#010x} TSSR_ERROR={:#010x} TX_TRB={:#010x} TX_CFG={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
+                int_cause,
+                fh_cause,
+                tx_status,
+                tx_error,
+                tx_trb,
+                tx_cfg,
+                scd_rptr,
+                scd_status,
+            );
+            unsafe {
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+                core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0);
+            }
+            self.fw_state = FwState::Error;
+            self.scan_pending = false;
+            self.iwl_state = IwlState::Disconnected;
+            return;
+        }
         if int_cause != 0 {
             unsafe {
                 core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
             }
-            let fh_cause = self.safe_read32(CSR_FH_INT).unwrap_or(0);
             if int_cause & (CSR_INT_BIT_FH_RX | CSR_INT_BIT_SW_RX) != 0 {
                 unsafe {
                     core::ptr::write_volatile(

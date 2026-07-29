@@ -109,9 +109,17 @@ pub const FH_TCSR_CHNL_TX_CONFIG_BASE: u32 = (0x1000 + 0xD00) / 4;
 pub const FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE: u32 = 0x0000_0008;
 pub const FH_TX_CHICKEN_BITS: u32 = (0x1000 + 0xE98) / 4;
 pub const FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN: u32 = 0x0000_0002;
+/// FH scheduler diagnostics for the legacy TX DMA engine.
+pub const FH_TSSR_TX_STATUS_REG: u32 = (0x1000 + 0xEB0) / 4;
+pub const FH_TSSR_TX_ERROR_REG: u32 = (0x1000 + 0xEB8) / 4;
+pub const FH_TX_TRB_CHNL0: u32 = (0x1000 + 0x958) / 4;
 pub const SCD_BASE: u32 = 0xA02C00;
 pub const SCD_SRAM_BASE_ADDR: u32 = SCD_BASE;
 pub const SCD_DRAM_BASE_ADDR: u32 = SCD_BASE + 0x08;
+/// Chain extension is enabled by default on this generation, but is known to
+/// interact badly with the legacy scheduler. Linux disables it during TX
+/// queue setup, including for 7265 devices.
+pub const SCD_CHAINEXT_EN: u32 = SCD_BASE + 0x244;
 pub const SCD_TXFACT: u32 = SCD_BASE + 0x10;
 pub const SCD_GP_CTRL: u32 = SCD_BASE + 0x1A8;
 pub const SCD_EN_CTRL: u32 = SCD_BASE + 0x254;

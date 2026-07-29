@@ -22,6 +22,10 @@ impl IwlWifiDevice {
             // alive. The table is also needed by the legacy scheduler even
             // though the command queue itself is non-aggregated.
             self.write_prph(SCD_DRAM_BASE_ADDR, (scd_bc_phys >> 10) as u32);
+            // The chain-extension path is enabled by default on gen1, but it
+            // is unreliable on the 7265 legacy scheduler. Keep the command
+            // queue on the ordinary TFD path, as upstream does.
+            self.write_prph(SCD_CHAINEXT_EN, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
         }
@@ -74,15 +78,17 @@ impl IwlWifiDevice {
         let fh_config = self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4));
         let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD);
         let scd_active = self.read_prph(SCD_EN_CTRL);
+        let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
         log::info!(
-            "iwlwifi: legacy TX command queue configured: q={} tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} scd_en={:#010x}",
+            "iwlwifi: legacy TX command queue configured: q={} tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
             IWL_CMD_QUEUE,
             ring_phys,
             keep_warm_phys,
             scd_bc_phys,
             fh_config.unwrap_or(!0),
             scd_status.unwrap_or(!0),
-            scd_active.unwrap_or(!0)
+            scd_active.unwrap_or(!0),
+            scd_chainext.unwrap_or(!0),
         );
     }
 
