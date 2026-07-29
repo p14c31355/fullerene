@@ -165,7 +165,12 @@ impl IwlWifiDevice {
         group: u8,
         data: &[u8],
     ) -> Result<(), crate::DriverError> {
-        let total_len = core::mem::size_of::<HcmdHeader>() + data.len();
+        let header_len = if group == GroupId::Legacy as u8 {
+            core::mem::size_of::<HcmdHeader>()
+        } else {
+            core::mem::size_of::<HcmdHeaderWide>()
+        };
+        let total_len = header_len + data.len();
         if total_len > MAX_FRAME_SIZE {
             return Err(crate::DriverError::InvalidArgument);
         }
@@ -173,11 +178,7 @@ impl IwlWifiDevice {
         self.health
             .pre_mmio_access()
             .map_err(|_| crate::DriverError::DeviceNotFound)?;
-        let hcmd_header = HcmdHeader {
-            opcode,
-            group_id: group,
-            sequence: ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff),
-        };
+        let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
 
         let used = self.tx_head.wrapping_sub(self.tx_tail);
         if used >= TX_QUEUE_SIZE {
@@ -186,14 +187,37 @@ impl IwlWifiDevice {
         let desc_idx = self.tx_head % TX_QUEUE_SIZE;
         let desc_ptr = self.tx_dma_ring.virt() as *mut TxDmaDesc;
         let cmd_buf = &mut self.tx_bufs[desc_idx];
-        let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &hcmd_header as *const HcmdHeader as *const u8,
-                core::mem::size_of::<HcmdHeader>(),
-            )
-        };
         let mut full_data = alloc::vec::Vec::with_capacity(total_len);
-        full_data.extend_from_slice(header_bytes);
+        if group == GroupId::Legacy as u8 {
+            let hcmd_header = HcmdHeader {
+                opcode,
+                group_id: group,
+                sequence,
+            };
+            let header_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &hcmd_header as *const HcmdHeader as *const u8,
+                    core::mem::size_of::<HcmdHeader>(),
+                )
+            };
+            full_data.extend_from_slice(header_bytes);
+        } else {
+            let hcmd_header = HcmdHeaderWide {
+                opcode,
+                group_id: group,
+                sequence,
+                length: data.len() as u16,
+                reserved: 0,
+                version: 0,
+            };
+            let header_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &hcmd_header as *const HcmdHeaderWide as *const u8,
+                    core::mem::size_of::<HcmdHeaderWide>(),
+                )
+            };
+            full_data.extend_from_slice(header_bytes);
+        }
         full_data.extend_from_slice(data);
         cmd_buf.write_from(&full_data);
 
@@ -216,11 +240,13 @@ impl IwlWifiDevice {
         }
         mmio::write_barrier();
         log::info!(
-            "iwlwifi: HCMD submitted: q={} index={} opcode=0x{:02x} group=0x{:02x} bytes={} dma={:#018x} tfd_addr={:#010x} tfd_hi_n_len={:#06x} wrptr={}",
+            "iwlwifi: HCMD submitted: q={} index={} opcode=0x{:02x} group=0x{:02x} header={} payload={} bytes={} dma={:#018x} tfd_addr={:#010x} tfd_hi_n_len={:#06x} wrptr={}",
             IWL_CMD_QUEUE,
             desc_idx,
             opcode,
             group,
+            header_len,
+            data.len(),
             total_len,
             dma_addr,
             dma_addr as u32,
@@ -244,6 +270,49 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: TX antenna config sent");
 
+        // Firmware API 17 uses the pre-v12 station API.  The scan engine
+        // requires its auxiliary station before accepting an offload request.
+        // ADD_STA is a long-group command, so send_hcmd() emits the required
+        // eight-byte wide header here.
+        const MAC_INDEX_AUX: u8 = 4;
+        let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX);
+        let aux_sta_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &aux_sta as *const AddStaCmdV7 as *const u8,
+                core::mem::size_of::<AddStaCmdV7>(),
+            )
+        };
+        self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Long as u8, aux_sta_bytes)?;
+        log::info!(
+            "iwlwifi: auxiliary scan station sent: sta_id={} group=0x{:02x} opcode=0x{:02x}",
+            MAC_INDEX_AUX,
+            GroupId::Long as u8,
+            LegacyCmd::AddSta as u8,
+        );
+
+        // Create the three PHY contexts expected by the MVM scan state
+        // machine.  API v1 uses the compact four-byte channel description.
+        for phy_id in 0..3u8 {
+            let phy = PhyContextCmdV1::add(phy_id);
+            let phy_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &phy as *const PhyContextCmdV1 as *const u8,
+                    core::mem::size_of::<PhyContextCmdV1>(),
+                )
+            };
+            self.send_hcmd(
+                LegacyCmd::PhyContext as u8,
+                GroupId::Legacy as u8,
+                phy_bytes,
+            )?;
+            log::info!(
+                "iwlwifi: PHY context added: id={} opcode=0x{:02x} payload={}",
+                phy_id,
+                LegacyCmd::PhyContext as u8,
+                core::mem::size_of::<PhyContextCmdV1>(),
+            );
+        }
+
         let mac_context = MacContextCmd::station(self.mac);
         let mac_context_bytes = unsafe {
             core::slice::from_raw_parts(
@@ -258,10 +327,10 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: station MAC context sent");
 
-        // The LMAC scan request is only accepted after the firmware's scan
-        // database has been activated. Linux sends SCAN_CFG_CMD in the long
-        // command group before issuing SCAN_OFFLOAD_REQUEST_CMD; without it
-        // this firmware queues the request but never starts the scan.
+        // API 17 uses the legacy LMAC scan engine.  Its channel database must
+        // be activated before SCAN_OFFLOAD_REQUEST_CMD is accepted.  Although
+        // the opcode is in the legacy command namespace, the command itself
+        // is a LONG_GROUP command and therefore uses the wide HCMD header.
         let scan_config = ScanConfigV1::new(self.mac);
         let scan_config_bytes = unsafe {
             core::slice::from_raw_parts(
@@ -270,17 +339,16 @@ impl IwlWifiDevice {
             )
         };
         self.send_hcmd(
-            LongCmd::ScanConfig as u8,
+            LegacyCmd::ScanConfig as u8,
             GroupId::Long as u8,
             scan_config_bytes,
         )?;
-        let scan_config_flags = scan_config.flags;
         log::info!(
-            "iwlwifi: scan config sent: group=0x{:02x} opcode=0x{:02x} channels={} flags={:#010x}",
+            "iwlwifi: legacy scan configuration sent: channels={} group=0x{:02x} opcode=0x{:02x} payload={}",
+            SCAN_CHANNEL_COUNT,
             GroupId::Long as u8,
-            LongCmd::ScanConfig as u8,
-            scan_config.channel_array.len(),
-            scan_config_flags,
+            LegacyCmd::ScanConfig as u8,
+            core::mem::size_of::<ScanConfigV1>(),
         );
 
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);

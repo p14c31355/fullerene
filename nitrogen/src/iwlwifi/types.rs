@@ -65,14 +65,12 @@ pub enum GroupId {
 }
 
 #[repr(u8)]
-pub enum LongCmd {
-    /// UMAC/LMAC scan database configuration for the 7265 firmware API.
-    ScanConfig = 0x0c,
-}
-
-#[repr(u8)]
 pub enum LegacyCmd {
     Echo = 0x03,
+    PhyContext = 0x08,
+    /// Legacy LMAC scan configuration.  The command number is legacy, but
+    /// firmware API 17 transports it through the long-command group.
+    ScanConfig = 0x0c,
     AddStaKey = 0x17,
     /// LMAC scan request for the 7265 firmware API (SCAN_OFFLOAD_REQUEST_CMD).
     /// 0x18 is ADD_STA, not a scan request.
@@ -83,7 +81,7 @@ pub enum LegacyCmd {
     Assoc = 0x1B,
     Disassoc = 0x1C,
     Deauth = 0x1D,
-    AddSta = 0x18 | 0x40,
+    AddSta = 0x18,
     MacContext = 0x28,
     TxAntConfig = 0x98,
     RxonAssoc = 0x20,
@@ -205,15 +203,131 @@ pub struct HcmdHeader {
     pub sequence: u16,
 }
 
+/// Host-command header used for the long command group.
+///
+/// Group 0 uses [`HcmdHeader`].  Group 1 and later use this header and the
+/// firmware expects `length` to contain the payload length, excluding this
+/// eight-byte header.
+#[repr(C, packed)]
+pub struct HcmdHeaderWide {
+    pub opcode: u8,
+    pub group_id: u8,
+    pub sequence: u16,
+    pub length: u16,
+    pub reserved: u8,
+    pub version: u8,
+}
+
 #[repr(C, packed)]
 pub struct HcmdResp {
     pub header: HcmdHeader,
     pub status: u32,
 }
 
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct PhyChannelInfoV1 {
+    pub band: u8,
+    pub channel: u8,
+    pub width: u8,
+    pub ctrl_pos: u8,
+}
+
+/// PHY_CONTEXT_CMD API v1 used by the 7265 firmware.
+///
+/// The old channel-info form is four bytes; the newer API's channel number is
+/// a le32 and must not be used with firmware API 17.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct PhyContextCmdV1 {
+    pub id_and_color: u32,
+    pub action: u32,
+    pub apply_time: u32,
+    pub tx_param_color: u32,
+    pub channel: PhyChannelInfoV1,
+    pub txchain_info: u32,
+    pub rxchain_info: u32,
+    pub acquisition_data: u32,
+    pub dsp_cfg_flags: u32,
+}
+
+impl PhyContextCmdV1 {
+    pub fn add(id: u8) -> Self {
+        Self {
+            id_and_color: id as u32,
+            action: 1, // FW_CTXT_ACTION_ADD
+            apply_time: 0,
+            tx_param_color: 0,
+            channel: PhyChannelInfoV1 {
+                band: 1, // PHY_BAND_24
+                channel: 1,
+                width: 0, // 20 MHz, no HT
+                ctrl_pos: 0,
+            },
+            txchain_info: 0x03,
+            // Valid chains A+B, two idle chains, two active/MIMO chains.
+            rxchain_info: (0x03 << 1) | (2 << 10) | (2 << 12),
+            acquisition_data: 0,
+            dsp_cfg_flags: 0,
+        }
+    }
+}
+
+/// ADD_STA command API v7, used by the old (pre-v12) station API.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct AddStaCmdV7 {
+    pub add_modify: u8,
+    pub awake_acs: u8,
+    pub tid_disable_tx: u16,
+    pub mac_id_n_color: u32,
+    pub addr: [u8; 6],
+    pub reserved2: u16,
+    pub sta_id: u8,
+    pub modify_mask: u8,
+    pub reserved3: u16,
+    pub station_flags: u32,
+    pub station_flags_msk: u32,
+    pub add_immediate_ba_tid: u8,
+    pub remove_immediate_ba_tid: u8,
+    pub add_immediate_ba_ssn: u16,
+    pub sleep_tx_count: u16,
+    pub sleep_state_flags: u16,
+    pub assoc_id: u16,
+    pub beamform_flags: u16,
+    pub tfd_queue_msk: u32,
+}
+
+impl AddStaCmdV7 {
+    pub fn aux(sta_id: u8) -> Self {
+        Self {
+            add_modify: 0, // STA_MODE_ADD
+            awake_acs: 0,
+            tid_disable_tx: 0xffff,
+            mac_id_n_color: sta_id as u32,
+            addr: [0; 6],
+            reserved2: 0,
+            sta_id,
+            modify_mask: 0,
+            reserved3: 0,
+            station_flags: 0,
+            station_flags_msk: 0,
+            add_immediate_ba_tid: 0,
+            remove_immediate_ba_tid: 0,
+            add_immediate_ba_ssn: 0,
+            sleep_tx_count: 0,
+            sleep_state_flags: 0,
+            assoc_id: 0,
+            beamform_flags: 0,
+            // Passive discovery does not transmit through the aux station.
+            tfd_queue_msk: 0,
+        }
+    }
+}
+
 // ── Scan command structures ────────
 
-const SCAN_CHANNEL_COUNT: usize = 23;
+pub const SCAN_CHANNEL_COUNT: usize = 23;
 const SCAN_DIRECT_SSID_COUNT: usize = 20;
 const SCAN_SSID_MAX_LEN: usize = 32;
 const SCAN_PROBE_BUFFER_SIZE: usize = 512;
@@ -224,15 +338,18 @@ const SCAN_CHANNELS: [u8; SCAN_CHANNEL_COUNT] = [
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-pub struct ScanDwell {
+pub struct ScanDwellV1 {
     pub active: u8,
     pub passive: u8,
     pub fragmented: u8,
     pub extended: u8,
 }
 
-/// SCAN_CFG_CMD API version 1. The firmware appends no hidden fields here;
-/// the channel list is part of the command payload.
+/// Legacy LMAC SCAN_CFG_CMD API v1 payload used by the 7265 firmware.
+///
+/// This command is not the same as the later UMAC scan configuration: the
+/// channel list is part of the payload and the command is sent with the
+/// eight-byte wide-command header because it belongs to LONG_GROUP.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct ScanConfigV1 {
@@ -242,7 +359,7 @@ pub struct ScanConfigV1 {
     pub legacy_rates: u32,
     pub out_of_channel_time: u32,
     pub suspend_time: u32,
-    pub dwell: ScanDwell,
+    pub dwell: ScanDwellV1,
     pub mac_addr: [u8; 6],
     pub bcast_sta_id: u8,
     pub channel_flags: u8,
@@ -250,10 +367,11 @@ pub struct ScanConfigV1 {
 }
 
 impl ScanConfigV1 {
-    pub fn new(mac: [u8; 6]) -> Self {
+    pub fn new(mac_addr: [u8; 6]) -> Self {
         // ACTIVATE | ALLOW_CHUB_REQS | SET_TX_CHAINS | SET_RX_CHAINS |
-        // SET_AUX_STA_ID | SET_ALL_TIMES | SET_LEGACY_RATES | SET_MAC_ADDR |
-        // SET_CHANNEL_FLAGS | CLEAR_FRAGMENTED | N_CHANNELS(23).
+        // SET_AUX_STA_ID | SET_ALL_TIMES | SET_CHANNEL_FLAGS |
+        // SET_LEGACY_RATES | SET_MAC_ADDR | CLEAR_FRAGMENTED |
+        // SCAN_CONFIG_N_CHANNELS(23).
         let flags = (1 << 0)
             | (1 << 3)
             | (1 << 8)
@@ -269,23 +387,19 @@ impl ScanConfigV1 {
         Self {
             flags,
             tx_chains: 0x03,
-            rx_chains: 0x01b7,
-            // All legacy 802.11 rates in both the basic and supported-rate
-            // halves. This is the superset used while discovering APs.
+            rx_chains: 0x03,
             legacy_rates: 0x0fff_0fff,
             out_of_channel_time: 120,
             suspend_time: 30,
-            dwell: ScanDwell {
+            dwell: ScanDwellV1 {
                 active: 10,
                 passive: 110,
                 fragmented: 44,
                 extended: 90,
             },
-            mac_addr: mac,
-            // No broadcast station has been installed yet; passive scanning
-            // does not transmit a probe, so keep the firmware's invalid-ID
-            // convention used by the legacy API.
-            bcast_sta_id: 0xff,
+            mac_addr,
+            bcast_sta_id: 4,
+            // EBS | ACCURATE_EBS | EBS_ADD | PRE_SCAN_PASSIVE2ACTIVE.
             channel_flags: 0x0f,
             channel_array: SCAN_CHANNELS,
         }
@@ -431,13 +545,15 @@ impl ScanRequestCmd {
                 ScanReqTxCmd {
                     tx_flags: 0,
                     rate_n_flags: 0,
-                    sta_id: 0xff,
+                    // The legacy scan engine transmits through the auxiliary
+                    // station created during firmware initialization.
+                    sta_id: 4,
                     reserved: [0; 3],
                 },
                 ScanReqTxCmd {
                     tx_flags: 0,
                     rate_n_flags: 0,
-                    sta_id: 0xff,
+                    sta_id: 4,
                     reserved: [0; 3],
                 },
             ],
