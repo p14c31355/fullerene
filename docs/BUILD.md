@@ -188,18 +188,26 @@ Expected output:
 
 ### Static BusyBox
 
-`run_busybox` launches a statically linked x86_64 BusyBox as `busybox sh`.
+`busybox` launches a statically linked x86_64 BusyBox as `busybox sh`.
 The kernel build validates and embeds BusyBox from `FULLERENE_BUSYBOX`; when
-that variable is omitted, `/usr/bin/busybox` and `/bin/busybox` are tried for
-developer convenience. Dynamic ELF binaries and non-x86_64 binaries are
-rejected, so a static build is required:
+that variable is omitted, the Rust builder's `target/busybox/busybox` output,
+`/usr/bin/busybox`, and `/bin/busybox` are tried. Dynamic ELF binaries and
+non-x86_64 binaries are rejected, so a static build is required. Build the
+submodule source with the Rust build tool:
 
 ```bash
-FULLERENE_BUSYBOX=/path/to/busybox-static \
-  cargo run -p flasks -- --display none --vga none
+cargo run --release --manifest-path toluene/busybox-build/Cargo.toml
 ```
 
-Then enter `run_busybox` in the Nozzle shell. Fullerene opens a focused
+The default output is `target/busybox/busybox`. To build and embed it in an
+ISO for a physical x86_64 machine:
+
+```bash
+cargo run --release --manifest-path toluene/busybox-build/Cargo.toml
+cargo run -p flasks -- --iso-only
+```
+
+Then enter `busybox` in the Nozzle shell. Fullerene opens a focused
 `BusyBox` window and attaches the Linux process's stdin/stdout/stderr to that
 window, so typing there is delivered to `busybox sh` while the original Nozzle
 terminal remains available. The shell receives a minimal Linux environment
@@ -211,7 +219,7 @@ BusyBox `sh`, terminal stdin/stdout, blocking input wait, exit status,
 scheduler handoff, and shell resumption:
 
 ```bash
-FULLERENE_BUSYBOX=/path/to/busybox-static \
+FULLERENE_BUSYBOX=target/busybox/busybox \
 FULLERENE_BUSYBOX_SMOKE=1 \
   cargo run -p flasks -- --display none --vga none --timeout 70
 ```

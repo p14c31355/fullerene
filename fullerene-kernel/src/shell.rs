@@ -955,7 +955,7 @@ fn nozzle_services() -> nozzle::ShellServices {
                     "Linux process started (PID: {})"
                 );
             }
-            "run_busybox" => launch_cmd!(
+            "busybox" => launch_cmd!(
                 ctx.terminal,
                 crate::linux::launch::launch_busybox(),
                 "BusyBox shell started (PID: {})"
@@ -1458,7 +1458,7 @@ pub fn run_linux_musl_smoke() {
 
 /// Run the static BusyBox shell through the real Nozzle command path.
 #[cfg(linux_busybox_smoke)]
-pub fn run_busybox_smoke() {
+pub fn busybox_smoke() {
     struct ScriptedTerminal {
         input: alloc::collections::VecDeque<u8>,
     }
@@ -1497,7 +1497,7 @@ pub fn run_busybox_smoke() {
     }
 
     let services = nozzle_services();
-    let mut terminal = ScriptedTerminal::new("run_busybox\nexit\n");
+    let mut terminal = ScriptedTerminal::new("busybox\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
     if crate::linux::launch::busybox_smoke_verified() {
         petroleum::serial::serial_log(format_args!(

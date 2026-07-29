@@ -273,13 +273,18 @@ fn main() {
 
 /// Validate and stage a static x86_64 BusyBox binary for the initramfs.
 ///
-/// The binary is deliberately supplied by the build environment instead of
-/// being checked into the Rust workspace.  This keeps the source tree Rust
-/// only and lets a release build choose its BusyBox configuration/version.
+/// The binary is generated outside the Rust workspace instead of being
+/// checked into it. This keeps the source tree small while allowing a release
+/// build to choose its BusyBox configuration/version.
 fn embed_busybox(out_dir: &Path) -> bool {
     let explicit = env::var_os("FULLERENE_BUSYBOX").map(PathBuf::from);
+    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("kernel manifest must live in the workspace")
+        .join("target/busybox/busybox");
     let candidates = explicit.clone().into_iter().chain(
         [
+            generated.clone(),
             PathBuf::from("/usr/bin/busybox"),
             PathBuf::from("/bin/busybox"),
         ]
@@ -292,11 +297,8 @@ fn embed_busybox(out_dir: &Path) -> bool {
             continue;
         };
         if !is_static_x86_64_elf(&data) {
-            if explicit.as_ref().is_some_and(|wanted| wanted == &path) {
-                panic!(
-                    "FULLERENE_BUSYBOX must point to a static x86_64 ELF: {}",
-                    path.display()
-                );
+            if explicit.as_ref().is_some_and(|wanted| wanted == &path) || path == generated {
+                panic!("BusyBox must be a static x86_64 ELF: {}", path.display());
             }
             continue;
         }
