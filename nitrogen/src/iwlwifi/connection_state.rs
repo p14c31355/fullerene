@@ -645,22 +645,45 @@ pub fn try_init_wifi_device_step() {
                 let ctx = WIFI_INIT_CTX.lock();
                 (ctx.alive_start_tsc, pci_bdf_from_ctx(&ctx))
             };
+
+            // Check PCI config space before touching the endpoint MMIO. This
+            // is safe even when the firmware has left the link down and avoids
+            // entering a non-posted read that cannot complete.
+            let pci_health = {
+                let mut ctx = WIFI_INIT_CTX.lock();
+                ctx.health.as_mut().map(PciHealth::check)
+            };
+            if let Some(Err(error)) = pci_health {
+                log::warn!("iwlwifi: alive wait PCI health check failed: {}", error);
+                let mut ctx = WIFI_INIT_CTX.lock();
+                ctx.fw_candidate_idx += 1;
+                set_init_phase(WifiInitPhase::FwUpload);
+                return;
+            }
+
             if let Some((pci_bdf, bridge_bdf)) = bdf_info {
                 mmio::arm_mmio_watchdog(0, pci_bdf, bridge_bdf);
             }
-            let alive_result = {
+            // Do not hold WIFI_INIT_CTX while the MMIO read is in progress.
+            // The NMI watchdog may abandon a stalled read and resume the
+            // scheduler; retaining this Mutex across that boundary would make
+            // force_init_failed() and the next state transition deadlock.
+            let mut dev = {
                 let mut ctx = WIFI_INIT_CTX.lock();
-                let dev = match ctx.mmio_device.as_mut() {
+                match ctx.mmio_device.take() {
                     Some(d) => d,
                     None => {
                         mmio::disarm_mmio_watchdog();
                         set_init_phase(WifiInitPhase::Failed);
                         return;
                     }
-                };
-                dev.check_alive_nonblocking(start_tsc)
+                }
             };
+            debug::print("iwlwifi", "step: fw_alive_mmio_read");
+            let alive_result = dev.check_alive_nonblocking(start_tsc);
             mmio::disarm_mmio_watchdog();
+            debug::print("iwlwifi", "step: fw_alive_mmio_done");
+            WIFI_INIT_CTX.lock().mmio_device = Some(dev);
             match alive_result {
                 Ok(true) => {
                     debug::print("iwlwifi", "step: fw_alive");

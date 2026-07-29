@@ -42,6 +42,7 @@ pub const CSR_INT_BIT_ALIVE: u32 = 1 << 0;
 pub const CSR_INT_BIT_SW_ERR: u32 = 1 << 25;
 pub const CSR_INT_BIT_FH_TX: u32 = 1 << 27;
 pub const CSR_INT_BIT_FH_RX: u32 = 1 << 31;
+pub const CSR_FH_INT_BIT_TX_CHNL0: u32 = 1 << 0;
 pub const CSR_UCODE_SW_BIT_RFKILL: u32 = 1 << 1;
 pub const CSR_UCODE_GP1_BIT_CMD_BLOCKED: u32 = 1 << 2;
 
@@ -53,6 +54,21 @@ pub const FH_RSCSR_CHNL0_RBDCB_RPTR_REG: u32 = 0x0C0 / 4;
 pub const FH_TX_CHNL0_WPTR: u32 = 0x0A0 / 4;
 /// Firmware-written boot section status consumed before releasing the CPU.
 pub const FH_UCODE_LOAD_STATUS: u32 = 0x1AF0 / 4;
+
+// Legacy 7000-series firmware upload service channel. These are the
+// byte-offsets from Linux's iwl-fh.h, converted to dword MMIO indices.
+pub const FH_SRVC_CHNL_SRAM_ADDR: u32 = (0x1000 + 0x9C8) / 4;
+pub const FH_TFDIB_CTRL0_SRVC: u32 = (0x1000 + 0x900 + 0x8 * 9) / 4;
+pub const FH_TFDIB_CTRL1_SRVC: u32 = FH_TFDIB_CTRL0_SRVC + 1;
+pub const FH_TCSR_CHNL_TX_CONFIG_SRVC: u32 = (0x1000 + 0xD00 + 0x20 * 9) / 4;
+pub const FH_TCSR_CHNL_TX_BUF_STS_SRVC: u32 = FH_TCSR_CHNL_TX_CONFIG_SRVC + 2;
+pub const FH_TCSR_TX_CONFIG_DMA_ENABLE: u32 = 0x8000_0000;
+pub const FH_TCSR_TX_CONFIG_CIRQ_HOST_ENDTFD: u32 = 0x0010_0000;
+pub const FH_TCSR_TX_BUF_STS_TFDB_VALID: u32 = 0x0000_0003;
+pub const FH_TCSR_TX_BUF_STS_TB_NUM: u32 = 1 << 20;
+pub const FH_TCSR_TX_BUF_STS_TB_IDX: u32 = 1 << 12;
+pub const FH_MEM_TFDIB_REG1_ADDR_BITSHIFT: u32 = 28;
+pub const FH_MEM_TB_MAX_LENGTH: usize = 0x0002_0000;
 
 // ── Firmware constants ─────────────
 

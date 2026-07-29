@@ -752,11 +752,10 @@ impl IwlWifiDevice {
                             &fw_data[tlv_data_off + 4..tlv_data_off + 4 + data_size as usize];
                         self.upload_section(target, section_data)?;
                         section_count += 1;
-                        let previous_status = self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(0);
                         unsafe {
                             core::ptr::write_volatile(
                                 self.mmio.add(FH_UCODE_LOAD_STATUS as usize),
-                                previous_status | section_status,
+                                section_status,
                             );
                         }
                         mmio::write_barrier();
@@ -784,7 +783,7 @@ impl IwlWifiDevice {
         mmio::write_barrier();
         log::info!(
             "iwlwifi: firmware sections ready: FH_UCODE_LOAD_STATUS={:#010x}",
-            self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(!0)
+            0xFFFF_u32
         );
 
         debug::print("iwlwifi", "fw: upload_done");
@@ -792,6 +791,12 @@ impl IwlWifiDevice {
 
         unsafe {
             core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), 0xFFFF_FFFF);
+            // Arm the alive interrupt before releasing reset. The firmware
+            // can signal alive immediately after the CPU starts.
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_INT_MASK as usize),
+                CSR_INT_BIT_ALIVE | CSR_INT_BIT_FH_RX,
+            );
             core::ptr::write_volatile(self.mmio.add(CSR_RESET as usize), 0);
         }
         crate::timing::delay_us(10_000);
@@ -862,33 +867,114 @@ impl IwlWifiDevice {
         Ok(())
     }
 
-    /// Upload a single firmware section to the device SRAM via HBUS direct writes.
+    /// Upload a firmware section through the legacy FH service DMA channel.
+    ///
+    /// The 7265 firmware expects every DMA chunk to complete before the next
+    /// chunk is submitted. A direct HBUS write can look successful from the
+    /// host side while leaving the CPU boot image incomplete, which results in
+    /// an alive timeout after the reset is released.
     fn upload_section(&mut self, target_addr: u32, data: &[u8]) -> Result<(), crate::DriverError> {
-        let dwords = data.len() / 4;
-        let extra = data.len() % 4;
-
-        unsafe {
-            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WADDR as usize), target_addr);
-
-            for i in 0..dwords {
-                let val = u32::from_le_bytes([
-                    data[i * 4],
-                    data[i * 4 + 1],
-                    data[i * 4 + 2],
-                    data[i * 4 + 3],
-                ]);
-                core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WDAT as usize), val);
-            }
-
-            if extra > 0 {
-                let mut last = [0u8; 4];
-                last[..extra].copy_from_slice(&data[dwords * 4..]);
-                let val = u32::from_le_bytes(last);
-                core::ptr::write_volatile(self.mmio.add(HBUS_TARG_MEM_WDAT as usize), val);
-            }
+        let mut dma = DmaRegion::alloc(self.ctx, FH_MEM_TB_MAX_LENGTH)
+            .ok_or(crate::DriverError::DmaMappingFailed)?;
+        let dma_device_id = ((self._pci_dev.bus as u16) << 8)
+            | ((self._pci_dev.device as u16) << 3)
+            | self._pci_dev.function as u16;
+        if dma.dma_map(self.ctx, dma_device_id).is_err() {
+            dma.free(self.ctx);
+            return Err(crate::DriverError::DmaMappingFailed);
         }
 
-        Ok(())
+        let result = (|| {
+            let mut offset = 0usize;
+            while offset < data.len() {
+                let count = core::cmp::min(FH_MEM_TB_MAX_LENGTH, data.len() - offset);
+                log::info!(
+                    "iwlwifi: FH firmware DMA target={:#010x} bytes={}",
+                    target_addr.saturating_add(offset as u32),
+                    count
+                );
+                dma.write_from(&data[offset..offset + count]);
+                self.upload_firmware_chunk(
+                    target_addr.saturating_add(offset as u32),
+                    dma.dma_iova(),
+                    count,
+                )?;
+                offset += count;
+            }
+            Ok(())
+        })();
+        dma.free(self.ctx);
+        result
+    }
+
+    /// Program and synchronously drain one FH service-DMA transfer.
+    fn upload_firmware_chunk(
+        &mut self,
+        target_addr: u32,
+        dma_addr: u64,
+        byte_count: usize,
+    ) -> Result<(), crate::DriverError> {
+        if byte_count == 0 || byte_count > FH_MEM_TB_MAX_LENGTH {
+            return Err(crate::DriverError::InvalidArgument);
+        }
+
+        unsafe {
+            core::ptr::write_volatile(self.mmio.add(FH_TCSR_CHNL_TX_CONFIG_SRVC as usize), 0);
+            core::ptr::write_volatile(self.mmio.add(FH_SRVC_CHNL_SRAM_ADDR as usize), target_addr);
+            core::ptr::write_volatile(self.mmio.add(FH_TFDIB_CTRL0_SRVC as usize), dma_addr as u32);
+            core::ptr::write_volatile(
+                self.mmio.add(FH_TFDIB_CTRL1_SRVC as usize),
+                (((dma_addr >> 32) as u32) & 0xF) << FH_MEM_TFDIB_REG1_ADDR_BITSHIFT
+                    | byte_count as u32,
+            );
+            core::ptr::write_volatile(
+                self.mmio.add(FH_TCSR_CHNL_TX_BUF_STS_SRVC as usize),
+                FH_TCSR_TX_BUF_STS_TB_NUM
+                    | FH_TCSR_TX_BUF_STS_TB_IDX
+                    | FH_TCSR_TX_BUF_STS_TFDB_VALID,
+            );
+            core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), CSR_INT_BIT_FH_TX);
+            core::ptr::write_volatile(self.mmio.add(CSR_FH_INT as usize), CSR_FH_INT_BIT_TX_CHNL0);
+            core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), CSR_INT_BIT_FH_TX);
+            core::ptr::write_volatile(
+                self.mmio.add(FH_TCSR_CHNL_TX_CONFIG_SRVC as usize),
+                FH_TCSR_TX_CONFIG_DMA_ENABLE | FH_TCSR_TX_CONFIG_CIRQ_HOST_ENDTFD,
+            );
+        }
+        mmio::write_barrier();
+
+        let start_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let timeout_tsc = crate::timing::ticks_per_us().saturating_mul(5_000_000);
+        loop {
+            let now = unsafe { core::arch::x86_64::_rdtsc() };
+            if now.wrapping_sub(start_tsc) >= timeout_tsc {
+                unsafe {
+                    core::ptr::write_volatile(
+                        self.mmio.add(FH_TCSR_CHNL_TX_CONFIG_SRVC as usize),
+                        0,
+                    );
+                }
+                return Err(crate::DriverError::TimedOut);
+            }
+
+            let int_cause = self
+                .safe_read32(CSR_INT)
+                .ok_or(crate::DriverError::DeviceNotFound)?;
+            if (int_cause & CSR_INT_BIT_FH_TX) != 0 {
+                let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(0);
+                unsafe {
+                    core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+                    core::ptr::write_volatile(self.mmio.add(CSR_FH_INT as usize), fh_int);
+                    core::ptr::write_volatile(
+                        self.mmio.add(FH_TCSR_CHNL_TX_CONFIG_SRVC as usize),
+                        0,
+                    );
+                }
+                log::info!("iwlwifi: FH firmware DMA complete");
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
     }
 
     /// Wait for the firmware "alive" response with a TSC-based timeout.

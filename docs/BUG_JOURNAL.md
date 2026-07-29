@@ -272,6 +272,19 @@ and retrained upstream bridge `00:1c.2` while the NIC firmware was booting. That
 recovery is now limited to before firmware upload; the post-upload retrain was
 removed so the alive notification can arrive over the unchanged link.
 
+If the alive poll itself encounters a stalled PCIe completion, the state
+machine now checks link health through PCI config space first and does not hold
+`WIFI_INIT_CTX` while performing the watchdog-protected MMIO read. This keeps
+watchdog recovery and the bounded firmware-candidate transition from being
+blocked by a permanently held initialization lock.
+
+The 7265 firmware loader now uses the legacy FH service-DMA channel (channel 9)
+for runtime sections and waits for each chunk's FH-TX completion before
+advancing. The previous HBUS write loop only proved that the host issued writes;
+it did not prove that the firmware image had reached device SRAM. The section
+status mailbox is also written from the host-maintained mask, avoiding the
+invalid `0xa5a5a5a0` readback value observed on the target.
+
 ### Follow-up — GUI cursor disappears after shell launch
 
 The GUI input path accepted out-of-framebuffer cursor coordinates. A malformed
