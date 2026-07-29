@@ -9,8 +9,11 @@ pub const IWL_DEVICE_IDS: &[u16] = &[0x095b, 0x095a, 0x08b1, 0x08b2];
 // ── CSR registers ──────────────────
 
 pub const CSR_HW_REV: u32 = 0x028 / 4;
+pub const CSR_HW_IF_CONFIG: u32 = 0x000 / 4;
 pub const CSR_HW_RF_ID: u32 = 0x034 / 4;
 pub const CSR_GIO: u32 = 0x03C / 4;
+pub const CSR_GIO_CHICKEN_BITS: u32 = 0x100 / 4;
+pub const CSR_DBG_HPET_MEM: u32 = 0x240 / 4;
 pub const CSR_UCODE_GP1: u32 = 0x054 / 4;
 pub const CSR_UCODE_GP1_SET: u32 = 0x058 / 4;
 pub const CSR_UCODE_GP1_CLR: u32 = 0x05C / 4;
@@ -45,6 +48,10 @@ pub const CSR_INT_BIT_FH_RX: u32 = 1 << 31;
 pub const CSR_FH_INT_BIT_TX_CHNL0: u32 = 1 << 0;
 pub const CSR_UCODE_SW_BIT_RFKILL: u32 = 1 << 1;
 pub const CSR_UCODE_GP1_BIT_CMD_BLOCKED: u32 = 1 << 2;
+pub const CSR_HW_IF_CONFIG_HAP_WAKE: u32 = 0x0008_0000;
+pub const CSR_GIO_CHICKEN_L1A_NO_L0S_RX: u32 = 0x0080_0000;
+pub const CSR_GIO_CHICKEN_DIS_L0S_EXIT_TIMER: u32 = 0x2000_0000;
+pub const CSR_DBG_HPET_MEM_VAL: u32 = 0xFFFF_0000;
 
 /// FH register for RX ring base address (BADR).
 pub const FH_RSCSR_CHNL0_RBDCB_BASE: u32 = 0x0B8 / 4;
@@ -69,6 +76,16 @@ pub const FH_TCSR_TX_BUF_STS_TB_NUM: u32 = 1 << 20;
 pub const FH_TCSR_TX_BUF_STS_TB_IDX: u32 = 1 << 12;
 pub const FH_MEM_TFDIB_REG1_ADDR_BITSHIFT: u32 = 28;
 pub const FH_MEM_TB_MAX_LENGTH: usize = 0x0002_0000;
+
+// Internal peripheral access used for the 7000-series APMG power/DMA setup.
+pub const HBUS_TARG_PRPH_WADDR: u32 = (0x400 + 0x044) / 4;
+pub const HBUS_TARG_PRPH_RADDR: u32 = (0x400 + 0x048) / 4;
+pub const HBUS_TARG_PRPH_WDAT: u32 = (0x400 + 0x04C) / 4;
+pub const HBUS_TARG_PRPH_RDAT: u32 = (0x400 + 0x050) / 4;
+pub const APMG_CLK_EN_REG: u32 = 0x3004;
+pub const APMG_PCIDEV_STT_REG: u32 = 0x3010;
+pub const APMG_CLK_VAL_DMA_CLK_RQT: u32 = 0x0000_0200;
+pub const APMG_PCIDEV_STT_L1_ACT_DIS: u32 = 0x0000_0800;
 
 // ── Firmware constants ─────────────
 

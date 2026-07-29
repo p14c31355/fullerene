@@ -673,6 +673,13 @@ impl IwlWifiDevice {
         }
         crate::timing::delay_us(10_000);
 
+        // The FH service channel is fed by the legacy 7000-series DMA clock.
+        // Linux enables this clock and disables the L1-Active transition in
+        // its APM init before submitting the first firmware chunk. Without
+        // this setup the FH registers accept the descriptor but never raise
+        // the firmware-load interrupt.
+        self.prepare_firmware_dma()?;
+
         debug::print("iwlwifi", "fw: header_parse");
         let fw_ptr = fw_data.as_ptr();
 
@@ -948,6 +955,19 @@ impl IwlWifiDevice {
         loop {
             let now = unsafe { core::arch::x86_64::_rdtsc() };
             if now.wrapping_sub(start_tsc) >= timeout_tsc {
+                let csr_int = self.safe_read32(CSR_INT).unwrap_or(!0);
+                let fh_int = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
+                let tx_cfg = self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_SRVC).unwrap_or(!0);
+                let tx_status = self.safe_read32(FH_TCSR_CHNL_TX_BUF_STS_SRVC).unwrap_or(!0);
+                log::warn!(
+                    "iwlwifi: FH firmware DMA timeout: CSR_INT={:#010x} FH_INT={:#010x} TX_CFG={:#010x} TX_STS={:#010x} dma={:#018x} bytes={}",
+                    csr_int,
+                    fh_int,
+                    tx_cfg,
+                    tx_status,
+                    dma_addr,
+                    byte_count,
+                );
                 unsafe {
                     core::ptr::write_volatile(
                         self.mmio.add(FH_TCSR_CHNL_TX_CONFIG_SRVC as usize),
@@ -974,6 +994,72 @@ impl IwlWifiDevice {
                 return Ok(());
             }
             core::hint::spin_loop();
+        }
+    }
+
+    /// Configure the 7265's legacy peripheral/DMA clocks before FH upload.
+    fn prepare_firmware_dma(&mut self) -> Result<(), crate::DriverError> {
+        let set_csr_bits = |mmio: *mut u32, reg: u32, bits: u32| {
+            let value = self
+                .safe_read32(reg)
+                .ok_or(crate::DriverError::DeviceNotFound)?;
+            unsafe { core::ptr::write_volatile(mmio.add(reg as usize), value | bits) };
+            Ok::<(), crate::DriverError>(())
+        };
+
+        set_csr_bits(
+            self.mmio,
+            CSR_GIO_CHICKEN_BITS,
+            CSR_GIO_CHICKEN_L1A_NO_L0S_RX,
+        )?;
+        set_csr_bits(
+            self.mmio,
+            CSR_GIO_CHICKEN_BITS,
+            CSR_GIO_CHICKEN_DIS_L0S_EXIT_TIMER,
+        )?;
+        set_csr_bits(self.mmio, CSR_HW_IF_CONFIG, CSR_HW_IF_CONFIG_HAP_WAKE)?;
+        set_csr_bits(self.mmio, CSR_DBG_HPET_MEM, CSR_DBG_HPET_MEM_VAL)?;
+
+        let gp = self
+            .safe_read32(CSR_GP_CNTRL)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(CSR_GP_CNTRL as usize),
+                gp | CSR_GP_CNTRL_MAC_ACCESS_REQ | CSR_GP_CNTRL_INIT_DONE,
+            );
+        }
+        mmio::write_barrier();
+
+        self.write_prph(APMG_CLK_EN_REG, APMG_CLK_VAL_DMA_CLK_RQT);
+        crate::timing::delay_us(20);
+        let pcidev_state = self.read_prph(APMG_PCIDEV_STT_REG).unwrap_or(0);
+        self.write_prph(
+            APMG_PCIDEV_STT_REG,
+            pcidev_state | APMG_PCIDEV_STT_L1_ACT_DIS,
+        );
+        mmio::write_barrier();
+        log::info!("iwlwifi: FH DMA clock enabled");
+        Ok(())
+    }
+
+    fn read_prph(&mut self, address: u32) -> Option<u32> {
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(HBUS_TARG_PRPH_RADDR as usize),
+                address | (3 << 24),
+            );
+        }
+        self.safe_read32(HBUS_TARG_PRPH_RDAT)
+    }
+
+    fn write_prph(&mut self, address: u32, value: u32) {
+        unsafe {
+            core::ptr::write_volatile(
+                self.mmio.add(HBUS_TARG_PRPH_WADDR as usize),
+                address | (3 << 24),
+            );
+            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_PRPH_WDAT as usize), value);
         }
     }
 

@@ -285,6 +285,13 @@ it did not prove that the firmware image had reached device SRAM. The section
 status mailbox is also written from the host-maintained mask, avoiding the
 invalid `0xa5a5a5a0` readback value observed on the target.
 
+The first real-hardware retest showed that the FH DMA submission itself timed
+out on the first runtime chunk (`0x00800000`, 98,304 bytes), before CPU reset was
+released and before an alive wait could begin. This rules out the firmware-alive
+mailbox as the immediate failure point. The loader now enables the 7000-series
+APMG DMA clock and L1-Active workaround before submitting the service-channel
+transfer, and records CSR/FH/TCSR state plus the DMA address on timeout.
+
 ### Follow-up — GUI cursor disappears after shell launch
 
 The GUI input path accepted out-of-framebuffer cursor coordinates. A malformed

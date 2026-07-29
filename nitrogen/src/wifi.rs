@@ -337,7 +337,15 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     // (ASPM disable, D0 re-assertion, CTO) can cause the PCIe
     // link to enter an inconsistent state on this platform.
     crate::debug::print("wifi", "enable_mem");
-    pci_dev.enable_memory_access();
+    if !pci_dev.enable_memory_access() {
+        log::warn!(
+            "WiFi: failed to enable PCI memory space/bus mastering at {:02x}:{:02x}.{}",
+            info.bus,
+            info.device,
+            info.function,
+        );
+        return None;
+    }
 
     // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");
