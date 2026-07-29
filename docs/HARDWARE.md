@@ -81,8 +81,9 @@ The target has now advanced beyond this stage to firmware upload, but the
 outer runtime timeout previously stopped it while waiting for firmware alive.
 The runtime loader now selects only the `SEC_RT` image sections, skips the
 firmware section separator, reports each loaded section through
-`FH_UCODE_LOAD_STATUS`, follows the GP1 mailbox clear protocol, and gives the
-bounded firmware-candidate sequence enough time to finish. Physical
+`FH_UCODE_LOAD_STATUS`, follows the GP1 mailbox clear protocol, detects
+7265D using CSR `HW_REV` before selecting firmware, and gives the bounded
+firmware-candidate sequence enough time to finish. Physical
 validation of this follow-up build is still required, so the support level
 remains Alpha.
 

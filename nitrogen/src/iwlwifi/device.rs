@@ -372,7 +372,7 @@ impl IwlWifiDevice {
     fn init_after_mmio(
         ctx: &'static dyn DriverContext,
         mmio: *mut u32,
-        hw_rev: u16,
+        _hw_rev: u16,
         device: PciDevice,
         mut health: PciHealth,
     ) -> Result<Self, IwlError> {
@@ -402,6 +402,18 @@ impl IwlWifiDevice {
             debug::print("iwlwifi", "ERR recover_before_read_mac");
             IwlError::ClockNotReady
         })?;
+
+        let hw_rev_raw = match unsafe {
+            mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize) as usize, Some(&health))
+        } {
+            SafeReadResult::Value(v) => v,
+            _ => return Err(IwlError::ClockNotReady),
+        };
+        let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
+        log::info!(
+            "iwlwifi: CSR HW_REV type={:#06x}",
+            hw_rev & CSR_HW_REV_TYPE_MASK
+        );
 
         debug::print("iwlwifi", "read_mac");
         let mac = Self::read_mac(mmio, Some(&health));
@@ -747,6 +759,7 @@ impl IwlWifiDevice {
                                 previous_status | section_status,
                             );
                         }
+                        mmio::write_barrier();
                         section_status = (section_status << 1) | 1;
                         log::info!(
                             "iwlwifi: uploaded section {} at {:#010x} ({} bytes)",
@@ -768,6 +781,7 @@ impl IwlWifiDevice {
         unsafe {
             core::ptr::write_volatile(self.mmio.add(FH_UCODE_LOAD_STATUS as usize), 0xFFFF);
         }
+        mmio::write_barrier();
         log::info!(
             "iwlwifi: firmware sections ready: FH_UCODE_LOAD_STATUS={:#010x}",
             self.safe_read32(FH_UCODE_LOAD_STATUS).unwrap_or(!0)
@@ -1060,6 +1074,10 @@ impl crate::wifi::WifiDriver for IwlWifiDevice {
 
     fn get_status(&self) -> bonder::wifi::WifiStatus {
         self.wifi_conn.status
+    }
+
+    fn hardware_revision(&self) -> u16 {
+        self.hw_rev
     }
 
     fn start_scan(&mut self) -> bool {

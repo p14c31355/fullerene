@@ -176,12 +176,6 @@ pub fn try_init_wifi_device_step() {
                     return;
                 }
             };
-            let candidates = select_firmware_list(raw.device_id);
-            if candidates.is_empty() {
-                debug::print("iwlwifi", "step: no_fw");
-                set_init_phase(WifiInitPhase::Failed);
-                return;
-            }
             {
                 let health = raw.upstream_bridge.map_or_else(
                     || PciHealth::new(&raw.pci_dev),
@@ -195,7 +189,10 @@ pub fn try_init_wifi_device_step() {
                 ctx.driver_ctx = Some(raw.driver_ctx);
                 ctx.health = Some(health);
                 ctx.hw_rev = raw.hw_rev;
-                ctx.fw_candidates = candidates;
+                // Firmware selection is deferred until the CSR HW_REV has
+                // been read after MMIO clock initialization.  7265 and
+                // 7265D share PCI IDs, so the PCI revision byte is not enough.
+                ctx.fw_candidates = &[];
                 ctx.fw_candidate_idx = 0;
             }
             set_init_phase(WifiInitPhase::MmioInit);
@@ -343,6 +340,36 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            let hw_rev_raw = match unsafe {
+                mmio::checked_read_u32(mmio.add(CSR_HW_REV as usize) as usize, health.as_ref())
+            } {
+                mmio::SafeReadResult::Value(v) => v,
+                _ => {
+                    mmio::disarm_mmio_watchdog();
+                    debug::print("iwlwifi", "step: ERR hw_rev_read");
+                    set_init_phase(WifiInitPhase::Failed);
+                    return;
+                }
+            };
+            let hw_rev = ((hw_rev_raw >> 4) & 0xFFFF) as u16;
+            let device_id = WIFI_INIT_CTX
+                .lock()
+                .pci_dev
+                .as_ref()
+                .map(|d| d.device_id)
+                .unwrap_or(0);
+            let candidates = select_firmware_list(device_id, hw_rev);
+            log::info!(
+                "iwlwifi: detected CSR HW_REV type={:#06x}, firmware candidates={}",
+                hw_rev & CSR_HW_REV_TYPE_MASK,
+                candidates.len()
+            );
+            if candidates.is_empty() {
+                mmio::disarm_mmio_watchdog();
+                debug::print("iwlwifi", "step: no_fw");
+                set_init_phase(WifiInitPhase::Failed);
+                return;
+            }
             debug::print("iwlwifi", "step: mmio_read_mac");
             let mac = {
                 if let Some((pci_bdf, bridge_bdf)) = bdf_info {
@@ -360,6 +387,8 @@ pub fn try_init_wifi_device_step() {
             {
                 let mut ctx = WIFI_INIT_CTX.lock();
                 ctx.mac = Some(mac);
+                ctx.hw_rev = hw_rev;
+                ctx.fw_candidates = candidates;
             }
             debug::print("iwlwifi", "step: mmio_poll_mac_done");
             set_init_phase(WifiInitPhase::DmaAlloc);
@@ -759,7 +788,7 @@ pub fn try_init_wifi_device() {
         }
     };
 
-    let candidates = select_firmware_list(probe.device_id);
+    let candidates = select_firmware_list(probe.device_id, probe.driver.hardware_revision());
     if candidates.is_empty() {
         log::warn!(
             "iwlwifi: no firmware available for device {:#06x}",

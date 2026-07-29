@@ -50,6 +50,9 @@ pub trait WifiDriver: Send {
     /// Return the current link / firmware status.
     fn get_status(&self) -> WifiStatus;
 
+    /// Hardware revision read from the device CSR after MMIO initialization.
+    fn hardware_revision(&self) -> u16;
+
     /// Initiate a scan.  Results are delivered asynchronously via
     /// [`get_scan_results`].
     fn start_scan(&mut self) -> bool;
