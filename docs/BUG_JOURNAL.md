@@ -265,3 +265,11 @@ the alive-timeout diagnostic.
 The next physical run should show `fw: alive_ok` or, on failure,
 `fw: alive_timeout` with CSR register values rather than being terminated by
 the outer timeout first.
+
+### Follow-up — GUI cursor disappears after shell launch
+
+The GUI input path accepted out-of-framebuffer cursor coordinates. A malformed
+or sign-wrapped PS/2 relative delta could therefore move the software cursor
+outside the visible screen; opening the shell then made it appear to vanish
+until a later movement. Mouse events are now clamped to the current
+framebuffer bounds before desktop hit-testing and cursor redraw.

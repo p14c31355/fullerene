@@ -7,7 +7,7 @@ use spin::Mutex;
 use alloc::string::String;
 
 use crate::{
-    MOUSE_SENSITIVITY, PREV_MOUSE_BUTTONS, RUNTIME_CONTEXT, RuntimeState, editor_bridge,
+    FB_DIMS, MOUSE_SENSITIVITY, PREV_MOUSE_BUTTONS, RUNTIME_CONTEXT, RuntimeState, editor_bridge,
     network_manager, settings_bridge,
 };
 
@@ -49,10 +49,19 @@ pub fn poll_mouse_state() {
     let old_x = mouse.x;
     let old_y = mouse.y;
     let sensitivity = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
-    mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(sensitivity));
-    mouse.y = mouse
-        .y
-        .wrapping_add(dy.wrapping_mul(sensitivity).wrapping_neg());
+    let next_x = i32::from(mouse.x) + i32::from(dx) * i32::from(sensitivity);
+    let next_y = i32::from(mouse.y) - i32::from(dy) * i32::from(sensitivity);
+    let (fb_width, fb_height, _) = *FB_DIMS.lock();
+    mouse.x = if fb_width == 0 {
+        next_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    } else {
+        next_x.clamp(0, fb_width.saturating_sub(1) as i32) as i16
+    };
+    mouse.y = if fb_height == 0 {
+        next_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    } else {
+        next_y.clamp(0, fb_height.saturating_sub(1) as i32) as i16
+    };
     mouse.buttons = buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;

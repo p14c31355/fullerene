@@ -69,6 +69,22 @@ fn apply_mouse_move(
     y: i32,
 ) {
     let previous = (desktop.cursor.x, desktop.cursor.y);
+    // PS/2 motion is relative and can contain a malformed/sign-wrapped
+    // delta after controller noise or a window launch.  Letting an absolute
+    // event outside the framebuffer through makes the software cursor vanish
+    // until another large movement brings it back.  Clamp at the GUI input
+    // boundary so all later hit-testing and cursor rendering stay in bounds.
+    let (width, height, _) = *FB_DIMS.lock();
+    let x = if width == 0 {
+        x
+    } else {
+        x.clamp(0, width.saturating_sub(1) as i32)
+    };
+    let y = if height == 0 {
+        y
+    } else {
+        y.clamp(0, height.saturating_sub(1) as i32)
+    };
     desktop.mouse_move(x, y);
     cursor_redraw_from.get_or_insert(previous);
 
@@ -281,6 +297,23 @@ mod tests {
         // A plain pointer move is handled by the cursor-only renderer. A
         // full frame is reserved for window dragging or other scene changes.
         assert!(!frame_due);
+    }
+
+    #[test]
+    fn mouse_input_clamps_cursor_to_framebuffer() {
+        let mut desktop = Desktop::new(0);
+        let mut cursor_redraw_from = None;
+        let mut frame_due = false;
+
+        apply_mouse_move(
+            &mut desktop,
+            &mut cursor_redraw_from,
+            &mut frame_due,
+            i32::MAX,
+            i32::MIN,
+        );
+
+        assert_eq!((desktop.cursor.x, desktop.cursor.y), (1023, 0));
     }
 }
 
