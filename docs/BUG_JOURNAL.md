@@ -266,6 +266,12 @@ The next physical run should show `fw: alive_ok` or, on failure,
 `fw: alive_timeout` with CSR register values rather than being terminated by
 the outer timeout first.
 
+The latest physical log exposed an ordering bug: immediately after
+`firmware upload complete, starting CPU`, the driver called `PciHealth::recover()`
+and retrained upstream bridge `00:1c.2` while the NIC firmware was booting. That
+recovery is now limited to before firmware upload; the post-upload retrain was
+removed so the alive notification can arrive over the unchanged link.
+
 ### Follow-up — GUI cursor disappears after shell launch
 
 The GUI input path accepted out-of-framebuffer cursor coordinates. A malformed

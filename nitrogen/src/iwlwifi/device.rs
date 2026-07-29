@@ -952,12 +952,10 @@ impl IwlWifiDevice {
             .map_err(|_| crate::DriverError::DeviceNotFound)?;
 
         self.upload_firmware_and_start_cpu(fw_data)?;
-
-        self.health.recover().map_err(|_| {
-            self.fw_state = FwState::Error;
-            crate::DriverError::DeviceFault
-        })?;
-
+        // Do not retrain the upstream PCIe link after releasing the NIC CPU
+        // reset. `PciHealth::recover()` toggles bridge link state; doing that
+        // while firmware is emitting its alive notification can reset or
+        // disconnect the endpoint and turn a valid boot into an alive timeout.
         debug::print("iwlwifi", "fw: cpu_started");
         Ok(())
     }
