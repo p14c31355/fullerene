@@ -467,10 +467,14 @@ fn try_mp4_file(path: &str) -> bool {
     println!("MP4 FILE size OK viewer_build={}", VIEWER_BUILD_ID);
     println!("viewer: mp4 header enter");
     let parsing_header = Rc::new(Cell::new(true));
-    let reader = match mp4::Mp4Reader::read_header(
-        BoundedMp4Reader::new(file, Rc::clone(&parsing_header)),
-        size,
-    ) {
+    // Wrap the bounded reader in a large BufReader so that the mp4 crate's
+    // many small header reads (8-byte atom size+type probes) are coalesced
+    // into far fewer real file I/O operations.  Without this, a normal MP4
+    // moov atom exhausts the 16 384-operation I/O budget before parsing
+    // completes, even though the file itself is well-formed.
+    let bounded = BoundedMp4Reader::new(file, Rc::clone(&parsing_header));
+    let buffered = std::io::BufReader::with_capacity(64 * 1024, bounded);
+    let reader = match mp4::Mp4Reader::read_header(buffered, size) {
         Ok(reader) => reader,
         Err(error) => {
             println!("viewer: mp4 header failed");
