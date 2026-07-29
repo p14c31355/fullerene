@@ -152,7 +152,15 @@ pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<Process
 
 fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     let data = crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound)?;
-    let terminal_window = solvent::create_process_terminal("BusyBox");
+    // Never start an interactive Linux process without its terminal window.
+    // A missing runtime here would otherwise leave BusyBox polling the global
+    // keyboard queue invisibly, which looks like a machine hang on hardware.
+    let Some(terminal_window) = solvent::create_process_terminal("BusyBox") else {
+        petroleum::serial::serial_log(format_args!(
+            "[LINUX-DIAG] BusyBox terminal window could not be created\n"
+        ));
+        return Err(LoadError::MappingFailed);
+    };
     #[cfg(linux_busybox_smoke)]
     let argv = ["busybox", "sh"];
     #[cfg(not(linux_busybox_smoke))]
@@ -172,20 +180,15 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     ) {
         Ok(pid) => pid,
         Err(error) => {
-            if let Some(window_id) = terminal_window {
-                solvent::close_process_terminal(window_id);
-            }
+            solvent::close_process_terminal(terminal_window);
             return Err(error);
         }
     };
-    if let Some(window_id) = terminal_window {
-        let _ = crate::process::SCHEDULER.with_process(pid, |process| {
-            if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut()
-            {
-                runtime.terminal_window = Some(window_id);
-            }
-        });
-    }
+    let _ = crate::process::SCHEDULER.with_process(pid, |process| {
+        if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut() {
+            runtime.terminal_window = Some(terminal_window);
+        }
+    });
     #[cfg(linux_busybox_smoke)]
     {
         BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
@@ -195,12 +198,13 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         BUSYBOX_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
         BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
-        if let Some(window_id) = terminal_window {
-            BUSYBOX_SMOKE_WINDOW.store(window_id.0, Ordering::Release);
-            // Feed only the first command. The exit command is injected after
-            // BusyBox has reached a real no-input wait.
-            solvent::push_process_terminal_input(window_id, b"echo Fullerene BusyBox is running\n");
-        }
+        BUSYBOX_SMOKE_WINDOW.store(terminal_window.0, Ordering::Release);
+        // Feed only the first command. The exit command is injected after
+        // BusyBox has reached a real no-input wait.
+        solvent::push_process_terminal_input(
+            terminal_window,
+            b"echo Fullerene BusyBox is running\n",
+        );
         BUSYBOX_SMOKE_PID.store(pid.0, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] fixture launched as PID {}\n",

@@ -60,6 +60,11 @@ pub fn sys_read(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
             // while waiting for keyboard input; the scheduler path polls PS/2
             // between attempts and this avoids making `busybox sh` exit
             // immediately when launched before the first keystroke.
+            // Poll here as well: on real hardware the Linux process can stay
+            // in this wait long enough that the shell-side tick does not get
+            // a chance to route the IRQ-decoded byte to the focused process
+            // terminal.
+            solvent::poll_keyboard();
             #[cfg(linux_busybox_smoke)]
             crate::linux::launch::observe_busybox_wait(rt.tid);
             crate::process::yield_current();
@@ -278,6 +283,7 @@ fn sys_poll_with_timeout(rt: &mut LinuxRuntime, fds: u64, nfds_arg: u64, timeout
         }
         // A negative timeout means wait indefinitely. For a positive timeout,
         // the deadline above limits the same cooperative wait.
+        solvent::poll_keyboard();
         #[cfg(linux_busybox_smoke)]
         crate::linux::launch::observe_busybox_wait(rt.tid);
         crate::process::yield_current();
