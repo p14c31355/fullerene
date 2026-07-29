@@ -290,6 +290,13 @@ impl IwlWifiDevice {
         if self.health.pre_mmio_access().is_err() {
             return;
         }
+        // A hardware error requires a full device restart. Do not keep
+        // polling the latched CSR_INT value after the transport has entered
+        // the terminal error state; otherwise one uncleared cause floods the
+        // kernel log on every scheduler tick.
+        if self.fw_state == FwState::Error {
+            return;
+        }
 
         // CSR_INT is an interrupt cause register, not a reliable completion
         // poll result. On this legacy transport a completion can be reflected
@@ -328,6 +335,7 @@ impl IwlWifiDevice {
         // to obscure the first DMA failure.
         let fh_cause = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
         if int_cause & CSR_INT_BIT_HW_ERR != 0 {
+            let int_mask = self.safe_read32(CSR_INT_MASK).unwrap_or(0);
             let tx_status = self.safe_read32(FH_TSSR_TX_STATUS_REG).unwrap_or(!0);
             let tx_error = self.safe_read32(FH_TSSR_TX_ERROR_REG).unwrap_or(!0);
             let tx_trb = self.safe_read32(FH_TX_TRB_CHNL0).unwrap_or(!0);
@@ -337,8 +345,9 @@ impl IwlWifiDevice {
             let scd_rptr = self.read_prph(SCD_QUEUE_RDPTR_CMD).unwrap_or(!0);
             let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD).unwrap_or(!0);
             log::error!(
-                "iwlwifi: FH hardware error: CSR_INT={:#010x} FH_INT={:#010x} TSSR_STATUS={:#010x} TSSR_ERROR={:#010x} TX_TRB={:#010x} TX_CFG={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
+                "iwlwifi: FH hardware error: CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} TSSR_STATUS={:#010x} TSSR_ERROR={:#010x} TX_TRB={:#010x} TX_CFG={:#010x} SCD_RDPTR={} SCD_STATUS={:#010x}",
                 int_cause,
+                int_mask,
                 fh_cause,
                 tx_status,
                 tx_error,
@@ -348,7 +357,11 @@ impl IwlWifiDevice {
                 scd_status,
             );
             unsafe {
-                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause);
+                // CSR_INT is cleared using the upstream gen1 formula:
+                // acknowledge the observed causes plus every currently
+                // masked cause. Writing only int_cause leaves HW_ERR latched
+                // on this hardware.
+                core::ptr::write_volatile(self.mmio.add(CSR_INT as usize), int_cause | !int_mask);
                 core::ptr::write_volatile(self.mmio.add(CSR_INT_MASK as usize), 0);
             }
             self.fw_state = FwState::Error;
