@@ -20,7 +20,12 @@ impl IwlWifiDevice {
         let subtype = (frame[0] >> 4) & 0x0F;
         match (frame_type, subtype) {
             (0, 5) | (0, 8) => {
-                if self.iwl_state == IwlState::Scanning {
+                // Accept beacons both during an active scan and for a short
+                // grace period after the scan-complete notification.  The
+                // firmware can deliver the scan-complete notification before
+                // the last few beacons reach the RX ring, and the old
+                // `iwl_state == Scanning` guard silently discarded them.
+                if self.iwl_state == IwlState::Scanning || self.scan_pending {
                     self.process_scan_result(frame);
                 }
             }
@@ -485,8 +490,17 @@ impl IwlWifiDevice {
         }
 
         if self.scan_pending {
+            // Watchdog: allow up to 12 000 ticks for the firmware to complete
+            // a passive scan and deliver beacons.  The previous 4 000-tick
+            // limit could fire in under 4 seconds on hardware with a fast
+            // APIC timer (1 tick ≈ 2.25 ms on this platform, but the period
+            // is hardware-dependent), destroying beacons that arrived just
+            // after the scan-complete notification or while the scan was
+            // still in progress.  23 channels × 110 TU ≈ 2.6 s of dwell,
+            // plus TX/RX latency, so 12 000 ticks (≈ 27 s) gives ample
+            // headroom while still bounding a wedged firmware.
             self.scan_channel += 1;
-            if self.scan_channel > 4000 {
+            if self.scan_channel > 12_000 {
                 self.scan_pending = false;
                 self.wifi_conn.finish_scan();
                 self.iwl_state = IwlState::Disconnected;

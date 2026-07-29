@@ -191,6 +191,56 @@ impl PhyContextCmdV1 {
     }
 }
 
+/// MAC_CONTEXT_CMD (0x28) payload for a minimal STA context.
+///
+/// Without this command the firmware never delivers 802.11 frames
+/// (beacons, probe responses) to the host.  Scan-complete notifications
+/// still arrive because they are command responses, but beacons travel
+/// the REPLY_RX_MPDU_CMD data path which requires an active MAC context.
+///
+/// The layout follows Linux's `iwl_mac_ctx_cmd` (API v1).
+#[repr(C, packed)]
+pub struct MacContextCmd {
+    /// MAC type: 0 = AUX, 1 = STA, 2 = P2P_DEVICE, 3 = P2P_CLIENT, 4 = P2P_GO, 5 = MONITOR
+    pub mac_type: u32,
+    /// MAC flags (0 for minimal STA).
+    pub mac_flags: u32,
+    /// TSF ID (0).
+    pub tsf_id: u8,
+    /// Color (0).
+    pub color: u8,
+    /// Reserved.
+    pub reserved: u16,
+    /// MAC address (6 bytes).
+    pub addr: [u8; 6],
+    /// Reserved after address.
+    pub reserved_for_addr: u16,
+    /// RX filter flags.
+    pub filter_flags: u32,
+    /// MAC data for STA context (variable, but we use a fixed-size block).
+    pub data: [u8; 64],
+}
+
+impl MacContextCmd {
+    /// Create a minimal STA MAC context that accepts beacons and multicast
+    /// frames — enough for passive scanning.
+    pub fn sta(mac: [u8; 6]) -> Self {
+        // MAC_FILTER_ACCEPT_GRP | MAC_FILTER_IN_BEACON
+        const FILTER_FLAGS: u32 = (1 << 2) | (1 << 6);
+        Self {
+            mac_type: 1, // IWL_MAC_TYPE_STA
+            mac_flags: 0,
+            tsf_id: 0,
+            color: 0,
+            reserved: 0,
+            addr: mac,
+            reserved_for_addr: 0,
+            filter_flags: FILTER_FLAGS,
+            data: [0u8; 64],
+        }
+    }
+}
+
 /// ADD_STA command API v7, used by the old (pre-v12) station API.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
@@ -317,8 +367,13 @@ impl ScanConfigV1 {
             },
             mac_addr,
             bcast_sta_id: 4,
-            // EBS | ACCURATE_EBS | EBS_ADD | PRE_SCAN_PASSIVE2ACTIVE.
-            channel_flags: 0x0f,
+            // PRE_SCAN_PASSIVE2ACTIVE only.  EBS (bits 0-2) is disabled
+            // because it lets the firmware skip channels it considers "empty"
+            // based on energy detection — on some hardware/firmware
+            // combinations this causes every channel to be skipped,
+            // resulting in scan-complete with 0 APs even when APs are
+            // present.
+            channel_flags: 0x08,
             channel_array: SCAN_CHANNELS,
         }
     }

@@ -936,9 +936,9 @@ impl IwlWifiDevice {
 
         self.wifi_conn.start_scan();
         self.scan_results.clear();
-        // This field is a bounded scan wait counter. The LMAC request covers
-        // the 2.4/5 GHz channel set and uses passive dwell times, so the host
-        // must leave several seconds for firmware completion and RX delivery.
+        // Reset the tick-count watchdog. The LMAC request covers the 2.4/5 GHz
+        // channel set and uses passive dwell times, so the host must leave
+        // several seconds for firmware completion and RX delivery.
         self.scan_channel = 0;
         self.scan_pending = true;
         self.iwl_state = IwlState::Scanning;

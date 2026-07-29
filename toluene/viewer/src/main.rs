@@ -616,6 +616,12 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
     // mp4 crate sample IDs are one-based. Decode every video sample in order,
     // present each decoded frame, and pace it against the track timestamps.
     for sample_id in 1..=sample_count {
+        // Yield to the host event loop at the start of every sample so that
+        // decode failures (which skip wait_for_video_time) and long NAL
+        // chains cannot freeze the desktop.
+        unsafe {
+            wait_for_ns(0);
+        }
         let sample = match reader.read_sample(track_id, sample_id) {
             Ok(Some(sample)) => sample,
             Ok(None) => {
@@ -740,11 +746,29 @@ fn present_mp4_failure(
 
 fn wait_for_video_time(start: Instant, target_ns: u64) {
     let target = Duration::from_nanos(target_ns);
-    if let Some(remaining) = target.checked_sub(start.elapsed()) {
-        let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
-        if remaining_ns > 0 {
+    match target.checked_sub(start.elapsed()) {
+        Some(remaining) => {
+            let remaining_ns = remaining.as_nanos().min(u128::from(u64::MAX)) as u64;
+            if remaining_ns > 0 {
+                unsafe {
+                    wait_for_ns(remaining_ns);
+                }
+            } else {
+                // Even a zero-duration wait must yield to the host event
+                // loop; otherwise synchronous WASM decode freezes the
+                // desktop until the next frame that happens to call
+                // wait_for_ns with a positive duration.
+                unsafe {
+                    wait_for_ns(0);
+                }
+            }
+        }
+        None => {
+            // Decode is behind real time.  Yield a minimal quantum so the
+            // compositor and input poll run between frames instead of
+            // locking up for the whole video.
             unsafe {
-                wait_for_ns(remaining_ns);
+                wait_for_ns(0);
             }
         }
     }

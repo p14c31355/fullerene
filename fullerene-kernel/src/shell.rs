@@ -131,16 +131,29 @@ fn wasm_wait_for_ns(duration_ns: u64) {
     let tsc_per_ms = solvent::get_tsc_per_ms().max(1);
     let ticks = ((duration_ns as u128 * tsc_per_ms as u128) / 1_000_000) as u64;
     let deadline = unsafe { core::arch::x86_64::_rdtsc() }.saturating_add(ticks);
+    // Mark that we are inside a WASM host callback so tick_core skips
+    // service ticking (WiFi MMIO, USB, etc.) that could block for seconds
+    // and freeze the WASM decode loop.
+    solvent::IN_WASM_HOST_CALLBACK.store(true, core::sync::atomic::Ordering::Relaxed);
     let mut next_tick = 0u64;
-    while unsafe { core::arch::x86_64::_rdtsc() } < deadline {
+    loop {
+        // Always pump the event loop at least once per call so that long
+        // synchronous WASM computations (e.g. H.264 decode) can use
+        // `wait_for_ns(0)` as a cooperative yield point.  Without this,
+        // a zero-duration wait was a no-op and the desktop froze while
+        // the viewer decoded a frame.
+        solvent::runtime_tick_no_fb();
         let now = unsafe { core::arch::x86_64::_rdtsc() };
+        if now >= deadline {
+            break;
+        }
         if now >= next_tick {
-            solvent::runtime_tick_no_fb();
             next_tick = now.saturating_add(tsc_per_ms.saturating_mul(4));
         } else {
             petroleum::cpu_pause();
         }
     }
+    solvent::IN_WASM_HOST_CALLBACK.store(false, core::sync::atomic::Ordering::Relaxed);
 }
 
 fn wasm_file_size(path: &str) -> Result<u64, genome::FsError> {
@@ -165,7 +178,9 @@ fn wasm_read_file_range(
         offset,
         limit
     );
+    solvent::IN_WASM_HOST_CALLBACK.store(true, core::sync::atomic::Ordering::Relaxed);
     let result = crate::fs::read_file_range(path, offset, limit);
+    solvent::IN_WASM_HOST_CALLBACK.store(false, core::sync::atomic::Ordering::Relaxed);
     crate::klog_fmt!(
         "[WASM-DIAG] read_range callback end path={} offset={} result={:?}\n",
         path,

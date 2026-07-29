@@ -334,6 +334,37 @@ impl IwlWifiDevice {
             core::mem::size_of::<PhyContextCmdV1>(),
         );
 
+        // MAC_CONTEXT_CMD: without this the firmware never delivers 802.11
+        // frames (beacons, probe responses) to the host.  Scan-complete
+        // notifications still arrive (they are command responses) but
+        // beacons travel the REPLY_RX_MPDU_CMD data path which requires an
+        // active MAC context.  This was the root cause of "scan complete
+        // with 0 APs" — the scan ran, beacons were received by the radio,
+        // but the firmware dropped them because no MAC context existed.
+        let mac_ctx = MacContextCmd::sta(self.mac);
+        let mac_ctx_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &mac_ctx as *const MacContextCmd as *const u8,
+                core::mem::size_of::<MacContextCmd>(),
+            )
+        };
+        self.send_hcmd(
+            LegacyCmd::MacContext as u8,
+            GroupId::Legacy as u8,
+            mac_ctx_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: MAC context sent (STA) mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} filter_flags=0x{:08x} payload={}",
+            self.mac[0],
+            self.mac[1],
+            self.mac[2],
+            self.mac[3],
+            self.mac[4],
+            self.mac[5],
+            (1u32 << 2) | (1u32 << 6),
+            core::mem::size_of::<MacContextCmd>(),
+        );
+
         // API 17 uses the legacy LMAC scan engine.  Its channel database must
         // be activated before SCAN_OFFLOAD_REQUEST_CMD is accepted.  Although
         // the opcode is in the legacy command namespace, the command itself
