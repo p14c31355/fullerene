@@ -20,6 +20,7 @@ struct Options {
     output: Option<PathBuf>,
     compiler: Option<OsString>,
     jobs: Option<usize>,
+    clean: bool,
 }
 
 fn main() -> Result<(), String> {
@@ -44,6 +45,13 @@ fn main() -> Result<(), String> {
             .unwrap_or_else(|| workspace.join(DEFAULT_OUTPUT)),
         &workspace,
     );
+    if options.clean && output.starts_with(&build_dir) {
+        return Err(format!(
+            "--output {} must not be inside --build-dir {} when --clean is used",
+            output.display(),
+            build_dir.display()
+        ));
+    }
     let jobs = options.jobs.or_else(|| {
         std::thread::available_parallelism()
             .ok()
@@ -63,6 +71,14 @@ fn main() -> Result<(), String> {
         .or_else(|| command_available("musl-gcc").then(|| OsString::from("musl-gcc")))
         .unwrap_or_else(|| OsString::from("gcc"));
 
+    if options.clean && build_dir.exists() {
+        fs::remove_dir_all(&build_dir).map_err(|error| {
+            format!(
+                "cannot clean BusyBox build directory {}: {error}",
+                build_dir.display()
+            )
+        })?;
+    }
     fs::create_dir_all(&build_dir).map_err(|error| {
         format!(
             "cannot create BusyBox build directory {}: {error}",
@@ -104,6 +120,14 @@ fn main() -> Result<(), String> {
     fs::copy(&built, &output)
         .map_err(|error| format!("cannot copy BusyBox to {}: {error}", output.display()))?;
     make_executable(&output)?;
+    if options.clean {
+        fs::remove_dir_all(&build_dir).map_err(|error| {
+            format!(
+                "cannot clean BusyBox build directory {} after build: {error}",
+                build_dir.display()
+            )
+        })?;
+    }
     println!("Built static BusyBox: {}", output.display());
     Ok(())
 }
@@ -116,6 +140,7 @@ fn parse_options() -> Result<Options, String> {
         output: None,
         compiler: None,
         jobs: None,
+        clean: false,
     };
 
     while let Some(argument) = args.next() {
@@ -141,6 +166,7 @@ fn parse_options() -> Result<Options, String> {
                 }
                 options.jobs = Some(jobs);
             }
+            "--clean" => options.clean = true,
             other => return Err(format!("unknown option `{other}` (use --help for usage)")),
         }
     }
@@ -163,8 +189,9 @@ Options:\n  \
 --source PATH       BusyBox source directory\n  \
 --build-dir PATH    out-of-tree build directory\n  \
 --output PATH       output binary (default: target/busybox/busybox)\n  \
---cc COMPILER       C compiler (default: musl-gcc, then gcc)\n  \
---jobs N            parallel make jobs\n  \
+  --cc COMPILER       C compiler (default: musl-gcc, then gcc)\n  \
+  --jobs N            parallel make jobs\n  \
+  --clean             remove the out-of-tree build directory before and after building\n  \
 -h, --help          show this help"
     );
 }

@@ -107,6 +107,7 @@ impl LinuxRuntime {
             SYS_FSTAT => linux_fs::sys_fstat(self, args),
             SYS_LSTAT => linux_fs::sys_stat(self, args),
             SYS_POLL => linux_fs::sys_poll(self, args),
+            SYS_PPOLL => linux_fs::sys_ppoll(self, args),
             SYS_LSEEK => linux_fs::sys_lseek(self, args),
             SYS_PREAD64 => linux_fs::sys_pread64(self, args),
             SYS_PWRITE64 => linux_fs::sys_pwrite64(self, args),

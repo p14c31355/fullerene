@@ -172,11 +172,38 @@ pub fn sys_write(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
 }
 
 pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    sys_poll_with_timeout(rt, args[0], args[1], args[2] as i32)
+}
+
+/// Linux x86_64 `ppoll(2)`. BusyBox ash uses this for interactive terminal
+/// input. The signal mask is currently process-local and has no effect on
+/// Fullerene's cooperative Linux personality, so the fifth argument is
+/// intentionally ignored after validating the user timeout.
+pub fn sys_ppoll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
+    let timeout_ms = if args[2] == 0 {
+        -1
+    } else {
+        let data = match unsafe { copy_from_user(args[2], core::mem::size_of::<LinuxTimespec>()) } {
+            Ok(data) => data,
+            Err(_) => return errno_code(EFAULT),
+        };
+        let timeout = unsafe { core::ptr::read_unaligned(data.as_ptr() as *const LinuxTimespec) };
+        if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
+            return errno_code(EINVAL);
+        }
+        let milliseconds = (timeout.tv_sec as u128)
+            .saturating_mul(1_000)
+            .saturating_add((timeout.tv_nsec as u128).saturating_add(999_999) / 1_000_000);
+        milliseconds.min(i32::MAX as u128) as i32
+    };
+    sys_poll_with_timeout(rt, args[0], args[1], timeout_ms)
+}
+
+fn sys_poll_with_timeout(rt: &mut LinuxRuntime, fds: u64, nfds_arg: u64, timeout_ms: i32) -> u64 {
     const POLLIN: i16 = 0x0001;
     const POLLOUT: i16 = 0x0004;
     const POLLNVAL: i16 = 0x0020;
     const MAX_POLL_FDS: usize = 1024;
-    let timeout_ms = args[2] as i32;
     let deadline = if timeout_ms > 0 {
         let ticks = solvent::get_tsc_per_ms()
             .max(1)
@@ -186,8 +213,7 @@ pub fn sys_poll(rt: &mut LinuxRuntime, args: &[u64; 6]) -> u64 {
         None
     };
 
-    let fds = args[0];
-    let nfds = match usize::try_from(args[1]) {
+    let nfds = match usize::try_from(nfds_arg) {
         Ok(nfds) if nfds <= MAX_POLL_FDS => nfds,
         _ => return errno_code(EINVAL),
     };

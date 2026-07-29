@@ -34,7 +34,8 @@ fn main() {
     );
     let linux_musl_smoke_requested = env::var_os("FULLERENE_LINUX_MUSL_SMOKE").is_some();
 
-    let have_busybox = embed_busybox(&out_dir);
+    let workspace_root = manifest_dir.parent().unwrap();
+    let have_busybox = embed_busybox(&out_dir, workspace_root);
     if env::var_os("FULLERENE_BUSYBOX_SMOKE").is_some() {
         assert!(
             have_busybox,
@@ -91,7 +92,6 @@ fn main() {
     }
 
     // ── Build application ports from submodule sources ──────────
-    let workspace_root = manifest_dir.parent().unwrap();
     let toluene_dir = workspace_root.join("toluene");
     let ports_dir = workspace_root.join("target").join("ports");
     let count = build_ports_cpio(&toluene_dir, &ports_dir, &out_dir);
@@ -276,12 +276,12 @@ fn main() {
 /// The binary is generated outside the Rust workspace instead of being
 /// checked into it. This keeps the source tree small while allowing a release
 /// build to choose its BusyBox configuration/version.
-fn embed_busybox(out_dir: &Path) -> bool {
+fn embed_busybox(out_dir: &Path, workspace_root: &Path) -> bool {
     let explicit = env::var_os("FULLERENE_BUSYBOX").map(PathBuf::from);
-    let generated = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("kernel manifest must live in the workspace")
-        .join("target/busybox/busybox");
+    let generated = workspace_root.join("target/busybox/busybox");
+    if explicit.is_none() {
+        build_toluene_busybox(workspace_root);
+    }
     let candidates = explicit.clone().into_iter().chain(
         [
             generated.clone(),
@@ -292,7 +292,9 @@ fn embed_busybox(out_dir: &Path) -> bool {
     );
 
     for path in candidates {
-        println!("cargo:rerun-if-changed={}", path.display());
+        if path != generated {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
         let Ok(data) = fs::read(&path) else {
             continue;
         };
@@ -320,6 +322,176 @@ fn embed_busybox(out_dir: &Path) -> bool {
         "cargo:warning=BusyBox not embedded; set FULLERENE_BUSYBOX to a static x86_64 BusyBox binary"
     );
     false
+}
+
+/// Build the BusyBox submodule as a static x86_64 release binary.
+///
+/// This is intentionally owned by the kernel's Toluene build orchestration,
+/// so `cargo run -p flasks -- --iso-only` needs no special BusyBox step in
+/// flasks. The make output is always out-of-tree and is removed after the
+/// binary has been copied, leaving only the artifact consumed by this build.
+fn build_toluene_busybox(workspace_root: &Path) {
+    let source = workspace_root.join("toluene/busybox");
+    let build_dir = workspace_root.join("target/busybox-build");
+    let output = workspace_root.join("target/busybox/busybox");
+    println!(
+        "cargo:rerun-if-changed={}",
+        source.join("Makefile").display()
+    );
+    println!("cargo:rerun-if-changed={}", source.display());
+
+    if !source.join("Makefile").is_file() {
+        panic!(
+            "BusyBox submodule is missing at {}; run `git submodule update --init --recursive`",
+            source.display()
+        );
+    }
+
+    if build_dir.exists() {
+        fs::remove_dir_all(&build_dir).unwrap_or_else(|error| {
+            panic!(
+                "cannot clean BusyBox build directory {}: {error}",
+                build_dir.display()
+            )
+        });
+    }
+    fs::create_dir_all(&build_dir).unwrap_or_else(|error| {
+        panic!(
+            "cannot create BusyBox build directory {}: {error}",
+            build_dir.display()
+        )
+    });
+    let _cleanup = BusyboxBuildCleanup(build_dir.clone());
+
+    let compiler = env::var_os("FULLERENE_BUSYBOX_CC")
+        .or_else(|| command_available("musl-gcc").then(|| "musl-gcc".into()))
+        .unwrap_or_else(|| "gcc".into());
+    let jobs = std::thread::available_parallelism()
+        .map(|count| count.get().min(8))
+        .unwrap_or(1);
+    run_busybox_make(&source, &build_dir, &compiler, jobs, &["defconfig"]);
+    let config_path = build_dir.join(".config");
+    configure_busybox(&config_path);
+    run_busybox_make(&source, &build_dir, &compiler, jobs, &[]);
+
+    let built = build_dir.join("busybox");
+    let data = fs::read(&built)
+        .unwrap_or_else(|error| panic!("cannot read built BusyBox {}: {error}", built.display()));
+    if !is_static_x86_64_elf(&data) {
+        panic!(
+            "BusyBox output is not a static x86_64 ELF: {}",
+            built.display()
+        );
+    }
+    if let Some(parent) = output.parent() {
+        fs::create_dir_all(parent).unwrap_or_else(|error| {
+            panic!(
+                "cannot create BusyBox output directory {}: {error}",
+                parent.display()
+            )
+        });
+    }
+    fs::copy(&built, &output)
+        .unwrap_or_else(|error| panic!("cannot copy BusyBox to {}: {error}", output.display()));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&output).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&output, permissions).unwrap();
+    }
+    println!(
+        "cargo:warning=Built static BusyBox release at {}",
+        output.display()
+    );
+}
+
+struct BusyboxBuildCleanup(PathBuf);
+
+impl Drop for BusyboxBuildCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn command_available(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn run_busybox_make(
+    source: &Path,
+    build_dir: &Path,
+    compiler: &std::ffi::OsStr,
+    jobs: usize,
+    targets: &[&str],
+) {
+    let status = Command::new("make")
+        .current_dir(source)
+        .arg(format!("O={}", build_dir.display()))
+        .arg(format!("CC={}", compiler.to_string_lossy()))
+        .arg(format!("-j{jobs}"))
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .args(targets)
+        .status()
+        .unwrap_or_else(|error| panic!("failed to start BusyBox make: {error}"));
+    if !status.success() {
+        panic!("BusyBox make {:?} failed with {status}", targets);
+    }
+}
+
+fn configure_busybox(path: &Path) {
+    let original = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("cannot read BusyBox config {}: {error}", path.display()));
+    let mut config = original.clone();
+    for (key, value) in [
+        ("CONFIG_PLATFORM_MINGW32", "n"),
+        ("CONFIG_STATIC", "y"),
+        ("CONFIG_STATIC_LIBGCC", "y"),
+        ("CONFIG_PIE", "n"),
+        ("CONFIG_FEATURE_PREFER_APPLETS", "y"),
+        ("CONFIG_FEATURE_SH_STANDALONE", "y"),
+        ("CONFIG_FEATURE_SH_EXTRA_QUIET", "y"),
+        ("CONFIG_BUSYBOX_EXEC_PATH", "\"/bin/busybox\""),
+        // busybox-w32's tc applet expects removed Linux CBQ headers.
+        ("CONFIG_TC", "n"),
+    ] {
+        set_busybox_config_value(&mut config, key, value);
+    }
+    if config != original {
+        fs::write(path, config).unwrap_or_else(|error| {
+            panic!("cannot write BusyBox config {}: {error}", path.display())
+        });
+    }
+}
+
+fn set_busybox_config_value(config: &mut String, key: &str, value: &str) {
+    let replacement = if value == "n" {
+        format!("# {key} is not set")
+    } else {
+        format!("{key}={value}")
+    };
+    let mut found = false;
+    let mut rewritten = String::with_capacity(config.len() + replacement.len());
+    for line in config.lines() {
+        if line.starts_with(&format!("{key}=")) || line == format!("# {key} is not set") {
+            rewritten.push_str(&replacement);
+            found = true;
+        } else {
+            rewritten.push_str(line);
+        }
+        rewritten.push('\n');
+    }
+    if !found {
+        rewritten.push_str(&replacement);
+        rewritten.push('\n');
+    }
+    *config = rewritten;
 }
 
 fn is_static_x86_64_elf(data: &[u8]) -> bool {

@@ -3,7 +3,7 @@ use crate::loader::LoadError;
 use crate::process::ProcessId;
 use alloc::boxed::Box;
 use alloc::string::ToString;
-#[cfg(linux_musl_smoke)]
+#[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
 use core::sync::atomic::AtomicUsize;
 #[cfg(any(linux_musl_smoke, linux_busybox_smoke))]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,11 +27,17 @@ static BUSYBOX_SMOKE_OUTPUT_SEEN: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_EXIT_OK: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_WINDOW_CLOSED: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_HARNESS_DONE: AtomicBool = AtomicBool::new(false);
+#[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_WINDOW: AtomicU64 = AtomicU64::new(u64::MAX);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_WAITING: AtomicBool = AtomicBool::new(false);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(linux_busybox_smoke)]
+static BUSYBOX_SMOKE_OUTPUT_MATCHED: AtomicUsize = AtomicUsize::new(0);
 #[cfg(linux_busybox_smoke)]
 static BUSYBOX_SMOKE_OUTPUT: &[u8] = b"Fullerene BusyBox is running";
 
@@ -184,6 +190,9 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
     {
         BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
         BUSYBOX_SMOKE_EXIT_OK.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_WINDOW_CLOSED.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_HARNESS_DONE.store(false, Ordering::Release);
+        BUSYBOX_SMOKE_OUTPUT_MATCHED.store(0, Ordering::Release);
         BUSYBOX_SMOKE_WAITING.store(false, Ordering::Release);
         BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
         if let Some(window_id) = terminal_window {
@@ -206,7 +215,7 @@ pub fn observe_busybox_output(pid: u64, bytes: &[u8]) {
     if BUSYBOX_SMOKE_PID.load(Ordering::Acquire) != pid {
         return;
     }
-    let mut matched = 0usize;
+    let mut matched = BUSYBOX_SMOKE_OUTPUT_MATCHED.load(Ordering::Acquire);
     for &byte in bytes {
         matched = if byte == BUSYBOX_SMOKE_OUTPUT[matched] {
             matched + 1
@@ -219,9 +228,10 @@ pub fn observe_busybox_output(pid: u64, bytes: &[u8]) {
             BUSYBOX_SMOKE_OUTPUT_SEEN.store(true, Ordering::Release);
             BUSYBOX_SMOKE_WAIT_COUNT.store(0, Ordering::Release);
             BUSYBOX_SMOKE_WAITING.store(true, Ordering::Release);
-            return;
+            matched = 0;
         }
     }
+    BUSYBOX_SMOKE_OUTPUT_MATCHED.store(matched, Ordering::Release);
 }
 
 /// Advance the interactive smoke only after BusyBox has entered a real
@@ -258,6 +268,10 @@ pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
         && code == 0
         && BUSYBOX_SMOKE_OUTPUT_SEEN.load(Ordering::Acquire)
     {
+        let window_id = BUSYBOX_SMOKE_WINDOW.load(Ordering::Acquire);
+        let window_closed = window_id == u64::MAX
+            || !solvent::process_terminal_exists(lattice::window::WindowId(window_id));
+        BUSYBOX_SMOKE_WINDOW_CLOSED.store(window_closed, Ordering::Release);
         BUSYBOX_SMOKE_EXIT_OK.store(true, Ordering::Release);
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] verified output and exit status\n"
@@ -268,6 +282,18 @@ pub fn observe_busybox_exit(pid: ProcessId, code: i32) {
 #[cfg(linux_busybox_smoke)]
 pub fn busybox_smoke_verified() -> bool {
     BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn mark_busybox_smoke_harness_done() {
+    BUSYBOX_SMOKE_HARNESS_DONE.store(true, Ordering::Release);
+}
+
+#[cfg(linux_busybox_smoke)]
+pub fn busybox_smoke_complete() -> bool {
+    BUSYBOX_SMOKE_EXIT_OK.load(Ordering::Acquire)
+        && BUSYBOX_SMOKE_WINDOW_CLOSED.load(Ordering::Acquire)
+        && BUSYBOX_SMOKE_HARNESS_DONE.load(Ordering::Acquire)
 }
 
 /// Launch BusyBox shell from embedded initramfs data.

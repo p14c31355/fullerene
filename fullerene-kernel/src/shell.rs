@@ -1499,7 +1499,8 @@ pub fn busybox_smoke() {
     let services = nozzle_services();
     let mut terminal = ScriptedTerminal::new("busybox\nexit\n");
     solvent::run_shell_on_with_command(&mut terminal, "fullerene> ", services, None);
-    if crate::linux::launch::busybox_smoke_verified() {
+    crate::linux::launch::mark_busybox_smoke_harness_done();
+    if crate::linux::launch::busybox_smoke_complete() {
         petroleum::serial::serial_log(format_args!(
             "[busybox-smoke] PASS: output observed, exit=0, shell resumed\n"
         ));

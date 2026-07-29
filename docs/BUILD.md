@@ -189,23 +189,19 @@ Expected output:
 ### Static BusyBox
 
 `busybox` launches a statically linked x86_64 BusyBox as `busybox sh`.
-The kernel build validates and embeds BusyBox from `FULLERENE_BUSYBOX`; when
-that variable is omitted, the Rust builder's `target/busybox/busybox` output,
-`/usr/bin/busybox`, and `/bin/busybox` are tried. Dynamic ELF binaries and
-non-x86_64 binaries are rejected, so a static build is required. Build the
-submodule source with the Rust build tool:
+The kernel's Toluene build step builds the checked-in `toluene/busybox`
+submodule with the Rust build orchestration, validates the static x86_64 ELF,
+and embeds it automatically. Its temporary out-of-tree make directory is
+removed after each build.
 
 ```bash
-cargo run --release --manifest-path toluene/busybox-build/Cargo.toml
-```
-
-The default output is `target/busybox/busybox`. To build and embed it in an
-ISO for a physical x86_64 machine:
-
-```bash
-cargo run --release --manifest-path toluene/busybox-build/Cargo.toml
 cargo run -p flasks -- --iso-only
 ```
+
+This single command performs the static BusyBox release build, kernel
+embedding, and ISO creation. The retained BusyBox artifact is
+`target/busybox/busybox`; the intermediate `target/busybox-build/` directory
+is cleaned up.
 
 Then enter `busybox` in the Nozzle shell. Fullerene opens a focused
 `BusyBox` window and attaches the Linux process's stdin/stdout/stderr to that
@@ -216,10 +212,11 @@ under the shared Linux personality layer.
 
 For a headless end-to-end check that exercises the Nozzle command, interactive
 BusyBox `sh`, terminal stdin/stdout, blocking input wait, exit status,
-scheduler handoff, and shell resumption:
+scheduler handoff, window cleanup, and shell resumption. QEMU is allowed to
+exit successfully only after the expected output marker, exit status 0, the
+BusyBox terminal window closing, and the smoke harness returning:
 
 ```bash
-FULLERENE_BUSYBOX=target/busybox/busybox \
 FULLERENE_BUSYBOX_SMOKE=1 \
   cargo run -p flasks -- --display none --vga none --timeout 70
 ```
