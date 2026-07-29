@@ -1,6 +1,6 @@
-# sealant
+# Sealant — Checked Memory Capabilities
 
-`sealant` is a `no_std` memory-access boundary for Fullerene. It converts a
+`sealant` is the workspace's `no_std` memory-access boundary. It converts a
 raw address into a checked capability only after validating:
 
 - nullness and alignment;
@@ -27,8 +27,8 @@ device. Consequently, raw region construction and operations which access
 untyped memory are `unsafe` and document their additional requirements.
 
 Mutable RAM access is additionally created through `ExclusiveRamRegion` and
-`CheckedMut::with_mut`, so the mutable reference cannot escape the capability's
-borrow.
+`CheckedMut::with_mut`, so the mutable reference cannot escape the
+capability's borrow.
 
 ```rust
 use sealant::RamRegion;
@@ -42,3 +42,7 @@ fn example() {
     assert_eq!(value, 20);
 }
 ```
+
+`secure_zero` is also provided for best-effort clearing of caller-owned secret
+bytes. It uses volatile stores followed by a compiler fence; it does not
+replace ownership or key-lifetime management.

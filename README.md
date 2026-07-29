@@ -46,6 +46,8 @@ Fullerene provides a full-featured kernel with multitasking capabilities, runnin
 
 - **Common Library (Petroleum)**: Shared no_std utilities used by both kernel and userspace — page table management, graphics primitives, syscall ABI numbers, VDSO layout definition, serial logging, VirtIO drivers.
 
+- **Memory Capability Boundary (Sealant)**: A no_std library for checked RAM, MMIO, user-memory, DMA, framebuffer, and physical-address capabilities. Range checks make low-level assumptions explicit; actual untyped memory operations remain audited `unsafe` operations.
+
 - **GUI Framework (Lattice)**: A no_std compositing window system providing desktop environment, window manager, scene graph, surface rendering, terminal surface with bitmap font, and cursor support.
 
 - **Event System (Resonance)**: A no_std event-driven framework with dispatcher, event queue, event sources, and typed event handlers for decoupled component communication.
@@ -87,6 +89,8 @@ For detailed build instructions, QEMU options, and manual build steps, see [docs
 | [docs/HARDWARE.md](docs/HARDWARE.md) | Real hardware compatibility notes |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Toolchain, testing, debugging, and development guidelines |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture overview |
+| [docs/api/sealant.md](docs/api/sealant.md) | Checked memory and MMIO capability API |
+| [docs/BUG_JOURNAL.md](docs/BUG_JOURNAL.md) | Investigated hangs and hardware failures |
 
 ## TODO / Next Steps
 

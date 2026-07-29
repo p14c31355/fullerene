@@ -11,11 +11,19 @@ static LAST_KLOG_LIVE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Macro to create input device interrupt handlers
 macro_rules! define_input_interrupt_handler {
-    ($handler_name:ident, $port:expr, $process_input:expr) => {
+    ($handler_name:ident, $port:expr, $status_value:expr, $process_input:expr) => {
         #[unsafe(no_mangle)]
         pub extern "x86-interrupt" fn $handler_name(_stack_frame: InterruptStackFrame) {
-            let data = port_read_u8!($port);
-            $process_input(data);
+            // IRQ1 and IRQ12 can be spuriously delivered while the controller
+            // output buffer belongs to the other PS/2 port. Do not consume a
+            // byte unless its AUX bit matches this handler; otherwise one
+            // stray keyboard byte can desynchronise all following mouse
+            // packets and appear as a cursor teleport.
+            let status = port_read_u8!(0x64);
+            if status & 0x21 == $status_value {
+                let data = port_read_u8!($port);
+                $process_input(data);
+            }
             send_eoi();
         }
     };
@@ -26,7 +34,7 @@ macro_rules! define_input_interrupt_handler {
 // Reads one byte from the PS/2 data port and feeds it to the Nitrogen
 // PS/2 keyboard driver for scancode processing.  The driver handles
 // scancode-to-ASCII conversion, modifier keys, and input buffering.
-define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
+define_input_interrupt_handler!(keyboard_handler, 0x60, 0x01, |scancode: u8| {
     nitrogen::ps2::keyboard::handle_keyboard_scancode(scancode);
 });
 
@@ -35,7 +43,7 @@ define_input_interrupt_handler!(keyboard_handler, 0x60, |scancode: u8| {
 // Reads one byte from the PS/2 data port and feeds it to the Nitrogen
 // PS/2 mouse driver for packet processing.  No manual packet parsing
 // is performed here – the driver handles that with proper validation.
-define_input_interrupt_handler!(mouse_handler, 0x60, |byte: u8| {
+define_input_interrupt_handler!(mouse_handler, 0x60, 0x21, |byte: u8| {
     nitrogen::ps2::mouse::handle_mouse_data(byte);
 });
 

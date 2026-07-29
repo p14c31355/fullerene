@@ -1,5 +1,6 @@
 //! PS/2 input polling and translation into desktop or Resonance events.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use lattice::desktop::DesktopAction;
 use resonance::{Event, InputEvent, MouseButton};
 use spin::Mutex;
@@ -7,7 +8,7 @@ use spin::Mutex;
 use alloc::string::String;
 
 use crate::{
-    MOUSE_SENSITIVITY, PREV_MOUSE_BUTTONS, RUNTIME_CONTEXT, RuntimeState, editor_bridge,
+    FB_DIMS, MOUSE_SENSITIVITY, PREV_MOUSE_BUTTONS, RUNTIME_CONTEXT, RuntimeState, editor_bridge,
     network_manager, settings_bridge,
 };
 
@@ -25,6 +26,25 @@ pub static MOUSE_STATE: Mutex<MouseState> = Mutex::new(MouseState {
     buttons: 0,
 });
 
+// Relative PS/2 packets can accumulate while a service performs bounded but
+// comparatively long hardware I/O (notably Wi-Fi firmware/MMIO work). Do not
+// turn that backlog into a single teleport across the desktop when polling
+// resumes. The rest is intentionally discarded: it is stale motion, not a
+// new pointer position that the user is still trying to reach.
+const MAX_MOUSE_STEP_PX: i32 = 96;
+const MOUSE_STALE_AFTER_MS: u64 = 50;
+static LAST_MOUSE_POLL_TSC: AtomicU64 = AtomicU64::new(0);
+
+fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
+    (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
+}
+
+fn mouse_motion_is_stale(previous_poll: u64, now_tsc: u64, tsc_per_ms: u64) -> bool {
+    previous_poll != 0
+        && tsc_per_ms != 0
+        && now_tsc.wrapping_sub(previous_poll) > tsc_per_ms.saturating_mul(MOUSE_STALE_AFTER_MS)
+}
+
 macro_rules! mouse_edge {
     ($queue:expr, $buttons:expr, $prev:expr, $bit:expr, $btn:ident) => {
         if ($buttons & $bit) != 0 && ($prev & $bit) == 0 {
@@ -41,18 +61,34 @@ pub fn poll_mouse_state() {
     // through the I/O APIC.
     nitrogen::ps2::mouse::poll_input();
     let ps2_state = nitrogen::ps2::mouse::consume_state();
-    let dx = ps2_state.get_x();
-    let dy = ps2_state.get_y();
+    let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let previous_poll = LAST_MOUSE_POLL_TSC.swap(now_tsc, Ordering::Relaxed);
+    let tsc_per_ms = crate::TSC_PER_MS.load(Ordering::Relaxed);
+    let stale = mouse_motion_is_stale(previous_poll, now_tsc, tsc_per_ms);
+    // A long gap means the relative packets describe motion that happened
+    // while the desktop was blocked (for example during Wi-Fi firmware I/O),
+    // not a reliable current pointer position. Consume and discard it.
+    let dx = if stale { 0 } else { ps2_state.get_x() };
+    let dy = if stale { 0 } else { ps2_state.get_y() };
     let wheel = ps2_state.get_wheel();
     let buttons = nitrogen::ps2::mouse::mouse_buttons();
     let mut mouse = MOUSE_STATE.lock();
     let old_x = mouse.x;
     let old_y = mouse.y;
     let sensitivity = MOUSE_SENSITIVITY.load(core::sync::atomic::Ordering::Relaxed);
-    mouse.x = mouse.x.wrapping_add(dx.wrapping_mul(sensitivity));
-    mouse.y = mouse
-        .y
-        .wrapping_add(dy.wrapping_mul(sensitivity).wrapping_neg());
+    let next_x = i32::from(mouse.x) + scaled_mouse_delta(dx, sensitivity);
+    let next_y = i32::from(mouse.y) - scaled_mouse_delta(dy, sensitivity);
+    let (fb_width, fb_height, _) = *FB_DIMS.lock();
+    mouse.x = if fb_width == 0 {
+        next_x.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    } else {
+        next_x.clamp(0, fb_width.saturating_sub(1) as i32) as i16
+    };
+    mouse.y = if fb_height == 0 {
+        next_y.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+    } else {
+        next_y.clamp(0, fb_height.saturating_sub(1) as i32) as i16
+    };
     mouse.buttons = buttons;
     let cursor_x = mouse.x as i32;
     let cursor_y = mouse.y as i32;
@@ -87,6 +123,36 @@ pub fn poll_mouse_state() {
         mouse_edge!(queue, buttons, previous, 0x04, Middle);
     }
     *previous_buttons = buttons;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, mouse_motion_is_stale, scaled_mouse_delta,
+    };
+
+    #[test]
+    fn caps_stale_accumulated_motion() {
+        assert_eq!(scaled_mouse_delta(127, 6), MAX_MOUSE_STEP_PX);
+        assert_eq!(scaled_mouse_delta(-127, 6), -MAX_MOUSE_STEP_PX);
+        assert_eq!(scaled_mouse_delta(4, 6), 24);
+    }
+
+    #[test]
+    fn discards_motion_only_after_a_real_poll_gap() {
+        let tsc_per_ms = 1_000;
+        assert!(!mouse_motion_is_stale(0, 100_000, tsc_per_ms));
+        assert!(!mouse_motion_is_stale(
+            100_000,
+            100_000 + tsc_per_ms * MOUSE_STALE_AFTER_MS,
+            tsc_per_ms,
+        ));
+        assert!(mouse_motion_is_stale(
+            100_000,
+            100_000 + tsc_per_ms * (MOUSE_STALE_AFTER_MS + 1),
+            tsc_per_ms,
+        ));
+    }
 }
 
 pub fn poll_keyboard() {

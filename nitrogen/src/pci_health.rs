@@ -38,6 +38,7 @@ impl core::fmt::Display for PciHealthError {
 /// - Health state is cached and lazily refreshed.
 /// - `pre_mmio_access()` must be called before every MMIO transaction
 ///   cycle to verify the device is safe to access.
+#[derive(Clone, Copy)]
 pub struct PciHealth {
     /// BDF coordinates cached from the PciDevice.
     bus: u8,

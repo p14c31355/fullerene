@@ -50,6 +50,9 @@ pub trait WifiDriver: Send {
     /// Return the current link / firmware status.
     fn get_status(&self) -> WifiStatus;
 
+    /// Hardware revision read from the device CSR after MMIO initialization.
+    fn hardware_revision(&self) -> u16;
+
     /// Initiate a scan.  Results are delivered asynchronously via
     /// [`get_scan_results`].
     fn start_scan(&mut self) -> bool;
@@ -101,10 +104,13 @@ pub struct PciWifiInfo {
     pub bus: u8,
     pub device: u8,
     pub function: u8,
-    pub bar0_phys: u64,        // from PCI BAR0
-    pub bar0_size: usize,      // from PCI BAR0
+    pub bar0_phys: u64, // from PCI BAR0
+    /// Safe register-window size selected without destructive BAR probing.
+    pub bar0_size: usize,
     pub subsystem_vendor: u16, // from config offset 0x2C
     pub subsystem_device: u16, // from config offset 0x2E
+    /// Upstream PCIe bridge, if it is visible in the same bus scan.
+    pub upstream_bridge: Option<(u8, u8, u8)>,
 }
 
 // ── Driver entry in the registry ─────────────────────────────────────
@@ -170,6 +176,7 @@ impl WifiRegistry {
                 bar0_size: 0,
                 subsystem_vendor: 0,
                 subsystem_device: 0,
+                upstream_bridge: None,
             };
 
             // Try each driver in the registry
@@ -181,10 +188,16 @@ impl WifiRegistry {
                     continue;
                 }
 
-                // Read BAR0 using the robust PciDevice API
-                let bar = device.get_bar_info(0)?;
+                // Read the firmware-programmed BAR only. Do not call
+                // `get_bar_info()` here: it writes all ones to the BAR to
+                // size it, which can strand a live PCIe endpoint on real
+                // hardware. The firmware boot status register at 0x1af0 is
+                // in the second page, so map the small two-page window.
+                let Some(bar) = device.read_bar_info(0) else {
+                    continue;
+                };
                 let phys = bar.address;
-                let size = bar.size as usize;
+                const IWL_BAR0_MAP_SIZE: usize = 0x2000;
 
                 // Read subsystem IDs
                 let subsys = crate::pci::PciConfigSpace::read_config_dword(
@@ -214,21 +227,38 @@ impl WifiRegistry {
                     );
                     continue;
                 }
-                // BAR0 must be a reasonable MMIO region (not 0, not > 64 MiB)
-                if phys == 0 || size == 0 || size > 0x0400_0000 {
+                // BAR0 must be a real memory BAR. Its size is deliberately
+                // not probed destructively; map only the register page.
+                if bar.is_io || phys == 0 {
                     log::warn!(
-                        "WiFi: ignoring device with invalid BAR0 phys={:#x} size={:#x}",
+                        "WiFi: ignoring device with invalid BAR0 phys={:#x} io={}",
                         phys,
-                        size,
+                        bar.is_io,
                     );
                     continue;
                 }
+
+                let upstream_bridge = scanner
+                    .get_devices()
+                    .iter()
+                    .find(|bridge| {
+                        bridge.class_code == 0x06
+                            && bridge.subclass == 0x04
+                            && crate::pci::PciConfigSpace::read_config_byte(
+                                bridge.bus,
+                                bridge.device,
+                                bridge.function,
+                                0x19,
+                            ) == info.bus
+                    })
+                    .map(|bridge| (bridge.bus, bridge.device, bridge.function));
 
                 let final_info = PciWifiInfo {
                     subsystem_vendor: subsys_vendor,
                     subsystem_device: subsys_device,
                     bar0_phys: phys,
-                    bar0_size: size,
+                    bar0_size: IWL_BAR0_MAP_SIZE,
+                    upstream_bridge,
                     ..info
                 };
 
@@ -276,46 +306,29 @@ pub struct RawPciProbeResult {
     pub upstream_bridge: Option<(u8, u8, u8)>,
 }
 
-/// Lightweight PCI probe: scan bus, configure D0/ASPM/enable-mem,
-/// map BAR0.  No MMIO access — only PCI config space (port I/O).
+/// Lightweight PCI probe: scan the bus, enable endpoint memory/bus-master
+/// access, and map BAR0. No MMIO access is performed by this phase.
 /// Returns raw state that can be used by subsequent init phases.
 pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResult> {
     crate::debug::print("wifi", "start_pci_probe");
     let (entry, info) = WifiRegistry::probe()?;
     crate::debug::print("wifi", "probe_ok");
 
-    // PCI config-space setup (NEVER hangs).
-    // Order is critical: configure the upstream bridge BEFORE touching
-    // the endpoint to avoid ASPM state mismatch on the PCIe link.
+    // PCI config-space setup uses only the endpoint's standard configuration
+    // registers before the first MMIO access.
     let pci_dev = crate::pci::PciDevice::new(info.bus, info.device, info.function)?;
 
-    // ── Find upstream PCIe bridge and disable its ASPM first ──
-    crate::debug::print("wifi", "scan_bridge");
-    let upstream_bridge: Option<(u8, u8, u8)> = {
-        let mut scanner = PciScanner::new();
-        let _ = scanner.scan_all_buses();
-        let upstream = scanner.get_devices().iter().find(|bridge| {
-            bridge.class_code == 0x06
-                && bridge.subclass == 0x04
-                && crate::pci::PciConfigSpace::read_config_byte(
-                    bridge.bus,
-                    bridge.device,
-                    bridge.function,
-                    0x19,
-                ) == info.bus
-        });
-        if let Some(up) = upstream {
-            log::info!(
-                "WiFi: found upstream bridge {:02x}:{:02x}.{}",
-                up.bus,
-                up.device,
-                up.function
-            );
-            Some((up.bus, up.device, up.function))
-        } else {
-            None
-        }
-    };
+    // The registry found the bridge in the same PCI scan. Avoid a second
+    // complete bus walk while the endpoint is being prepared.
+    let upstream_bridge = info.upstream_bridge;
+    if let Some((bus, dev, func)) = upstream_bridge {
+        log::info!(
+            "WiFi: found upstream bridge {:02x}:{:02x}.{}",
+            bus,
+            dev,
+            func
+        );
+    }
 
     // ── Minimal endpoint configuration ─────────────────────
     // Linux' iwlwifi calls only pci_enable_device() (which sets
@@ -324,7 +337,15 @@ pub fn probe_pci_only(ctx: &'static dyn DriverContext) -> Option<RawPciProbeResu
     // (ASPM disable, D0 re-assertion, CTO) can cause the PCIe
     // link to enter an inconsistent state on this platform.
     crate::debug::print("wifi", "enable_mem");
-    pci_dev.enable_memory_access();
+    if !pci_dev.enable_memory_access() {
+        log::warn!(
+            "WiFi: failed to enable PCI memory space/bus mastering at {:02x}:{:02x}.{}",
+            info.bus,
+            info.device,
+            info.function,
+        );
+        return None;
+    }
 
     // Read HW revision from PCI config space (port I/O, NEVER hangs)
     crate::debug::print("wifi", "read_hw_rev_pci");

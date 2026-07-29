@@ -7,7 +7,107 @@ use super::device::IwlWifiDevice;
 use super::registers::*;
 use super::types::*;
 
+/// The legacy TFD stores the buffer length in bits 4..15 of `hi_n_len`.
+const TFD_LENGTH_MAX: usize = 0x0fff;
+
+const _: () = assert!(
+    core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
+        <= MAX_FRAME_SIZE
+);
+const _: () = assert!(
+    core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
+        <= TFD_LENGTH_MAX
+);
+
 impl IwlWifiDevice {
+    fn init_tx_cmd_queue(&mut self) {
+        let ring_phys = self.tx_dma_ring.dma_iova();
+        let keep_warm_phys = ring_phys + TX_KEEP_WARM_OFFSET as u64;
+        let scd_bc_phys = ring_phys + TX_SCD_BC_OFFSET as u64;
+
+        // The command queue is FIFO mode on gen1 hardware and still needs the
+        // scheduler context/active FIFO setup after firmware alive.
+        self.write_prph(SCD_TXFACT, 0);
+        self.write_prph(SCD_EN_CTRL, 0);
+        if let Some(scd_base) = self.read_prph(SCD_SRAM_BASE_ADDR) {
+            // Linux resets the scheduler's host-memory backing pointer after
+            // alive. The table is also needed by the legacy scheduler even
+            // though the command queue itself is non-aggregated.
+            self.write_prph(SCD_DRAM_BASE_ADDR, (scd_bc_phys >> 10) as u32);
+            // The chain-extension path is enabled by default on gen1, but it
+            // is unreliable on the 7265 legacy scheduler. Keep the command
+            // queue on the ordinary TFD path, as upstream does.
+            self.write_prph(SCD_CHAINEXT_EN, 0);
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
+            self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
+        } else {
+            log::warn!(
+                "iwlwifi: unable to read SCD SRAM base; command scheduler backing table was not configured"
+            );
+        }
+        // Linux enables automatic queue activation before publishing the
+        // queue status. Otherwise the SCD can retain the post-reset inactive
+        // state even though the status register looks active.
+        let scd_gp = self.read_prph(SCD_GP_CTRL).unwrap_or(0);
+        self.write_prph(SCD_GP_CTRL, scd_gp | SCD_GP_CTRL_AUTO_ACTIVE_MODE);
+        self.write_prph(SCD_QUEUE_RDPTR_CMD, 0);
+        self.write_prph(
+            SCD_QUEUE_STATUS_CMD,
+            SCD_QUEUE_STTS_ACTIVE
+                | SCD_QUEUE_STTS_WSL
+                | SCD_QUEUE_STTS_FIFO_COMMAND
+                | SCD_QUEUE_STTS_MASK,
+        );
+        self.write_prph(SCD_TXFACT, 0xFF);
+        self.write_prph(SCD_EN_CTRL, 1 << IWL_CMD_QUEUE);
+
+        unsafe {
+            // The keep-warm buffer must be a separate 4 KiB-aligned DMA
+            // region. It occupies the page immediately after the TFD ring in
+            // the single contiguous allocation.
+            core::ptr::write_volatile(
+                self.mmio.add(FH_KW_MEM_ADDR_REG as usize),
+                (keep_warm_phys >> 4) as u32,
+            );
+            // The 7265 uses a gen1 128-byte TFD and queue 4 for HCMDs. The
+            // previous code rang 0x0bc, which is not HBUS_TARG_WRPTR on this
+            // device and therefore never submitted the scan command.
+            core::ptr::write_volatile(
+                self.mmio.add(FH_MEM_CBBC_CMD_QUEUE as usize),
+                (ring_phys >> 8) as u32,
+            );
+            core::ptr::write_volatile(self.mmio.add(HBUS_TARG_WRPTR as usize), IWL_CMD_QUEUE << 8);
+            for channel in 0..8 {
+                core::ptr::write_volatile(
+                    self.mmio
+                        .add((FH_TCSR_CHNL_TX_CONFIG_BASE + channel * (0x20 / 4)) as usize),
+                    FH_TCSR_TX_CONFIG_DMA_ENABLE | FH_TCSR_TX_CONFIG_DMA_CREDIT_ENABLE,
+                );
+            }
+            let chicken = core::ptr::read_volatile(self.mmio.add(FH_TX_CHICKEN_BITS as usize));
+            core::ptr::write_volatile(
+                self.mmio.add(FH_TX_CHICKEN_BITS as usize),
+                chicken | FH_TX_CHICKEN_BITS_SCD_AUTO_RETRY_EN,
+            );
+        }
+        mmio::write_barrier();
+        let fh_config = self.safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4));
+        let scd_status = self.read_prph(SCD_QUEUE_STATUS_CMD);
+        let scd_active = self.read_prph(SCD_EN_CTRL);
+        let scd_chainext = self.read_prph(SCD_CHAINEXT_EN);
+        log::info!(
+            "iwlwifi: legacy TX command queue configured: q={} tfd={:#018x} kw={:#018x} scd_bc={:#018x} fh_cfg={:#010x} scd_status={:#010x} scd_en={:#010x} scd_chainext={:#010x}",
+            IWL_CMD_QUEUE,
+            ring_phys,
+            keep_warm_phys,
+            scd_bc_phys,
+            fh_config.unwrap_or(!0),
+            scd_status.unwrap_or(!0),
+            scd_active.unwrap_or(!0),
+            scd_chainext.unwrap_or(!0),
+        );
+    }
+
     /// Queue WPA2-PSK CCMP pairwise and group key installation commands.
     ///
     /// iwlwifi performs CCMP in the NIC/firmware.  Keeping the keys only in
@@ -81,21 +181,22 @@ impl IwlWifiDevice {
         group: u8,
         data: &[u8],
     ) -> Result<(), crate::DriverError> {
-        let total_len = core::mem::size_of::<HcmdHeader>() + data.len();
-        if total_len > MAX_FRAME_SIZE {
+        let header_len = if group == GroupId::Legacy as u8 {
+            core::mem::size_of::<HcmdHeader>()
+        } else {
+            core::mem::size_of::<HcmdHeaderWide>()
+        };
+        let total_len = header_len
+            .checked_add(data.len())
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        if total_len > MAX_FRAME_SIZE || total_len > TFD_LENGTH_MAX {
             return Err(crate::DriverError::InvalidArgument);
         }
 
         self.health
             .pre_mmio_access()
             .map_err(|_| crate::DriverError::DeviceNotFound)?;
-        let hcmd_header = HcmdHeader {
-            opcode,
-            group_id: group,
-            length: data.len() as u16,
-            flags: 0,
-            reserved: 0,
-        };
+        let sequence = ((IWL_CMD_QUEUE as u16) << 8) | (self.tx_head as u16 & 0xff);
 
         let used = self.tx_head.wrapping_sub(self.tx_tail);
         if used >= TX_QUEUE_SIZE {
@@ -104,36 +205,82 @@ impl IwlWifiDevice {
         let desc_idx = self.tx_head % TX_QUEUE_SIZE;
         let desc_ptr = self.tx_dma_ring.virt() as *mut TxDmaDesc;
         let cmd_buf = &mut self.tx_bufs[desc_idx];
-        let header_bytes = unsafe {
-            core::slice::from_raw_parts(
-                &hcmd_header as *const HcmdHeader as *const u8,
-                core::mem::size_of::<HcmdHeader>(),
-            )
-        };
         let mut full_data = alloc::vec::Vec::with_capacity(total_len);
-        full_data.extend_from_slice(header_bytes);
+        if group == GroupId::Legacy as u8 {
+            let hcmd_header = HcmdHeader {
+                opcode,
+                group_id: group,
+                sequence,
+            };
+            let header_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &hcmd_header as *const HcmdHeader as *const u8,
+                    core::mem::size_of::<HcmdHeader>(),
+                )
+            };
+            full_data.extend_from_slice(header_bytes);
+        } else {
+            let hcmd_header = HcmdHeaderWide {
+                opcode,
+                group_id: group,
+                sequence,
+                length: data.len() as u16,
+                reserved: 0,
+                version: 0,
+            };
+            let header_bytes = unsafe {
+                core::slice::from_raw_parts(
+                    &hcmd_header as *const HcmdHeaderWide as *const u8,
+                    core::mem::size_of::<HcmdHeaderWide>(),
+                )
+            };
+            full_data.extend_from_slice(header_bytes);
+        }
         full_data.extend_from_slice(data);
         cmd_buf.write_from(&full_data);
 
         let dma_addr = cmd_buf.dma_iova();
         let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
-        desc.addr_lo = dma_addr as u32;
-        desc.addr_hi = (dma_addr >> 32) as u32;
-        desc.len = total_len as u16;
-        desc.flags = 0;
+        *desc = TxDmaDesc::zeroed();
+        desc.num_tbs = 1;
+        desc.tbs[0].addr_lo = dma_addr as u32;
+        let hi_n_len = ((total_len as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
+        desc.tbs[0].hi_n_len = hi_n_len;
         mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
         self.tx_head = self.tx_head.wrapping_add(1);
         mmio::write_barrier();
         unsafe {
-            core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
+            core::ptr::write_volatile(
+                self.mmio.add(HBUS_TARG_WRPTR as usize),
+                (self.tx_head as u32 & 0xff) | (IWL_CMD_QUEUE << 8),
+            );
         }
         mmio::write_barrier();
+        log::info!(
+            "iwlwifi: HCMD submitted: q={} index={} opcode=0x{:02x} group=0x{:02x} header={} payload={} bytes={} dma={:#018x} tfd_addr={:#010x} tfd_hi_n_len={:#06x} wrptr={}",
+            IWL_CMD_QUEUE,
+            desc_idx,
+            opcode,
+            group,
+            header_len,
+            data.len(),
+            total_len,
+            dma_addr,
+            dma_addr as u32,
+            hi_n_len,
+            self.tx_head & 0xff,
+        );
         Ok(())
     }
 
     pub fn send_init_commands(&mut self) -> Result<(), crate::DriverError> {
-        let ant_cfg: [u8; 8] = [0x03, 0x03, 0, 0, 0, 0, 0, 0];
+        self.init_tx_cmd_queue();
+        self.init_rx_dma();
+
+        // The 7265 modules used here expose two RF chains. Keep the valid TX
+        // mask aligned with the two-chain RX scan selection.
+        let ant_cfg: [u8; 4] = [0x03, 0, 0, 0];
         self.send_hcmd(
             LegacyCmd::TxAntConfig as u8,
             GroupId::Legacy as u8,
@@ -141,13 +288,96 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: TX antenna config sent");
 
-        let mut rxon = [0u8; 36];
-        rxon[0] = 0x42;
-        rxon[1] = 0x00;
-        rxon[12..18].copy_from_slice(&self.mac);
-        rxon[22] = 100;
-        self.send_hcmd(LegacyCmd::Rxon as u8, GroupId::Legacy as u8, &rxon)?;
-        log::info!("iwlwifi: RXON config sent");
+        // Firmware API 17 uses the pre-v12 station API.  The scan engine
+        // requires its auxiliary station before accepting an offload request.
+        // ADD_STA is a long-group command, so send_hcmd() emits the required
+        // eight-byte wide header here.
+        const MAC_INDEX_AUX: u8 = 4;
+        let aux_sta = AddStaCmdV7::aux(MAC_INDEX_AUX);
+        let aux_sta_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &aux_sta as *const AddStaCmdV7 as *const u8,
+                core::mem::size_of::<AddStaCmdV7>(),
+            )
+        };
+        self.send_hcmd(LegacyCmd::AddSta as u8, GroupId::Long as u8, aux_sta_bytes)?;
+        log::info!(
+            "iwlwifi: auxiliary scan station sent: sta_id={} group=0x{:02x} opcode=0x{:02x}",
+            MAC_INDEX_AUX,
+            GroupId::Long as u8,
+            LegacyCmd::AddSta as u8,
+        );
+
+        // API v1 uses the compact four-byte channel description.  This
+        // minimal driver only binds one 2.4 GHz station/scan context.  The
+        // 7265 firmware accepts PHY context 0 here but leaves the command
+        // scheduler stopped when unused contexts 1/2 are added during the
+        // same startup burst; those contexts can be created later when a
+        // second interface actually needs them.
+        let phy_id = 0u8;
+        let phy = PhyContextCmdV1::add(phy_id);
+        let phy_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &phy as *const PhyContextCmdV1 as *const u8,
+                core::mem::size_of::<PhyContextCmdV1>(),
+            )
+        };
+        self.send_hcmd(
+            LegacyCmd::PhyContext as u8,
+            GroupId::Legacy as u8,
+            phy_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: PHY context added: id={} opcode=0x{:02x} payload={}",
+            phy_id,
+            LegacyCmd::PhyContext as u8,
+            core::mem::size_of::<PhyContextCmdV1>(),
+        );
+
+        // API 17 uses the legacy LMAC scan engine.  Its channel database must
+        // be activated before SCAN_OFFLOAD_REQUEST_CMD is accepted.  Although
+        // the opcode is in the legacy command namespace, the command itself
+        // is a LONG_GROUP command and therefore uses the wide HCMD header.
+        let scan_config = ScanConfigV1::new(self.mac);
+        let scan_config_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &scan_config as *const ScanConfigV1 as *const u8,
+                core::mem::size_of::<ScanConfigV1>(),
+            )
+        };
+        self.send_hcmd(
+            LegacyCmd::ScanConfig as u8,
+            GroupId::Long as u8,
+            scan_config_bytes,
+        )?;
+        log::info!(
+            "iwlwifi: legacy scan configuration sent: channels={} group=0x{:02x} opcode=0x{:02x} payload={}",
+            SCAN_CHANNEL_COUNT,
+            GroupId::Long as u8,
+            LegacyCmd::ScanConfig as u8,
+            core::mem::size_of::<ScanConfigV1>(),
+        );
+
+        let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
+        let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
+        log::info!(
+            "iwlwifi: command transport before optional echo probe: CSR_INT={:#010x} FH_INT={:#010x}",
+            csr_int_before_echo,
+            csr_fh_int_before_echo,
+        );
+        if csr_int_before_echo & CSR_INT_BIT_HW_ERR != 0 {
+            log::error!(
+                "iwlwifi: HW_ERR was already set before ECHO probe; initial HCMD submissions triggered the failure"
+            );
+            self.fw_state = FwState::Error;
+            return Err(crate::DriverError::Protocol);
+        }
+
+        // ECHO is a valid legacy command in the general firmware API, but on
+        // this 7265-17 target it causes CSR_INT_BIT_HW_ERR during the init
+        // sequence. Do not issue this diagnostic probe in the production init
+        // path; the scan command is the useful end-to-end transport test.
+        log::info!("iwlwifi: command transport echo probe skipped");
 
         self.fw_state = FwState::Ready;
         log::info!("iwlwifi: init commands complete, device operational");
@@ -322,32 +552,25 @@ impl IwlWifiDevice {
             && frame_type == 0 // Management frame type
             && matches!(frame[0] & 0xFC, 0x00 | 0xB0 | 0xC0); // assoc, auth, deauth subtypes
         let is_80211_data = frame_type == 2; // Data frame type
-        let is_80211_eapol = is_80211_data
-            && frame.len() >= 32
-            && frame[24..32] == [0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E];
 
-        // EAPOL data frames and management frames are intentionally allowed
-        // before the handshake. Other data frames are not: an unprotected
-        // frame is a silent plaintext fallback and must be rejected.
-        if self.wpa_required {
-            if is_80211_data {
-                let protected_bit = (frame[1] & 0x40) != 0;
-                if is_80211_eapol {
-                    if protected_bit {
-                        return Err(crate::DriverError::NotReady);
-                    }
-                } else if !self.wpa_keys_installed || !protected_bit {
-                    // For WPA-protected associations, data frames must not be
-                    // transmitted until keys are installed, and must carry the
-                    // Protected bit.  There is no plaintext fallback.
-                    return Err(crate::DriverError::NotReady);
-                }
-            } else if !is_80211_management {
-                // Reject frames that are neither management nor data.
-                // This prevents bare IP/UDP payloads from being misclassified
-                // and sent without proper 802.11 encapsulation.
-                return Err(crate::DriverError::NotSupported);
-            }
+        // Data TX needs its own configured data queue and independent ring
+        // accounting. The current WIP driver only owns the HCMD queue, so
+        // never enqueue an 802.11 data frame there (this includes EAPOL and
+        // DHCP). Management-frame transport remains available for scanning
+        // and association bring-up.
+        if is_80211_data {
+            log::warn!("iwlwifi: rejecting 802.11 data frame: data TX queue is not implemented");
+            return Err(crate::DriverError::NotSupported);
+        }
+
+        // Management frames are allowed before the handshake. If WPA is
+        // enabled, reject any other frame shape rather than silently sending
+        // plaintext through the command queue.
+        if self.wpa_required && !is_80211_management {
+            // Reject frames that are neither management nor data.
+            // This prevents bare IP/UDP payloads from being misclassified
+            // and sent without proper 802.11 encapsulation.
+            return Err(crate::DriverError::NotSupported);
         }
 
         self.tx_queue.push_back(frame.to_vec());
@@ -361,7 +584,7 @@ impl IwlWifiDevice {
         }
 
         while let Some(tx_frame) = self.tx_queue.front() {
-            if tx_frame.len() > MAX_FRAME_SIZE {
+            if tx_frame.len() > MAX_FRAME_SIZE || tx_frame.len() > TFD_LENGTH_MAX {
                 self.tx_queue.pop_front();
                 continue;
             }
@@ -377,16 +600,20 @@ impl IwlWifiDevice {
 
             let dma_addr = buf.dma_iova();
             let desc = unsafe { &mut *desc_ptr.add(desc_idx) };
-            desc.addr_lo = dma_addr as u32;
-            desc.addr_hi = (dma_addr >> 32) as u32;
-            desc.len = tx_frame.len() as u16;
-            desc.flags = 0;
+            *desc = TxDmaDesc::zeroed();
+            desc.num_tbs = 1;
+            desc.tbs[0].addr_lo = dma_addr as u32;
+            desc.tbs[0].hi_n_len =
+                ((tx_frame.len() as u16) << 4) | ((dma_addr >> 32) as u16 & 0x0f);
             mmio::cache_flush(desc as *const TxDmaDesc as usize);
 
             self.tx_head = self.tx_head.wrapping_add(1);
             mmio::write_barrier();
             unsafe {
-                core::ptr::write_volatile(self.mmio.add(0x0BC / 4), self.tx_head as u32);
+                core::ptr::write_volatile(
+                    self.mmio.add(HBUS_TARG_WRPTR as usize),
+                    (self.tx_head as u32 & 0xff) | (IWL_CMD_QUEUE << 8),
+                );
             }
             mmio::write_barrier();
         }

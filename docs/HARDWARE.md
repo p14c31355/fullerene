@@ -55,6 +55,38 @@ recovery remains a platform mechanism, not a replacement read primitive.
 Real-hardware validation is still required for the complete controller reset,
 port enumeration, and mass-storage path on this machine.
 
+## Intel iwlwifi 7265-family PCI probe
+
+The supported Intel IDs are `8086:095b`, `8086:095a`, `8086:08b1`, and
+`8086:08b2`. Wi-Fi initialization is deferred to Solvent's service tick, so a
+driver probe cannot block the kernel's boot sequence indefinitely. The phases
+are PCI discovery, MMIO setup, DMA allocation, firmware upload/alive polling,
+and post-alive initialization commands.
+
+The PCI probe now preserves the firmware-assigned BAR0. It uses
+`read_bar_info()` and maps an 8 KiB register window; it does not use
+`get_bar_info()`, whose all-ones BAR size probe is unsafe for a live endpoint on
+the affected hardware. The upstream bridge is taken from the same scan rather
+than triggering a second full bus walk. PCI config-lock acquisition is bounded
+so an abandoned transaction cannot permanently spin the CPU.
+
+The affected real machine has now been observed to advance past
+`step: start pci_probe` and reach `step: mmio_poll_mac`, confirming that the
+non-destructive PCI/BAR probe fixes the original hang. The post-reset CSR
+sequence sets both `MAC_ACCESS_REQ` and `INIT_DONE`, as required before
+`MAC_CLOCK_READY` can become set; the recovery path uses the same bits. The
+diagnostic marker `mmio_mac_clock_wait` means the CSR read completed but the
+clock was not ready, while `mmio_read_mac` confirms that this stage passed.
+The target has now advanced beyond this stage to firmware upload, but the
+outer runtime timeout previously stopped it while waiting for firmware alive.
+The runtime loader now selects only the `SEC_RT` image sections, skips the
+firmware section separator, reports each loaded section through
+`FH_UCODE_LOAD_STATUS`, follows the GP1 mailbox clear protocol, detects
+7265D using CSR `HW_REV` before selecting firmware, and gives the bounded
+firmware-candidate sequence enough time to finish. Physical
+validation of this follow-up build is still required, so the support level
+remains Alpha.
+
 The Realtek RTS5249 reader (`10ec:5249`) is matched by vendor/device identity,
 because PCI class `0xff` is a real vendor-specific class rather than a driver
 wildcard. Boot registers the reader without accessing its device registers.

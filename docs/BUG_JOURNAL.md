@@ -183,3 +183,138 @@ while rearranging arguments.
 The Release UEFI image was rebuilt and launched with Flasks/QEMU. It reached
 `efi_main_real_logic`, memory-management initialization, GUI initialization,
 and `scheduler_loop` without the invalid-opcode exception.
+
+---
+
+## Entry 005 — iwlwifi stopped at `step: start pci_probe`
+
+### Symptoms
+
+On the affected real machine, Wi-Fi initialization could stop after entering
+the deferred PCI probe phase. The path was especially risky because it ran
+against a live firmware-configured PCIe endpoint while the rest of the system
+was already servicing the desktop.
+
+### Root cause found by code inspection
+
+`WifiRegistry::probe()` called `PciDevice::get_bar_info(0)`. That API sizes a
+BAR by temporarily writing `0xffffffff` to the configuration register. This is
+not safe for every firmware-initialized endpoint and contradicted the PCI
+allocator's rule to preserve non-zero BARs. The Wi-Fi path also performed a
+second complete PCI bus scan to rediscover the upstream bridge, and PCI config
+lock acquisition could spin forever if a transaction had been abandoned by
+recovery.
+
+### Fix
+
+The Wi-Fi probe now reads the existing BAR only, maps a 0x2000-byte (8 KiB)
+register window,
+reuses the bridge found during the original scan, and bounds PCI config-lock
+acquisition. The normal iwlwifi initialization path uses the same non-
+destructive BAR policy.
+
+### Validation status
+
+Formatting, `cargo check -p nitrogen`, and dependent kernel/runtime checks
+pass after this change; the Nitrogen test suite also passes (74 tests). The
+current development host exposes only Intel Ethernet `8086:15b8`, not one of
+the supported iwlwifi IDs. The affected target machine subsequently advanced
+past PCI probe and reached `step: mmio_poll_mac`, confirming that the original
+PCI-probe hang was resolved; the next MMIO power-up stage then exposed a
+follow-up issue.
+
+### Follow-up — MAC clock did not become ready
+
+The initial MMIO sequence wrote only `MAC_ACCESS_REQ` after software reset.
+Linux's iwlwifi CSR definition specifies that `MAC_CLOCK_READY` remains zero
+after reset until the host sets `INIT_DONE`; the timeout fallback also wrote
+the wrong bit (`1 << 1`). The sequence now sets the named
+`MAC_ACCESS_REQ | INIT_DONE` bits both on entry and during recovery. The
+incremental path additionally reports `mmio_mac_clock_wait`, so a subsequent
+machine run distinguishes a completed CSR read with an unready clock from a
+PCI master-abort/device-gone result. `PciHealth` is copied out of the global
+initialization lock before MMIO reads, preventing a stalled transaction from
+holding the state lock needed by watchdog recovery.
+
+Formatting, workspace checks, and the Nitrogen test suite (74 tests) pass.
+The target machine still needs to boot this follow-up build. Success is
+`mmio_read_mac` (and then DMA allocation); a continued
+`mmio_mac_clock_wait` indicates that the remaining issue is device power,
+link, or an omitted 7265-specific APM sequence rather than PCI discovery.
+
+### Follow-up — firmware alive timeout
+
+The target then reached firmware upload, but the outer Solvent timeout
+reported `force_init_failed(timeout)` while waiting for the alive signal. The
+outer limit was only 600 scheduler ticks (about 1.35 seconds), shorter than
+the driver's 5-second per-candidate alive wait. In addition, the parser was
+loading `SEC_INIT`, `SEC_WOWLAN`, and calibration TLVs into the runtime image,
+including the `0xffffcccc` section separator. The loader now selects only
+`SEC_RT`, skips the separator, clears stale CSR/FH interrupts, uses the GP1
+CLR mailbox for RF-kill/CMD_BLOCKED bits, and enables the ALIVE/RX interrupt
+causes before polling. The outer timeout is now 12,000 ticks. Because 7265
+and 7265D share PCI IDs, firmware selection now waits for the CSR HW_REV read
+and chooses only the matching two-candidate family.
+
+The firmware boot path now also updates the direct `FH_UCODE_LOAD_STATUS`
+mailbox after every runtime section (`1`, `3`, …) and writes `0xffff` before
+releasing CPU reset, matching the 7265 PCIe transport sequence. The MMIO
+window is 8 KiB so that the 0x1af0 register is mapped, and a write barrier is
+issued after each status update. The physical log now includes `FH_LOAD` in
+the alive-timeout diagnostic.
+
+The next physical run should show `fw: alive_ok` or, on failure,
+`fw: alive_timeout` with CSR register values rather than being terminated by
+the outer timeout first.
+
+The latest physical log exposed an ordering bug: immediately after
+`firmware upload complete, starting CPU`, the driver called `PciHealth::recover()`
+and retrained upstream bridge `00:1c.2` while the NIC firmware was booting. That
+recovery is now limited to before firmware upload; the post-upload retrain was
+removed so the alive notification can arrive over the unchanged link.
+
+If the alive poll itself encounters a stalled PCIe completion, the state
+machine now checks link health through PCI config space first and does not hold
+`WIFI_INIT_CTX` while performing the watchdog-protected MMIO read. This keeps
+watchdog recovery and the bounded firmware-candidate transition from being
+blocked by a permanently held initialization lock.
+
+The 7265 firmware loader now uses the legacy FH service-DMA channel (channel 9)
+for runtime sections and waits for each chunk's FH-TX completion before
+advancing. The previous HBUS write loop only proved that the host issued writes;
+it did not prove that the firmware image had reached device SRAM. The section
+status mailbox is also written from the host-maintained mask, avoiding the
+invalid `0xa5a5a5a0` readback value observed on the target.
+
+The first real-hardware retest showed that the FH DMA submission itself timed
+out on the first runtime chunk (`0x00800000`, 98,304 bytes), before CPU reset was
+released and before an alive wait could begin. This rules out the firmware-alive
+mailbox as the immediate failure point. The loader now enables the 7000-series
+APMG DMA clock and L1-Active workaround before submitting the service-channel
+transfer, and records CSR/FH/TCSR state plus the DMA address on timeout.
+
+The next retest reached repeated scan completion, but reported zero APs. The
+RX path had been checking obsolete bit positions (`1 << 18` and `1 << 15`) rather
+than the 7265 CSR FH-RX/FH-TX causes (`bit 31` and `bit 27`). Those checks now
+use the named CSR constants. Scan completion is also delayed long enough for
+the four requested channels to finish their dwell time instead of ending after
+13 scheduler ticks.
+
+### Follow-up — GUI cursor disappears after shell launch
+
+The GUI input path accepted out-of-framebuffer cursor coordinates. A malformed
+or sign-wrapped PS/2 relative delta could therefore move the software cursor
+outside the visible screen; opening the shell then made it appear to vanish
+until a later movement. Mouse events are now clamped to the current
+framebuffer bounds before desktop hit-testing and cursor redraw.
+
+### Follow-up — cursor jumps when Wi-Fi is enabled
+
+Wi-Fi firmware/MMIO work runs from the service tick and can delay the next
+PS/2 poll. Relative packets that arrive during that interval were then
+consumed as one large movement. The scheduler also polled input before calling
+`tick_core`, which polled it again. Input polling is now owned by `tick_core`,
+and each resumed poll caps stale accumulated motion to a bounded screen step.
+The IRQ handlers also verify the PS/2 controller's AUX/keyboard status before
+consuming `0x60`, and a poll gap over 50 ms discards the stale relative packet
+backlog entirely.

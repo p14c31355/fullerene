@@ -22,13 +22,21 @@ use crate::port::PortWriter;
 static PCI_CONFIG_LOCK: AtomicBool = AtomicBool::new(false);
 
 #[inline]
-fn pci_config_lock_acquire() {
-    while PCI_CONFIG_LOCK
-        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
+fn pci_config_lock_acquire() -> bool {
+    // A transaction can be abandoned by the MMIO/NMI recovery path. Never
+    // turn a stale lock into a permanent CPU spin; callers treat failure as
+    // an absent/unavailable config read and continue their probe safely.
+    const MAX_SPINS: usize = 100_000;
+    for _ in 0..MAX_SPINS {
+        if PCI_CONFIG_LOCK
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return true;
+        }
         core::hint::spin_loop();
     }
+    false
 }
 
 /// Release the PCI config space lock.
@@ -227,12 +235,21 @@ impl PciConfigSpace {
 
     pub fn read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
         let dword = Self::read_config_dword(bus, device, function, offset);
+        if dword == u32::MAX {
+            // Keep the config-lock acquisition failure sentinel intact when
+            // narrowing a failed DWORD read to a WORD. Callers such as
+            // enable_memory_access must not mistake it for a valid command
+            // register value.
+            return u16::MAX;
+        }
         let shift = if offset % 4 < 2 { 0 } else { 16 };
         ((dword >> shift) & 0xFFFF) as u16
     }
 
     pub fn read_config_dword(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return u32::MAX;
+        }
         let value = Self::read_config_dword_unlocked(bus, device, function, offset);
         pci_config_lock_release();
         value
@@ -300,7 +317,9 @@ impl PciConfigSpace {
     ///
     /// Serializes CF8/CFC access with all other configuration transactions.
     pub fn write_config_word_raw(bus: u8, device: u8, function: u8, offset: u8, value: u16) {
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return;
+        }
         Self::write_config_word_unlocked(bus, device, function, offset, value);
         pci_config_lock_release();
     }
@@ -312,7 +331,9 @@ impl PciConfigSpace {
     ///
     /// Serializes CF8/CFC access with all other configuration transactions.
     pub fn write_config_dword_raw(bus: u8, device: u8, function: u8, offset: u8, value: u32) {
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return;
+        }
         Self::write_config_dword_unlocked(bus, device, function, offset, value);
         pci_config_lock_release();
     }
@@ -345,6 +366,15 @@ impl PciDevice {
     /// and before performing MMIO or DMA operations.
     pub fn enable_memory_access(&self) -> bool {
         let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
+        if cmd == u16::MAX {
+            log::warn!(
+                "PCI: unable to read command register for {:02x}:{:02x}.{}",
+                self.bus,
+                self.device,
+                self.function,
+            );
+            return false;
+        }
         PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd | 0x06);
         PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4) & 0x06 == 0x06
     }
@@ -622,7 +652,9 @@ impl PciDevice {
             return 0;
         }
         let offset = 0x10 + (bar_index * 4);
-        pci_config_lock_acquire();
+        if !pci_config_lock_acquire() {
+            return 0;
+        }
         let original_value = PciConfigSpace::read_config_dword_unlocked(
             self.bus,
             self.device,

@@ -1,6 +1,6 @@
 # Fullerene Project Rules
 
-## Current implementation snapshot (2026-07-27)
+## Current implementation snapshot (2026-07-29)
 
 The repository currently implements the context-oriented architecture
 described below across the root workspace members. The main runtime path is:
@@ -108,12 +108,19 @@ petroleum (no_std support library)
     ├── raw syscall instruction (numbers come from fullerene-abi)
     ├── VDSO layout (read-only metadata page)
     └── serial, early boot helpers
+
+sealant (no_std memory capability boundary)
+    └── checked RAM / MMIO / user / DMA / physical-address access
 ```
 
 New in this revision:
 - **Fullerene ABI** is the dependency-free contract shared directly by the kernel and Toluene SDK. Petroleum re-exports its typed syscall numbers for compatibility but does not own them.
 - **Genome** provides the filesystem framework (`FileSystem` trait, `Vfs` dispatcher, `MemFileSystem`) as a standalone leaf crate. The kernel re-exports Genome types and adds the singleton `VfsContext`.
 - **Carrier** provides the I/O abstraction (`Terminal` trait, pipeline, streaming `dispatch()`) as another leaf crate. Nozzle and Solvent depend on Carrier for terminal I/O and command dispatch.
+- **Sealant** keeps checked memory capabilities at the raw-memory boundary. A
+  range check does not make an arbitrary mapping safe; mapping, initialization,
+  provenance, lifetime, and concurrency remain the responsibility of the
+  owning subsystem.
 
 Lower layers must never depend on higher-level policy layers.
 
@@ -319,6 +326,11 @@ incremental initialization state machine, while Solvent owns `WifiService`, its
 timeout, scan cadence, action consumption, and immutable desktop snapshot. The
 kernel installs the `DriverContext` capability, starts Solvent via `solvent::init()`,
 and explicitly registers the Wi-Fi service via `solvent::register_wifi_service()`.
+
+The Wi-Fi PCI probe reads firmware-assigned BAR0 state without writing the
+destructive all-ones size-probe pattern. It maps the first two register pages,
+reuses the upstream bridge found during the original scan, and treats a stale
+PCI configuration lock as an unavailable probe rather than spinning forever.
 
 Solvent's crate root is an API facade rather than an orchestration
 implementation. Runtime responsibilities are divided under `solvent/src/`:

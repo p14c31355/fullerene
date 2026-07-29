@@ -9,7 +9,10 @@ use bonder::wifi::Ssid;
 use lattice::desktop::DesktopAction;
 
 #[cfg(not(nitrogen_no_iwlwifi))]
-const WIFI_INIT_TIMEOUT_TICKS: u64 = 600;
+// The driver allows up to 5 seconds per firmware candidate and may try four
+// candidates on 7265-family hardware.  600 scheduler ticks (~1.35 seconds)
+// aborted the state machine before its own alive timeout could run.
+const WIFI_INIT_TIMEOUT_TICKS: u64 = 12_000;
 
 /// Runtime-owned Wi-Fi lifecycle and UI projection.
 #[allow(dead_code)]
