@@ -290,42 +290,31 @@ impl IwlWifiDevice {
             LegacyCmd::AddSta as u8,
         );
 
-        // Create the three PHY contexts expected by the MVM scan state
-        // machine.  API v1 uses the compact four-byte channel description.
-        for phy_id in 0..3u8 {
-            let phy = PhyContextCmdV1::add(phy_id);
-            let phy_bytes = unsafe {
-                core::slice::from_raw_parts(
-                    &phy as *const PhyContextCmdV1 as *const u8,
-                    core::mem::size_of::<PhyContextCmdV1>(),
-                )
-            };
-            self.send_hcmd(
-                LegacyCmd::PhyContext as u8,
-                GroupId::Legacy as u8,
-                phy_bytes,
-            )?;
-            log::info!(
-                "iwlwifi: PHY context added: id={} opcode=0x{:02x} payload={}",
-                phy_id,
-                LegacyCmd::PhyContext as u8,
-                core::mem::size_of::<PhyContextCmdV1>(),
-            );
-        }
-
-        let mac_context = MacContextCmd::station(self.mac);
-        let mac_context_bytes = unsafe {
+        // API v1 uses the compact four-byte channel description.  This
+        // minimal driver only binds one 2.4 GHz station/scan context.  The
+        // 7265 firmware accepts PHY context 0 here but leaves the command
+        // scheduler stopped when unused contexts 1/2 are added during the
+        // same startup burst; those contexts can be created later when a
+        // second interface actually needs them.
+        let phy_id = 0u8;
+        let phy = PhyContextCmdV1::add(phy_id);
+        let phy_bytes = unsafe {
             core::slice::from_raw_parts(
-                &mac_context as *const MacContextCmd as *const u8,
-                core::mem::size_of::<MacContextCmd>(),
+                &phy as *const PhyContextCmdV1 as *const u8,
+                core::mem::size_of::<PhyContextCmdV1>(),
             )
         };
         self.send_hcmd(
-            LegacyCmd::MacContext as u8,
+            LegacyCmd::PhyContext as u8,
             GroupId::Legacy as u8,
-            mac_context_bytes,
+            phy_bytes,
         )?;
-        log::info!("iwlwifi: station MAC context sent");
+        log::info!(
+            "iwlwifi: PHY context added: id={} opcode=0x{:02x} payload={}",
+            phy_id,
+            LegacyCmd::PhyContext as u8,
+            core::mem::size_of::<PhyContextCmdV1>(),
+        );
 
         // API 17 uses the legacy LMAC scan engine.  Its channel database must
         // be activated before SCAN_OFFLOAD_REQUEST_CMD is accepted.  Although

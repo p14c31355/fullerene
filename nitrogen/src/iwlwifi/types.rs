@@ -492,11 +492,10 @@ pub struct ScanRequestCmd {
 impl ScanRequestCmd {
     pub fn new(mac: [u8; 6]) -> Self {
         let mut channels = [ScanChannelCfgLmac {
-            // A normal discovery scan covers the complete channel entry.
-            // The LMAC API reserves bit 27 for FULL and bit 28 for PARTIAL;
-            // using PARTIAL for every channel can leave the request waiting
-            // for a scan plan that was never configured.
-            flags: 1 << 27,
+            // Each entry is explicitly supplied by this request.  The
+            // legacy LMAC API marks that form as PARTIAL; FULL is reserved
+            // for a firmware-managed channel plan.
+            flags: 1 << 28,
             channel_num: 0,
             iter_count: 1,
             iter_interval: 0,
