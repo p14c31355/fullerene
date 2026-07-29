@@ -207,7 +207,8 @@ recovery.
 
 ### Fix
 
-The Wi-Fi probe now reads the existing BAR only, maps a 4 KiB register window,
+The Wi-Fi probe now reads the existing BAR only, maps a 0x2000-byte (8 KiB)
+register window,
 reuses the bridge found during the original scan, and bounds PCI config-lock
 acquisition. The normal iwlwifi initialization path uses the same non-
 destructive BAR policy.

@@ -275,7 +275,25 @@ impl EventHandler for WmEventHandler {
 #[cfg(test)]
 mod tests {
     use super::apply_mouse_move;
+    use crate::FB_DIMS;
     use lattice::desktop::Desktop;
+
+    struct FbDimsGuard((u32, u32, u32));
+
+    impl FbDimsGuard {
+        fn new(dims: (u32, u32, u32)) -> Self {
+            let mut fb_dims = FB_DIMS.lock();
+            let previous = *fb_dims;
+            *fb_dims = dims;
+            Self(previous)
+        }
+    }
+
+    impl Drop for FbDimsGuard {
+        fn drop(&mut self) {
+            *FB_DIMS.lock() = self.0;
+        }
+    }
 
     #[test]
     fn mouse_input_transitions_cursor_state_and_queues_cursor_redraw() {
@@ -301,6 +319,7 @@ mod tests {
 
     #[test]
     fn mouse_input_clamps_cursor_to_framebuffer() {
+        let _fb_dims = FbDimsGuard::new((1024, 768, 1024));
         let mut desktop = Desktop::new(0);
         let mut cursor_redraw_from = None;
         let mut frame_due = false;

@@ -370,6 +370,11 @@ pub fn try_init_wifi_device_step() {
                 set_init_phase(WifiInitPhase::Failed);
                 return;
             }
+            // The clock/revision probe is complete. Do not leave the
+            // recovery watchdog armed while read_mac performs its own
+            // protected MMIO sequence; that sequence has a separate arm /
+            // disarm pair below.
+            mmio::disarm_mmio_watchdog();
             debug::print("iwlwifi", "step: mmio_read_mac");
             let mac = {
                 if let Some((pci_bdf, bridge_bdf)) = bdf_info {

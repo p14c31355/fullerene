@@ -39,6 +39,12 @@ fn scaled_mouse_delta(delta: i16, sensitivity: i16) -> i32 {
     (i32::from(delta) * i32::from(sensitivity)).clamp(-MAX_MOUSE_STEP_PX, MAX_MOUSE_STEP_PX)
 }
 
+fn mouse_motion_is_stale(previous_poll: u64, now_tsc: u64, tsc_per_ms: u64) -> bool {
+    previous_poll != 0
+        && tsc_per_ms != 0
+        && now_tsc.wrapping_sub(previous_poll) > tsc_per_ms.saturating_mul(MOUSE_STALE_AFTER_MS)
+}
+
 macro_rules! mouse_edge {
     ($queue:expr, $buttons:expr, $prev:expr, $bit:expr, $btn:ident) => {
         if ($buttons & $bit) != 0 && ($prev & $bit) == 0 {
@@ -58,9 +64,7 @@ pub fn poll_mouse_state() {
     let now_tsc = unsafe { core::arch::x86_64::_rdtsc() };
     let previous_poll = LAST_MOUSE_POLL_TSC.swap(now_tsc, Ordering::Relaxed);
     let tsc_per_ms = crate::TSC_PER_MS.load(Ordering::Relaxed);
-    let stale = previous_poll != 0
-        && tsc_per_ms != 0
-        && now_tsc.wrapping_sub(previous_poll) > tsc_per_ms.saturating_mul(MOUSE_STALE_AFTER_MS);
+    let stale = mouse_motion_is_stale(previous_poll, now_tsc, tsc_per_ms);
     // A long gap means the relative packets describe motion that happened
     // while the desktop was blocked (for example during Wi-Fi firmware I/O),
     // not a reliable current pointer position. Consume and discard it.
@@ -123,13 +127,31 @@ pub fn poll_mouse_state() {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_MOUSE_STEP_PX, scaled_mouse_delta};
+    use super::{
+        MAX_MOUSE_STEP_PX, MOUSE_STALE_AFTER_MS, mouse_motion_is_stale, scaled_mouse_delta,
+    };
 
     #[test]
     fn caps_stale_accumulated_motion() {
         assert_eq!(scaled_mouse_delta(127, 6), MAX_MOUSE_STEP_PX);
         assert_eq!(scaled_mouse_delta(-127, 6), -MAX_MOUSE_STEP_PX);
         assert_eq!(scaled_mouse_delta(4, 6), 24);
+    }
+
+    #[test]
+    fn discards_motion_only_after_a_real_poll_gap() {
+        let tsc_per_ms = 1_000;
+        assert!(!mouse_motion_is_stale(0, 100_000, tsc_per_ms));
+        assert!(!mouse_motion_is_stale(
+            100_000,
+            100_000 + tsc_per_ms * MOUSE_STALE_AFTER_MS,
+            tsc_per_ms,
+        ));
+        assert!(mouse_motion_is_stale(
+            100_000,
+            100_000 + tsc_per_ms * (MOUSE_STALE_AFTER_MS + 1),
+            tsc_per_ms,
+        ));
     }
 }
 

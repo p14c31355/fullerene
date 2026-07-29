@@ -7,6 +7,18 @@ use super::device::IwlWifiDevice;
 use super::registers::*;
 use super::types::*;
 
+/// The legacy TFD stores the buffer length in bits 4..15 of `hi_n_len`.
+const TFD_LENGTH_MAX: usize = 0x0fff;
+
+const _: () = assert!(
+    core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
+        <= MAX_FRAME_SIZE
+);
+const _: () = assert!(
+    core::mem::size_of::<HcmdHeaderWide>() + core::mem::size_of::<ScanRequestCmd>()
+        <= TFD_LENGTH_MAX
+);
+
 impl IwlWifiDevice {
     fn init_tx_cmd_queue(&mut self) {
         let ring_phys = self.tx_dma_ring.dma_iova();
@@ -28,6 +40,10 @@ impl IwlWifiDevice {
             self.write_prph(SCD_CHAINEXT_EN, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD, 0);
             self.write_mem32(scd_base + SCD_CONTEXT_QUEUE_CMD + 4, 64 | (64 << 16));
+        } else {
+            log::warn!(
+                "iwlwifi: unable to read SCD SRAM base; command scheduler backing table was not configured"
+            );
         }
         // Linux enables automatic queue activation before publishing the
         // queue status. Otherwise the SCD can retain the post-reset inactive
@@ -170,8 +186,10 @@ impl IwlWifiDevice {
         } else {
             core::mem::size_of::<HcmdHeaderWide>()
         };
-        let total_len = header_len + data.len();
-        if total_len > MAX_FRAME_SIZE {
+        let total_len = header_len
+            .checked_add(data.len())
+            .ok_or(crate::DriverError::InvalidArgument)?;
+        if total_len > MAX_FRAME_SIZE || total_len > TFD_LENGTH_MAX {
             return Err(crate::DriverError::InvalidArgument);
         }
 
@@ -534,32 +552,25 @@ impl IwlWifiDevice {
             && frame_type == 0 // Management frame type
             && matches!(frame[0] & 0xFC, 0x00 | 0xB0 | 0xC0); // assoc, auth, deauth subtypes
         let is_80211_data = frame_type == 2; // Data frame type
-        let is_80211_eapol = is_80211_data
-            && frame.len() >= 32
-            && frame[24..32] == [0xAA, 0xAA, 0x03, 0x00, 0x00, 0x00, 0x88, 0x8E];
 
-        // EAPOL data frames and management frames are intentionally allowed
-        // before the handshake. Other data frames are not: an unprotected
-        // frame is a silent plaintext fallback and must be rejected.
-        if self.wpa_required {
-            if is_80211_data {
-                let protected_bit = (frame[1] & 0x40) != 0;
-                if is_80211_eapol {
-                    if protected_bit {
-                        return Err(crate::DriverError::NotReady);
-                    }
-                } else if !self.wpa_keys_installed || !protected_bit {
-                    // For WPA-protected associations, data frames must not be
-                    // transmitted until keys are installed, and must carry the
-                    // Protected bit.  There is no plaintext fallback.
-                    return Err(crate::DriverError::NotReady);
-                }
-            } else if !is_80211_management {
-                // Reject frames that are neither management nor data.
-                // This prevents bare IP/UDP payloads from being misclassified
-                // and sent without proper 802.11 encapsulation.
-                return Err(crate::DriverError::NotSupported);
-            }
+        // Data TX needs its own configured data queue and independent ring
+        // accounting. The current WIP driver only owns the HCMD queue, so
+        // never enqueue an 802.11 data frame there (this includes EAPOL and
+        // DHCP). Management-frame transport remains available for scanning
+        // and association bring-up.
+        if is_80211_data {
+            log::warn!("iwlwifi: rejecting 802.11 data frame: data TX queue is not implemented");
+            return Err(crate::DriverError::NotSupported);
+        }
+
+        // Management frames are allowed before the handshake. If WPA is
+        // enabled, reject any other frame shape rather than silently sending
+        // plaintext through the command queue.
+        if self.wpa_required && !is_80211_management {
+            // Reject frames that are neither management nor data.
+            // This prevents bare IP/UDP payloads from being misclassified
+            // and sent without proper 802.11 encapsulation.
+            return Err(crate::DriverError::NotSupported);
         }
 
         self.tx_queue.push_back(frame.to_vec());
@@ -573,7 +584,7 @@ impl IwlWifiDevice {
         }
 
         while let Some(tx_frame) = self.tx_queue.front() {
-            if tx_frame.len() > MAX_FRAME_SIZE {
+            if tx_frame.len() > MAX_FRAME_SIZE || tx_frame.len() > TFD_LENGTH_MAX {
                 self.tx_queue.pop_front();
                 continue;
             }

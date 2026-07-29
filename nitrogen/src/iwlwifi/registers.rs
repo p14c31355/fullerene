@@ -14,7 +14,7 @@ pub const fn pci_dma_device_id(bus: u8, device: u8, function: u8) -> u16 {
 // ── CSR registers ──────────────────
 
 pub const CSR_HW_REV: u32 = 0x028 / 4;
-pub const CSR_HW_IF_CONFIG: u32 = 0x000 / 4;
+pub const CSR_HW_IF_CONFIG: u32 = 0x000;
 pub const CSR_HW_RF_ID: u32 = 0x034 / 4;
 pub const CSR_GIO: u32 = 0x03C / 4;
 pub const CSR_GIO_CHICKEN_BITS: u32 = 0x100 / 4;

@@ -314,7 +314,7 @@ impl IwlWifiDevice {
         if let Some(hardware_tail) = polled_tx_tail {
             self.update_tx_tail(hardware_tail);
             if self.tx_tail != tx_tail_before_poll {
-                log::info!(
+                log::debug!(
                     "iwlwifi: TX completion progress scd_rptr={} tx_tail={} tx_head={}",
                     hardware_tail & (TX_QUEUE_SIZE - 1),
                     self.tx_tail & (TX_QUEUE_SIZE - 1),

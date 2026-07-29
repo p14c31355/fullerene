@@ -328,7 +328,7 @@ kernel installs the `DriverContext` capability, starts Solvent via `solvent::ini
 and explicitly registers the Wi-Fi service via `solvent::register_wifi_service()`.
 
 The Wi-Fi PCI probe reads firmware-assigned BAR0 state without writing the
-destructive all-ones size-probe pattern. It maps only the first register page,
+destructive all-ones size-probe pattern. It maps the first two register pages,
 reuses the upstream bridge found during the original scan, and treats a stale
 PCI configuration lock as an unavailable probe rather than spinning forever.
 

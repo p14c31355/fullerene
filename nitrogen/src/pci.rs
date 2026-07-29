@@ -235,6 +235,13 @@ impl PciConfigSpace {
 
     pub fn read_config_word(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
         let dword = Self::read_config_dword(bus, device, function, offset);
+        if dword == u32::MAX {
+            // Keep the config-lock acquisition failure sentinel intact when
+            // narrowing a failed DWORD read to a WORD. Callers such as
+            // enable_memory_access must not mistake it for a valid command
+            // register value.
+            return u16::MAX;
+        }
         let shift = if offset % 4 < 2 { 0 } else { 16 };
         ((dword >> shift) & 0xFFFF) as u16
     }
@@ -359,6 +366,15 @@ impl PciDevice {
     /// and before performing MMIO or DMA operations.
     pub fn enable_memory_access(&self) -> bool {
         let cmd = PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4);
+        if cmd == u16::MAX {
+            log::warn!(
+                "PCI: unable to read command register for {:02x}:{:02x}.{}",
+                self.bus,
+                self.device,
+                self.function,
+            );
+            return false;
+        }
         PciConfigSpace::write_config_word_raw(self.bus, self.device, self.function, 4, cmd | 0x06);
         PciConfigSpace::read_config_word(self.bus, self.device, self.function, 4) & 0x06 == 0x06
     }

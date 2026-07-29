@@ -635,7 +635,7 @@ impl IwlWifiDevice {
     }
 
     /// Reset the device with posted-write + pure TSC delays.
-    pub fn reset_device(mmio: *mut u32) {
+    pub(super) fn reset_device(mmio: *mut u32) {
         unsafe {
             core::ptr::write_volatile(mmio.add(CSR_RESET as usize), CSR_RESET_BIT_STOP_MASTER);
         }
@@ -651,7 +651,7 @@ impl IwlWifiDevice {
     }
 
     /// Read MAC address from the NVM (non-volatile memory) via CSR registers.
-    pub fn read_mac(mmio: *mut u32, health: Option<&PciHealth>) -> [u8; 6] {
+    pub(super) fn read_mac(mmio: *mut u32, health: Option<&PciHealth>) -> [u8; 6] {
         let checked_read = |reg: u32| -> Option<u32> {
             let addr = unsafe { mmio.add(reg as usize) } as *const u32;
             match unsafe { mmio::checked_read_u32(addr as usize, health) } {
@@ -972,9 +972,11 @@ impl IwlWifiDevice {
     fn upload_section(&mut self, target_addr: u32, data: &[u8]) -> Result<(), crate::DriverError> {
         let mut dma = DmaRegion::alloc(self.ctx, FH_MEM_TB_MAX_LENGTH)
             .ok_or(crate::DriverError::DmaMappingFailed)?;
-        let dma_device_id = ((self._pci_dev.bus as u16) << 8)
-            | ((self._pci_dev.device as u16) << 3)
-            | self._pci_dev.function as u16;
+        let dma_device_id = pci_dma_device_id(
+            self._pci_dev.bus,
+            self._pci_dev.device,
+            self._pci_dev.function,
+        );
         if dma.dma_map(self.ctx, dma_device_id).is_err() {
             dma.free(self.ctx);
             return Err(crate::DriverError::DmaMappingFailed);
@@ -1122,7 +1124,9 @@ impl IwlWifiDevice {
 
         self.write_prph(APMG_CLK_EN_REG, APMG_CLK_VAL_DMA_CLK_RQT);
         crate::timing::delay_us(20);
-        let pcidev_state = self.read_prph(APMG_PCIDEV_STT_REG).unwrap_or(0);
+        let pcidev_state = self
+            .read_prph(APMG_PCIDEV_STT_REG)
+            .ok_or(crate::DriverError::DeviceNotFound)?;
         self.write_prph(
             APMG_PCIDEV_STT_REG,
             pcidev_state | APMG_PCIDEV_STT_L1_ACT_DIS,
