@@ -950,11 +950,15 @@ impl IwlWifiDevice {
                 core::mem::size_of::<ScanRequestCmd>(),
             )
         };
-        if let Err(error) = self.send_hcmd(
-            LegacyCmd::ScanRequest as u8,
-            GroupId::Legacy as u8,
-            cmd_data,
-        ) {
+        // SCAN_OFFLOAD_REQUEST_CMD (0x51) lives in LONG_GROUP and therefore
+        // uses the wide (8-byte) HCMD header, even though its opcode is in
+        // the legacy command namespace.  Sending it as Legacy produced a
+        // 4-byte header that the firmware did not recognise, so the scan
+        // never ran and the watchdog completed with zero APs.  See the
+        // matching note in `tx.rs` (`send_init_commands`).
+        if let Err(error) =
+            self.send_hcmd(LegacyCmd::ScanRequest as u8, GroupId::Long as u8, cmd_data)
+        {
             self.scan_pending = false;
             self.iwl_state = IwlState::Disconnected;
             self.wifi_conn.finish_scan();

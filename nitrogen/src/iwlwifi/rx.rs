@@ -549,7 +549,9 @@ impl IwlWifiDevice {
             let command = data[4];
             let group = data[5];
             let sequence = u16::from_le_bytes([data[6], data[7]]);
-            if command == 0xe7 || command == 0x6d {
+            if command == LegacyCmd::ScanOffloadCompleteNotif as u8
+                || command == LegacyCmd::ScanCompleteUrgent as u8
+            {
                 let payload = &data[8..packet_len];
                 log::info!(
                     "iwlwifi: firmware scan complete notification cmd=0x{:02x} status={} scanned_channels={}",
@@ -573,7 +575,7 @@ impl IwlWifiDevice {
             // (byte_count, assist) at payload offset 0, followed by the raw
             // 802.11 MPDU. The packet's 4-byte length header is not part of
             // the command payload.
-            if command == 0xc1 && packet_len >= 12 {
+            if command == LegacyCmd::ReplyRxMpduCmd as u8 && packet_len >= 12 {
                 let payload = &data[8..packet_len];
                 let byte_count = u16::from_le_bytes([payload[0], payload[1]]) as usize;
                 let frame_end = 12usize.saturating_add(byte_count).min(packet_len);

@@ -151,16 +151,38 @@ pub fn launch_linux_from_data(data: &[u8], name: &'static str) -> Result<Process
 }
 
 fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
-    let data = crate::fs::read_entire_file(path).map_err(|_| LoadError::FileNotFound)?;
+    crate::klog_fmt!("[BUSYBOX-DIAG] read begin path={}\n", path);
+    let data = match crate::fs::read_entire_file(path) {
+        Ok(d) => {
+            crate::klog_fmt!("[BUSYBOX-DIAG] read exit path={} bytes={}\n", path, d.len());
+            d
+        }
+        Err(error) => {
+            crate::klog_fmt!(
+                "[BUSYBOX-DIAG] read error path={} error={:?}\n",
+                path,
+                error
+            );
+            return Err(LoadError::FileNotFound);
+        }
+    };
     // Never start an interactive Linux process without its terminal window.
     // A missing runtime here would otherwise leave BusyBox polling the global
     // keyboard queue invisibly, which looks like a machine hang on hardware.
+    crate::klog_fmt!("[BUSYBOX-DIAG] create_process_terminal begin\n");
     let Some(terminal_window) = solvent::create_process_terminal("BusyBox") else {
+        crate::klog_fmt!(
+            "[BUSYBOX-DIAG] create_process_terminal failed — aborting to avoid invisible hang\n"
+        );
         petroleum::serial::serial_log(format_args!(
             "[LINUX-DIAG] BusyBox terminal window could not be created\n"
         ));
         return Err(LoadError::MappingFailed);
     };
+    crate::klog_fmt!(
+        "[BUSYBOX-DIAG] create_process_terminal exit window_id={}\n",
+        terminal_window.0
+    );
     #[cfg(linux_busybox_smoke)]
     let argv = ["busybox", "sh"];
     #[cfg(not(linux_busybox_smoke))]
@@ -171,6 +193,7 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         "SHELL=/bin/sh",
         "TERM=xterm",
     ];
+    crate::klog_fmt!("[BUSYBOX-DIAG] loader enter bytes={}\n", data.len());
     let pid = match crate::loader::load_program_with_runtime_args(
         data.as_slice(),
         "busybox",
@@ -178,17 +201,23 @@ fn launch_busybox_with_args(path: &str) -> Result<ProcessId, LoadError> {
         &envp,
         true,
     ) {
-        Ok(pid) => pid,
+        Ok(pid) => {
+            crate::klog_fmt!("[BUSYBOX-DIAG] loader exit pid={}\n", pid.0);
+            pid
+        }
         Err(error) => {
+            crate::klog_fmt!("[BUSYBOX-DIAG] loader error={:?}\n", error);
             solvent::close_process_terminal(terminal_window);
             return Err(error);
         }
     };
+    crate::klog_fmt!("[BUSYBOX-DIAG] attach terminal_window to pid={}\n", pid.0);
     let _ = crate::process::SCHEDULER.with_process(pid, |process| {
         if let Some(crate::linux::DispatchMode::Linux(runtime)) = process.dispatch_mode.as_mut() {
             runtime.terminal_window = Some(terminal_window);
         }
     });
+    crate::klog_fmt!("[BUSYBOX-DIAG] launch complete pid={}\n", pid.0);
     #[cfg(linux_busybox_smoke)]
     {
         BUSYBOX_SMOKE_OUTPUT_SEEN.store(false, Ordering::Release);
@@ -314,11 +343,12 @@ pub fn launch_busybox() -> Result<ProcessId, LoadError> {
 
     for path in &locations {
         if crate::contexts::vfs::exists(path) {
-            log::info!("Found BusyBox at {}", path);
+            crate::klog_fmt!("[BUSYBOX-DIAG] found at {}\n", path);
             return launch_busybox_with_args(path);
         }
     }
 
+    crate::klog_fmt!("[BUSYBOX-DIAG] binary not found in any standard location\n");
     Err(LoadError::FileNotFound)
 }
 

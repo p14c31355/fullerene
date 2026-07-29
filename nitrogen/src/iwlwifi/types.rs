@@ -89,6 +89,13 @@ pub enum LegacyCmd {
     PowerUp = 0x27,
     ReplyAlive = 0x01,
     ReplyError = 0x02,
+    /// RX MPDU notification (legacy transport). Carries the raw 802.11 frame
+    /// preceded by an `iwl_rx_mpdu_res_start` header.
+    ReplyRxMpduCmd = 0xc1,
+    /// Urgent scan-complete notification (older firmware).
+    ScanCompleteUrgent = 0x6d,
+    /// Offloaded scan-complete notification (7265 firmware API).
+    ScanOffloadCompleteNotif = 0xe7,
 }
 
 /// ADD_STA_KEY command payload used by the 7000-series firmware API.

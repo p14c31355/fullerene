@@ -883,6 +883,17 @@ fn nozzle_services() -> nozzle::ShellServices {
                     ctx.terminal.write_str("Windowing system not active.\n");
                 }
             }
+            "klog_live" => {
+                if solvent::open_klog_live() {
+                    ctx.terminal.write_str(
+                        "KLog Live window opened. New klog entries appear here \
+                         even when the scheduler is stuck.\n",
+                    );
+                } else {
+                    ctx.terminal
+                        .write_str("KLog Live unavailable (GUI not ready).\n");
+                }
+            }
             "dmesg" => {
                 let klog_len = crate::klog::len();
                 if klog_len > 0 {

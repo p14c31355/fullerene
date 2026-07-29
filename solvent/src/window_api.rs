@@ -91,6 +91,21 @@ pub fn invalidate_window(id: WindowId) {
     nitrogen::debug_status!("WASM", "window_api invalidate exit");
 }
 
+/// Open the live kernel-log viewer window from a non-GUI context (e.g. the
+/// Nozzle shell).  This lets the user open Klog Live before launching a
+/// command that may hang, so the timer-driven lock-free repaint keeps
+/// displaying new `klog_fmt!` diagnostics even when the scheduler is stuck.
+pub fn open_klog_live() -> bool {
+    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+        return false;
+    }
+    let opened = RUNTIME_CONTEXT.runtime().as_mut().map(|runtime| {
+        crate::menu_actions::open_klog_live_window(runtime);
+    });
+    RENDERING_SUSPENDED.store(false, core::sync::atomic::Ordering::SeqCst);
+    opened.is_some()
+}
+
 /// Mark the live kernel-log window dirty from a synchronous diagnostic path.
 /// Normally the event loop does this periodically, but a synchronous WASM
 /// command prevents that loop from running while the command is blocked.

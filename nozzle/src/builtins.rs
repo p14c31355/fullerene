@@ -80,6 +80,7 @@ sys_info_cmd!(cmd_cpuinfo, "cpuinfo");
 sys_info_cmd!(cmd_tasks, "tasks");
 sys_info_cmd!(cmd_windows, "windows");
 sys_info_cmd!(cmd_dmesg, "dmesg");
+sys_info_cmd!(cmd_klog_live, "klog_live");
 
 /// `hexdump` — show hex dump of provided string
 pub fn cmd_hexdump(ctx: &mut CommandContext) -> bool {

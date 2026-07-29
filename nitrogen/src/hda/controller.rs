@@ -66,8 +66,49 @@ impl HdaController {
             PciConfigSpace::read_config_word(bus, 0, 0, 0) != 0xFFFF
         }
 
-        let mut fallback: Option<(u8, u8, u8, u64)> = None;
-        let mut codec_candidate: Option<(u8, u8, u8, u64)> = None;
+        /// Identify Intel integrated-GPU HDMI audio controllers.
+        ///
+        /// These controllers expose only digital display-port codecs and
+        /// cannot drive an analog speaker.  When a PCH analog controller is
+        /// also present we must prefer it; otherwise playback silently routes
+        /// to a port nothing is listening on.  The list below is the set of
+        /// Intel HDMI audio PCI device IDs observed across Broadwell, Haswell,
+        /// Skylake/Kaby Lake, and Coffee Lake platforms.
+        fn is_intel_hdmi_audio(vendor_id: u16, device_id: u16) -> bool {
+            if vendor_id != 0x8086 {
+                return false;
+            }
+            matches!(
+                device_id,
+                0x0a0c
+                    | 0x0c0c
+                    | 0x0d0c
+                    | 0x160c
+                    | 0x190c
+                    | 0x1c0c
+                    | 0x1d0c
+                    | 0x1e0c
+                    | 0x1f0c
+                    | 0x280c
+                    | 0x281c
+                    | 0x9c70
+                    | 0x9d70
+                    | 0xa170
+                    | 0x490d
+                    | 0x4b55
+                    | 0x5c70
+                    | 0x7af0
+                    | 0x51c8
+                    | 0x51cb
+                    | 0x54c8
+                    | 0x7a70
+            )
+        }
+
+        let mut analog_candidate: Option<(u8, u8, u8, u64)> = None;
+        let mut hdmi_candidate: Option<(u8, u8, u8, u64)> = None;
+        let mut analog_codec_seen = false;
+        let mut hdmi_codec_seen = false;
 
         for bus in 0..=255u8 {
             if bus > 0 && !bus_exists(bus) {
@@ -80,6 +121,8 @@ impl HdaController {
                 if dev.class_code != 0x04 || dev.subclass != 0x03 {
                     continue;
                 }
+                let is_hdmi = is_intel_hdmi_audio(dev.vendor_id, dev.device_id);
+                let kind_label = if is_hdmi { "HDMI" } else { "analog" };
                 let Some(bar0) = dev.read_bar(0) else {
                     continue;
                 };
@@ -99,7 +142,8 @@ impl HdaController {
                 let states = unsafe { core::ptr::read_volatile(mmio.add(STATESTS) as *const u16) };
 
                 log::info!(
-                    "HDA: {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x} CMD=0x{:04x}",
+                    "HDA({}): {:04x}:{:02x}.{} [{:#06x}:{:#06x}] BAR0=0x{:016x} GCAP=0x{:08x} STATESTS=0x{:04x} CMD=0x{:04x}",
+                    kind_label,
                     bus,
                     d,
                     0,
@@ -111,37 +155,62 @@ impl HdaController {
                     cmd_after,
                 );
 
-                if states & 0x0001 != 0 {
-                    log::info!("HDA: codec connected at {:04x}:{:02x}.{}", bus, d, 0);
-                    // Systems with integrated graphics commonly expose an
-                    // HDMI HDA controller at a low device number and the
-                    // analog PCH codec later in the bus. Keep scanning so a
-                    // later connected controller can be preferred.
-                    codec_candidate = Some((bus, d, 0, bar0));
+                let codec_present = states & 0x0001 != 0;
+                if codec_present {
+                    log::info!(
+                        "HDA({}): codec connected at {:04x}:{:02x}.{}",
+                        kind_label,
+                        bus,
+                        d,
+                        0
+                    );
                 }
 
-                fallback = Some((bus, d, 0, bar0));
+                // Prefer the analog (PCH) controller over the GPU HDMI
+                // controller.  STATESTS is unreliable before CRST, so do not
+                // gate selection on codec presence: the analog codec may only
+                // appear after the controller is reset in `init`.  HDMI is
+                // tracked only as a fallback so that display-audio-only
+                // systems still produce sound through their monitor.
+                if is_hdmi {
+                    if hdmi_candidate.is_none() {
+                        hdmi_candidate = Some((bus, d, 0, bar0));
+                        if codec_present {
+                            hdmi_codec_seen = true;
+                        }
+                    }
+                } else {
+                    // Keep the last analog controller (PCH codecs are usually
+                    // at higher device numbers than the GPU HDMI audio).
+                    analog_candidate = Some((bus, d, 0, bar0));
+                    if codec_present {
+                        analog_codec_seen = true;
+                    }
+                }
             }
         }
 
-        if let Some(ref b) = codec_candidate {
+        if let Some(ref b) = analog_candidate {
             log::info!(
-                "HDA: selecting {:04x}:{:02x}.{} (last codec-connected controller)",
+                "HDA(analog): selecting {:04x}:{:02x}.{} (codec_present={})",
                 b.0,
                 b.1,
-                b.2
+                b.2,
+                analog_codec_seen
             );
-            return codec_candidate;
+            return analog_candidate;
         }
-        if let Some(ref b) = fallback {
+        if let Some(ref b) = hdmi_candidate {
             log::info!(
-                "HDA: falling back to {:04x}:{:02x}.{} (no codec detected)",
+                "HDA(HDMI): selecting {:04x}:{:02x}.{} (codec_present={}) — no analog controller found",
                 b.0,
                 b.1,
-                b.2
+                b.2,
+                hdmi_codec_seen
             );
+            return hdmi_candidate;
         }
-        fallback
+        None
     }
 
     /// Create a new `HdaController` in the uninitialised state.
@@ -333,6 +402,8 @@ impl HdaController {
         // boundary interrupt. Do not start DMA in that case: callers would
         // otherwise wait forever for playback progress.
         if !route_found {
+            log::warn!("HDA: no speaker route found — dumping codec inventory for diagnosis");
+            unsafe { crate::hda::diagnostics::dump_codec_inventory(mmio, &self.corb, &graph) };
             return false;
         }
 
