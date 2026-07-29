@@ -301,7 +301,11 @@ impl ScanRequestCmd {
             1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
         ];
         let mut channels = [ScanChannelCfgLmac {
-            flags: 1 << 28,
+            // A normal discovery scan covers the complete channel entry.
+            // The LMAC API reserves bit 27 for FULL and bit 28 for PARTIAL;
+            // using PARTIAL for every channel can leave the request waiting
+            // for a scan plan that was never configured.
+            flags: 1 << 27,
             channel_num: 0,
             iter_count: 1,
             iter_interval: 0,

@@ -498,8 +498,11 @@ impl IwlWifiDevice {
                 let tx_cfg = self
                     .safe_read32(FH_TCSR_CHNL_TX_CONFIG_BASE + IWL_CMD_QUEUE * (0x20 / 4))
                     .unwrap_or(!0);
+                let rx_closed = self.rx_status().closed_rb_num;
+                let rx_finished = self.rx_status().finished_rb_num;
+                let rx_rptr = self.safe_read32(FH_RSCSR_CHNL0_RDPTR_REG).unwrap_or(!0);
                 log::warn!(
-                    "iwlwifi: scan watchdog expired without firmware completion notification ({} APs found): tx_head={} tx_tail={} scd_rptr={} scd_status={:#010x} CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} TX_CFG={:#010x}",
+                    "iwlwifi: scan watchdog expired without firmware completion notification ({} APs found): tx_head={} tx_tail={} scd_rptr={} scd_status={:#010x} CSR_INT={:#010x} CSR_INT_MASK={:#010x} FH_INT={:#010x} TX_CFG={:#010x} RX_CLOSED={} RX_FINISHED={} RX_RDPTR={:#010x} RX_HEAD={} RX_TAIL={}",
                     self.scan_results.len(),
                     self.tx_head & 0xff,
                     self.tx_tail & 0xff,
@@ -509,6 +512,11 @@ impl IwlWifiDevice {
                     int_mask,
                     fh_int,
                     tx_cfg,
+                    rx_closed,
+                    rx_finished,
+                    rx_rptr,
+                    self.rx_head,
+                    self.rx_tail,
                 );
                 log::info!(
                     "iwlwifi: scan complete by host watchdog ({} APs found)",
