@@ -65,6 +65,12 @@ pub enum GroupId {
 }
 
 #[repr(u8)]
+pub enum LongCmd {
+    /// UMAC/LMAC scan database configuration for the 7265 firmware API.
+    ScanConfig = 0x0c,
+}
+
+#[repr(u8)]
 pub enum LegacyCmd {
     Echo = 0x03,
     AddStaKey = 0x17,
@@ -212,6 +218,80 @@ const SCAN_DIRECT_SSID_COUNT: usize = 20;
 const SCAN_SSID_MAX_LEN: usize = 32;
 const SCAN_PROBE_BUFFER_SIZE: usize = 512;
 
+const SCAN_CHANNELS: [u8; SCAN_CHANNEL_COUNT] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
+];
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanDwell {
+    pub active: u8,
+    pub passive: u8,
+    pub fragmented: u8,
+    pub extended: u8,
+}
+
+/// SCAN_CFG_CMD API version 1. The firmware appends no hidden fields here;
+/// the channel list is part of the command payload.
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct ScanConfigV1 {
+    pub flags: u32,
+    pub tx_chains: u32,
+    pub rx_chains: u32,
+    pub legacy_rates: u32,
+    pub out_of_channel_time: u32,
+    pub suspend_time: u32,
+    pub dwell: ScanDwell,
+    pub mac_addr: [u8; 6],
+    pub bcast_sta_id: u8,
+    pub channel_flags: u8,
+    pub channel_array: [u8; SCAN_CHANNEL_COUNT],
+}
+
+impl ScanConfigV1 {
+    pub fn new(mac: [u8; 6]) -> Self {
+        // ACTIVATE | ALLOW_CHUB_REQS | SET_TX_CHAINS | SET_RX_CHAINS |
+        // SET_AUX_STA_ID | SET_ALL_TIMES | SET_LEGACY_RATES | SET_MAC_ADDR |
+        // SET_CHANNEL_FLAGS | CLEAR_FRAGMENTED | N_CHANNELS(23).
+        let flags = (1 << 0)
+            | (1 << 3)
+            | (1 << 8)
+            | (1 << 9)
+            | (1 << 10)
+            | (1 << 11)
+            | (1 << 13)
+            | (1 << 14)
+            | (1 << 15)
+            | (1 << 17)
+            | ((SCAN_CHANNEL_COUNT as u32) << 26);
+
+        Self {
+            flags,
+            tx_chains: 0x03,
+            rx_chains: 0x01b7,
+            // All legacy 802.11 rates in both the basic and supported-rate
+            // halves. This is the superset used while discovering APs.
+            legacy_rates: 0x0fff_0fff,
+            out_of_channel_time: 120,
+            suspend_time: 30,
+            dwell: ScanDwell {
+                active: 10,
+                passive: 110,
+                fragmented: 44,
+                extended: 90,
+            },
+            mac_addr: mac,
+            // No broadcast station has been installed yet; passive scanning
+            // does not transmit a probe, so keep the firmware's invalid-ID
+            // convention used by the legacy API.
+            bcast_sta_id: 0xff,
+            channel_flags: 0x0f,
+            channel_array: SCAN_CHANNELS,
+        }
+    }
+}
+
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct ScanReqTxCmd {
@@ -297,9 +377,6 @@ pub struct ScanRequestCmd {
 
 impl ScanRequestCmd {
     pub fn new(mac: [u8; 6]) -> Self {
-        let channel_numbers: [u16; SCAN_CHANNEL_COUNT] = [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 36, 40, 44, 48, 149, 153, 157, 161, 165,
-        ];
         let mut channels = [ScanChannelCfgLmac {
             // A normal discovery scan covers the complete channel entry.
             // The LMAC API reserves bit 27 for FULL and bit 28 for PARTIAL;
@@ -310,8 +387,8 @@ impl ScanRequestCmd {
             iter_count: 1,
             iter_interval: 0,
         }; SCAN_CHANNEL_COUNT];
-        for (channel, number) in channels.iter_mut().zip(channel_numbers) {
-            channel.channel_num = number;
+        for (channel, number) in channels.iter_mut().zip(SCAN_CHANNELS) {
+            channel.channel_num = number as u16;
         }
 
         let mut probe = ScanProbeReqV1 {

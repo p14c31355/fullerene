@@ -258,6 +258,31 @@ impl IwlWifiDevice {
         )?;
         log::info!("iwlwifi: station MAC context sent");
 
+        // The LMAC scan request is only accepted after the firmware's scan
+        // database has been activated. Linux sends SCAN_CFG_CMD in the long
+        // command group before issuing SCAN_OFFLOAD_REQUEST_CMD; without it
+        // this firmware queues the request but never starts the scan.
+        let scan_config = ScanConfigV1::new(self.mac);
+        let scan_config_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &scan_config as *const ScanConfigV1 as *const u8,
+                core::mem::size_of::<ScanConfigV1>(),
+            )
+        };
+        self.send_hcmd(
+            LongCmd::ScanConfig as u8,
+            GroupId::Long as u8,
+            scan_config_bytes,
+        )?;
+        let scan_config_flags = scan_config.flags;
+        log::info!(
+            "iwlwifi: scan config sent: group=0x{:02x} opcode=0x{:02x} channels={} flags={:#010x}",
+            GroupId::Long as u8,
+            LongCmd::ScanConfig as u8,
+            scan_config.channel_array.len(),
+            scan_config_flags,
+        );
+
         let csr_int_before_echo = self.safe_read32(CSR_INT).unwrap_or(!0);
         let csr_fh_int_before_echo = self.safe_read32(CSR_FH_INT).unwrap_or(!0);
         log::info!(
@@ -267,18 +292,16 @@ impl IwlWifiDevice {
         );
         if csr_int_before_echo & CSR_INT_BIT_HW_ERR != 0 {
             log::error!(
-                "iwlwifi: HW_ERR was already set before ECHO; first two HCMD submissions triggered the failure"
+                "iwlwifi: HW_ERR was already set before ECHO probe; initial HCMD submissions triggered the failure"
             );
             self.fw_state = FwState::Error;
             return Err(crate::DriverError::Protocol);
         }
 
         // ECHO is a valid legacy command in the general firmware API, but on
-        // this 7265-17 target it causes CSR_INT_BIT_HW_ERR immediately after
-        // the two required init commands. Do not issue this diagnostic probe
-        // in the production init path; continue to the real scan command so
-        // we can distinguish an ECHO-specific firmware failure from a general
-        // TX/SCD failure.
+        // this 7265-17 target it causes CSR_INT_BIT_HW_ERR during the init
+        // sequence. Do not issue this diagnostic probe in the production init
+        // path; the scan command is the useful end-to-end transport test.
         log::info!("iwlwifi: command transport echo probe skipped");
 
         self.fw_state = FwState::Ready;
