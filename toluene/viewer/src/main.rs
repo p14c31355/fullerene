@@ -624,7 +624,14 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
         // decode failures (which skip wait_for_video_time) and long NAL
         // chains cannot freeze the desktop.
         unsafe {
+            if trace_sample {
+                println!("viewer: mp4 sample wait begin id={}", sample_id);
+            }
             wait_for_ns(0);
+            if trace_sample {
+                println!("viewer: mp4 sample wait exit id={}", sample_id);
+                println!("viewer: mp4 sample read begin id={}", sample_id);
+            }
         }
         let sample = match reader.read_sample(track_id, sample_id) {
             Ok(Some(sample)) => sample,
@@ -647,6 +654,13 @@ fn try_mp4_reader<R: Read + Seek>(path: &str, size: u64, mut reader: mp4::Mp4Rea
                 );
             }
         };
+        if trace_sample {
+            println!(
+                "viewer: mp4 sample read exit id={} bytes={}",
+                sample_id,
+                sample.bytes.len()
+            );
+        }
         if sample.bytes.len() > MAX_PLAYBACK_SAMPLE_BYTES {
             println!(
                 "viewer: mp4 sample rejected id={} size>{} bytes",

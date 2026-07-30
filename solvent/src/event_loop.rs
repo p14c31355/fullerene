@@ -13,6 +13,8 @@ pub static GLOBAL_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::Atom
 
 static LAST_RENDER_TSC: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static YIELD_TICK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static TICK_CORE_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 static RENDER_FN: Mutex<Option<fn()>> = Mutex::new(None);
 static LAST_USB_POLL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -110,6 +112,7 @@ fn service_explorer_copy() {
 }
 
 pub fn tick_core(now: u64) {
+    TICK_CORE_ACTIVE.store(true, core::sync::atomic::Ordering::Release);
     GLOBAL_TICK.store(now, core::sync::atomic::Ordering::Relaxed);
 
     crate::poll_mouse_state();
@@ -190,10 +193,13 @@ pub fn tick_core(now: u64) {
     }) {
         crate::ensure_editor_window();
     }
+    TICK_CORE_ACTIVE.store(false, core::sync::atomic::Ordering::Release);
 }
 
 pub fn runtime_tick_no_fb() {
-    if RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst) {
+    let already_suspended = RENDERING_SUSPENDED.swap(true, core::sync::atomic::Ordering::SeqCst);
+    let tick_core_active = TICK_CORE_ACTIVE.load(core::sync::atomic::Ordering::Acquire);
+    if already_suspended || tick_core_active {
         // The shell and the synchronous WASM viewer are both entered from
         // inside the normal event-loop tick.  In that case a nested
         // runtime_tick_no_fb used to be discarded completely.  That left a
@@ -235,7 +241,10 @@ pub fn runtime_tick_no_fb() {
             if let Some(render_fn) = render_fn {
                 render_fn();
             }
-            RENDERING_SUSPENDED.store(true, core::sync::atomic::Ordering::SeqCst);
+            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
+        }
+        if !do_render {
+            RENDERING_SUSPENDED.store(already_suspended, core::sync::atomic::Ordering::SeqCst);
         }
         return;
     }

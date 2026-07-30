@@ -10,6 +10,9 @@ use lattice::window::WindowId;
 use nozzle::terminal_buffer::TerminalBuffer;
 use spin::Mutex;
 
+static SHELL_YIELD_DIAG: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 // ── Constants ────────────────────────────────────────────────
 const GLYPH_W: u32 = 8;
 const GLYPH_H: u32 = terminal_surface::CELL_HEIGHT;
@@ -398,7 +401,14 @@ impl carrier::terminal::Terminal for LatticeTerminal {
             // the routing step to avoid discarding keystrokes meant for
             // a foreground process.
             crate::runtime_tick_no_fb();
+            let log_yield = !SHELL_YIELD_DIAG.swap(true, core::sync::atomic::Ordering::AcqRel);
+            if log_yield {
+                log::info!("[LINUX-DIAG] shell terminal yield enter");
+            }
             crate::yield_scheduler();
+            if log_yield {
+                log::info!("[LINUX-DIAG] shell terminal yield exit");
+            }
             if let Some(ch) = nitrogen::ps2::keyboard::read_char() {
                 if let Some(runtime) = RUNTIME_CONTEXT.runtime().as_mut() {
                     runtime.term_buf.reset_scroll();
