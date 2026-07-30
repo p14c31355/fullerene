@@ -75,64 +75,69 @@ pub enum EfiStatus {
 
 impl From<usize> for EfiStatus {
     fn from(value: usize) -> Self {
-        // EFI status: bit 63 set for errors, clear code bits for specific errors
-        let code = value & 0x7FFFFFFFFFFFFFFF;
-        match code {
-            0 => EfiStatus::Success,
-            1 => EfiStatus::LoadError,
-            2 => EfiStatus::InvalidParameter,
-            3 => EfiStatus::Unsupported,
-            4 => EfiStatus::BadBufferSize,
-            5 => EfiStatus::BufferTooSmall,
-            6 => EfiStatus::NotInReadyState,
-            7 => EfiStatus::DeviceError,
-            8 => EfiStatus::WriteProtected,
-            9 => EfiStatus::OutOfResources,
-            10 => EfiStatus::VolumeCorrupted,
-            11 => EfiStatus::VolumeFull,
-            12 => EfiStatus::NoMedia,
-            13 => EfiStatus::MediaChanged,
-            14 => EfiStatus::NotFound,
-            15 => EfiStatus::AccessDenied,
-            16 => EfiStatus::NoResponse,
-            17 => EfiStatus::NoMapping,
-            18 => EfiStatus::Timeout,
-            19 => EfiStatus::NotStarted,
-            20 => EfiStatus::AlreadyStarted,
-            21 => EfiStatus::Aborted,
-            22 => EfiStatus::IcalFailed,
-            _ => EfiStatus::Unsupported, // Fallback for unknown status codes
-        }
+        // EFI status: bit 63 set for errors, clear code bits for specific errors.
+        // Discriminants are contiguous 0..=22 (see `EfiStatus` definition).
+        const CODES: [EfiStatus; 23] = [
+            EfiStatus::Success,
+            EfiStatus::LoadError,
+            EfiStatus::InvalidParameter,
+            EfiStatus::Unsupported,
+            EfiStatus::BadBufferSize,
+            EfiStatus::BufferTooSmall,
+            EfiStatus::NotInReadyState,
+            EfiStatus::DeviceError,
+            EfiStatus::WriteProtected,
+            EfiStatus::OutOfResources,
+            EfiStatus::VolumeCorrupted,
+            EfiStatus::VolumeFull,
+            EfiStatus::NoMedia,
+            EfiStatus::MediaChanged,
+            EfiStatus::NotFound,
+            EfiStatus::AccessDenied,
+            EfiStatus::NoResponse,
+            EfiStatus::NoMapping,
+            EfiStatus::Timeout,
+            EfiStatus::NotStarted,
+            EfiStatus::AlreadyStarted,
+            EfiStatus::Aborted,
+            EfiStatus::IcalFailed,
+        ];
+        let code = value & 0x7FFF_FFFF_FFFF_FFFF;
+        CODES.get(code).copied().unwrap_or(EfiStatus::Unsupported)
     }
 }
 
-/// Converts an EfiStatus to a human-readable string slice for debugging
+/// Converts an EfiStatus to a human-readable string slice for debugging.
+///
+/// Indexed by the `#[repr(usize)]` discriminant; `Unsupported` covers any
+/// future (currently impossible) out-of-range discriminant.
 pub fn efi_status_to_str(status: EfiStatus) -> &'static str {
-    match status {
-        EfiStatus::Success => "Success",
-        EfiStatus::LoadError => "LoadError",
-        EfiStatus::InvalidParameter => "InvalidParameter",
-        EfiStatus::Unsupported => "Unsupported",
-        EfiStatus::BadBufferSize => "BadBufferSize",
-        EfiStatus::BufferTooSmall => "BufferTooSmall",
-        EfiStatus::NotInReadyState => "NotInReadyState",
-        EfiStatus::DeviceError => "DeviceError",
-        EfiStatus::WriteProtected => "WriteProtected",
-        EfiStatus::OutOfResources => "OutOfResources",
-        EfiStatus::VolumeCorrupted => "VolumeCorrupted",
-        EfiStatus::VolumeFull => "VolumeFull",
-        EfiStatus::NoMedia => "NoMedia",
-        EfiStatus::MediaChanged => "MediaChanged",
-        EfiStatus::NotFound => "NotFound",
-        EfiStatus::AccessDenied => "AccessDenied",
-        EfiStatus::NoResponse => "NoResponse",
-        EfiStatus::NoMapping => "NoMapping",
-        EfiStatus::Timeout => "Timeout",
-        EfiStatus::NotStarted => "NotStarted",
-        EfiStatus::AlreadyStarted => "AlreadyStarted",
-        EfiStatus::Aborted => "Aborted",
-        EfiStatus::IcalFailed => "IcalFailed",
-    }
+    const NAMES: [&str; 23] = [
+        "Success",
+        "LoadError",
+        "InvalidParameter",
+        "Unsupported",
+        "BadBufferSize",
+        "BufferTooSmall",
+        "NotInReadyState",
+        "DeviceError",
+        "WriteProtected",
+        "OutOfResources",
+        "VolumeCorrupted",
+        "VolumeFull",
+        "NoMedia",
+        "MediaChanged",
+        "NotFound",
+        "AccessDenied",
+        "NoResponse",
+        "NoMapping",
+        "Timeout",
+        "NotStarted",
+        "AlreadyStarted",
+        "Aborted",
+        "IcalFailed",
+    ];
+    NAMES.get(status as usize).copied().unwrap_or("Unsupported")
 }
 
 /// Minimal subset of UEFI memory types (only those we need)

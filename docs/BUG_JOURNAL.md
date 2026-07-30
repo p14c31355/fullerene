@@ -3,6 +3,64 @@
 This document records non-obvious software bugs encountered during
 development, their root cause analysis, and the fix applied.
 
+## Entry 009 — 2026-07-30 workspace audit fixes
+
+A full-workspace bug and redundancy sweep produced the following fixes. Each
+preserves the existing behaviour except where a bug was corrected.
+
+### IPv4 header checksum double byte-swap (HIGH — networking)
+
+`bonder::ipv4::build_packet` stored `checksum()`'s result through
+`hdr.header_checksum = cs.to_be()`, but `Ipv4Header::write_to` already
+serialises the field with `to_be_bytes()`. On little-endian x86 the two swaps
+cancelled, emitting a little-endian (wrong-order) checksum that
+standards-compliant receivers drop. The UDP path already did the right thing
+(`hdr.checksum = cs`). Fixed by storing the native-order value. This broke all
+outgoing IPv4 packets (DHCP, DNS, …).
+
+### Framebuffer scroll left a 2-px stale band
+
+`FramebufferWriter::scroll_up` and `scroll_buffer_pixels` shifted the buffer up
+by one text row (10 px, `FONT_6X10`) but only cleared the bottom 8 lines. The
+2 lines between `height-10` and `height-8` retained old bottom-region content
+after every scroll. Fixed by clearing the full freed row (10 px) so shift and
+clear use the same height.
+
+### Unchecked arithmetic on firmware-supplied boot data
+
+- `BitmapFrameAllocator::init_with_memory_map` computed
+  `physical_start + page_count * 4096` with plain `+`/`*`, which can overflow
+  `u64` for malformed UEFI descriptors and panic under the dev profile's
+  overflow checks. Routed through `saturating_add`/`saturating_mul` to match
+  the companion validator.
+- `set_heap_range` stored `start + size` without overflow protection; now
+  `saturating_add`.
+- `VirtualMemoryContext::extend` used `extension.used += additional` where the
+  sibling `extend_for` correctly used `saturating_add`; unified on
+  `saturating_add`.
+- `timing::ticks_per_us` performed the CPUID-0x15 frequency multiply in `u64`,
+  which a malformed leaf could overflow (panic in debug); promoted the
+  intermediate to `u128`.
+
+### Compositor FPS update landed one frame early
+
+`notify_frame_presented` compared the *pre-increment* `fetch_add` result
+against the 30-frame interval, so the FPS readout updated on frames 1, 31, 61…
+instead of 30, 60, 90…. Fixed by using `fc + 1` in the modulo.
+
+### Redundancy reductions (behaviour-preserving)
+
+The same pass replaced repetitive code with table-driven / helper forms that
+keep the runtime contract identical: the 110-line `glyph()` match became two
+indexed `const` arrays (A–Z / 0–9); `EfiStatus`'s two 23-arm matches became
+discriminant-indexed arrays; `u32_to_vga_color` became a 16-entry table; the
+37 repeated `if !self.initialized` guards in `UnifiedMemoryManager` became a
+`check_init()?` helper; the iwlwifi `from_raw_parts` command-serialisation
+boilerplate (9 sites) became a single `as_bytes` helper; and
+`WifiInitPhase::From<u8>` became a discriminant-indexed array.
+
+---
+
 ## Entry 006 — Right-click was consumed by the left-button WM path
 
 ### Symptoms

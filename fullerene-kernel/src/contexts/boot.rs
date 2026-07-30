@@ -90,6 +90,11 @@ pub struct BootContext {
     pub rsdp_address: u64,
     pub kernel_args: *const petroleum::assembly::KernelArgs,
 }
+// SAFETY: `BootContext` is a single-owner boot structure written before the
+// scheduler starts and accessed only from the boot CPU afterwards. The raw
+// `kernel_args` pointer targets a boot-time allocation that outlives boot and
+// is never aliased by another core. Interior mutability is not required, so
+// `Send + Sync` is sound for the static holder.
 unsafe impl Send for BootContext {}
 unsafe impl Sync for BootContext {}
 

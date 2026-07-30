@@ -772,18 +772,21 @@ pub enum WifiInitPhase {
 
 impl From<u8> for WifiInitPhase {
     fn from(v: u8) -> Self {
-        match v {
-            0 => Self::Idle,
-            1 => Self::PciProbe,
-            2 => Self::MmioInit,
-            3 => Self::MmioPollMacClock,
-            4 => Self::DmaAlloc,
-            5 => Self::FwUpload,
-            6 => Self::FwWaitAlive,
-            7 => Self::FwInitCmds,
-            8 => Self::Done,
-            _ => Self::Failed,
-        }
+        // Discriminants are contiguous 0..=9; any value outside that range
+        // (and 9 itself) collapses to `Failed`, matching the prior match.
+        const PHASES: [WifiInitPhase; 10] = [
+            WifiInitPhase::Idle,
+            WifiInitPhase::PciProbe,
+            WifiInitPhase::MmioInit,
+            WifiInitPhase::MmioPollMacClock,
+            WifiInitPhase::DmaAlloc,
+            WifiInitPhase::FwUpload,
+            WifiInitPhase::FwWaitAlive,
+            WifiInitPhase::FwInitCmds,
+            WifiInitPhase::Done,
+            WifiInitPhase::Failed,
+        ];
+        PHASES.get(v as usize).copied().unwrap_or(WifiInitPhase::Failed)
     }
 }
 

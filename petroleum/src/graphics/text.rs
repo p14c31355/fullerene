@@ -145,25 +145,25 @@ impl core::fmt::Write for VgaBuffer {
 }
 
 fn u32_to_vga_color(color: u32) -> Color {
-    match color & 0x0F {
-        0 => Color::Black,
-        1 => Color::Blue,
-        2 => Color::Green,
-        3 => Color::Cyan,
-        4 => Color::Red,
-        5 => Color::Magenta,
-        6 => Color::Brown,
-        7 => Color::LightGray,
-        8 => Color::DarkGray,
-        9 => Color::LightBlue,
-        10 => Color::LightGreen,
-        11 => Color::LightCyan,
-        12 => Color::LightRed,
-        13 => Color::Pink,
-        14 => Color::Yellow,
-        15 => Color::White,
-        _ => Color::LightGray,
-    }
+    const COLORS: [Color; 16] = [
+        Color::Black,
+        Color::Blue,
+        Color::Green,
+        Color::Cyan,
+        Color::Red,
+        Color::Magenta,
+        Color::Brown,
+        Color::LightGray,
+        Color::DarkGray,
+        Color::LightBlue,
+        Color::LightGreen,
+        Color::LightCyan,
+        Color::LightRed,
+        Color::Pink,
+        Color::Yellow,
+        Color::White,
+    ];
+    COLORS[(color & 0x0F) as usize]
 }
 
 impl crate::graphics::Console for VgaBuffer {

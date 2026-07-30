@@ -45,11 +45,13 @@ all members. `toluene/cargo` is a vendored third-party Cargo source tree and is
 not a root-workspace member.
 
 The current owned-source inventory (2026-07-30), excluding `target/` and the
-vendored BusyBox/VSCodium trees, is 1,758 Rust files and approximately
-444,401 Rust LOC. There are 2,163 Rust/C/assembly source files when the
-tracked non-Rust integration sources are included. The kernel's `src/linux`
-entry is a symlink to the shared `solvent/linux` implementation; it is counted
-once by the owned-source figure.
+vendored BusyBox/VSCodium trees, is 1,759 Rust files and approximately
+444,283 Rust LOC. Of these, the Fullerene-authored source (also excluding the
+`toluene/cargo`, `toluene/freedoom`, and `toluene/netsurf` port inputs) is 395
+Rust files and roughly 101,898 Rust LOC. There are 3,383 Rust/C/assembly source
+files when the tracked non-Rust integration sources are included. The kernel's
+`src/linux` entry is a symlink to the shared `solvent/linux` implementation; it is
+counted once by the owned-source figure.
 The large `toluene/busybox` and `toluene/vscodium` trees are vendored inputs,
 not Fullerene-owned architecture layers; changes to their integration belong
 in `fullerene-kernel/build.rs`, the ELF loader, and the runtime terminal bridge.

@@ -764,11 +764,11 @@ fn nozzle_services() -> nozzle::ShellServices {
                     }
                     ctx.terminal
                         .write_str("Filesystem      Size  Used  Avail  Use%  Mounted on\n");
-                    let msg = format!(
-                        "ramfs           {:>4}K  {:>4}K  {:>4}K  {:>3}%  /\n",
-                        0, 0, 0, 0
-                    );
-                    ctx.terminal.write_str(&msg);
+                    // ramfs is backed by the kernel heap; per-mount byte
+                    // accounting is not tracked, so report N/A rather than
+                    // fabricating zero columns (the file/dir counts below are real).
+                    ctx.terminal
+                        .write_str("ramfs           N/A   N/A   N/A   N/A  /\n");
                     let msg2 = format!("{} files, {} directories\n", file_count, dir_count);
                     ctx.terminal.write_str(&msg2);
                 }

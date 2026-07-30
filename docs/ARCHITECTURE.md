@@ -65,6 +65,18 @@ The release profile keeps aggressive optimization, single-unit LTO, and abort
 panics, and strips the symbol table from shipped binaries. Debug builds retain
 symbols for diagnosis; this changes artifact metadata, not runtime code paths.
 
+A 2026-07-30 redundancy and correctness audit reduced logic LOC without
+changing runtime contracts: repetitive command-serialisation and font/colour
+tables became table-driven `const` arrays and a shared `as_bytes` helper
+(localised to `nitrogen::iwlwifi`); the kernel memory manager's 37 repeated
+initialisation guards collapsed to a `check_init()?` helper. Correctness fixes
+from the same pass are recorded in `docs/BUG_JOURNAL.md` (Entry 009), notably
+the IPv4 header-checksum byte-order bug, a 2-px framebuffer-scroll stale band,
+and unchecked boot-path arithmetic. The `assembly.rs` hand-coded boot
+transitions remain `asm!` because no safe Rust equivalent exists for the
+CR3/GDT/stack handoff; they are already encapsulated behind safe Rust entry
+points per section 6.
+
 ## 1. Overall Philosophy (Highest Priority)
 
 - **Fullerene aims to be a safe, readable, maintainable, loosely-coupled no_std operating system.**

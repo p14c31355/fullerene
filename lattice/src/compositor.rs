@@ -200,8 +200,10 @@ pub fn notify_frame_presented(now_tick: u64) {
     let last = LAST_FPS_TICK.load(Ordering::Relaxed);
     // Update FPS every FRAMES_PER_UPDATE frames, but also enforce a minimum
     // time between updates so low-framerate environments don't show stale data.
+    // `fetch_add` returns the pre-increment count, so use `fc + 1` so the
+    // update lands on frames 30, 60, 90, … rather than 1, 31, 61, …
     const FRAMES_PER_UPDATE: u64 = 30;
-    if now_tick > last && (fc as u64 % FRAMES_PER_UPDATE == 0) {
+    if now_tick > last && (fc + 1) % FRAMES_PER_UPDATE == 0 {
         let ticks_since = now_tick.saturating_sub(last);
         if ticks_since > 0 {
             let fps = FRAMES_PER_UPDATE
